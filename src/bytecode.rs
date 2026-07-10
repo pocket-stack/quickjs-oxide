@@ -90,6 +90,7 @@ pub enum Instruction {
     Mul,
     Div,
     Mod,
+    Pow,
     Shl,
     Sar,
     Shr,
@@ -174,6 +175,7 @@ impl Instruction {
             | Self::Mul
             | Self::Div
             | Self::Mod
+            | Self::Pow
             | Self::Shl
             | Self::Sar
             | Self::Shr

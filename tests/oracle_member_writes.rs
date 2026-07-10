@@ -63,6 +63,61 @@ Object.defineProperty(throwingKey, Symbol.toPrimitive, {
     value: function() { log += "k!"; throw new Error("key"); }
 });
 function throwingKeyExpr() { log += "q"; return throwingKey; }
+const powerLeft = function(){};
+const powerRight = function(){};
+powerLeft.valueOf = function(){ log += "l"; return 2; };
+powerRight.valueOf = function(){ log += "p"; return 3; };
+function powerRhsExpr() { log += "R"; return powerRight; }
+let powerPhase = "";
+const powerPhaseLeft = function(){};
+const powerPhaseRight = function(){};
+function powerThrow(message) { throw new Error(message); }
+powerPhaseLeft.valueOf = function(){
+    log += "l";
+    powerPhase === "lhs-convert" && powerThrow("lhs conversion");
+    return 2;
+};
+powerPhaseRight.valueOf = function(){
+    log += "p";
+    powerPhase === "rhs-convert" && powerThrow("rhs conversion");
+    return 3;
+};
+function phasePowerRhs() {
+    log += "r";
+    powerPhase === "rhs" && powerThrow("rhs");
+    return powerPhaseRight;
+}
+Object.defineProperty(target, "powerFailure", {
+    get() {
+        log += "g";
+        powerPhase === "getter" && powerThrow("getter");
+        return powerPhaseLeft;
+    },
+    set(value) {
+        log += "s";
+        powerPhase === "setter" && powerThrow("setter");
+        seenValue = value;
+    },
+    configurable: true
+});
+const powerOuter = {};
+const powerInner = {};
+let powerOuterSeen;
+let powerInnerSeen;
+Object.defineProperty(powerOuter, "value", {
+    get() { log += "G"; return 2; },
+    set(value) { log += "S"; powerOuterSeen = value; },
+    configurable: true
+});
+Object.defineProperty(powerInner, "value", {
+    get() { log += "g"; return 3; },
+    set(value) { log += "s"; powerInnerSeen = value; },
+    configurable: true
+});
+function rightPowerRhs() { log += "r"; return 2; }
+function bigintPowerRhs() { log += "r"; return 1n; }
+const powerSymbol = Symbol("power");
+function symbolPowerRhs() { log += "r"; return powerSymbol; }
 
 log = ""; seenThis = false; seenValue = undefined;
 const setResult = baseExpr()[keyExpr()] = rhsExpr();
@@ -86,12 +141,39 @@ oldValue = 3; log = ""; seenThis = false; seenValue = undefined;
 const shiftCompoundResult = baseExpr()[compoundKeyExpr()] <<= rhsExpr();
 print("ordered-shift-compound=" + [show(shiftCompoundResult), log,
       show(seenThis), show(seenValue), show(Object.hasOwn(target, "compound"))].join("|"));
+oldValue = powerLeft; log = ""; seenThis = false; seenValue = undefined;
+const powerCompoundResult = baseExpr()[compoundKeyExpr()] **= powerRhsExpr();
+print("ordered-power-compound=" + [show(powerCompoundResult), log,
+      show(seenThis), show(seenValue), show(Object.hasOwn(target, "compound"))].join("|"));
+function printPowerFailure(label, phase) {
+    powerPhase = phase; log = ""; seenValue = undefined;
+    print(label + "=" + observe(() => target.powerFailure **= phasePowerRhs()) +
+          "|" + log + "|" + show(seenValue));
+}
+printPowerFailure("power-getter-failure", "getter");
+printPowerFailure("power-rhs-failure", "rhs");
+printPowerFailure("power-lhs-convert-failure", "lhs-convert");
+printPowerFailure("power-rhs-convert-failure", "rhs-convert");
+printPowerFailure("power-setter-failure", "setter");
+log = ""; powerOuterSeen = undefined; powerInnerSeen = undefined;
+const powerRightAssociative = powerOuter.value **= powerInner.value **= rightPowerRhs();
+print("power-right-assoc=" + [show(powerRightAssociative), log,
+      show(powerOuterSeen), show(powerInnerSeen)].join("|"));
+let powerAnonymousName = "unset";
+Function.prototype.valueOf = function(){ powerAnonymousName = this.name; return 3; };
+target.powerAnonymous = 2;
+const powerAnonymousResult = target.powerAnonymous **= function(){};
+delete Function.prototype.valueOf;
+print("power-anonymous-name=" + [show(powerAnonymousResult),
+      show(powerAnonymousName)].join("|"));
 log = "";
 print("null-compound=" + observe(() => null[compoundKeyExpr()] += rhsExpr()) + "|" + log);
 log = "";
 print("null-bitwise-compound=" + observe(() => null[compoundKeyExpr()] &= rhsExpr()) + "|" + log);
 log = "";
 print("null-shift-compound=" + observe(() => null[compoundKeyExpr()] <<= rhsExpr()) + "|" + log);
+log = "";
+print("null-power-compound=" + observe(() => null[compoundKeyExpr()] **= rhsExpr()) + "|" + log);
 
 const compoundSymbol = Symbol("compound-key");
 const otherCompoundSymbol = Symbol("compound-key");
@@ -127,6 +209,8 @@ print("bitwise=" + [show(target.bitwise &= 11), show(target.bitwise ^= 3),
 target.shift = -8;
 print("shift=" + [show(target.shift >>= 1), show(target.shift >>>= 1),
       show(target.shift <<= 1)].join("|"));
+target.power = 2;
+print("power=" + [show(target.power **= 3), show(target.power **= 2)].join("|"));
 
 oldValue = 2; log = ""; seenThis = false; seenValue = undefined;
 const logicalAndSet = baseExpr()[compoundKeyExpr()] &&= rhsExpr();
@@ -188,6 +272,11 @@ identifierSetThis = false; seenValue = undefined;
 const identifierShift = identifierAccessor <<= rhsExpr();
 print("identifier-shift=" + [show(identifierShift), log,
       show(identifierGetThis), show(identifierSetThis), show(seenValue)].join("|"));
+identifierOld = 2; log = ""; identifierGetThis = false;
+identifierSetThis = false; seenValue = undefined;
+const identifierPower = identifierAccessor **= rhsExpr();
+print("identifier-power=" + [show(identifierPower), log,
+      show(identifierGetThis), show(identifierSetThis), show(seenValue)].join("|"));
 identifierOld = 0; log = ""; identifierGetThis = false;
 identifierSetThis = false; seenValue = undefined;
 const identifierLogicalSet = identifierAccessor ||= rhsExpr();
@@ -216,12 +305,17 @@ print("identifier-bitwise-readonly=" + [show(identifierReadonly &= 3),
 print("identifier-shift-readonly=" + [show(identifierReadonly >>>= 1),
       show(identifierReadonly),
       observe(() => (function(){ "use strict"; return identifierReadonly <<= 1; })())].join("|"));
+print("identifier-power-readonly=" + [show(identifierReadonly **= 3),
+      show(identifierReadonly),
+      observe(() => (function(){ "use strict"; return identifierReadonly **= 3; })())].join("|"));
 log = "";
 print("identifier-missing=" + observe(() => identifierMissing += rhsExpr()) + "|" + log);
 log = "";
 print("identifier-bitwise-missing=" + observe(() => identifierMissingBits &= rhsExpr()) + "|" + log);
 log = "";
 print("identifier-shift-missing=" + observe(() => identifierMissingShift >>= rhsExpr()) + "|" + log);
+log = "";
+print("identifier-power-missing=" + observe(() => identifierMissingPower **= rhsExpr()) + "|" + log);
 log = "";
 print("identifier-getter-throw=" + observe(() => identifierThrowing ||= rhsExpr()) + "|" + log);
 
@@ -251,6 +345,18 @@ print("readonly-bitwise-set=" + observe(() =>
 log = "";
 print("readonly-shift-set=" + observe(() =>
       (function(){ "use strict"; return Function.prototype <<= rhsExpr(); })()) + "|" + log);
+log = "";
+print("readonly-power-set=" + observe(() =>
+      (function(){ "use strict"; return Function.prototype **= rhsExpr(); })()) + "|" + log);
+log = "";
+print("readonly-power-mixed=" + observe(() =>
+      (function(){ "use strict"; return Function.prototype **= bigintPowerRhs(); })()) + "|" + log);
+log = "";
+print("readonly-power-symbol=" + observe(() =>
+      (function(){ "use strict"; return Function.prototype **= symbolPowerRhs(); })()) + "|" + log);
+log = "";
+print("readonly-power-rhs-throw=" + observe(() =>
+      (function(){ "use strict"; return Function.prototype **= throwingRhs(); })()) + "|" + log);
 print("native-setter=" + observe(() => Function.prototype.caller = 1));
 
 Object.defineProperty(target, "getterOnly", {
@@ -515,6 +621,185 @@ fn rust_observations() -> Vec<String> {
         "symbolKeyObject",
         Value::Object(symbol_key_object),
     );
+
+    let value_of = runtime.intern_property_key("valueOf").unwrap();
+    let power_left = function(&runtime, &mut context, "(function(){})");
+    let power_left_converter = function(
+        &runtime,
+        &mut context,
+        "(function(){ log = log + 'l'; return 2; })",
+    );
+    define_data(
+        &mut context,
+        power_left.as_object(),
+        &value_of,
+        Value::Object(power_left_converter.as_object().clone()),
+        true,
+        true,
+    );
+    define_global(
+        &runtime,
+        &mut context,
+        "powerLeft",
+        Value::Object(power_left.as_object().clone()),
+    );
+    let power_right = function(&runtime, &mut context, "(function(){})");
+    let power_right_converter = function(
+        &runtime,
+        &mut context,
+        "(function(){ log = log + 'p'; return 3; })",
+    );
+    define_data(
+        &mut context,
+        power_right.as_object(),
+        &value_of,
+        Value::Object(power_right_converter.as_object().clone()),
+        true,
+        true,
+    );
+    define_global(
+        &runtime,
+        &mut context,
+        "powerRight",
+        Value::Object(power_right.as_object().clone()),
+    );
+    define_global(
+        &runtime,
+        &mut context,
+        "powerPhase",
+        Value::String(JsString::from("")),
+    );
+    let power_throw = function(
+        &runtime,
+        &mut context,
+        "(function(message){ throw new Error(message); })",
+    );
+    define_global(
+        &runtime,
+        &mut context,
+        "powerThrow",
+        Value::Object(power_throw.as_object().clone()),
+    );
+    let power_phase_left = function(&runtime, &mut context, "(function(){})");
+    let power_phase_left_converter = function(
+        &runtime,
+        &mut context,
+        "(function(){ log = log + 'l'; powerPhase === 'lhs-convert' && powerThrow('lhs conversion'); return 2; })",
+    );
+    define_data(
+        &mut context,
+        power_phase_left.as_object(),
+        &value_of,
+        Value::Object(power_phase_left_converter.as_object().clone()),
+        true,
+        true,
+    );
+    define_global(
+        &runtime,
+        &mut context,
+        "powerPhaseLeft",
+        Value::Object(power_phase_left.as_object().clone()),
+    );
+    let power_phase_right = function(&runtime, &mut context, "(function(){})");
+    let power_phase_right_converter = function(
+        &runtime,
+        &mut context,
+        "(function(){ log = log + 'p'; powerPhase === 'rhs-convert' && powerThrow('rhs conversion'); return 3; })",
+    );
+    define_data(
+        &mut context,
+        power_phase_right.as_object(),
+        &value_of,
+        Value::Object(power_phase_right_converter.as_object().clone()),
+        true,
+        true,
+    );
+    define_global(
+        &runtime,
+        &mut context,
+        "powerPhaseRight",
+        Value::Object(power_phase_right.as_object().clone()),
+    );
+    let power_failure_getter = function(
+        &runtime,
+        &mut context,
+        "(function(){ log = log + 'g'; powerPhase === 'getter' && powerThrow('getter'); return powerPhaseLeft; })",
+    );
+    let power_failure_setter = function(
+        &runtime,
+        &mut context,
+        "(function(value){ log = log + 's'; powerPhase === 'setter' && powerThrow('setter'); seenValue = value; })",
+    );
+    let power_failure = runtime.intern_property_key("powerFailure").unwrap();
+    define_accessor(
+        &mut context,
+        &target,
+        &power_failure,
+        AccessorValue::Callable(power_failure_getter),
+        AccessorValue::Callable(power_failure_setter),
+        true,
+    );
+
+    define_global(&runtime, &mut context, "powerOuterSeen", Value::Undefined);
+    define_global(&runtime, &mut context, "powerInnerSeen", Value::Undefined);
+    let power_symbol = runtime.new_symbol(Some(JsString::from("power"))).unwrap();
+    define_global(
+        &runtime,
+        &mut context,
+        "powerSymbol",
+        Value::Symbol(power_symbol),
+    );
+    let power_outer = context.new_object().unwrap();
+    let power_inner = context.new_object().unwrap();
+    define_global(
+        &runtime,
+        &mut context,
+        "powerOuter",
+        Value::Object(power_outer.clone()),
+    );
+    define_global(
+        &runtime,
+        &mut context,
+        "powerInner",
+        Value::Object(power_inner.clone()),
+    );
+    let power_value = runtime.intern_property_key("value").unwrap();
+    let power_outer_getter = function(
+        &runtime,
+        &mut context,
+        "(function(){ log = log + 'G'; return 2; })",
+    );
+    let power_outer_setter = function(
+        &runtime,
+        &mut context,
+        "(function(value){ log = log + 'S'; powerOuterSeen = value; })",
+    );
+    define_accessor(
+        &mut context,
+        &power_outer,
+        &power_value,
+        AccessorValue::Callable(power_outer_getter),
+        AccessorValue::Callable(power_outer_setter),
+        true,
+    );
+    let power_inner_getter = function(
+        &runtime,
+        &mut context,
+        "(function(){ log = log + 'g'; return 3; })",
+    );
+    let power_inner_setter = function(
+        &runtime,
+        &mut context,
+        "(function(value){ log = log + 's'; powerInnerSeen = value; })",
+    );
+    define_accessor(
+        &mut context,
+        &power_inner,
+        &power_value,
+        AccessorValue::Callable(power_inner_getter),
+        AccessorValue::Callable(power_inner_setter),
+        true,
+    );
     for (name, source) in [
         (
             "baseExpr",
@@ -533,6 +818,26 @@ fn rust_observations() -> Vec<String> {
         (
             "throwingKeyExpr",
             "(function(){ log = log + 'q'; return throwingKey; })",
+        ),
+        (
+            "powerRhsExpr",
+            "(function(){ log = log + 'R'; return powerRight; })",
+        ),
+        (
+            "phasePowerRhs",
+            "(function(){ log = log + 'r'; powerPhase === 'rhs' && powerThrow('rhs'); return powerPhaseRight; })",
+        ),
+        (
+            "rightPowerRhs",
+            "(function(){ log = log + 'r'; return 2; })",
+        ),
+        (
+            "bigintPowerRhs",
+            "(function(){ log = log + 'r'; return 1n; })",
+        ),
+        (
+            "symbolPowerRhs",
+            "(function(){ log = log + 'r'; return powerSymbol; })",
         ),
     ] {
         let value = function(&runtime, &mut context, source);
@@ -648,6 +953,99 @@ fn rust_observations() -> Vec<String> {
             runtime.has_own_property(&target, &compound).unwrap()
         )),
     ));
+    let power_left_value = global_value(&runtime, &mut context, "powerLeft");
+    set_global(&runtime, &mut context, "oldValue", power_left_value);
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    set_global(&runtime, &mut context, "seenThis", Value::Bool(false));
+    set_global(&runtime, &mut context, "seenValue", Value::Undefined);
+    let power_compound_result = context
+        .eval("baseExpr()[compoundKeyExpr()] **= powerRhsExpr()")
+        .unwrap();
+    output.push(format!(
+        "ordered-power-compound={}|{}|{}|{}|{}",
+        show(power_compound_result),
+        string_global(&runtime, &mut context, "log"),
+        show(global_value(&runtime, &mut context, "seenThis")),
+        show(global_value(&runtime, &mut context, "seenValue")),
+        show(Value::Bool(
+            runtime.has_own_property(&target, &compound).unwrap()
+        )),
+    ));
+    for (label, phase) in [
+        ("power-getter-failure", "getter"),
+        ("power-rhs-failure", "rhs"),
+        ("power-lhs-convert-failure", "lhs-convert"),
+        ("power-rhs-convert-failure", "rhs-convert"),
+        ("power-setter-failure", "setter"),
+    ] {
+        set_global(
+            &runtime,
+            &mut context,
+            "powerPhase",
+            Value::String(JsString::from(phase)),
+        );
+        set_global(
+            &runtime,
+            &mut context,
+            "log",
+            Value::String(JsString::from("")),
+        );
+        set_global(&runtime, &mut context, "seenValue", Value::Undefined);
+        let observation = observe(
+            &runtime,
+            &mut context,
+            "target.powerFailure **= phasePowerRhs()",
+        );
+        output.push(format!(
+            "{label}={observation}|{}|{}",
+            string_global(&runtime, &mut context, "log"),
+            show(global_value(&runtime, &mut context, "seenValue")),
+        ));
+    }
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    set_global(&runtime, &mut context, "powerOuterSeen", Value::Undefined);
+    set_global(&runtime, &mut context, "powerInnerSeen", Value::Undefined);
+    let power_right_associative = context
+        .eval("powerOuter.value **= powerInner.value **= rightPowerRhs()")
+        .unwrap();
+    output.push(format!(
+        "power-right-assoc={}|{}|{}|{}",
+        show(power_right_associative),
+        string_global(&runtime, &mut context, "log"),
+        show(global_value(&runtime, &mut context, "powerOuterSeen")),
+        show(global_value(&runtime, &mut context, "powerInnerSeen")),
+    ));
+    define_global(
+        &runtime,
+        &mut context,
+        "powerAnonymousName",
+        Value::String(JsString::from("unset")),
+    );
+    context
+        .eval(
+            "Function.prototype.valueOf = function(){ powerAnonymousName = this.name; return 3; }",
+        )
+        .unwrap();
+    context.eval("target.powerAnonymous = 2").unwrap();
+    let power_anonymous_result = context
+        .eval("target.powerAnonymous **= function(){}")
+        .unwrap();
+    context.eval("delete Function.prototype.valueOf").unwrap();
+    output.push(format!(
+        "power-anonymous-name={}|{}",
+        show(power_anonymous_result),
+        show(global_value(&runtime, &mut context, "powerAnonymousName")),
+    ));
     set_global(
         &runtime,
         &mut context,
@@ -691,6 +1089,21 @@ fn rust_observations() -> Vec<String> {
     );
     output.push(format!(
         "null-shift-compound={null_shift_compound}|{}",
+        string_global(&runtime, &mut context, "log")
+    ));
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    let null_power_compound = observe(
+        &runtime,
+        &mut context,
+        "null[compoundKeyExpr()] **= rhsExpr()",
+    );
+    output.push(format!(
+        "null-power-compound={null_power_compound}|{}",
         string_global(&runtime, &mut context, "log")
     ));
 
@@ -800,6 +1213,14 @@ fn rust_observations() -> Vec<String> {
     .map(|source| show(context.eval(source).unwrap()))
     .collect::<Vec<_>>();
     output.push(format!("shift={}", shift_values.join("|")));
+
+    let power = runtime.intern_property_key("power").unwrap();
+    define_data(&mut context, &target, &power, Value::Int(2), true, true);
+    let power_values = ["target.power **= 3", "target.power **= 2"]
+        .into_iter()
+        .map(|source| show(context.eval(source).unwrap()))
+        .collect::<Vec<_>>();
+    output.push(format!("power={}", power_values.join("|")));
 
     for (label, old_value, source) in [
         (
@@ -984,6 +1405,11 @@ fn rust_observations() -> Vec<String> {
             "identifierAccessor <<= rhsExpr()",
         ),
         (
+            "identifier-power",
+            Value::Int(2),
+            "identifierAccessor **= rhsExpr()",
+        ),
+        (
             "identifier-logical-set",
             Value::Int(0),
             "identifierAccessor ||= rhsExpr()",
@@ -1095,6 +1521,16 @@ fn rust_observations() -> Vec<String> {
             "(function(){ 'use strict'; return identifierReadonly <<= 1; })()"
         ),
     ));
+    output.push(format!(
+        "identifier-power-readonly={}|{}|{}",
+        show(context.eval("identifierReadonly **= 3").unwrap()),
+        show(context.eval("identifierReadonly").unwrap()),
+        observe(
+            &runtime,
+            &mut context,
+            "(function(){ 'use strict'; return identifierReadonly **= 3; })()"
+        ),
+    ));
     set_global(
         &runtime,
         &mut context,
@@ -1131,6 +1567,21 @@ fn rust_observations() -> Vec<String> {
     );
     output.push(format!(
         "identifier-shift-missing={identifier_shift_missing}|{}",
+        string_global(&runtime, &mut context, "log")
+    ));
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    let identifier_power_missing = observe(
+        &runtime,
+        &mut context,
+        "identifierMissingPower **= rhsExpr()",
+    );
+    output.push(format!(
+        "identifier-power-missing={identifier_power_missing}|{}",
         string_global(&runtime, &mut context, "log")
     ));
     set_global(
@@ -1282,6 +1733,49 @@ fn rust_observations() -> Vec<String> {
             string_global(&runtime, &mut context, "log")
         )
     }));
+    output.push(format!("readonly-power-set={}", {
+        set_global(
+            &runtime,
+            &mut context,
+            "log",
+            Value::String(JsString::from("")),
+        );
+        let observation = observe(
+            &runtime,
+            &mut context,
+            "(function(){ 'use strict'; return Function.prototype **= rhsExpr(); })()",
+        );
+        format!(
+            "{observation}|{}",
+            string_global(&runtime, &mut context, "log")
+        )
+    }));
+    for (label, source) in [
+        (
+            "readonly-power-mixed",
+            "(function(){ 'use strict'; return Function.prototype **= bigintPowerRhs(); })()",
+        ),
+        (
+            "readonly-power-symbol",
+            "(function(){ 'use strict'; return Function.prototype **= symbolPowerRhs(); })()",
+        ),
+        (
+            "readonly-power-rhs-throw",
+            "(function(){ 'use strict'; return Function.prototype **= throwingRhs(); })()",
+        ),
+    ] {
+        set_global(
+            &runtime,
+            &mut context,
+            "log",
+            Value::String(JsString::from("")),
+        );
+        let observation = observe(&runtime, &mut context, source);
+        output.push(format!(
+            "{label}={observation}|{}",
+            string_global(&runtime, &mut context, "log")
+        ));
+    }
     output.push(format!(
         "native-setter={}",
         observe(&runtime, &mut context, "Function.prototype.caller = 1")

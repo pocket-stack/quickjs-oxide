@@ -52,6 +52,48 @@ const CASES: &[(&str, &str)] = &[
     ("trailing-dot exponent numeric string", "+'1.e2'"),
     ("signed exponent numeric string", "+'-1.5e+2'"),
     ("non-ascii whitespace after number", "0\u{00a0}+1"),
+    // Exponentiation lives above multiplicative expressions, associates to the
+    // right, and retains QuickJS's libc-pow special cases.
+    ("number exponentiation", "2 ** 10"),
+    ("exponentiation is right associative", "2 ** 3 ** 2"),
+    ("power binds before multiplication", "2 * 3 ** 2"),
+    ("power result binds into multiplication", "2 ** 3 * 4"),
+    ("power accepts unary rhs", "2 ** -2"),
+    ("parenthesized negative power base", "(-2) ** 3"),
+    ("parenthesized power under unary minus", "-(2 ** 2)"),
+    ("parenthesized power inside unary rhs", "2 ** -(2 ** 3)"),
+    ("nan to the zero power", "(0 / 0) ** 0"),
+    ("undefined to the zero power", "(void 0) ** 0"),
+    ("one to nan power is nan", "1 ** (0 / 0)"),
+    ("one to infinite power is nan", "1 ** (1 / 0)"),
+    (
+        "negative one to negative infinite power is nan",
+        "(-1) ** (-1 / 0)",
+    ),
+    ("negative zero odd positive power", "(-0) ** 3"),
+    ("negative zero even positive power", "(-0) ** 2"),
+    ("negative zero odd negative power", "(-0) ** -3"),
+    ("negative zero even negative power", "(-0) ** -2"),
+    ("negative base fractional power", "(-2) ** 0.5"),
+    ("minimum positive power subnormal", "2 ** -1074"),
+    ("positive power underflow", "2 ** -1075"),
+    ("negative power underflow keeps sign", "(-2) ** -1075"),
+    ("negative infinity odd power", "(-1 / 0) ** 3"),
+    ("negative infinity negative odd power", "(-1 / 0) ** -3"),
+    ("negative infinity fractional power", "(-1 / 0) ** 0.5"),
+    ("power primitive conversion", "'2' ** true"),
+    (
+        "power expression and coercion order",
+        "(function(){ var log = ''; var left = function(){}; var right = function(){}; left.valueOf = function(){ log = log + 'l'; return 2; }; right.valueOf = function(){ log = log + 'r'; return 3; }; var evalLeft = function(){ log = log + 'L'; return left; }; var evalRight = function(){ log = log + 'R'; return right; }; var result = evalLeft() ** evalRight(); return result + '|' + log; })()",
+    ),
+    (
+        "right associative power evaluation and coercion order",
+        "(function(){ var log = ''; var a = function(){}, b = function(){}, c = function(){}; a.valueOf = function(){ log = log + 'a'; return 2; }; b.valueOf = function(){ log = log + 'b'; return 3; }; c.valueOf = function(){ log = log + 'c'; return 2; }; var evalA = function(){ log = log + 'A'; return a; }; var evalB = function(){ log = log + 'B'; return b; }; var evalC = function(){ log = log + 'C'; return c; }; var result = evalA() ** evalB() ** evalC(); return result + '|' + log; })()",
+    ),
+    (
+        "power object operands both convert to BigInt",
+        "(function(){ var log = ''; var left = function(){}, right = function(){}; left.valueOf = function(){ log = log + 'l'; return 2n; }; right.valueOf = function(){ log = log + 'r'; return 10n; }; return (left ** right) + '|' + log; })()",
+    ),
     // QuickJS bitwise operators apply ToNumeric, then signed ToInt32 for
     // Numbers or infinite-width two's-complement operations for BigInts.
     ("bitwise not zero", "~0"),
@@ -303,6 +345,30 @@ const CASES: &[(&str, &str)] = &[
         "shift compound does not infer anonymous function names",
         "(function(){ var names = ''; Function.prototype.valueOf = function(){ names = names + this.name + '|'; return 1; }; var direct = 1, paren = 1; direct <<= function(){}; (paren) >>= function(){}; Function.__qjo_shift_name = 1; Function.__qjo_shift_name >>>= function(){}; delete Function.prototype.valueOf; return names; })()",
     ),
+    (
+        "identifier exponent compound",
+        "(function(value){ value **= 3; return value; })(2)",
+    ),
+    (
+        "identifier exponent compound is right associative",
+        "(function(){ var left = 2, right = 3; var result = left **= right **= 2; return result + left + right; })()",
+    ),
+    (
+        "bigint exponent compound assignment",
+        "(function(){ var value = 2n; value **= 100n; return value; })()",
+    ),
+    (
+        "fixed member exponent compound",
+        "(function(){ Function.__qjo_power = 2; var result = Function.__qjo_power **= 3; return result + Function.__qjo_power; })()",
+    ),
+    (
+        "computed member exponent compound converts key once",
+        "(function(){ var log = ''; var key = function(){}; key.toString = function(){ log = log + 'k'; return '__qjo_computed_power'; }; Function.__qjo_computed_power = 2; var result = Function[key] **= 3; return result + '|' + Function.__qjo_computed_power + '|' + log; })()",
+    ),
+    (
+        "exponent compound does not infer anonymous function names",
+        "(function(){ var names = ''; Function.prototype.valueOf = function(){ names = names + this.name + '|'; return 1; }; var direct = 1, paren = 1; direct **= function(){}; (paren) **= function(){}; Function.__qjo_power_name = 1; Function.__qjo_power_name **= function(){}; delete Function.prototype.valueOf; return names; })()",
+    ),
     // Conditional selection and associativity.
     ("truthy conditional", "'x' ? -0 : 1"),
     ("falsy conditional", "0 ? 1 : 'no'"),
@@ -392,6 +458,45 @@ const CASES: &[(&str, &str)] = &[
     (
         "heap bigint multiplication",
         "123456789012345678901234567890n * 98765432109876543210n",
+    ),
+    ("bigint exponentiation", "2n ** 100n"),
+    ("negative bigint exponentiation", "(-2n) ** 3n"),
+    ("zero bigint to zero power", "0n ** 0n"),
+    (
+        "zero bigint huge exponent shortcut",
+        "0n ** 999999999999999999999999999999999999999n",
+    ),
+    (
+        "one bigint huge exponent shortcut",
+        "1n ** 999999999999999999999999999999999999999n",
+    ),
+    (
+        "negative one bigint huge odd exponent shortcut",
+        "(-1n) ** 999999999999999999999999999999999999999n",
+    ),
+    (
+        "quickjs power of two allocation success boundary",
+        "typeof (2n ** 1048574n)",
+    ),
+    (
+        "quickjs negative power allocation sign boundary",
+        "typeof ((-2n) ** 1048575n)",
+    ),
+    (
+        "quickjs four power allocation success boundary",
+        "typeof (4n ** 524287n)",
+    ),
+    (
+        "quickjs generic bigint square allocation boundary",
+        "typeof (((1n << 524286n) + 1n) ** 2n)",
+    ),
+    (
+        "quickjs nominal bigint power identity",
+        "((1n << 1048574n) ** 1n) >> 1048574n",
+    ),
+    (
+        "quickjs extended bigint zeroth power shortcut",
+        "(1n << 1048575n) ** 0n",
     ),
     ("bigint division truncates toward zero", "-7n / 3n"),
     ("bigint remainder follows dividend", "-7n % 3n"),
@@ -491,6 +596,14 @@ const SHARED_ERRORS: &[(&str, &str)] = &[
     ("logical and cannot precede nullish", "1 && 2 ?? 3"),
     ("nullish cannot precede logical or", "1 ?? 2 || 3"),
     ("nullish cannot precede logical and", "1 ?? 2 && 3"),
+    ("unparenthesized negative power lhs", "-2 ** 2"),
+    ("unparenthesized positive power lhs", "+2 ** 2"),
+    ("unparenthesized logical-not power lhs", "!2 ** 2"),
+    ("unparenthesized bitwise-not power lhs", "~2 ** 2"),
+    ("unparenthesized typeof power lhs", "typeof 2 ** 2"),
+    ("unparenthesized void power lhs", "void 2 ** 2"),
+    ("unparenthesized delete power lhs", "delete Function ** 2"),
+    ("unparenthesized unary power rhs chain", "2 ** -2 ** 3"),
     ("adjacent numeric expressions need ASI", "1 2"),
     ("malformed hexadecimal literal", "0x"),
     ("legacy octal cannot have a fraction", "01.1"),
@@ -542,6 +655,7 @@ const QUICKJS_ACCEPTED_DIRECTIVE_EDGES: &[(&str, &str)] = &[
 const RUNTIME_ERROR_CASES: &[(&str, &str)] = &[
     ("logical before nullish syntax message", "1 || 2 ?? 3"),
     ("nullish before logical syntax message", "1 ?? 2 || 3"),
+    ("unparenthesized unary power syntax message", "-2 ** 2"),
     (
         "identifier compound missing global",
         "__qjo_missing_compound += 1",
@@ -587,6 +701,34 @@ const RUNTIME_ERROR_CASES: &[(&str, &str)] = &[
     ("unsigned shift rejects bigint lhs", "1n >>> 0"),
     ("unsigned shift rejects bigint rhs", "1 >>> 0n"),
     ("oversized bigint left shift", "1n << 1048576n"),
+    ("mixed BigInt exponent lhs", "1n ** 1"),
+    ("mixed BigInt exponent rhs", "1 ** 1n"),
+    ("negative BigInt exponent", "2n ** -1n"),
+    ("zero BigInt negative exponent", "0n ** -1n"),
+    ("power-of-two BigInt allocation boundary", "2n ** 1048575n"),
+    (
+        "negative power-of-two BigInt allocation boundary",
+        "(-2n) ** 1048576n",
+    ),
+    ("BigInt exponent mathematical size guard", "2n ** 1048577n"),
+    ("BigInt exponent int32 guard", "3n ** 2147483648n"),
+    ("four power BigInt allocation boundary", "4n ** 524288n"),
+    (
+        "extended BigInt power identity allocation guard",
+        "(1n << 1048575n) ** 1n",
+    ),
+    (
+        "negative exponent precedes extended base allocation guard",
+        "(1n << 1048575n) ** -1n",
+    ),
+    (
+        "nominal BigInt square preallocation guard",
+        "(1n << 1048574n) ** 2n",
+    ),
+    (
+        "generic BigInt square next allocation boundary",
+        "((1n << 524287n) + 1n) ** 2n",
+    ),
     (
         "nonzero bigint reverse huge right shift overflows",
         "1n >> -999999999999999999999999999999n",
@@ -651,6 +793,18 @@ const RUNTIME_ERROR_CASES: &[(&str, &str)] = &[
     (
         "strict arguments shift compound early error",
         "(function(){ 'use strict'; (arguments) >>>= 1; })",
+    ),
+    (
+        "strict private name exponent write",
+        "(function named(){ 'use strict'; named **= 1; })()",
+    ),
+    (
+        "strict eval exponent compound early error",
+        "(function(){ 'use strict'; eval **= 1; })",
+    ),
+    (
+        "strict arguments exponent compound early error",
+        "(function(){ 'use strict'; (arguments) **= 1; })",
     ),
     ("call non-callable", "(1)()"),
     ("construct non-callable", "new 1"),

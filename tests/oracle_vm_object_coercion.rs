@@ -329,6 +329,180 @@ console.log("shift-symbol-right=" + observe(() => shiftBeforeSymbol << shiftSymb
             "|left-calls:" + shiftBeforeSymbolCalls);
 "#;
 
+const EXPONENTIATION_COERCION_PROBE: &str = r#"
+let powerHints = "";
+let powerHintCalls = 0;
+const powerNumber = {
+    [Symbol.toPrimitive](hint) {
+        powerHints = powerHints + hint + ",";
+        powerHintCalls = powerHintCalls + 1;
+        return 2;
+    }
+};
+console.log("power-number=" + observe(() => powerNumber ** 3) +
+            "|hints:" + powerHints + "|calls:" + powerHintCalls);
+
+let powerOrder = "";
+const powerOrderedLeft = {
+    [Symbol.toPrimitive]() { powerOrder = powerOrder + "l"; return 2; }
+};
+const powerOrderedRight = {
+    [Symbol.toPrimitive]() { powerOrder = powerOrder + "r"; return 3; }
+};
+function powerEvalLeft() { powerOrder = powerOrder + "L"; return powerOrderedLeft; }
+function powerEvalRight() { powerOrder = powerOrder + "R"; return powerOrderedRight; }
+console.log("power-order=" + observe(() => powerEvalLeft() ** powerEvalRight()) +
+            "@" + powerOrder);
+
+powerOrder = "";
+const powerA = {
+    [Symbol.toPrimitive]() { powerOrder = powerOrder + "a"; return 2; }
+};
+const powerB = {
+    [Symbol.toPrimitive]() { powerOrder = powerOrder + "b"; return 3; }
+};
+const powerC = {
+    [Symbol.toPrimitive]() { powerOrder = powerOrder + "c"; return 2; }
+};
+function powerEvalA() { powerOrder = powerOrder + "A"; return powerA; }
+function powerEvalB() { powerOrder = powerOrder + "B"; return powerB; }
+function powerEvalC() { powerOrder = powerOrder + "C"; return powerC; }
+console.log("power-right-associative=" +
+            observe(() => powerEvalA() ** powerEvalB() ** powerEvalC()) +
+            "@" + powerOrder);
+
+const powerSentinel = {};
+function powerThrownSame(thunk) {
+    try { thunk(); return 0; }
+    catch (error) { return error === powerSentinel ? 1 : 0; }
+}
+let powerLeftThrowCalls = 0;
+let powerAfterLeftThrowCalls = 0;
+const powerLeftThrow = {
+    [Symbol.toPrimitive]() {
+        powerLeftThrowCalls = powerLeftThrowCalls + 1;
+        throw powerSentinel;
+    }
+};
+const powerAfterLeftThrow = {
+    [Symbol.toPrimitive]() {
+        powerAfterLeftThrowCalls = powerAfterLeftThrowCalls + 1;
+        return 3;
+    }
+};
+console.log("power-left-throw=" +
+            powerThrownSame(() => powerLeftThrow ** powerAfterLeftThrow) +
+            "|left-calls:" + powerLeftThrowCalls +
+            "|right-calls:" + powerAfterLeftThrowCalls);
+
+let powerBeforeRightThrowCalls = 0;
+let powerRightThrowCalls = 0;
+const powerBeforeRightThrow = {
+    [Symbol.toPrimitive]() {
+        powerBeforeRightThrowCalls = powerBeforeRightThrowCalls + 1;
+        return 2;
+    }
+};
+const powerRightThrow = {
+    [Symbol.toPrimitive]() {
+        powerRightThrowCalls = powerRightThrowCalls + 1;
+        throw powerSentinel;
+    }
+};
+console.log("power-right-throw=" +
+            powerThrownSame(() => powerBeforeRightThrow ** powerRightThrow) +
+            "|left-calls:" + powerBeforeRightThrowCalls +
+            "|right-calls:" + powerRightThrowCalls);
+
+let powerMixedOrder = 0;
+const powerBigIntLeft = {
+    [Symbol.toPrimitive]() { powerMixedOrder = powerMixedOrder * 10 + 1; return 2n; }
+};
+const powerNumberRight = {
+    [Symbol.toPrimitive]() { powerMixedOrder = powerMixedOrder * 10 + 2; return 3; }
+};
+const powerNumberLeft = {
+    [Symbol.toPrimitive]() { powerMixedOrder = powerMixedOrder * 10 + 1; return 2; }
+};
+const powerBigIntRight = {
+    [Symbol.toPrimitive]() { powerMixedOrder = powerMixedOrder * 10 + 2; return 3n; }
+};
+let powerBigIntNumber = observe(() => powerBigIntLeft ** powerNumberRight) +
+                        "@" + powerMixedOrder;
+powerMixedOrder = 0;
+let powerNumberBigInt = observe(() => powerNumberLeft ** powerBigIntRight) +
+                        "@" + powerMixedOrder;
+console.log("power-mixed=" + powerBigIntNumber + "," + powerNumberBigInt);
+
+powerMixedOrder = 0;
+const powerMixedThrowRight = {
+    [Symbol.toPrimitive]() {
+        powerMixedOrder = powerMixedOrder * 10 + 2;
+        throw powerSentinel;
+    }
+};
+let powerMixedThrow = powerThrownSame(() => powerBigIntLeft ** powerMixedThrowRight) +
+                      "@" + powerMixedOrder;
+powerMixedOrder = 0;
+const powerMixedSymbolRight = {
+    [Symbol.toPrimitive]() {
+        powerMixedOrder = powerMixedOrder * 10 + 2;
+        return Symbol("mixed-power");
+    }
+};
+let powerMixedSymbol = observe(() => powerBigIntLeft ** powerMixedSymbolRight) +
+                       "@" + powerMixedOrder;
+console.log("power-mixed-priority=" + powerMixedThrow + "," + powerMixedSymbol);
+
+const powerSymbol = Symbol("power");
+let powerAfterSymbolCalls = 0;
+const powerAfterSymbol = {
+    [Symbol.toPrimitive]() {
+        powerAfterSymbolCalls = powerAfterSymbolCalls + 1;
+        throw powerSentinel;
+    }
+};
+console.log("power-symbol-before-throw=" +
+            observe(() => powerSymbol ** powerAfterSymbol) +
+            "|right-calls:" + powerAfterSymbolCalls);
+let powerBeforeSymbolCalls = 0;
+const powerBeforeSymbol = {
+    [Symbol.toPrimitive]() {
+        powerBeforeSymbolCalls = powerBeforeSymbolCalls + 1;
+        throw powerSentinel;
+    }
+};
+console.log("power-throw-before-symbol=" +
+            powerThrownSame(() => powerBeforeSymbol ** powerSymbol) +
+            "|left-calls:" + powerBeforeSymbolCalls);
+let powerConvertedBeforeSymbolCalls = 0;
+const powerConvertedBeforeSymbol = {
+    [Symbol.toPrimitive]() {
+        powerConvertedBeforeSymbolCalls = powerConvertedBeforeSymbolCalls + 1;
+        return 2;
+    }
+};
+console.log("power-symbol-right=" +
+            observe(() => powerConvertedBeforeSymbol ** powerSymbol) +
+            "|left-calls:" + powerConvertedBeforeSymbolCalls);
+
+console.log("power-number-special=" +
+            observe(() => (0 / 0) ** 0) + "," +
+            observe(() => (0 / 0) ** 1) + "," +
+            observe(() => 1 ** (1 / 0)) + "," +
+            observe(() => (-1) ** (-1 / 0)) + "," +
+            observe(() => (-2) ** 0.5) + "," +
+            observe(() => 1 / ((-0) ** 3)) + "," +
+            observe(() => 1 / ((-0) ** 2)) + "," +
+            observe(() => (-0) ** -3) + "," +
+            observe(() => (-0) ** -2) + "," +
+            observe(() => (-1 / 0) ** 3) + "," +
+            observe(() => 1 / ((-1 / 0) ** -3)) + "," +
+            observe(() => 2 ** 1024) + "," +
+            observe(() => 2 ** -1074) + "," +
+            observe(() => 2 ** -1075));
+"#;
+
 const EQUALITY_PROBE: &str = r#"
 const symbolValue = Symbol("s");
 function box(value) {
@@ -411,6 +585,7 @@ fn vm_object_coercion_matches_quickjs_oracle() {
         rust_add_observations(),
         rust_bitwise_coercion_observations(),
         rust_shift_coercion_observations(),
+        rust_exponentiation_coercion_observations(),
         rust_equality_observations(),
         rust_order_and_error_observations(),
     ]
@@ -420,6 +595,10 @@ fn vm_object_coercion_matches_quickjs_oracle() {
         ("addition object coercion", ADD_PROBE),
         ("bitwise object coercion", BITWISE_COERCION_PROBE),
         ("shift object coercion", SHIFT_COERCION_PROBE),
+        (
+            "exponentiation object coercion",
+            EXPONENTIATION_COERCION_PROBE,
+        ),
         ("abstract equality object coercion", EQUALITY_PROBE),
         ("coercion order and errors", ORDER_AND_ERROR_PROBE),
     ]
@@ -1018,6 +1197,329 @@ fn rust_shift_coercion_observations() -> Vec<String> {
         format!("shift-unsigned-bigint={}", unsigned_bigint.join(",")),
         format!("shift-symbol-left={symbol_left}|right-calls:{symbol_right_calls}"),
         format!("shift-symbol-right={symbol_right}|left-calls:{before_symbol_calls}"),
+    ]
+}
+
+fn rust_exponentiation_coercion_observations() -> Vec<String> {
+    let mut harness = Harness::new();
+
+    harness.bind("powerHints", Value::String(JsString::from("")));
+    harness.bind("powerHintCalls", Value::Int(0));
+    let power_number_method = harness.function(
+        "(function(hint){ powerHints = powerHints + hint + \",\"; \
+         powerHintCalls = powerHintCalls + 1; return 2; })",
+    );
+    let power_number =
+        harness.object_with_exotic(Value::Object(power_number_method.as_object().clone()));
+    harness.bind("powerNumber", Value::Object(power_number));
+    let power_number = harness.observe("powerNumber ** 3");
+    let power_hints = string_global(&harness.runtime, &mut harness.context, "powerHints");
+    let power_hint_calls = integer_global(&harness.runtime, &mut harness.context, "powerHintCalls");
+
+    harness.bind("powerOrder", Value::String(JsString::from("")));
+    let ordered_left_method =
+        harness.function("(function(){ powerOrder = powerOrder + \"l\"; return 2; })");
+    let ordered_right_method =
+        harness.function("(function(){ powerOrder = powerOrder + \"r\"; return 3; })");
+    let ordered_left =
+        harness.object_with_exotic(Value::Object(ordered_left_method.as_object().clone()));
+    let ordered_right =
+        harness.object_with_exotic(Value::Object(ordered_right_method.as_object().clone()));
+    harness.bind("powerOrderedLeft", Value::Object(ordered_left));
+    harness.bind("powerOrderedRight", Value::Object(ordered_right));
+    let eval_left = harness
+        .function("(function(){ powerOrder = powerOrder + \"L\"; return powerOrderedLeft; })");
+    let eval_right = harness
+        .function("(function(){ powerOrder = powerOrder + \"R\"; return powerOrderedRight; })");
+    harness.bind(
+        "powerEvalLeft",
+        Value::Object(eval_left.as_object().clone()),
+    );
+    harness.bind(
+        "powerEvalRight",
+        Value::Object(eval_right.as_object().clone()),
+    );
+    let ordered = harness.observe("powerEvalLeft() ** powerEvalRight()");
+    let ordered_log = string_global(&harness.runtime, &mut harness.context, "powerOrder");
+
+    set_global(
+        &harness.runtime,
+        &mut harness.context,
+        "powerOrder",
+        Value::String(JsString::from("")),
+    );
+    let power_a_method =
+        harness.function("(function(){ powerOrder = powerOrder + \"a\"; return 2; })");
+    let power_b_method =
+        harness.function("(function(){ powerOrder = powerOrder + \"b\"; return 3; })");
+    let power_c_method =
+        harness.function("(function(){ powerOrder = powerOrder + \"c\"; return 2; })");
+    let power_a = harness.object_with_exotic(Value::Object(power_a_method.as_object().clone()));
+    let power_b = harness.object_with_exotic(Value::Object(power_b_method.as_object().clone()));
+    let power_c = harness.object_with_exotic(Value::Object(power_c_method.as_object().clone()));
+    harness.bind("powerA", Value::Object(power_a));
+    harness.bind("powerB", Value::Object(power_b));
+    harness.bind("powerC", Value::Object(power_c));
+    let eval_a =
+        harness.function("(function(){ powerOrder = powerOrder + \"A\"; return powerA; })");
+    let eval_b =
+        harness.function("(function(){ powerOrder = powerOrder + \"B\"; return powerB; })");
+    let eval_c =
+        harness.function("(function(){ powerOrder = powerOrder + \"C\"; return powerC; })");
+    harness.bind("powerEvalA", Value::Object(eval_a.as_object().clone()));
+    harness.bind("powerEvalB", Value::Object(eval_b.as_object().clone()));
+    harness.bind("powerEvalC", Value::Object(eval_c.as_object().clone()));
+    let right_associative = harness.observe("powerEvalA() ** powerEvalB() ** powerEvalC()");
+    let right_associative_log = string_global(&harness.runtime, &mut harness.context, "powerOrder");
+
+    let sentinel = harness.context.new_object().unwrap();
+    harness.bind("powerSentinel", Value::Object(sentinel.clone()));
+    harness.bind("powerLeftThrowCalls", Value::Int(0));
+    harness.bind("powerAfterLeftThrowCalls", Value::Int(0));
+    let left_throw_method = harness.function(
+        "(function(){ powerLeftThrowCalls = powerLeftThrowCalls + 1; throw powerSentinel; })",
+    );
+    let after_left_throw_method = harness.function(
+        "(function(){ powerAfterLeftThrowCalls = powerAfterLeftThrowCalls + 1; return 3; })",
+    );
+    let left_throw =
+        harness.object_with_exotic(Value::Object(left_throw_method.as_object().clone()));
+    let after_left_throw =
+        harness.object_with_exotic(Value::Object(after_left_throw_method.as_object().clone()));
+    harness.bind("powerLeftThrow", Value::Object(left_throw));
+    harness.bind("powerAfterLeftThrow", Value::Object(after_left_throw));
+    let left_throw_same = eval_thrown_identity(
+        &harness.runtime,
+        &mut harness.context,
+        "powerLeftThrow ** powerAfterLeftThrow",
+        &sentinel,
+    );
+    let left_throw_calls = integer_global(
+        &harness.runtime,
+        &mut harness.context,
+        "powerLeftThrowCalls",
+    );
+    let after_left_throw_calls = integer_global(
+        &harness.runtime,
+        &mut harness.context,
+        "powerAfterLeftThrowCalls",
+    );
+
+    harness.bind("powerBeforeRightThrowCalls", Value::Int(0));
+    harness.bind("powerRightThrowCalls", Value::Int(0));
+    let before_right_throw_method = harness.function(
+        "(function(){ powerBeforeRightThrowCalls = powerBeforeRightThrowCalls + 1; return 2; })",
+    );
+    let right_throw_method = harness.function(
+        "(function(){ powerRightThrowCalls = powerRightThrowCalls + 1; throw powerSentinel; })",
+    );
+    let before_right_throw =
+        harness.object_with_exotic(Value::Object(before_right_throw_method.as_object().clone()));
+    let right_throw =
+        harness.object_with_exotic(Value::Object(right_throw_method.as_object().clone()));
+    harness.bind("powerBeforeRightThrow", Value::Object(before_right_throw));
+    harness.bind("powerRightThrow", Value::Object(right_throw));
+    let right_throw_same = eval_thrown_identity(
+        &harness.runtime,
+        &mut harness.context,
+        "powerBeforeRightThrow ** powerRightThrow",
+        &sentinel,
+    );
+    let before_right_throw_calls = integer_global(
+        &harness.runtime,
+        &mut harness.context,
+        "powerBeforeRightThrowCalls",
+    );
+    let right_throw_calls = integer_global(
+        &harness.runtime,
+        &mut harness.context,
+        "powerRightThrowCalls",
+    );
+
+    harness.bind("powerMixedOrder", Value::Int(0));
+    let bigint_left_method =
+        harness.function("(function(){ powerMixedOrder = powerMixedOrder * 10 + 1; return 2n; })");
+    let number_right_method =
+        harness.function("(function(){ powerMixedOrder = powerMixedOrder * 10 + 2; return 3; })");
+    let number_left_method =
+        harness.function("(function(){ powerMixedOrder = powerMixedOrder * 10 + 1; return 2; })");
+    let bigint_right_method =
+        harness.function("(function(){ powerMixedOrder = powerMixedOrder * 10 + 2; return 3n; })");
+    let bigint_left =
+        harness.object_with_exotic(Value::Object(bigint_left_method.as_object().clone()));
+    let number_right =
+        harness.object_with_exotic(Value::Object(number_right_method.as_object().clone()));
+    let number_left =
+        harness.object_with_exotic(Value::Object(number_left_method.as_object().clone()));
+    let bigint_right =
+        harness.object_with_exotic(Value::Object(bigint_right_method.as_object().clone()));
+    harness.bind("powerBigIntLeft", Value::Object(bigint_left));
+    harness.bind("powerNumberRight", Value::Object(number_right));
+    harness.bind("powerNumberLeft", Value::Object(number_left));
+    harness.bind("powerBigIntRight", Value::Object(bigint_right));
+    let mut mixed = Vec::new();
+    for (left, right) in [
+        ("powerBigIntLeft", "powerNumberRight"),
+        ("powerNumberLeft", "powerBigIntRight"),
+    ] {
+        set_global(
+            &harness.runtime,
+            &mut harness.context,
+            "powerMixedOrder",
+            Value::Int(0),
+        );
+        let value = harness.observe(&format!("{left} ** {right}"));
+        let order = integer_global(&harness.runtime, &mut harness.context, "powerMixedOrder");
+        mixed.push(format!("{value}@{order}"));
+    }
+
+    set_global(
+        &harness.runtime,
+        &mut harness.context,
+        "powerMixedOrder",
+        Value::Int(0),
+    );
+    let mixed_throw_right_method = harness.function(
+        "(function(){ powerMixedOrder = powerMixedOrder * 10 + 2; throw powerSentinel; })",
+    );
+    let mixed_throw_right =
+        harness.object_with_exotic(Value::Object(mixed_throw_right_method.as_object().clone()));
+    harness.bind("powerMixedThrowRight", Value::Object(mixed_throw_right));
+    let mixed_throw_same = eval_thrown_identity(
+        &harness.runtime,
+        &mut harness.context,
+        "powerBigIntLeft ** powerMixedThrowRight",
+        &sentinel,
+    );
+    let mixed_throw_order =
+        integer_global(&harness.runtime, &mut harness.context, "powerMixedOrder");
+    set_global(
+        &harness.runtime,
+        &mut harness.context,
+        "powerMixedOrder",
+        Value::Int(0),
+    );
+    let mixed_symbol = harness
+        .runtime
+        .new_symbol(Some(JsString::from("mixed-power")))
+        .unwrap();
+    harness.bind("powerMixedSymbol", Value::Symbol(mixed_symbol));
+    let mixed_symbol_right_method = harness.function(
+        "(function(){ powerMixedOrder = powerMixedOrder * 10 + 2; return powerMixedSymbol; })",
+    );
+    let mixed_symbol_right =
+        harness.object_with_exotic(Value::Object(mixed_symbol_right_method.as_object().clone()));
+    harness.bind("powerMixedSymbolRight", Value::Object(mixed_symbol_right));
+    let mixed_symbol_result = harness.observe("powerBigIntLeft ** powerMixedSymbolRight");
+    let mixed_symbol_order =
+        integer_global(&harness.runtime, &mut harness.context, "powerMixedOrder");
+
+    let symbol = harness
+        .runtime
+        .new_symbol(Some(JsString::from("power")))
+        .unwrap();
+    harness.bind("powerSymbol", Value::Symbol(symbol));
+    harness.bind("powerAfterSymbolCalls", Value::Int(0));
+    let after_symbol_method = harness.function(
+        "(function(){ powerAfterSymbolCalls = powerAfterSymbolCalls + 1; throw powerSentinel; })",
+    );
+    let after_symbol =
+        harness.object_with_exotic(Value::Object(after_symbol_method.as_object().clone()));
+    harness.bind("powerAfterSymbol", Value::Object(after_symbol));
+    let symbol_before_throw = harness.observe("powerSymbol ** powerAfterSymbol");
+    let after_symbol_calls = integer_global(
+        &harness.runtime,
+        &mut harness.context,
+        "powerAfterSymbolCalls",
+    );
+
+    harness.bind("powerBeforeSymbolCalls", Value::Int(0));
+    let before_symbol_method = harness.function(
+        "(function(){ powerBeforeSymbolCalls = powerBeforeSymbolCalls + 1; throw powerSentinel; })",
+    );
+    let before_symbol =
+        harness.object_with_exotic(Value::Object(before_symbol_method.as_object().clone()));
+    harness.bind("powerBeforeSymbol", Value::Object(before_symbol));
+    let throw_before_symbol = eval_thrown_identity(
+        &harness.runtime,
+        &mut harness.context,
+        "powerBeforeSymbol ** powerSymbol",
+        &sentinel,
+    );
+    let before_symbol_calls = integer_global(
+        &harness.runtime,
+        &mut harness.context,
+        "powerBeforeSymbolCalls",
+    );
+
+    harness.bind("powerConvertedBeforeSymbolCalls", Value::Int(0));
+    let converted_before_symbol_method = harness.function(
+        "(function(){ powerConvertedBeforeSymbolCalls = \
+         powerConvertedBeforeSymbolCalls + 1; return 2; })",
+    );
+    let converted_before_symbol = harness.object_with_exotic(Value::Object(
+        converted_before_symbol_method.as_object().clone(),
+    ));
+    harness.bind(
+        "powerConvertedBeforeSymbol",
+        Value::Object(converted_before_symbol),
+    );
+    let symbol_right = harness.observe("powerConvertedBeforeSymbol ** powerSymbol");
+    let converted_before_symbol_calls = integer_global(
+        &harness.runtime,
+        &mut harness.context,
+        "powerConvertedBeforeSymbolCalls",
+    );
+
+    let number_special = [
+        "(0 / 0) ** 0",
+        "(0 / 0) ** 1",
+        "1 ** (1 / 0)",
+        "(-1) ** (-1 / 0)",
+        "(-2) ** 0.5",
+        "1 / ((-0) ** 3)",
+        "1 / ((-0) ** 2)",
+        "(-0) ** -3",
+        "(-0) ** -2",
+        "(-1 / 0) ** 3",
+        "1 / ((-1 / 0) ** -3)",
+        "2 ** 1024",
+        "2 ** -1074",
+        "2 ** -1075",
+    ]
+    .map(|source| harness.observe(source))
+    .join(",");
+
+    vec![
+        format!(
+            "power-number={power_number}|hints:{}|calls:{power_hint_calls}",
+            power_hints.to_utf8_lossy()
+        ),
+        format!("power-order={ordered}@{}", ordered_log.to_utf8_lossy()),
+        format!(
+            "power-right-associative={right_associative}@{}",
+            right_associative_log.to_utf8_lossy()
+        ),
+        format!(
+            "power-left-throw={}|left-calls:{left_throw_calls}|right-calls:{after_left_throw_calls}",
+            if left_throw_same { 1 } else { 0 }
+        ),
+        format!(
+            "power-right-throw={}|left-calls:{before_right_throw_calls}|right-calls:{right_throw_calls}",
+            if right_throw_same { 1 } else { 0 }
+        ),
+        format!("power-mixed={}", mixed.join(",")),
+        format!(
+            "power-mixed-priority={}@{mixed_throw_order},{mixed_symbol_result}@{mixed_symbol_order}",
+            if mixed_throw_same { 1 } else { 0 }
+        ),
+        format!("power-symbol-before-throw={symbol_before_throw}|right-calls:{after_symbol_calls}"),
+        format!(
+            "power-throw-before-symbol={}|left-calls:{before_symbol_calls}",
+            if throw_before_symbol { 1 } else { 0 }
+        ),
+        format!("power-symbol-right={symbol_right}|left-calls:{converted_before_symbol_calls}"),
+        format!("power-number-special={number_special}"),
     ]
 }
 

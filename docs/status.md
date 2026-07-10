@@ -26,7 +26,8 @@ claim full parity.
   lowering to stack bytecode. In addition to the primitive expression grammar,
   the current source path supports anonymous and named ordinary function
   expressions, simple parameters, `return`/fallthrough, function-local `var`,
-  simple/arithmetic/shift/bitwise/logical identifier assignment, direct calls,
+  simple/arithmetic/exponentiation/shift/bitwise/logical identifier assignment,
+  direct calls,
   transitive parameter/local and private function-name capture through
   `ParentClosure` relays, and QuickJS-style contextual `SetName` for direct
   anonymous initializers and assignments. Named expressions use a
@@ -56,30 +57,32 @@ claim full parity.
   computed References to the common `Delete(base,key)` opcode, never invokes a
   getter, converts computed keys before ToObject, and implements strict/sloppy
   configurable behavior plus String's virtual index/length properties.
-  Arithmetic, shift and bitwise member compound assignment (`+=`, `-=`, `*=`,
-  `/=`, `%=`, `<<=`, `>>=`, `>>>=`, `&=`, `^=`, `|=`) rewrites fixed getters
-  to `GetField2` and computed getters to `GetArrayEl3`, so the old value and
-  lvalue operands survive while an object key is converted exactly once before
-  the getter and RHS. The arithmetic/shift/bitwise operator carries the
-  compound-token source marker; `Insert2`/`Insert3` plus the same put opcodes
-  preserve the final value and strict setter semantics.
+  Arithmetic, exponentiation, shift and bitwise member compound assignment
+  (`+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `<<=`, `>>=`, `>>>=`, `&=`, `^=`,
+  `|=`) rewrites fixed getters to `GetField2` and computed getters to
+  `GetArrayEl3`, so the old value and lvalue operands survive while an object
+  key is converted exactly once before the getter and RHS. The arithmetic,
+  exponentiation, shift or bitwise operator carries the compound-token source
+  marker; `Insert2`/`Insert3` plus the same put opcodes preserve the final value
+  and strict setter semantics.
   Logical member assignment (`&&=`, `||=`, `??=`) uses the same retained
   Reference, then matches QuickJS's `Dup`, conditional branch and `Nip`
   cleanup. The short branch returns the original value without evaluating the
   RHS or setter; the write branch preserves the RHS value. Unlike arithmetic,
-  shift and bitwise compound assignment, the logical operator emits no new
-  source marker.
+  exponentiation, shift and bitwise compound assignment, the logical operator
+  emits no new source marker.
 - Identifier assignment keeps an unresolved tail Reference through parentheses
-  and resolves it only after the full scope tree is known. Arithmetic, shift
-  and bitwise compound assignment select `Get`/operator/`Set` paths for
-  arguments, locals, closures and globals; logical compound assignment uses
-  QuickJS's depth-zero branch with no `Nip`. Private named-function bindings
+  and resolves it only after the full scope tree is known. Arithmetic,
+  exponentiation, shift and bitwise compound assignment select
+  `Get`/operator/`Set` paths for arguments, locals, closures and globals;
+  logical compound assignment uses QuickJS's depth-zero branch with no `Nip`.
+  Private named-function bindings
   preserve sloppy ignored writes and strict read-only throws. Direct logical
   assignment performs NamedEvaluation, including QuickJS's parenthesized-lvalue
-  exception, while arithmetic, shift and bitwise compound assignment do not.
-  Comma, conditional,
-  bitwise and logical values are rejected as assignment targets, and strict
-  `eval`/`arguments` lvalues are early errors at the upstream source position.
+  exception, while arithmetic, exponentiation, shift and bitwise compound
+  assignment do not. Comma, conditional, bitwise and logical values are
+  rejected as assignment targets, and strict `eval`/`arguments` lvalues are
+  early errors at the upstream source position.
 - Binary nullish coalescing flattens a chain through QuickJS's shared
   `Dup; IsUndefinedOrNull; IfFalse` exit, preserving the first non-nullish
   operand without coercion and skipping every later operand. It has no
@@ -99,25 +102,34 @@ claim full parity.
   values and child bytecode; a 50,000-deep publication/release test covers the
   iterative ownership path.
 - Primitive coercion, mixed BigInt comparison/equality, BigInt arithmetic,
-  bitwise and shift operations, and string concatenation are covered by a real
-  upstream-oracle differential suite. The implemented VM unary, arithmetic,
-  bitwise, shift and relational operators route object operands through
-  completion-aware Number-hint `ToPrimitive`. Unary `~` and binary `&`, `^`,
-  `|` match QuickJS's signed modulo-2^32 `ToInt32` Number path and its
-  infinite-width BigInt two's-complement path. Binary `<<`, `>>`, and `>>>`
-  occupy the QuickJS shift precedence level between additive and relational
-  expressions. Their Number path masks a `ToUint32` count to five bits and
-  preserves arithmetic versus unsigned results; their BigInt path supports
-  negative-count direction reversal and huge-right-shift saturation. It also
+  exponentiation, bitwise and shift operations, and string concatenation are
+  covered by a real upstream-oracle differential suite. The implemented VM
+  unary, arithmetic, exponentiation, bitwise, shift and relational operators
+  route object operands through completion-aware Number-hint `ToPrimitive`.
+  Unary `~` and binary `&`, `^`, `|` match QuickJS's signed modulo-2^32
+  `ToInt32` Number path and its infinite-width BigInt two's-complement path.
+  Right-associative `**` is parsed
+  at QuickJS's unary level above multiplication, accepts a unary RHS, and
+  rejects an unparenthesized unary LHS with the pinned early error. Its Number
+  path uses Rust `f64::powf` plus QuickJS's `abs(base) == 1`/non-finite-exponent
+  NaN correction, with pinned-oracle matrices locking the observed libc-`pow`
+  results. Its BigInt path preserves negative-exponent errors, `0`/`1`/`-1`
+  shortcuts, the `INT32_MAX` exponent ceiling, power-of-two exact allocation,
+  and generic high-to-low square-and-multiply preallocation behavior. Binary
+  `<<`, `>>`, and `>>>` occupy the QuickJS shift precedence level between
+  additive and relational expressions. Their Number path masks a `ToUint32`
+  count to five bits and preserves arithmetic versus unsigned results; their
+  BigInt path supports negative-count direction reversal and huge-right-shift
+  saturation. It also
   reproduces the 16,384-limb allocation guard and the pinned `js_bigint_extend`
   one-sign-limb bypass, including later allocation failures for the resulting
   16,385-limb value. After both operand expressions are evaluated, binary
   numeric operations complete the left `ToNumeric` before converting the
-  right; bitwise and shift mixed Number/BigInt operands preserve the pinned
-  error after both conversions. Unsigned right shift converts both operands
-  before rejecting any BigInt with its distinct pinned TypeError. Relational
-  comparison preserves the two-sided primitive-conversion order and
-  uses `StringToBigInt` rather than Number rounding for BigInt/String pairs.
+  right; exponentiation, bitwise and shift mixed Number/BigInt operands
+  preserve the pinned error after both conversions. Unsigned right shift
+  converts both operands before rejecting any BigInt with its distinct pinned
+  TypeError. Relational comparison preserves the two-sided primitive-conversion
+  order and uses `StringToBigInt` rather than Number rounding for BigInt/String pairs.
   Addition and abstract equality use the distinct default hint, preserve
   arbitrary thrown values, and keep QuickJS's observable conversion order.
 - The runtime owns a generational Object/Shape arena. Public Object, Symbol and
@@ -333,9 +345,14 @@ claim full parity.
   A separate `apply` differential covers conversion and Get ordering, every
   abrupt path, holes/inheritance/accessors and the real 65,534/65,535 boundary.
   A VM object-coercion differential covers Number/default hints, unary,
-  arithmetic, bitwise and shift operators, BigInt/String relations, abstract
-  equality, left-to-right conversion, mixed-numeric and Symbol error precedence,
-  arbitrary throws and coercion stacks.
+  arithmetic, exponentiation, bitwise and shift operators, BigInt/String
+  relations, abstract equality, left-to-right conversion, mixed-numeric and
+  Symbol error precedence, arbitrary throws and coercion stacks. A dedicated
+  1,421-case Number exponentiation matrix compares special values, signed zero,
+  overflow, subnormal underflow, rounding boundaries and deterministic finite
+  pairs through the real parser/VM against one pinned QuickJS batch. A separate
+  725-case BigInt power matrix covers short/heap bases, both signs, odd/even
+  exponents, constant shortcuts and thousands-of-bits exact decimal results.
   A normal-Function-constructor differential locks the intrinsic/global graph,
   descriptors and key order, exact dynamic source and debug metadata, call/new
   behavior, source-conversion/parse/prototype-Get ordering, custom/fallback new
@@ -348,12 +365,12 @@ claim full parity.
 
 The function slice is intentionally narrow. Function declarations/hoisting,
 block scopes, source `let`/`const` declarations and their declaration-
-instantiation rules, destructuring and other general assignment targets,
-exponentiation and its compound assignment, module resolution, computed
-property-definition naming, mapped
-`arguments`, arrow/async/generator functions and callable Proxy classes
-are not yet implemented. Top-level declarations are rejected instead of being
-faked as frame locals. The internal global lexical VarRef path already enforces
+instantiation rules, destructuring, prefix/postfix update expressions and other
+general assignment targets, module resolution, computed property-definition
+naming, mapped `arguments`, arrow/async/generator functions and callable Proxy
+classes are not yet implemented. Top-level declarations are rejected instead
+of being faked as frame locals. The internal global lexical VarRef path already
+enforces
 TDZ, mutable and const behavior, but it is currently exercised through
 test-only creation/initialization helpers rather than source `let`/`const`
 syntax. The valid implicit `arguments` binding is likewise
@@ -392,23 +409,23 @@ function-kind metadata and `toString` fallback distinguish all four QuickJS
 kinds. Bound dispatch is iterative and therefore does not consume the Rust host
 stack, but exact QuickJS runtime-stack accounting and its deep-bound-chain
 overflow threshold are not yet reproduced. VM object coercion is wired through
-the implemented unary, arithmetic, bitwise, shift, relational, addition and
-abstract-equality operators and now reaches the implemented callable classes
-through `Function.prototype.toString`. Proxy hooks, Date's special default hint
-behavior, OOM/interrupt edges and operators outside the current bytecode slice
-also remain pending.
+the implemented unary, arithmetic, exponentiation, bitwise, shift, relational,
+addition and abstract-equality operators and now reaches the implemented
+callable classes through `Function.prototype.toString`. Proxy hooks, Date's
+special default hint behavior, OOM/interrupt edges and operators outside the
+current bytecode slice also remain pending.
 
 Accessors are executable through the Rust Context property API, and
 strict/sloppy global identifier assignment is implemented. Source property
 reads and receiver-preserving method calls are implemented for object/function
 bases, plus exact String index/length reads; simple member assignment and
 property delete cover ordinary objects and the current primitive own-property
-surface. Exponentiation and its compound assignment, sloppy direct-identifier
-delete, the distinct primitive
-prototype graphs and their inherited setters,
-Proxy/exotic internal methods, and the full `function_accessors.js` fixture are
-still pending. AggregateError iterable-to-Array, primitive wrapper objects for
-direct Object-prototype method calls, remaining Object prototype methods and
+surface. Prefix/postfix update expressions (including QuickJS's valid
+`++x ** 2` form), sloppy direct-identifier delete, the distinct primitive
+prototype graphs and their inherited setters, Proxy/exotic internal methods,
+and the full `function_accessors.js` fixture are still pending. AggregateError
+iterable-to-Array, primitive wrapper objects for direct Object-prototype method
+calls, remaining Object prototype methods and
 uncatchable termination state are also pending. Arrays, object literals and the
 rest of the builtin table build on those layers.
 

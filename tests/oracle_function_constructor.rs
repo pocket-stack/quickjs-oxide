@@ -72,6 +72,8 @@ var add = Function("a", "b", "return a + b");
 print("multi=" + add.name + "|" + add.length + "|" + add(20, 22) + "|" +
       hex(fp.toString.call(add)) + "|" + text(add.fileName) + "|" +
       text(add.lineNumber) + "|" + text(add.columnNumber));
+var power = Function("a", "b", "return a ** b");
+print("power=" + power(2, 10));
 
 var viaNew = new Function("return 9");
 print("function-new=" + viaNew() + "|" + (Object.getPrototypeOf(viaNew) === fp));
@@ -334,6 +336,21 @@ fn rust_observations(mode: DebugInfoMode) -> Vec<String> {
         property_text(&runtime, &mut context, &add, "lineNumber"),
         property_text(&runtime, &mut context, &add, "columnNumber"),
     ));
+
+    let power = call_function_constructor(
+        &mut context,
+        &constructor,
+        &[string("a"), string("b"), string("return a ** b")],
+    );
+    let power_callable = runtime.as_callable(&power).unwrap().unwrap();
+    let power_result = context
+        .call(
+            &power_callable,
+            Value::Undefined,
+            &[Value::Int(2), Value::Int(10)],
+        )
+        .unwrap();
+    output.push(format!("power={}", value_text(power_result)));
 
     let via_new = expect_object(
         context

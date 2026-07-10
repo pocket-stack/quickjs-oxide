@@ -134,6 +134,18 @@ enum LogicalAssignment {
     Nullish,
 }
 
+/// Mirrors QuickJS's `PF_POW_ALLOWED`, `PF_POW_FORBIDDEN`, and zero flag.
+/// The zero mode is reserved for prefix-update operands: `++x ** 2` may use
+/// the updated value as the left operand, while ordinary unary expressions
+/// such as `-x ** 2` are early errors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PowerMode {
+    Allowed,
+    Forbidden,
+    #[allow(dead_code)]
+    None,
+}
+
 #[derive(Debug)]
 enum IrOp {
     Bytecode(Instruction),
@@ -581,6 +593,7 @@ impl<'source> Parser<'source> {
             TokenKind::Punctuator(Punctuator::MultiplyAssign) => Some(Instruction::Mul),
             TokenKind::Punctuator(Punctuator::DivideAssign) => Some(Instruction::Div),
             TokenKind::Punctuator(Punctuator::RemainderAssign) => Some(Instruction::Mod),
+            TokenKind::Punctuator(Punctuator::ExponentAssign) => Some(Instruction::Pow),
             TokenKind::Punctuator(Punctuator::ShiftLeftAssign) => Some(Instruction::Shl),
             TokenKind::Punctuator(Punctuator::ShiftRightAssign) => Some(Instruction::Sar),
             TokenKind::Punctuator(Punctuator::UnsignedShiftRightAssign) => Some(Instruction::Shr),
@@ -976,9 +989,6 @@ impl<'source> Parser<'source> {
                 TokenKind::Punctuator(Punctuator::Multiply) => Instruction::Mul,
                 TokenKind::Punctuator(Punctuator::Divide) => Instruction::Div,
                 TokenKind::Punctuator(Punctuator::Remainder) => Instruction::Mod,
-                TokenKind::Punctuator(Punctuator::Exponent) => {
-                    return Err(self.unsupported_here("exponentiation is not implemented yet"));
-                }
                 _ => break,
             };
             self.advance();
@@ -990,10 +1000,14 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_unary(&mut self) -> Result<(), Error> {
+        self.parse_unary_with_power(PowerMode::Allowed)
+    }
+
+    fn parse_unary_with_power(&mut self, power_mode: PowerMode) -> Result<(), Error> {
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Typeof)) {
             self.advance();
             let operand_start = self.current_ir().ops.len();
-            self.parse_unary()?;
+            self.parse_unary_with_power(PowerMode::Forbidden)?;
 
             // Parentheses do not change an IdentifierReference into a value
             // expression, so both `typeof missing` and `typeof (missing)` use
@@ -1011,13 +1025,13 @@ impl<'source> Parser<'source> {
             }
             self.emit_instruction(Instruction::TypeOf)?;
             self.anonymous_function_definition = None;
-            return Ok(());
+            return self.parse_power_suffix(power_mode);
         }
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Delete)) {
             let delete_span = self.current().span;
             self.advance();
             let operand_start = self.current_ir().ops.len();
-            self.parse_unary()?;
+            self.parse_unary_with_power(PowerMode::Forbidden)?;
             if let Some(target) = self.take_tail_member_reference()? {
                 match target {
                     MemberReference::Field { key, site } => {
@@ -1051,7 +1065,7 @@ impl<'source> Parser<'source> {
                 self.emit_instruction(Instruction::PushTrue)?;
             }
             self.anonymous_function_definition = None;
-            return Ok(());
+            return self.parse_power_suffix(power_mode);
         }
         let operation_span = self.current().span;
         let operation = match self.current().kind {
@@ -1061,17 +1075,17 @@ impl<'source> Parser<'source> {
             TokenKind::Punctuator(Punctuator::Not) => Some(Instruction::Not),
             TokenKind::Keyword(Keyword::Void) => {
                 self.advance();
-                self.parse_unary()?;
+                self.parse_unary_with_power(PowerMode::Forbidden)?;
                 self.emit_instruction(Instruction::Drop)?;
                 self.emit_instruction(Instruction::Undefined)?;
                 self.anonymous_function_definition = None;
-                return Ok(());
+                return self.parse_power_suffix(power_mode);
             }
             _ => None,
         };
         if let Some(operation) = operation {
             self.advance();
-            self.parse_unary()?;
+            self.parse_unary_with_power(PowerMode::Forbidden)?;
             if matches!(
                 operation,
                 Instruction::Plus | Instruction::Neg | Instruction::BitNot
@@ -1081,9 +1095,33 @@ impl<'source> Parser<'source> {
                 self.emit_instruction(operation)?;
             }
             self.anonymous_function_definition = None;
+            return self.parse_power_suffix(power_mode);
+        }
+        self.parse_postfix()?;
+        self.parse_power_suffix(power_mode)
+    }
+
+    fn parse_power_suffix(&mut self, power_mode: PowerMode) -> Result<(), Error> {
+        if !self.is_punctuator(Punctuator::Exponent) {
             return Ok(());
         }
-        self.parse_postfix()
+        match power_mode {
+            PowerMode::None => return Ok(()),
+            PowerMode::Forbidden => {
+                return Err(Error::new(
+                    ErrorKind::Syntax,
+                    "unparenthesized unary expression can't appear on the left-hand side of '**'",
+                ));
+            }
+            PowerMode::Allowed => {}
+        }
+
+        let operation_span = self.current().span;
+        self.advance();
+        self.parse_unary_with_power(PowerMode::Allowed)?;
+        self.emit_instruction_at(Instruction::Pow, source_offset(operation_span)?)?;
+        self.anonymous_function_definition = None;
+        Ok(())
     }
 
     fn parse_postfix(&mut self) -> Result<(), Error> {
@@ -2694,6 +2732,41 @@ mod tests {
     }
 
     #[test]
+    fn exponentiation_follows_quickjs_precedence_associativity_and_unary_rules() {
+        assert_eq!(evaluate("2 ** 3 ** 2"), Value::Int(512));
+        assert_eq!(evaluate("2 * 3 ** 2"), Value::Int(18));
+        assert_eq!(evaluate("2 ** 3 * 4"), Value::Int(32));
+        assert_eq!(evaluate("2 ** -2"), Value::Float(0.25));
+        assert_eq!(evaluate("(-2) ** 2"), Value::Int(4));
+        assert!(evaluate("(typeof 2) ** 2").as_number().unwrap().is_nan());
+
+        assert_eq!(evaluate("0n ** 0n"), Value::BigInt(JsBigInt::one()));
+        assert_eq!(evaluate("(-2n) ** 3n"), Value::BigInt(JsBigInt::from(-8)));
+        assert_eq!(
+            evaluate("2n ** 100n"),
+            Value::BigInt(JsBigInt::parse_js_string("1267650600228229401496703205376").unwrap())
+        );
+
+        for source in [
+            "-2 ** 2",
+            "+2 ** 2",
+            "!2 ** 2",
+            "~2 ** 2",
+            "typeof 2 ** 2",
+            "void 2 ** 2",
+            "delete Function ** 2",
+            "2 ** -2 ** 3",
+        ] {
+            let error = compile_script(source).unwrap_err();
+            assert_eq!(
+                error.message(),
+                "unparenthesized unary expression can't appear on the left-hand side of '**'",
+                "source {source:?}"
+            );
+        }
+    }
+
+    #[test]
     fn compiles_primitive_coercion_and_equality() {
         assert_eq!(
             evaluate("'answer: ' + 42"),
@@ -3251,6 +3324,17 @@ mod tests {
             Value::String(JsString::from("'shadowed' is read-only"))
         );
         assert!(matches!(
+            context.eval("shadowed **= 3"),
+            Err(RuntimeError::Exception)
+        ));
+        let Value::Object(exception) = context.take_exception().unwrap().unwrap() else {
+            panic!("const exponent compound assignment did not throw an object");
+        };
+        assert_eq!(
+            context.get_property(&exception, &message).unwrap(),
+            Value::String(JsString::from("'shadowed' is read-only"))
+        );
+        assert!(matches!(
             context.eval("shadowed &&= 3"),
             Err(RuntimeError::Exception)
         ));
@@ -3280,6 +3364,11 @@ mod tests {
             Err(RuntimeError::Exception)
         ));
         context.take_exception().unwrap().unwrap();
+        assert!(matches!(
+            context.eval("mutableLexical **= 2"),
+            Err(RuntimeError::Exception)
+        ));
+        context.take_exception().unwrap().unwrap();
         context
             .initialize_global_lexical_for_test("mutableLexical", Value::Int(4))
             .unwrap();
@@ -3289,7 +3378,11 @@ mod tests {
         assert_eq!(context.eval("mutableLexical += 3").unwrap(), Value::Int(10));
         assert_eq!(context.eval("mutableLexical &&= 5").unwrap(), Value::Int(5));
         assert_eq!(context.eval("mutableLexical ??= 9").unwrap(), Value::Int(5));
-        assert_eq!(context.eval("mutableLexical").unwrap(), Value::Int(5));
+        assert_eq!(
+            context.eval("mutableLexical **= 2").unwrap(),
+            Value::Int(25)
+        );
+        assert_eq!(context.eval("mutableLexical").unwrap(), Value::Int(25));
 
         context
             .create_global_lexical_for_test("mutableShift", false, None)
@@ -3980,6 +4073,132 @@ mod tests {
         assert!(context.compile("(shiftIdentifier) <<= 1").is_ok());
         assert!(context.compile("(0, Function.shift) >>= 1").is_err());
         assert!(context.compile("(Function.shift << 1) >>= 1").is_err());
+    }
+
+    #[test]
+    fn exponent_compound_assignment_reuses_quickjs_lvalue_shapes() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+
+        let fixed = context.compile("Function.power **= 3").unwrap();
+        let fixed_code = runtime.test_function_code(&fixed).unwrap();
+        assert!(fixed_code.windows(3).any(|window| matches!(
+            window,
+            [
+                Instruction::Pow,
+                Instruction::Insert2,
+                Instruction::PutField(_)
+            ]
+        )));
+
+        let computed = context.compile("Function['power'] **= 2").unwrap();
+        let computed_code = runtime.test_function_code(&computed).unwrap();
+        assert!(computed_code.windows(3).any(|window| matches!(
+            window,
+            [
+                Instruction::Pow,
+                Instruction::Insert3,
+                Instruction::PutArrayEl
+            ]
+        )));
+
+        let argument_root = context
+            .compile("(function(value){ value **= 3; return value; })")
+            .unwrap();
+        let argument = runtime
+            .test_child_function_bytecode(&argument_root, 0)
+            .unwrap();
+        let argument_code = runtime.test_function_code(&argument).unwrap();
+        assert!(
+            argument_code
+                .windows(2)
+                .any(|window| matches!(window, [Instruction::Pow, Instruction::SetArg(0)]))
+        );
+
+        let closure_root = context
+            .compile("(function(value){ return function(){ value **= 2; return value; }; })")
+            .unwrap();
+        let closure_outer = runtime
+            .test_child_function_bytecode(&closure_root, 0)
+            .unwrap();
+        let closure = runtime
+            .test_child_function_bytecode(&closure_outer, 0)
+            .unwrap();
+        let closure_code = runtime.test_function_code(&closure).unwrap();
+        assert!(
+            closure_code
+                .windows(2)
+                .any(|window| matches!(window, [Instruction::Pow, Instruction::SetVarRef(0)]))
+        );
+
+        let global = context.compile("__qjo_power_global **= 2").unwrap();
+        let global_code = runtime.test_function_code(&global).unwrap();
+        assert!(global_code.windows(3).any(|window| matches!(
+            window,
+            [Instruction::Pow, Instruction::Dup, Instruction::PutVar(_)]
+        )));
+
+        let sloppy_private_root = context
+            .compile("(function named(){ named **= 1; return named; })")
+            .unwrap();
+        let sloppy_private = runtime
+            .test_child_function_bytecode(&sloppy_private_root, 0)
+            .unwrap();
+        let sloppy_private_code = runtime.test_function_code(&sloppy_private).unwrap();
+        assert!(
+            sloppy_private_code
+                .windows(2)
+                .any(|window| matches!(window, [Instruction::Pow, Instruction::Nop]))
+        );
+
+        let strict_private_root = context
+            .compile("(function named(){ 'use strict'; named **= 1; })")
+            .unwrap();
+        let strict_private = runtime
+            .test_child_function_bytecode(&strict_private_root, 0)
+            .unwrap();
+        let strict_private_code = runtime.test_function_code(&strict_private).unwrap();
+        assert!(
+            strict_private_code
+                .windows(2)
+                .any(|window| matches!(window, [Instruction::Pow, Instruction::ThrowReadOnly(_)]))
+        );
+
+        assert_eq!(
+            context
+                .eval("(function(){ var value = 2; value **= 3; return value; })()")
+                .unwrap(),
+            Value::Int(8)
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "(function(value){ return (function(){ value **= 2; \
+                     return value; })(); })(3)"
+                )
+                .unwrap(),
+            Value::Int(9)
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "(function(){ var left = 2, right = 3; \
+                     left **= right **= 2; return left + right; })()"
+                )
+                .unwrap(),
+            Value::Int(521)
+        );
+        assert_eq!(
+            context
+                .eval("(function(){ var value = 2n; (value) **= 100n; return value; })()")
+                .unwrap(),
+            Value::BigInt(JsBigInt::parse_js_string("1267650600228229401496703205376").unwrap())
+        );
+
+        assert!(context.compile("(Function.power) **= 2").is_ok());
+        assert!(context.compile("(powerIdentifier) **= 2").is_ok());
+        assert!(context.compile("(0, Function.power) **= 2").is_err());
+        assert!(context.compile("(Function.power ** 1) **= 2").is_err());
     }
 
     #[test]

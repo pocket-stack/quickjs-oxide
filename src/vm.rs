@@ -751,6 +751,13 @@ impl CallFrame {
                         return Ok(Completion::Throw(value));
                     }
                 }
+                Instruction::Pow => {
+                    if let OperationOutcome::Throw(value) =
+                        self.binary_numeric(host, number_pow, JsBigInt::pow)?
+                    {
+                        return Ok(Completion::Throw(value));
+                    }
+                }
                 Instruction::Shl => {
                     if let OperationOutcome::Throw(value) = self.binary_numeric(
                         host,
@@ -1255,6 +1262,14 @@ fn number_to_uint32(value: f64) -> u32 {
     u32::from_ne_bytes(number_to_int32(value).to_ne_bytes())
 }
 
+fn number_pow(base: f64, exponent: f64) -> f64 {
+    if !exponent.is_finite() && base.abs() == 1.0 {
+        f64::NAN
+    } else {
+        base.powf(exponent)
+    }
+}
+
 fn compare_bigint_number(bigint: &JsBigInt, number: f64) -> Option<std::cmp::Ordering> {
     if number.is_nan() {
         return None;
@@ -1302,7 +1317,7 @@ mod tests {
     use crate::bytecode::{BytecodeFunction, Instruction};
     use crate::value::{JsString, Value};
 
-    use super::{Vm, number_to_int32, number_to_uint32};
+    use super::{Vm, number_pow, number_to_int32, number_to_uint32};
 
     #[test]
     fn executes_arithmetic_stack_bytecode() {
@@ -1319,6 +1334,32 @@ mod tests {
         };
 
         assert_eq!(Vm::new().execute(&function).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn executes_power_stack_bytecode_and_quickjs_number_edges() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(2),
+                Instruction::PushI32(3),
+                Instruction::PushI32(2),
+                Instruction::Pow,
+                Instruction::Pow,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            max_stack: 3,
+        };
+
+        assert_eq!(Vm::new().execute(&function).unwrap(), Value::Int(512));
+        assert!(number_pow(1.0, f64::INFINITY).is_nan());
+        assert!(number_pow(-1.0, f64::NEG_INFINITY).is_nan());
+        assert!(number_pow(-2.0, 0.5).is_nan());
+        assert_eq!(number_pow(f64::NAN, 0.0), 1.0);
+        assert_eq!(number_pow(2.0, -2.0), 0.25);
+        assert_eq!(number_pow(-0.0, 3.0).to_bits(), (-0.0f64).to_bits());
+        assert_eq!(number_pow(-0.0, -3.0), f64::NEG_INFINITY);
     }
 
     #[test]

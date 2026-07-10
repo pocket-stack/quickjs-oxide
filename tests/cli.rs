@@ -32,6 +32,28 @@ fn eval_executes_source_level_functions_and_formats_native_errors() {
 }
 
 #[test]
+fn unparenthesized_power_unary_error_omits_a_source_frame_like_quickjs() {
+    let output = qjs().args(["-e", "-2 ** 2"]).output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "SyntaxError: unparenthesized unary expression can't appear on the left-hand side of '**'\n\n"
+    );
+
+    let dynamic = qjs()
+        .args(["-e", "Function(\"return -2 ** 2\")"])
+        .output()
+        .unwrap();
+    assert_eq!(dynamic.status.code(), Some(1));
+    assert!(dynamic.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(dynamic.stderr).unwrap(),
+        "SyntaxError: unparenthesized unary expression can't appear on the left-hand side of '**'\n    at Function (native)\n    at <eval> (<cmdline>:1:9)\n"
+    );
+}
+
+#[test]
 fn eval_executes_the_dynamic_function_constructor_path() {
     for source in [
         "throw Function(\"a\", \"return a + 1\")(41)",

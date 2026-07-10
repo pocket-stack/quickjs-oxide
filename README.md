@@ -29,22 +29,29 @@ the pinned differential locks chaining, `ToPropertyKey` order, `this`, String
 index/length reads, and member error locations. Simple member assignment and
 property delete use the corresponding QuickJS lvalue/stack shapes, including
 the intentionally different computed-key conversion order, setter receiver,
-strict rejection and delete-without-getter behavior. Arithmetic, shift and
-bitwise member assignment follow `GetField2`/`GetArrayEl3`: `+=`, `-=`, `*=`,
-`/=`, `%=`, `<<=`, `>>=`, `>>>=`, `&=`, `^=` and `|=` reuse the old value,
-while `&&=`, `||=` and `??=` branch through QuickJS's `Nip` cleanup shape.
+strict rejection and delete-without-getter behavior. Arithmetic,
+exponentiation, shift and bitwise member assignment follow
+`GetField2`/`GetArrayEl3`: `+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `<<=`, `>>=`,
+`>>>=`, `&=`, `^=` and `|=` reuse the old value, while `&&=`, `||=` and `??=`
+branch through QuickJS's `Nip` cleanup shape.
 Both paths convert a computed object key exactly once before the getter. Unary
 `~`, binary `&`, `^`, `|`, and binary `<<`, `>>`, `>>>` use QuickJS's exact
 precedence levels and ordered `ToNumeric`. Number shifts preserve the signed
 `ToInt32`/unsigned `ToUint32` split and masked counts; BigInt shifts preserve
-negative-count reversal, arithmetic right-shift saturation, allocation failures, and the
-pinned release's one-sign-limb allocation extension.
+negative-count reversal, arithmetic right-shift saturation, allocation
+failures, and the pinned release's one-sign-limb allocation extension.
+Right-associative `**` follows QuickJS's unary-level parser, including unary-RHS
+acceptance and the unparenthesized-unary-LHS early error. Its Number path uses
+Rust `f64::powf` plus QuickJS's `±1`/non-finite-exponent correction, with a
+pinned differential locking the observed libc-`pow` results. Its BigInt path
+preserves negative-exponent errors, constant shortcuts, and exact limb
+preallocation boundaries.
 Binary `??` uses QuickJS's shared short-circuit join for a chain, preserves the
 selected operand without coercion, and enforces the unparenthesized
-`??`/`&&`/`||` mixing restriction. The same arithmetic, shift, bitwise and
-logical assignment operators now accept direct or parenthesized identifier
-References and resolve late to argument, local, closure, global, or private
-function-name paths. Exponentiation and its compound assignment,
+`??`/`&&`/`||` mixing restriction. The same arithmetic, exponentiation, shift,
+bitwise and logical assignment operators accept direct or parenthesized
+identifier References and resolve late to argument, local, closure, global, or
+private function-name paths. Prefix/postfix update expressions,
 direct-identifier delete, and the distinct primitive prototype graphs remain
 unfinished slices.
 Runtime-wide full/strip-source/strip-debug modes follow QuickJS's immutable
@@ -88,6 +95,10 @@ built official release:
 ```sh
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_primitives -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_power_numbers -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_power_bigints -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_error_stacks -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
