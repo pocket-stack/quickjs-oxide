@@ -93,6 +93,20 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "Function.prototype.caller &&= 1",
         ),
         (
+            "nullish RHS getter keeps member site",
+            "null ?? Function.prototype.caller",
+        ),
+        (
+            "nullish RHS call throw uses call site",
+            "null ?? (function(){ throw new Error('boom'); })()",
+        ),
+        (
+            "nullish RHS identifier keeps identifier site",
+            "void 0 ?? missingNullishRhs",
+        ),
+        ("logical before nullish parse location", "1 || 2 ?? 3"),
+        ("nullish before logical parse location", "1 ?? 2 || 3"),
+        (
             "CR remains a debug column",
             "(function f(){\rreturn 1n + 1;\r})()",
         ),

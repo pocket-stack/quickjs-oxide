@@ -66,6 +66,12 @@ claim full parity.
   cleanup. The short branch returns the original value without evaluating the
   RHS or setter; the write branch preserves the RHS value. Unlike arithmetic
   compound assignment, the logical operator emits no new source marker.
+- Binary nullish coalescing flattens a chain through QuickJS's shared
+  `Dup; IsUndefinedOrNull; IfFalse` exit, preserving the first non-nullish
+  operand without coercion and skipping every later operand. It has no
+  operator source marker, invalidates a member Reference before an outer call
+  or assignment, suppresses anonymous-function name inference, and enforces
+  QuickJS's unparenthesized mixing boundary between `??` and `&&`/`||`.
 - Bytecode publication first validates structural operands in every instruction
   (including unreachable code), then verifies reachable control-flow joins and
   stack depth. Runtime publication additionally checks constant kinds, frame

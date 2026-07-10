@@ -33,9 +33,11 @@ strict rejection and delete-without-getter behavior. Arithmetic and logical
 member assignment follow `GetField2`/`GetArrayEl3`: `+=`, `-=`, `*=`, `/=` and
 `%=` reuse the old value, while `&&=`, `||=` and `??=` branch through QuickJS's
 `Nip` cleanup shape. Both paths convert a computed object key exactly once
-before the getter. Bitwise/shift/exponent and identifier compound assignment,
-direct-identifier delete, and the distinct primitive prototype graphs remain
-unfinished slices.
+before the getter. Binary `??` uses QuickJS's shared short-circuit join for a
+chain, preserves the selected operand without coercion, and enforces the
+unparenthesized `??`/`&&`/`||` mixing restriction. Bitwise/shift/exponent and
+identifier compound assignment, direct-identifier delete, and the distinct
+primitive prototype graphs remain unfinished slices.
 Runtime-wide full/strip-source/strip-debug modes follow QuickJS's immutable
 bytecode publication boundary, and the `qjs` CLI exposes `--strip-source` and
 `-s` with upstream last-option-wins behavior.

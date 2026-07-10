@@ -84,6 +84,41 @@ const CASES: &[(&str, &str)] = &[
     ("short circuit or", "1 || -0"),
     ("logical and selected value", "'left' && 'right'"),
     ("logical or selected value", "'' || 'fallback'"),
+    // Nullish coalescing uses exact null/undefined checks and preserves identity.
+    ("nullish null selects rhs", "null ?? 42"),
+    ("nullish undefined selects rhs", "void 0 ?? 'fallback'"),
+    ("nullish false preserves lhs", "false ?? true"),
+    ("nullish zero preserves lhs", "0 ?? 1"),
+    ("nullish negative zero preserves lhs", "-0 ?? 1"),
+    ("nullish empty string preserves lhs", "'' ?? 'fallback'"),
+    ("nullish chain selects last", "null ?? void 0 ?? 'last'"),
+    (
+        "nullish short circuit skips rhs",
+        "(function(){ var calls = 0; var value = 1 ?? (calls = 1); return value + calls; })()",
+    ),
+    (
+        "nullish chain stops at zero",
+        "(function(){ var calls = 0; var value = null ?? (calls = calls + 1, 0) ?? (calls = 99); return value + calls; })()",
+    ),
+    ("nullish arithmetic precedence", "null ?? 1 + 2 * 3"),
+    ("nullish conditional precedence", "0 ?? 1 ? 2 : 3"),
+    ("parenthesized logical before nullish", "(false || 4) ?? 5"),
+    (
+        "parenthesized logical after nullish",
+        "null ?? (false || 6)",
+    ),
+    (
+        "nullish anonymous function is not named",
+        "(function(){ var inferred; inferred = null ?? function(){}; return inferred.name; })()",
+    ),
+    (
+        "nullish result call drops member receiver",
+        "(Function.__nullishMethod = function(){ return this === Function; }, (Function.__nullishMethod ?? Function)())",
+    ),
+    (
+        "nullish rhs member call keeps receiver",
+        "(Function.__nullishRhs = function(){ return this === Function; }, null ?? Function.__nullishRhs())",
+    ),
     // Conditional selection and associativity.
     ("truthy conditional", "'x' ? -0 : 1"),
     ("falsy conditional", "0 ? 1 : 'no'"),
@@ -202,6 +237,10 @@ const SHARED_ERRORS: &[(&str, &str)] = &[
         "'use strict'; 010",
     ),
     ("conditional consequent excludes comma", "true ? 1, 2 : 3"),
+    ("logical or cannot precede nullish", "1 || 2 ?? 3"),
+    ("logical and cannot precede nullish", "1 && 2 ?? 3"),
+    ("nullish cannot precede logical or", "1 ?? 2 || 3"),
+    ("nullish cannot precede logical and", "1 ?? 2 && 3"),
     ("adjacent numeric expressions need ASI", "1 2"),
     ("malformed hexadecimal literal", "0x"),
     ("legacy octal cannot have a fraction", "01.1"),
@@ -251,6 +290,8 @@ const QUICKJS_ACCEPTED_DIRECTIVE_EDGES: &[(&str, &str)] = &[
 ];
 
 const RUNTIME_ERROR_CASES: &[(&str, &str)] = &[
+    ("logical before nullish syntax message", "1 || 2 ?? 3"),
+    ("nullish before logical syntax message", "1 ?? 2 || 3"),
     ("mixed BigInt arithmetic", "1n + 1"),
     ("BigInt unary plus", "+1n"),
     ("call non-callable", "(1)()"),

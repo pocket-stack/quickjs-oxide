@@ -347,7 +347,7 @@ impl<'source> Parser<'source> {
                 }
                 continue;
             }
-            return Err(self.syntax_here("expected ';' or a line terminator"));
+            return Err(self.syntax_here("expecting ';'"));
         }
 
         if !has_completion_value {
@@ -510,7 +510,7 @@ impl<'source> Parser<'source> {
         {
             Ok(())
         } else {
-            Err(self.syntax_here("expected ';' or a line terminator"))
+            Err(self.syntax_here("expecting ';'"))
         }
     }
 
@@ -666,7 +666,7 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_conditional(&mut self) -> Result<(), Error> {
-        self.parse_logical_or()?;
+        self.parse_coalesce()?;
         if !self.is_punctuator(Punctuator::Question) {
             return Ok(());
         }
@@ -694,6 +694,34 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
+    /// QuickJS lowers a nullish-coalescing chain to one shared short-circuit
+    /// label. Each segment preserves the selected value, and the RHS enters
+    /// below the logical-and/or grammar level so unparenthesized mixing remains
+    /// a syntax error instead of changing precedence.
+    fn parse_coalesce(&mut self) -> Result<(), Error> {
+        self.parse_logical_or()?;
+        let mut short_circuits = Vec::new();
+        while self.is_punctuator(Punctuator::NullishCoalesce) {
+            self.advance();
+            self.emit_instruction(Instruction::Dup)?;
+            self.emit_instruction(Instruction::IsUndefinedOrNull)?;
+            short_circuits.push(self.emit_instruction(Instruction::IfFalse(u32::MAX))?);
+            self.emit_instruction(Instruction::Drop)?;
+            // `parse_equality` is the highest currently implemented binary
+            // level below logical-and/or. Bitwise levels will slot above it.
+            self.parse_equality()?;
+            self.anonymous_function_definition = None;
+        }
+        if !short_circuits.is_empty() {
+            let end = self.current_ir().ops.len();
+            for short_circuit in short_circuits {
+                self.patch_jump(short_circuit, end)?;
+            }
+            self.current_ir_mut().last_member_reference = None;
+        }
+        Ok(())
+    }
+
     fn parse_logical_or(&mut self) -> Result<(), Error> {
         self.parse_logical_and()?;
         let mut composed = false;
@@ -707,8 +735,8 @@ impl<'source> Parser<'source> {
             self.patch_jump(end_jump, self.current_ir().ops.len())?;
             self.anonymous_function_definition = None;
         }
-        if self.is_punctuator(Punctuator::NullishCoalesce) {
-            return Err(self.unsupported_here("nullish coalescing is not implemented yet"));
+        if composed && self.is_punctuator(Punctuator::NullishCoalesce) {
+            return Err(self.syntax_here("cannot mix ?? with && or ||"));
         }
         if composed {
             self.current_ir_mut().last_member_reference = None;
@@ -728,6 +756,9 @@ impl<'source> Parser<'source> {
             self.parse_equality()?;
             self.patch_jump(end_jump, self.current_ir().ops.len())?;
             self.anonymous_function_definition = None;
+        }
+        if composed && self.is_punctuator(Punctuator::NullishCoalesce) {
+            return Err(self.syntax_here("cannot mix ?? with && or ||"));
         }
         if composed {
             self.current_ir_mut().last_member_reference = None;
@@ -2436,6 +2467,101 @@ mod tests {
         assert_eq!(evaluate("false ? 1 : 2"), Value::Int(2));
         assert!(compile_script("true ? 1, 2 : 3").is_err());
         assert_eq!(evaluate("true ? 1 : 2, 3"), Value::Int(3));
+    }
+
+    #[test]
+    fn nullish_coalescing_uses_one_quickjs_short_circuit_join() {
+        assert_eq!(evaluate("null ?? 42"), Value::Int(42));
+        assert_eq!(evaluate("void 0 ?? 7"), Value::Int(7));
+        assert_eq!(evaluate("false ?? true"), Value::Bool(false));
+        assert_eq!(evaluate("-0 ?? 1"), Value::Float(-0.0));
+        assert_eq!(
+            evaluate("'' ?? 'fallback'"),
+            Value::String(JsString::from(""))
+        );
+        assert_eq!(evaluate("null ?? void 0 ?? 9"), Value::Int(9));
+        assert_eq!(evaluate("null ?? 1 + 2 * 3"), Value::Int(7));
+        assert_eq!(evaluate("0 ?? 1 ? 2 : 3"), Value::Int(3));
+
+        let chain = compile_script("null ?? void 0 ?? 9").unwrap();
+        let targets = chain
+            .code
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::IfFalse(target) => Some(*target),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0], targets[1]);
+        assert!(matches!(
+            chain.code[usize::try_from(targets[0]).unwrap()],
+            Instruction::Return
+        ));
+
+        for source in ["1 || 2 ?? 3", "1 && 2 ?? 3", "1 ?? 2 || 3", "1 ?? 2 && 3"] {
+            assert!(compile_script(source).is_err(), "accepted {source:?}");
+        }
+        assert_eq!(evaluate("(false || 4) ?? 5"), Value::Int(4));
+        assert_eq!(evaluate("null ?? (false || 6)"), Value::Int(6));
+        assert_eq!(evaluate("(null ?? 0) || 7"), Value::Int(7));
+        assert_eq!(evaluate("false || (null ?? 8)"), Value::Int(8));
+
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let call = context
+            .compile(
+                "Function.coalesce = function(){ return this === Function; }; \
+                 (Function.coalesce ?? Function)()",
+            )
+            .unwrap();
+        let call_code = runtime.test_function_code(&call).unwrap();
+        assert!(
+            call_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Call(0)))
+        );
+        assert!(
+            !call_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::CallMethod(_)))
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "Function.coalesce = function(){ return this === Function; }; \
+                     (Function.coalesce ?? Function)()"
+                )
+                .unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            context
+                .eval("inferred = null ?? function(){}; inferred.name")
+                .unwrap(),
+            Value::String(JsString::from(""))
+        );
+        assert_eq!(
+            context.eval("1 ?? missingNullishRhs").unwrap(),
+            Value::Int(1)
+        );
+        assert_eq!(
+            context
+                .eval("Function.combo = 0; Function.combo ||= null ?? 4")
+                .unwrap(),
+            Value::Int(4)
+        );
+        assert_eq!(
+            context
+                .eval("Function.combo = null; Function.combo ??= void 0 ?? 5")
+                .unwrap(),
+            Value::Int(5)
+        );
+        assert!(
+            context
+                .compile("(Function.left ?? Function.right) = 1")
+                .is_err()
+        );
     }
 
     #[test]

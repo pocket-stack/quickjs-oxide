@@ -76,6 +76,9 @@ log = "";
 const objectSymbolCompound = target[symbolKeyObject] += 4;
 print("object-symbol-compound=" + [show(objectSymbolCompound), log,
       show(target[compoundSymbol]), show(target[otherCompoundSymbol])].join("|"));
+const binaryNullishSymbol = compoundSymbol ?? otherCompoundSymbol;
+print("binary-nullish-symbol=" + [show(binaryNullishSymbol === compoundSymbol),
+      show(binaryNullishSymbol === otherCompoundSymbol)].join("|"));
 
 target[compoundSymbol] = 0;
 log = "";
@@ -115,6 +118,9 @@ const coercionBomb = {};
 Object.defineProperty(coercionBomb, Symbol.toPrimitive, {
     value: function() { log += "p"; throw new Error("coerced"); }
 });
+log = "";
+const binaryNullishObject = coercionBomb ?? null;
+print("binary-nullish-object=" + [show(binaryNullishObject === coercionBomb), log].join("|"));
 oldValue = coercionBomb; log = "";
 const logicalObjectAnd = baseExpr()[compoundKeyExpr()] &&= rhsExpr();
 print("logical-object-and=" + [show(logicalObjectAnd), log].join("|"));
@@ -476,6 +482,19 @@ fn rust_observations() -> Vec<String> {
         show(context.eval("target[compoundSymbol]").unwrap()),
         show(context.eval("target[otherCompoundSymbol]").unwrap()),
     ));
+    let binary_nullish_symbol = context
+        .eval("compoundSymbol ?? otherCompoundSymbol")
+        .unwrap();
+    runtime.run_gc().unwrap();
+    output.push(format!(
+        "binary-nullish-symbol={}|{}",
+        show(Value::Bool(
+            binary_nullish_symbol == global_value(&runtime, &mut context, "compoundSymbol")
+        )),
+        show(Value::Bool(
+            binary_nullish_symbol == global_value(&runtime, &mut context, "otherCompoundSymbol")
+        )),
+    ));
 
     context.eval("target[compoundSymbol] = 0").unwrap();
     set_global(
@@ -601,6 +620,21 @@ fn rust_observations() -> Vec<String> {
         "coercionBomb",
         Value::Object(coercion_bomb.clone()),
     );
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    let binary_nullish_object = context.eval("coercionBomb ?? null").unwrap();
+    runtime.run_gc().unwrap();
+    output.push(format!(
+        "binary-nullish-object={}|{}",
+        show(Value::Bool(
+            binary_nullish_object == Value::Object(coercion_bomb.clone())
+        )),
+        string_global(&runtime, &mut context, "log")
+    ));
     set_global(
         &runtime,
         &mut context,
