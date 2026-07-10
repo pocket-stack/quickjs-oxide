@@ -173,6 +173,11 @@ claim full parity.
   to the hidden object, resets it to Uninitialized, and allows a later data
   definition to reconnect the same closures. These VarRef, hidden-object,
   Shape and atom edges participate in reference counting and trial-deletion GC.
+- Every realm installs `Infinity`, `NaN` and `undefined` as non-writable,
+  non-enumerable, non-configurable global data properties, matching the pinned
+  QuickJS 2026-06-04 descriptors and direct-delete results. This is the current
+  primitive-constant slice, not a claim that the wider global builtin table is
+  complete.
 - Unresolved identifiers no longer use a string-key global opcode. Resolution
   installs one root `Global` closure descriptor and `ParentGlobal` relays on
   every nested function path; publication interns each exact name and function
@@ -182,6 +187,14 @@ claim full parity.
   non-lexical cell. `GetVarUndef` suppresses only a genuinely missing binding,
   so direct parenthesized `typeof name` returns `undefined` while a lexical TDZ,
   getter throw, or comma/composed reference still throws.
+  Sloppy direct-identifier `delete` uses the corresponding late scope result
+  without first performing `GetValue`: argument, local, closure, private
+  function-name, implicit `arguments` and lexical paths return `false`, while
+  global/unresolved paths perform `HasProperty` followed by `DeleteProperty`
+  on the defining realm's global object (and return `true` when no property is
+  present). Parentheses retain the direct Reference, while comma/composed
+  values do not. Strict direct IdentifierReferences are rejected as early
+  errors at the pinned QuickJS source position.
   Consequently a function invoked from another Context observes its defining
   realm's global/lexical environment, and global Reference/Type errors use that
   defining realm's native-error prototypes.
@@ -374,6 +387,11 @@ claim full parity.
   boundaries and wide values. Separate update-expression and dynamic-Function
   differentials lock observable Reference/coercion order, readonly failures,
   ASI, power grammar, exact diagnostics and stack metadata.
+  The identifier-delete differential covers late local/argument/closure/private
+  resolution, implicit `arguments`, missing/configurable/non-configurable global
+  properties, accessors without getter invocation, inherited properties,
+  Reference-preserving parentheses, composed-value side effects, precedence,
+  dynamic `%Function%` compilation, and strict diagnostics/stacks.
   A normal-Function-constructor differential locks the intrinsic/global graph,
   descriptors and key order, exact dynamic source and debug metadata, call/new
   behavior, source-conversion/parse/prototype-Get ordering, custom/fallback new
@@ -394,10 +412,12 @@ of being faked as frame locals. The internal global lexical VarRef path already
 enforces
 TDZ, mutable and const behavior, but it is currently exercised through
 test-only creation/initialization helpers rather than source `let`/`const`
-syntax. The valid implicit `arguments` binding is likewise
-rejected where supporting it as an ordinary local would be observably wrong;
-this includes a reference to `arguments` inside `function arguments(){...}`, where
-QuickJS resolves the implicit arguments object before the private function name.
+syntax. Ordinary reads and calls of the valid implicit `arguments` binding are
+likewise rejected where materializing it as an ordinary local would be
+observably wrong. Direct `delete arguments` is the narrow exception: it resolves
+to `false` without materializing or reading the arguments object, including
+inside `function arguments(){...}`, where QuickJS resolves the implicit
+arguments binding before the private function name.
 Derived/class/super construction, dynamic Generator/Async/AsyncGenerator
 Function constructors, `AggregateError`, other native builtin constructor
 families, Proxy construct dispatch, and Reflect APIs remain. Typed
@@ -443,9 +463,12 @@ bases, plus exact String index/length reads; simple member assignment and
 property delete cover ordinary objects and the current primitive own-property
 surface. Prefix/postfix update expressions (including QuickJS's valid
 `++x ** 2` form) are implemented for the current identifier and ordinary
-fixed/computed member References. Sloppy direct-identifier delete, the distinct
-primitive prototype graphs and their inherited setters, Proxy/exotic internal
-methods, and the full `function_accessors.js` fixture are still pending. AggregateError
+fixed/computed member References. Sloppy direct-identifier delete is implemented
+for the current static scope tree and defining-realm global object. Dynamic
+object-environment lookup/deletion introduced by `with` or direct `eval`, the
+distinct primitive prototype graphs and their inherited setters, Proxy/exotic
+internal methods, and the full `function_accessors.js` fixture are still
+pending. AggregateError
 iterable-to-Array, primitive wrapper objects for direct Object-prototype method
 calls, remaining Object prototype methods and
 uncatchable termination state are also pending. Arrays, object literals and the

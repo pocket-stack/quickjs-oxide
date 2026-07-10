@@ -41,6 +41,10 @@ pub enum Instruction {
     /// QuickJS `OP_get_var_undef`: as `GetVar`, but suppress a genuinely
     /// missing global binding for a direct `typeof IdentifierReference`.
     GetVarUndef(u16),
+    /// QuickJS `OP_delete_var`: delete one sloppy direct global binding and
+    /// push the Boolean result. Lexical and resolved non-global bindings are
+    /// folded to `PushFalse` during scope resolution.
+    DeleteVar(u16),
     /// QuickJS `OP_put_var`: assign and consume a global binding value.
     PutVar(u16),
     /// QuickJS `OP_put_var_init`: initialize a lexical global binding.
@@ -146,7 +150,8 @@ impl Instruction {
             | Self::GetArg(_)
             | Self::GetVarRef(_)
             | Self::GetVar(_)
-            | Self::GetVarUndef(_) => (0, 1),
+            | Self::GetVarUndef(_)
+            | Self::DeleteVar(_) => (0, 1),
             Self::SetName(_) => (1, 1),
             Self::GetField(_) => (1, 1),
             Self::GetField2(_) => (1, 2),

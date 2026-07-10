@@ -90,6 +90,7 @@ pub(crate) trait VmHost {
     fn instantiate_closure(&mut self, index: u32) -> Result<Value, Error>;
     fn set_function_name(&mut self, value: &Value, name_index: u32) -> Result<(), Error>;
     fn get_global_var(&mut self, index: u16, throw_if_missing: bool) -> Result<Completion, Error>;
+    fn delete_global_var(&mut self, index: u16) -> Result<Completion, Error>;
     fn put_global_var(
         &mut self,
         index: u16,
@@ -203,6 +204,12 @@ impl VmHost for DetachedHost<'_> {
         _index: u16,
         _throw_if_missing: bool,
     ) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "detached VM has no realm global environment",
+        ))
+    }
+
+    fn delete_global_var(&mut self, _index: u16) -> Result<Completion, Error> {
         Err(Error::internal(
             "detached VM has no realm global environment",
         ))
@@ -558,6 +565,10 @@ impl CallFrame {
                         Completion::Throw(value) => return Ok(Completion::Throw(value)),
                     }
                 }
+                Instruction::DeleteVar(index) => match host.delete_global_var(*index)? {
+                    Completion::Return(value) => self.stack.push(value),
+                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                },
                 Instruction::PutVar(index) | Instruction::PutVarInit(index) => {
                     let value = self.pop()?;
                     let initialize = matches!(instruction, Instruction::PutVarInit(_));

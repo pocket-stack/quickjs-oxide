@@ -845,6 +845,56 @@ impl VmHost for RuntimeVmHost {
         }
     }
 
+    fn delete_global_var(&mut self, index: u16) -> Result<Completion, Error> {
+        let descriptor = *self
+            .closure_variables
+            .get(usize::from(index))
+            .ok_or_else(|| Error::internal("global closure index is out of bounds"))?;
+        let ClosureVariableName::Atom(atom) = descriptor.name else {
+            return Err(Error::internal(
+                "published global closure descriptor has no name atom",
+            ));
+        };
+        let root = self
+            .closure_slots
+            .get(usize::from(index))
+            .ok_or_else(|| Error::internal("global closure slot is out of bounds"))?;
+        let is_lexical = self
+            .runtime
+            .0
+            .state
+            .borrow()
+            .heap
+            .var_ref(root.id())
+            .map_err(|error| Error::internal(error.to_string()))?
+            .is_lexical;
+        if is_lexical {
+            return Ok(Completion::Return(Value::Bool(false)));
+        }
+
+        let key = PropertyKey::from_borrowed_atom(self.runtime.clone(), atom)
+            .map_err(|error| Error::internal(error.to_string()))?;
+        let global_object = self
+            .runtime
+            .global_object_for_realm(self.current_realm)
+            .map_err(runtime_error_to_vm_error)?;
+        // QuickJS `JS_DeleteGlobalVar` performs HasProperty first. Ordinary
+        // objects reach the same Boolean result without it, but the step is
+        // observable through the future Proxy/exotic prototype path.
+        let exists = self
+            .runtime
+            .has_property(&global_object, &key)
+            .map_err(runtime_error_to_vm_error)?;
+        let deleted = if exists {
+            self.runtime
+                .delete_property(&global_object, &key)
+                .map_err(runtime_error_to_vm_error)?
+        } else {
+            true
+        };
+        Ok(Completion::Return(Value::Bool(deleted)))
+    }
+
     fn put_global_var(
         &mut self,
         index: u16,
@@ -1472,6 +1522,8 @@ impl Runtime {
         .expect("Error intrinsic initialization must succeed");
         self.initialize_function_constructor(realm, &function_prototype, &global_object)
             .expect("Function constructor initialization must succeed");
+        self.initialize_global_primitive_constants(&global_object)
+            .expect("global primitive constant initialization must succeed");
         drop(global_var_object);
         drop(global_object);
         drop(uninitialized_vars);
@@ -1934,6 +1986,22 @@ impl Runtime {
             .borrow_mut()
             .heap
             .attach_function_constructor(realm, constructor.as_object().object_id())?;
+        Ok(())
+    }
+
+    fn initialize_global_primitive_constants(
+        &self,
+        global_object: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        // Tail of QuickJS `js_global_funcs`: all three are non-writable,
+        // non-enumerable and non-configurable global data properties.
+        for (name, value) in [
+            ("Infinity", Value::Float(f64::INFINITY)),
+            ("NaN", Value::Float(f64::NAN)),
+            ("undefined", Value::Undefined),
+        ] {
+            self.define_function_data_property(global_object, name, value, false, false)?;
+        }
         Ok(())
     }
 
@@ -7562,6 +7630,7 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                 }
                 crate::bytecode::Instruction::GetVar(index)
                 | crate::bytecode::Instruction::GetVarUndef(index)
+                | crate::bytecode::Instruction::DeleteVar(index)
                 | crate::bytecode::Instruction::PutVar(index)
                 | crate::bytecode::Instruction::PutVarInit(index)
                     if function
@@ -7601,6 +7670,7 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                 | crate::bytecode::Instruction::SetVarRef(index)
                 | crate::bytecode::Instruction::GetVar(index)
                 | crate::bytecode::Instruction::GetVarUndef(index)
+                | crate::bytecode::Instruction::DeleteVar(index)
                 | crate::bytecode::Instruction::PutVar(index)
                 | crate::bytecode::Instruction::PutVarInit(index)
                     if *index >= function.metadata().closure_count =>
@@ -8580,6 +8650,38 @@ mod tests {
                 .set_prototype_of(&first_prototype, Some(&object))
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn global_primitive_constants_match_quickjs_frozen_descriptors() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let global = context.global_object().unwrap();
+        for (name, expected) in [
+            ("undefined", Value::Undefined),
+            ("NaN", Value::Float(f64::NAN)),
+            ("Infinity", Value::Float(f64::INFINITY)),
+        ] {
+            let key = runtime.intern_property_key(name).unwrap();
+            let Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value,
+                writable,
+                enumerable,
+                configurable,
+            }) = runtime.get_own_property(&global, &key).unwrap()
+            else {
+                panic!("global {name} was not an own data property");
+            };
+            assert!(value.same_value(&expected), "global {name}");
+            assert!(!writable, "global {name}");
+            assert!(!enumerable, "global {name}");
+            assert!(!configurable, "global {name}");
+            assert!(!runtime.delete_property(&global, &key).unwrap());
+            assert_eq!(
+                context.eval(&format!("delete {name}")).unwrap(),
+                Value::Bool(false)
+            );
+        }
     }
 
     #[test]
@@ -13857,6 +13959,20 @@ mod tests {
         assert_eq!(runtime.heap_counts().function_bytecode_nodes, 0);
 
         let function = UnlinkedFunction::new(
+            vec![Instruction::DeleteVar(0), Instruction::Return],
+            Vec::new(),
+            FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(matches!(
+            runtime.publish_unlinked_function(context.realm, function),
+            Err(RuntimeError::Engine(_))
+        ));
+        assert_eq!(runtime.heap_counts().function_bytecode_nodes, 0);
+
+        let function = UnlinkedFunction::new(
             vec![Instruction::Undefined, Instruction::Return],
             Vec::new(),
             FunctionMetadata {
@@ -14147,6 +14263,7 @@ mod tests {
         for code in [
             vec![Instruction::GetVar(0), Instruction::Return],
             vec![Instruction::GetVarUndef(0), Instruction::Return],
+            vec![Instruction::DeleteVar(0), Instruction::Return],
             vec![
                 Instruction::PushI32(1),
                 Instruction::PutVar(0),

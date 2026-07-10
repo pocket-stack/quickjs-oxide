@@ -111,6 +111,7 @@ enum IrConstant {
 enum IdentifierAccess {
     Get,
     GetOrUndefined,
+    Delete,
     Put,
     Set,
 }
@@ -175,7 +176,8 @@ impl IrOp {
             Self::PushConstant(_) | Self::MakeClosure(_) => (0, 1),
             Self::GlobalSet(_) => (1, 1),
             Self::Identifier {
-                access: IdentifierAccess::Get | IdentifierAccess::GetOrUndefined,
+                access:
+                    IdentifierAccess::Get | IdentifierAccess::GetOrUndefined | IdentifierAccess::Delete,
                 ..
             } => (0, 1),
             Self::Identifier {
@@ -1041,7 +1043,6 @@ impl<'source> Parser<'source> {
             return self.parse_power_suffix(power_mode);
         }
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Delete)) {
-            let delete_span = self.current().span;
             self.advance();
             let operand_start = self.current_ir().ops.len();
             self.parse_unary_with_power(PowerMode::Forbidden)?;
@@ -1065,14 +1066,19 @@ impl<'source> Parser<'source> {
                 )
             {
                 if self.current_ir().strict {
-                    return Err(Error::syntax(
-                        "cannot delete a direct reference in strict mode",
-                        source_span(delete_span),
-                    ));
+                    return Err(self.syntax_here("cannot delete a direct reference in strict mode"));
                 }
-                return Err(self.unsupported_here(
-                    "sloppy direct-identifier delete resolution is not implemented yet",
-                ));
+                let Some(SpannedIrOp {
+                    op: IrOp::Identifier { access, .. },
+                    ..
+                }) = self.current_ir_mut().ops.get_mut(operand_start)
+                else {
+                    return Err(Error::internal(
+                        "direct delete identifier operation disappeared",
+                    ));
+                };
+                *access = IdentifierAccess::Delete;
+                self.current_ir_mut().last_identifier_reference = None;
             } else {
                 self.emit_instruction(Instruction::Drop)?;
                 self.emit_instruction(Instruction::PushTrue)?;
@@ -2015,6 +2021,16 @@ fn resolve_identifier(
     span: Span,
     access: IdentifierAccess,
 ) -> Result<IrOp, Error> {
+    if access == IdentifierAccess::Delete
+        && name == "arguments"
+        && matches!(tree.functions[function_id].kind, FunctionKind::Ordinary)
+    {
+        // Every ordinary function has an own arguments binding even though
+        // the wider arguments-object slice is not materialized yet. Sloppy
+        // direct delete is statically false and must not force that object to
+        // exist merely to reject deletion.
+        return Ok(IrOp::Bytecode(Instruction::PushFalse));
+    }
     if let Some(binding) = find_or_create_own_binding(tree, function_id, name, span)? {
         return binding_instruction(&mut tree.functions[function_id], binding, access, name)
             .map(IrOp::Bytecode);
@@ -2029,6 +2045,7 @@ fn resolve_identifier(
                 IdentifierAccess::GetOrUndefined => {
                     IrOp::Bytecode(Instruction::GetVarUndef(closure_index))
                 }
+                IdentifierAccess::Delete => IrOp::Bytecode(Instruction::DeleteVar(closure_index)),
                 IdentifierAccess::Put => IrOp::Bytecode(Instruction::PutVar(closure_index)),
                 IdentifierAccess::Set => IrOp::GlobalSet(closure_index),
             });
@@ -2169,6 +2186,8 @@ fn binding_instruction(
         (Binding::Argument(index), IdentifierAccess::Get | IdentifierAccess::GetOrUndefined) => {
             Ok(Instruction::GetArg(index))
         }
+        (Binding::Argument(_), IdentifierAccess::Delete)
+        | (Binding::Local { .. }, IdentifierAccess::Delete) => Ok(Instruction::PushFalse),
         (Binding::Argument(index), IdentifierAccess::Put) => Ok(Instruction::PutArg(index)),
         (Binding::Argument(index), IdentifierAccess::Set) => Ok(Instruction::SetArg(index)),
         (
@@ -2210,6 +2229,7 @@ fn closure_binding_instruction(
         (_, IdentifierAccess::Get | IdentifierAccess::GetOrUndefined) => {
             Ok(Instruction::GetVarRef(index))
         }
+        (_, IdentifierAccess::Delete) => Ok(Instruction::PushFalse),
         (BindingKind::Normal, IdentifierAccess::Put) => Ok(Instruction::PutVarRef(index)),
         (BindingKind::Normal, IdentifierAccess::Set) => Ok(Instruction::SetVarRef(index)),
         (BindingKind::FunctionName { is_const }, IdentifierAccess::Put | IdentifierAccess::Set) => {
@@ -2231,7 +2251,7 @@ fn function_name_write_instruction(
     Ok(match access {
         IdentifierAccess::Put => Instruction::Drop,
         IdentifierAccess::Set => Instruction::Nop,
-        IdentifierAccess::Get | IdentifierAccess::GetOrUndefined => {
+        IdentifierAccess::Get | IdentifierAccess::GetOrUndefined | IdentifierAccess::Delete => {
             return Err(Error::internal(
                 "function-name write received a read access",
             ));
@@ -3105,6 +3125,9 @@ mod tests {
     fn detached_vm_rejects_runtime_global_execution_explicitly() {
         let error = compile_script("answer").unwrap_err();
         assert!(error.message().contains("global-environment"));
+
+        let error = compile_script("delete answer").unwrap_err();
+        assert!(error.message().contains("global-environment"));
     }
 
     #[test]
@@ -3455,6 +3478,7 @@ mod tests {
         context
             .create_global_lexical_for_test("shadowed", true, None)
             .unwrap();
+        assert_eq!(context.eval("delete shadowed").unwrap(), Value::Bool(false));
         assert_eq!(
             context.get_property(&global, &shadowed).unwrap(),
             Value::Int(1)
@@ -3998,7 +4022,197 @@ mod tests {
             Value::Undefined
         );
         assert!(context.compile("'use strict'; delete Function").is_err());
-        assert!(context.compile("delete Function").is_err());
+        let direct_delete = context.compile("delete __qjo_delete_global").unwrap();
+        assert!(
+            runtime
+                .test_function_code(&direct_delete)
+                .unwrap()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::DeleteVar(0)))
+        );
+    }
+
+    #[test]
+    fn direct_identifier_delete_uses_quickjs_scope_resolution() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+
+        assert_eq!(
+            context.eval("delete __qjo_missing_delete").unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            context
+                .eval("(function(){ var value = 1; return delete value; })()")
+                .unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            context
+                .eval("(function(value){ return delete value; })(1)")
+                .unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            context
+                .eval("(function(value){ return (function(){ return delete value; })(); })(1)")
+                .unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            context
+                .eval("(function named(){ return delete named; })()")
+                .unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            context
+                .eval("(function(){ return delete arguments; })()")
+                .unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            context
+                .eval("(function(){ var value = 1; return delete (value); })()")
+                .unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            context
+                .eval("(function(){ var value = 1; return delete (0, value); })()")
+                .unwrap(),
+            Value::Bool(true)
+        );
+
+        assert_eq!(
+            context
+                .eval("__qjo_delete_global = 1; delete __qjo_delete_global")
+                .unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            context.eval("typeof __qjo_delete_global").unwrap(),
+            Value::String(JsString::from("undefined"))
+        );
+
+        let Value::Object(reader) = context
+            .eval("(function(){ return __qjo_delete_reconnect; })")
+            .unwrap()
+        else {
+            panic!("delete/reconnect probe did not produce a function");
+        };
+        let reader = runtime.as_callable(&reader).unwrap().unwrap();
+        assert_eq!(
+            context.eval("__qjo_delete_reconnect = 1").unwrap(),
+            Value::Int(1)
+        );
+        assert_eq!(
+            context.call(&reader, Value::Undefined, &[]).unwrap(),
+            Value::Int(1)
+        );
+        assert_eq!(
+            context.eval("delete __qjo_delete_reconnect").unwrap(),
+            Value::Bool(true)
+        );
+        assert!(matches!(
+            context.call(&reader, Value::Undefined, &[]),
+            Err(RuntimeError::Exception)
+        ));
+        assert!(context.take_exception().unwrap().is_some());
+        assert_eq!(
+            context.eval("__qjo_delete_reconnect = 2").unwrap(),
+            Value::Int(2)
+        );
+        assert_eq!(
+            context.call(&reader, Value::Undefined, &[]).unwrap(),
+            Value::Int(2)
+        );
+
+        for name in ["undefined", "NaN", "Infinity"] {
+            assert_eq!(
+                context.eval(&format!("delete {name}")).unwrap(),
+                Value::Bool(false),
+                "global constant {name}"
+            );
+        }
+
+        let mut caller = runtime.new_context();
+        let realm_key = runtime.intern_property_key("__qjo_delete_realm").unwrap();
+        let descriptor = OrdinaryPropertyDescriptor {
+            value: DescriptorField::Present(Value::Int(1)),
+            writable: DescriptorField::Present(true),
+            enumerable: DescriptorField::Present(true),
+            configurable: DescriptorField::Present(true),
+            ..OrdinaryPropertyDescriptor::new()
+        };
+        assert!(
+            context
+                .define_own_property(&context.global_object().unwrap(), &realm_key, &descriptor)
+                .unwrap()
+        );
+        assert!(
+            caller
+                .define_own_property(&caller.global_object().unwrap(), &realm_key, &descriptor)
+                .unwrap()
+        );
+        let Value::Object(deleter) = context
+            .eval("(function(){ return delete __qjo_delete_realm; })")
+            .unwrap()
+        else {
+            panic!("cross-realm delete source did not produce a function");
+        };
+        let deleter = runtime.as_callable(&deleter).unwrap().unwrap();
+        assert_eq!(
+            caller.call(&deleter, Value::Undefined, &[]).unwrap(),
+            Value::Bool(true)
+        );
+        assert!(
+            !runtime
+                .has_own_property(&context.global_object().unwrap(), &realm_key)
+                .unwrap()
+        );
+        assert!(
+            runtime
+                .has_own_property(&caller.global_object().unwrap(), &realm_key)
+                .unwrap()
+        );
+
+        let global = context.compile("delete __qjo_delete_opcode").unwrap();
+        assert!(
+            runtime
+                .test_function_code(&global)
+                .unwrap()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::DeleteVar(0)))
+        );
+        let local_root = context
+            .compile("(function(value){ return delete value; })")
+            .unwrap();
+        let local = runtime
+            .test_child_function_bytecode(&local_root, 0)
+            .unwrap();
+        assert!(
+            runtime
+                .test_function_code(&local)
+                .unwrap()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::PushFalse))
+        );
+
+        for source in [
+            "'use strict'; delete direct",
+            "'use strict'; delete (direct)",
+        ] {
+            let error = compile_script(source).unwrap_err();
+            assert_eq!(
+                error.message(),
+                "cannot delete a direct reference in strict mode"
+            );
+            assert_eq!(
+                error.span().unwrap().start.column,
+                u32::try_from(source.len() + 1).unwrap()
+            );
+        }
     }
 
     #[test]

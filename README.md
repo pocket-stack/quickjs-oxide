@@ -57,8 +57,15 @@ postfix keeps the already-`ToNumeric` old value, while member writes use
 `Perm3`/`Perm4` to preserve it. Their restricted LineTerminator production,
 `++x ** 2` power interaction, strict lvalue errors, source markers, Number
 edges, BigInt short/heap behavior, and the pinned slow-decrement quirk are
-covered by differential tests. Direct-identifier delete and the distinct
-primitive prototype graphs remain unfinished slices.
+covered by differential tests. Sloppy direct-identifier `delete` now follows
+the pinned QuickJS scope rewrite without first reading the binding: argument,
+local, closure, private function-name and implicit-`arguments` paths return
+`false`, while global/unresolved paths perform defining-realm `HasProperty`
+followed by `DeleteProperty`; strict direct references are early errors. Each
+realm also installs the frozen `Infinity`, `NaN` and `undefined` global data
+properties. Dynamic object-environment resolution through `with`/direct
+`eval`, Proxy/exotic delete dispatch, and the distinct primitive prototype
+graphs remain unfinished slices.
 Runtime-wide full/strip-source/strip-debug modes follow QuickJS's immutable
 bytecode publication boundary, and the `qjs` CLI exposes `--strip-source` and
 `-s` with upstream last-option-wins behavior.
@@ -110,6 +117,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_update_expressions -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_update_function_constructor -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_identifier_delete -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_error_stacks -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
