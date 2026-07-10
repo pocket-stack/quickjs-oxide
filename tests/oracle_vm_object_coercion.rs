@@ -197,6 +197,138 @@ console.log("bitwise-right-throw=" +
             "|left-calls:" + rightThrowLeftCalls + "|right-calls:" + rightThrowCalls);
 "#;
 
+const SHIFT_COERCION_PROBE: &str = r#"
+let shiftHints = "";
+let shiftHintCalls = 0;
+const shiftNumber = {
+    [Symbol.toPrimitive](hint) {
+        shiftHints = shiftHints + hint + ",";
+        shiftHintCalls = shiftHintCalls + 1;
+        return -1;
+    }
+};
+console.log("shift-number=" + observe(() => shiftNumber << 1) + "," +
+            observe(() => shiftNumber >> 1) + "," +
+            observe(() => shiftNumber >>> 0) +
+            "|hints:" + shiftHints + "|calls:" + shiftHintCalls);
+console.log("shift-unsigned-result=" + observe(() => -1 >>> 0) + "," +
+            observe(() => -2147483648 >>> 0) + "," +
+            observe(() => -1 >>> 1));
+
+let shiftOrder = "";
+const shiftOrderedLeft = {
+    [Symbol.toPrimitive]() { shiftOrder = shiftOrder + "l"; return 16; }
+};
+const shiftOrderedRight = {
+    [Symbol.toPrimitive]() { shiftOrder = shiftOrder + "r"; return 1; }
+};
+function shiftEvalLeft() { shiftOrder = shiftOrder + "L"; return shiftOrderedLeft; }
+function shiftEvalRight() { shiftOrder = shiftOrder + "R"; return shiftOrderedRight; }
+let orderedShl = observe(() => shiftEvalLeft() << shiftEvalRight()) + "@" + shiftOrder;
+shiftOrder = "";
+let orderedSar = observe(() => shiftEvalLeft() >> shiftEvalRight()) + "@" + shiftOrder;
+shiftOrder = "";
+let orderedShr = observe(() => shiftEvalLeft() >>> shiftEvalRight()) + "@" + shiftOrder;
+console.log("shift-order=" + orderedShl + "," + orderedSar + "," + orderedShr);
+
+const shiftSentinel = {};
+function shiftThrownSame(thunk) {
+    try { thunk(); return 0; }
+    catch (error) { return error === shiftSentinel ? 1 : 0; }
+}
+let shiftLeftThrowCalls = 0;
+let shiftAfterLeftThrowCalls = 0;
+const shiftLeftThrow = {
+    [Symbol.toPrimitive]() {
+        shiftLeftThrowCalls = shiftLeftThrowCalls + 1;
+        throw shiftSentinel;
+    }
+};
+const shiftAfterLeftThrow = {
+    [Symbol.toPrimitive]() {
+        shiftAfterLeftThrowCalls = shiftAfterLeftThrowCalls + 1;
+        return 1;
+    }
+};
+console.log("shift-left-throw=" +
+            shiftThrownSame(() => shiftLeftThrow << shiftAfterLeftThrow) + "," +
+            shiftThrownSame(() => shiftLeftThrow >> shiftAfterLeftThrow) + "," +
+            shiftThrownSame(() => shiftLeftThrow >>> shiftAfterLeftThrow) +
+            "|left-calls:" + shiftLeftThrowCalls +
+            "|right-calls:" + shiftAfterLeftThrowCalls);
+
+let shiftBeforeRightThrowCalls = 0;
+let shiftRightThrowCalls = 0;
+const shiftBeforeRightThrow = {
+    [Symbol.toPrimitive]() {
+        shiftBeforeRightThrowCalls = shiftBeforeRightThrowCalls + 1;
+        return 1;
+    }
+};
+const shiftRightThrow = {
+    [Symbol.toPrimitive]() {
+        shiftRightThrowCalls = shiftRightThrowCalls + 1;
+        throw shiftSentinel;
+    }
+};
+console.log("shift-right-throw=" +
+            shiftThrownSame(() => shiftBeforeRightThrow << shiftRightThrow) + "," +
+            shiftThrownSame(() => shiftBeforeRightThrow >> shiftRightThrow) + "," +
+            shiftThrownSame(() => shiftBeforeRightThrow >>> shiftRightThrow) +
+            "|left-calls:" + shiftBeforeRightThrowCalls +
+            "|right-calls:" + shiftRightThrowCalls);
+
+let shiftMixedOrder = 0;
+const shiftBigIntLeft = {
+    [Symbol.toPrimitive]() { shiftMixedOrder = shiftMixedOrder * 10 + 1; return 8n; }
+};
+const shiftNumberRight = {
+    [Symbol.toPrimitive]() { shiftMixedOrder = shiftMixedOrder * 10 + 2; return 1; }
+};
+const shiftNumberLeft = {
+    [Symbol.toPrimitive]() { shiftMixedOrder = shiftMixedOrder * 10 + 1; return 8; }
+};
+const shiftBigIntRight = {
+    [Symbol.toPrimitive]() { shiftMixedOrder = shiftMixedOrder * 10 + 2; return 1n; }
+};
+let mixedBigIntNumberShl = observe(() => shiftBigIntLeft << shiftNumberRight) + "@" + shiftMixedOrder;
+shiftMixedOrder = 0;
+let mixedBigIntNumberSar = observe(() => shiftBigIntLeft >> shiftNumberRight) + "@" + shiftMixedOrder;
+shiftMixedOrder = 0;
+let mixedNumberBigIntShl = observe(() => shiftNumberLeft << shiftBigIntRight) + "@" + shiftMixedOrder;
+shiftMixedOrder = 0;
+let mixedNumberBigIntSar = observe(() => shiftNumberLeft >> shiftBigIntRight) + "@" + shiftMixedOrder;
+console.log("shift-mixed=" + mixedBigIntNumberShl + "," + mixedBigIntNumberSar + "," +
+            mixedNumberBigIntShl + "," + mixedNumberBigIntSar);
+
+shiftMixedOrder = 0;
+let unsignedBigIntNumber = observe(() => shiftBigIntLeft >>> shiftNumberRight) + "@" + shiftMixedOrder;
+shiftMixedOrder = 0;
+let unsignedNumberBigInt = observe(() => shiftNumberLeft >>> shiftBigIntRight) + "@" + shiftMixedOrder;
+shiftMixedOrder = 0;
+let unsignedBigIntBigInt = observe(() => shiftBigIntLeft >>> shiftBigIntRight) + "@" + shiftMixedOrder;
+console.log("shift-unsigned-bigint=" + unsignedBigIntNumber + "," +
+            unsignedNumberBigInt + "," + unsignedBigIntBigInt);
+
+const shiftSymbol = Symbol("shift");
+let shiftSymbolRightCalls = 0;
+const shiftSymbolRight = {
+    [Symbol.toPrimitive]() { shiftSymbolRightCalls = shiftSymbolRightCalls + 1; return 1n; }
+};
+console.log("shift-symbol-left=" + observe(() => shiftSymbol << shiftSymbolRight) + "," +
+            observe(() => shiftSymbol >> shiftSymbolRight) + "," +
+            observe(() => shiftSymbol >>> shiftSymbolRight) +
+            "|right-calls:" + shiftSymbolRightCalls);
+let shiftBeforeSymbolCalls = 0;
+const shiftBeforeSymbol = {
+    [Symbol.toPrimitive]() { shiftBeforeSymbolCalls = shiftBeforeSymbolCalls + 1; return 1n; }
+};
+console.log("shift-symbol-right=" + observe(() => shiftBeforeSymbol << shiftSymbol) + "," +
+            observe(() => shiftBeforeSymbol >> shiftSymbol) + "," +
+            observe(() => shiftBeforeSymbol >>> shiftSymbol) +
+            "|left-calls:" + shiftBeforeSymbolCalls);
+"#;
+
 const EQUALITY_PROBE: &str = r#"
 const symbolValue = Symbol("s");
 function box(value) {
@@ -278,6 +410,7 @@ fn vm_object_coercion_matches_quickjs_oracle() {
         rust_numeric_observations(),
         rust_add_observations(),
         rust_bitwise_coercion_observations(),
+        rust_shift_coercion_observations(),
         rust_equality_observations(),
         rust_order_and_error_observations(),
     ]
@@ -286,6 +419,7 @@ fn vm_object_coercion_matches_quickjs_oracle() {
         ("numeric object coercion", NUMERIC_PROBE),
         ("addition object coercion", ADD_PROBE),
         ("bitwise object coercion", BITWISE_COERCION_PROBE),
+        ("shift object coercion", SHIFT_COERCION_PROBE),
         ("abstract equality object coercion", EQUALITY_PROBE),
         ("coercion order and errors", ORDER_AND_ERROR_PROBE),
     ]
@@ -646,6 +780,247 @@ fn rust_bitwise_coercion_observations() -> Vec<String> {
     ]
 }
 
+fn rust_shift_coercion_observations() -> Vec<String> {
+    let mut harness = Harness::new();
+
+    harness.bind("shiftHints", Value::String(JsString::from("")));
+    harness.bind("shiftHintCalls", Value::Int(0));
+    let shift_number_method = harness.function(
+        "(function(hint){ shiftHints = shiftHints + hint + \",\"; \
+         shiftHintCalls = shiftHintCalls + 1; return -1; })",
+    );
+    let shift_number =
+        harness.object_with_exotic(Value::Object(shift_number_method.as_object().clone()));
+    harness.bind("shiftNumber", Value::Object(shift_number));
+    let shift_shl = harness.observe("shiftNumber << 1");
+    let shift_sar = harness.observe("shiftNumber >> 1");
+    let shift_shr = harness.observe("shiftNumber >>> 0");
+    let shift_hints = string_global(&harness.runtime, &mut harness.context, "shiftHints");
+    let shift_hint_calls = integer_global(&harness.runtime, &mut harness.context, "shiftHintCalls");
+    let unsigned_results = ["-1 >>> 0", "-2147483648 >>> 0", "-1 >>> 1"]
+        .map(|source| harness.observe(source))
+        .join(",");
+
+    harness.bind("shiftOrder", Value::String(JsString::from("")));
+    let ordered_left_method =
+        harness.function("(function(){ shiftOrder = shiftOrder + \"l\"; return 16; })");
+    let ordered_right_method =
+        harness.function("(function(){ shiftOrder = shiftOrder + \"r\"; return 1; })");
+    let ordered_left =
+        harness.object_with_exotic(Value::Object(ordered_left_method.as_object().clone()));
+    let ordered_right =
+        harness.object_with_exotic(Value::Object(ordered_right_method.as_object().clone()));
+    harness.bind("shiftOrderedLeft", Value::Object(ordered_left));
+    harness.bind("shiftOrderedRight", Value::Object(ordered_right));
+    let eval_left = harness
+        .function("(function(){ shiftOrder = shiftOrder + \"L\"; return shiftOrderedLeft; })");
+    let eval_right = harness
+        .function("(function(){ shiftOrder = shiftOrder + \"R\"; return shiftOrderedRight; })");
+    harness.bind(
+        "shiftEvalLeft",
+        Value::Object(eval_left.as_object().clone()),
+    );
+    harness.bind(
+        "shiftEvalRight",
+        Value::Object(eval_right.as_object().clone()),
+    );
+    let mut ordered = Vec::new();
+    for operator in ["<<", ">>", ">>>"] {
+        set_global(
+            &harness.runtime,
+            &mut harness.context,
+            "shiftOrder",
+            Value::String(JsString::from("")),
+        );
+        let value = harness.observe(&format!("shiftEvalLeft() {operator} shiftEvalRight()"));
+        let order = string_global(&harness.runtime, &mut harness.context, "shiftOrder");
+        ordered.push(format!("{value}@{}", order.to_utf8_lossy()));
+    }
+
+    let sentinel = harness.context.new_object().unwrap();
+    harness.bind("shiftSentinel", Value::Object(sentinel.clone()));
+    harness.bind("shiftLeftThrowCalls", Value::Int(0));
+    harness.bind("shiftAfterLeftThrowCalls", Value::Int(0));
+    let left_throw_method = harness.function(
+        "(function(){ shiftLeftThrowCalls = shiftLeftThrowCalls + 1; throw shiftSentinel; })",
+    );
+    let after_left_throw_method = harness.function(
+        "(function(){ shiftAfterLeftThrowCalls = shiftAfterLeftThrowCalls + 1; return 1; })",
+    );
+    let left_throw =
+        harness.object_with_exotic(Value::Object(left_throw_method.as_object().clone()));
+    let after_left_throw =
+        harness.object_with_exotic(Value::Object(after_left_throw_method.as_object().clone()));
+    harness.bind("shiftLeftThrow", Value::Object(left_throw));
+    harness.bind("shiftAfterLeftThrow", Value::Object(after_left_throw));
+    let left_throw_same = ["<<", ">>", ">>>"]
+        .map(|operator| {
+            eval_thrown_identity(
+                &harness.runtime,
+                &mut harness.context,
+                &format!("shiftLeftThrow {operator} shiftAfterLeftThrow"),
+                &sentinel,
+            )
+        })
+        .map(|same| if same { "1" } else { "0" })
+        .join(",");
+    let left_throw_calls = integer_global(
+        &harness.runtime,
+        &mut harness.context,
+        "shiftLeftThrowCalls",
+    );
+    let after_left_throw_calls = integer_global(
+        &harness.runtime,
+        &mut harness.context,
+        "shiftAfterLeftThrowCalls",
+    );
+
+    harness.bind("shiftBeforeRightThrowCalls", Value::Int(0));
+    harness.bind("shiftRightThrowCalls", Value::Int(0));
+    let before_right_throw_method = harness.function(
+        "(function(){ shiftBeforeRightThrowCalls = shiftBeforeRightThrowCalls + 1; return 1; })",
+    );
+    let right_throw_method = harness.function(
+        "(function(){ shiftRightThrowCalls = shiftRightThrowCalls + 1; throw shiftSentinel; })",
+    );
+    let before_right_throw =
+        harness.object_with_exotic(Value::Object(before_right_throw_method.as_object().clone()));
+    let right_throw =
+        harness.object_with_exotic(Value::Object(right_throw_method.as_object().clone()));
+    harness.bind("shiftBeforeRightThrow", Value::Object(before_right_throw));
+    harness.bind("shiftRightThrow", Value::Object(right_throw));
+    let right_throw_same = ["<<", ">>", ">>>"]
+        .map(|operator| {
+            eval_thrown_identity(
+                &harness.runtime,
+                &mut harness.context,
+                &format!("shiftBeforeRightThrow {operator} shiftRightThrow"),
+                &sentinel,
+            )
+        })
+        .map(|same| if same { "1" } else { "0" })
+        .join(",");
+    let before_right_throw_calls = integer_global(
+        &harness.runtime,
+        &mut harness.context,
+        "shiftBeforeRightThrowCalls",
+    );
+    let right_throw_calls = integer_global(
+        &harness.runtime,
+        &mut harness.context,
+        "shiftRightThrowCalls",
+    );
+
+    harness.bind("shiftMixedOrder", Value::Int(0));
+    let bigint_left_method =
+        harness.function("(function(){ shiftMixedOrder = shiftMixedOrder * 10 + 1; return 8n; })");
+    let number_right_method =
+        harness.function("(function(){ shiftMixedOrder = shiftMixedOrder * 10 + 2; return 1; })");
+    let number_left_method =
+        harness.function("(function(){ shiftMixedOrder = shiftMixedOrder * 10 + 1; return 8; })");
+    let bigint_right_method =
+        harness.function("(function(){ shiftMixedOrder = shiftMixedOrder * 10 + 2; return 1n; })");
+    let bigint_left =
+        harness.object_with_exotic(Value::Object(bigint_left_method.as_object().clone()));
+    let number_right =
+        harness.object_with_exotic(Value::Object(number_right_method.as_object().clone()));
+    let number_left =
+        harness.object_with_exotic(Value::Object(number_left_method.as_object().clone()));
+    let bigint_right =
+        harness.object_with_exotic(Value::Object(bigint_right_method.as_object().clone()));
+    harness.bind("shiftBigIntLeft", Value::Object(bigint_left));
+    harness.bind("shiftNumberRight", Value::Object(number_right));
+    harness.bind("shiftNumberLeft", Value::Object(number_left));
+    harness.bind("shiftBigIntRight", Value::Object(bigint_right));
+    let mut mixed = Vec::new();
+    for (left, right) in [
+        ("shiftBigIntLeft", "shiftNumberRight"),
+        ("shiftNumberLeft", "shiftBigIntRight"),
+    ] {
+        for operator in ["<<", ">>"] {
+            set_global(
+                &harness.runtime,
+                &mut harness.context,
+                "shiftMixedOrder",
+                Value::Int(0),
+            );
+            let value = harness.observe(&format!("{left} {operator} {right}"));
+            let order = integer_global(&harness.runtime, &mut harness.context, "shiftMixedOrder");
+            mixed.push(format!("{value}@{order}"));
+        }
+    }
+    let mut unsigned_bigint = Vec::new();
+    for (left, right) in [
+        ("shiftBigIntLeft", "shiftNumberRight"),
+        ("shiftNumberLeft", "shiftBigIntRight"),
+        ("shiftBigIntLeft", "shiftBigIntRight"),
+    ] {
+        set_global(
+            &harness.runtime,
+            &mut harness.context,
+            "shiftMixedOrder",
+            Value::Int(0),
+        );
+        let value = harness.observe(&format!("{left} >>> {right}"));
+        let order = integer_global(&harness.runtime, &mut harness.context, "shiftMixedOrder");
+        unsigned_bigint.push(format!("{value}@{order}"));
+    }
+
+    let symbol = harness
+        .runtime
+        .new_symbol(Some(JsString::from("shift")))
+        .unwrap();
+    harness.bind("shiftSymbol", Value::Symbol(symbol));
+    harness.bind("shiftSymbolRightCalls", Value::Int(0));
+    let symbol_right_method = harness
+        .function("(function(){ shiftSymbolRightCalls = shiftSymbolRightCalls + 1; return 1n; })");
+    let symbol_right =
+        harness.object_with_exotic(Value::Object(symbol_right_method.as_object().clone()));
+    harness.bind("shiftSymbolRight", Value::Object(symbol_right));
+    let symbol_left = ["<<", ">>", ">>>"]
+        .map(|operator| harness.observe(&format!("shiftSymbol {operator} shiftSymbolRight")))
+        .join(",");
+    let symbol_right_calls = integer_global(
+        &harness.runtime,
+        &mut harness.context,
+        "shiftSymbolRightCalls",
+    );
+    harness.bind("shiftBeforeSymbolCalls", Value::Int(0));
+    let before_symbol_method = harness.function(
+        "(function(){ shiftBeforeSymbolCalls = shiftBeforeSymbolCalls + 1; return 1n; })",
+    );
+    let before_symbol =
+        harness.object_with_exotic(Value::Object(before_symbol_method.as_object().clone()));
+    harness.bind("shiftBeforeSymbol", Value::Object(before_symbol));
+    let symbol_right = ["<<", ">>", ">>>"]
+        .map(|operator| harness.observe(&format!("shiftBeforeSymbol {operator} shiftSymbol")))
+        .join(",");
+    let before_symbol_calls = integer_global(
+        &harness.runtime,
+        &mut harness.context,
+        "shiftBeforeSymbolCalls",
+    );
+
+    vec![
+        format!(
+            "shift-number={shift_shl},{shift_sar},{shift_shr}|hints:{}|calls:{shift_hint_calls}",
+            shift_hints.to_utf8_lossy()
+        ),
+        format!("shift-unsigned-result={unsigned_results}"),
+        format!("shift-order={}", ordered.join(",")),
+        format!(
+            "shift-left-throw={left_throw_same}|left-calls:{left_throw_calls}|right-calls:{after_left_throw_calls}"
+        ),
+        format!(
+            "shift-right-throw={right_throw_same}|left-calls:{before_right_throw_calls}|right-calls:{right_throw_calls}"
+        ),
+        format!("shift-mixed={}", mixed.join(",")),
+        format!("shift-unsigned-bigint={}", unsigned_bigint.join(",")),
+        format!("shift-symbol-left={symbol_left}|right-calls:{symbol_right_calls}"),
+        format!("shift-symbol-right={symbol_right}|left-calls:{before_symbol_calls}"),
+    ]
+}
+
 fn rust_equality_observations() -> Vec<String> {
     let mut harness = Harness::new();
     let symbol = harness
@@ -842,6 +1217,13 @@ fn global_value(runtime: &Runtime, context: &mut Context, name: &str) -> Value {
 fn integer_global(runtime: &Runtime, context: &mut Context, name: &str) -> i32 {
     let Value::Int(value) = global_value(runtime, context, name) else {
         panic!("global marker {name} was not an integer");
+    };
+    value
+}
+
+fn string_global(runtime: &Runtime, context: &mut Context, name: &str) -> JsString {
+    let Value::String(value) = global_value(runtime, context, name) else {
+        panic!("global marker {name} was not a string");
     };
     value
 }

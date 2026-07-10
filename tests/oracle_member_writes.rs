@@ -82,10 +82,16 @@ oldValue = 14; log = ""; seenThis = false; seenValue = undefined;
 const bitwiseCompoundResult = baseExpr()[compoundKeyExpr()] &= rhsExpr();
 print("ordered-bitwise-compound=" + [show(bitwiseCompoundResult), log,
       show(seenThis), show(seenValue), show(Object.hasOwn(target, "compound"))].join("|"));
+oldValue = 3; log = ""; seenThis = false; seenValue = undefined;
+const shiftCompoundResult = baseExpr()[compoundKeyExpr()] <<= rhsExpr();
+print("ordered-shift-compound=" + [show(shiftCompoundResult), log,
+      show(seenThis), show(seenValue), show(Object.hasOwn(target, "compound"))].join("|"));
 log = "";
 print("null-compound=" + observe(() => null[compoundKeyExpr()] += rhsExpr()) + "|" + log);
 log = "";
 print("null-bitwise-compound=" + observe(() => null[compoundKeyExpr()] &= rhsExpr()) + "|" + log);
+log = "";
+print("null-shift-compound=" + observe(() => null[compoundKeyExpr()] <<= rhsExpr()) + "|" + log);
 
 const compoundSymbol = Symbol("compound-key");
 const otherCompoundSymbol = Symbol("compound-key");
@@ -118,6 +124,9 @@ print("arithmetic=" + [show(target.arithmetic += 2), show(target.arithmetic -= 4
 target.bitwise = 14;
 print("bitwise=" + [show(target.bitwise &= 11), show(target.bitwise ^= 3),
       show(target.bitwise |= 4)].join("|"));
+target.shift = -8;
+print("shift=" + [show(target.shift >>= 1), show(target.shift >>>= 1),
+      show(target.shift <<= 1)].join("|"));
 
 oldValue = 2; log = ""; seenThis = false; seenValue = undefined;
 const logicalAndSet = baseExpr()[compoundKeyExpr()] &&= rhsExpr();
@@ -174,6 +183,11 @@ identifierSetThis = false; seenValue = undefined;
 const identifierBitwise = identifierAccessor &= rhsExpr();
 print("identifier-bitwise=" + [show(identifierBitwise), log,
       show(identifierGetThis), show(identifierSetThis), show(seenValue)].join("|"));
+identifierOld = 3; log = ""; identifierGetThis = false;
+identifierSetThis = false; seenValue = undefined;
+const identifierShift = identifierAccessor <<= rhsExpr();
+print("identifier-shift=" + [show(identifierShift), log,
+      show(identifierGetThis), show(identifierSetThis), show(seenValue)].join("|"));
 identifierOld = 0; log = ""; identifierGetThis = false;
 identifierSetThis = false; seenValue = undefined;
 const identifierLogicalSet = identifierAccessor ||= rhsExpr();
@@ -199,10 +213,15 @@ print("identifier-readonly=" + [show(identifierReadonly += 3), show(identifierRe
 print("identifier-bitwise-readonly=" + [show(identifierReadonly &= 3),
       show(identifierReadonly),
       observe(() => (function(){ "use strict"; return identifierReadonly |= 1; })())].join("|"));
+print("identifier-shift-readonly=" + [show(identifierReadonly >>>= 1),
+      show(identifierReadonly),
+      observe(() => (function(){ "use strict"; return identifierReadonly <<= 1; })())].join("|"));
 log = "";
 print("identifier-missing=" + observe(() => identifierMissing += rhsExpr()) + "|" + log);
 log = "";
 print("identifier-bitwise-missing=" + observe(() => identifierMissingBits &= rhsExpr()) + "|" + log);
+log = "";
+print("identifier-shift-missing=" + observe(() => identifierMissingShift >>= rhsExpr()) + "|" + log);
 log = "";
 print("identifier-getter-throw=" + observe(() => identifierThrowing ||= rhsExpr()) + "|" + log);
 
@@ -229,6 +248,9 @@ print("readonly-logical-set=" + observe(() =>
 log = "";
 print("readonly-bitwise-set=" + observe(() =>
       (function(){ "use strict"; return Function.prototype &= rhsExpr(); })()) + "|" + log);
+log = "";
+print("readonly-shift-set=" + observe(() =>
+      (function(){ "use strict"; return Function.prototype <<= rhsExpr(); })()) + "|" + log);
 print("native-setter=" + observe(() => Function.prototype.caller = 1));
 
 Object.defineProperty(target, "getterOnly", {
@@ -604,6 +626,28 @@ fn rust_observations() -> Vec<String> {
             runtime.has_own_property(&target, &compound).unwrap()
         )),
     ));
+    set_global(&runtime, &mut context, "oldValue", Value::Int(3));
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    set_global(&runtime, &mut context, "seenThis", Value::Bool(false));
+    set_global(&runtime, &mut context, "seenValue", Value::Undefined);
+    let shift_compound_result = context
+        .eval("baseExpr()[compoundKeyExpr()] <<= rhsExpr()")
+        .unwrap();
+    output.push(format!(
+        "ordered-shift-compound={}|{}|{}|{}|{}",
+        show(shift_compound_result),
+        string_global(&runtime, &mut context, "log"),
+        show(global_value(&runtime, &mut context, "seenThis")),
+        show(global_value(&runtime, &mut context, "seenValue")),
+        show(Value::Bool(
+            runtime.has_own_property(&target, &compound).unwrap()
+        )),
+    ));
     set_global(
         &runtime,
         &mut context,
@@ -632,6 +676,21 @@ fn rust_observations() -> Vec<String> {
     );
     output.push(format!(
         "null-bitwise-compound={null_bitwise_compound}|{}",
+        string_global(&runtime, &mut context, "log")
+    ));
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    let null_shift_compound = observe(
+        &runtime,
+        &mut context,
+        "null[compoundKeyExpr()] <<= rhsExpr()",
+    );
+    output.push(format!(
+        "null-shift-compound={null_shift_compound}|{}",
         string_global(&runtime, &mut context, "log")
     ));
 
@@ -729,6 +788,18 @@ fn rust_observations() -> Vec<String> {
     .map(|source| show(context.eval(source).unwrap()))
     .collect::<Vec<_>>();
     output.push(format!("bitwise={}", bitwise_values.join("|")));
+
+    let shift = runtime.intern_property_key("shift").unwrap();
+    define_data(&mut context, &target, &shift, Value::Int(-8), true, true);
+    let shift_values = [
+        "target.shift >>= 1",
+        "target.shift >>>= 1",
+        "target.shift <<= 1",
+    ]
+    .into_iter()
+    .map(|source| show(context.eval(source).unwrap()))
+    .collect::<Vec<_>>();
+    output.push(format!("shift={}", shift_values.join("|")));
 
     for (label, old_value, source) in [
         (
@@ -908,6 +979,11 @@ fn rust_observations() -> Vec<String> {
             "identifierAccessor &= rhsExpr()",
         ),
         (
+            "identifier-shift",
+            Value::Int(3),
+            "identifierAccessor <<= rhsExpr()",
+        ),
+        (
             "identifier-logical-set",
             Value::Int(0),
             "identifierAccessor ||= rhsExpr()",
@@ -1009,6 +1085,16 @@ fn rust_observations() -> Vec<String> {
             "(function(){ 'use strict'; return identifierReadonly |= 1; })()"
         ),
     ));
+    output.push(format!(
+        "identifier-shift-readonly={}|{}|{}",
+        show(context.eval("identifierReadonly >>>= 1").unwrap()),
+        show(context.eval("identifierReadonly").unwrap()),
+        observe(
+            &runtime,
+            &mut context,
+            "(function(){ 'use strict'; return identifierReadonly <<= 1; })()"
+        ),
+    ));
     set_global(
         &runtime,
         &mut context,
@@ -1030,6 +1116,21 @@ fn rust_observations() -> Vec<String> {
         observe(&runtime, &mut context, "identifierMissingBits &= rhsExpr()");
     output.push(format!(
         "identifier-bitwise-missing={identifier_bitwise_missing}|{}",
+        string_global(&runtime, &mut context, "log")
+    ));
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    let identifier_shift_missing = observe(
+        &runtime,
+        &mut context,
+        "identifierMissingShift >>= rhsExpr()",
+    );
+    output.push(format!(
+        "identifier-shift-missing={identifier_shift_missing}|{}",
         string_global(&runtime, &mut context, "log")
     ));
     set_global(
@@ -1158,6 +1259,23 @@ fn rust_observations() -> Vec<String> {
             &runtime,
             &mut context,
             "(function(){ 'use strict'; return Function.prototype &= rhsExpr(); })()",
+        );
+        format!(
+            "{observation}|{}",
+            string_global(&runtime, &mut context, "log")
+        )
+    }));
+    output.push(format!("readonly-shift-set={}", {
+        set_global(
+            &runtime,
+            &mut context,
+            "log",
+            Value::String(JsString::from("")),
+        );
+        let observation = observe(
+            &runtime,
+            &mut context,
+            "(function(){ 'use strict'; return Function.prototype <<= rhsExpr(); })()",
         );
         format!(
             "{observation}|{}",

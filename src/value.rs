@@ -175,8 +175,8 @@ impl Value {
     /// runtime kernel.
     ///
     /// # Errors
-    /// Symbol conversion throws, while object conversion must be routed
-    /// through a context so `ToPrimitive` can execute user code.
+    /// Symbol and BigInt conversion throw, while object conversion must be
+    /// routed through a context so `ToPrimitive` can execute user code.
     pub fn to_number(&self) -> Result<f64, Error> {
         match self {
             Self::Undefined => Ok(f64::NAN),
@@ -204,8 +204,9 @@ impl Value {
     /// runtime kernel.
     ///
     /// # Errors
-    /// Symbol conversion throws, while object conversion must be routed
-    /// through a context so `ToPrimitive` can execute user code.
+    /// Symbol conversion throws, an extended-limit BigInt can fail the pinned
+    /// QuickJS decimal-conversion allocation guard, and object conversion must
+    /// be routed through a context so `ToPrimitive` can execute user code.
     pub fn to_js_string(&self) -> Result<JsString, Error> {
         let text = match self {
             Self::Undefined => "undefined".to_owned(),
@@ -214,7 +215,15 @@ impl Value {
             Self::Bool(true) => "true".to_owned(),
             Self::Int(value) => value.to_string(),
             Self::Float(value) => number_to_string(*value),
-            Self::BigInt(value) => value.to_string(),
+            Self::BigInt(value) => {
+                if value.exceeds_allocation_limit() {
+                    return Err(Error::new(
+                        ErrorKind::Range,
+                        "BigInt is too large to allocate",
+                    ));
+                }
+                value.to_string()
+            }
             Self::String(value) => return Ok(value.clone()),
             Self::Symbol(_) => {
                 return Err(Error::new(

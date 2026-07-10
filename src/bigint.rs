@@ -19,12 +19,13 @@ use std::str::FromStr;
 use num_bigint::{BigInt, BigUint, Sign};
 use num_traits::{One, ToPrimitive, Zero};
 
-/// `QuickJS` limits a BigInt to `(1024 * 1024) / JS_LIMB_BITS` limbs.
+/// `QuickJS` normally limits a BigInt allocation to
+/// `(1024 * 1024) / JS_LIMB_BITS` limbs.
 ///
 /// On the 64-bit compatibility target this is 16,384 limbs, or 1,048,576
-/// signed representation bits. This is still arbitrary precision (and far
-/// beyond any fixed Rust integer), while retaining the upstream allocation
-/// guard.
+/// signed representation bits. `js_bigint_extend` can append one sign limb
+/// after that guarded allocation, so selected add/sub/neg/shift results may
+/// temporarily occupy 16,385 limbs exactly as in the pinned release.
 pub const MAX_BIGINT_BITS: u64 = 1024 * 1024;
 
 /// The host limb width used by the `QuickJS` 64-bit value representation.
@@ -45,6 +46,9 @@ pub enum BigIntError {
     NegativeExponent,
     /// The result would exceed the upstream BigInt allocation limit.
     BigIntTooLarge,
+    /// An operation tried to allocate an input-sized BigInt whose normalized
+    /// representation came from QuickJS's one-limb extension bypass.
+    AllocationTooLarge,
     /// A left shift would exceed the upstream BigInt allocation limit.
     ShiftTooLarge,
 }
@@ -62,6 +66,7 @@ impl fmt::Display for BigIntError {
             Self::DivisionByZero => formatter.write_str("BigInt division by zero"),
             Self::NegativeExponent => formatter.write_str("BigInt negative exponent"),
             Self::BigIntTooLarge => formatter.write_str("BigInt is too large"),
+            Self::AllocationTooLarge => formatter.write_str("BigInt is too large to allocate"),
             Self::ShiftTooLarge => formatter.write_str("BigInt shift is too large"),
         }
     }
@@ -227,6 +232,10 @@ impl JsBigInt {
         }
     }
 
+    pub(crate) fn exceeds_allocation_limit(&self) -> bool {
+        self.signed_limb_len() > MAX_BIGINT_LIMBS
+    }
+
     /// Whether this value is zero.
     #[must_use]
     pub fn is_zero(&self) -> bool {
@@ -259,7 +268,8 @@ impl JsBigInt {
         if let Some(result) = short_result {
             return Ok(Self::from(result));
         }
-        self.checked_binary(rhs, |left, right| left + right)
+        self.ensure_operands_allocatable(rhs)?;
+        self.checked_extending_binary(rhs, |left, right| left + right)
     }
 
     /// Subtract two BigInts, promoting on short overflow and compacting the
@@ -277,7 +287,8 @@ impl JsBigInt {
         if let Some(result) = short_result {
             return Ok(Self::from(result));
         }
-        self.checked_binary(rhs, |left, right| left - right)
+        self.ensure_operands_allocatable(rhs)?;
+        self.checked_extending_binary(rhs, |left, right| left - right)
     }
 
     /// Multiply two BigInts, promoting on short overflow and compacting the
@@ -294,6 +305,14 @@ impl JsBigInt {
         };
         if let Some(result) = short_result {
             return Ok(Self::from(result));
+        }
+        self.ensure_operands_allocatable(rhs)?;
+        let allocated_limbs = self
+            .signed_limb_len()
+            .checked_add(rhs.signed_limb_len())
+            .ok_or(BigIntError::AllocationTooLarge)?;
+        if allocated_limbs > MAX_BIGINT_LIMBS {
+            return Err(BigIntError::AllocationTooLarge);
         }
         self.checked_binary(rhs, |left, right| left * right)
     }
@@ -313,6 +332,13 @@ impl JsBigInt {
         };
         if let Some(result) = short_result {
             return Ok(Self::from(result));
+        }
+        if self
+            .signed_limb_len()
+            .checked_add(2)
+            .is_none_or(|allocated_limbs| allocated_limbs > MAX_BIGINT_LIMBS)
+        {
+            return Err(BigIntError::AllocationTooLarge);
         }
         // The only overflowing i64 division is MIN / -1. The arbitrary-
         // precision path naturally promotes it instead of panicking.
@@ -336,6 +362,13 @@ impl JsBigInt {
             }
             return Ok(Self::from(left % right));
         }
+        if self
+            .signed_limb_len()
+            .checked_add(2)
+            .is_none_or(|allocated_limbs| allocated_limbs > MAX_BIGINT_LIMBS)
+        {
+            return Err(BigIntError::AllocationTooLarge);
+        }
         self.checked_binary(rhs, |left, right| left % right)
     }
 
@@ -347,15 +380,22 @@ impl JsBigInt {
     ///
     /// # Errors
     ///
-    /// Returns [`BigIntError::NegativeExponent`] for a negative exponent and
-    /// [`BigIntError::BigIntTooLarge`] when the exponent/result exceeds the
-    /// upstream limit.
+    /// Returns [`BigIntError::NegativeExponent`] for a negative exponent,
+    /// [`BigIntError::BigIntTooLarge`] when the mathematical exponent exceeds
+    /// the upstream limit, and [`BigIntError::AllocationTooLarge`] when an
+    /// intermediate or final allocation crosses the nominal limb guard.
     pub fn pow(&self, exponent: &Self) -> Result<Self, BigIntError> {
         if exponent.is_negative() {
             return Err(BigIntError::NegativeExponent);
         }
         if exponent.is_zero() {
             return Ok(Self::one());
+        }
+        if exponent.is_one() {
+            if self.exceeds_allocation_limit() {
+                return Err(BigIntError::AllocationTooLarge);
+            }
+            return Ok(self.clone());
         }
         if self.is_zero() || self.is_one() {
             return Ok(self.clone());
@@ -368,22 +408,48 @@ impl JsBigInt {
             });
         }
 
-        let mut exponent = exponent
+        let exponent = exponent
             .to_u32()
             .filter(|value| *value <= i32::MAX as u32)
             .ok_or(BigIntError::BigIntTooLarge)?;
-        let mut base = self.clone();
-        let mut result = Self::one();
 
-        // Exponentiation by squaring matches the shape of js_bigint_pow. Each
-        // multiplication checks the upstream limit before the next iteration.
-        while exponent != 0 {
-            if exponent & 1 != 0 {
-                result = result.mul(&base)?;
+        // js_bigint_pow has an exact-allocation shortcut for one-limb powers
+        // of two. Besides being faster, this is observable at the allocation
+        // boundary because the generic multiplier reserves both input widths.
+        if let Some(base) = self.as_i64() {
+            let magnitude = base.unsigned_abs();
+            if magnitude.is_power_of_two() {
+                let base_shift = u64::from(magnitude.trailing_zeros());
+                let result_shift = u64::from(exponent) * base_shift;
+                if result_shift > MAX_BIGINT_BITS {
+                    return Err(BigIntError::BigIntTooLarge);
+                }
+                let mut result = BigInt::one()
+                    << usize::try_from(result_shift)
+                        .expect("bounded QuickJS BigInt power shift fits usize");
+                if base.is_negative() && exponent & 1 != 0 {
+                    result = -result;
+                }
+                return Self::from_bigint(result).map_err(|error| match error {
+                    BigIntError::BigIntTooLarge => BigIntError::AllocationTooLarge,
+                    error => error,
+                });
             }
-            exponent >>= 1;
-            if exponent != 0 {
-                base = base.mul(&base)?;
+        }
+
+        // The generic upstream algorithm starts with `a`, then scans the
+        // remaining exponent bits from most to least significant. Matching
+        // that order avoids an observable final `1 * result` allocation near
+        // the 16,384-limb boundary.
+        if self.exceeds_allocation_limit() {
+            return Err(BigIntError::AllocationTooLarge);
+        }
+        let highest_bit = u32::BITS - exponent.leading_zeros();
+        let mut result = self.clone();
+        for bit in (0..highest_bit - 1).rev() {
+            result = result.mul(&result)?;
+            if exponent & (1 << bit) != 0 {
+                result = result.mul(self)?;
             }
         }
         Ok(result)
@@ -403,43 +469,72 @@ impl JsBigInt {
         if let Some(result) = short_result {
             return Ok(Self::from(result));
         }
-        Self::from_bigint(-self.as_bigint().as_ref())
+        if self.exceeds_allocation_limit() {
+            return Err(BigIntError::AllocationTooLarge);
+        }
+        let result = -self.as_bigint().as_ref();
+        if signed_limb_len(&result) > MAX_BIGINT_LIMBS + 1 {
+            return Err(BigIntError::AllocationTooLarge);
+        }
+        Ok(Self::normalize(result))
     }
 
     /// Infinite-width two's-complement bitwise AND.
-    #[must_use]
-    pub fn bit_and(&self, rhs: &Self) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BigIntError::AllocationTooLarge`] when either operand came
+    /// from QuickJS's unguarded one-sign-limb extension.
+    pub fn bit_and(&self, rhs: &Self) -> Result<Self, BigIntError> {
         if let (BigIntRepr::Short(left), BigIntRepr::Short(right)) = (&self.0, &rhs.0) {
-            return Self::from(left & right);
+            return Ok(Self::from(left & right));
         }
-        self.unchecked_binary(rhs, |left, right| left & right)
+        self.ensure_operands_allocatable(rhs)?;
+        Ok(self.unchecked_binary(rhs, |left, right| left & right))
     }
 
     /// Infinite-width two's-complement bitwise OR.
-    #[must_use]
-    pub fn bit_or(&self, rhs: &Self) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BigIntError::AllocationTooLarge`] when either operand came
+    /// from QuickJS's unguarded one-sign-limb extension.
+    pub fn bit_or(&self, rhs: &Self) -> Result<Self, BigIntError> {
         if let (BigIntRepr::Short(left), BigIntRepr::Short(right)) = (&self.0, &rhs.0) {
-            return Self::from(left | right);
+            return Ok(Self::from(left | right));
         }
-        self.unchecked_binary(rhs, |left, right| left | right)
+        self.ensure_operands_allocatable(rhs)?;
+        Ok(self.unchecked_binary(rhs, |left, right| left | right))
     }
 
     /// Infinite-width two's-complement bitwise XOR.
-    #[must_use]
-    pub fn bit_xor(&self, rhs: &Self) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BigIntError::AllocationTooLarge`] when either operand came
+    /// from QuickJS's unguarded one-sign-limb extension.
+    pub fn bit_xor(&self, rhs: &Self) -> Result<Self, BigIntError> {
         if let (BigIntRepr::Short(left), BigIntRepr::Short(right)) = (&self.0, &rhs.0) {
-            return Self::from(left ^ right);
+            return Ok(Self::from(left ^ right));
         }
-        self.unchecked_binary(rhs, |left, right| left ^ right)
+        self.ensure_operands_allocatable(rhs)?;
+        Ok(self.unchecked_binary(rhs, |left, right| left ^ right))
     }
 
     /// Infinite-width two's-complement bitwise NOT.
-    #[must_use]
-    pub fn bit_not(&self) -> Self {
-        match &self.0 {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BigIntError::AllocationTooLarge`] when the operand came from
+    /// QuickJS's unguarded one-sign-limb extension.
+    pub fn bit_not(&self) -> Result<Self, BigIntError> {
+        if self.exceeds_allocation_limit() {
+            return Err(BigIntError::AllocationTooLarge);
+        }
+        Ok(match &self.0 {
             BigIntRepr::Short(value) => Self::from(!value),
             BigIntRepr::Heap(value) => Self::normalize(!value.as_ref()),
-        }
+        })
     }
 
     /// ECMAScript BigInt left shift. A negative count shifts right.
@@ -502,7 +597,32 @@ impl JsBigInt {
     ) -> Result<Self, BigIntError> {
         let left = self.as_bigint();
         let right = rhs.as_bigint();
-        Self::from_bigint(operation(left.as_ref(), right.as_ref()))
+        Self::from_bigint(operation(left.as_ref(), right.as_ref())).map_err(|error| match error {
+            BigIntError::BigIntTooLarge => BigIntError::AllocationTooLarge,
+            error => error,
+        })
+    }
+
+    fn checked_extending_binary(
+        &self,
+        rhs: &Self,
+        operation: impl FnOnce(&BigInt, &BigInt) -> BigInt,
+    ) -> Result<Self, BigIntError> {
+        let left = self.as_bigint();
+        let right = rhs.as_bigint();
+        let result = operation(left.as_ref(), right.as_ref());
+        if signed_limb_len(&result) > MAX_BIGINT_LIMBS + 1 {
+            return Err(BigIntError::AllocationTooLarge);
+        }
+        Ok(Self::normalize(result))
+    }
+
+    fn ensure_operands_allocatable(&self, rhs: &Self) -> Result<(), BigIntError> {
+        if self.exceeds_allocation_limit() || rhs.exceeds_allocation_limit() {
+            Err(BigIntError::AllocationTooLarge)
+        } else {
+            Ok(())
+        }
     }
 
     fn unchecked_binary(
@@ -540,32 +660,36 @@ impl JsBigInt {
     }
 
     fn shift(&self, count: &Self, operator_shifts_left: bool) -> Result<Self, BigIntError> {
-        if count.is_zero() {
-            return Ok(self.clone());
-        }
-
         let shifts_left = operator_shifts_left != count.is_negative();
+        let count = count
+            .magnitude_to_u64()
+            .unwrap_or(u64::MAX)
+            .min(i32::MAX as u64);
         if shifts_left {
             // js_bigint_shl returns zero before attempting an allocation.
             if self.is_zero() {
                 return Ok(Self::zero());
             }
-            let count = count
-                .magnitude_to_u64()
-                .filter(|count| *count <= MAX_BIGINT_BITS)
+            let allocated_limbs = self
+                .signed_limb_len()
+                .checked_add(count / BIGINT_LIMB_BITS)
                 .ok_or(BigIntError::ShiftTooLarge)?;
+            if allocated_limbs > MAX_BIGINT_LIMBS {
+                return Err(BigIntError::ShiftTooLarge);
+            }
             let count = usize::try_from(count).map_err(|_| BigIntError::ShiftTooLarge)?;
             let result = self.as_bigint().as_ref() << count;
-            Self::from_bigint(result).map_err(|error| match error {
-                BigIntError::BigIntTooLarge => BigIntError::ShiftTooLarge,
-                other => other,
-            })
+            if signed_limb_len(&result) > MAX_BIGINT_LIMBS + 1 {
+                return Err(BigIntError::ShiftTooLarge);
+            }
+            Ok(Self::normalize(result))
         } else {
-            let Some(count) = count.magnitude_to_u64() else {
+            let limb_offset = count / BIGINT_LIMB_BITS;
+            if limb_offset >= self.signed_limb_len() {
                 return Ok(self.right_shift_saturation());
-            };
-            if count >= self.signed_limb_len() * BIGINT_LIMB_BITS {
-                return Ok(self.right_shift_saturation());
+            }
+            if self.signed_limb_len() - limb_offset > MAX_BIGINT_LIMBS {
+                return Err(BigIntError::ShiftTooLarge);
             }
             let count = usize::try_from(count).expect("bounded BigInt shift fits usize");
             Ok(Self::normalize(self.as_bigint().as_ref() >> count))
@@ -827,7 +951,7 @@ fn is_ecmascript_whitespace(character: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{BigIntError, JsBigInt, MAX_BIGINT_BITS};
+    use super::{BigIntError, JsBigInt, MAX_BIGINT_BITS, MAX_BIGINT_LIMBS};
 
     fn bigint(source: &str) -> JsBigInt {
         JsBigInt::parse_js_string(source).unwrap()
@@ -1015,6 +1139,39 @@ mod tests {
             JsBigInt::from(2).pow(&bigint("2147483648")),
             Err(BigIntError::BigIntTooLarge)
         );
+
+        let half_width_base = JsBigInt::one()
+            .shl(&JsBigInt::from(MAX_BIGINT_BITS / 2 - 2))
+            .unwrap()
+            .add(&JsBigInt::one())
+            .unwrap();
+        assert_eq!(
+            half_width_base.pow(&JsBigInt::from(2)).unwrap(),
+            half_width_base.mul(&half_width_base).unwrap()
+        );
+
+        let max_power_of_two = JsBigInt::from(2)
+            .pow(&JsBigInt::from(MAX_BIGINT_BITS - 2))
+            .unwrap();
+        assert_eq!(max_power_of_two.signed_limb_len(), MAX_BIGINT_LIMBS);
+        assert_eq!(
+            JsBigInt::from(2).pow(&JsBigInt::from(MAX_BIGINT_BITS - 1)),
+            Err(BigIntError::AllocationTooLarge)
+        );
+        assert_eq!(
+            JsBigInt::from(-2).pow(&JsBigInt::from(MAX_BIGINT_BITS)),
+            Err(BigIntError::AllocationTooLarge)
+        );
+        assert_eq!(
+            JsBigInt::from(2).pow(&JsBigInt::from(MAX_BIGINT_BITS + 1)),
+            Err(BigIntError::BigIntTooLarge)
+        );
+        assert!(
+            JsBigInt::from(-2)
+                .pow(&JsBigInt::from(MAX_BIGINT_BITS - 1))
+                .unwrap()
+                .is_negative()
+        );
     }
 
     #[test]
@@ -1056,20 +1213,93 @@ mod tests {
     }
 
     #[test]
+    fn shift_preserves_quickjs_unguarded_sign_limb_extension() {
+        let boundary_count = JsBigInt::from(MAX_BIGINT_BITS - 1);
+        let boundary = JsBigInt::one().shl(&boundary_count).unwrap();
+        assert_eq!(boundary.signed_limb_len(), MAX_BIGINT_LIMBS + 1);
+        assert_eq!(boundary.shr(&boundary_count).unwrap(), JsBigInt::one());
+
+        assert_eq!(
+            boundary.shl(&JsBigInt::zero()),
+            Err(BigIntError::ShiftTooLarge)
+        );
+        assert_eq!(
+            boundary.shr(&JsBigInt::zero()),
+            Err(BigIntError::ShiftTooLarge)
+        );
+        assert_eq!(
+            boundary.bit_and(&JsBigInt::from(-1)),
+            Err(BigIntError::AllocationTooLarge)
+        );
+        assert_eq!(boundary.bit_not(), Err(BigIntError::AllocationTooLarge));
+        assert_eq!(
+            boundary.add(&JsBigInt::zero()),
+            Err(BigIntError::AllocationTooLarge)
+        );
+        assert_eq!(boundary.neg(), Err(BigIntError::AllocationTooLarge));
+
+        assert_eq!(
+            JsBigInt::one().shl(&JsBigInt::from(MAX_BIGINT_BITS)),
+            Err(BigIntError::ShiftTooLarge)
+        );
+        assert_eq!(
+            JsBigInt::zero().shl(&JsBigInt::from(u64::MAX)).unwrap(),
+            JsBigInt::zero()
+        );
+
+        let near_boundary = JsBigInt::one()
+            .shl(&JsBigInt::from(MAX_BIGINT_BITS - 2))
+            .unwrap();
+        assert_eq!(near_boundary.add(&JsBigInt::zero()).unwrap(), near_boundary);
+        assert_eq!(
+            near_boundary.bit_and(&JsBigInt::from(-1)).unwrap(),
+            near_boundary
+        );
+        assert_eq!(
+            near_boundary.mul(&JsBigInt::zero()),
+            Err(BigIntError::AllocationTooLarge)
+        );
+        assert_eq!(
+            near_boundary.div(&JsBigInt::one()),
+            Err(BigIntError::AllocationTooLarge)
+        );
+        assert_eq!(
+            near_boundary.rem(&JsBigInt::one()),
+            Err(BigIntError::AllocationTooLarge)
+        );
+        assert_eq!(near_boundary.pow(&JsBigInt::one()).unwrap(), near_boundary);
+        let added_boundary = near_boundary.add(&near_boundary).unwrap();
+        assert_eq!(added_boundary, boundary);
+
+        let negative_boundary = JsBigInt::from(-1)
+            .shl(&JsBigInt::from(MAX_BIGINT_BITS - 1))
+            .unwrap();
+        assert_eq!(negative_boundary.neg().unwrap(), boundary);
+        assert_eq!(
+            boundary.pow(&JsBigInt::one()),
+            Err(BigIntError::AllocationTooLarge)
+        );
+        assert_eq!(boundary.pow(&JsBigInt::zero()).unwrap(), JsBigInt::one());
+    }
+
+    #[test]
     fn bitwise_operations_use_infinite_twos_complement() {
         assert_eq!(
-            JsBigInt::from(0x5a65_3ca6).bit_not(),
+            JsBigInt::from(0x5a65_3ca6).bit_not().unwrap(),
             JsBigInt::from(-1_516_584_103)
         );
         let left = JsBigInt::from(0x5a46_3ca6);
         let right = JsBigInt::from(0x6737_6856);
-        assert_eq!(left.bit_or(&right), JsBigInt::from(2_138_537_206));
-        assert_eq!(left.bit_and(&right), JsBigInt::from(1_107_699_718));
-        assert_eq!(left.bit_xor(&right), JsBigInt::from(1_030_837_488));
+        assert_eq!(left.bit_or(&right).unwrap(), JsBigInt::from(2_138_537_206));
+        assert_eq!(left.bit_and(&right).unwrap(), JsBigInt::from(1_107_699_718));
+        assert_eq!(left.bit_xor(&right).unwrap(), JsBigInt::from(1_030_837_488));
 
         let huge = bigint("1208925819614629174706176"); // 2^80
-        assert_eq!(huge.bit_or(&JsBigInt::from(-1)), JsBigInt::from(-1));
-        assert_eq!(huge.bit_and(&JsBigInt::from(-1)), huge);
+        assert_eq!(
+            huge.bit_or(&JsBigInt::from(-1)).unwrap(),
+            JsBigInt::from(-1)
+        );
+        assert_eq!(huge.bit_and(&JsBigInt::from(-1)).unwrap(), huge);
     }
 
     #[test]

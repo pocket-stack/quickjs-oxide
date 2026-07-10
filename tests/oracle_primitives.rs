@@ -75,6 +75,34 @@ const CASES: &[(&str, &str)] = &[
         "bitwise expression and coercion order",
         "(function(){ var log = ''; var left = function(){}; var right = function(){}; left.valueOf = function(){ log = log + 'l'; return 6; }; right.valueOf = function(){ log = log + 'r'; return 3; }; var evalLeft = function(){ log = log + 'L'; return left; }; var evalRight = function(){ log = log + 'R'; return right; }; var result = evalLeft() & evalRight(); return result + '|' + log; })()",
     ),
+    // Shift operators share QuickJS's ordered ToNumeric path. Number counts
+    // are masked to five bits, while >>> preserves an unsigned 32-bit result.
+    ("shift left number", "1 << 3"),
+    ("shift right signed number", "-8 >> 2"),
+    ("shift right unsigned number", "-1 >>> 0"),
+    ("shift count masks at 32", "1 << 33"),
+    ("negative number shift count wraps", "1 << -1"),
+    ("shift count masks uint32 max", "1 << 4294967295"),
+    ("shift count wraps at uint32", "1 << 4294967296"),
+    ("signed shift converts lhs", "4294967295 >> 0"),
+    ("unsigned shift converts lhs", "4294967295 >>> 0"),
+    ("nan shifts as zero", "(0 / 0) << 5"),
+    ("nan shift count is zero", "7 >> (0 / 0)"),
+    ("infinity shifts as zero", "(1 / 0) >>> 0"),
+    ("infinity shift count is zero", "7 >>> (1 / 0)"),
+    ("shift removes negative zero", "-0 << 0"),
+    ("fractional shift conversion", "-9.9 >> 1.9"),
+    ("string and boolean shift conversion", "'7' << true"),
+    ("additive binds before shift", "1 + 2 << 3"),
+    ("shift rhs includes additive", "16 >> 1 + 1"),
+    ("shift binds before relational", "1 << 2 < 5"),
+    ("shift binds before bitwise", "8 >> 1 & 3"),
+    ("shift operators are left associative", "64 >> 2 >> 1"),
+    ("shift binds inside nullish rhs", "1 ?? 2 << 3"),
+    (
+        "shift expression and coercion order",
+        "(function(){ var log = ''; var left = function(){}; var right = function(){}; left.valueOf = function(){ log = log + 'l'; return 8; }; right.valueOf = function(){ log = log + 'r'; return 1; }; var evalLeft = function(){ log = log + 'L'; return left; }; var evalRight = function(){ log = log + 'R'; return right; }; var result = evalLeft() >>> evalRight(); return result + '|' + log; })()",
+    ),
     // Number observations that String(number) alone cannot distinguish.
     ("positive infinity", "1 / 0"),
     ("negative infinity", "-1 / 0"),
@@ -251,6 +279,30 @@ const CASES: &[(&str, &str)] = &[
         "bitwise compound does not infer anonymous function names",
         "(function(){ var names = ''; Function.prototype.valueOf = function(){ names = names + this.name + '|'; return 1; }; var direct = 0, paren = 0; direct |= function(){}; (paren) |= function(){}; Function.__qjo_name = 0; Function.__qjo_name |= function(){}; delete Function.prototype.valueOf; return names; })()",
     ),
+    (
+        "identifier shift compound matrix",
+        "(function(){ var value = 8; value <<= 2; value >>= 1; value >>>= 2; return value; })()",
+    ),
+    (
+        "identifier shift compound is right associative",
+        "(function(){ var left = 1, right = 3; var result = left <<= right >>= 1; return result * 100 + left * 10 + right; })()",
+    ),
+    (
+        "bigint shift compound assignment",
+        "(function(){ var value = 1n; value <<= 65n; value >>= 64n; return value; })()",
+    ),
+    (
+        "fixed member shift compound matrix",
+        "(function(){ Function.__qjo_shift = -8; Function.__qjo_shift >>= 1; return Function.__qjo_shift >>>= 1; })()",
+    ),
+    (
+        "computed member shift compound converts key once",
+        "(function(){ var log = ''; var key = function(){}; key.toString = function(){ log = log + 'k'; return '__qjo_computed_shift'; }; Function.__qjo_computed_shift = 3; var result = Function[key] <<= 2; return result + '|' + Function.__qjo_computed_shift + '|' + log; })()",
+    ),
+    (
+        "shift compound does not infer anonymous function names",
+        "(function(){ var names = ''; Function.prototype.valueOf = function(){ names = names + this.name + '|'; return 1; }; var direct = 1, paren = 1; direct <<= function(){}; (paren) >>= function(){}; Function.__qjo_shift_name = 1; Function.__qjo_shift_name >>>= function(){}; delete Function.prototype.valueOf; return names; })()",
+    ),
     // Conditional selection and associativity.
     ("truthy conditional", "'x' ? -0 : 1"),
     ("falsy conditional", "0 ? 1 : 'no'"),
@@ -357,6 +409,58 @@ const CASES: &[(&str, &str)] = &[
     (
         "heap bigint bitwise compound matrix",
         "(function(){ var value = -1n; value &= 123456789012345678901234567890n; value ^= 15n; value |= 2n; return value; })()",
+    ),
+    ("bigint left shift", "1n << 65n"),
+    ("negative bigint arithmetic right shift", "-9n >> 2n"),
+    ("bigint negative left count reverses", "8n << -1n"),
+    ("bigint negative right count reverses", "8n >> -2n"),
+    (
+        "bigint huge right shift saturates positive",
+        "123456789n >> 999999999999999999999999999999n",
+    ),
+    (
+        "bigint huge right shift saturates negative",
+        "-1n >> 999999999999999999999999999999n",
+    ),
+    (
+        "zero bigint huge left shift stays zero",
+        "0n << 999999999999999999999999999999n",
+    ),
+    (
+        "zero bigint reverse huge right shift stays zero",
+        "0n >> -999999999999999999999999999999n",
+    ),
+    (
+        "quickjs bigint shift sign-limb extension boundary",
+        "typeof (1n << 1048575n)",
+    ),
+    (
+        "quickjs bigint shift boundary round trip",
+        "(1n << 1048575n) >> 1048575n",
+    ),
+    (
+        "quickjs bigint extended value right shifts one limb",
+        "((1n << 1048575n) >> 64n) >> 1048511n",
+    ),
+    (
+        "quickjs bigint extended value negative count shifts one limb",
+        "((1n << 1048575n) << -64n) >> 1048511n",
+    ),
+    (
+        "quickjs negative bigint shift boundary",
+        "typeof (-1n << 1048575n)",
+    ),
+    (
+        "quickjs bigint add sign-limb extension boundary",
+        "typeof ((1n << 1048574n) + (1n << 1048574n))",
+    ),
+    (
+        "quickjs bigint negation sign-limb extension boundary",
+        "typeof -(-1n << 1048575n)",
+    ),
+    (
+        "quickjs max allocation bigint additive identity",
+        "((1n << 1048574n) + 0n) >> 1048574n",
     ),
     ("bigint string concatenation", "1n + ' oxide'"),
     ("bigint number abstract equality", "1n == 1"),
@@ -477,6 +581,52 @@ const RUNTIME_ERROR_CASES: &[(&str, &str)] = &[
     ("mixed BigInt arithmetic", "1n + 1"),
     ("mixed BigInt bitwise left", "1n & 1"),
     ("mixed BigInt bitwise right", "1 | 1n"),
+    ("mixed BigInt shift left", "1n << 1"),
+    ("mixed BigInt shift right", "1 >> 1n"),
+    ("unsigned shift rejects two BigInts", "1n >>> 0n"),
+    ("unsigned shift rejects bigint lhs", "1n >>> 0"),
+    ("unsigned shift rejects bigint rhs", "1 >>> 0n"),
+    ("oversized bigint left shift", "1n << 1048576n"),
+    (
+        "nonzero bigint reverse huge right shift overflows",
+        "1n >> -999999999999999999999999999999n",
+    ),
+    (
+        "extended bigint zero left shift allocation guard",
+        "(1n << 1048575n) << 0n",
+    ),
+    (
+        "extended bigint zero right shift allocation guard",
+        "(1n << 1048575n) >> 0n",
+    ),
+    (
+        "extended bigint sub-limb right shift allocation guard",
+        "(1n << 1048575n) >> 63n",
+    ),
+    (
+        "extended bigint bitwise allocation guard",
+        "(1n << 1048575n) & -1n",
+    ),
+    (
+        "extended bigint arithmetic allocation guard",
+        "(1n << 1048575n) + 0n",
+    ),
+    (
+        "extended bigint string allocation guard",
+        "'' + (1n << 1048575n)",
+    ),
+    (
+        "max allocation bigint multiply preallocation guard",
+        "(1n << 1048574n) * 0n",
+    ),
+    (
+        "max allocation bigint divide preallocation guard",
+        "(1n << 1048574n) / 1n",
+    ),
+    (
+        "max allocation bigint remainder preallocation guard",
+        "(1n << 1048574n) % 1n",
+    ),
     ("BigInt unary plus", "+1n"),
     (
         "strict private name bitwise write",
@@ -489,6 +639,18 @@ const RUNTIME_ERROR_CASES: &[(&str, &str)] = &[
     (
         "strict arguments bitwise compound early error",
         "(function(){ 'use strict'; (arguments) ^= 1; })",
+    ),
+    (
+        "strict private name shift write",
+        "(function named(){ 'use strict'; named <<= 1; })()",
+    ),
+    (
+        "strict eval shift compound early error",
+        "(function(){ 'use strict'; eval >>= 1; })",
+    ),
+    (
+        "strict arguments shift compound early error",
+        "(function(){ 'use strict'; (arguments) >>>= 1; })",
     ),
     ("call non-callable", "(1)()"),
     ("construct non-callable", "new 1"),

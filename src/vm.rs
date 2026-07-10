@@ -751,11 +751,40 @@ impl CallFrame {
                         return Ok(Completion::Throw(value));
                     }
                 }
+                Instruction::Shl => {
+                    if let OperationOutcome::Throw(value) = self.binary_numeric(
+                        host,
+                        |left, right| {
+                            f64::from(
+                                number_to_int32(left).wrapping_shl(number_to_uint32(right) & 0x1f),
+                            )
+                        },
+                        JsBigInt::shl,
+                    )? {
+                        return Ok(Completion::Throw(value));
+                    }
+                }
+                Instruction::Sar => {
+                    if let OperationOutcome::Throw(value) = self.binary_numeric(
+                        host,
+                        |left, right| {
+                            f64::from(number_to_int32(left) >> (number_to_uint32(right) & 0x1f))
+                        },
+                        JsBigInt::shr,
+                    )? {
+                        return Ok(Completion::Throw(value));
+                    }
+                }
+                Instruction::Shr => {
+                    if let OperationOutcome::Throw(value) = self.unsigned_shift_right(host)? {
+                        return Ok(Completion::Throw(value));
+                    }
+                }
                 Instruction::BitAnd => {
                     if let OperationOutcome::Throw(value) = self.binary_numeric(
                         host,
                         |left, right| f64::from(number_to_int32(left) & number_to_int32(right)),
-                        |left, right| Ok(left.bit_and(right)),
+                        JsBigInt::bit_and,
                     )? {
                         return Ok(Completion::Throw(value));
                     }
@@ -764,7 +793,7 @@ impl CallFrame {
                     if let OperationOutcome::Throw(value) = self.binary_numeric(
                         host,
                         |left, right| f64::from(number_to_int32(left) ^ number_to_int32(right)),
-                        |left, right| Ok(left.bit_xor(right)),
+                        JsBigInt::bit_xor,
                     )? {
                         return Ok(Completion::Throw(value));
                     }
@@ -773,7 +802,7 @@ impl CallFrame {
                     if let OperationOutcome::Throw(value) = self.binary_numeric(
                         host,
                         |left, right| f64::from(number_to_int32(left) | number_to_int32(right)),
-                        |left, right| Ok(left.bit_or(right)),
+                        JsBigInt::bit_or,
                     )? {
                         return Ok(Completion::Throw(value));
                     }
@@ -957,9 +986,35 @@ impl CallFrame {
             OperationOutcome::Throw(value) => return Ok(OperationOutcome::Throw(value)),
         };
         match operand {
-            NumericValue::BigInt(value) => self.stack.push(Value::BigInt(value.bit_not())),
+            NumericValue::BigInt(value) => self
+                .stack
+                .push(Value::BigInt(value.bit_not().map_err(bigint_error)?)),
             NumericValue::Number(value) => self.stack.push(Value::Int(!number_to_int32(value))),
         }
+        Ok(OperationOutcome::Value(()))
+    }
+
+    fn unsigned_shift_right(
+        &mut self,
+        host: &mut impl VmHost,
+    ) -> Result<OperationOutcome<()>, Error> {
+        let (left, right) = self.pop_pair()?;
+        let left = match to_numeric(host, left)? {
+            OperationOutcome::Value(value) => value,
+            OperationOutcome::Throw(value) => return Ok(OperationOutcome::Throw(value)),
+        };
+        let right = match to_numeric(host, right)? {
+            OperationOutcome::Value(value) => value,
+            OperationOutcome::Throw(value) => return Ok(OperationOutcome::Throw(value)),
+        };
+        let (NumericValue::Number(left), NumericValue::Number(right)) = (left, right) else {
+            return Err(Error::new(
+                ErrorKind::Type,
+                "bigint operands are forbidden for >>>",
+            ));
+        };
+        let result = number_to_uint32(left) >> (number_to_uint32(right) & 0x1f);
+        self.stack.push(Value::number(f64::from(result)));
         Ok(OperationOutcome::Value(()))
     }
 
@@ -1196,6 +1251,10 @@ fn number_to_int32(value: f64) -> i32 {
     }
 }
 
+fn number_to_uint32(value: f64) -> u32 {
+    u32::from_ne_bytes(number_to_int32(value).to_ne_bytes())
+}
+
 fn compare_bigint_number(bigint: &JsBigInt, number: f64) -> Option<std::cmp::Ordering> {
     if number.is_nan() {
         return None;
@@ -1231,7 +1290,11 @@ fn mixed_numeric_type_error() -> Error {
 }
 
 fn bigint_error(error: BigIntError) -> Error {
-    Error::new(ErrorKind::Range, error.to_string())
+    let message = match error {
+        BigIntError::ShiftTooLarge => "BigInt is too large to allocate".to_owned(),
+        error => error.to_string(),
+    };
+    Error::new(ErrorKind::Range, message)
 }
 
 #[cfg(test)]
@@ -1239,7 +1302,7 @@ mod tests {
     use crate::bytecode::{BytecodeFunction, Instruction};
     use crate::value::{JsString, Value};
 
-    use super::{Vm, number_to_int32};
+    use super::{Vm, number_to_int32, number_to_uint32};
 
     #[test]
     fn executes_arithmetic_stack_bytecode() {
@@ -1323,5 +1386,36 @@ mod tests {
         ] {
             assert_eq!(number_to_int32(value), expected, "input {value:?}");
         }
+
+        for (value, expected) in [
+            (-1.0, u32::MAX),
+            (2_147_483_648.0, 2_147_483_648),
+            (4_294_967_295.0, u32::MAX),
+            (4_294_967_296.0, 0),
+            (-4_294_967_295.0, 1),
+        ] {
+            assert_eq!(number_to_uint32(value), expected, "input {value:?}");
+        }
+    }
+
+    #[test]
+    fn executes_shift_stack_bytecode() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(-8),
+                Instruction::PushI32(1),
+                Instruction::Sar,
+                Instruction::PushI32(1),
+                Instruction::Shr,
+                Instruction::PushI32(2),
+                Instruction::Shl,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            max_stack: 2,
+        };
+
+        assert_eq!(Vm::new().execute(&function).unwrap(), Value::Int(-8));
     }
 }

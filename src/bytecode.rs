@@ -90,6 +90,9 @@ pub enum Instruction {
     Mul,
     Div,
     Mod,
+    Shl,
+    Sar,
+    Shr,
     BitAnd,
     BitXor,
     BitOr,
@@ -171,6 +174,9 @@ impl Instruction {
             | Self::Mul
             | Self::Div
             | Self::Mod
+            | Self::Shl
+            | Self::Sar
+            | Self::Shr
             | Self::BitAnd
             | Self::BitXor
             | Self::BitOr

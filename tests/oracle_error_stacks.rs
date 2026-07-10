@@ -75,6 +75,18 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "(function(){ return 1n & 1; })()",
         ),
         (
+            "binary shift mixed type uses operator site",
+            "(function(){ return 1n << 1; })()",
+        ),
+        (
+            "unsigned shift BigInt rejection uses operator site",
+            "(function(){ return 1n >>> 0n; })()",
+        ),
+        (
+            "oversized BigInt shift uses operator site",
+            "(function(){ return 1n << 1048576n; })()",
+        ),
+        (
             "strict fixed bitwise assignment rejection uses operator site",
             "\"use strict\";\nFunction.prototype &= 1",
         ),
@@ -83,8 +95,20 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "\"use strict\";\nFunction['prototype'] ^= 1",
         ),
         (
+            "strict fixed shift assignment rejection uses operator site",
+            "\"use strict\";\nFunction.prototype <<= 1",
+        ),
+        (
+            "strict computed shift assignment rejection uses operator site",
+            "\"use strict\";\nFunction['prototype'] >>>= 1",
+        ),
+        (
             "bitwise compound getter fault keeps member site",
             "Function.prototype.caller |= 1",
+        ),
+        (
+            "shift compound getter fault keeps member site",
+            "Function.prototype.caller >>= 1",
         ),
         (
             "bitwise compound mixed type uses operator site",
@@ -135,12 +159,20 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "missingIdentifierBitwise &= 1",
         ),
         (
+            "identifier shift compound missing read keeps identifier site",
+            "missingIdentifierShift >>>= 1",
+        ),
+        (
             "strict private identifier arithmetic write uses operator site",
             "(function named(){ 'use strict'; named += 1; })()",
         ),
         (
             "strict private identifier bitwise write uses operator site",
             "(function named(){ 'use strict'; named &= 1; })()",
+        ),
+        (
+            "strict private identifier shift write uses operator site",
+            "(function named(){ 'use strict'; named <<= 1; })()",
         ),
         (
             "strict private identifier logical write uses identifier site",

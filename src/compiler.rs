@@ -581,6 +581,9 @@ impl<'source> Parser<'source> {
             TokenKind::Punctuator(Punctuator::MultiplyAssign) => Some(Instruction::Mul),
             TokenKind::Punctuator(Punctuator::DivideAssign) => Some(Instruction::Div),
             TokenKind::Punctuator(Punctuator::RemainderAssign) => Some(Instruction::Mod),
+            TokenKind::Punctuator(Punctuator::ShiftLeftAssign) => Some(Instruction::Shl),
+            TokenKind::Punctuator(Punctuator::ShiftRightAssign) => Some(Instruction::Sar),
+            TokenKind::Punctuator(Punctuator::UnsignedShiftRightAssign) => Some(Instruction::Shr),
             TokenKind::Punctuator(Punctuator::BitAndAssign) => Some(Instruction::BitAnd),
             TokenKind::Punctuator(Punctuator::BitXorAssign) => Some(Instruction::BitXor),
             TokenKind::Punctuator(Punctuator::BitOrAssign) => Some(Instruction::BitOr),
@@ -912,7 +915,7 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_relational(&mut self) -> Result<(), Error> {
-        self.parse_additive()?;
+        self.parse_shift()?;
         loop {
             let operation_span = self.current().span;
             let operation = match self.current().kind {
@@ -920,6 +923,24 @@ impl<'source> Parser<'source> {
                 TokenKind::Punctuator(Punctuator::LessEqual) => Instruction::Lte,
                 TokenKind::Punctuator(Punctuator::Greater) => Instruction::Gt,
                 TokenKind::Punctuator(Punctuator::GreaterEqual) => Instruction::Gte,
+                _ => break,
+            };
+            self.advance();
+            self.parse_shift()?;
+            self.emit_instruction_at(operation, source_offset(operation_span)?)?;
+            self.anonymous_function_definition = None;
+        }
+        Ok(())
+    }
+
+    fn parse_shift(&mut self) -> Result<(), Error> {
+        self.parse_additive()?;
+        loop {
+            let operation_span = self.current().span;
+            let operation = match self.current().kind {
+                TokenKind::Punctuator(Punctuator::ShiftLeft) => Instruction::Shl,
+                TokenKind::Punctuator(Punctuator::ShiftRight) => Instruction::Sar,
+                TokenKind::Punctuator(Punctuator::UnsignedShiftRight) => Instruction::Shr,
                 _ => break,
             };
             self.advance();
@@ -2649,6 +2670,30 @@ mod tests {
     }
 
     #[test]
+    fn shift_operators_follow_quickjs_precedence_and_numeric_semantics() {
+        assert_eq!(evaluate("1 << 3"), Value::Int(8));
+        assert_eq!(evaluate("-8 >> 2"), Value::Int(-2));
+        assert_eq!(evaluate("-1 >>> 0"), Value::Float(4_294_967_295.0));
+        assert_eq!(evaluate("1 << 33"), Value::Int(2));
+        assert_eq!(evaluate("1 << -1"), Value::Int(i32::MIN));
+        assert_eq!(evaluate("4294967295 >> 0"), Value::Int(-1));
+        assert_eq!(evaluate("1 + 2 << 3"), Value::Int(24));
+        assert_eq!(evaluate("16 >> 1 + 1"), Value::Int(4));
+        assert_eq!(evaluate("1 << 2 < 5"), Value::Bool(true));
+        assert_eq!(evaluate("8 >> 1 & 3"), Value::Int(0));
+        assert_eq!(evaluate("64 >> 2 >> 1"), Value::Int(8));
+        assert_eq!(evaluate("1 ?? 2 << 3"), Value::Int(1));
+
+        assert_eq!(
+            evaluate("1n << 65n"),
+            Value::BigInt(JsBigInt::parse_js_string("36893488147419103232").unwrap())
+        );
+        assert_eq!(evaluate("-8n >> 2n"), Value::BigInt(JsBigInt::from(-2)));
+        assert_eq!(evaluate("8n << -1n"), Value::BigInt(JsBigInt::from(4)));
+        assert_eq!(evaluate("8n >> -2n"), Value::BigInt(JsBigInt::from(32)));
+    }
+
+    #[test]
     fn compiles_primitive_coercion_and_equality() {
         assert_eq!(
             evaluate("'answer: ' + 42"),
@@ -3195,6 +3240,17 @@ mod tests {
             Value::String(JsString::from("'shadowed' is read-only"))
         );
         assert!(matches!(
+            context.eval("shadowed <<= 1"),
+            Err(RuntimeError::Exception)
+        ));
+        let Value::Object(exception) = context.take_exception().unwrap().unwrap() else {
+            panic!("const shift compound assignment did not throw an object");
+        };
+        assert_eq!(
+            context.get_property(&exception, &message).unwrap(),
+            Value::String(JsString::from("'shadowed' is read-only"))
+        );
+        assert!(matches!(
             context.eval("shadowed &&= 3"),
             Err(RuntimeError::Exception)
         ));
@@ -3234,6 +3290,24 @@ mod tests {
         assert_eq!(context.eval("mutableLexical &&= 5").unwrap(), Value::Int(5));
         assert_eq!(context.eval("mutableLexical ??= 9").unwrap(), Value::Int(5));
         assert_eq!(context.eval("mutableLexical").unwrap(), Value::Int(5));
+
+        context
+            .create_global_lexical_for_test("mutableShift", false, None)
+            .unwrap();
+        assert!(matches!(
+            context.eval("mutableShift >>>= 1"),
+            Err(RuntimeError::Exception)
+        ));
+        context.take_exception().unwrap().unwrap();
+        context
+            .initialize_global_lexical_for_test("mutableShift", Value::Int(-8))
+            .unwrap();
+        assert_eq!(context.eval("mutableShift >>= 1").unwrap(), Value::Int(-4));
+        assert_eq!(
+            context.eval("mutableShift >>>= 1").unwrap(),
+            Value::Int(2_147_483_646)
+        );
+        assert_eq!(context.eval("mutableShift <<= 1").unwrap(), Value::Int(-4));
     }
 
     #[test]
@@ -3800,6 +3874,112 @@ mod tests {
                 .is_err()
         );
         assert!(context.compile("(Function.bits & 1) |= 1").is_err());
+    }
+
+    #[test]
+    fn shift_compound_assignment_reuses_quickjs_lvalue_shapes() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+
+        let fixed = context.compile("Function.shift <<= 3").unwrap();
+        let fixed_code = runtime.test_function_code(&fixed).unwrap();
+        assert!(fixed_code.windows(3).any(|window| matches!(
+            window,
+            [
+                Instruction::Shl,
+                Instruction::Insert2,
+                Instruction::PutField(_)
+            ]
+        )));
+
+        let computed = context.compile("Function['shift'] >>= 2").unwrap();
+        let computed_code = runtime.test_function_code(&computed).unwrap();
+        assert!(computed_code.windows(3).any(|window| matches!(
+            window,
+            [
+                Instruction::Sar,
+                Instruction::Insert3,
+                Instruction::PutArrayEl
+            ]
+        )));
+
+        let argument_root = context
+            .compile("(function(value){ value >>>= 1; return value; })")
+            .unwrap();
+        let argument = runtime
+            .test_child_function_bytecode(&argument_root, 0)
+            .unwrap();
+        let argument_code = runtime.test_function_code(&argument).unwrap();
+        assert!(
+            argument_code
+                .windows(2)
+                .any(|window| matches!(window, [Instruction::Shr, Instruction::SetArg(0)]))
+        );
+
+        let closure_root = context
+            .compile("(function(value){ return function(){ value >>= 2; return value; }; })")
+            .unwrap();
+        let closure_outer = runtime
+            .test_child_function_bytecode(&closure_root, 0)
+            .unwrap();
+        let closure = runtime
+            .test_child_function_bytecode(&closure_outer, 0)
+            .unwrap();
+        let closure_code = runtime.test_function_code(&closure).unwrap();
+        assert!(
+            closure_code
+                .windows(2)
+                .any(|window| matches!(window, [Instruction::Sar, Instruction::SetVarRef(0)]))
+        );
+
+        let global = context.compile("__qjo_shift_global <<= 1").unwrap();
+        let global_code = runtime.test_function_code(&global).unwrap();
+        assert!(global_code.windows(3).any(|window| matches!(
+            window,
+            [Instruction::Shl, Instruction::Dup, Instruction::PutVar(_)]
+        )));
+
+        assert_eq!(
+            context
+                .eval(
+                    "(function(){ var value = 3; value <<= 2; value >>= 1; \
+                     value >>>= 1; return value; })()"
+                )
+                .unwrap(),
+            Value::Int(3)
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "Function.shift = -8; Function.shift >>= 1; \
+                     Function['shift'] >>>= 1"
+                )
+                .unwrap(),
+            Value::Int(2_147_483_646)
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "(function(){ var left = 1, right = 3; \
+                     left <<= right >>= 1; return left * 10 + right; })()"
+                )
+                .unwrap(),
+            Value::Int(21)
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "(function(value){ return (function(){ value >>= 2; \
+                     return value; })(); })(-8)"
+                )
+                .unwrap(),
+            Value::Int(-2)
+        );
+
+        assert!(context.compile("(Function.shift) >>>= 1").is_ok());
+        assert!(context.compile("(shiftIdentifier) <<= 1").is_ok());
+        assert!(context.compile("(0, Function.shift) >>= 1").is_err());
+        assert!(context.compile("(Function.shift << 1) >>= 1").is_err());
     }
 
     #[test]
