@@ -93,6 +93,110 @@ console.log("add-mixed=" + observe(() => bigintObject + 1));
 console.log("function-plus=" + observe(() => +(function () {})));
 "#;
 
+const BITWISE_COERCION_PROBE: &str = r#"
+let bitwiseHints = "";
+let bitwiseHintCalls = 0;
+const bitwiseNumber = {
+    [Symbol.toPrimitive](hint) {
+        bitwiseHints = bitwiseHints + hint + ",";
+        bitwiseHintCalls = bitwiseHintCalls + 1;
+        return 6;
+    }
+};
+console.log("bitwise-number=" + observe(() => ~bitwiseNumber) + "," +
+            observe(() => bitwiseNumber & 3) + "," +
+            observe(() => bitwiseNumber ^ 3) + "," +
+            observe(() => bitwiseNumber | 3) +
+            "|hints:" + bitwiseHints + "|calls:" + bitwiseHintCalls);
+
+let bitwiseOrder = 0;
+const bitwiseLeft = {
+    [Symbol.toPrimitive]() { bitwiseOrder = bitwiseOrder * 10 + 1; return 5; }
+};
+const bitwiseRight = {
+    [Symbol.toPrimitive]() { bitwiseOrder = bitwiseOrder * 10 + 2; return 3; }
+};
+let orderedAnd = observe(() => bitwiseLeft & bitwiseRight) + "@" + bitwiseOrder;
+bitwiseOrder = 0;
+let orderedXor = observe(() => bitwiseLeft ^ bitwiseRight) + "@" + bitwiseOrder;
+bitwiseOrder = 0;
+let orderedOr = observe(() => bitwiseLeft | bitwiseRight) + "@" + bitwiseOrder;
+console.log("bitwise-order=" + orderedAnd + "," + orderedXor + "," + orderedOr);
+
+let mixedOrder = 0;
+const mixedBigIntLeft = {
+    [Symbol.toPrimitive]() { mixedOrder = mixedOrder * 10 + 1; return 1n; }
+};
+const mixedNumberRight = {
+    [Symbol.toPrimitive]() { mixedOrder = mixedOrder * 10 + 2; return 1; }
+};
+const mixedNumberLeft = {
+    [Symbol.toPrimitive]() { mixedOrder = mixedOrder * 10 + 1; return 1; }
+};
+const mixedBigIntRight = {
+    [Symbol.toPrimitive]() { mixedOrder = mixedOrder * 10 + 2; return 1n; }
+};
+let mixedBigIntNumberAnd = observe(() => mixedBigIntLeft & mixedNumberRight) + "@" + mixedOrder;
+mixedOrder = 0;
+let mixedBigIntNumberXor = observe(() => mixedBigIntLeft ^ mixedNumberRight) + "@" + mixedOrder;
+mixedOrder = 0;
+let mixedBigIntNumberOr = observe(() => mixedBigIntLeft | mixedNumberRight) + "@" + mixedOrder;
+mixedOrder = 0;
+let mixedNumberBigIntAnd = observe(() => mixedNumberLeft & mixedBigIntRight) + "@" + mixedOrder;
+mixedOrder = 0;
+let mixedNumberBigIntXor = observe(() => mixedNumberLeft ^ mixedBigIntRight) + "@" + mixedOrder;
+mixedOrder = 0;
+let mixedNumberBigIntOr = observe(() => mixedNumberLeft | mixedBigIntRight) + "@" + mixedOrder;
+console.log("bitwise-mixed=" +
+            mixedBigIntNumberAnd + "," + mixedBigIntNumberXor + "," + mixedBigIntNumberOr + "," +
+            mixedNumberBigIntAnd + "," + mixedNumberBigIntXor + "," + mixedNumberBigIntOr);
+
+const leftBitwiseSymbol = Symbol("left-bitwise");
+let symbolRightCalls = 0;
+const symbolRight = {
+    [Symbol.toPrimitive]() { symbolRightCalls = symbolRightCalls + 1; return 1; }
+};
+console.log("bitwise-symbol-left=" +
+            observe(() => leftBitwiseSymbol & symbolRight) + "," +
+            observe(() => leftBitwiseSymbol ^ symbolRight) + "," +
+            observe(() => leftBitwiseSymbol | symbolRight) +
+            "|right-calls:" + symbolRightCalls);
+
+const bitwiseSentinel = {};
+let leftThrowCalls = 0;
+let leftThrowRightCalls = 0;
+const leftThrow = {
+    [Symbol.toPrimitive]() { leftThrowCalls = leftThrowCalls + 1; throw bitwiseSentinel; }
+};
+const afterLeftThrow = {
+    [Symbol.toPrimitive]() { leftThrowRightCalls = leftThrowRightCalls + 1; return 1; }
+};
+function bitwiseThrownSame(thunk) {
+    try { thunk(); return 0; }
+    catch (error) { return error === bitwiseSentinel ? 1 : 0; }
+}
+console.log("bitwise-left-throw=" +
+            bitwiseThrownSame(() => ~leftThrow) + "," +
+            bitwiseThrownSame(() => leftThrow & afterLeftThrow) + "," +
+            bitwiseThrownSame(() => leftThrow ^ afterLeftThrow) + "," +
+            bitwiseThrownSame(() => leftThrow | afterLeftThrow) +
+            "|left-calls:" + leftThrowCalls + "|right-calls:" + leftThrowRightCalls);
+
+let rightThrowLeftCalls = 0;
+let rightThrowCalls = 0;
+const beforeRightThrow = {
+    [Symbol.toPrimitive]() { rightThrowLeftCalls = rightThrowLeftCalls + 1; return 1; }
+};
+const rightThrowBitwise = {
+    [Symbol.toPrimitive]() { rightThrowCalls = rightThrowCalls + 1; throw bitwiseSentinel; }
+};
+console.log("bitwise-right-throw=" +
+            bitwiseThrownSame(() => beforeRightThrow & rightThrowBitwise) + "," +
+            bitwiseThrownSame(() => beforeRightThrow ^ rightThrowBitwise) + "," +
+            bitwiseThrownSame(() => beforeRightThrow | rightThrowBitwise) +
+            "|left-calls:" + rightThrowLeftCalls + "|right-calls:" + rightThrowCalls);
+"#;
+
 const EQUALITY_PROBE: &str = r#"
 const symbolValue = Symbol("s");
 function box(value) {
@@ -173,6 +277,7 @@ fn vm_object_coercion_matches_quickjs_oracle() {
     let rust = [
         rust_numeric_observations(),
         rust_add_observations(),
+        rust_bitwise_coercion_observations(),
         rust_equality_observations(),
         rust_order_and_error_observations(),
     ]
@@ -180,6 +285,7 @@ fn vm_object_coercion_matches_quickjs_oracle() {
     let oracle = [
         ("numeric object coercion", NUMERIC_PROBE),
         ("addition object coercion", ADD_PROBE),
+        ("bitwise object coercion", BITWISE_COERCION_PROBE),
         ("abstract equality object coercion", EQUALITY_PROBE),
         ("coercion order and errors", ORDER_AND_ERROR_PROBE),
     ]
@@ -345,6 +451,198 @@ fn rust_add_observations() -> Vec<String> {
         format!("add-string={add_string}|hint:{}", hint.to_utf8_lossy()),
         format!("add-mixed={mixed}"),
         format!("function-plus={function_plus}"),
+    ]
+}
+
+fn rust_bitwise_coercion_observations() -> Vec<String> {
+    let mut harness = Harness::new();
+
+    harness.bind("bitwiseHints", Value::String(JsString::from("")));
+    harness.bind("bitwiseHintCalls", Value::Int(0));
+    let bitwise_number_method = harness.function(
+        "(function(hint){ bitwiseHints = bitwiseHints + hint + \",\"; \
+         bitwiseHintCalls = bitwiseHintCalls + 1; return 6; })",
+    );
+    let bitwise_number =
+        harness.object_with_exotic(Value::Object(bitwise_number_method.as_object().clone()));
+    harness.bind("bitwiseNumber", Value::Object(bitwise_number));
+    let unary_not = harness.observe("~bitwiseNumber");
+    let bitwise_and = harness.observe("bitwiseNumber & 3");
+    let bitwise_xor = harness.observe("bitwiseNumber ^ 3");
+    let bitwise_or = harness.observe("bitwiseNumber | 3");
+    let Value::String(bitwise_hints) =
+        global_value(&harness.runtime, &mut harness.context, "bitwiseHints")
+    else {
+        panic!("bitwise hints marker was not a string");
+    };
+    let bitwise_hint_calls =
+        integer_global(&harness.runtime, &mut harness.context, "bitwiseHintCalls");
+
+    harness.bind("bitwiseOrder", Value::Int(0));
+    let bitwise_left_method =
+        harness.function("(function(){ bitwiseOrder = bitwiseOrder * 10 + 1; return 5; })");
+    let bitwise_right_method =
+        harness.function("(function(){ bitwiseOrder = bitwiseOrder * 10 + 2; return 3; })");
+    let bitwise_left =
+        harness.object_with_exotic(Value::Object(bitwise_left_method.as_object().clone()));
+    let bitwise_right =
+        harness.object_with_exotic(Value::Object(bitwise_right_method.as_object().clone()));
+    harness.bind("bitwiseLeft", Value::Object(bitwise_left));
+    harness.bind("bitwiseRight", Value::Object(bitwise_right));
+    let mut ordered = Vec::new();
+    for operator in ["&", "^", "|"] {
+        set_global(
+            &harness.runtime,
+            &mut harness.context,
+            "bitwiseOrder",
+            Value::Int(0),
+        );
+        let value = harness.observe(&format!("bitwiseLeft {operator} bitwiseRight"));
+        let order = integer_global(&harness.runtime, &mut harness.context, "bitwiseOrder");
+        ordered.push(format!("{value}@{order}"));
+    }
+
+    harness.bind("mixedOrder", Value::Int(0));
+    let mixed_bigint_left_method =
+        harness.function("(function(){ mixedOrder = mixedOrder * 10 + 1; return 1n; })");
+    let mixed_number_right_method =
+        harness.function("(function(){ mixedOrder = mixedOrder * 10 + 2; return 1; })");
+    let mixed_number_left_method =
+        harness.function("(function(){ mixedOrder = mixedOrder * 10 + 1; return 1; })");
+    let mixed_bigint_right_method =
+        harness.function("(function(){ mixedOrder = mixedOrder * 10 + 2; return 1n; })");
+    let mixed_bigint_left =
+        harness.object_with_exotic(Value::Object(mixed_bigint_left_method.as_object().clone()));
+    let mixed_number_right =
+        harness.object_with_exotic(Value::Object(mixed_number_right_method.as_object().clone()));
+    let mixed_number_left =
+        harness.object_with_exotic(Value::Object(mixed_number_left_method.as_object().clone()));
+    let mixed_bigint_right =
+        harness.object_with_exotic(Value::Object(mixed_bigint_right_method.as_object().clone()));
+    harness.bind("mixedBigIntLeft", Value::Object(mixed_bigint_left));
+    harness.bind("mixedNumberRight", Value::Object(mixed_number_right));
+    harness.bind("mixedNumberLeft", Value::Object(mixed_number_left));
+    harness.bind("mixedBigIntRight", Value::Object(mixed_bigint_right));
+    let mut mixed = Vec::new();
+    for (left, right) in [
+        ("mixedBigIntLeft", "mixedNumberRight"),
+        ("mixedNumberLeft", "mixedBigIntRight"),
+    ] {
+        for operator in ["&", "^", "|"] {
+            set_global(
+                &harness.runtime,
+                &mut harness.context,
+                "mixedOrder",
+                Value::Int(0),
+            );
+            let value = harness.observe(&format!("{left} {operator} {right}"));
+            let order = integer_global(&harness.runtime, &mut harness.context, "mixedOrder");
+            mixed.push(format!("{value}@{order}"));
+        }
+    }
+
+    let left_bitwise_symbol = harness
+        .runtime
+        .new_symbol(Some(JsString::from("left-bitwise")))
+        .unwrap();
+    harness.bind("leftBitwiseSymbol", Value::Symbol(left_bitwise_symbol));
+    harness.bind("symbolRightCalls", Value::Int(0));
+    let symbol_right_method =
+        harness.function("(function(){ symbolRightCalls = symbolRightCalls + 1; return 1; })");
+    let symbol_right =
+        harness.object_with_exotic(Value::Object(symbol_right_method.as_object().clone()));
+    harness.bind("symbolRight", Value::Object(symbol_right));
+    let symbol_left = ["&", "^", "|"]
+        .map(|operator| harness.observe(&format!("leftBitwiseSymbol {operator} symbolRight")))
+        .join(",");
+    let symbol_right_calls =
+        integer_global(&harness.runtime, &mut harness.context, "symbolRightCalls");
+
+    let bitwise_sentinel = harness.context.new_object().unwrap();
+    harness.bind("bitwiseSentinel", Value::Object(bitwise_sentinel.clone()));
+    harness.bind("leftThrowCalls", Value::Int(0));
+    harness.bind("leftThrowRightCalls", Value::Int(0));
+    let left_throw_method = harness
+        .function("(function(){ leftThrowCalls = leftThrowCalls + 1; throw bitwiseSentinel; })");
+    let after_left_throw_method = harness
+        .function("(function(){ leftThrowRightCalls = leftThrowRightCalls + 1; return 1; })");
+    let left_throw =
+        harness.object_with_exotic(Value::Object(left_throw_method.as_object().clone()));
+    let after_left_throw =
+        harness.object_with_exotic(Value::Object(after_left_throw_method.as_object().clone()));
+    harness.bind("leftThrow", Value::Object(left_throw));
+    harness.bind("afterLeftThrow", Value::Object(after_left_throw));
+    let mut left_throw_same = vec![eval_thrown_identity(
+        &harness.runtime,
+        &mut harness.context,
+        "~leftThrow",
+        &bitwise_sentinel,
+    )];
+    left_throw_same.extend(["&", "^", "|"].map(|operator| {
+        eval_thrown_identity(
+            &harness.runtime,
+            &mut harness.context,
+            &format!("leftThrow {operator} afterLeftThrow"),
+            &bitwise_sentinel,
+        )
+    }));
+    let left_throw_same = left_throw_same
+        .into_iter()
+        .map(|same| if same { "1" } else { "0" })
+        .collect::<Vec<_>>()
+        .join(",");
+    let left_throw_calls = integer_global(&harness.runtime, &mut harness.context, "leftThrowCalls");
+    let left_throw_right_calls = integer_global(
+        &harness.runtime,
+        &mut harness.context,
+        "leftThrowRightCalls",
+    );
+
+    harness.bind("rightThrowLeftCalls", Value::Int(0));
+    harness.bind("rightThrowCalls", Value::Int(0));
+    let before_right_throw_method = harness
+        .function("(function(){ rightThrowLeftCalls = rightThrowLeftCalls + 1; return 1; })");
+    let right_throw_method = harness
+        .function("(function(){ rightThrowCalls = rightThrowCalls + 1; throw bitwiseSentinel; })");
+    let before_right_throw =
+        harness.object_with_exotic(Value::Object(before_right_throw_method.as_object().clone()));
+    let right_throw =
+        harness.object_with_exotic(Value::Object(right_throw_method.as_object().clone()));
+    harness.bind("beforeRightThrow", Value::Object(before_right_throw));
+    harness.bind("rightThrowBitwise", Value::Object(right_throw));
+    let right_throw_same = ["&", "^", "|"]
+        .map(|operator| {
+            eval_thrown_identity(
+                &harness.runtime,
+                &mut harness.context,
+                &format!("beforeRightThrow {operator} rightThrowBitwise"),
+                &bitwise_sentinel,
+            )
+        })
+        .map(|same| if same { "1" } else { "0" })
+        .join(",");
+    let right_throw_left_calls = integer_global(
+        &harness.runtime,
+        &mut harness.context,
+        "rightThrowLeftCalls",
+    );
+    let right_throw_calls =
+        integer_global(&harness.runtime, &mut harness.context, "rightThrowCalls");
+
+    vec![
+        format!(
+            "bitwise-number={unary_not},{bitwise_and},{bitwise_xor},{bitwise_or}|hints:{}|calls:{bitwise_hint_calls}",
+            bitwise_hints.to_utf8_lossy()
+        ),
+        format!("bitwise-order={}", ordered.join(",")),
+        format!("bitwise-mixed={}", mixed.join(",")),
+        format!("bitwise-symbol-left={symbol_left}|right-calls:{symbol_right_calls}"),
+        format!(
+            "bitwise-left-throw={left_throw_same}|left-calls:{left_throw_calls}|right-calls:{left_throw_right_calls}"
+        ),
+        format!(
+            "bitwise-right-throw={right_throw_same}|left-calls:{right_throw_left_calls}|right-calls:{right_throw_calls}"
+        ),
     ]
 }
 

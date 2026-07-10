@@ -29,16 +29,19 @@ the pinned differential locks chaining, `ToPropertyKey` order, `this`, String
 index/length reads, and member error locations. Simple member assignment and
 property delete use the corresponding QuickJS lvalue/stack shapes, including
 the intentionally different computed-key conversion order, setter receiver,
-strict rejection and delete-without-getter behavior. Arithmetic and logical
-member assignment follow `GetField2`/`GetArrayEl3`: `+=`, `-=`, `*=`, `/=` and
-`%=` reuse the old value, while `&&=`, `||=` and `??=` branch through QuickJS's
-`Nip` cleanup shape. Both paths convert a computed object key exactly once
-before the getter. Binary `??` uses QuickJS's shared short-circuit join for a
-chain, preserves the selected operand without coercion, and enforces the
-unparenthesized `??`/`&&`/`||` mixing restriction. The same arithmetic and
-logical assignment operators now accept direct or parenthesized identifier
-References and resolve late to argument, local, closure, global, or private
-function-name paths. Bitwise/shift/exponent compound assignment,
+strict rejection and delete-without-getter behavior. Arithmetic and bitwise
+member assignment follow `GetField2`/`GetArrayEl3`: `+=`, `-=`, `*=`, `/=`,
+`%=`, `&=`, `^=` and `|=` reuse the old value, while `&&=`, `||=` and `??=`
+branch through QuickJS's `Nip` cleanup shape. Both paths convert a computed
+object key exactly once before the getter. Unary `~` and binary `&`, `^`, `|`
+use QuickJS's three distinct precedence levels, ordered `ToNumeric`, signed
+`ToInt32` Number results and infinite-width BigInt two's-complement operations.
+Binary `??` uses QuickJS's shared short-circuit join for a chain, preserves the
+selected operand without coercion, and enforces the unparenthesized
+`??`/`&&`/`||` mixing restriction. The same arithmetic, bitwise and logical
+assignment operators now accept direct or parenthesized identifier References
+and resolve late to argument, local, closure, global, or private function-name
+paths. Shift/exponentiation operators and compound assignment,
 direct-identifier delete, and the distinct primitive prototype graphs remain
 unfinished slices.
 Runtime-wide full/strip-source/strip-debug modes follow QuickJS's immutable

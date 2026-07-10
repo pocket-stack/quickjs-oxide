@@ -78,8 +78,14 @@ log = ""; seenThis = false; seenValue = undefined;
 const compoundResult = baseExpr()[compoundKeyExpr()] += rhsExpr();
 print("ordered-compound=" + [show(compoundResult), log, show(seenThis), show(seenValue),
       show(Object.hasOwn(target, "compound"))].join("|"));
+oldValue = 14; log = ""; seenThis = false; seenValue = undefined;
+const bitwiseCompoundResult = baseExpr()[compoundKeyExpr()] &= rhsExpr();
+print("ordered-bitwise-compound=" + [show(bitwiseCompoundResult), log,
+      show(seenThis), show(seenValue), show(Object.hasOwn(target, "compound"))].join("|"));
 log = "";
 print("null-compound=" + observe(() => null[compoundKeyExpr()] += rhsExpr()) + "|" + log);
+log = "";
+print("null-bitwise-compound=" + observe(() => null[compoundKeyExpr()] &= rhsExpr()) + "|" + log);
 
 const compoundSymbol = Symbol("compound-key");
 const otherCompoundSymbol = Symbol("compound-key");
@@ -109,6 +115,9 @@ target.arithmetic = 20;
 print("arithmetic=" + [show(target.arithmetic += 2), show(target.arithmetic -= 4),
       show(target.arithmetic *= 3), show(target.arithmetic /= 2),
       show(target.arithmetic %= 5)].join("|"));
+target.bitwise = 14;
+print("bitwise=" + [show(target.bitwise &= 11), show(target.bitwise ^= 3),
+      show(target.bitwise |= 4)].join("|"));
 
 oldValue = 2; log = ""; seenThis = false; seenValue = undefined;
 const logicalAndSet = baseExpr()[compoundKeyExpr()] &&= rhsExpr();
@@ -160,6 +169,11 @@ identifierSetThis = false; seenValue = undefined;
 const identifierArithmetic = identifierAccessor += rhsExpr();
 print("identifier-arithmetic=" + [show(identifierArithmetic), log,
       show(identifierGetThis), show(identifierSetThis), show(seenValue)].join("|"));
+identifierOld = 14; log = ""; identifierGetThis = false;
+identifierSetThis = false; seenValue = undefined;
+const identifierBitwise = identifierAccessor &= rhsExpr();
+print("identifier-bitwise=" + [show(identifierBitwise), log,
+      show(identifierGetThis), show(identifierSetThis), show(seenValue)].join("|"));
 identifierOld = 0; log = ""; identifierGetThis = false;
 identifierSetThis = false; seenValue = undefined;
 const identifierLogicalSet = identifierAccessor ||= rhsExpr();
@@ -182,8 +196,13 @@ print("identifier-readonly=" + [show(identifierReadonly += 3), show(identifierRe
       observe(() => (function(){ "use strict"; return identifierReadonly += 3; })()),
       observe(() => (function(){ "use strict"; return identifierReadonly ||= 9; })()),
       observe(() => (function(){ "use strict"; return identifierReadonly &&= 9; })())].join("|"));
+print("identifier-bitwise-readonly=" + [show(identifierReadonly &= 3),
+      show(identifierReadonly),
+      observe(() => (function(){ "use strict"; return identifierReadonly |= 1; })())].join("|"));
 log = "";
 print("identifier-missing=" + observe(() => identifierMissing += rhsExpr()) + "|" + log);
+log = "";
+print("identifier-bitwise-missing=" + observe(() => identifierMissingBits &= rhsExpr()) + "|" + log);
 log = "";
 print("identifier-getter-throw=" + observe(() => identifierThrowing ||= rhsExpr()) + "|" + log);
 
@@ -207,6 +226,9 @@ print("readonly-logical-skip=" + observe(() =>
 log = "";
 print("readonly-logical-set=" + observe(() =>
       (function(){ "use strict"; return Function.prototype &&= rhsExpr(); })()) + "|" + log);
+log = "";
+print("readonly-bitwise-set=" + observe(() =>
+      (function(){ "use strict"; return Function.prototype &= rhsExpr(); })()) + "|" + log);
 print("native-setter=" + observe(() => Function.prototype.caller = 1));
 
 Object.defineProperty(target, "getterOnly", {
@@ -560,6 +582,28 @@ fn rust_observations() -> Vec<String> {
             runtime.has_own_property(&target, &compound).unwrap()
         )),
     ));
+    set_global(&runtime, &mut context, "oldValue", Value::Int(14));
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    set_global(&runtime, &mut context, "seenThis", Value::Bool(false));
+    set_global(&runtime, &mut context, "seenValue", Value::Undefined);
+    let bitwise_compound_result = context
+        .eval("baseExpr()[compoundKeyExpr()] &= rhsExpr()")
+        .unwrap();
+    output.push(format!(
+        "ordered-bitwise-compound={}|{}|{}|{}|{}",
+        show(bitwise_compound_result),
+        string_global(&runtime, &mut context, "log"),
+        show(global_value(&runtime, &mut context, "seenThis")),
+        show(global_value(&runtime, &mut context, "seenValue")),
+        show(Value::Bool(
+            runtime.has_own_property(&target, &compound).unwrap()
+        )),
+    ));
     set_global(
         &runtime,
         &mut context,
@@ -573,6 +617,21 @@ fn rust_observations() -> Vec<String> {
     );
     output.push(format!(
         "null-compound={null_compound}|{}",
+        string_global(&runtime, &mut context, "log")
+    ));
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    let null_bitwise_compound = observe(
+        &runtime,
+        &mut context,
+        "null[compoundKeyExpr()] &= rhsExpr()",
+    );
+    output.push(format!(
+        "null-bitwise-compound={null_bitwise_compound}|{}",
         string_global(&runtime, &mut context, "log")
     ));
 
@@ -658,6 +717,18 @@ fn rust_observations() -> Vec<String> {
         arithmetic_values.push(show(context.eval(source).unwrap()));
     }
     output.push(format!("arithmetic={}", arithmetic_values.join("|")));
+
+    let bitwise = runtime.intern_property_key("bitwise").unwrap();
+    define_data(&mut context, &target, &bitwise, Value::Int(14), true, true);
+    let bitwise_values = [
+        "target.bitwise &= 11",
+        "target.bitwise ^= 3",
+        "target.bitwise |= 4",
+    ]
+    .into_iter()
+    .map(|source| show(context.eval(source).unwrap()))
+    .collect::<Vec<_>>();
+    output.push(format!("bitwise={}", bitwise_values.join("|")));
 
     for (label, old_value, source) in [
         (
@@ -832,6 +903,11 @@ fn rust_observations() -> Vec<String> {
             "identifierAccessor += rhsExpr()",
         ),
         (
+            "identifier-bitwise",
+            Value::Int(14),
+            "identifierAccessor &= rhsExpr()",
+        ),
+        (
             "identifier-logical-set",
             Value::Int(0),
             "identifierAccessor ||= rhsExpr()",
@@ -923,6 +999,16 @@ fn rust_observations() -> Vec<String> {
             "(function(){ 'use strict'; return identifierReadonly &&= 9; })()"
         ),
     ));
+    output.push(format!(
+        "identifier-bitwise-readonly={}|{}|{}",
+        show(context.eval("identifierReadonly &= 3").unwrap()),
+        show(context.eval("identifierReadonly").unwrap()),
+        observe(
+            &runtime,
+            &mut context,
+            "(function(){ 'use strict'; return identifierReadonly |= 1; })()"
+        ),
+    ));
     set_global(
         &runtime,
         &mut context,
@@ -932,6 +1018,18 @@ fn rust_observations() -> Vec<String> {
     let identifier_missing = observe(&runtime, &mut context, "identifierMissing += rhsExpr()");
     output.push(format!(
         "identifier-missing={identifier_missing}|{}",
+        string_global(&runtime, &mut context, "log")
+    ));
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    let identifier_bitwise_missing =
+        observe(&runtime, &mut context, "identifierMissingBits &= rhsExpr()");
+    output.push(format!(
+        "identifier-bitwise-missing={identifier_bitwise_missing}|{}",
         string_global(&runtime, &mut context, "log")
     ));
     set_global(
@@ -1043,6 +1141,23 @@ fn rust_observations() -> Vec<String> {
             &runtime,
             &mut context,
             "(function(){ 'use strict'; return Function.prototype &&= rhsExpr(); })()",
+        );
+        format!(
+            "{observation}|{}",
+            string_global(&runtime, &mut context, "log")
+        )
+    }));
+    output.push(format!("readonly-bitwise-set={}", {
+        set_global(
+            &runtime,
+            &mut context,
+            "log",
+            Value::String(JsString::from("")),
+        );
+        let observation = observe(
+            &runtime,
+            &mut context,
+            "(function(){ 'use strict'; return Function.prototype &= rhsExpr(); })()",
         );
         format!(
             "{observation}|{}",

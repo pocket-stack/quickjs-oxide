@@ -70,6 +70,26 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "strict computed compound assignment rejection",
             "\"use strict\";\nFunction['prototype'] += 1",
         ),
+        (
+            "binary bitwise mixed type uses operator site",
+            "(function(){ return 1n & 1; })()",
+        ),
+        (
+            "strict fixed bitwise assignment rejection uses operator site",
+            "\"use strict\";\nFunction.prototype &= 1",
+        ),
+        (
+            "strict computed bitwise assignment rejection uses operator site",
+            "\"use strict\";\nFunction['prototype'] ^= 1",
+        ),
+        (
+            "bitwise compound getter fault keeps member site",
+            "Function.prototype.caller |= 1",
+        ),
+        (
+            "bitwise compound mixed type uses operator site",
+            "Function.__qjo_bit_error = 1n; Function.__qjo_bit_error &= 1",
+        ),
         ("compound nullish pre-key fault", "null[true] += 1"),
         (
             "compound getter fault keeps member site",
@@ -111,8 +131,16 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "missingIdentifierCompound += 1",
         ),
         (
+            "identifier bitwise compound missing read keeps identifier site",
+            "missingIdentifierBitwise &= 1",
+        ),
+        (
             "strict private identifier arithmetic write uses operator site",
             "(function named(){ 'use strict'; named += 1; })()",
+        ),
+        (
+            "strict private identifier bitwise write uses operator site",
+            "(function named(){ 'use strict'; named &= 1; })()",
         ),
         (
             "strict private identifier logical write uses identifier site",
@@ -155,11 +183,41 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "QuickJS Error stack drifted for {description}: {source:?}",
         );
     }
+
+    assert_eq!(
+        rust_stack_with_symbol("~__qjo_bitwise_symbol"),
+        oracle_stack(
+            &oracle,
+            "~Symbol()",
+            "unary bitwise coercion uses operator site"
+        ),
+        "QuickJS unary bitwise Error stack drifted",
+    );
 }
 
 fn rust_stack(source: &str) -> String {
+    rust_stack_with_optional_symbol(source, false)
+}
+
+fn rust_stack_with_symbol(source: &str) -> String {
+    rust_stack_with_optional_symbol(source, true)
+}
+
+fn rust_stack_with_optional_symbol(source: &str, bind_symbol: bool) -> String {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
+    if bind_symbol {
+        let global = context.global_object().expect("Rust global object");
+        let key = runtime
+            .intern_property_key("__qjo_bitwise_symbol")
+            .expect("Rust symbol binding key");
+        let symbol = runtime.new_symbol(None).expect("Rust symbol value");
+        assert!(
+            context
+                .set_property(&global, &key, Value::Symbol(symbol))
+                .expect("bind Rust symbol")
+        );
+    }
     assert_eq!(
         context.eval_with_filename(source, "<cmdline>"),
         Err(RuntimeError::Exception),

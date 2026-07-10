@@ -700,6 +700,11 @@ impl CallFrame {
                         return Ok(Completion::Throw(value));
                     }
                 }
+                Instruction::BitNot => {
+                    if let OperationOutcome::Throw(value) = self.bit_not(host)? {
+                        return Ok(Completion::Throw(value));
+                    }
+                }
                 Instruction::Not => {
                     let value = self.pop()?;
                     self.stack.push(Value::Bool(!value.to_boolean()));
@@ -743,6 +748,33 @@ impl CallFrame {
                     if let OperationOutcome::Throw(value) =
                         self.binary_numeric(host, |left, right| left % right, JsBigInt::rem)?
                     {
+                        return Ok(Completion::Throw(value));
+                    }
+                }
+                Instruction::BitAnd => {
+                    if let OperationOutcome::Throw(value) = self.binary_numeric(
+                        host,
+                        |left, right| f64::from(number_to_int32(left) & number_to_int32(right)),
+                        |left, right| Ok(left.bit_and(right)),
+                    )? {
+                        return Ok(Completion::Throw(value));
+                    }
+                }
+                Instruction::BitXor => {
+                    if let OperationOutcome::Throw(value) = self.binary_numeric(
+                        host,
+                        |left, right| f64::from(number_to_int32(left) ^ number_to_int32(right)),
+                        |left, right| Ok(left.bit_xor(right)),
+                    )? {
+                        return Ok(Completion::Throw(value));
+                    }
+                }
+                Instruction::BitOr => {
+                    if let OperationOutcome::Throw(value) = self.binary_numeric(
+                        host,
+                        |left, right| f64::from(number_to_int32(left) | number_to_int32(right)),
+                        |left, right| Ok(left.bit_or(right)),
+                    )? {
                         return Ok(Completion::Throw(value));
                     }
                 }
@@ -916,6 +948,18 @@ impl CallFrame {
             return Err(Error::new(ErrorKind::Type, "bigint argument with unary +"));
         }
         self.stack.push(Value::number(operand.to_number()?));
+        Ok(OperationOutcome::Value(()))
+    }
+
+    fn bit_not(&mut self, host: &mut impl VmHost) -> Result<OperationOutcome<()>, Error> {
+        let operand = match to_numeric(host, self.pop()?)? {
+            OperationOutcome::Value(value) => value,
+            OperationOutcome::Throw(value) => return Ok(OperationOutcome::Throw(value)),
+        };
+        match operand {
+            NumericValue::BigInt(value) => self.stack.push(Value::BigInt(value.bit_not())),
+            NumericValue::Number(value) => self.stack.push(Value::Int(!number_to_int32(value))),
+        }
         Ok(OperationOutcome::Value(()))
     }
 
@@ -1129,6 +1173,29 @@ fn to_numeric_primitive(value: Value) -> Result<NumericValue, Error> {
     }
 }
 
+/// ECMAScript `ToInt32`, matching QuickJS's modulo-2^32 conversion for every
+/// finite IEEE-754 input and its zero result for NaN and infinities.
+#[allow(clippy::cast_possible_truncation)]
+fn number_to_int32(value: f64) -> i32 {
+    if !value.is_finite() || value == 0.0 {
+        return 0;
+    }
+
+    const TWO_TO_31: f64 = 2_147_483_648.0;
+    const TWO_TO_32: f64 = 4_294_967_296.0;
+    let modulo = value.trunc() % TWO_TO_32;
+    let unsigned = if modulo < 0.0 {
+        modulo + TWO_TO_32
+    } else {
+        modulo
+    };
+    if unsigned >= TWO_TO_31 {
+        (unsigned - TWO_TO_32) as i32
+    } else {
+        unsigned as i32
+    }
+}
+
 fn compare_bigint_number(bigint: &JsBigInt, number: f64) -> Option<std::cmp::Ordering> {
     if number.is_nan() {
         return None;
@@ -1172,7 +1239,7 @@ mod tests {
     use crate::bytecode::{BytecodeFunction, Instruction};
     use crate::value::{JsString, Value};
 
-    use super::Vm;
+    use super::{Vm, number_to_int32};
 
     #[test]
     fn executes_arithmetic_stack_bytecode() {
@@ -1212,5 +1279,49 @@ mod tests {
             Vm::new().execute(&function).unwrap(),
             Value::String(JsString::from("quickjs"))
         );
+    }
+
+    #[test]
+    fn executes_bitwise_stack_bytecode() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(0b1010),
+                Instruction::PushI32(0b1100),
+                Instruction::BitAnd,
+                Instruction::BitNot,
+                Instruction::PushI32(0b0011),
+                Instruction::BitXor,
+                Instruction::PushI32(0b0100),
+                Instruction::BitOr,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            max_stack: 2,
+        };
+
+        assert_eq!(Vm::new().execute(&function).unwrap(), Value::Int(-12));
+    }
+
+    #[test]
+    fn to_int32_uses_ecmascript_modulo_semantics() {
+        for (value, expected) in [
+            (0.0, 0),
+            (-0.0, 0),
+            (f64::NAN, 0),
+            (f64::INFINITY, 0),
+            (f64::NEG_INFINITY, 0),
+            (1.9, 1),
+            (-1.9, -1),
+            (2_147_483_647.0, i32::MAX),
+            (2_147_483_648.0, i32::MIN),
+            (4_294_967_295.0, -1),
+            (4_294_967_296.0, 0),
+            (4_294_967_297.0, 1),
+            (-2_147_483_649.0, i32::MAX),
+            (1.0e300, 0),
+        ] {
+            assert_eq!(number_to_int32(value), expected, "input {value:?}");
+        }
     }
 }

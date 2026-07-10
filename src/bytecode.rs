@@ -6,8 +6,9 @@ use std::collections::VecDeque;
 pub const MAX_STACK_SIZE: u16 = 65_534;
 
 /// Stack-machine operations deliberately use the names and stack behavior of
-/// their `QuickJS` counterparts. This typed form is the compiler IR; the compact
-/// byte encoding and verifier share the same opcode metadata.
+/// their `QuickJS` counterparts. This typed form is the current compiler IR and
+/// verified execution format; a future compact encoder must share this opcode
+/// metadata instead of defining a second instruction contract.
 #[derive(Clone, Debug)]
 pub enum Instruction {
     Nop,
@@ -80,6 +81,7 @@ pub enum Instruction {
     Dup,
     Neg,
     Plus,
+    BitNot,
     Not,
     TypeOf,
     IsUndefinedOrNull,
@@ -88,6 +90,9 @@ pub enum Instruction {
     Mul,
     Div,
     Mod,
+    BitAnd,
+    BitXor,
+    BitOr,
     Eq,
     StrictEq,
     Neq,
@@ -155,12 +160,20 @@ impl Instruction {
             Self::Nip => (2, 1),
             Self::SetLocal(_) | Self::SetArg(_) | Self::SetVarRef(_) => (1, 1),
             Self::Dup => (1, 2),
-            Self::Neg | Self::Plus | Self::Not | Self::TypeOf | Self::IsUndefinedOrNull => (1, 1),
+            Self::Neg
+            | Self::Plus
+            | Self::BitNot
+            | Self::Not
+            | Self::TypeOf
+            | Self::IsUndefinedOrNull => (1, 1),
             Self::Add
             | Self::Sub
             | Self::Mul
             | Self::Div
             | Self::Mod
+            | Self::BitAnd
+            | Self::BitXor
+            | Self::BitOr
             | Self::Eq
             | Self::StrictEq
             | Self::Neq

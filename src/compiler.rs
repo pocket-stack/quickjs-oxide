@@ -581,6 +581,9 @@ impl<'source> Parser<'source> {
             TokenKind::Punctuator(Punctuator::MultiplyAssign) => Some(Instruction::Mul),
             TokenKind::Punctuator(Punctuator::DivideAssign) => Some(Instruction::Div),
             TokenKind::Punctuator(Punctuator::RemainderAssign) => Some(Instruction::Mod),
+            TokenKind::Punctuator(Punctuator::BitAndAssign) => Some(Instruction::BitAnd),
+            TokenKind::Punctuator(Punctuator::BitXorAssign) => Some(Instruction::BitXor),
+            TokenKind::Punctuator(Punctuator::BitOrAssign) => Some(Instruction::BitOr),
             _ => return Ok(()),
         };
 
@@ -793,9 +796,7 @@ impl<'source> Parser<'source> {
             self.emit_instruction(Instruction::IsUndefinedOrNull)?;
             short_circuits.push(self.emit_instruction(Instruction::IfFalse(u32::MAX))?);
             self.emit_instruction(Instruction::Drop)?;
-            // `parse_equality` is the highest currently implemented binary
-            // level below logical-and/or. Bitwise levels will slot above it.
-            self.parse_equality()?;
+            self.parse_bitwise_or()?;
             self.anonymous_function_definition = None;
         }
         if !short_circuits.is_empty() {
@@ -833,7 +834,7 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_logical_and(&mut self) -> Result<(), Error> {
-        self.parse_equality()?;
+        self.parse_bitwise_or()?;
         let mut composed = false;
         while self.is_punctuator(Punctuator::LogicalAnd) {
             composed = true;
@@ -841,7 +842,7 @@ impl<'source> Parser<'source> {
             self.emit_instruction(Instruction::Dup)?;
             let end_jump = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
             self.emit_instruction(Instruction::Drop)?;
-            self.parse_equality()?;
+            self.parse_bitwise_or()?;
             self.patch_jump(end_jump, self.current_ir().ops.len())?;
             self.anonymous_function_definition = None;
         }
@@ -851,6 +852,42 @@ impl<'source> Parser<'source> {
         if composed {
             self.current_ir_mut().last_member_reference = None;
             self.current_ir_mut().last_identifier_reference = None;
+        }
+        Ok(())
+    }
+
+    fn parse_bitwise_or(&mut self) -> Result<(), Error> {
+        self.parse_bitwise_xor()?;
+        while self.is_punctuator(Punctuator::BitOr) {
+            let operation_span = self.current().span;
+            self.advance();
+            self.parse_bitwise_xor()?;
+            self.emit_instruction_at(Instruction::BitOr, source_offset(operation_span)?)?;
+            self.anonymous_function_definition = None;
+        }
+        Ok(())
+    }
+
+    fn parse_bitwise_xor(&mut self) -> Result<(), Error> {
+        self.parse_bitwise_and()?;
+        while self.is_punctuator(Punctuator::BitXor) {
+            let operation_span = self.current().span;
+            self.advance();
+            self.parse_bitwise_and()?;
+            self.emit_instruction_at(Instruction::BitXor, source_offset(operation_span)?)?;
+            self.anonymous_function_definition = None;
+        }
+        Ok(())
+    }
+
+    fn parse_bitwise_and(&mut self) -> Result<(), Error> {
+        self.parse_equality()?;
+        while self.is_punctuator(Punctuator::BitAnd) {
+            let operation_span = self.current().span;
+            self.advance();
+            self.parse_equality()?;
+            self.emit_instruction_at(Instruction::BitAnd, source_offset(operation_span)?)?;
+            self.anonymous_function_definition = None;
         }
         Ok(())
     }
@@ -999,6 +1036,7 @@ impl<'source> Parser<'source> {
         let operation = match self.current().kind {
             TokenKind::Punctuator(Punctuator::Plus) => Some(Instruction::Plus),
             TokenKind::Punctuator(Punctuator::Minus) => Some(Instruction::Neg),
+            TokenKind::Punctuator(Punctuator::BitNot) => Some(Instruction::BitNot),
             TokenKind::Punctuator(Punctuator::Not) => Some(Instruction::Not),
             TokenKind::Keyword(Keyword::Void) => {
                 self.advance();
@@ -1008,15 +1046,15 @@ impl<'source> Parser<'source> {
                 self.anonymous_function_definition = None;
                 return Ok(());
             }
-            TokenKind::Punctuator(Punctuator::BitNot) => {
-                return Err(self.unsupported_here("this unary operator is not implemented yet"));
-            }
             _ => None,
         };
         if let Some(operation) = operation {
             self.advance();
             self.parse_unary()?;
-            if matches!(operation, Instruction::Plus | Instruction::Neg) {
+            if matches!(
+                operation,
+                Instruction::Plus | Instruction::Neg | Instruction::BitNot
+            ) {
                 self.emit_instruction_at(operation, source_offset(operation_span)?)?;
             } else {
                 self.emit_instruction(operation)?;
@@ -2592,6 +2630,25 @@ mod tests {
     }
 
     #[test]
+    fn bitwise_operators_follow_quickjs_precedence_and_numeric_semantics() {
+        assert_eq!(evaluate("~0"), Value::Int(-1));
+        assert_eq!(evaluate("~4294967296"), Value::Int(-1));
+        assert_eq!(evaluate("-1.9 & 3.7"), Value::Int(3));
+        assert_eq!(evaluate("'7' ^ true"), Value::Int(6));
+        assert_eq!(evaluate("1 | 2 ^ 3 & 4"), Value::Int(3));
+        assert_eq!(evaluate("1 | 2 === 3"), Value::Int(1));
+        assert_eq!(evaluate("null ?? 1 | 2"), Value::Int(3));
+        assert_eq!(evaluate("0 || 1 | 2"), Value::Int(3));
+
+        assert_eq!(evaluate("~0n"), Value::BigInt(JsBigInt::from(-1)));
+        assert_eq!(evaluate("-1n ^ 255n"), Value::BigInt(JsBigInt::from(-256)));
+        assert_eq!(
+            evaluate("123456789012345678901234567890n & -1n"),
+            Value::BigInt(JsBigInt::parse_js_string("123456789012345678901234567890").unwrap())
+        );
+    }
+
+    #[test]
     fn compiles_primitive_coercion_and_equality() {
         assert_eq!(
             evaluate("'answer: ' + 42"),
@@ -3127,6 +3184,17 @@ mod tests {
             Value::String(JsString::from("'shadowed' is read-only"))
         );
         assert!(matches!(
+            context.eval("shadowed &= 3"),
+            Err(RuntimeError::Exception)
+        ));
+        let Value::Object(exception) = context.take_exception().unwrap().unwrap() else {
+            panic!("const bitwise compound assignment did not throw an object");
+        };
+        assert_eq!(
+            context.get_property(&exception, &message).unwrap(),
+            Value::String(JsString::from("'shadowed' is read-only"))
+        );
+        assert!(matches!(
             context.eval("shadowed &&= 3"),
             Err(RuntimeError::Exception)
         ));
@@ -3151,10 +3219,18 @@ mod tests {
             Err(RuntimeError::Exception)
         ));
         context.take_exception().unwrap().unwrap();
+        assert!(matches!(
+            context.eval("mutableLexical |= 1"),
+            Err(RuntimeError::Exception)
+        ));
+        context.take_exception().unwrap().unwrap();
         context
             .initialize_global_lexical_for_test("mutableLexical", Value::Int(4))
             .unwrap();
-        assert_eq!(context.eval("mutableLexical += 3").unwrap(), Value::Int(7));
+        assert_eq!(context.eval("mutableLexical |= 8").unwrap(), Value::Int(12));
+        assert_eq!(context.eval("mutableLexical ^= 3").unwrap(), Value::Int(15));
+        assert_eq!(context.eval("mutableLexical &= 7").unwrap(), Value::Int(7));
+        assert_eq!(context.eval("mutableLexical += 3").unwrap(), Value::Int(10));
         assert_eq!(context.eval("mutableLexical &&= 5").unwrap(), Value::Int(5));
         assert_eq!(context.eval("mutableLexical ??= 9").unwrap(), Value::Int(5));
         assert_eq!(context.eval("mutableLexical").unwrap(), Value::Int(5));
@@ -3547,6 +3623,183 @@ mod tests {
         );
         assert!(context.compile("'use strict'; delete Function").is_err());
         assert!(context.compile("delete Function").is_err());
+    }
+
+    #[test]
+    fn bitwise_compound_assignment_reuses_quickjs_lvalue_shapes() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+
+        let fixed = context.compile("Function.bits &= 3").unwrap();
+        let fixed_code = runtime.test_function_code(&fixed).unwrap();
+        assert!(fixed_code.windows(3).any(|window| matches!(
+            window,
+            [
+                Instruction::BitAnd,
+                Instruction::Insert2,
+                Instruction::PutField(_)
+            ]
+        )));
+
+        let computed = context.compile("Function['bits'] ^= 4").unwrap();
+        let computed_code = runtime.test_function_code(&computed).unwrap();
+        assert!(computed_code.windows(3).any(|window| matches!(
+            window,
+            [
+                Instruction::BitXor,
+                Instruction::Insert3,
+                Instruction::PutArrayEl
+            ]
+        )));
+
+        let identifier_root = context
+            .compile("(function(value){ value |= 8; return value; })")
+            .unwrap();
+        let identifier = runtime
+            .test_child_function_bytecode(&identifier_root, 0)
+            .unwrap();
+        let identifier_code = runtime.test_function_code(&identifier).unwrap();
+        assert!(
+            identifier_code
+                .windows(2)
+                .any(|window| matches!(window, [Instruction::BitOr, Instruction::SetArg(0)]))
+        );
+
+        let local_root = context
+            .compile("(function(){ var value = 7; value &= 3; return value; })")
+            .unwrap();
+        let local = runtime
+            .test_child_function_bytecode(&local_root, 0)
+            .unwrap();
+        let local_code = runtime.test_function_code(&local).unwrap();
+        assert!(
+            local_code
+                .windows(2)
+                .any(|window| matches!(window, [Instruction::BitAnd, Instruction::SetLocal(0)]))
+        );
+
+        let closure_root = context
+            .compile("(function(value){ return function(){ value ^= 3; return value; }; })")
+            .unwrap();
+        let closure_outer = runtime
+            .test_child_function_bytecode(&closure_root, 0)
+            .unwrap();
+        let closure = runtime
+            .test_child_function_bytecode(&closure_outer, 0)
+            .unwrap();
+        let closure_code = runtime.test_function_code(&closure).unwrap();
+        assert!(
+            closure_code
+                .windows(2)
+                .any(|window| matches!(window, [Instruction::BitXor, Instruction::SetVarRef(0)]))
+        );
+
+        let global = context.compile("__qjo_bit_global |= 8").unwrap();
+        let global_code = runtime.test_function_code(&global).unwrap();
+        assert!(
+            global_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::GetVar(_)))
+        );
+        assert!(global_code.windows(3).any(|window| matches!(
+            window,
+            [Instruction::BitOr, Instruction::Dup, Instruction::PutVar(_)]
+        )));
+
+        let sloppy_private_root = context
+            .compile("(function named(){ named &= 1; return named; })")
+            .unwrap();
+        let sloppy_private = runtime
+            .test_child_function_bytecode(&sloppy_private_root, 0)
+            .unwrap();
+        let sloppy_private_code = runtime.test_function_code(&sloppy_private).unwrap();
+        assert!(
+            sloppy_private_code
+                .windows(2)
+                .any(|window| matches!(window, [Instruction::BitAnd, Instruction::Nop]))
+        );
+
+        let strict_private_root = context
+            .compile("(function named(){ 'use strict'; named |= 1; })")
+            .unwrap();
+        let strict_private = runtime
+            .test_child_function_bytecode(&strict_private_root, 0)
+            .unwrap();
+        let strict_private_code = runtime.test_function_code(&strict_private).unwrap();
+        assert!(
+            strict_private_code.windows(2).any(|window| matches!(
+                window,
+                [Instruction::BitOr, Instruction::ThrowReadOnly(_)]
+            ))
+        );
+
+        assert_eq!(
+            context
+                .eval(
+                    "(function(){ var value = 14; value &= 11; value ^= 3; \
+                     value |= 4; return value; })()"
+                )
+                .unwrap(),
+            Value::Int(13)
+        );
+        assert_eq!(
+            context
+                .eval("(function(value){ value |= 8; return value; })(1)")
+                .unwrap(),
+            Value::Int(9)
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "(function(value){ return (function(){ value ^= 3; \
+                     return value; })(); })(5)"
+                )
+                .unwrap(),
+            Value::Int(6)
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "Function.bits = 14; Function.bits &= 11; \
+                     Function['bits'] ^= 3; Function.bits |= 4"
+                )
+                .unwrap(),
+            Value::Int(13)
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "(function(){ var left = 1, right = 3; \
+                     left |= right &= 2; return left * 10 + right; })()"
+                )
+                .unwrap(),
+            Value::Int(32)
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "(function(){ var value = -1n; (value) &= \
+                     123456789012345678901234567890n; return value; })()"
+                )
+                .unwrap(),
+            Value::BigInt(JsBigInt::parse_js_string("123456789012345678901234567890").unwrap())
+        );
+        assert_eq!(
+            context
+                .eval("(function(value){ (value) |= 2; return value; })(1)")
+                .unwrap(),
+            Value::Int(3)
+        );
+
+        assert!(context.compile("(Function.bits) |= 1").is_ok());
+        assert!(context.compile("(bitwiseIdentifier) &= 1").is_ok());
+        assert!(context.compile("(0, Function.bits) |= 1").is_err());
+        assert!(
+            context
+                .compile("(true ? Function.bits : Function.bits) |= 1")
+                .is_err()
+        );
+        assert!(context.compile("(Function.bits & 1) |= 1").is_err());
     }
 
     #[test]
