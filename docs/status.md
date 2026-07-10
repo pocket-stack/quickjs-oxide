@@ -26,8 +26,9 @@ claim full parity.
   lowering to stack bytecode. In addition to the primitive expression grammar,
   the current source path supports anonymous and named ordinary function
   expressions, simple parameters, `return`/fallthrough, function-local `var`,
-  simple identifier assignment, direct calls, transitive parameter/local and
-  private function-name capture through `ParentClosure` relays, and QuickJS-style
+  simple/arithmetic/logical identifier assignment, direct calls, transitive
+  parameter/local and private function-name capture through `ParentClosure`
+  relays, and QuickJS-style
   contextual `SetName` for direct anonymous initializers and assignments. Named expressions use
   a per-invocation private self binding; sloppy writes are ignored and strict
   writes raise the QuickJS-compatible read-only TypeError.
@@ -66,6 +67,16 @@ claim full parity.
   cleanup. The short branch returns the original value without evaluating the
   RHS or setter; the write branch preserves the RHS value. Unlike arithmetic
   compound assignment, the logical operator emits no new source marker.
+- Identifier assignment keeps an unresolved tail Reference through parentheses
+  and resolves it only after the full scope tree is known. Arithmetic compound
+  assignment selects `Get`/operator/`Set` paths for arguments, locals,
+  closures and globals; logical compound assignment uses QuickJS's depth-zero
+  branch with no `Nip`. Private named-function bindings preserve sloppy ignored
+  writes and strict read-only throws. Direct logical assignment performs
+  NamedEvaluation, including QuickJS's parenthesized-lvalue exception, while
+  arithmetic compound assignment does not. Comma, conditional and logical
+  values are rejected as assignment targets, and strict `eval`/`arguments`
+  lvalues are early errors at the upstream source position.
 - Binary nullish coalescing flattens a chain through QuickJS's shared
   `Dup; IsUndefinedOrNull; IfFalse` exit, preserving the first non-nullish
   operand without coercion and skipping every later operand. It has no
@@ -320,8 +331,8 @@ claim full parity.
 
 The function slice is intentionally narrow. Function declarations/hoisting,
 block scopes, source `let`/`const` declarations and their declaration-
-instantiation rules, general identifier assignment targets, member bitwise/
-shift/exponent compound operators, module
+instantiation rules, destructuring and other general assignment targets,
+bitwise/shift/exponent compound operators, module
 resolution, computed property-definition naming, mapped
 `arguments`, arrow/async/generator functions and callable Proxy classes
 are not yet implemented. Top-level declarations are rejected instead of being
@@ -375,8 +386,8 @@ strict/sloppy global identifier assignment is implemented. Source property
 reads and receiver-preserving method calls are implemented for object/function
 bases, plus exact String index/length reads; simple member assignment and
 property delete cover ordinary objects and the current primitive own-property
-surface. Bitwise, shift and exponent member compound assignment, identifier
-compound assignment, sloppy direct-identifier delete, the distinct primitive
+surface. Bitwise, shift and exponent compound assignment, sloppy
+direct-identifier delete, the distinct primitive
 prototype graphs and their inherited setters,
 Proxy/exotic internal methods, and the full `function_accessors.js` fixture are
 still pending. AggregateError iterable-to-Array, primitive wrapper objects for

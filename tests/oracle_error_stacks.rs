@@ -107,6 +107,30 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
         ("logical before nullish parse location", "1 || 2 ?? 3"),
         ("nullish before logical parse location", "1 ?? 2 || 3"),
         (
+            "identifier compound missing read keeps identifier site",
+            "missingIdentifierCompound += 1",
+        ),
+        (
+            "strict private identifier arithmetic write uses operator site",
+            "(function named(){ 'use strict'; named += 1; })()",
+        ),
+        (
+            "strict private identifier logical write uses identifier site",
+            "(function named(){ 'use strict'; named &&= 1; })()",
+        ),
+        (
+            "identifier logical write inherits RHS call site",
+            "(function named(){ 'use strict'; named &&= (function(){ return 1; })(); })()",
+        ),
+        (
+            "strict eval compound early error uses RHS site",
+            "(function(){ 'use strict'; eval += 1; })",
+        ),
+        (
+            "strict parenthesized arguments compound early error uses RHS site",
+            "(function(){ 'use strict'; (arguments) ??= 1; })",
+        ),
+        (
             "CR remains a debug column",
             "(function f(){\rreturn 1n + 1;\r})()",
         ),

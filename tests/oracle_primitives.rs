@@ -119,6 +119,95 @@ const CASES: &[(&str, &str)] = &[
         "nullish rhs member call keeps receiver",
         "(Function.__nullishRhs = function(){ return this === Function; }, null ?? Function.__nullishRhs())",
     ),
+    // Identifier compound assignment shares QuickJS's late scope get/set path.
+    (
+        "identifier arithmetic compound local matrix",
+        "(function(){ var value = 20; value += 2; value -= 4; value *= 3; value /= 2; value %= 5; return value; })()",
+    ),
+    (
+        "identifier arithmetic compound argument",
+        "(function(value){ value += 2; return value; })(3)",
+    ),
+    (
+        "identifier arithmetic compound closure",
+        "(function(value){ return (function(){ value += 2; return value; })() + (function(){ value += 3; return value; })(); })(1)",
+    ),
+    (
+        "identifier arithmetic compound global",
+        "(__qjo_identifier_compound = 1, __qjo_identifier_compound += 2)",
+    ),
+    (
+        "identifier arithmetic compound is right associative",
+        "(function(){ var left = 1, right = 2; var result = left += right *= 3; return result + left + right; })()",
+    ),
+    (
+        "identifier logical and taken",
+        "(function(value){ value &&= 9; return value; })(2)",
+    ),
+    (
+        "identifier logical and short",
+        "(function(value){ value &&= 9; return value; })(0)",
+    ),
+    (
+        "identifier logical or taken",
+        "(function(value){ value ||= 9; return value; })(0)",
+    ),
+    (
+        "identifier logical or short",
+        "(function(value){ value ||= 9; return value; })(2)",
+    ),
+    (
+        "identifier logical nullish taken",
+        "(function(value){ value ??= 9; return value; })(null)",
+    ),
+    (
+        "identifier logical nullish false short",
+        "(function(value){ value ??= 9; return value; })(false)",
+    ),
+    (
+        "identifier logical function object short",
+        "typeof (Function ||= 1)",
+    ),
+    (
+        "identifier logical direct name inference",
+        "(function(){ var named; named ??= function(){}; return named.name; })()",
+    ),
+    (
+        "identifier logical parenthesized lhs has no name inference",
+        "(function(){ var named; (named) ??= function(){}; return named.name; })()",
+    ),
+    (
+        "identifier logical parenthesized assignment still infers",
+        "(function(){ var named; (named ??= function(){}); return named.name; })()",
+    ),
+    (
+        "identifier simple parenthesized lhs has no name inference",
+        "(function(){ var named; (named) = function(){}; return named.name; })()",
+    ),
+    (
+        "identifier logical right associative inner name",
+        "(function(){ var a = 0, b = 0; a ||= b ||= function(){}; return a.name + '|' + b.name; })()",
+    ),
+    (
+        "identifier logical comma rhs has no name inference",
+        "(function(){ var named; named ||= (0, function(){}); return named.name; })()",
+    ),
+    (
+        "sloppy private name arithmetic ignores write",
+        "(function named(){ var result = named += ''; return typeof result + '|' + typeof named; })()",
+    ),
+    (
+        "sloppy private name logical names rhs and ignores write",
+        "(function named(){ var before = named; var result = named &&= function(){}; return (named === before) + '|' + result.name; })()",
+    ),
+    (
+        "strict private name logical short",
+        "(function named(){ 'use strict'; var before = named; return (named ||= 1) === before; })()",
+    ),
+    (
+        "captured sloppy private name ignores write",
+        "(function named(){ return function(){ named += ''; return typeof named; }; })()()",
+    ),
     // Conditional selection and associativity.
     ("truthy conditional", "'x' ? -0 : 1"),
     ("falsy conditional", "0 ? 1 : 'no'"),
@@ -292,6 +381,42 @@ const QUICKJS_ACCEPTED_DIRECTIVE_EDGES: &[(&str, &str)] = &[
 const RUNTIME_ERROR_CASES: &[(&str, &str)] = &[
     ("logical before nullish syntax message", "1 || 2 ?? 3"),
     ("nullish before logical syntax message", "1 ?? 2 || 3"),
+    (
+        "identifier compound missing global",
+        "__qjo_missing_compound += 1",
+    ),
+    (
+        "identifier logical compound missing global",
+        "__qjo_missing_logical ||= 1",
+    ),
+    (
+        "strict private name arithmetic write",
+        "(function named(){ 'use strict'; named += 1; })()",
+    ),
+    (
+        "strict private name logical write",
+        "(function named(){ 'use strict'; named &&= 1; })()",
+    ),
+    (
+        "captured strict private name logical write",
+        "(function named(){ 'use strict'; return function(){ named &&= 1; }; })()()",
+    ),
+    (
+        "strict eval compound early error",
+        "(function(){ 'use strict'; eval += 1; })",
+    ),
+    (
+        "strict eval simple assignment early error",
+        "(function(){ 'use strict'; eval = 1; })",
+    ),
+    (
+        "strict arguments compound early error",
+        "(function(){ 'use strict'; (arguments) ??= 1; })",
+    ),
+    (
+        "strict arguments simple assignment early error",
+        "(function(){ 'use strict'; (arguments) = 1; })",
+    ),
     ("mixed BigInt arithmetic", "1n + 1"),
     ("BigInt unary plus", "+1n"),
     ("call non-callable", "(1)()"),

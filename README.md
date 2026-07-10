@@ -35,9 +35,12 @@ member assignment follow `GetField2`/`GetArrayEl3`: `+=`, `-=`, `*=`, `/=` and
 `Nip` cleanup shape. Both paths convert a computed object key exactly once
 before the getter. Binary `??` uses QuickJS's shared short-circuit join for a
 chain, preserves the selected operand without coercion, and enforces the
-unparenthesized `??`/`&&`/`||` mixing restriction. Bitwise/shift/exponent and
-identifier compound assignment, direct-identifier delete, and the distinct
-primitive prototype graphs remain unfinished slices.
+unparenthesized `??`/`&&`/`||` mixing restriction. The same arithmetic and
+logical assignment operators now accept direct or parenthesized identifier
+References and resolve late to argument, local, closure, global, or private
+function-name paths. Bitwise/shift/exponent compound assignment,
+direct-identifier delete, and the distinct primitive prototype graphs remain
+unfinished slices.
 Runtime-wide full/strip-source/strip-debug modes follow QuickJS's immutable
 bytecode publication boundary, and the `qjs` CLI exposes `--strip-source` and
 `-s` with upstream last-option-wins behavior.

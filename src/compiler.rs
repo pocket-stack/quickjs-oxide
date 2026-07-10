@@ -121,6 +121,12 @@ enum MemberReference {
     Computed { site: SourceOffset },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct IdentifierReference {
+    name: String,
+    span: Span,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LogicalAssignment {
     And,
@@ -190,6 +196,10 @@ struct FunctionIr {
     /// `last_opcode_pos` for the same rewrite, but an explicit index prevents
     /// comma/conditional values from accidentally retaining a method receiver.
     last_member_reference: Option<usize>,
+    /// Parser-only Reference marker for a final identifier read. This lets
+    /// parenthesized IdentifierReferences remain assignment targets while
+    /// composed values (comma, conditional, logical and binary forms) do not.
+    last_identifier_reference: Option<usize>,
     constants: Vec<IrConstant>,
     closure_variables: Vec<ClosureVariable>,
     stack_depth: usize,
@@ -223,6 +233,7 @@ impl FunctionIr {
             locals: Vec::new(),
             ops: Vec::new(),
             last_member_reference: None,
+            last_identifier_reference: None,
             constants: Vec::new(),
             closure_variables: Vec::new(),
             stack_depth: 0,
@@ -530,42 +541,23 @@ impl<'source> Parser<'source> {
         if has_comma {
             self.anonymous_function_definition = None;
             self.current_ir_mut().last_member_reference = None;
+            self.current_ir_mut().last_identifier_reference = None;
         }
         Ok(())
     }
 
-    /// Parse the currently supported simple assignment targets.
-    ///
-    /// Keeping the unresolved write as a typed identifier operation lets the
-    /// late resolver apply QuickJS's special function-name behavior: normal
-    /// bindings use `Set*`, a sloppy private function name is a no-op, and a
-    /// strict private function name throws without mutating the cell.
+    /// Parse assignment targets through typed unresolved References. Keeping
+    /// identifier writes unresolved lets the late resolver select argument,
+    /// local, closure, global and private-function-name behavior after the
+    /// complete nested scope tree is known.
     fn parse_assignment(&mut self) -> Result<(), Error> {
-        let token = self.current().clone();
-        if let TokenKind::Identifier(identifier) = token.kind
-            && self.next_is_punctuator(Punctuator::Equal)
-        {
-            validate_identifier(&identifier, token.span, self.current_ir().strict, false)?;
-            let name = identifier.value;
-            self.advance();
-            self.advance();
-            let rhs_start = self.current_ir().ops.len();
-            self.parse_assignment()?;
-            self.inherit_source_marker_at(rhs_start, source_offset(token.span)?)?;
-            if self.anonymous_function_definition.take().is_some() {
-                let name_constant = self.add_constant(IrConstant::Primitive(Value::String(
-                    JsString::from_utf8(&name),
-                )))?;
-                self.emit_instruction(Instruction::SetName(name_constant))?;
-            }
-            // QuickJS `js_parse_assign_expr2` does not emit a new source
-            // position for ordinary `=`. `put_lvalue` inherits whichever
-            // marker was last: the LHS marker for an unmarked RHS, or a marker
-            // emitted while evaluating the RHS.
-            self.emit_identifier_inherited(name, token.span, IdentifierAccess::Set)?;
-            self.anonymous_function_definition = None;
-            return Ok(());
-        }
+        // QuickJS's `name0` is captured only when the AssignmentExpression
+        // starts with the identifier token itself. Parenthesized lvalues are
+        // valid References but intentionally do not trigger NamedEvaluation.
+        let direct_identifier_name = match &self.current().kind {
+            TokenKind::Identifier(identifier) => Some(identifier.value.clone()),
+            _ => None,
+        };
         self.parse_conditional()?;
         let logical = match self.current().kind {
             TokenKind::Punctuator(Punctuator::LogicalAndAssign) => Some(LogicalAssignment::And),
@@ -574,6 +566,10 @@ impl<'source> Parser<'source> {
             _ => None,
         };
         if let Some(logical) = logical {
+            if let Some(target) = self.promote_tail_identifier_get()? {
+                let infer_name = direct_identifier_name.as_deref() == Some(target.name.as_str());
+                return self.parse_logical_identifier_assignment(target, logical, infer_name);
+            }
             return self.parse_logical_member_assignment(logical);
         }
 
@@ -589,6 +585,15 @@ impl<'source> Parser<'source> {
         };
 
         if let Some(operation) = compound {
+            if let Some(target) = self.promote_tail_identifier_get()? {
+                self.advance();
+                self.validate_identifier_assignment_target(&target)?;
+                self.parse_assignment()?;
+                self.emit_instruction_at(operation, source_offset(assignment_span)?)?;
+                self.anonymous_function_definition = None;
+                self.emit_identifier_inherited(target.name, target.span, IdentifierAccess::Set)?;
+                return Ok(());
+            }
             let Some(target) = self.promote_tail_member_get_for_compound()? else {
                 return Err(self.syntax_here("invalid assignment left-hand side"));
             };
@@ -597,6 +602,27 @@ impl<'source> Parser<'source> {
             self.emit_instruction_at(operation, source_offset(assignment_span)?)?;
             self.anonymous_function_definition = None;
             self.emit_member_put(target)?;
+            return Ok(());
+        }
+
+        if let Some(target) = self.take_tail_identifier_reference()? {
+            self.advance();
+            self.validate_identifier_assignment_target(&target)?;
+            let rhs_start = self.current_ir().ops.len();
+            self.parse_assignment()?;
+            self.inherit_source_marker_at(rhs_start, source_offset(target.span)?)?;
+            let anonymous_rhs = self.anonymous_function_definition.take().is_some();
+            if direct_identifier_name.as_deref() == Some(target.name.as_str()) && anonymous_rhs {
+                let name_constant = self.add_constant(IrConstant::Primitive(Value::String(
+                    JsString::from_utf8(&target.name),
+                )))?;
+                self.emit_instruction(Instruction::SetName(name_constant))?;
+            }
+            // QuickJS emits no source position for ordinary `=`. The Set
+            // inherits the LHS marker for an unmarked RHS or the last marker
+            // produced while evaluating the RHS.
+            self.emit_identifier_inherited(target.name, target.span, IdentifierAccess::Set)?;
+            self.anonymous_function_definition = None;
             return Ok(());
         }
 
@@ -616,6 +642,64 @@ impl<'source> Parser<'source> {
         // identifier assignment such as `x = obj.p = function(){}`.
         self.anonymous_function_definition = None;
         self.emit_member_put(target)
+    }
+
+    /// Identifier logical assignment is QuickJS's depth-zero lvalue case. The
+    /// short branch already contains only the old value, while the write branch
+    /// replaces it with the RHS and resolves one preserving Set operation.
+    fn parse_logical_identifier_assignment(
+        &mut self,
+        target: IdentifierReference,
+        logical: LogicalAssignment,
+        infer_name: bool,
+    ) -> Result<(), Error> {
+        self.advance();
+        self.validate_identifier_assignment_target(&target)?;
+        self.emit_instruction(Instruction::Dup)?;
+        if logical == LogicalAssignment::Nullish {
+            self.emit_instruction(Instruction::IsUndefinedOrNull)?;
+        }
+        let short_circuit = self.emit_instruction(match logical {
+            LogicalAssignment::Or => Instruction::IfTrue(u32::MAX),
+            LogicalAssignment::And | LogicalAssignment::Nullish => Instruction::IfFalse(u32::MAX),
+        })?;
+        let short_circuit_depth = self.current_ir().stack_depth;
+
+        self.emit_instruction(Instruction::Drop)?;
+        self.parse_assignment()?;
+        let anonymous_rhs = self.anonymous_function_definition.take().is_some();
+        if infer_name && anonymous_rhs {
+            let name_constant = self.add_constant(IrConstant::Primitive(Value::String(
+                JsString::from_utf8(&target.name),
+            )))?;
+            self.emit_instruction(Instruction::SetName(name_constant))?;
+        }
+        self.emit_identifier_inherited(target.name, target.span, IdentifierAccess::Set)?;
+        let end = self.emit_instruction(Instruction::Goto(u32::MAX))?;
+        let joined_depth = self.current_ir().stack_depth;
+        if short_circuit_depth != joined_depth {
+            return Err(Error::internal(
+                "identifier logical assignment branches have unequal stack depth",
+            ));
+        }
+
+        let target = self.current_ir().ops.len();
+        self.patch_jump(short_circuit, target)?;
+        self.patch_jump(end, target)?;
+        self.anonymous_function_definition = None;
+        self.current_ir_mut().last_member_reference = None;
+        self.current_ir_mut().last_identifier_reference = None;
+        Ok(())
+    }
+
+    fn validate_identifier_assignment_target(
+        &self,
+        target: &IdentifierReference,
+    ) -> Result<(), Error> {
+        if self.current_ir().strict && matches!(target.name.as_str(), "eval" | "arguments") {
+            return Err(self.syntax_here("invalid lvalue in strict mode"));
+        }
+        Ok(())
     }
 
     /// Lower a logical member assignment with the same two-branch stack shape
@@ -662,6 +746,7 @@ impl<'source> Parser<'source> {
         }
         self.patch_jump(end, self.current_ir().ops.len())?;
         self.current_ir_mut().last_member_reference = None;
+        self.current_ir_mut().last_identifier_reference = None;
         Ok(())
     }
 
@@ -691,6 +776,7 @@ impl<'source> Parser<'source> {
         }
         self.patch_jump(end_jump, self.current_ir().ops.len())?;
         self.current_ir_mut().last_member_reference = None;
+        self.current_ir_mut().last_identifier_reference = None;
         Ok(())
     }
 
@@ -718,6 +804,7 @@ impl<'source> Parser<'source> {
                 self.patch_jump(short_circuit, end)?;
             }
             self.current_ir_mut().last_member_reference = None;
+            self.current_ir_mut().last_identifier_reference = None;
         }
         Ok(())
     }
@@ -740,6 +827,7 @@ impl<'source> Parser<'source> {
         }
         if composed {
             self.current_ir_mut().last_member_reference = None;
+            self.current_ir_mut().last_identifier_reference = None;
         }
         Ok(())
     }
@@ -762,6 +850,7 @@ impl<'source> Parser<'source> {
         }
         if composed {
             self.current_ir_mut().last_member_reference = None;
+            self.current_ir_mut().last_identifier_reference = None;
         }
         Ok(())
     }
@@ -1039,6 +1128,65 @@ impl<'source> Parser<'source> {
         Ok(promoted)
     }
 
+    /// Keep the final identifier read in place while exposing its unresolved
+    /// binding metadata to compound-assignment lowering. Parentheses preserve
+    /// this marker; every operation that turns the Reference into a value
+    /// clears it through `emit_with_site` or the composing parser level.
+    fn promote_tail_identifier_get(&mut self) -> Result<Option<IdentifierReference>, Error> {
+        let function = self.current_ir_mut();
+        if function.last_identifier_reference != function.ops.len().checked_sub(1) {
+            return Ok(None);
+        }
+        function.last_identifier_reference = None;
+        let Some(SpannedIrOp {
+            op:
+                IrOp::Identifier {
+                    name,
+                    span,
+                    access: IdentifierAccess::Get,
+                },
+            ..
+        }) = function.ops.last()
+        else {
+            return Err(Error::internal(
+                "identifier Reference marker did not point to a getter",
+            ));
+        };
+        Ok(Some(IdentifierReference {
+            name: name.clone(),
+            span: *span,
+        }))
+    }
+
+    /// Remove the final identifier getter for ordinary `=` while retaining
+    /// its unresolved binding identity for the later Set operation.
+    fn take_tail_identifier_reference(&mut self) -> Result<Option<IdentifierReference>, Error> {
+        let function = self.current_ir_mut();
+        if function.last_identifier_reference != function.ops.len().checked_sub(1) {
+            return Ok(None);
+        }
+        function.last_identifier_reference = None;
+        let operation = function
+            .ops
+            .pop()
+            .ok_or_else(|| Error::internal("identifier Reference operation disappeared"))?;
+        let IrOp::Identifier {
+            name,
+            span,
+            access: IdentifierAccess::Get,
+        } = operation.op
+        else {
+            return Err(Error::internal(
+                "identifier Reference marker did not point to a getter",
+            ));
+        };
+        function.stack_depth = function
+            .stack_depth
+            .checked_sub(1)
+            .ok_or_else(|| Error::internal("identifier lvalue removal underflowed the stack"))?;
+        Ok(Some(IdentifierReference { name, span }))
+    }
+
     /// Remove the final getter while leaving its already-evaluated base/key
     /// operands on the abstract stack. This mirrors QuickJS `get_lvalue` and
     /// is shared by assignment and `delete` rewrites.
@@ -1255,7 +1403,9 @@ impl<'source> Parser<'source> {
             TokenKind::Identifier(identifier) => {
                 validate_identifier(&identifier, token.span, self.current_ir().strict, false)?;
                 self.advance();
-                self.emit_identifier(identifier.value, token.span, IdentifierAccess::Get)?;
+                let operation =
+                    self.emit_identifier(identifier.value, token.span, IdentifierAccess::Get)?;
+                self.current_ir_mut().last_identifier_reference = Some(operation);
             }
             TokenKind::Keyword(Keyword::Function) => {
                 self.parse_function_expression()?;
@@ -1489,6 +1639,7 @@ impl<'source> Parser<'source> {
         let (popped, pushed) = operation.stack_effect();
         let function = self.current_ir_mut();
         function.last_member_reference = None;
+        function.last_identifier_reference = None;
         function.stack_depth = function
             .stack_depth
             .checked_sub(popped)
@@ -1544,13 +1695,6 @@ impl<'source> Parser<'source> {
 
     fn is_punctuator(&self, punctuator: Punctuator) -> bool {
         matches!(self.current().kind, TokenKind::Punctuator(current) if current == punctuator)
-    }
-
-    fn next_is_punctuator(&self, punctuator: Punctuator) -> bool {
-        matches!(
-            self.tokens.get(self.cursor + 1).map(|token| &token.kind),
-            Some(TokenKind::Punctuator(current)) if *current == punctuator
-        )
     }
 
     fn at_eof(&self) -> bool {
@@ -2701,6 +2845,22 @@ mod tests {
             context.get_property(&exception, &message).unwrap(),
             Value::String(JsString::from("'readonly' is read-only"))
         );
+        assert_eq!(context.eval("readonly += 2").unwrap(), Value::Int(3));
+        assert_eq!(context.eval("readonly").unwrap(), Value::Int(1));
+        assert_eq!(
+            context.eval("'use strict'; readonly ||= 9").unwrap(),
+            Value::Int(1)
+        );
+        assert!(matches!(
+            context.eval("'use strict'; readonly += 2"),
+            Err(RuntimeError::Exception)
+        ));
+        context.take_exception().unwrap().unwrap();
+        assert!(matches!(
+            context.eval("'use strict'; readonly &&= 2"),
+            Err(RuntimeError::Exception)
+        ));
+        context.take_exception().unwrap().unwrap();
 
         let inherited = runtime.intern_property_key("inheritedReadOnly").unwrap();
         assert!(
@@ -2757,6 +2917,16 @@ mod tests {
             context.get_property(&exception, &message).unwrap(),
             Value::String(JsString::from("no setter for property"))
         );
+        assert_eq!(context.eval("noSetter ||= 8").unwrap(), Value::Int(8));
+        assert!(matches!(
+            context.eval("'use strict'; noSetter ||= 8"),
+            Err(RuntimeError::Exception)
+        ));
+        context.take_exception().unwrap().unwrap();
+        assert_eq!(
+            context.eval("'use strict'; noSetter &&= 8").unwrap(),
+            Value::Undefined
+        );
 
         assert!(matches!(
             context.eval("'use strict'; trulyMissing = 1"),
@@ -2797,6 +2967,8 @@ mod tests {
         );
         assert_eq!(context.eval("setterTarget = 42").unwrap(), Value::Int(42));
         assert_eq!(context.eval("sink").unwrap(), Value::Int(42));
+        assert_eq!(context.eval("setterTarget ||= 17").unwrap(), Value::Int(17));
+        assert_eq!(context.eval("sink").unwrap(), Value::Int(17));
 
         let Value::Object(getter) = context.eval("(function() { return this; })").unwrap() else {
             panic!("getter source did not produce a function");
@@ -2853,6 +3025,20 @@ mod tests {
             Err(RuntimeError::Exception)
         ));
         assert_eq!(context.take_exception().unwrap(), Some(Value::Int(17)));
+
+        assert_eq!(context.eval("compoundSide = 0").unwrap(), Value::Int(0));
+        assert!(matches!(
+            context.eval("missingCompound += (compoundSide = 1)"),
+            Err(RuntimeError::Exception)
+        ));
+        context.take_exception().unwrap().unwrap();
+        assert_eq!(context.eval("compoundSide").unwrap(), Value::Int(0));
+        assert!(matches!(
+            context.eval("missingLogical ||= (compoundSide = 2)"),
+            Err(RuntimeError::Exception)
+        ));
+        context.take_exception().unwrap().unwrap();
+        assert_eq!(context.eval("compoundSide").unwrap(), Value::Int(0));
     }
 
     #[test]
@@ -2928,6 +3114,23 @@ mod tests {
             context.get_property(&global, &shadowed).unwrap(),
             Value::Int(1)
         );
+        assert_eq!(context.eval("shadowed ||= 9").unwrap(), Value::Int(2));
+        assert!(matches!(
+            context.eval("shadowed += 3"),
+            Err(RuntimeError::Exception)
+        ));
+        let Value::Object(exception) = context.take_exception().unwrap().unwrap() else {
+            panic!("const compound assignment did not throw an object");
+        };
+        assert_eq!(
+            context.get_property(&exception, &message).unwrap(),
+            Value::String(JsString::from("'shadowed' is read-only"))
+        );
+        assert!(matches!(
+            context.eval("shadowed &&= 3"),
+            Err(RuntimeError::Exception)
+        ));
+        context.take_exception().unwrap().unwrap();
 
         context
             .create_global_lexical_for_test("mutableLexical", false, None)
@@ -2943,10 +3146,17 @@ mod tests {
             context.get_property(&exception, &message).unwrap(),
             Value::String(JsString::from("mutableLexical is not initialized"))
         );
+        assert!(matches!(
+            context.eval("mutableLexical += 1"),
+            Err(RuntimeError::Exception)
+        ));
+        context.take_exception().unwrap().unwrap();
         context
             .initialize_global_lexical_for_test("mutableLexical", Value::Int(4))
             .unwrap();
-        assert_eq!(context.eval("mutableLexical = 5").unwrap(), Value::Int(5));
+        assert_eq!(context.eval("mutableLexical += 3").unwrap(), Value::Int(7));
+        assert_eq!(context.eval("mutableLexical &&= 5").unwrap(), Value::Int(5));
+        assert_eq!(context.eval("mutableLexical ??= 9").unwrap(), Value::Int(5));
         assert_eq!(context.eval("mutableLexical").unwrap(), Value::Int(5));
     }
 
@@ -3504,6 +3714,284 @@ mod tests {
             context
                 .compile("(Function.fixed || Function.computed) &&= 1")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn identifier_compound_assignment_uses_resolved_get_set_paths() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+
+        let argument_root = context
+            .compile("(function(value){ value += 2; return value; })")
+            .unwrap();
+        let argument = runtime
+            .test_child_function_bytecode(&argument_root, 0)
+            .unwrap();
+        let argument_code = runtime.test_function_code(&argument).unwrap();
+        assert!(
+            argument_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::GetArg(0)))
+        );
+        assert!(
+            argument_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::SetArg(0)))
+        );
+
+        let local_root = context
+            .compile("(function(){ var value = 1; value ||= 4; return value; })")
+            .unwrap();
+        let local = runtime
+            .test_child_function_bytecode(&local_root, 0)
+            .unwrap();
+        let local_code = runtime.test_function_code(&local).unwrap();
+        assert!(
+            local_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::GetLocal(0)))
+        );
+        assert!(
+            local_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::SetLocal(0)))
+        );
+        let branch = local_code
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instruction::IfTrue(target) => Some(usize::try_from(*target).unwrap()),
+                _ => None,
+            })
+            .unwrap();
+        let end = local_code
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instruction::Goto(target) => Some(usize::try_from(*target).unwrap()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(branch, end);
+        assert!(
+            !local_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Nip))
+        );
+
+        let closure_root = context
+            .compile("(function(value){ return function(){ value += 2; return value; }; })")
+            .unwrap();
+        let closure_outer = runtime
+            .test_child_function_bytecode(&closure_root, 0)
+            .unwrap();
+        let closure_inner = runtime
+            .test_child_function_bytecode(&closure_outer, 0)
+            .unwrap();
+        let closure_code = runtime.test_function_code(&closure_inner).unwrap();
+        assert!(
+            closure_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::GetVarRef(0)))
+        );
+        assert!(
+            closure_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::SetVarRef(0)))
+        );
+
+        let global = context.compile("identifierCompoundGlobal ||= 2").unwrap();
+        let global_code = runtime.test_function_code(&global).unwrap();
+        assert!(
+            global_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::GetVar(_)))
+        );
+        assert!(
+            global_code
+                .windows(2)
+                .any(|window| matches!(window, [Instruction::Dup, Instruction::PutVar(_)]))
+        );
+        let global_branch = global_code
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instruction::IfTrue(target) => Some(*target),
+                _ => None,
+            })
+            .unwrap();
+        let global_end = global_code
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instruction::Goto(target) => Some(*target),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(global_branch, global_end);
+
+        let sloppy_self_root = context
+            .compile("(function named(){ named += ''; return named; })")
+            .unwrap();
+        let sloppy_self = runtime
+            .test_child_function_bytecode(&sloppy_self_root, 0)
+            .unwrap();
+        let sloppy_self_code = runtime.test_function_code(&sloppy_self).unwrap();
+        assert!(
+            sloppy_self_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Nop))
+        );
+        assert!(
+            !sloppy_self_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::SetLocal(_)))
+        );
+
+        let strict_self_root = context
+            .compile("(function named(){ 'use strict'; named &&= 1; })")
+            .unwrap();
+        let strict_self = runtime
+            .test_child_function_bytecode(&strict_self_root, 0)
+            .unwrap();
+        let strict_self_code = runtime.test_function_code(&strict_self).unwrap();
+        assert!(
+            strict_self_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::ThrowReadOnly(_)))
+        );
+        assert!(
+            !strict_self_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::SetLocal(_)))
+        );
+
+        assert_eq!(
+            context
+                .eval("(function(value){ value += 2; return value; })(3)")
+                .unwrap(),
+            Value::Int(5)
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "(function(){ var value = 20; value += 2; value -= 4; \
+                     value *= 3; value /= 2; value %= 5; return value; })()"
+                )
+                .unwrap(),
+            Value::Int(2)
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "(function(value){ return (function(){ value += 2; return value; })() \
+                     + (function(){ value += 3; return value; })(); })(1)"
+                )
+                .unwrap(),
+            Value::Int(9)
+        );
+        assert_eq!(
+            context
+                .eval("identifierCompoundGlobal = 1; identifierCompoundGlobal += 2")
+                .unwrap(),
+            Value::Int(3)
+        );
+
+        for (source, expected) in [
+            (
+                "(function(value){ value &&= 9; return value; })(2)",
+                Value::Int(9),
+            ),
+            (
+                "(function(value){ value &&= 9; return value; })(0)",
+                Value::Int(0),
+            ),
+            (
+                "(function(value){ value ||= 9; return value; })(0)",
+                Value::Int(9),
+            ),
+            (
+                "(function(value){ value ||= 9; return value; })(2)",
+                Value::Int(2),
+            ),
+            (
+                "(function(value){ value ??= 9; return value; })(null)",
+                Value::Int(9),
+            ),
+            (
+                "(function(value){ value ??= 9; return value; })(false)",
+                Value::Bool(false),
+            ),
+        ] {
+            assert_eq!(context.eval(source).unwrap(), expected, "{source}");
+        }
+
+        assert_eq!(
+            context
+                .eval("(function(){ var named; named ??= function(){}; return named.name; })()")
+                .unwrap(),
+            Value::String(JsString::from("named"))
+        );
+        assert_eq!(
+            context
+                .eval("(function(){ var named; (named) ??= function(){}; return named.name; })()")
+                .unwrap(),
+            Value::String(JsString::from(""))
+        );
+        assert_eq!(
+            context
+                .eval("(function(){ var named; (named = function(){}); return named.name; })()")
+                .unwrap(),
+            Value::String(JsString::from("named"))
+        );
+        assert_eq!(
+            context
+                .eval("(function(){ var named; (named) = function(){}; return named.name; })()")
+                .unwrap(),
+            Value::String(JsString::from(""))
+        );
+
+        assert_eq!(
+            context
+                .eval("(function(value){ (value) += 2; return value; })(3)")
+                .unwrap(),
+            Value::Int(5)
+        );
+        assert!(
+            context
+                .compile("(function(a,b){ (0, a) += 1; return a; })")
+                .is_err()
+        );
+        assert!(
+            context
+                .compile("(function(a,b){ (true ? a : b) ||= 1; return a; })")
+                .is_err()
+        );
+        assert!(
+            context
+                .compile("(function(){ 'use strict'; eval += 1; })")
+                .is_err()
+        );
+        assert!(
+            context
+                .compile("(function(){ 'use strict'; (arguments) ??= 1; })")
+                .is_err()
+        );
+
+        assert_eq!(
+            context
+                .eval(
+                    "(function named(){ var result = named += ''; \
+                     return typeof result + '|' + typeof named; })()"
+                )
+                .unwrap(),
+            Value::String(JsString::from("string|function"))
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "(function(wrapper){ return wrapper() === wrapper; })(function named(){ \
+                     return named ||= 1; })"
+                )
+                .unwrap(),
+            Value::Bool(true)
         );
     }
 

@@ -35,6 +35,21 @@ Object.defineProperty(proto, "compound", {
     configurable: true
 });
 let oldValue = 2;
+let identifierOld = 2;
+let identifierGetThis = false;
+let identifierSetThis = false;
+Object.defineProperty(globalThis, "identifierAccessor", {
+    get() { log += "G"; identifierGetThis = this === globalThis; return identifierOld; },
+    set(value) { log += "S"; identifierSetThis = this === globalThis; seenValue = value; },
+    configurable: true
+});
+Object.defineProperty(globalThis, "identifierReadonly", {
+    value: 2, writable: false, configurable: true
+});
+Object.defineProperty(globalThis, "identifierThrowing", {
+    get() { log += "G"; throw new Error("identifier getter"); },
+    configurable: true
+});
 const compoundKey = {
     [Symbol.toPrimitive](hint) { log += "k(" + hint + ")"; return "compound"; }
 };
@@ -139,6 +154,39 @@ print("logical-key-throw=" + observe(() =>
 log = "";
 print("logical-getter-throw=" + observe(() =>
       Function.prototype.caller &&= rhsExpr()) + "|" + log);
+
+identifierOld = 2; log = ""; identifierGetThis = false;
+identifierSetThis = false; seenValue = undefined;
+const identifierArithmetic = identifierAccessor += rhsExpr();
+print("identifier-arithmetic=" + [show(identifierArithmetic), log,
+      show(identifierGetThis), show(identifierSetThis), show(seenValue)].join("|"));
+identifierOld = 0; log = ""; identifierGetThis = false;
+identifierSetThis = false; seenValue = undefined;
+const identifierLogicalSet = identifierAccessor ||= rhsExpr();
+print("identifier-logical-set=" + [show(identifierLogicalSet), log,
+      show(identifierGetThis), show(identifierSetThis), show(seenValue)].join("|"));
+identifierOld = 2; log = ""; identifierGetThis = false;
+identifierSetThis = false; seenValue = undefined;
+const identifierLogicalShort = identifierAccessor ||= rhsExpr();
+print("identifier-logical-short=" + [show(identifierLogicalShort), log,
+      show(identifierGetThis), show(identifierSetThis), show(seenValue)].join("|"));
+identifierOld = undefined; log = ""; seenValue = undefined;
+const identifierNamed = identifierAccessor ??= function(){};
+print("identifier-name=" + [show(identifierNamed.name),
+      show(identifierNamed === seenValue), log].join("|"));
+identifierOld = undefined; log = ""; seenValue = undefined;
+const identifierParenNamed = (identifierAccessor) ??= function(){};
+print("identifier-paren-name=" + [show(identifierParenNamed.name),
+      show(identifierParenNamed === seenValue), log].join("|"));
+print("identifier-readonly=" + [show(identifierReadonly += 3), show(identifierReadonly),
+      observe(() => (function(){ "use strict"; return identifierReadonly += 3; })()),
+      observe(() => (function(){ "use strict"; return identifierReadonly ||= 9; })()),
+      observe(() => (function(){ "use strict"; return identifierReadonly &&= 9; })())].join("|"));
+log = "";
+print("identifier-missing=" + observe(() => identifierMissing += rhsExpr()) + "|" + log);
+log = "";
+print("identifier-getter-throw=" + observe(() => identifierThrowing ||= rhsExpr()) + "|" + log);
+
 log = "";
 print("null-logical=" + observe(() => null[compoundKeyExpr()] ||= rhsExpr()) + "|" + log);
 
@@ -223,6 +271,68 @@ fn rust_observations() -> Vec<String> {
     define_global(&runtime, &mut context, "seenThis", Value::Bool(false));
     define_global(&runtime, &mut context, "seenValue", Value::Undefined);
     define_global(&runtime, &mut context, "oldValue", Value::Int(2));
+    define_global(&runtime, &mut context, "identifierOld", Value::Int(2));
+    define_global(
+        &runtime,
+        &mut context,
+        "identifierGetThis",
+        Value::Bool(false),
+    );
+    define_global(
+        &runtime,
+        &mut context,
+        "identifierSetThis",
+        Value::Bool(false),
+    );
+    let global = context.global_object().unwrap();
+    define_global(
+        &runtime,
+        &mut context,
+        "identifierGlobal",
+        Value::Object(global.clone()),
+    );
+    let identifier_getter = function(
+        &runtime,
+        &mut context,
+        "(function(){ log = log + 'G'; identifierGetThis = this === identifierGlobal; return identifierOld; })",
+    );
+    let identifier_setter = function(
+        &runtime,
+        &mut context,
+        "(function(value){ log = log + 'S'; identifierSetThis = this === identifierGlobal; seenValue = value; })",
+    );
+    let identifier_accessor = runtime.intern_property_key("identifierAccessor").unwrap();
+    define_accessor(
+        &mut context,
+        &global,
+        &identifier_accessor,
+        AccessorValue::Callable(identifier_getter),
+        AccessorValue::Callable(identifier_setter),
+        true,
+    );
+    let identifier_readonly = runtime.intern_property_key("identifierReadonly").unwrap();
+    define_data(
+        &mut context,
+        &global,
+        &identifier_readonly,
+        Value::Int(2),
+        false,
+        true,
+    );
+    let identifier_throwing_getter = function(
+        &runtime,
+        &mut context,
+        "(function(){ log = log + 'G'; throw new Error('identifier getter'); })",
+    );
+    let identifier_throwing = runtime.intern_property_key("identifierThrowing").unwrap();
+    define_accessor(
+        &mut context,
+        &global,
+        &identifier_throwing,
+        AccessorValue::Callable(identifier_throwing_getter),
+        AccessorValue::Undefined,
+        true,
+    );
 
     let proto = context.new_object().unwrap();
     let target = context.new_object_with_prototype(Some(&proto)).unwrap();
@@ -714,6 +824,128 @@ fn rust_observations() -> Vec<String> {
             string_global(&runtime, &mut context, "log")
         ));
     }
+
+    for (label, old_value, source) in [
+        (
+            "identifier-arithmetic",
+            Value::Int(2),
+            "identifierAccessor += rhsExpr()",
+        ),
+        (
+            "identifier-logical-set",
+            Value::Int(0),
+            "identifierAccessor ||= rhsExpr()",
+        ),
+        (
+            "identifier-logical-short",
+            Value::Int(2),
+            "identifierAccessor ||= rhsExpr()",
+        ),
+    ] {
+        set_global(&runtime, &mut context, "identifierOld", old_value);
+        set_global(
+            &runtime,
+            &mut context,
+            "log",
+            Value::String(JsString::from("")),
+        );
+        set_global(
+            &runtime,
+            &mut context,
+            "identifierGetThis",
+            Value::Bool(false),
+        );
+        set_global(
+            &runtime,
+            &mut context,
+            "identifierSetThis",
+            Value::Bool(false),
+        );
+        set_global(&runtime, &mut context, "seenValue", Value::Undefined);
+        let result = context.eval(source).unwrap();
+        output.push(format!(
+            "{label}={}|{}|{}|{}|{}",
+            show(result),
+            string_global(&runtime, &mut context, "log"),
+            show(global_value(&runtime, &mut context, "identifierGetThis")),
+            show(global_value(&runtime, &mut context, "identifierSetThis")),
+            show(global_value(&runtime, &mut context, "seenValue")),
+        ));
+    }
+
+    let name = runtime.intern_property_key("name").unwrap();
+    for (label, source) in [
+        ("identifier-name", "identifierAccessor ??= function(){}"),
+        (
+            "identifier-paren-name",
+            "(identifierAccessor) ??= function(){}",
+        ),
+    ] {
+        set_global(&runtime, &mut context, "identifierOld", Value::Undefined);
+        set_global(
+            &runtime,
+            &mut context,
+            "log",
+            Value::String(JsString::from("")),
+        );
+        set_global(&runtime, &mut context, "seenValue", Value::Undefined);
+        let Value::Object(result) = context.eval(source).unwrap() else {
+            panic!("identifier name probe did not produce a function");
+        };
+        let result_value = Value::Object(result.clone());
+        output.push(format!(
+            "{label}={}|{}|{}",
+            show(context.get_property(&result, &name).unwrap()),
+            show(Value::Bool(
+                result_value == global_value(&runtime, &mut context, "seenValue")
+            )),
+            string_global(&runtime, &mut context, "log"),
+        ));
+    }
+
+    output.push(format!(
+        "identifier-readonly={}|{}|{}|{}|{}",
+        show(context.eval("identifierReadonly += 3").unwrap()),
+        show(context.eval("identifierReadonly").unwrap()),
+        observe(
+            &runtime,
+            &mut context,
+            "(function(){ 'use strict'; return identifierReadonly += 3; })()"
+        ),
+        observe(
+            &runtime,
+            &mut context,
+            "(function(){ 'use strict'; return identifierReadonly ||= 9; })()"
+        ),
+        observe(
+            &runtime,
+            &mut context,
+            "(function(){ 'use strict'; return identifierReadonly &&= 9; })()"
+        ),
+    ));
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    let identifier_missing = observe(&runtime, &mut context, "identifierMissing += rhsExpr()");
+    output.push(format!(
+        "identifier-missing={identifier_missing}|{}",
+        string_global(&runtime, &mut context, "log")
+    ));
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    let identifier_getter_throw =
+        observe(&runtime, &mut context, "identifierThrowing ||= rhsExpr()");
+    output.push(format!(
+        "identifier-getter-throw={identifier_getter_throw}|{}",
+        string_global(&runtime, &mut context, "log")
+    ));
 
     set_global(
         &runtime,
