@@ -898,7 +898,13 @@ impl<'source> Parser<'source> {
             TokenKind::Template(_) | TokenKind::RegExp(_) | TokenKind::PrivateIdentifier(_) => {
                 return Err(self.unsupported_here("this literal form is not implemented yet"));
             }
-            TokenKind::Punctuator(_) | TokenKind::Eof => {
+            TokenKind::Punctuator(punctuator) => {
+                return Err(self.syntax_here(format!(
+                    "unexpected token in expression: '{}'",
+                    punctuator.as_str()
+                )));
+            }
+            TokenKind::Eof => {
                 return Err(self.syntax_here("expected an expression"));
             }
         }
@@ -925,7 +931,7 @@ impl<'source> Parser<'source> {
             loop {
                 let token = self.current().clone();
                 let TokenKind::Identifier(identifier) = token.kind else {
-                    return Err(self.syntax_here("expected a simple identifier parameter"));
+                    return Err(self.syntax_here("missing formal parameter"));
                 };
                 validate_identifier(&identifier, token.span, false, true)?;
                 parameter_tokens.push((identifier.clone(), token.span));
@@ -936,7 +942,12 @@ impl<'source> Parser<'source> {
                 }
                 self.advance();
                 if !self.consume_punctuator(Punctuator::Comma) {
-                    self.expect_punctuator(Punctuator::RightParen)?;
+                    if !self.consume_punctuator(Punctuator::RightParen) {
+                        return Err(Error::syntax(
+                            "expecting ','",
+                            source_span(self.current().span),
+                        ));
+                    }
                     break;
                 }
                 if self.is_punctuator(Punctuator::RightParen) {
@@ -960,8 +971,8 @@ impl<'source> Parser<'source> {
                 let parameter = &identifier.value;
                 if parameters[..index].contains(parameter) {
                     return Err(Error::syntax(
-                        "duplicate parameter names are forbidden in strict mode",
-                        source_span(function_span),
+                        "duplicate argument names not allowed in this context",
+                        source_span(self.current().span),
                     ));
                 }
             }

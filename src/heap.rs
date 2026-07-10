@@ -346,6 +346,9 @@ pub enum AutoInitProperty {
 pub struct ContextData {
     pub object_prototype: ObjectId,
     pub function_prototype: ObjectId,
+    /// `%Function%`, published after the cyclic realm bootstrap has created
+    /// `%Function.prototype%` and the global object.
+    pub function_constructor: Option<ObjectId>,
     /// Shared frozen poison callable used by legacy restricted function
     /// accessors and future restricted arguments objects.
     pub throw_type_error: Option<ObjectId>,
@@ -371,6 +374,7 @@ impl ContextData {
         Self {
             object_prototype,
             function_prototype,
+            function_constructor: None,
             throw_type_error: None,
             global_object,
             global_var_object,
@@ -631,6 +635,7 @@ pub enum ObjectKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NativeFunctionId {
     FunctionPrototype,
+    FunctionConstructor(DynamicFunctionKind),
     ThrowTypeError,
     FunctionPrototypeCall,
     FunctionPrototypeApply,
@@ -653,6 +658,16 @@ pub enum NativeFunctionId {
     ConstructorOrFunctionProbe,
     #[cfg(test)]
     ActiveFrameProbe,
+}
+
+/// Typed equivalent of QuickJS's magic selector shared by the dynamic
+/// Function-family constructors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DynamicFunctionKind {
+    Normal,
+    Generator,
+    Async,
+    AsyncGenerator,
 }
 
 /// Typed replacement for the magic selector shared by QuickJS's function
@@ -726,6 +741,9 @@ impl NativeFunctionId {
             | Self::ObjectPrototypeToLocaleString
             | Self::ObjectPrototypeValueOf => NativeFunctionDescriptor {
                 cproto: NativeCProto::Generic,
+            },
+            Self::FunctionConstructor(_) => NativeFunctionDescriptor {
+                cproto: NativeCProto::ConstructorOrFunctionMagic,
             },
             Self::FunctionPrototypeFileName => NativeFunctionDescriptor {
                 cproto: NativeCProto::Getter,
@@ -1345,6 +1363,46 @@ impl Heap {
             unreachable!("context identity was validated before retaining the thrower")
         };
         context.throw_type_error = Some(thrower);
+        Ok(())
+    }
+
+    /// Publish the realm's `%Function%` root after its native callable and
+    /// constructor/prototype cycle have been fully initialized.
+    pub(crate) fn attach_function_constructor(
+        &mut self,
+        realm: ContextId,
+        constructor: ObjectId,
+    ) -> Result<(), HeapError> {
+        let context = self.context(realm)?;
+        if context.function_constructor.is_some() {
+            return Err(HeapError::Invariant(
+                "context already has a Function constructor root",
+            ));
+        }
+        let constructor_object = self.object(constructor)?;
+        if !constructor_object.is_constructor
+            || !matches!(
+                constructor_object.payload,
+                ObjectPayload::NativeFunction {
+                    data: NativeFunctionData {
+                        target: NativeFunctionId::FunctionConstructor(DynamicFunctionKind::Normal),
+                        realm: Some(target_realm),
+                        ..
+                    }
+                } if target_realm == realm
+            )
+        {
+            return Err(HeapError::Invariant(
+                "Function constructor root is not the realm's Function native",
+            ));
+        }
+
+        self.retain_raw(RawId::Object(constructor), 1)?;
+        let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(realm))?.data
+        else {
+            unreachable!("context identity was validated before retaining Function")
+        };
+        context.function_constructor = Some(constructor);
         Ok(())
     }
 
@@ -2594,7 +2652,7 @@ fn raw_value_edges(value: &RawValue) -> Vec<RawId> {
 
 fn context_edges(context: &ContextData) -> Vec<RawId> {
     let mut edges = Vec::with_capacity(
-        6usize
+        7usize
             .saturating_add(NativeErrorKind::COUNT)
             .saturating_add(context.global_objects.len())
             .saturating_add(context.intrinsics.len())
@@ -2602,6 +2660,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     );
     edges.push(RawId::Object(context.object_prototype));
     edges.push(RawId::Object(context.function_prototype));
+    edges.extend(context.function_constructor.map(RawId::Object));
     edges.extend(context.throw_type_error.map(RawId::Object));
     edges.push(RawId::Object(context.global_object));
     edges.push(RawId::Object(context.global_var_object));

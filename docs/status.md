@@ -180,6 +180,17 @@ claim full parity.
   method implements ordinary prototype traversal and delegates a bound target
   through the full instance-check path, including custom target
   `Symbol.hasInstance` and thrown completions.
+- The normal `%Function%` intrinsic is a constructor-or-function native rooted
+  explicitly by its realm, published as the global `Function`, and linked to
+  `%Function.prototype%` with the exact final key order and descriptors. Its
+  dynamic constructor follows QuickJS's typed function-kind handler: it
+  performs completion-aware parameter/body `ToString` in actual-argc order,
+  builds the exact `(function anonymous(...))` wrapper, compiles it as
+  `<input>` indirect global code in the constructor's defining realm, and only
+  then performs the observable `newTarget.prototype` Get and cross-realm
+  fallback. Generated functions preserve the upstream name, length, 1:2 debug
+  definition site, authored source, strict duplicate-parameter validation,
+  constructability and strip-mode behavior for the grammar accepted today.
 - Native payloads carry a typed target, cproto descriptor, defining realm and
   minimum readable argument count; actual argc remains distinct from
   undefined-padded argv. Generic, constructor-only, constructor-or-function,
@@ -253,6 +264,11 @@ claim full parity.
   A VM object-coercion differential covers Number/default hints, unary and
   binary operators, BigInt/String relations, abstract equality, left-to-right
   conversion, Symbol error precedence, arbitrary throws and coercion stacks.
+  A normal-Function-constructor differential locks the intrinsic/global graph,
+  descriptors and key order, exact dynamic source and debug metadata, call/new
+  behavior, source-conversion/parse/prototype-Get ordering, custom/fallback new
+  targets, sloppy/strict duplicate parameters, exact covered diagnostics, and
+  all three source/debug strip modes.
 - `Runtime` and `Context` are distinct; `qjs -e` and file execution use the
   Rust compiler/VM path and never delegate to an external engine.
 
@@ -261,7 +277,7 @@ claim full parity.
 The function slice is intentionally narrow. Function declarations/hoisting,
 block scopes, source `let`/`const` declarations and their declaration-
 instantiation rules, general assignment targets and compound operators, module
-resolution, member/method bytecode, computed/method naming, `%Function%`, mapped
+resolution, member/method bytecode, computed/method naming, mapped
 `arguments`, arrow/async/generator functions and callable Proxy classes
 are not yet implemented. Top-level declarations are rejected instead of being
 faked as frame locals. The internal global lexical VarRef path already enforces
@@ -273,12 +289,12 @@ this includes a reference to `arguments` inside `function arguments(){...}`, whe
 QuickJS resolves the implicit arguments object before the private function name.
 The current `new` parser accepts the implemented primary/new-expression
 constructor heads, but not MemberExpression heads such as `new obj.F()`.
-Derived/class/super construction, `%Function%`, `AggregateError`, other native
-builtin constructor families, Proxy construct dispatch, and Reflect APIs
-remain. Typed target/cproto, data-bearing Error selector, realm, arity padding,
-production BoundFunction allocation and frame foundations exist, but
-specialized setter/F64/iterator cproto adapters and the wider builtin table
-remain.
+Derived/class/super construction, dynamic Generator/Async/AsyncGenerator
+Function constructors, `AggregateError`, other native builtin constructor
+families, Proxy construct dispatch, and Reflect APIs remain. Typed
+target/cproto, data-bearing Error selector, realm, arity padding, production
+BoundFunction allocation and frame foundations exist, but specialized
+setter/F64/iterator cproto adapters and the wider builtin table remain.
 
 Explicit `throw`, nested propagation, VM-generated native errors and eager
 Error backtraces share the completion path for the current synchronous slice,
@@ -293,8 +309,13 @@ removes the represented function source/location payload. The `qjs`
 including combined short options and their effect on `toString`, function debug
 accessors and Error backtraces. QuickJS's additional stripping of non-observable
 vardef/closure-var debug names and bytecode debug serialization are still
-pending. In particular `%Function%`, its Function-prototype `constructor` link,
-and the rest of the Function intrinsic/constructor graph remain pending. The
+pending. The normal `%Function%` graph is present, but dynamic formal parameters
+remain limited to simple identifiers and bodies to the current statement and
+expression grammar; implicit `arguments`, default/rest/destructuring
+parameters, generator/async kinds, Proxy new-target realms, and pinned
+QuickJS's wrapper-escape quirk remain pending. Compiler input is still UTF-8,
+so dynamic source containing an unpaired UTF-16 surrogate throws an explicit
+implementation-gap `InternalError` instead of being silently rewritten. The
 current parser does not yet produce generator or async bytecode, although the
 function-kind metadata and `toString` fallback distinguish all four QuickJS
 kinds. Bound dispatch is iterative and therefore does not consume the Rust host

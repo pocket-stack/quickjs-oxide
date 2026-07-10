@@ -32,6 +32,19 @@ fn eval_executes_source_level_functions_and_formats_native_errors() {
 }
 
 #[test]
+fn eval_executes_the_dynamic_function_constructor_path() {
+    for source in [
+        "throw Function(\"a\", \"return a + 1\")(41)",
+        "throw new Function(\"return 42\")()",
+    ] {
+        let output = qjs().args(["-e", source]).output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert_eq!(String::from_utf8(output.stderr).unwrap(), "42\n");
+    }
+}
+
+#[test]
 fn exception_output_quotes_strings_and_marks_bigints() {
     for (source, expected) in [
         ("throw \"x\"", "\"x\"\n"),

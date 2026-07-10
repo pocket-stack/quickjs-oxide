@@ -13,7 +13,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::atom::{Atom, AtomError, AtomKind, AtomTable};
 use crate::bytecode::verify_parts;
-use crate::compiler::{CompileOptions, compile_unlinked_script_with_filename};
+use crate::compiler::{
+    CompileOptions, DEFAULT_EVAL_FILENAME, compile_unlinked_script_with_filename,
+};
 use crate::debug::{DebugInfoMode, LineColumn, QuickJsSourceLocator};
 use crate::error::{Error, ErrorKind, NativeErrorKind};
 use crate::function::{
@@ -21,11 +23,11 @@ use crate::function::{
 };
 use crate::heap::{
     AutoInitProperty, BytecodeConstant, ClosureSource, ClosureVariable, ClosureVariableKind,
-    ClosureVariableName, ConstructorKind, ContextData, ContextId, ErrorConstructorKind,
-    FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo, FunctionDebugPosition,
-    FunctionKind, FunctionMetadata, GcStats, Heap, HeapCleanup, HeapCounts, HeapError,
-    NativeCProto, NativeFunctionId, ObjectData, ObjectId, ObjectKind, ObjectPayload, PropertySlot,
-    RawValue, ShapeId, VarRefData, VarRefId,
+    ClosureVariableName, ConstructorKind, ContextData, ContextId, DynamicFunctionKind,
+    ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo,
+    FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, Heap, HeapCleanup, HeapCounts,
+    HeapError, NativeCProto, NativeFunctionId, ObjectData, ObjectId, ObjectKind, ObjectPayload,
+    PropertySlot, RawValue, ShapeId, VarRefData, VarRefId,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -161,6 +163,11 @@ struct NativeArguments {
 
 enum NativeConversion<T> {
     Value(T),
+    Throw(Value),
+}
+
+enum Compilation {
+    Published(FunctionBytecodeRef),
     Throw(Value),
 }
 
@@ -1094,6 +1101,8 @@ impl Runtime {
             &global_object,
         )
         .expect("Error intrinsic initialization must succeed");
+        self.initialize_function_constructor(realm, &function_prototype, &global_object)
+            .expect("Function constructor initialization must succeed");
         drop(global_var_object);
         drop(global_object);
         drop(uninitialized_vars);
@@ -1522,6 +1531,40 @@ impl Runtime {
             )?;
             self.define_constructor_relationship(&constructor, prototype)?;
         }
+        Ok(())
+    }
+
+    fn initialize_function_constructor(
+        &self,
+        realm: ContextId,
+        function_prototype: &ObjectRef,
+        global_object: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        // QuickJS publishes Function after its prototype table and the Error
+        // family, then closes the constructor/prototype cycle. Its magic
+        // selector makes this same handler reusable by the future dynamic
+        // GeneratorFunction/AsyncFunction constructors.
+        let constructor = self.new_native_builtin(
+            function_prototype,
+            realm,
+            NativeFunctionId::FunctionConstructor(DynamicFunctionKind::Normal),
+            1,
+            "Function",
+            1,
+        )?;
+        self.define_function_data_property(
+            global_object,
+            "Function",
+            Value::Object(constructor.as_object().clone()),
+            true,
+            true,
+        )?;
+        self.define_constructor_relationship(&constructor, function_prototype)?;
+        self.0
+            .state
+            .borrow_mut()
+            .heap
+            .attach_function_constructor(realm, constructor.as_object().object_id())?;
         Ok(())
     }
 
@@ -3378,6 +3421,57 @@ impl Runtime {
             ))
     }
 
+    /// Compile and publish source without mutating the runtime pending-
+    /// exception slot. Native indirect-eval paths need the thrown value as a
+    /// normal completion, while the public Context boundary installs that
+    /// same value into the pending slot before returning `Exception`.
+    fn compile_in_realm(
+        &self,
+        realm: ContextId,
+        source: &str,
+        filename: &str,
+    ) -> Result<Compilation, RuntimeError> {
+        self.0.state.borrow().heap.context(realm)?;
+        let debug_info = self.debug_info_mode();
+        let function = match compile_unlinked_script_with_filename(source, filename, debug_info) {
+            Ok(function) => function,
+            Err(error) => {
+                let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
+                    return Err(RuntimeError::Engine(error));
+                };
+                let explicit_location = if error.kind() == ErrorKind::Syntax {
+                    if let Some(span) = error.span() {
+                        let position = QuickJsSourceLocator::new(source)
+                            .locate_byte_offset(span.start.byte_offset)
+                            .map_err(|_| {
+                                RuntimeError::Invariant(
+                                    "syntax-error byte offset is invalid for its source",
+                                )
+                            })?;
+                        Some(ExplicitBacktraceLocation {
+                            filename: JsString::from_utf8(filename),
+                            position,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let exception = if error.kind() == ErrorKind::Syntax {
+                    self.new_native_error_without_backtrace(realm, kind, error.message())?
+                } else {
+                    self.new_native_error(realm, kind, error.message())?
+                };
+                self.ensure_error_backtrace(&exception, false, explicit_location)?;
+                return Ok(Compilation::Throw(exception));
+            }
+        };
+        Ok(Compilation::Published(
+            self.publish_unlinked_function(realm, function)?,
+        ))
+    }
+
     fn snapshot_function_bytecode(
         &self,
         function: &FunctionBytecodeRef,
@@ -4693,6 +4787,26 @@ impl Runtime {
         }
     }
 
+    fn native_to_dynamic_source_fragment(
+        &self,
+        realm: ContextId,
+        value: &Value,
+    ) -> Result<NativeConversion<String>, RuntimeError> {
+        let value = match self.native_to_js_string(realm, value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        let units = value.utf16_units().collect::<Vec<_>>();
+        match String::from_utf16(&units) {
+            Ok(value) => Ok(NativeConversion::Value(value)),
+            Err(_) => Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Internal,
+                "dynamic Function source containing a lone UTF-16 surrogate is not implemented",
+            )?)),
+        }
+    }
+
     fn native_to_number(
         &self,
         realm: ContextId,
@@ -4908,6 +5022,131 @@ impl Runtime {
             this_argument,
             &arguments.readable[1..arguments.actual_arg_count],
         )
+    }
+
+    fn call_function_constructor(
+        &self,
+        realm: ContextId,
+        kind: DynamicFunctionKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Construct { new_target } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Function constructor did not receive constructor-or-function invocation",
+            ));
+        };
+
+        // Match js_function_constructor byte-for-byte: all parameter strings
+        // precede the final body string, argc == 0 reads no padded argument,
+        // and the complete wrapper is parsed as one indirect-eval unit so a
+        // body strict directive can retroactively validate the parameters.
+        let mut source = String::from("(");
+        match kind {
+            DynamicFunctionKind::Normal | DynamicFunctionKind::Generator => {}
+            DynamicFunctionKind::Async | DynamicFunctionKind::AsyncGenerator => {
+                source.push_str("async ");
+            }
+        }
+        source.push_str("function");
+        if matches!(
+            kind,
+            DynamicFunctionKind::Generator | DynamicFunctionKind::AsyncGenerator
+        ) {
+            source.push('*');
+        }
+        source.push_str(" anonymous(");
+
+        let parameter_count = arguments.actual_arg_count.saturating_sub(1);
+        for index in 0..parameter_count {
+            if index != 0 {
+                source.push(',');
+            }
+            let parameter =
+                match self.native_to_dynamic_source_fragment(realm, &arguments.readable[index])? {
+                    NativeConversion::Value(parameter) => parameter,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+            source.push_str(&parameter);
+        }
+        source.push_str("\n) {\n");
+        if arguments.actual_arg_count != 0 {
+            let body_index = arguments.actual_arg_count - 1;
+            let body = match self
+                .native_to_dynamic_source_fragment(realm, &arguments.readable[body_index])?
+            {
+                NativeConversion::Value(body) => body,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            source.push_str(&body);
+        }
+        source.push_str("\n})");
+
+        let script = match self.compile_in_realm(realm, &source, DEFAULT_EVAL_FILENAME)? {
+            Compilation::Published(script) => script,
+            Compilation::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let script_callable = self.new_bytecode_closure(realm, &script)?;
+        let global_object = {
+            let global_object = self.0.state.borrow().heap.context(realm)?.global_object;
+            ObjectRef::from_borrowed_handle(self.clone(), global_object)?
+        };
+        let value =
+            match self.call_internal(realm, &script_callable, Value::Object(global_object), &[])? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+
+        if matches!(new_target, Value::Undefined) {
+            return Ok(Completion::Return(value));
+        }
+        let Value::Object(new_target) = new_target else {
+            return Err(RuntimeError::Invariant(
+                "Function constructor new.target was neither undefined nor an object",
+            ));
+        };
+        let prototype_key = self.intern_property_key("prototype")?;
+        let prototype = match self.get_property_in_realm(realm, &new_target, &prototype_key)? {
+            Completion::Return(Value::Object(prototype)) => prototype,
+            Completion::Return(_) => {
+                let new_target = self.callable_from_value(Value::Object(new_target))?;
+                let fallback_realm = self.callable_realm(&new_target)?;
+                let prototype = match kind {
+                    DynamicFunctionKind::Normal => {
+                        self.0
+                            .state
+                            .borrow()
+                            .heap
+                            .context(fallback_realm)?
+                            .function_prototype
+                    }
+                    DynamicFunctionKind::Generator
+                    | DynamicFunctionKind::Async
+                    | DynamicFunctionKind::AsyncGenerator => {
+                        return Err(RuntimeError::Invariant(
+                            "dynamic Function kind has no intrinsic prototype yet",
+                        ));
+                    }
+                };
+                ObjectRef::from_borrowed_handle(self.clone(), prototype)?
+            }
+            Completion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let Value::Object(function) = value else {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "not an object",
+            )?));
+        };
+        if !self.set_prototype_of(&function, Some(&prototype))? {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "prototype is immutable",
+            )?));
+        }
+        Ok(Completion::Return(Value::Object(function)))
     }
 
     fn call_function_prototype_apply(
@@ -5807,6 +6046,9 @@ impl Runtime {
         let _ = &invocation;
         match target {
             NativeFunctionId::FunctionPrototype => Ok(Completion::Return(Value::Undefined)),
+            NativeFunctionId::FunctionConstructor(kind) => {
+                self.call_function_constructor(realm, kind, invocation, arguments)
+            }
             NativeFunctionId::ThrowTypeError => {
                 self.call_throw_type_error(realm, invocation, arguments)
             }
@@ -7436,6 +7678,22 @@ impl Context {
         )?)
     }
 
+    /// Return this realm's `%Function%` constructor root.
+    pub fn function_constructor(&self) -> Result<CallableRef, RuntimeError> {
+        let object = self
+            .runtime
+            .0
+            .state
+            .borrow()
+            .heap
+            .context(self.realm)?
+            .function_constructor
+            .ok_or(RuntimeError::Invariant("realm has no Function constructor"))?;
+        Ok(CallableRef::from_validated_object(
+            ObjectRef::from_borrowed_handle(self.runtime.clone(), object)?,
+        ))
+    }
+
     /// Return this realm's global object root.
     pub fn global_object(&self) -> Result<ObjectRef, RuntimeError> {
         let object = self
@@ -7632,50 +7890,16 @@ impl Context {
         source: &str,
         options: &CompileOptions,
     ) -> Result<FunctionBytecodeRef, RuntimeError> {
-        let debug_info = self.runtime.debug_info_mode();
-        let function =
-            match compile_unlinked_script_with_filename(source, &options.filename, debug_info) {
-                Ok(function) => function,
-                Err(error) => {
-                    let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
-                        return Err(RuntimeError::Engine(error));
-                    };
-                    let explicit_location = if error.kind() == ErrorKind::Syntax {
-                        if let Some(span) = error.span() {
-                            let position = QuickJsSourceLocator::new(source)
-                                .locate_byte_offset(span.start.byte_offset)
-                                .map_err(|_| {
-                                    RuntimeError::Invariant(
-                                        "syntax-error byte offset is invalid for its source",
-                                    )
-                                })?;
-                            Some(ExplicitBacktraceLocation {
-                                filename: JsString::from_utf8(&options.filename),
-                                position,
-                            })
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-                    let exception = if error.kind() == ErrorKind::Syntax {
-                        self.runtime.new_native_error_without_backtrace(
-                            self.realm,
-                            kind,
-                            error.message(),
-                        )?
-                    } else {
-                        self.runtime
-                            .new_native_error(self.realm, kind, error.message())?
-                    };
-                    self.runtime
-                        .ensure_error_backtrace(&exception, false, explicit_location)?;
-                    self.runtime.set_pending_exception(exception)?;
-                    return Err(RuntimeError::Exception);
-                }
-            };
-        self.runtime.publish_unlinked_function(self.realm, function)
+        match self
+            .runtime
+            .compile_in_realm(self.realm, source, &options.filename)?
+        {
+            Compilation::Published(function) => Ok(function),
+            Compilation::Throw(exception) => {
+                self.runtime.set_pending_exception(exception)?;
+                Err(RuntimeError::Exception)
+            }
+        }
     }
 
     /// Instantiate and evaluate runtime-owned script bytecode.
@@ -7809,7 +8033,8 @@ mod tests {
     use crate::function::{UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug};
     use crate::heap::{
         ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
-        FunctionDebugPosition, FunctionMetadata, NativeCProto, NativeFunctionId, ObjectPayload,
+        DynamicFunctionKind, FunctionDebugPosition, FunctionMetadata, NativeCProto,
+        NativeFunctionId, ObjectPayload,
     };
     use crate::object::{
         AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField,
@@ -8827,6 +9052,7 @@ mod tests {
         let file_name = runtime.intern_property_key("fileName").unwrap();
         let line_number = runtime.intern_property_key("lineNumber").unwrap();
         let column_number = runtime.intern_property_key("columnNumber").unwrap();
+        let constructor = runtime.intern_property_key("constructor").unwrap();
         let has_instance =
             PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::HasInstance));
         let prototype = runtime.intern_property_key("prototype").unwrap();
@@ -8844,6 +9070,7 @@ mod tests {
                 file_name,
                 line_number,
                 column_number,
+                constructor,
                 has_instance,
             ]
         );
@@ -8877,6 +9104,914 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn function_constructor_intrinsic_and_dynamic_source_match_quickjs() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let constructor = context.function_constructor().unwrap();
+        let function_prototype = context.function_prototype().unwrap();
+        let global = context.global_object().unwrap();
+        let length = runtime.intern_property_key("length").unwrap();
+        let name = runtime.intern_property_key("name").unwrap();
+        let prototype = runtime.intern_property_key("prototype").unwrap();
+        let constructor_key = runtime.intern_property_key("constructor").unwrap();
+        let function_key = runtime.intern_property_key("Function").unwrap();
+
+        assert!(runtime.is_constructor(constructor.as_object()).unwrap());
+        assert_eq!(runtime.callable_realm(&constructor).unwrap(), context.realm);
+        assert_eq!(
+            runtime.get_prototype_of(constructor.as_object()).unwrap(),
+            Some(function_prototype.clone())
+        );
+        assert_eq!(
+            runtime.own_property_keys(constructor.as_object()).unwrap(),
+            vec![length.clone(), name.clone(), prototype.clone()]
+        );
+        assert!(matches!(
+            runtime
+                .get_own_property(constructor.as_object(), &length)
+                .unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Int(1),
+                writable: false,
+                enumerable: false,
+                configurable: true,
+            })
+        ));
+        assert!(matches!(
+            runtime
+                .get_own_property(constructor.as_object(), &name)
+                .unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::String(value),
+                writable: false,
+                enumerable: false,
+                configurable: true,
+            }) if value == JsString::from("Function")
+        ));
+        assert!(matches!(
+            runtime
+                .get_own_property(constructor.as_object(), &prototype)
+                .unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Object(value),
+                writable: false,
+                enumerable: false,
+                configurable: false,
+            }) if value == function_prototype
+        ));
+        assert!(matches!(
+            runtime.get_own_property(&global, &function_key).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Object(value),
+                writable: true,
+                enumerable: false,
+                configurable: true,
+            }) if value == constructor.as_object().clone()
+        ));
+        assert!(matches!(
+            runtime
+                .get_own_property(&function_prototype, &constructor_key)
+                .unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Object(value),
+                writable: true,
+                enumerable: false,
+                configurable: true,
+            }) if value == constructor.as_object().clone()
+        ));
+        {
+            let state = runtime.0.state.borrow();
+            let ObjectPayload::NativeFunction { data } = &state
+                .heap
+                .object(constructor.as_object().object_id())
+                .unwrap()
+                .payload
+            else {
+                panic!("Function was not a native constructor");
+            };
+            assert_eq!(
+                data.target,
+                NativeFunctionId::FunctionConstructor(DynamicFunctionKind::Normal)
+            );
+            assert_eq!(
+                data.target.descriptor().cproto,
+                NativeCProto::ConstructorOrFunctionMagic
+            );
+            assert_eq!(data.min_readable_args, 1);
+        }
+
+        let to_string = runtime.intern_property_key("toString").unwrap();
+        let Value::Object(to_string) = context
+            .get_property(&function_prototype, &to_string)
+            .unwrap()
+        else {
+            panic!("Function.prototype.toString was not callable");
+        };
+        let to_string = runtime.as_callable(&to_string).unwrap().unwrap();
+        assert_eq!(
+            context
+                .call(
+                    &to_string,
+                    Value::Object(constructor.as_object().clone()),
+                    &[],
+                )
+                .unwrap(),
+            Value::String(JsString::from(
+                "function Function() {\n    [native code]\n}"
+            ))
+        );
+
+        let Value::Object(empty) = context.call(&constructor, Value::Null, &[]).unwrap() else {
+            panic!("Function() did not return an object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&empty).unwrap(),
+            Some(function_prototype)
+        );
+        assert_eq!(
+            context
+                .call(&to_string, Value::Object(empty.clone()), &[])
+                .unwrap(),
+            Value::String(JsString::from("function anonymous(\n) {\n\n}"))
+        );
+        for (property_name, expected) in [
+            ("name", Value::String(JsString::from("anonymous"))),
+            ("length", Value::Int(0)),
+            ("fileName", Value::String(JsString::from("<input>"))),
+            ("lineNumber", Value::Int(1)),
+            ("columnNumber", Value::Int(2)),
+        ] {
+            let key = runtime.intern_property_key(property_name).unwrap();
+            assert_eq!(context.get_property(&empty, &key).unwrap(), expected);
+        }
+
+        let Value::Object(add) = context
+            .call(
+                &constructor,
+                Value::Undefined,
+                &[
+                    Value::String(JsString::from("a")),
+                    Value::String(JsString::from("b")),
+                    Value::String(JsString::from("return a + b")),
+                ],
+            )
+            .unwrap()
+        else {
+            panic!("Function parameters did not produce an object");
+        };
+        let add_callable = runtime.as_callable(&add).unwrap().unwrap();
+        assert_eq!(
+            context
+                .call(
+                    &add_callable,
+                    Value::Undefined,
+                    &[Value::Int(20), Value::Int(22)],
+                )
+                .unwrap(),
+            Value::Int(42)
+        );
+        assert_eq!(
+            context.call(&to_string, Value::Object(add), &[]).unwrap(),
+            Value::String(JsString::from(
+                "function anonymous(a,b\n) {\nreturn a + b\n}"
+            ))
+        );
+
+        let Value::Object(duplicate) = context
+            .call(
+                &constructor,
+                Value::Undefined,
+                &[
+                    Value::String(JsString::from("a")),
+                    Value::String(JsString::from("a")),
+                    Value::String(JsString::from("return a")),
+                ],
+            )
+            .unwrap()
+        else {
+            panic!("sloppy duplicate parameters were rejected");
+        };
+        let duplicate = runtime.as_callable(&duplicate).unwrap().unwrap();
+        assert_eq!(
+            context
+                .call(
+                    &duplicate,
+                    Value::Undefined,
+                    &[Value::Int(1), Value::Int(2)],
+                )
+                .unwrap(),
+            Value::Int(2)
+        );
+
+        assert_eq!(
+            context.call(
+                &constructor,
+                Value::Undefined,
+                &[
+                    Value::String(JsString::from("a")),
+                    Value::String(JsString::from("a")),
+                    Value::String(JsString::from("\"use strict\"; return a")),
+                ],
+            ),
+            Err(RuntimeError::Exception)
+        );
+        let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
+            panic!("strict duplicate parameters did not throw an Error");
+        };
+        assert_eq!(
+            context.get_property(&error, &name).unwrap(),
+            Value::String(JsString::from("SyntaxError"))
+        );
+
+        assert_eq!(
+            context.call(
+                &constructor,
+                Value::Undefined,
+                &[Value::String(JsString::from_utf16([0xd800]))],
+            ),
+            Err(RuntimeError::Exception)
+        );
+        let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
+            panic!("lone-surrogate source did not throw an Error");
+        };
+        assert_eq!(
+            context.get_property(&error, &name).unwrap(),
+            Value::String(JsString::from("InternalError"))
+        );
+    }
+
+    #[test]
+    fn function_constructor_uses_defining_realm_and_new_target_prototype() {
+        let runtime = Runtime::new();
+        let first = runtime.new_context();
+        let mut second = runtime.new_context();
+        let constructor = first.function_constructor().unwrap();
+        let first_function_prototype = first.function_prototype().unwrap();
+        let second_function_prototype = second.function_prototype().unwrap();
+        let first_object_prototype = first.object_prototype().unwrap();
+        let marker = runtime.intern_property_key("dynamicRealmMarker").unwrap();
+        runtime
+            .define_function_data_property(
+                &first.global_object().unwrap(),
+                "dynamicRealmMarker",
+                Value::Int(11),
+                true,
+                true,
+            )
+            .unwrap();
+        runtime
+            .define_function_data_property(
+                &second.global_object().unwrap(),
+                "dynamicRealmMarker",
+                Value::Int(22),
+                true,
+                true,
+            )
+            .unwrap();
+        assert_eq!(
+            second
+                .get_property(&first.global_object().unwrap(), &marker)
+                .unwrap(),
+            Value::Int(11)
+        );
+
+        let Value::Object(dynamic) = second
+            .call(
+                &constructor,
+                Value::Object(second.global_object().unwrap()),
+                &[Value::String(JsString::from("return dynamicRealmMarker"))],
+            )
+            .unwrap()
+        else {
+            panic!("cross-realm Function call did not return an object");
+        };
+        let dynamic_callable = runtime.as_callable(&dynamic).unwrap().unwrap();
+        assert_eq!(
+            runtime.callable_realm(&dynamic_callable).unwrap(),
+            first.realm
+        );
+        assert_eq!(
+            runtime.get_prototype_of(&dynamic).unwrap(),
+            Some(first_function_prototype.clone())
+        );
+        assert_eq!(
+            second
+                .call(&dynamic_callable, Value::Undefined, &[])
+                .unwrap(),
+            Value::Int(11)
+        );
+
+        let Value::Object(new_target) = second.eval("(function NewTarget(){})").unwrap() else {
+            panic!("newTarget source did not return a function");
+        };
+        let new_target = runtime.as_callable(&new_target).unwrap().unwrap();
+        let prototype_key = runtime.intern_property_key("prototype").unwrap();
+        let custom_prototype = second.new_object().unwrap();
+        assert!(
+            runtime
+                .define_own_property(
+                    new_target.as_object(),
+                    &prototype_key,
+                    &OrdinaryPropertyDescriptor {
+                        value: DescriptorField::Present(Value::Object(custom_prototype.clone())),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        let Value::Object(customized) = second
+            .construct_with_new_target(
+                &constructor,
+                &new_target,
+                &[Value::String(JsString::from("return dynamicRealmMarker"))],
+            )
+            .unwrap()
+        else {
+            panic!("custom newTarget did not return an object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&customized).unwrap(),
+            Some(custom_prototype)
+        );
+        let customized_callable = runtime.as_callable(&customized).unwrap().unwrap();
+        assert_eq!(
+            second
+                .call(&customized_callable, Value::Undefined, &[])
+                .unwrap(),
+            Value::Int(11)
+        );
+        let Value::Object(instance_prototype) =
+            second.get_property(&customized, &prototype_key).unwrap()
+        else {
+            panic!("dynamic function prototype was not an object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&instance_prototype).unwrap(),
+            Some(first_object_prototype)
+        );
+
+        assert!(
+            runtime
+                .define_own_property(
+                    new_target.as_object(),
+                    &prototype_key,
+                    &OrdinaryPropertyDescriptor {
+                        value: DescriptorField::Present(Value::Int(1)),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        let Value::Object(fallback) = second
+            .construct_with_new_target(
+                &constructor,
+                &new_target,
+                &[Value::String(JsString::from("return 3"))],
+            )
+            .unwrap()
+        else {
+            panic!("fallback newTarget did not return an object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&fallback).unwrap(),
+            Some(second_function_prototype)
+        );
+        assert_eq!(runtime.callable_realm(&constructor).unwrap(), first.realm);
+    }
+
+    #[test]
+    fn function_constructor_samples_strip_mode_and_keeps_parse_locations() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let constructor = context.function_constructor().unwrap();
+        let function_prototype = context.function_prototype().unwrap();
+        let to_string_key = runtime.intern_property_key("toString").unwrap();
+        let Value::Object(to_string) = context
+            .get_property(&function_prototype, &to_string_key)
+            .unwrap()
+        else {
+            panic!("Function.prototype.toString was not an object");
+        };
+        let to_string = runtime.as_callable(&to_string).unwrap().unwrap();
+        let keys = ["fileName", "lineNumber", "columnNumber"]
+            .map(|name| runtime.intern_property_key(name).unwrap());
+
+        runtime.set_debug_info_mode(DebugInfoMode::StripSource);
+        let Value::Object(source_stripped) = context
+            .call(
+                &constructor,
+                Value::Undefined,
+                &[Value::String(JsString::from("return 1"))],
+            )
+            .unwrap()
+        else {
+            panic!("strip-source Function did not return an object");
+        };
+        for (key, expected) in keys.iter().zip([
+            Value::String(JsString::from("<input>")),
+            Value::Int(1),
+            Value::Int(2),
+        ]) {
+            assert_eq!(
+                context.get_property(&source_stripped, key).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            context
+                .call(&to_string, Value::Object(source_stripped.clone()), &[])
+                .unwrap(),
+            Value::String(JsString::from(
+                "function anonymous() {\n    [native code]\n}"
+            ))
+        );
+        let name = runtime.intern_property_key("name").unwrap();
+        assert!(
+            runtime
+                .define_own_property(
+                    &source_stripped,
+                    &name,
+                    &OrdinaryPropertyDescriptor {
+                        value: DescriptorField::Present(Value::String(JsString::from("renamed"))),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context
+                .call(&to_string, Value::Object(source_stripped), &[])
+                .unwrap(),
+            Value::String(JsString::from("function renamed() {\n    [native code]\n}"))
+        );
+
+        runtime.set_debug_info_mode(DebugInfoMode::StripDebug);
+        let Value::Object(debug_stripped) = context
+            .call(
+                &constructor,
+                Value::Undefined,
+                &[Value::String(JsString::from("return 2"))],
+            )
+            .unwrap()
+        else {
+            panic!("strip-debug Function did not return an object");
+        };
+        for key in &keys {
+            assert_eq!(
+                context.get_property(&debug_stripped, key).unwrap(),
+                Value::Undefined
+            );
+        }
+        assert_eq!(
+            context
+                .call(&to_string, Value::Object(debug_stripped), &[])
+                .unwrap(),
+            Value::String(JsString::from(
+                "function anonymous() {\n    [native code]\n}"
+            ))
+        );
+
+        assert_eq!(
+            context.call(
+                &constructor,
+                Value::Undefined,
+                &[
+                    Value::String(JsString::from("a-")),
+                    Value::String(JsString::from("return 1")),
+                ],
+            ),
+            Err(RuntimeError::Exception)
+        );
+        let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
+            panic!("malformed Function did not throw an Error");
+        };
+        for (name, expected) in [
+            ("fileName", Value::String(JsString::from("<input>"))),
+            ("lineNumber", Value::Int(1)),
+            ("columnNumber", Value::Int(22)),
+        ] {
+            let key = runtime.intern_property_key(name).unwrap();
+            assert_eq!(context.get_property(&error, &key).unwrap(), expected);
+        }
+        let stack = runtime.intern_property_key("stack").unwrap();
+        let Value::String(stack) = context.get_property(&error, &stack).unwrap() else {
+            panic!("Function syntax error had no stack");
+        };
+        assert_eq!(
+            stack,
+            JsString::from("    at <input>:1:22\n    at Function (native)\n")
+        );
+    }
+
+    #[test]
+    fn function_constructor_orders_source_conversion_parse_and_prototype_get() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let constructor = context.function_constructor().unwrap();
+        let global = context.global_object().unwrap();
+        runtime
+            .define_function_data_property(
+                &global,
+                "functionOrder",
+                Value::String(JsString::from("")),
+                true,
+                true,
+            )
+            .unwrap();
+        let custom_prototype = context.new_object().unwrap();
+        runtime
+            .define_function_data_property(
+                &global,
+                "functionCustomPrototype",
+                Value::Object(custom_prototype.clone()),
+                true,
+                true,
+            )
+            .unwrap();
+
+        let (
+            parameter_to_string,
+            body_to_string,
+            bad_parameter_to_string,
+            throwing_to_string,
+            prototype_getter,
+        ) = {
+            let mut eval_callable = |source: &str| {
+                let Value::Object(function) = context.eval(source).unwrap() else {
+                    panic!("conversion helper was not a function");
+                };
+                runtime.as_callable(&function).unwrap().unwrap()
+            };
+            (
+                eval_callable(
+                    "(function(){ functionOrder = functionOrder + \"p\"; return \"a\"; })",
+                ),
+                eval_callable(
+                    "(function(){ functionOrder = functionOrder + \"b\"; return \"return a\"; })",
+                ),
+                eval_callable(
+                    "(function(){ functionOrder = functionOrder + \"p\"; return \"a-\"; })",
+                ),
+                eval_callable(
+                    "(function(){ functionOrder = functionOrder + \"t\"; throw \"stop\"; })",
+                ),
+                eval_callable(
+                    "(function(){ functionOrder = functionOrder + \"x\"; return functionCustomPrototype; })",
+                ),
+            )
+        };
+
+        let to_string = runtime.intern_property_key("toString").unwrap();
+        let parameter = context.new_object().unwrap();
+        let body = context.new_object().unwrap();
+        runtime
+            .define_function_data_property(
+                &parameter,
+                "toString",
+                Value::Object(parameter_to_string.as_object().clone()),
+                true,
+                true,
+            )
+            .unwrap();
+        runtime
+            .define_function_data_property(
+                &body,
+                "toString",
+                Value::Object(body_to_string.as_object().clone()),
+                true,
+                true,
+            )
+            .unwrap();
+        assert!(runtime.has_own_property(&parameter, &to_string).unwrap());
+
+        let function_prototype = context.function_prototype().unwrap();
+        let bind_key = runtime.intern_property_key("bind").unwrap();
+        let Value::Object(bind) = context
+            .get_property(&function_prototype, &bind_key)
+            .unwrap()
+        else {
+            panic!("Function.prototype.bind was not an object");
+        };
+        let bind = runtime.as_callable(&bind).unwrap().unwrap();
+        let Value::Object(new_target) = context
+            .call(
+                &bind,
+                Value::Object(constructor.as_object().clone()),
+                &[Value::Undefined],
+            )
+            .unwrap()
+        else {
+            panic!("bound Function was not an object");
+        };
+        let new_target = runtime.as_callable(&new_target).unwrap().unwrap();
+        let prototype = runtime.intern_property_key("prototype").unwrap();
+        assert!(
+            runtime
+                .define_own_property(
+                    new_target.as_object(),
+                    &prototype,
+                    &OrdinaryPropertyDescriptor {
+                        get: DescriptorField::Present(AccessorValue::Callable(prototype_getter)),
+                        set: DescriptorField::Present(AccessorValue::Undefined),
+                        enumerable: DescriptorField::Present(false),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+
+        let Value::Object(function) = context
+            .construct_with_new_target(
+                &constructor,
+                &new_target,
+                &[
+                    Value::Object(parameter.clone()),
+                    Value::Object(body.clone()),
+                ],
+            )
+            .unwrap()
+        else {
+            panic!("converted Function source did not return an object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&function).unwrap(),
+            Some(custom_prototype)
+        );
+        let order = runtime.intern_property_key("functionOrder").unwrap();
+        assert_eq!(
+            context.get_property(&global, &order).unwrap(),
+            Value::String(JsString::from("pbx"))
+        );
+
+        runtime
+            .define_function_data_property(
+                &global,
+                "functionOrder",
+                Value::String(JsString::from("")),
+                true,
+                true,
+            )
+            .unwrap();
+        runtime
+            .define_function_data_property(
+                &parameter,
+                "toString",
+                Value::Object(bad_parameter_to_string.as_object().clone()),
+                true,
+                true,
+            )
+            .unwrap();
+        assert_eq!(
+            context.construct_with_new_target(
+                &constructor,
+                &new_target,
+                &[
+                    Value::Object(parameter.clone()),
+                    Value::Object(body.clone())
+                ],
+            ),
+            Err(RuntimeError::Exception)
+        );
+        drop(context.take_exception().unwrap());
+        assert_eq!(
+            context.get_property(&global, &order).unwrap(),
+            Value::String(JsString::from("pb"))
+        );
+
+        runtime
+            .define_function_data_property(
+                &global,
+                "functionOrder",
+                Value::String(JsString::from("")),
+                true,
+                true,
+            )
+            .unwrap();
+        runtime
+            .define_function_data_property(
+                &parameter,
+                "toString",
+                Value::Object(throwing_to_string.as_object().clone()),
+                true,
+                true,
+            )
+            .unwrap();
+        assert_eq!(
+            context.call(
+                &constructor,
+                Value::Undefined,
+                &[Value::Object(parameter), Value::Object(body)],
+            ),
+            Err(RuntimeError::Exception)
+        );
+        assert_eq!(
+            context.take_exception().unwrap(),
+            Some(Value::String(JsString::from("stop")))
+        );
+        assert_eq!(
+            context.get_property(&global, &order).unwrap(),
+            Value::String(JsString::from("t"))
+        );
+    }
+
+    #[test]
+    fn function_constructor_typed_realm_root_and_cycles_are_collectable() {
+        let runtime = Runtime::new();
+        let context = runtime.new_context();
+        let realm = context.realm;
+        let constructor = context.function_constructor().unwrap();
+        let function_prototype = context.function_prototype().unwrap();
+        let global = context.global_object().unwrap();
+        let function_key = runtime.intern_property_key("Function").unwrap();
+        let constructor_key = runtime.intern_property_key("constructor").unwrap();
+
+        assert!(runtime.delete_property(&global, &function_key).unwrap());
+        assert!(
+            runtime
+                .delete_property(&function_prototype, &constructor_key)
+                .unwrap()
+        );
+        drop(constructor);
+        let rooted = context.function_constructor().unwrap();
+        assert!(runtime.is_constructor(rooted.as_object()).unwrap());
+        assert!(matches!(
+            runtime.bytecode_for_callable(&rooted).unwrap(),
+            CallableExecution::Native {
+                target: NativeFunctionId::FunctionConstructor(DynamicFunctionKind::Normal),
+                realm: target_realm,
+                min_readable_args: 1,
+            } if target_realm == realm
+        ));
+
+        drop(rooted);
+        drop(function_key);
+        drop(constructor_key);
+        drop(global);
+        drop(function_prototype);
+        drop(context);
+        runtime.run_gc().unwrap();
+        assert!(runtime.0.state.borrow().heap.context(realm).is_err());
+        let counts = runtime.heap_counts();
+        assert_eq!(counts.context_nodes, 0);
+        assert_eq!(counts.object_nodes, 0);
+        assert_eq!(counts.shape_nodes, 0);
+        assert_eq!(counts.function_bytecode_nodes, 0);
+    }
+
+    #[test]
+    fn dynamic_function_keeps_its_defining_realm_alive() {
+        let runtime = Runtime::new();
+        let mut defining = runtime.new_context();
+        let defining_realm = defining.realm;
+        let constructor = defining.function_constructor().unwrap();
+        let Value::Object(function_object) = defining
+            .call(
+                &constructor,
+                Value::Undefined,
+                &[Value::String(JsString::from("return 9"))],
+            )
+            .unwrap()
+        else {
+            panic!("Function did not return a bytecode function");
+        };
+        let function = runtime.as_callable(&function_object).unwrap().unwrap();
+        drop(function_object);
+        let mut caller = runtime.new_context();
+
+        drop(constructor);
+        drop(defining);
+        runtime.run_gc().unwrap();
+        assert!(
+            runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .context(defining_realm)
+                .is_ok()
+        );
+        assert_eq!(
+            caller.call(&function, Value::Undefined, &[]).unwrap(),
+            Value::Int(9)
+        );
+
+        drop(function);
+        runtime.run_gc().unwrap();
+        assert!(
+            runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .context(defining_realm)
+                .is_err()
+        );
+        assert_eq!(runtime.heap_counts().context_nodes, 1);
+    }
+
+    #[test]
+    fn function_constructor_failure_paths_release_temporary_graphs() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let constructor = context.function_constructor().unwrap();
+        let live_counts = || {
+            let counts = runtime.heap_counts();
+            (
+                counts.object_nodes,
+                counts.shape_nodes,
+                counts.var_ref_nodes,
+                counts.context_nodes,
+                counts.function_bytecode_nodes,
+            )
+        };
+
+        let parse_baseline = live_counts();
+        let parse_atom_baseline = runtime.test_atom_count();
+        for _ in 0..3 {
+            assert_eq!(
+                context.call(
+                    &constructor,
+                    Value::Undefined,
+                    &[
+                        Value::String(JsString::from("a-")),
+                        Value::String(JsString::from("return 1")),
+                    ],
+                ),
+                Err(RuntimeError::Exception)
+            );
+            drop(context.take_exception().unwrap());
+            runtime.run_gc().unwrap();
+            assert_eq!(live_counts(), parse_baseline);
+            assert_eq!(runtime.test_atom_count(), parse_atom_baseline);
+        }
+
+        let function_prototype = context.function_prototype().unwrap();
+        let bind_key = runtime.intern_property_key("bind").unwrap();
+        let Value::Object(bind) = context
+            .get_property(&function_prototype, &bind_key)
+            .unwrap()
+        else {
+            panic!("Function.prototype.bind was not an object");
+        };
+        let bind = runtime.as_callable(&bind).unwrap().unwrap();
+        let Value::Object(new_target) = context
+            .call(
+                &bind,
+                Value::Object(constructor.as_object().clone()),
+                &[Value::Undefined],
+            )
+            .unwrap()
+        else {
+            panic!("bound Function was not an object");
+        };
+        let new_target = runtime.as_callable(&new_target).unwrap().unwrap();
+        let Value::Object(getter) = context
+            .eval("(function(){ throw \"prototype\"; })")
+            .unwrap()
+        else {
+            panic!("prototype getter was not an object");
+        };
+        let getter = runtime.as_callable(&getter).unwrap().unwrap();
+        let prototype = runtime.intern_property_key("prototype").unwrap();
+        assert!(
+            runtime
+                .define_own_property(
+                    new_target.as_object(),
+                    &prototype,
+                    &OrdinaryPropertyDescriptor {
+                        get: DescriptorField::Present(AccessorValue::Callable(getter)),
+                        set: DescriptorField::Present(AccessorValue::Undefined),
+                        enumerable: DescriptorField::Present(false),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        runtime.run_gc().unwrap();
+        let getter_baseline = live_counts();
+        let getter_atom_baseline = runtime.test_atom_count();
+        for _ in 0..3 {
+            assert_eq!(
+                context.construct_with_new_target(
+                    &constructor,
+                    &new_target,
+                    &[Value::String(JsString::from("return 1"))],
+                ),
+                Err(RuntimeError::Exception)
+            );
+            assert_eq!(
+                context.take_exception().unwrap(),
+                Some(Value::String(JsString::from("prototype")))
+            );
+            runtime.run_gc().unwrap();
+            assert_eq!(live_counts(), getter_baseline);
+            assert_eq!(runtime.test_atom_count(), getter_atom_baseline);
+        }
     }
 
     #[test]

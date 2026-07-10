@@ -18,6 +18,11 @@ ordinary/bound `@@hasInstance`) plus the eager `fileName`, `lineNumber`, and
 payload and forward calls, construction, `new.target`, realm lookup, and
 instance checks along the QuickJS paths; function source text and native
 fallback templates are also observable through `Function.prototype.toString`.
+The normal `%Function%` constructor is rooted in each realm with its exact
+constructor/prototype/global descriptors. For the currently supported ordinary
+function grammar it follows QuickJS's exact dynamic-source wrapper, indirect
+global compilation, actual-argc conversion order, call/construct split,
+cross-realm behavior, and `newTarget.prototype` fallback.
 Runtime-wide full/strip-source/strip-debug modes follow QuickJS's immutable
 bytecode publication boundary, and the `qjs` CLI exposes `--strip-source` and
 `-s` with upstream last-option-wins behavior.
@@ -26,9 +31,9 @@ The implemented VM operators use completion-aware QuickJS-style Number/default
 relational comparison and preservation of user-thrown coercion values.
 Explicit reference counting and cycle removal own those metadata, frame and
 intrinsic roots. Passing these tests proves only those slices;
-it does not imply QuickJS feature parity. Recoverable OOM behavior, `%Function%`
-and its constructor relationships, bytecode debug serialization, and most of
-the language and builtin library remain unfinished. See
+it does not imply QuickJS feature parity. Recoverable OOM behavior, the complete
+dynamic Function-family grammar, bytecode debug serialization, and most of the
+language and builtin library remain unfinished. See
 [`docs/parity.md`](docs/parity.md) for the full completion contract and
 [`docs/status.md`](docs/status.md) for the current audited boundary.
 
@@ -67,6 +72,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_bind_to_string -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_debug_accessors -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_function_constructor -- --nocapture
 ```
 
 Or run the complete current gate—including checksum-verified oracle setup,
