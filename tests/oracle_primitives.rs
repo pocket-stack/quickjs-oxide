@@ -290,6 +290,10 @@ const CASES: &[(&str, &str)] = &[
         "(function named(){ var result = named += ''; return typeof result + '|' + typeof named; })()",
     ),
     (
+        "sloppy private name postfix update ignores write",
+        "(function named(){ var before = named; named.valueOf = function(){ return 4; }; var old = named++; return old + '|' + (named === before) + '|' + typeof named; })()",
+    ),
+    (
         "sloppy private name logical names rhs and ignores write",
         "(function named(){ var before = named; var result = named &&= function(){}; return (named === before) + '|' + result.name; })()",
     ),
@@ -368,6 +372,73 @@ const CASES: &[(&str, &str)] = &[
     (
         "exponent compound does not infer anonymous function names",
         "(function(){ var names = ''; Function.prototype.valueOf = function(){ names = names + this.name + '|'; return 1; }; var direct = 1, paren = 1; direct **= function(){}; (paren) **= function(){}; Function.__qjo_power_name = 1; Function.__qjo_power_name **= function(){}; delete Function.prototype.valueOf; return names; })()",
+    ),
+    // Update expressions retain QuickJS's dedicated inc/dec and post-inc/dec
+    // semantics: postfix returns the converted old Numeric while prefix
+    // returns the replacement written through the original Reference.
+    (
+        "identifier update value and conversion matrix",
+        "(function(){ var value = '01'; var a = value++; var b = ++value; var c = value--; var d = --value; return typeof a + '|' + a + '|' + b + '|' + c + '|' + d + '|' + value; })()",
+    ),
+    (
+        "postfix object returns converted old numeric",
+        "(function(){ var value = function(){}; value.valueOf = function(){ return 4; }; var original = value; var old = value++; return (old === original) + '|' + typeof old + '|' + old + '|' + value; })()",
+    ),
+    (
+        "bigint update matrix",
+        "(function(){ var value = 4n; var old = value--; var replacement = ++value; return old * 100n + replacement * 10n + value; })()",
+    ),
+    (
+        "captured identifier updates share one cell",
+        "(function(value){ var update = function(){ return value++; }; return update() * 100 + (++value) * 10 + value; })(2)",
+    ),
+    (
+        "global identifier postfix update",
+        "(__qjo_update_global = '01', __qjo_update_global++ * 10 + __qjo_update_global)",
+    ),
+    (
+        "fixed member update preserves old and new values",
+        "(function(){ Function.__qjo_update = '01'; var old = Function.__qjo_update++; return old + '|' + ++Function.__qjo_update; })()",
+    ),
+    (
+        "computed member update converts key once",
+        "(function(){ var log = ''; var key = function(){}; key.toString = function(){ log = log + 'k'; return '__qjo_computed_update'; }; Function.__qjo_computed_update = '01'; var old = Function[key]++; return typeof old + '|' + old + '|' + Function.__qjo_computed_update + '|' + log; })()",
+    ),
+    (
+        "prefix and postfix updates bind before power",
+        "(function(){ var value = 2; return (++value ** 2) * 100 + (value++ ** 2) * 10 + value; })()",
+    ),
+    (
+        "postfix line terminator starts prefix statement",
+        "(function(){ var x = 1, y = 2; var result = x\n++y; return result * 100 + x * 10 + y; })()",
+    ),
+    (
+        "postfix CRLF starts prefix statement",
+        "(function(){ var x = 1, y = 2; var result = x\r\n++y; return result * 100 + x * 10 + y; })()",
+    ),
+    (
+        "postfix line-separator starts prefix statement",
+        "(function(){ var x = 1, y = 2; var result = x\u{2028}++y; return result * 100 + x * 10 + y; })()",
+    ),
+    (
+        "postfix paragraph-separator starts prefix statement",
+        "(function(){ var x = 1, y = 2; var result = x\u{2029}++y; return result * 100 + x * 10 + y; })()",
+    ),
+    (
+        "postfix block-comment line starts prefix statement",
+        "(function(){ var x = 1, y = 2; var result = x/*\n*/++y; return result * 100 + x * 10 + y; })()",
+    ),
+    (
+        "postfix survives comment without line terminator",
+        "(function(){ var value = 1; var old = value/**/++; return old * 10 + value; })()",
+    ),
+    (
+        "prefix accepts a line terminator",
+        "(function(){ var value = 1; return ++\nvalue; })()",
+    ),
+    (
+        "parenthesized references remain update targets",
+        "(function(){ var value = 1; var old = (value)++; return old * 100 + (++(value)) * 10 + value; })()",
     ),
     // Conditional selection and associativity.
     ("truthy conditional", "'x' ? -0 : 1"),
@@ -604,6 +675,20 @@ const SHARED_ERRORS: &[(&str, &str)] = &[
     ("unparenthesized void power lhs", "void 2 ** 2"),
     ("unparenthesized delete power lhs", "delete Function ** 2"),
     ("unparenthesized unary power rhs chain", "2 ** -2 ** 3"),
+    (
+        "unparenthesized unary containing postfix update power lhs",
+        "(function(value){ return -value++ ** 2; })(2)",
+    ),
+    (
+        "prefix update rejects a power expression operand",
+        "(function(value){ return ++(value ** 2); })(2)",
+    ),
+    (
+        "postfix update rejects a power expression operand",
+        "(function(value){ return (value ** 2)++; })(2)",
+    ),
+    ("prefix update rejects a value operand", "++1"),
+    ("postfix update rejects a value operand", "1++"),
     ("adjacent numeric expressions need ASI", "1 2"),
     ("malformed hexadecimal literal", "0x"),
     ("legacy octal cannot have a fraction", "01.1"),
@@ -656,6 +741,24 @@ const RUNTIME_ERROR_CASES: &[(&str, &str)] = &[
     ("logical before nullish syntax message", "1 || 2 ?? 3"),
     ("nullish before logical syntax message", "1 ?? 2 || 3"),
     ("unparenthesized unary power syntax message", "-2 ** 2"),
+    ("prefix update invalid operand", "++1"),
+    ("postfix update invalid operand", "1++"),
+    (
+        "strict eval prefix update early error",
+        "(function(){ 'use strict'; ++eval; })",
+    ),
+    (
+        "strict arguments postfix update early error",
+        "(function(){ 'use strict'; arguments++; })",
+    ),
+    (
+        "missing global postfix update",
+        "__qjo_missing_update_global++",
+    ),
+    (
+        "strict private name postfix update",
+        "(function named(){ 'use strict'; return named++; })()",
+    ),
     (
         "identifier compound missing global",
         "__qjo_missing_compound += 1",
@@ -724,6 +827,14 @@ const RUNTIME_ERROR_CASES: &[(&str, &str)] = &[
     (
         "nominal BigInt square preallocation guard",
         "(1n << 1048574n) ** 2n",
+    ),
+    (
+        "postfix BigInt update allocation guard",
+        "(function(){ var value = 1n << 1048575n; return value++; })()",
+    ),
+    (
+        "prefix BigInt decrement allocation guard",
+        "(function(){ var value = 1n << 1048575n; return --value; })()",
     ),
     (
         "generic BigInt square next allocation boundary",

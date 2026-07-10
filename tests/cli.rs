@@ -33,13 +33,16 @@ fn eval_executes_source_level_functions_and_formats_native_errors() {
 
 #[test]
 fn unparenthesized_power_unary_error_omits_a_source_frame_like_quickjs() {
-    let output = qjs().args(["-e", "-2 ** 2"]).output().unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "SyntaxError: unparenthesized unary expression can't appear on the left-hand side of '**'\n\n"
-    );
+    for source in ["-2 ** 2", "-value++ ** 2"] {
+        let output = qjs().args(["-e", source]).output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{source}");
+        assert!(output.stdout.is_empty(), "{source}");
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            "SyntaxError: unparenthesized unary expression can't appear on the left-hand side of '**'\n\n",
+            "{source}"
+        );
+    }
 
     let dynamic = qjs()
         .args(["-e", "Function(\"return -2 ** 2\")"])

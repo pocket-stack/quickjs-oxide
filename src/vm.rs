@@ -650,6 +650,24 @@ impl CallFrame {
                     self.stack.push(key);
                     self.stack.push(value);
                 }
+                Instruction::Perm3 => {
+                    let new_value = self.pop()?;
+                    let old_value = self.pop()?;
+                    let base = self.pop()?;
+                    self.stack.push(old_value);
+                    self.stack.push(base);
+                    self.stack.push(new_value);
+                }
+                Instruction::Perm4 => {
+                    let new_value = self.pop()?;
+                    let old_value = self.pop()?;
+                    let key = self.pop()?;
+                    let base = self.pop()?;
+                    self.stack.push(old_value);
+                    self.stack.push(base);
+                    self.stack.push(key);
+                    self.stack.push(new_value);
+                }
                 Instruction::PutField(index) => {
                     let (base, value) = self.pop_pair()?;
                     if let Completion::Throw(value) =
@@ -697,6 +715,22 @@ impl CallFrame {
                 }
                 Instruction::Plus => {
                     if let OperationOutcome::Throw(value) = self.unary_plus(host)? {
+                        return Ok(Completion::Throw(value));
+                    }
+                }
+                Instruction::Inc | Instruction::Dec => {
+                    let increment = matches!(instruction, Instruction::Inc);
+                    if let OperationOutcome::Throw(value) =
+                        self.update_numeric(host, increment, false)?
+                    {
+                        return Ok(Completion::Throw(value));
+                    }
+                }
+                Instruction::PostInc | Instruction::PostDec => {
+                    let increment = matches!(instruction, Instruction::PostInc);
+                    if let OperationOutcome::Throw(value) =
+                        self.update_numeric(host, increment, true)?
+                    {
                         return Ok(Completion::Throw(value));
                     }
                 }
@@ -984,6 +1018,43 @@ impl CallFrame {
             return Err(Error::new(ErrorKind::Type, "bigint argument with unary +"));
         }
         self.stack.push(Value::number(operand.to_number()?));
+        Ok(OperationOutcome::Value(()))
+    }
+
+    /// QuickJS `js_unary_arith_slow` / `js_post_inc_slow`. Postfix updates
+    /// retain the converted numeric value, not the original string or object.
+    fn update_numeric(
+        &mut self,
+        host: &mut impl VmHost,
+        increment: bool,
+        postfix: bool,
+    ) -> Result<OperationOutcome<()>, Error> {
+        let operand = match to_numeric(host, self.pop()?)? {
+            OperationOutcome::Value(value) => value,
+            OperationOutcome::Throw(value) => return Ok(OperationOutcome::Throw(value)),
+        };
+        match operand {
+            NumericValue::Number(old) => {
+                let new = if increment { old + 1.0 } else { old - 1.0 };
+                if postfix {
+                    self.stack.push(Value::number(old));
+                }
+                self.stack.push(Value::number(new));
+            }
+            NumericValue::BigInt(old) => {
+                let one = JsBigInt::from(1_i32);
+                let new = if increment {
+                    old.add(&one)
+                } else {
+                    old.update_decrement()
+                }
+                .map_err(bigint_error)?;
+                if postfix {
+                    self.stack.push(Value::BigInt(old));
+                }
+                self.stack.push(Value::BigInt(new));
+            }
+        }
         Ok(OperationOutcome::Value(()))
     }
 

@@ -142,7 +142,6 @@ enum LogicalAssignment {
 enum PowerMode {
     Allowed,
     Forbidden,
-    #[allow(dead_code)]
     None,
 }
 
@@ -1004,6 +1003,20 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_unary_with_power(&mut self, power_mode: PowerMode) -> Result<(), Error> {
+        if matches!(
+            self.current().kind,
+            TokenKind::Punctuator(Punctuator::Increment | Punctuator::Decrement)
+        ) {
+            let operator_span = self.current().span;
+            let increment = self.is_punctuator(Punctuator::Increment);
+            self.advance();
+            // QuickJS passes no power flag for a prefix-update operand. This
+            // leaves `**` for the outer update expression, so `++x ** 2` is
+            // valid while the operand itself must still be an lvalue.
+            self.parse_unary_with_power(PowerMode::None)?;
+            self.lower_update_expression(operator_span, increment, false)?;
+            return self.parse_power_suffix(power_mode);
+        }
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Typeof)) {
             self.advance();
             let operand_start = self.current_ir().ops.len();
@@ -1147,7 +1160,63 @@ impl<'source> Parser<'source> {
             }
             break;
         }
+        if !self.current().line_terminator_before
+            && matches!(
+                self.current().kind,
+                TokenKind::Punctuator(Punctuator::Increment | Punctuator::Decrement)
+            )
+        {
+            let operator_span = self.current().span;
+            let increment = self.is_punctuator(Punctuator::Increment);
+            self.lower_update_expression(operator_span, increment, true)?;
+            self.advance();
+        }
         Ok(())
+    }
+
+    /// Lower QuickJS's `get_lvalue(..., keep = TRUE)` followed by one of
+    /// `inc`, `dec`, `post_inc`, or `post_dec`, then its matching
+    /// `put_lvalue` keep mode. Prefix updates preserve the replacement value;
+    /// postfix updates preserve the old, already-converted numeric value.
+    fn lower_update_expression(
+        &mut self,
+        operator_span: Span,
+        increment: bool,
+        postfix: bool,
+    ) -> Result<(), Error> {
+        let operation = match (postfix, increment) {
+            (false, true) => Instruction::Inc,
+            (false, false) => Instruction::Dec,
+            (true, true) => Instruction::PostInc,
+            (true, false) => Instruction::PostDec,
+        };
+
+        if let Some(target) = self.promote_tail_identifier_get()? {
+            self.validate_identifier_assignment_target(&target)?;
+            self.emit_instruction_at(operation, source_offset(operator_span)?)?;
+            self.emit_identifier_inherited(
+                target.name,
+                target.span,
+                if postfix {
+                    IdentifierAccess::Put
+                } else {
+                    IdentifierAccess::Set
+                },
+            )?;
+            self.anonymous_function_definition = None;
+            return Ok(());
+        }
+
+        let Some(target) = self.promote_tail_member_get_for_compound()? else {
+            return Err(self.syntax_here("invalid increment/decrement operand"));
+        };
+        self.emit_instruction_at(operation, source_offset(operator_span)?)?;
+        self.anonymous_function_definition = None;
+        if postfix {
+            self.emit_member_post_put(target)
+        } else {
+            self.emit_member_put(target)
+        }
     }
 
     /// Parse one member suffix without accepting a call. This is shared by
@@ -1367,6 +1436,22 @@ impl<'source> Parser<'source> {
             }
             MemberReference::Computed { .. } => {
                 self.emit_instruction(Instruction::Insert3)?;
+                self.emit_instruction(Instruction::PutArrayEl)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// QuickJS `PUT_LVALUE_KEEP_SECOND`: move the old numeric value below the
+    /// kept member Reference, then consume the Reference and replacement.
+    fn emit_member_post_put(&mut self, target: MemberReference) -> Result<(), Error> {
+        match target {
+            MemberReference::Field { key, .. } => {
+                self.emit_instruction(Instruction::Perm3)?;
+                self.emit_instruction(Instruction::PutField(key))?;
+            }
+            MemberReference::Computed { .. } => {
+                self.emit_instruction(Instruction::Perm4)?;
                 self.emit_instruction(Instruction::PutArrayEl)?;
             }
         }
@@ -1901,6 +1986,22 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
 
         for (operation_index, name, span, access) in unresolved {
             let operation = resolve_identifier(tree, function_id, &name, span, access)?;
+            if matches!(operation, IrOp::Bytecode(Instruction::ThrowReadOnly(_)))
+                && let Some(return_site) = tree.functions[function_id]
+                    .ops
+                    .get(operation_index + 1)
+                    .and_then(|operation| {
+                        matches!(operation.op, IrOp::Bytecode(Instruction::Return))
+                            .then_some(operation.pc_site)
+                            .flatten()
+                    })
+            {
+                // QuickJS emits the return source marker after parsing its
+                // expression. When late scope resolution replaces the final
+                // write with terminal OP_throw_error, that marker becomes the
+                // observable fault site instead of the expression's marker.
+                tree.functions[function_id].ops[operation_index].pc_site = Some(return_site);
+            }
             tree.functions[function_id].ops[operation_index].op = operation;
         }
     }
@@ -2763,6 +2864,114 @@ mod tests {
                 "unparenthesized unary expression can't appear on the left-hand side of '**'",
                 "source {source:?}"
             );
+        }
+    }
+
+    #[test]
+    fn update_expressions_follow_quickjs_lvalue_and_power_shapes() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+
+        assert_eq!(
+            context
+                .eval("(function(){ var x = '01'; var old = x++; return old + '|' + x; })()")
+                .unwrap(),
+            Value::String(JsString::from("1|2"))
+        );
+        assert_eq!(
+            context
+                .eval("(function(){ var x = 2; return (++x ** 2) * 100 + (x++ ** 2) * 10 + x; })()")
+                .unwrap(),
+            Value::Int(994)
+        );
+        assert_eq!(
+            context
+                .eval("(function(){ var x = 4n; var old = x--; return old * 10n + --x; })()")
+                .unwrap(),
+            Value::BigInt(JsBigInt::from(42))
+        );
+        assert_eq!(
+            context
+                .eval("(function(){ Function.update = '4'; var old = Function.update++; return old + '|' + ++Function.update; })()")
+                .unwrap(),
+            Value::String(JsString::from("4|6"))
+        );
+        assert_eq!(
+            context
+                .eval("(function(){ Function['update'] = 5; var old = Function['update']--; return old * 10 + Function.update; })()")
+                .unwrap(),
+            Value::Int(54)
+        );
+        assert_eq!(
+            context
+                .eval("(function(){ var x = 1, y = 2; x\n++y; return x * 10 + y; })()")
+                .unwrap(),
+            Value::Int(13)
+        );
+
+        let prefix_argument = context
+            .compile("(function(value){ return ++value; })")
+            .unwrap();
+        let prefix_argument = runtime
+            .test_child_function_bytecode(&prefix_argument, 0)
+            .unwrap();
+        let prefix_code = runtime.test_function_code(&prefix_argument).unwrap();
+        assert!(prefix_code.windows(3).any(|window| matches!(
+            window,
+            [
+                Instruction::GetArg(0),
+                Instruction::Inc,
+                Instruction::SetArg(0)
+            ]
+        )));
+
+        let postfix_argument = context
+            .compile("(function(value){ return value++; })")
+            .unwrap();
+        let postfix_argument = runtime
+            .test_child_function_bytecode(&postfix_argument, 0)
+            .unwrap();
+        let postfix_code = runtime.test_function_code(&postfix_argument).unwrap();
+        assert!(postfix_code.windows(3).any(|window| matches!(
+            window,
+            [
+                Instruction::GetArg(0),
+                Instruction::PostInc,
+                Instruction::PutArg(0)
+            ]
+        )));
+
+        let fixed = context.compile("Function.update++").unwrap();
+        let fixed_code = runtime.test_function_code(&fixed).unwrap();
+        assert!(fixed_code.windows(4).any(|window| matches!(
+            window,
+            [
+                Instruction::GetField2(_),
+                Instruction::PostInc,
+                Instruction::Perm3,
+                Instruction::PutField(_)
+            ]
+        )));
+
+        let computed = context.compile("--Function['update']").unwrap();
+        let computed_code = runtime.test_function_code(&computed).unwrap();
+        assert!(computed_code.windows(4).any(|window| matches!(
+            window,
+            [
+                Instruction::GetArrayEl3,
+                Instruction::Dec,
+                Instruction::Insert3,
+                Instruction::PutArrayEl
+            ]
+        )));
+
+        for source in ["++1", "1++", "++(1 + 2)", "(1 + 2)--"] {
+            let error = compile_script(source).unwrap_err();
+            assert_eq!(error.message(), "invalid increment/decrement operand");
+        }
+        for source in ["'use strict'; ++eval", "'use strict'; arguments--"] {
+            let error = compile_script(source).unwrap_err();
+            assert_eq!(error.message(), "invalid lvalue in strict mode");
         }
     }
 

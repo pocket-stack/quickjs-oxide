@@ -291,6 +291,23 @@ impl JsBigInt {
         self.checked_extending_binary(rhs, |left, right| left - right)
     }
 
+    /// Apply the pinned QuickJS 2026-06-04 BigInt `--` operation.
+    ///
+    /// QuickJS handles ordinary short values in its VM fast path. At
+    /// `i64::MIN` and for every heap BigInt it enters `js_unary_arith_slow`,
+    /// where unsigned opcode-enum arithmetic turns the intended `-1` limb
+    /// into `UINT32_MAX` before `js_bigint_add`. This observable release quirk
+    /// is deliberately confined to update-decrement; binary subtraction keeps
+    /// mathematical BigInt semantics.
+    pub(crate) fn update_decrement(&self) -> Result<Self, BigIntError> {
+        if let BigIntRepr::Short(value) = self.0
+            && value != i64::MIN
+        {
+            return Ok(Self::from(value - 1));
+        }
+        self.add(&Self::from(i64::from(u32::MAX)))
+    }
+
     /// Multiply two BigInts, promoting on short overflow and compacting the
     /// result.
     ///
@@ -974,6 +991,30 @@ mod tests {
         assert_eq!(above_max.sub(&JsBigInt::one()).unwrap(), max);
         assert_eq!(below_min.add(&JsBigInt::one()).unwrap(), min);
         assert!(above_max.sub(&JsBigInt::one()).unwrap().is_short());
+    }
+
+    #[test]
+    fn update_decrement_preserves_pinned_unsigned_opcode_quirk() {
+        assert_eq!(
+            JsBigInt::from(4).update_decrement().unwrap(),
+            JsBigInt::from(3)
+        );
+        assert_eq!(
+            JsBigInt::from(i64::MIN).update_decrement().unwrap(),
+            bigint("-9223372032559808513")
+        );
+        assert_eq!(
+            bigint("9223372036854775808").update_decrement().unwrap(),
+            bigint("9223372041149743103")
+        );
+        assert_eq!(
+            bigint("-9223372036854775809").update_decrement().unwrap(),
+            bigint("-9223372032559808514")
+        );
+        assert_eq!(
+            bigint("9223372036854775808").sub(&JsBigInt::one()).unwrap(),
+            JsBigInt::from(i64::MAX)
+        );
     }
 
     #[test]

@@ -27,7 +27,7 @@ claim full parity.
   the current source path supports anonymous and named ordinary function
   expressions, simple parameters, `return`/fallthrough, function-local `var`,
   simple/arithmetic/exponentiation/shift/bitwise/logical identifier assignment,
-  direct calls,
+  prefix/postfix identifier and member updates, direct calls,
   transitive parameter/local and private function-name capture through
   `ParentClosure` relays, and QuickJS-style contextual `SetName` for direct
   anonymous initializers and assignments. Named expressions use a
@@ -83,6 +83,22 @@ claim full parity.
   assignment do not. Comma, conditional, bitwise and logical values are
   rejected as assignment targets, and strict `eval`/`arguments` lvalues are
   early errors at the upstream source position.
+- Prefix/postfix `++` and `--` follow QuickJS's unary parser and lvalue rewrite
+  rather than lowering to ordinary addition. Prefix operands use the zero power
+  mode so `++x ** 2` updates before the outer exponentiation; postfix is
+  accepted only without an intervening LineTerminator, including CRLF,
+  U+2028/U+2029 and line-bearing block comments. Identifier updates resolve
+  late across argument, local, closure, global and private function-name
+  bindings. Fixed members retain `base, old` through `GetField2`; computed
+  members retain `base, canonical-key, old` through `GetArrayEl3`, converting
+  an object key exactly once. Prefix writes use `Insert2`/`Insert3` and preserve
+  the new value; postfix `PostInc`/`PostDec` first preserves the converted old
+  Numeric and uses `Perm3`/`Perm4` before the put. Number, BigInt, getter/key/
+  coercion/setter ordering, strict/sloppy rejection, nullish fast checks,
+  missing bindings, Function-constructor parsing and source markers are pinned
+  to the oracle. BigInt decrement deliberately preserves the release's slow-
+  path unsigned-enum quirk: short non-minimum values subtract one, while
+  `i64::MIN` and heap values add `4294967295n` exactly as upstream.
 - Binary nullish coalescing flattens a chain through QuickJS's shared
   `Dup; IsUndefinedOrNull; IfFalse` exit, preserving the first non-nullish
   operand without coercion and skipping every later operand. It has no
@@ -353,6 +369,11 @@ claim full parity.
   pairs through the real parser/VM against one pinned QuickJS batch. A separate
   725-case BigInt power matrix covers short/heap bases, both signs, odd/even
   exponents, constant shortcuts and thousands-of-bits exact decimal results.
+  A 324-case update-numeric matrix compares prefix results and both postfix
+  old/new values across Number bit patterns, numeric strings, short/heap BigInt
+  boundaries and wide values. Separate update-expression and dynamic-Function
+  differentials lock observable Reference/coercion order, readonly failures,
+  ASI, power grammar, exact diagnostics and stack metadata.
   A normal-Function-constructor differential locks the intrinsic/global graph,
   descriptors and key order, exact dynamic source and debug metadata, call/new
   behavior, source-conversion/parse/prototype-Get ordering, custom/fallback new
@@ -365,8 +386,8 @@ claim full parity.
 
 The function slice is intentionally narrow. Function declarations/hoisting,
 block scopes, source `let`/`const` declarations and their declaration-
-instantiation rules, destructuring, prefix/postfix update expressions and other
-general assignment targets, module resolution, computed property-definition
+instantiation rules, destructuring, other general assignment targets, module
+resolution, computed property-definition
 naming, mapped `arguments`, arrow/async/generator functions and callable Proxy
 classes are not yet implemented. Top-level declarations are rejected instead
 of being faked as frame locals. The internal global lexical VarRef path already
@@ -421,9 +442,10 @@ reads and receiver-preserving method calls are implemented for object/function
 bases, plus exact String index/length reads; simple member assignment and
 property delete cover ordinary objects and the current primitive own-property
 surface. Prefix/postfix update expressions (including QuickJS's valid
-`++x ** 2` form), sloppy direct-identifier delete, the distinct primitive
-prototype graphs and their inherited setters, Proxy/exotic internal methods,
-and the full `function_accessors.js` fixture are still pending. AggregateError
+`++x ** 2` form) are implemented for the current identifier and ordinary
+fixed/computed member References. Sloppy direct-identifier delete, the distinct
+primitive prototype graphs and their inherited setters, Proxy/exotic internal
+methods, and the full `function_accessors.js` fixture are still pending. AggregateError
 iterable-to-Array, primitive wrapper objects for direct Object-prototype method
 calls, remaining Object prototype methods and
 uncatchable termination state are also pending. Arrays, object literals and the

@@ -66,6 +66,10 @@ pub enum Instruction {
     Insert2,
     /// QuickJS `OP_insert3`: `base key value -> value base key value`.
     Insert3,
+    /// QuickJS `OP_perm3`: `base old new -> old base new`.
+    Perm3,
+    /// QuickJS `OP_perm4`: `base key old new -> old base key new`.
+    Perm4,
     /// QuickJS `OP_put_field`: assign one constant string-keyed property.
     PutField(u32),
     /// QuickJS `OP_put_array_el`: assign a computed property, converting the
@@ -81,6 +85,14 @@ pub enum Instruction {
     Dup,
     Neg,
     Plus,
+    Inc,
+    Dec,
+    /// QuickJS `OP_post_inc`: convert the operand to numeric, then leave the
+    /// old numeric value below its incremented replacement.
+    PostInc,
+    /// QuickJS `OP_post_dec`: convert the operand to numeric, then leave the
+    /// old numeric value below its decremented replacement.
+    PostDec,
     BitNot,
     Not,
     TypeOf,
@@ -144,6 +156,8 @@ impl Instruction {
             Self::ToPropKey => (1, 1),
             Self::Insert2 => (2, 3),
             Self::Insert3 => (3, 4),
+            Self::Perm3 => (3, 3),
+            Self::Perm4 => (4, 4),
             Self::PutField(_) => (2, 0),
             Self::PutArrayEl => (3, 0),
             Self::Delete => (2, 1),
@@ -166,10 +180,13 @@ impl Instruction {
             Self::Dup => (1, 2),
             Self::Neg
             | Self::Plus
+            | Self::Inc
+            | Self::Dec
             | Self::BitNot
             | Self::Not
             | Self::TypeOf
             | Self::IsUndefinedOrNull => (1, 1),
+            Self::PostInc | Self::PostDec => (1, 2),
             Self::Add
             | Self::Sub
             | Self::Mul
@@ -311,7 +328,7 @@ pub(crate) fn verify_parts(
         maximum = maximum.max(next_depth);
 
         match instruction {
-            Instruction::Return | Instruction::Throw | Instruction::ThrowReadOnly(_) => {
+            Instruction::Return | Instruction::Throw => {
                 if next_depth != 0 {
                     return Err(Error::internal(
                         "function completion leaves temporary values on the bytecode stack",
@@ -319,6 +336,11 @@ pub(crate) fn verify_parts(
                 }
                 has_termination = true;
             }
+            // QuickJS `OP_throw_error` is terminal and abandons the complete
+            // frame stack. A postfix update can legitimately retain its old
+            // value below the attempted write when immutable-binding
+            // resolution replaces that write with this instruction.
+            Instruction::ThrowReadOnly(_) => has_termination = true,
             Instruction::Goto(target) => {
                 enqueue_target(&mut worklist, *target, next_depth, code.len())?;
             }
@@ -464,6 +486,18 @@ mod tests {
             max_stack: 1,
         };
         assert!(nip_underflow.verify().is_err());
+
+        let postfix_readonly = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::PostInc,
+                Instruction::ThrowReadOnly(0),
+            ],
+            constants: vec![Value::String("binding".into())],
+            max_stack: 2,
+        };
+        assert_eq!(postfix_readonly.verify().unwrap().max_stack, 2);
     }
 
     #[test]

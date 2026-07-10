@@ -15,6 +15,15 @@ fn primitive_exception_dump_matches_quickjs_oracle() {
         ("short BigInt", "throw 1n"),
         ("heap BigInt", "throw 123456789012345678901234567890n"),
         ("negative zero", "throw -0"),
+        ("invalid prefix update operand", "++1"),
+        (
+            "postfix under unary power early error has no source frame",
+            "-value++ ** 2",
+        ),
+        (
+            "strict private postfix update return marker",
+            "(function named(){ 'use strict'; return named++; })()",
+        ),
     ] {
         let rust = run(env!("CARGO_BIN_EXE_qjs").as_ref(), source, description);
         let quickjs = run(&oracle, source, description);

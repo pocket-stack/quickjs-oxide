@@ -227,6 +227,47 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "(function(){ 'use strict'; eval **= 1; })",
         ),
         (
+            "postfix update missing read keeps identifier site",
+            "missingIdentifierUpdate++",
+        ),
+        (
+            "prefix update missing read keeps identifier site",
+            "++missingIdentifierUpdate",
+        ),
+        (
+            "strict fixed postfix update rejection uses operator site",
+            "\"use strict\";\nFunction.prototype++",
+        ),
+        (
+            "strict computed prefix update rejection uses operator site",
+            "\"use strict\";\n++Function['prototype']",
+        ),
+        (
+            "postfix update getter fault keeps member site",
+            "Function.prototype.caller++",
+        ),
+        ("postfix update nullish pre-key fault", "null[true]++"),
+        (
+            "strict private postfix update write",
+            "(function named(){ 'use strict'; named++; })()",
+        ),
+        (
+            "strict private prefix update write",
+            "(function named(){ 'use strict'; ++named; })()",
+        ),
+        (
+            "return marker supersedes strict private postfix update",
+            "(function named(){ 'use strict'; return named++; })()",
+        ),
+        (
+            "return marker supersedes strict private prefix update",
+            "(function named(){ 'use strict'; return ++named; })()",
+        ),
+        (
+            "postfix BigInt update allocation error uses operator site",
+            "(function(){ var value = 1n << 1048575n; return value++; })()",
+        ),
+        (
             "CR remains a debug column",
             "(function f(){\rreturn 1n + 1;\r})()",
         ),

@@ -868,6 +868,13 @@ impl<'a> Lexer<'a> {
                 continue;
             }
 
+            // Non-ASCII whitespace and U+2028/U+2029 terminate an ASCII
+            // identifier just like their ASCII counterparts. They must be
+            // left for `skip_trivia`, which records the restricted-production
+            // LineTerminator flag used by postfix updates.
+            if !first && (is_line_terminator(ch) || is_js_whitespace(ch)) {
+                break;
+            }
             if !ch.is_ascii() {
                 return Err(self.unsupported_unicode_identifier(ch));
             }
@@ -2153,6 +2160,24 @@ mod tests {
             .find(|token| matches!(token.kind, TokenKind::Punctuator(Punctuator::Increment)))
             .unwrap();
         assert!(increment.line_terminator_before);
+    }
+
+    #[test]
+    fn unicode_line_terminators_after_identifiers_feed_asi_metadata() {
+        let tokens = Lexer::new("value\u{2028}++next\u{2029}--last")
+            .tokenize()
+            .unwrap();
+        let updates = tokens
+            .iter()
+            .filter(|token| {
+                matches!(
+                    token.kind,
+                    TokenKind::Punctuator(Punctuator::Increment | Punctuator::Decrement)
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(updates.len(), 2);
+        assert!(updates.iter().all(|token| token.line_terminator_before));
     }
 
     #[test]
