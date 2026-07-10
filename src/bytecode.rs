@@ -55,6 +55,18 @@ pub enum Instruction {
     GetArrayEl,
     /// QuickJS `OP_get_array_el2`: `base key -> base value` for method calls.
     GetArrayEl2,
+    /// QuickJS `OP_insert2`: `base value -> value base value`.
+    Insert2,
+    /// QuickJS `OP_insert3`: `base key value -> value base key value`.
+    Insert3,
+    /// QuickJS `OP_put_field`: assign one constant string-keyed property.
+    PutField(u32),
+    /// QuickJS `OP_put_array_el`: assign a computed property, converting the
+    /// still-raw key only after the right-hand side has been evaluated.
+    PutArrayEl,
+    /// QuickJS `OP_delete`: `base key -> bool` with strictness supplied by the
+    /// active call frame.
+    Delete,
     Drop,
     Dup,
     Neg,
@@ -110,6 +122,11 @@ impl Instruction {
             Self::GetField2(_) => (1, 2),
             Self::GetArrayEl => (2, 1),
             Self::GetArrayEl2 => (2, 2),
+            Self::Insert2 => (2, 3),
+            Self::Insert3 => (3, 4),
+            Self::PutField(_) => (2, 0),
+            Self::PutArrayEl => (3, 0),
+            Self::Delete => (2, 1),
             Self::Call(argument_count) => (*argument_count as usize + 1, 1),
             Self::CallMethod(argument_count) => (*argument_count as usize + 2, 1),
             Self::Construct(argument_count) => (*argument_count as usize + 2, 1),
@@ -170,7 +187,8 @@ impl BytecodeFunction {
             if let Instruction::SetName(index)
             | Instruction::ThrowReadOnly(index)
             | Instruction::GetField(index)
-            | Instruction::GetField2(index) = instruction
+            | Instruction::GetField2(index)
+            | Instruction::PutField(index) = instruction
                 && !matches!(self.constant(*index), Some(Value::String(_)))
             {
                 return Err(Error::internal(
@@ -213,7 +231,8 @@ pub(crate) fn verify_parts(
             | Instruction::SetName(index)
             | Instruction::ThrowReadOnly(index)
             | Instruction::GetField(index)
-            | Instruction::GetField2(index) => {
+            | Instruction::GetField2(index)
+            | Instruction::PutField(index) => {
                 let is_valid = usize::try_from(*index)
                     .ok()
                     .is_some_and(|index| index < constant_count);
@@ -459,6 +478,20 @@ mod tests {
             max_stack: 2,
         };
         assert!(non_string_keep_field.verify().is_err());
+
+        let non_string_put_field = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::PutField(0),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            constants: vec![Value::Int(1)],
+            max_stack: 2,
+        };
+        assert!(non_string_put_field.verify().is_err());
 
         let bad_jump = BytecodeFunction {
             name: None,

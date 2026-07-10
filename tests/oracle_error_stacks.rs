@@ -46,6 +46,22 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "tail method call site",
             "(function(){ return Function.name(); })()",
         ),
+        ("fixed member assignment fault", "null.x = 1"),
+        ("computed member assignment fault", "null['x'] = 1"),
+        ("fixed member delete fault", "delete null.x"),
+        ("computed member delete fault", "delete (void 0)['x']"),
+        (
+            "strict fixed member assignment rejection",
+            "\"use strict\";\nFunction.prototype = 1",
+        ),
+        (
+            "strict fixed member delete rejection",
+            "\"use strict\";\ndelete Function.prototype",
+        ),
+        (
+            "native member setter fault",
+            "Function.prototype.caller = 1",
+        ),
         (
             "CR remains a debug column",
             "(function f(){\rreturn 1n + 1;\r})()",

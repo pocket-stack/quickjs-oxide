@@ -43,6 +43,18 @@ claim full parity.
   implement exact UTF-16 indexed own properties and `length`. Other primitive
   inherited lookup is rejected explicitly until the distinct primitive
   prototype roots exist, rather than silently skipping them.
+- Simple member assignment mirrors QuickJS's lvalue rewrite rather than
+  evaluating the getter: fixed targets lower through `Insert2; PutField`, and
+  computed targets through `Insert3; PutArrayEl`, preserving the RHS as the
+  expression value. Computed assignment deliberately delays observable
+  `ToPropertyKey` until after the RHS, including for null/undefined bases.
+  Ordinary setters receive the original base, discard normal return values and
+  preserve throws; strict versus sloppy rejection distinguishes read-only,
+  missing-setter and non-extensible cases. Member assignment does not apply
+  identifier NamedEvaluation. Property `delete` rewrites both fixed and
+  computed References to the common `Delete(base,key)` opcode, never invokes a
+  getter, converts computed keys before ToObject, and implements strict/sloppy
+  configurable behavior plus String's virtual index/length properties.
 - Bytecode publication first validates structural operands in every instruction
   (including unreachable code), then verifies reachable control-flow joins and
   stack depth. Runtime publication additionally checks constant kinds, frame
@@ -292,8 +304,7 @@ claim full parity.
 The function slice is intentionally narrow. Function declarations/hoisting,
 block scopes, source `let`/`const` declarations and their declaration-
 instantiation rules, general assignment targets and compound operators, module
-resolution, member assignment/delete bytecode, computed property-definition
-naming, mapped
+resolution, computed property-definition naming, mapped
 `arguments`, arrow/async/generator functions and callable Proxy classes
 are not yet implemented. Top-level declarations are rejected instead of being
 faked as frame locals. The internal global lexical VarRef path already enforces
@@ -344,9 +355,11 @@ also remain pending.
 Accessors are executable through the Rust Context property API, and
 strict/sloppy global identifier assignment is implemented. Source property
 reads and receiver-preserving method calls are implemented for object/function
-bases, plus exact String index/length reads; source member assignment/delete,
-the distinct primitive prototype graphs, strict property-assignment behavior,
-Proxy/exotic internal methods and the full `function_accessors.js` fixture are
+bases, plus exact String index/length reads; simple member assignment and
+property delete cover ordinary objects and the current primitive own-property
+surface. Compound/logical assignment, sloppy direct-identifier delete, the
+distinct primitive prototype graphs and their inherited setters,
+Proxy/exotic internal methods, and the full `function_accessors.js` fixture are
 still pending. AggregateError iterable-to-Array, primitive wrapper objects for
 direct Object-prototype method calls, remaining Object prototype methods and
 uncatchable termination state are also pending. Arrays, object literals and the

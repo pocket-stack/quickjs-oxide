@@ -26,8 +26,12 @@ cross-realm behavior, and `newTarget.prototype` fallback.
 Source-level fixed/computed member reads, receiver-preserving method calls, and
 member constructor heads now lower through QuickJS-shaped property bytecode;
 the pinned differential locks chaining, `ToPropertyKey` order, `this`, String
-index/length reads, and member error locations. Property assignment/delete and
-the distinct primitive prototype graphs remain separate unfinished slices.
+index/length reads, and member error locations. Simple member assignment and
+property delete use the corresponding QuickJS lvalue/stack shapes, including
+the intentionally different computed-key conversion order, setter receiver,
+strict rejection and delete-without-getter behavior. Compound/logical
+assignment, direct-identifier delete and the distinct primitive prototype
+graphs remain unfinished slices.
 Runtime-wide full/strip-source/strip-debug modes follow QuickJS's immutable
 bytecode publication boundary, and the `qjs` CLI exposes `--strip-source` and
 `-s` with upstream last-option-wins behavior.
@@ -81,6 +85,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_constructor -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_member_reads -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_member_writes -- --nocapture
 ```
 
 Or run the complete current gate—including checksum-verified oracle setup,

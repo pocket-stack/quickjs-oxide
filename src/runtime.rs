@@ -373,6 +373,26 @@ enum VmPropertyKeyConversion {
 }
 
 impl RuntimeVmHost {
+    fn constant_property_key(&self, index: u32) -> Result<(JsString, PropertyKey), Error> {
+        let name = match usize::try_from(index)
+            .ok()
+            .and_then(|index| self.constants.get(index))
+        {
+            Some(BytecodeConstant::Value(RawValue::String(name))) => name.clone(),
+            Some(BytecodeConstant::Value(_) | BytecodeConstant::Function(_)) => {
+                return Err(Error::internal(
+                    "field opcode referenced a non-string constant",
+                ));
+            }
+            None => return Err(Error::internal("constant index is out of bounds")),
+        };
+        let key = self
+            .runtime
+            .intern_property_key_js_string(&name)
+            .map_err(|error| Error::internal(error.to_string()))?;
+        Ok((name, key))
+    }
+
     /// QuickJS `JS_ValueToAtom` / `JS_ToPropertyKey` at the VM/runtime
     /// boundary. Object conversion can execute JavaScript and therefore keeps
     /// an ordinary thrown value distinct from an engine failure.
@@ -490,6 +510,123 @@ impl RuntimeVmHost {
         Err(Error::internal(
             "primitive prototype property lookup is not implemented yet",
         ))
+    }
+
+    fn set_property_with_key(
+        &mut self,
+        base: Value,
+        key: &PropertyKey,
+        value: Value,
+        strict: bool,
+    ) -> Result<Completion, Error> {
+        let Value::Object(object) = &base else {
+            if matches!(base, Value::Null | Value::Undefined) {
+                let base_name = if matches!(base, Value::Null) {
+                    "null"
+                } else {
+                    "undefined"
+                };
+                let name = self
+                    .runtime
+                    .property_key_to_js_string(key)
+                    .map_err(runtime_error_to_vm_error)?;
+                return Err(Error::new(
+                    ErrorKind::Type,
+                    format!(
+                        "cannot set property '{}' of {base_name}",
+                        name.to_utf8_lossy()
+                    ),
+                ));
+            }
+            if !strict {
+                return Ok(Completion::Return(Value::Undefined));
+            }
+            if matches!(base, Value::String(_)) {
+                let length = self
+                    .runtime
+                    .intern_property_key("length")
+                    .map_err(|error| Error::internal(error.to_string()))?;
+                if key == &length {
+                    return Err(Error::new(ErrorKind::Type, "'length' is read-only"));
+                }
+            }
+            return Err(Error::new(ErrorKind::Type, "not an object"));
+        };
+
+        match self
+            .runtime
+            .prepare_set_property_with_receiver(object, key, value, base.clone())
+            .map_err(runtime_error_to_vm_error)?
+        {
+            PropertySetAction::Complete => Ok(Completion::Return(Value::Undefined)),
+            PropertySetAction::Rejected(_) if !strict => Ok(Completion::Return(Value::Undefined)),
+            PropertySetAction::Rejected(rejection) => {
+                let message = match rejection {
+                    PropertySetRejection::ReadOnly => {
+                        let name = self
+                            .runtime
+                            .property_key_to_js_string(key)
+                            .map_err(runtime_error_to_vm_error)?;
+                        format!("'{}' is read-only", name.to_utf8_lossy())
+                    }
+                    PropertySetRejection::NoSetter => "no setter for property".to_owned(),
+                    PropertySetRejection::NotExtensible => "object is not extensible".to_owned(),
+                };
+                Err(Error::new(ErrorKind::Type, message))
+            }
+            PropertySetAction::Call {
+                setter,
+                receiver,
+                argument,
+            } => self
+                .runtime
+                .call_internal(self.current_realm, &setter, receiver, &[argument])
+                .map_err(runtime_error_to_vm_error),
+        }
+    }
+
+    fn delete_property_with_key(
+        &mut self,
+        base: Value,
+        key: &PropertyKey,
+        strict: bool,
+    ) -> Result<Completion, Error> {
+        let deleted = match &base {
+            Value::Null | Value::Undefined => {
+                return Err(Error::new(ErrorKind::Type, "cannot convert to object"));
+            }
+            Value::Object(object) => self
+                .runtime
+                .delete_property(object, key)
+                .map_err(runtime_error_to_vm_error)?,
+            Value::String(string) => {
+                let index = self
+                    .runtime
+                    .0
+                    .state
+                    .borrow()
+                    .atoms
+                    .array_index(key.atom())
+                    .map_err(|error| Error::internal(error.to_string()))?;
+                let indexed = index.is_some_and(|index| {
+                    usize::try_from(index).is_ok_and(|index| index < string.len())
+                });
+                let length = self
+                    .runtime
+                    .intern_property_key("length")
+                    .map_err(|error| Error::internal(error.to_string()))?;
+                !indexed && key != &length
+            }
+            Value::Bool(_)
+            | Value::Int(_)
+            | Value::Float(_)
+            | Value::BigInt(_)
+            | Value::Symbol(_) => true,
+        };
+        if !deleted && strict {
+            return Err(Error::new(ErrorKind::Type, "could not delete property"));
+        }
+        Ok(Completion::Return(Value::Bool(deleted)))
     }
 }
 
@@ -813,22 +950,7 @@ impl VmHost for RuntimeVmHost {
     }
 
     fn get_field(&mut self, base: Value, key_index: u32) -> Result<Completion, Error> {
-        let name = match usize::try_from(key_index)
-            .ok()
-            .and_then(|index| self.constants.get(index))
-        {
-            Some(BytecodeConstant::Value(RawValue::String(name))) => name.clone(),
-            Some(BytecodeConstant::Value(_) | BytecodeConstant::Function(_)) => {
-                return Err(Error::internal(
-                    "field opcode referenced a non-string constant",
-                ));
-            }
-            None => return Err(Error::internal("constant index is out of bounds")),
-        };
-        let key = self
-            .runtime
-            .intern_property_key_js_string(&name)
-            .map_err(|error| Error::internal(error.to_string()))?;
+        let (name, key) = self.constant_property_key(key_index)?;
         self.get_property_with_key(base, &key, Some(&name))
     }
 
@@ -851,6 +973,48 @@ impl VmHost for RuntimeVmHost {
             VmPropertyKeyConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
         self.get_property_with_key(base, &key, None)
+    }
+
+    fn set_field(
+        &mut self,
+        base: Value,
+        key_index: u32,
+        value: Value,
+        strict: bool,
+    ) -> Result<Completion, Error> {
+        let (_, key) = self.constant_property_key(key_index)?;
+        self.set_property_with_key(base, &key, value, strict)
+    }
+
+    fn set_property(
+        &mut self,
+        base: Value,
+        key: Value,
+        value: Value,
+        strict: bool,
+    ) -> Result<Completion, Error> {
+        // QuickJS `OP_put_array_el` evaluates the RHS before entering here,
+        // then performs observable key conversion before it checks/boxes the
+        // base. This intentionally differs from computed reads.
+        let key = match self.property_key_from_value(key)? {
+            VmPropertyKeyConversion::Key(key) => key,
+            VmPropertyKeyConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        self.set_property_with_key(base, &key, value, strict)
+    }
+
+    fn delete_property(
+        &mut self,
+        base: Value,
+        key: Value,
+        strict: bool,
+    ) -> Result<Completion, Error> {
+        // QuickJS `OP_delete` converts the key before ToObject/null checking.
+        let key = match self.property_key_from_value(key)? {
+            VmPropertyKeyConversion::Key(key) => key,
+            VmPropertyKeyConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        self.delete_property_with_key(base, &key, strict)
     }
 
     fn call(
@@ -7305,7 +7469,8 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                 crate::bytecode::Instruction::SetName(index)
                 | crate::bytecode::Instruction::ThrowReadOnly(index)
                 | crate::bytecode::Instruction::GetField(index)
-                | crate::bytecode::Instruction::GetField2(index) => {
+                | crate::bytecode::Instruction::GetField2(index)
+                | crate::bytecode::Instruction::PutField(index) => {
                     let index = usize::try_from(*index)
                         .map_err(|_| RuntimeError::Invariant("constant index did not fit usize"))?;
                     let constant = function.constants().get(index).ok_or_else(|| {
@@ -8509,6 +8674,16 @@ mod tests {
                     Instruction::Undefined,
                     Instruction::GetField2(0),
                     Instruction::Drop,
+                    Instruction::Return,
+                ],
+                2,
+            ),
+            (
+                vec![
+                    Instruction::Undefined,
+                    Instruction::Undefined,
+                    Instruction::PutField(0),
+                    Instruction::Undefined,
                     Instruction::Return,
                 ],
                 2,

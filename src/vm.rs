@@ -104,6 +104,26 @@ pub(crate) trait VmHost {
     /// `base[key]` after the VM has preserved QuickJS's operand order. The
     /// runtime host owns `ToObject`/`ToPropertyKey` and accessor execution.
     fn get_property(&mut self, base: Value, key: Value) -> Result<Completion, Error>;
+    fn set_field(
+        &mut self,
+        base: Value,
+        key_index: u32,
+        value: Value,
+        strict: bool,
+    ) -> Result<Completion, Error>;
+    fn set_property(
+        &mut self,
+        base: Value,
+        key: Value,
+        value: Value,
+        strict: bool,
+    ) -> Result<Completion, Error>;
+    fn delete_property(
+        &mut self,
+        base: Value,
+        key: Value,
+        strict: bool,
+    ) -> Result<Completion, Error>;
     fn call(
         &mut self,
         function: Value,
@@ -206,6 +226,41 @@ impl VmHost for DetachedHost<'_> {
     fn get_property(&mut self, _base: Value, _key: Value) -> Result<Completion, Error> {
         Err(Error::internal(
             "detached VM cannot access runtime-owned properties",
+        ))
+    }
+
+    fn set_field(
+        &mut self,
+        _base: Value,
+        _key_index: u32,
+        _value: Value,
+        _strict: bool,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "detached VM cannot mutate runtime-owned properties",
+        ))
+    }
+
+    fn set_property(
+        &mut self,
+        _base: Value,
+        _key: Value,
+        _value: Value,
+        _strict: bool,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "detached VM cannot mutate runtime-owned properties",
+        ))
+    }
+
+    fn delete_property(
+        &mut self,
+        _base: Value,
+        _key: Value,
+        _strict: bool,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "detached VM cannot delete runtime-owned properties",
         ))
     }
 
@@ -528,6 +583,46 @@ impl CallFrame {
                             }
                             self.stack.push(value);
                         }
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                }
+                Instruction::Insert2 => {
+                    let (base, value) = self.pop_pair()?;
+                    self.stack.push(value.clone());
+                    self.stack.push(base);
+                    self.stack.push(value);
+                }
+                Instruction::Insert3 => {
+                    let value = self.pop()?;
+                    let key = self.pop()?;
+                    let base = self.pop()?;
+                    self.stack.push(value.clone());
+                    self.stack.push(base);
+                    self.stack.push(key);
+                    self.stack.push(value);
+                }
+                Instruction::PutField(index) => {
+                    let (base, value) = self.pop_pair()?;
+                    if let Completion::Throw(value) =
+                        host.set_field(base, *index, value, self.strict)?
+                    {
+                        return Ok(Completion::Throw(value));
+                    }
+                }
+                Instruction::PutArrayEl => {
+                    let value = self.pop()?;
+                    let key = self.pop()?;
+                    let base = self.pop()?;
+                    if let Completion::Throw(value) =
+                        host.set_property(base, key, value, self.strict)?
+                    {
+                        return Ok(Completion::Throw(value));
+                    }
+                }
+                Instruction::Delete => {
+                    let (base, key) = self.pop_pair()?;
+                    match host.delete_property(base, key, self.strict)? {
+                        Completion::Return(value) => self.stack.push(value),
                         Completion::Throw(value) => return Ok(Completion::Throw(value)),
                     }
                 }

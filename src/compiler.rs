@@ -115,6 +115,12 @@ enum IdentifierAccess {
     Set,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MemberReference {
+    Field { key: u32, site: SourceOffset },
+    Computed { site: SourceOffset },
+}
+
 #[derive(Debug)]
 enum IrOp {
     Bytecode(Instruction),
@@ -521,7 +527,7 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    /// Parse the currently supported simple assignment target.
+    /// Parse the currently supported simple assignment targets.
     ///
     /// Keeping the unresolved write as a typed identifier operation lets the
     /// late resolver apply QuickJS's special function-name behavior: normal
@@ -553,7 +559,37 @@ impl<'source> Parser<'source> {
             self.anonymous_function_definition = None;
             return Ok(());
         }
-        self.parse_conditional()
+        self.parse_conditional()?;
+        if !self.is_punctuator(Punctuator::Equal) {
+            return Ok(());
+        }
+
+        let Some(target) = self.take_tail_member_reference()? else {
+            return Err(self.syntax_here("invalid assignment left-hand side"));
+        };
+        self.advance();
+        let rhs_start = self.current_ir().ops.len();
+        self.parse_assignment()?;
+        let site = match target {
+            MemberReference::Field { site, .. } | MemberReference::Computed { site } => site,
+        };
+        self.inherit_source_marker_at(rhs_start, site)?;
+
+        // QuickJS does not apply NamedEvaluation to member assignment. The
+        // anonymous function marker also must not escape to an enclosing
+        // identifier assignment such as `x = obj.p = function(){}`.
+        self.anonymous_function_definition = None;
+        match target {
+            MemberReference::Field { key, .. } => {
+                self.emit_instruction(Instruction::Insert2)?;
+                self.emit_instruction(Instruction::PutField(key))?;
+            }
+            MemberReference::Computed { .. } => {
+                self.emit_instruction(Instruction::Insert3)?;
+                self.emit_instruction(Instruction::PutArrayEl)?;
+            }
+        }
+        Ok(())
     }
 
     fn parse_conditional(&mut self) -> Result<(), Error> {
@@ -726,6 +762,46 @@ impl<'source> Parser<'source> {
             self.anonymous_function_definition = None;
             return Ok(());
         }
+        if matches!(self.current().kind, TokenKind::Keyword(Keyword::Delete)) {
+            let delete_span = self.current().span;
+            self.advance();
+            let operand_start = self.current_ir().ops.len();
+            self.parse_unary()?;
+            if let Some(target) = self.take_tail_member_reference()? {
+                match target {
+                    MemberReference::Field { key, site } => {
+                        self.emit_with_site(IrOp::PushConstant(key), Some(site))?;
+                        self.emit_instruction(Instruction::Delete)?;
+                    }
+                    MemberReference::Computed { site } => {
+                        self.emit_instruction_at(Instruction::Delete, site)?;
+                    }
+                }
+            } else if self.current_ir().ops.len() == operand_start + 1
+                && matches!(
+                    self.current_ir().ops[operand_start].op,
+                    IrOp::Identifier {
+                        access: IdentifierAccess::Get,
+                        ..
+                    }
+                )
+            {
+                if self.current_ir().strict {
+                    return Err(Error::syntax(
+                        "cannot delete a direct reference in strict mode",
+                        source_span(delete_span),
+                    ));
+                }
+                return Err(self.unsupported_here(
+                    "sloppy direct-identifier delete resolution is not implemented yet",
+                ));
+            } else {
+                self.emit_instruction(Instruction::Drop)?;
+                self.emit_instruction(Instruction::PushTrue)?;
+            }
+            self.anonymous_function_definition = None;
+            return Ok(());
+        }
         let operation_span = self.current().span;
         let operation = match self.current().kind {
             TokenKind::Punctuator(Punctuator::Plus) => Some(Instruction::Plus),
@@ -739,7 +815,7 @@ impl<'source> Parser<'source> {
                 self.anonymous_function_definition = None;
                 return Ok(());
             }
-            TokenKind::Punctuator(Punctuator::BitNot) | TokenKind::Keyword(Keyword::Delete) => {
+            TokenKind::Punctuator(Punctuator::BitNot) => {
                 return Err(self.unsupported_here("this unary operator is not implemented yet"));
             }
             _ => None,
@@ -857,6 +933,39 @@ impl<'source> Parser<'source> {
         }
         function.last_member_reference = None;
         Ok(promoted)
+    }
+
+    /// Remove the final getter while leaving its already-evaluated base/key
+    /// operands on the abstract stack. This mirrors QuickJS `get_lvalue` and
+    /// is shared by assignment and `delete` rewrites.
+    fn take_tail_member_reference(&mut self) -> Result<Option<MemberReference>, Error> {
+        let function = self.current_ir_mut();
+        if function.last_member_reference != function.ops.len().checked_sub(1) {
+            return Ok(None);
+        }
+        function.last_member_reference = None;
+        let SpannedIrOp { op, pc_site } = function
+            .ops
+            .pop()
+            .ok_or_else(|| Error::internal("member Reference operation disappeared"))?;
+        let site = pc_site.ok_or_else(|| Error::internal("member getter has no source site"))?;
+        match op {
+            IrOp::Bytecode(Instruction::GetField(key)) => {
+                Ok(Some(MemberReference::Field { key, site }))
+            }
+            IrOp::Bytecode(Instruction::GetArrayEl) => {
+                // Removing a 2 -> 1 getter restores the raw `[base, key]`
+                // operands produced by the preceding IR.
+                function.stack_depth = function
+                    .stack_depth
+                    .checked_add(1)
+                    .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+                Ok(Some(MemberReference::Computed { site }))
+            }
+            _ => Err(Error::internal(
+                "member Reference marker did not point to a getter",
+            )),
+        }
     }
 
     /// Parse the contents of an already-consumed call/construct `(`.
@@ -2868,6 +2977,79 @@ mod tests {
             context.eval("Function().toString()"),
             Ok(Value::String(_))
         ));
+    }
+
+    #[test]
+    fn member_assignment_and_delete_lower_through_quickjs_lvalue_shapes() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+
+        let fixed = context.compile("Function.fixed = 1").unwrap();
+        let fixed_code = runtime.test_function_code(&fixed).unwrap();
+        assert!(
+            fixed_code
+                .windows(2)
+                .any(|window| matches!(window, [Instruction::Insert2, Instruction::PutField(_)]))
+        );
+        assert!(
+            !fixed_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::GetField(_)))
+        );
+
+        let computed = context.compile("Function['computed'] = 2").unwrap();
+        let computed_code = runtime.test_function_code(&computed).unwrap();
+        assert!(
+            computed_code
+                .windows(2)
+                .any(|window| matches!(window, [Instruction::Insert3, Instruction::PutArrayEl]))
+        );
+        assert!(
+            !computed_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::GetArrayEl))
+        );
+
+        let fixed_delete = context.compile("delete Function.fixed").unwrap();
+        let fixed_delete_code = runtime.test_function_code(&fixed_delete).unwrap();
+        assert!(
+            fixed_delete_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Delete))
+        );
+        assert!(
+            !fixed_delete_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::GetField(_)))
+        );
+
+        assert_eq!(
+            context
+                .eval("Function.paren = 1; (Function.paren) = 2; Function.paren")
+                .unwrap(),
+            Value::Int(2)
+        );
+        assert!(context.compile("(0, Function.fixed) = 1").is_err());
+        assert!(
+            context
+                .compile("(true ? Function.fixed : Function.fixed) = 1")
+                .is_err()
+        );
+
+        assert_eq!(
+            context
+                .eval("Function.keep = 3; delete (0, Function.keep); Function.keep")
+                .unwrap(),
+            Value::Int(3)
+        );
+        assert_eq!(
+            context
+                .eval("Function.gone = 4; delete (Function.gone); Function.gone")
+                .unwrap(),
+            Value::Undefined
+        );
+        assert!(context.compile("'use strict'; delete Function").is_err());
+        assert!(context.compile("delete Function").is_err());
     }
 
     #[test]
