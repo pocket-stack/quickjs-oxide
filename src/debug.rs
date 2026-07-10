@@ -9,6 +9,22 @@
 use std::error::Error;
 use std::fmt;
 
+/// Runtime-wide policy for the currently represented, JS-observable portion
+/// of QuickJS `JS_SetStripInfo`.
+///
+/// The selected mode is sampled when a function is compiled. Existing
+/// bytecode keeps the debug payload it was published with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum DebugInfoMode {
+    /// Keep filename, PC positions and exact authored function source.
+    #[default]
+    Full,
+    /// Keep filename and PC positions but omit authored function source.
+    StripSource,
+    /// Omit function source and location metadata from the bytecode payload.
+    StripDebug,
+}
+
 /// A byte offset into the original UTF-8 source buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourceOffset(u32);

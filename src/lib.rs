@@ -23,7 +23,9 @@ pub mod vm;
 
 pub use bigint::{BigIntError, JsBigInt};
 pub use compiler::CompileOptions;
-pub use debug::{LineColumn, Pc2LineEntry, Pc2LineTable, QuickJsSourceLocator, SourceOffset};
+pub use debug::{
+    DebugInfoMode, LineColumn, Pc2LineEntry, Pc2LineTable, QuickJsSourceLocator, SourceOffset,
+};
 pub use error::{Error, ErrorKind, SourceLocation, SourceSpan};
 pub use function::FunctionBytecodeRef;
 pub use object::{

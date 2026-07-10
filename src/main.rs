@@ -3,56 +3,125 @@ use std::process::ExitCode;
 
 use quickjs_oxide::value::number_to_string;
 use quickjs_oxide::{
-    Context, JsString, PropertyKey, QUICKJS_COMPAT_VERSION, Runtime, RuntimeError, Value,
+    Context, DebugInfoMode, JsString, PropertyKey, QUICKJS_COMPAT_VERSION, Runtime, RuntimeError,
+    Value,
 };
 
 const QUICKJS_PRINT_MAX_STRING_LENGTH: usize = 1_000;
 
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
-        Some("--version" | "-v") => {
-            println!(
-                "quickjs-oxide {} (QuickJS {} compatibility target)",
-                env!("CARGO_PKG_VERSION"),
-                QUICKJS_COMPAT_VERSION
-            );
-            ExitCode::SUCCESS
-        }
-        Some("--help" | "-h") | None => {
-            println!("usage: qjs [options] [file [args]]");
-            println!("  -e, --eval EXPR   evaluate EXPR");
-            println!("  -v, --version     show version and compatibility target");
-            ExitCode::SUCCESS
-        }
-        Some("-q" | "--quit") => {
-            let runtime = Runtime::new();
-            let _context = runtime.new_context();
-            ExitCode::SUCCESS
-        }
-        Some("-e" | "--eval") => {
-            let Some(source) = args.next() else {
-                eprintln!("qjs: -e requires an expression");
-                return ExitCode::from(2);
-            };
-            evaluate(&source, "<cmdline>")
-        }
-        Some(option) if option.starts_with('-') => {
-            eprintln!("qjs: unknown option: {option}");
-            ExitCode::from(2)
-        }
-        Some(file) => match std::fs::read_to_string(file) {
-            Ok(source) => evaluate(&source, file),
-            Err(error) => {
-                eprintln!("qjs: could not read '{file}': {error}");
-                ExitCode::from(1)
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let mut debug_info = DebugInfoMode::Full;
+    let mut expression = None;
+    let mut quit = false;
+    let mut index = 0;
+    while index < args.len() && args[index].starts_with('-') && args[index] != "-" {
+        let option = args[index].clone();
+        index += 1;
+        match option.as_str() {
+            "--" => break,
+            "--strip-source" => debug_info = DebugInfoMode::StripSource,
+            "--version" => {
+                println!(
+                    "quickjs-oxide {} (QuickJS {} compatibility target)",
+                    env!("CARGO_PKG_VERSION"),
+                    QUICKJS_COMPAT_VERSION
+                );
+                return ExitCode::SUCCESS;
             }
-        },
+            "--help" => {
+                println!("usage: qjs [options] [file [args]]");
+                println!("  -e, --eval EXPR   evaluate EXPR");
+                println!("  -s                strip all debug information");
+                println!("      --strip-source strip only function source text");
+                println!("  -v, --version     show version and compatibility target");
+                return ExitCode::SUCCESS;
+            }
+            "--quit" => quit = true,
+            "--eval" => {
+                let Some(source) = args.get(index) else {
+                    eprintln!("qjs: -e requires an expression");
+                    return ExitCode::from(2);
+                };
+                expression = Some(source.clone());
+                index += 1;
+            }
+            short if short.starts_with('-') && !short.starts_with("--") => {
+                for (offset, short_option) in short[1..].char_indices() {
+                    match short_option {
+                        's' => debug_info = DebugInfoMode::StripDebug,
+                        'q' => quit = true,
+                        'v' => {
+                            println!(
+                                "quickjs-oxide {} (QuickJS {} compatibility target)",
+                                env!("CARGO_PKG_VERSION"),
+                                QUICKJS_COMPAT_VERSION
+                            );
+                            return ExitCode::SUCCESS;
+                        }
+                        'h' => {
+                            println!("usage: qjs [options] [file [args]]");
+                            println!("  -e, --eval EXPR   evaluate EXPR");
+                            println!("  -s                strip all debug information");
+                            println!("      --strip-source strip only function source text");
+                            println!("  -v, --version     show version and compatibility target");
+                            return ExitCode::SUCCESS;
+                        }
+                        'e' => {
+                            let source_offset = 1 + offset + short_option.len_utf8();
+                            if source_offset < short.len() {
+                                expression = Some(short[source_offset..].to_owned());
+                            } else {
+                                let Some(source) = args.get(index) else {
+                                    eprintln!("qjs: -e requires an expression");
+                                    return ExitCode::from(2);
+                                };
+                                expression = Some(source.clone());
+                                index += 1;
+                            }
+                            break;
+                        }
+                        _ => {
+                            eprintln!("qjs: unknown option: -{short_option}");
+                            return ExitCode::from(2);
+                        }
+                    }
+                }
+            }
+            _ => {
+                eprintln!("qjs: unknown option: {option}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    if quit {
+        let runtime = Runtime::new();
+        runtime.set_debug_info_mode(debug_info);
+        let _context = runtime.new_context();
+        return ExitCode::SUCCESS;
+    }
+    if let Some(source) = expression {
+        return evaluate(&source, "<cmdline>", debug_info);
+    }
+    let Some(file) = args.get(index) else {
+        println!("usage: qjs [options] [file [args]]");
+        println!("  -e, --eval EXPR   evaluate EXPR");
+        println!("  -v, --version     show version and compatibility target");
+        return ExitCode::SUCCESS;
+    };
+    match std::fs::read_to_string(file) {
+        Ok(source) => evaluate(&source, file, debug_info),
+        Err(error) => {
+            eprintln!("qjs: could not read '{file}': {error}");
+            ExitCode::from(1)
+        }
     }
 }
 
-fn evaluate(source: &str, filename: &str) -> ExitCode {
+fn evaluate(source: &str, filename: &str, debug_info: DebugInfoMode) -> ExitCode {
     let runtime = Runtime::new();
+    runtime.set_debug_info_mode(debug_info);
     let mut context = runtime.new_context();
     match context.eval_with_filename(source, filename) {
         Ok(_) => ExitCode::SUCCESS,

@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::atom::{Atom, AtomError, AtomKind, AtomTable};
 use crate::bytecode::verify_parts;
 use crate::compiler::{CompileOptions, compile_unlinked_script_with_filename};
-use crate::debug::{LineColumn, QuickJsSourceLocator};
+use crate::debug::{DebugInfoMode, LineColumn, QuickJsSourceLocator};
 use crate::error::{Error, ErrorKind, NativeErrorKind};
 use crate::function::{
     FunctionBytecodeRef, UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug,
@@ -22,9 +22,10 @@ use crate::function::{
 use crate::heap::{
     AutoInitProperty, BytecodeConstant, ClosureSource, ClosureVariable, ClosureVariableKind,
     ClosureVariableName, ConstructorKind, ContextData, ContextId, ErrorConstructorKind,
-    FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo, FunctionKind, FunctionMetadata,
-    GcStats, Heap, HeapCleanup, HeapCounts, HeapError, NativeCProto, NativeFunctionId, ObjectData,
-    ObjectId, ObjectKind, ObjectPayload, PropertySlot, RawValue, ShapeId, VarRefData, VarRefId,
+    FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo, FunctionDebugPosition,
+    FunctionKind, FunctionMetadata, GcStats, Heap, HeapCleanup, HeapCounts, HeapError,
+    NativeCProto, NativeFunctionId, ObjectData, ObjectId, ObjectKind, ObjectPayload, PropertySlot,
+    RawValue, ShapeId, VarRefData, VarRefId,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -81,6 +82,9 @@ struct RuntimeState {
     /// carry one manually retained root; no public `Value::Exception` sentinel
     /// exists.
     pending_exception: Option<RawValue>,
+    /// Observable function-debug portion of QuickJS `JS_SetStripInfo`, sampled
+    /// by each subsequent compilation.
+    debug_info_mode: DebugInfoMode,
     /// QuickJS's shape hash is non-owning. These generational IDs are likewise
     /// weak and are validated before reuse.
     shape_cache: HashMap<ShapeFingerprint, ShapeId>,
@@ -147,6 +151,7 @@ enum RawStringProperty {
 enum NativeInvocation {
     Call { this_value: Value },
     Construct { new_target: Value },
+    Getter { this_value: Value },
 }
 
 struct NativeArguments {
@@ -953,6 +958,7 @@ impl Runtime {
                 atoms,
                 heap: Heap::new(),
                 pending_exception: None,
+                debug_info_mode: DebugInfoMode::Full,
                 shape_cache: HashMap::new(),
                 shape_fingerprints: HashMap::new(),
                 well_known_symbols,
@@ -965,6 +971,18 @@ impl Runtime {
             next_context_id: Cell::new(0),
             domain_id,
         }))
+    }
+
+    /// Set the runtime-wide debug information policy for future compilations.
+    /// Existing bytecode is immutable and keeps the mode used when published.
+    pub fn set_debug_info_mode(&self, mode: DebugInfoMode) {
+        self.0.state.borrow_mut().debug_info_mode = mode;
+    }
+
+    /// Return the policy which the next compilation will sample.
+    #[must_use]
+    pub fn debug_info_mode(&self) -> DebugInfoMode {
+        self.0.state.borrow().debug_info_mode
     }
 
     #[must_use]
@@ -1622,7 +1640,66 @@ impl Runtime {
             1,
             1,
             PropertyFlags::data(false, false, false),
-        )
+        )?;
+
+        // Unlike C functions in JS_SetPropertyFunctionList, QuickJS's
+        // CGETSET entries are instantiated eagerly. Keep that distinction so
+        // descriptor reads and realm/GC edges match the upstream table.
+        for (target, property_name, getter_name) in [
+            (
+                NativeFunctionId::FunctionPrototypeFileName,
+                "fileName",
+                "get fileName",
+            ),
+            (
+                NativeFunctionId::FunctionPrototypePosition(FunctionDebugPosition::Line),
+                "lineNumber",
+                "get lineNumber",
+            ),
+            (
+                NativeFunctionId::FunctionPrototypePosition(FunctionDebugPosition::Column),
+                "columnNumber",
+                "get columnNumber",
+            ),
+        ] {
+            self.define_native_builtin_getter(
+                function_prototype,
+                realm,
+                target,
+                property_name,
+                getter_name,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn define_native_builtin_getter(
+        &self,
+        function_prototype: &ObjectRef,
+        realm: ContextId,
+        target: NativeFunctionId,
+        property_name: &str,
+        getter_name: &str,
+    ) -> Result<(), RuntimeError> {
+        let getter =
+            self.new_native_builtin(function_prototype, realm, target, 0, getter_name, 0)?;
+        let key = self.intern_property_key(property_name)?;
+        if !self.define_own_property(
+            function_prototype,
+            &key,
+            &OrdinaryPropertyDescriptor {
+                get: DescriptorField::Present(AccessorValue::Callable(getter)),
+                set: DescriptorField::Present(AccessorValue::Undefined),
+                enumerable: DescriptorField::Present(false),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )? {
+            return Err(RuntimeError::Invariant(
+                "native builtin getter definition was rejected",
+            ));
+        }
+        Ok(())
     }
 
     fn initialize_object_prototype_intrinsics(
@@ -5046,6 +5123,80 @@ impl Runtime {
         Ok(Completion::Return(Value::String(source)))
     }
 
+    fn call_function_prototype_file_name(
+        &self,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Getter { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Function.prototype.fileName getter received the wrong native invocation",
+            ));
+        };
+        let Value::Object(function) = this_value else {
+            return Ok(Completion::Return(Value::Undefined));
+        };
+        let filename = {
+            let state = self.0.state.borrow();
+            let object = state.heap.object(function.object_id())?;
+            let ObjectPayload::BytecodeFunction { bytecode, .. } = &object.payload else {
+                return Ok(Completion::Return(Value::Undefined));
+            };
+            let bytecode = state.heap.function_bytecode(*bytecode)?;
+            bytecode
+                .debug
+                .as_ref()
+                .map(|debug| state.atoms.to_js_string(debug.filename))
+                .transpose()?
+        };
+        Ok(Completion::Return(
+            filename.map_or(Value::Undefined, Value::String),
+        ))
+    }
+
+    fn call_function_prototype_position(
+        &self,
+        invocation: NativeInvocation,
+        selector: FunctionDebugPosition,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Getter { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Function.prototype position getter received the wrong native invocation",
+            ));
+        };
+        let Value::Object(function) = this_value else {
+            return Ok(Completion::Return(Value::Undefined));
+        };
+        let position = {
+            let state = self.0.state.borrow();
+            let object = state.heap.object(function.object_id())?;
+            let ObjectPayload::BytecodeFunction { bytecode, .. } = &object.payload else {
+                return Ok(Completion::Return(Value::Undefined));
+            };
+            let bytecode = state.heap.function_bytecode(*bytecode)?;
+            bytecode
+                .debug
+                .as_ref()
+                .map(|debug| debug.pc2line.as_ref().map(|table| table.lookup(None)))
+        };
+        let Some(position) = position else {
+            return Ok(Completion::Return(Value::Undefined));
+        };
+        let Some(position) = position else {
+            return Ok(Completion::Return(Value::Int(0)));
+        };
+        let (line, column) = position.one_based().ok_or(RuntimeError::Invariant(
+            "function definition position cannot be represented one-based",
+        ))?;
+        let selected = match selector {
+            FunctionDebugPosition::Line => line,
+            FunctionDebugPosition::Column => column,
+        };
+        let selected = i32::try_from(selected).map_err(|_| {
+            RuntimeError::Invariant("function definition position does not fit Int32")
+        })?;
+        Ok(Completion::Return(Value::Int(selected)))
+    }
+
     fn call_function_prototype_has_instance(
         &self,
         realm: ContextId,
@@ -5626,11 +5777,24 @@ impl Runtime {
                 NativeInvocation::Construct { new_target },
             ) => NativeInvocation::Construct { new_target },
             (
+                NativeCProto::Getter | NativeCProto::GetterMagic,
+                NativeInvocation::Call { this_value },
+            ) => NativeInvocation::Getter { this_value },
+            (
+                NativeCProto::Getter | NativeCProto::GetterMagic,
+                NativeInvocation::Construct { new_target },
+            ) => NativeInvocation::Getter {
+                this_value: new_target,
+            },
+            (_, NativeInvocation::Getter { .. }) => {
+                return Err(RuntimeError::Invariant(
+                    "native invocation was adapted as a getter more than once",
+                ));
+            }
+            (
                 NativeCProto::UnaryF64
                 | NativeCProto::BinaryF64
-                | NativeCProto::Getter
                 | NativeCProto::Setter
-                | NativeCProto::GetterMagic
                 | NativeCProto::SetterMagic
                 | NativeCProto::IteratorNext,
                 _,
@@ -5660,6 +5824,12 @@ impl Runtime {
             }
             NativeFunctionId::FunctionPrototypeHasInstance => {
                 self.call_function_prototype_has_instance(realm, invocation, arguments)
+            }
+            NativeFunctionId::FunctionPrototypeFileName => {
+                self.call_function_prototype_file_name(invocation)
+            }
+            NativeFunctionId::FunctionPrototypePosition(selector) => {
+                self.call_function_prototype_position(invocation, selector)
             }
             NativeFunctionId::ObjectPrototypeToString => {
                 self.call_object_prototype_to_string(realm, invocation)
@@ -5702,7 +5872,12 @@ impl Runtime {
                     NativeInvocation::Construct {
                         new_target: Value::Object(object),
                     } => object.object_id() == frame.function,
-                    NativeInvocation::Call { .. } | NativeInvocation::Construct { .. } => false,
+                    NativeInvocation::Getter {
+                        this_value: Value::Object(object),
+                    } => object.object_id() == frame.function,
+                    NativeInvocation::Call { .. }
+                    | NativeInvocation::Construct { .. }
+                    | NativeInvocation::Getter { .. } => false,
                 };
                 let result = format!(
                     "{}|{}|{}|{}",
@@ -7457,47 +7632,49 @@ impl Context {
         source: &str,
         options: &CompileOptions,
     ) -> Result<FunctionBytecodeRef, RuntimeError> {
-        let function = match compile_unlinked_script_with_filename(source, &options.filename) {
-            Ok(function) => function,
-            Err(error) => {
-                let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
-                    return Err(RuntimeError::Engine(error));
-                };
-                let explicit_location = if error.kind() == ErrorKind::Syntax {
-                    if let Some(span) = error.span() {
-                        let position = QuickJsSourceLocator::new(source)
-                            .locate_byte_offset(span.start.byte_offset)
-                            .map_err(|_| {
-                                RuntimeError::Invariant(
-                                    "syntax-error byte offset is invalid for its source",
-                                )
-                            })?;
-                        Some(ExplicitBacktraceLocation {
-                            filename: JsString::from_utf8(&options.filename),
-                            position,
-                        })
+        let debug_info = self.runtime.debug_info_mode();
+        let function =
+            match compile_unlinked_script_with_filename(source, &options.filename, debug_info) {
+                Ok(function) => function,
+                Err(error) => {
+                    let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
+                        return Err(RuntimeError::Engine(error));
+                    };
+                    let explicit_location = if error.kind() == ErrorKind::Syntax {
+                        if let Some(span) = error.span() {
+                            let position = QuickJsSourceLocator::new(source)
+                                .locate_byte_offset(span.start.byte_offset)
+                                .map_err(|_| {
+                                    RuntimeError::Invariant(
+                                        "syntax-error byte offset is invalid for its source",
+                                    )
+                                })?;
+                            Some(ExplicitBacktraceLocation {
+                                filename: JsString::from_utf8(&options.filename),
+                                position,
+                            })
+                        } else {
+                            None
+                        }
                     } else {
                         None
-                    }
-                } else {
-                    None
-                };
-                let exception = if error.kind() == ErrorKind::Syntax {
-                    self.runtime.new_native_error_without_backtrace(
-                        self.realm,
-                        kind,
-                        error.message(),
-                    )?
-                } else {
+                    };
+                    let exception = if error.kind() == ErrorKind::Syntax {
+                        self.runtime.new_native_error_without_backtrace(
+                            self.realm,
+                            kind,
+                            error.message(),
+                        )?
+                    } else {
+                        self.runtime
+                            .new_native_error(self.realm, kind, error.message())?
+                    };
                     self.runtime
-                        .new_native_error(self.realm, kind, error.message())?
-                };
-                self.runtime
-                    .ensure_error_backtrace(&exception, false, explicit_location)?;
-                self.runtime.set_pending_exception(exception)?;
-                return Err(RuntimeError::Exception);
-            }
-        };
+                        .ensure_error_backtrace(&exception, false, explicit_location)?;
+                    self.runtime.set_pending_exception(exception)?;
+                    return Err(RuntimeError::Exception);
+                }
+            };
         self.runtime.publish_unlinked_function(self.realm, function)
     }
 
@@ -7627,12 +7804,12 @@ impl Context {
 mod tests {
     use crate::JsBigInt;
     use crate::bytecode::{BytecodeFunction, Instruction};
-    use crate::debug::{LineColumn, Pc2LineEntry, Pc2LineTable};
+    use crate::debug::{DebugInfoMode, LineColumn, Pc2LineEntry, Pc2LineTable};
     use crate::error::NativeErrorKind;
     use crate::function::{UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug};
     use crate::heap::{
         ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
-        FunctionMetadata, NativeFunctionId, ObjectPayload,
+        FunctionDebugPosition, FunctionMetadata, NativeCProto, NativeFunctionId, ObjectPayload,
     };
     use crate::object::{
         AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField,
@@ -8647,6 +8824,9 @@ mod tests {
         let apply = runtime.intern_property_key("apply").unwrap();
         let bind = runtime.intern_property_key("bind").unwrap();
         let to_string = runtime.intern_property_key("toString").unwrap();
+        let file_name = runtime.intern_property_key("fileName").unwrap();
+        let line_number = runtime.intern_property_key("lineNumber").unwrap();
+        let column_number = runtime.intern_property_key("columnNumber").unwrap();
         let has_instance =
             PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::HasInstance));
         let prototype = runtime.intern_property_key("prototype").unwrap();
@@ -8661,6 +8841,9 @@ mod tests {
                 apply,
                 bind,
                 to_string,
+                file_name,
+                line_number,
+                column_number,
                 has_instance,
             ]
         );
@@ -8694,6 +8877,316 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn function_debug_accessors_match_quickjs_descriptors_realms_and_receivers() {
+        let runtime = Runtime::new();
+        let mut first = runtime.new_context();
+        let mut second = runtime.new_context();
+        let function_prototype = first.function_prototype().unwrap();
+        let prototype_key = runtime.intern_property_key("prototype").unwrap();
+        let length_key = runtime.intern_property_key("length").unwrap();
+        let name_key = runtime.intern_property_key("name").unwrap();
+        let specs = [
+            (
+                "fileName",
+                "get fileName",
+                NativeFunctionId::FunctionPrototypeFileName,
+                NativeCProto::Getter,
+            ),
+            (
+                "lineNumber",
+                "get lineNumber",
+                NativeFunctionId::FunctionPrototypePosition(FunctionDebugPosition::Line),
+                NativeCProto::GetterMagic,
+            ),
+            (
+                "columnNumber",
+                "get columnNumber",
+                NativeFunctionId::FunctionPrototypePosition(FunctionDebugPosition::Column),
+                NativeCProto::GetterMagic,
+            ),
+        ];
+        let mut getters = Vec::new();
+        for (property_name, getter_name, target, cproto) in specs {
+            let key = runtime.intern_property_key(property_name).unwrap();
+            let CompleteOrdinaryPropertyDescriptor::Accessor {
+                get: Some(getter),
+                set: None,
+                enumerable: false,
+                configurable: true,
+            } = runtime
+                .get_own_property(&function_prototype, &key)
+                .unwrap()
+                .unwrap()
+            else {
+                panic!("{property_name} was not the expected getter-only accessor");
+            };
+            assert_eq!(
+                runtime.get_prototype_of(getter.as_object()).unwrap(),
+                Some(function_prototype.clone())
+            );
+            assert_eq!(runtime.callable_realm(&getter).unwrap(), first.realm);
+            assert!(!runtime.is_constructor(getter.as_object()).unwrap());
+            assert_eq!(
+                runtime
+                    .get_own_property(getter.as_object(), &prototype_key)
+                    .unwrap(),
+                None
+            );
+            assert!(matches!(
+                runtime
+                    .get_own_property(getter.as_object(), &length_key)
+                    .unwrap(),
+                Some(CompleteOrdinaryPropertyDescriptor::Data {
+                    value: Value::Int(0),
+                    writable: false,
+                    enumerable: false,
+                    configurable: true,
+                })
+            ));
+            assert!(matches!(
+                runtime
+                    .get_own_property(getter.as_object(), &name_key)
+                    .unwrap(),
+                Some(CompleteOrdinaryPropertyDescriptor::Data {
+                    value: Value::String(value),
+                    writable: false,
+                    enumerable: false,
+                    configurable: true,
+                }) if value == JsString::from(getter_name)
+            ));
+            let state = runtime.0.state.borrow();
+            let ObjectPayload::NativeFunction { data } = &state
+                .heap
+                .object(getter.as_object().object_id())
+                .unwrap()
+                .payload
+            else {
+                panic!("debug accessor getter was not a native function");
+            };
+            assert_eq!(data.target, target);
+            assert_eq!(data.target.descriptor().cproto, cproto);
+            drop(state);
+            getters.push((key, getter));
+        }
+        assert_ne!(getters[0].1.as_object(), getters[1].1.as_object());
+        assert_ne!(getters[1].1.as_object(), getters[2].1.as_object());
+
+        let source = "\n  (function named(){})";
+        let Value::Object(function) = second.eval_with_filename(source, "receiver.js").unwrap()
+        else {
+            panic!("debug receiver source did not return a function");
+        };
+        for (index, expected) in [
+            Value::String(JsString::from("receiver.js")),
+            Value::Int(2),
+            Value::Int(4),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                first.get_property(&function, &getters[index].0).unwrap(),
+                expected
+            );
+            assert_eq!(
+                first
+                    .call(
+                        &getters[index].1,
+                        Value::Object(function.clone()),
+                        &[Value::Int(1), Value::Int(2)],
+                    )
+                    .unwrap(),
+                expected,
+                "getter ABI must ignore arguments and inspect the receiver"
+            );
+        }
+
+        let bind_key = runtime.intern_property_key("bind").unwrap();
+        let Value::Object(bind_object) =
+            first.get_property(&function_prototype, &bind_key).unwrap()
+        else {
+            panic!("Function.prototype.bind was not an object");
+        };
+        let bind = runtime.as_callable(&bind_object).unwrap().unwrap();
+        let Value::Object(bound) = first
+            .call(&bind, Value::Object(function.clone()), &[Value::Null])
+            .unwrap()
+        else {
+            panic!("bind did not return an object");
+        };
+        let ordinary = first.new_object().unwrap();
+        for (_, getter) in &getters {
+            for receiver in [
+                Value::Undefined,
+                Value::Null,
+                Value::Int(1),
+                Value::Object(ordinary.clone()),
+                Value::Object(function_prototype.clone()),
+                Value::Object(bound.clone()),
+                Value::Object(getter.as_object().clone()),
+            ] {
+                assert_eq!(first.call(getter, receiver, &[]).unwrap(), Value::Undefined);
+            }
+        }
+
+        // If an embedder enables the constructor bit, QuickJS's getter cproto
+        // receives newTarget as its receiver.
+        let target = runtime.as_callable(&function).unwrap().unwrap();
+        runtime
+            .set_constructor_bit(getters[0].1.as_object(), true)
+            .unwrap();
+        assert_eq!(
+            first
+                .construct_with_new_target(&getters[0].1, &target, &[])
+                .unwrap(),
+            Value::String(JsString::from("receiver.js"))
+        );
+        runtime
+            .set_constructor_bit(getters[0].1.as_object(), false)
+            .unwrap();
+    }
+
+    #[test]
+    fn runtime_debug_info_mode_matches_quickjs_strip_source_and_strip_debug() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let function_prototype = context.function_prototype().unwrap();
+        let keys = ["fileName", "lineNumber", "columnNumber"]
+            .map(|name| runtime.intern_property_key(name).unwrap());
+        let to_string_key = runtime.intern_property_key("toString").unwrap();
+        let Value::Object(to_string_object) = context
+            .get_property(&function_prototype, &to_string_key)
+            .unwrap()
+        else {
+            panic!("Function.prototype.toString was not an object");
+        };
+        let to_string = runtime.as_callable(&to_string_object).unwrap().unwrap();
+        let expression = "\n  (function stripped() {})";
+
+        let Value::Object(full) = context.eval_with_filename(expression, "full.js").unwrap() else {
+            panic!("full debug compile did not return a function");
+        };
+        assert_eq!(runtime.debug_info_mode(), DebugInfoMode::Full);
+        assert_eq!(
+            context
+                .call(&to_string, Value::Object(full.clone()), &[])
+                .unwrap(),
+            Value::String(JsString::from("function stripped() {}"))
+        );
+
+        runtime.set_debug_info_mode(DebugInfoMode::StripSource);
+        let Value::Object(source_stripped) = context
+            .eval_with_filename(expression, "source-stripped.js")
+            .unwrap()
+        else {
+            panic!("source-stripped compile did not return a function");
+        };
+        for (key, expected) in keys.iter().zip([
+            Value::String(JsString::from("source-stripped.js")),
+            Value::Int(2),
+            Value::Int(4),
+        ]) {
+            assert_eq!(
+                context.get_property(&source_stripped, key).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            context
+                .call(&to_string, Value::Object(source_stripped), &[])
+                .unwrap(),
+            Value::String(JsString::from(
+                "function stripped() {\n    [native code]\n}"
+            ))
+        );
+
+        runtime.set_debug_info_mode(DebugInfoMode::StripDebug);
+        let Value::Object(debug_stripped) = context
+            .eval_with_filename(expression, "debug-stripped.js")
+            .unwrap()
+        else {
+            panic!("debug-stripped compile did not return a function");
+        };
+        for key in &keys {
+            assert_eq!(
+                context.get_property(&debug_stripped, key).unwrap(),
+                Value::Undefined
+            );
+        }
+        assert_eq!(
+            context
+                .call(&to_string, Value::Object(debug_stripped), &[])
+                .unwrap(),
+            Value::String(JsString::from(
+                "function stripped() {\n    [native code]\n}"
+            ))
+        );
+
+        // Changing the runtime policy never mutates already-published bytecode.
+        assert_eq!(
+            context.call(&to_string, Value::Object(full), &[]).unwrap(),
+            Value::String(JsString::from("function stripped() {}"))
+        );
+    }
+
+    #[test]
+    fn function_debug_position_distinguishes_missing_debug_from_missing_pc_table() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let keys = ["fileName", "lineNumber", "columnNumber"]
+            .map(|name| runtime.intern_property_key(name).unwrap());
+
+        let with_debug = runtime
+            .publish_unlinked_function(
+                context.realm,
+                debug_draft(UnlinkedFunctionDebug {
+                    filename: JsString::from("no-pc-table.js"),
+                    pc2line: None,
+                    source: None,
+                }),
+            )
+            .unwrap();
+        let with_debug = runtime
+            .new_bytecode_closure(context.realm, &with_debug)
+            .unwrap();
+        for (key, expected) in keys.iter().zip([
+            Value::String(JsString::from("no-pc-table.js")),
+            Value::Int(0),
+            Value::Int(0),
+        ]) {
+            assert_eq!(
+                context.get_property(with_debug.as_object(), key).unwrap(),
+                expected
+            );
+        }
+
+        let without_debug = runtime
+            .publish_unlinked_function(
+                context.realm,
+                UnlinkedFunction::new(
+                    vec![Instruction::Undefined, Instruction::Return],
+                    Vec::new(),
+                    FunctionMetadata {
+                        max_stack: 1,
+                        ..FunctionMetadata::default()
+                    },
+                ),
+            )
+            .unwrap();
+        let without_debug = runtime
+            .new_bytecode_closure(context.realm, &without_debug)
+            .unwrap();
+        for key in &keys {
+            assert_eq!(
+                context
+                    .get_property(without_debug.as_object(), key)
+                    .unwrap(),
+                Value::Undefined
+            );
+        }
     }
 
     #[test]

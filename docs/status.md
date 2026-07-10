@@ -170,17 +170,23 @@ claim full parity.
   `Function.prototype.toString` returns the exact captured bytecode source when
   present without reading `name`; otherwise it performs the observable name
   conversion and emits QuickJS's normal/generator/async/async-generator native
-  template. The non-writable, non-enumerable, non-configurable `@@hasInstance`
+  template. The eager getter-only `fileName`, `lineNumber`, and `columnNumber`
+  accessors inspect only the receiver's bytecode class, return its filename and
+  one-based definition position, silently return `undefined` for non-bytecode
+  receivers, and preserve QuickJS's `0` position when debug exists without a
+  PC table. They use distinct realm-bound native getter objects with the exact
+  names, arities and descriptors. The non-writable, non-enumerable,
+  non-configurable `@@hasInstance`
   method implements ordinary prototype traversal and delegates a bound target
   through the full instance-check path, including custom target
   `Symbol.hasInstance` and thrown completions.
 - Native payloads carry a typed target, cproto descriptor, defining realm and
   minimum readable argument count; actual argc remains distinct from
-  undefined-padded argv. Generic, constructor-only and
-  constructor-or-function adapters share active native frame bookkeeping,
-  restore it across return/throw/engine-error paths, and keep the mutable
-  object constructor bit independent from cproto and own `length`. Native
-  defining-realm edges participate in trial-deletion GC.
+  undefined-padded argv. Generic, constructor-only, constructor-or-function,
+  and Getter/GetterMagic adapters share active native
+  frame bookkeeping, restore it across return/throw/engine-error paths, and
+  keep the mutable object constructor bit independent from cproto and own
+  `length`. Native defining-realm edges participate in trial-deletion GC.
 - Typed autoinit also covers native methods and constant intrinsic strings.
   The current Object/Function/Error function-list prefixes expose keys and
   descriptors before allocating their values; ownKeys/has-own/delete remain
@@ -271,27 +277,31 @@ Derived/class/super construction, `%Function%`, `AggregateError`, other native
 builtin constructor families, Proxy construct dispatch, and Reflect APIs
 remain. Typed target/cproto, data-bearing Error selector, realm, arity padding,
 production BoundFunction allocation and frame foundations exist, but
-specialized getter/setter/F64/iterator cproto adapters and the wider builtin
-table remain.
+specialized setter/F64/iterator cproto adapters and the wider builtin table
+remain.
 
 Explicit `throw`, nested propagation, VM-generated native errors and eager
 Error backtraces share the completion path for the current synchronous slice,
 but catch/finally handler tables, async/generator/Promise frame integration,
 recoverable OOM and backtrace-allocation fallback, interrupt/termination and
-full abrupt-completion semantics remain. Debug/source stripping and the
-`JS_STRIP_DEBUG` / `JS_STRIP_SOURCE` configuration surface are not implemented;
-neither are bytecode debug serialization or the complete Function debug
-surface. In particular `%Function%`, the Function-prototype
-`fileName`/`lineNumber`/`columnNumber` getters and `constructor` link, and the
-rest of the Function intrinsic/constructor table remain pending despite the
-underlying filename, source-range and PC metadata. The current parser does not
-yet produce generator or async bytecode, although the function-kind metadata
-and `toString` fallback distinguish all four QuickJS kinds. Bound dispatch is
-iterative and therefore does not consume the Rust host stack, but exact
-QuickJS runtime-stack accounting and its deep-bound-chain overflow threshold
-are not yet reproduced. VM object coercion is wired through the implemented
-unary, arithmetic, relational, addition and abstract-equality operators and
-now reaches the implemented callable classes through
+full abrupt-completion semantics remain. The `JS_STRIP_DEBUG` /
+`JS_STRIP_SOURCE` debug/source-stripping decision is implemented as a
+runtime-wide three-state policy sampled by subsequent compilation: strip-source
+retains filename/PC metadata but removes authored source, while strip-debug
+removes the represented function source/location payload. The `qjs`
+`--strip-source` and `-s` options select the same states in upstream order,
+including combined short options and their effect on `toString`, function debug
+accessors and Error backtraces. QuickJS's additional stripping of non-observable
+vardef/closure-var debug names and bytecode debug serialization are still
+pending. In particular `%Function%`, its Function-prototype `constructor` link,
+and the rest of the Function intrinsic/constructor graph remain pending. The
+current parser does not yet produce generator or async bytecode, although the
+function-kind metadata and `toString` fallback distinguish all four QuickJS
+kinds. Bound dispatch is iterative and therefore does not consume the Rust host
+stack, but exact QuickJS runtime-stack accounting and its deep-bound-chain
+overflow threshold are not yet reproduced. VM object coercion is wired through
+the implemented unary, arithmetic, relational, addition and abstract-equality
+operators and now reaches the implemented callable classes through
 `Function.prototype.toString`. Proxy hooks, Date's special default hint
 behavior, OOM/interrupt edges and operators outside the current bytecode slice
 also remain pending.

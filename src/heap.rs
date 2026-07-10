@@ -637,6 +637,8 @@ pub enum NativeFunctionId {
     FunctionPrototypeBind,
     FunctionPrototypeToString,
     FunctionPrototypeHasInstance,
+    FunctionPrototypeFileName,
+    FunctionPrototypePosition(FunctionDebugPosition),
     ObjectPrototypeToString,
     ObjectPrototypeToLocaleString,
     ObjectPrototypeValueOf,
@@ -651,6 +653,14 @@ pub enum NativeFunctionId {
     ConstructorOrFunctionProbe,
     #[cfg(test)]
     ActiveFrameProbe,
+}
+
+/// Typed replacement for the magic selector shared by QuickJS's function
+/// definition-position getter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FunctionDebugPosition {
+    Line,
+    Column,
 }
 
 /// Type-safe replacement for QuickJS's integer magic selector on the shared
@@ -716,6 +726,12 @@ impl NativeFunctionId {
             | Self::ObjectPrototypeToLocaleString
             | Self::ObjectPrototypeValueOf => NativeFunctionDescriptor {
                 cproto: NativeCProto::Generic,
+            },
+            Self::FunctionPrototypeFileName => NativeFunctionDescriptor {
+                cproto: NativeCProto::Getter,
+            },
+            Self::FunctionPrototypePosition(_) => NativeFunctionDescriptor {
+                cproto: NativeCProto::GetterMagic,
             },
             Self::ErrorConstructor(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::ConstructorOrFunctionMagic,

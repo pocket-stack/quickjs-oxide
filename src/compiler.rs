@@ -10,7 +10,7 @@
 
 use crate::bigint::JsBigInt;
 use crate::bytecode::{BytecodeFunction, Instruction, verify_parts};
-use crate::debug::{Pc2LineEntry, Pc2LineTable, QuickJsSourceLocator, SourceOffset};
+use crate::debug::{DebugInfoMode, Pc2LineEntry, Pc2LineTable, QuickJsSourceLocator, SourceOffset};
 use crate::error::{Error, ErrorKind, SourceLocation, SourceSpan};
 use crate::function::{UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug};
 use crate::heap::{
@@ -74,16 +74,17 @@ pub fn compile_script(source: &str) -> Result<BytecodeFunction, Error> {
 /// structural and to carry execution metadata into the heap node.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn compile_unlinked_script(source: &str) -> Result<UnlinkedFunction, Error> {
-    compile_unlinked_script_with_filename(source, DEFAULT_EVAL_FILENAME)
+    compile_unlinked_script_with_filename(source, DEFAULT_EVAL_FILENAME, DebugInfoMode::Full)
 }
 
 pub(crate) fn compile_unlinked_script_with_filename(
     source: &str,
     filename: &str,
+    debug_info: DebugInfoMode,
 ) -> Result<UnlinkedFunction, Error> {
     let mut tree = Parser::parse(source, JsString::from_utf8(filename))?;
     resolve_identifiers(&mut tree)?;
-    lower_unlinked_tree(tree)
+    lower_unlinked_tree(tree, debug_info)
 }
 
 type FunctionId = usize;
@@ -1618,7 +1619,10 @@ fn lower_detached_script(tree: FunctionTree) -> Result<BytecodeFunction, Error> 
     Ok(bytecode)
 }
 
-fn lower_unlinked_tree(tree: FunctionTree) -> Result<UnlinkedFunction, Error> {
+fn lower_unlinked_tree(
+    tree: FunctionTree,
+    debug_info: DebugInfoMode,
+) -> Result<UnlinkedFunction, Error> {
     let FunctionTree {
         functions: tree_functions,
         source,
@@ -1679,13 +1683,20 @@ fn lower_unlinked_tree(tree: FunctionTree) -> Result<UnlinkedFunction, Error> {
             },
         };
         let func_name = function.function_name.as_deref().map(JsString::from_utf8);
-        let debug = build_unlinked_debug(
-            &source,
-            filename.clone(),
-            function.source.definition,
-            function.source.range,
-            &lowered_ops.pc_sites,
-        )?;
+        let debug = match debug_info {
+            DebugInfoMode::Full | DebugInfoMode::StripSource => Some(build_unlinked_debug(
+                &source,
+                filename.clone(),
+                function.source.definition,
+                if debug_info == DebugInfoMode::Full {
+                    function.source.range
+                } else {
+                    None
+                },
+                &lowered_ops.pc_sites,
+            )?),
+            DebugInfoMode::StripDebug => None,
+        };
         let unlinked = if function.closure_variables.is_empty() {
             UnlinkedFunction::new(code, constants, metadata)
         } else {
@@ -1696,7 +1707,11 @@ fn lower_unlinked_tree(tree: FunctionTree) -> Result<UnlinkedFunction, Error> {
                 function.closure_variables,
             )
         };
-        lowered[function_id] = Some(unlinked.with_name(func_name).with_debug(debug));
+        let unlinked = unlinked.with_name(func_name);
+        lowered[function_id] = Some(match debug {
+            Some(debug) => unlinked.with_debug(debug),
+            None => unlinked,
+        });
     }
 
     lowered[0]
@@ -1993,6 +2008,7 @@ const fn source_span(span: Span) -> SourceSpan {
 mod tests {
     use crate::bigint::JsBigInt;
     use crate::bytecode::Instruction;
+    use crate::debug::DebugInfoMode;
     use crate::error::ErrorKind;
     use crate::heap::{
         ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
@@ -3428,6 +3444,55 @@ mod tests {
         );
         drop(child);
         assert_eq!(runtime.heap_counts().function_bytecode_nodes, 0);
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
+    }
+
+    #[test]
+    fn runtime_strip_mode_controls_debug_payload_and_filename_atom_ownership() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let baseline_atoms = runtime.test_atom_count();
+
+        runtime.set_debug_info_mode(DebugInfoMode::StripSource);
+        let root = context
+            .compile_with_filename("(function(){})", "strip-source-unique.js")
+            .unwrap();
+        let child = runtime.test_child_function_bytecode(&root, 0).unwrap();
+        assert_eq!(
+            runtime.test_function_debug_location(&child, None).unwrap(),
+            Some((
+                JsString::from("strip-source-unique.js"),
+                crate::LineColumn::new(0, 1),
+            ))
+        );
+        assert_eq!(runtime.test_function_debug_source(&child).unwrap(), None);
+        assert!(
+            runtime
+                .test_debug_filename_atom_ownership(&child)
+                .unwrap()
+                .is_some()
+        );
+        drop(root);
+        drop(child);
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
+
+        runtime.set_debug_info_mode(DebugInfoMode::StripDebug);
+        let root = context
+            .compile_with_filename("(function(){})", "strip-debug-unique.js")
+            .unwrap();
+        let child = runtime.test_child_function_bytecode(&root, 0).unwrap();
+        assert_eq!(
+            runtime.test_function_debug_location(&child, None).unwrap(),
+            None
+        );
+        assert_eq!(runtime.test_function_debug_source(&child).unwrap(), None);
+        assert_eq!(
+            runtime.test_debug_filename_atom_ownership(&child).unwrap(),
+            None
+        );
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
+        drop(root);
+        drop(child);
         assert_eq!(runtime.test_atom_count(), baseline_atoms);
     }
 }
