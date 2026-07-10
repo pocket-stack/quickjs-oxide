@@ -678,6 +678,10 @@ impl CallFrame {
                 Instruction::Drop => {
                     self.pop()?;
                 }
+                Instruction::Nip => {
+                    let (_, value) = self.pop_pair()?;
+                    self.stack.push(value);
+                }
                 Instruction::Dup => {
                     let value = self
                         .stack

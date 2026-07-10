@@ -30,10 +30,11 @@ const key = {
     [Symbol.toPrimitive](hint) { log += "k(" + hint + ")"; return "member"; }
 };
 Object.defineProperty(proto, "compound", {
-    get() { log += "g"; return 2; },
+    get() { log += "g"; return oldValue; },
     set(value) { log += "s"; seenThis = this === target; seenValue = value; },
     configurable: true
 });
+let oldValue = 2;
 const compoundKey = {
     [Symbol.toPrimitive](hint) { log += "k(" + hint + ")"; return "compound"; }
 };
@@ -41,6 +42,12 @@ function baseExpr() { log += "b"; return target; }
 function keyExpr() { log += "q"; return key; }
 function compoundKeyExpr() { log += "q"; return compoundKey; }
 function rhsExpr() { log += "r"; return 9; }
+function throwingRhs() { log += "r"; throw new Error("rhs"); }
+const throwingKey = {};
+Object.defineProperty(throwingKey, Symbol.toPrimitive, {
+    value: function() { log += "k!"; throw new Error("key"); }
+});
+function throwingKeyExpr() { log += "q"; return throwingKey; }
 
 log = ""; seenThis = false; seenValue = undefined;
 const setResult = baseExpr()[keyExpr()] = rhsExpr();
@@ -70,10 +77,64 @@ const objectSymbolCompound = target[symbolKeyObject] += 4;
 print("object-symbol-compound=" + [show(objectSymbolCompound), log,
       show(target[compoundSymbol]), show(target[otherCompoundSymbol])].join("|"));
 
+target[compoundSymbol] = 0;
+log = "";
+const objectSymbolLogical = target[symbolKeyObject] ||= 8;
+print("object-symbol-logical=" + [show(objectSymbolLogical), log,
+      show(target[compoundSymbol]), show(target[otherCompoundSymbol])].join("|"));
+log = "";
+const objectSymbolLogicalShort = target[symbolKeyObject] ||= 10;
+print("object-symbol-logical-short=" + [show(objectSymbolLogicalShort), log,
+      show(target[compoundSymbol]), show(target[otherCompoundSymbol])].join("|"));
+
 target.arithmetic = 20;
 print("arithmetic=" + [show(target.arithmetic += 2), show(target.arithmetic -= 4),
       show(target.arithmetic *= 3), show(target.arithmetic /= 2),
       show(target.arithmetic %= 5)].join("|"));
+
+oldValue = 2; log = ""; seenThis = false; seenValue = undefined;
+const logicalAndSet = baseExpr()[compoundKeyExpr()] &&= rhsExpr();
+print("logical-and-set=" + [show(logicalAndSet), log, show(seenThis), show(seenValue)].join("|"));
+oldValue = 0; log = ""; seenThis = false; seenValue = undefined;
+const logicalAndSkip = baseExpr()[compoundKeyExpr()] &&= rhsExpr();
+print("logical-and-skip=" + [show(logicalAndSkip), log, show(seenThis), show(seenValue)].join("|"));
+oldValue = 0; log = ""; seenThis = false; seenValue = undefined;
+const logicalOrSet = baseExpr()[compoundKeyExpr()] ||= rhsExpr();
+print("logical-or-set=" + [show(logicalOrSet), log, show(seenThis), show(seenValue)].join("|"));
+oldValue = 2; log = ""; seenThis = false; seenValue = undefined;
+const logicalOrSkip = baseExpr()[compoundKeyExpr()] ||= rhsExpr();
+print("logical-or-skip=" + [show(logicalOrSkip), log, show(seenThis), show(seenValue)].join("|"));
+oldValue = null; log = ""; seenThis = false; seenValue = undefined;
+const logicalNullishSet = baseExpr()[compoundKeyExpr()] ??= rhsExpr();
+print("logical-nullish-set=" + [show(logicalNullishSet), log, show(seenThis), show(seenValue)].join("|"));
+oldValue = false; log = ""; seenThis = false; seenValue = undefined;
+const logicalNullishSkip = baseExpr()[compoundKeyExpr()] ??= rhsExpr();
+print("logical-nullish-skip=" + [show(logicalNullishSkip), log, show(seenThis), show(seenValue)].join("|"));
+
+const coercionBomb = {};
+Object.defineProperty(coercionBomb, Symbol.toPrimitive, {
+    value: function() { log += "p"; throw new Error("coerced"); }
+});
+oldValue = coercionBomb; log = "";
+const logicalObjectAnd = baseExpr()[compoundKeyExpr()] &&= rhsExpr();
+print("logical-object-and=" + [show(logicalObjectAnd), log].join("|"));
+oldValue = coercionBomb; log = "";
+const logicalObjectOr = baseExpr()[compoundKeyExpr()] ||= rhsExpr();
+print("logical-object-or=" + [show(logicalObjectOr === coercionBomb), log].join("|"));
+oldValue = coercionBomb; log = "";
+const logicalObjectNullish = baseExpr()[compoundKeyExpr()] ??= rhsExpr();
+print("logical-object-nullish=" + [show(logicalObjectNullish === coercionBomb), log].join("|"));
+oldValue = 1; log = "";
+print("logical-rhs-throw=" + observe(() =>
+      baseExpr()[compoundKeyExpr()] &&= throwingRhs()) + "|" + log);
+log = "";
+print("logical-key-throw=" + observe(() =>
+      baseExpr()[throwingKeyExpr()] ||= rhsExpr()) + "|" + log);
+log = "";
+print("logical-getter-throw=" + observe(() =>
+      Function.prototype.caller &&= rhsExpr()) + "|" + log);
+log = "";
+print("null-logical=" + observe(() => null[compoundKeyExpr()] ||= rhsExpr()) + "|" + log);
 
 log = "";
 print("null-set=" + observe(() => null[keyExpr()] = rhsExpr()) + "|" + log);
@@ -86,6 +147,12 @@ print("readonly-sloppy=" + [show(sloppyReadonly),
       show(Function.prototype === originalPrototype), show(delete Function.prototype)].join("|"));
 print("readonly-strict-set=" + observe(() => (function(){ "use strict"; return Function.prototype = 1; })()));
 print("readonly-strict-delete=" + observe(() => (function(){ "use strict"; return delete Function.prototype; })()));
+log = "";
+print("readonly-logical-skip=" + observe(() =>
+      (function(){ "use strict"; return Function.prototype ||= rhsExpr(); })() === Function.prototype) + "|" + log);
+log = "";
+print("readonly-logical-set=" + observe(() =>
+      (function(){ "use strict"; return Function.prototype &&= rhsExpr(); })()) + "|" + log);
 print("native-setter=" + observe(() => Function.prototype.caller = 1));
 
 Object.defineProperty(target, "getterOnly", {
@@ -149,6 +216,7 @@ fn rust_observations() -> Vec<String> {
     );
     define_global(&runtime, &mut context, "seenThis", Value::Bool(false));
     define_global(&runtime, &mut context, "seenValue", Value::Undefined);
+    define_global(&runtime, &mut context, "oldValue", Value::Int(2));
 
     let proto = context.new_object().unwrap();
     let target = context.new_object_with_prototype(Some(&proto)).unwrap();
@@ -176,7 +244,7 @@ fn rust_observations() -> Vec<String> {
     let compound_getter = function(
         &runtime,
         &mut context,
-        "(function(){ log = log + 'g'; return 2; })",
+        "(function(){ log = log + 'g'; return oldValue; })",
     );
     let compound_setter = function(
         &runtime,
@@ -229,6 +297,26 @@ fn rust_observations() -> Vec<String> {
         "compoundKey",
         Value::Object(compound_key),
     );
+    let throwing_key = context.new_object().unwrap();
+    let throwing_key_converter = function(
+        &runtime,
+        &mut context,
+        "(function(){ log = log + 'k!'; throw new Error('key'); })",
+    );
+    define_data(
+        &mut context,
+        &throwing_key,
+        &to_primitive,
+        Value::Object(throwing_key_converter.as_object().clone()),
+        true,
+        true,
+    );
+    define_global(
+        &runtime,
+        &mut context,
+        "throwingKey",
+        Value::Object(throwing_key),
+    );
     let compound_symbol = runtime
         .new_symbol(Some(JsString::from("compound-key")))
         .unwrap();
@@ -278,6 +366,14 @@ fn rust_observations() -> Vec<String> {
             "(function(){ log = log + 'q'; return compoundKey; })",
         ),
         ("rhsExpr", "(function(){ log = log + 'r'; return 9; })"),
+        (
+            "throwingRhs",
+            "(function(){ log = log + 'r'; throw new Error('rhs'); })",
+        ),
+        (
+            "throwingKeyExpr",
+            "(function(){ log = log + 'q'; return throwingKey; })",
+        ),
     ] {
         let value = function(&runtime, &mut context, source);
         define_global(
@@ -381,6 +477,38 @@ fn rust_observations() -> Vec<String> {
         show(context.eval("target[otherCompoundSymbol]").unwrap()),
     ));
 
+    context.eval("target[compoundSymbol] = 0").unwrap();
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    let object_symbol_logical = context.eval("target[symbolKeyObject] ||= 8").unwrap();
+    runtime.run_gc().unwrap();
+    output.push(format!(
+        "object-symbol-logical={}|{}|{}|{}",
+        show(object_symbol_logical),
+        string_global(&runtime, &mut context, "log"),
+        show(context.eval("target[compoundSymbol]").unwrap()),
+        show(context.eval("target[otherCompoundSymbol]").unwrap()),
+    ));
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    let object_symbol_logical_short = context.eval("target[symbolKeyObject] ||= 10").unwrap();
+    runtime.run_gc().unwrap();
+    output.push(format!(
+        "object-symbol-logical-short={}|{}|{}|{}",
+        show(object_symbol_logical_short),
+        string_global(&runtime, &mut context, "log"),
+        show(context.eval("target[compoundSymbol]").unwrap()),
+        show(context.eval("target[otherCompoundSymbol]").unwrap()),
+    ));
+
     let arithmetic = runtime.intern_property_key("arithmetic").unwrap();
     define_data(
         &mut context,
@@ -401,6 +529,173 @@ fn rust_observations() -> Vec<String> {
         arithmetic_values.push(show(context.eval(source).unwrap()));
     }
     output.push(format!("arithmetic={}", arithmetic_values.join("|")));
+
+    for (label, old_value, source) in [
+        (
+            "logical-and-set",
+            Value::Int(2),
+            "baseExpr()[compoundKeyExpr()] &&= rhsExpr()",
+        ),
+        (
+            "logical-and-skip",
+            Value::Int(0),
+            "baseExpr()[compoundKeyExpr()] &&= rhsExpr()",
+        ),
+        (
+            "logical-or-set",
+            Value::Int(0),
+            "baseExpr()[compoundKeyExpr()] ||= rhsExpr()",
+        ),
+        (
+            "logical-or-skip",
+            Value::Int(2),
+            "baseExpr()[compoundKeyExpr()] ||= rhsExpr()",
+        ),
+        (
+            "logical-nullish-set",
+            Value::Null,
+            "baseExpr()[compoundKeyExpr()] ??= rhsExpr()",
+        ),
+        (
+            "logical-nullish-skip",
+            Value::Bool(false),
+            "baseExpr()[compoundKeyExpr()] ??= rhsExpr()",
+        ),
+    ] {
+        set_global(&runtime, &mut context, "oldValue", old_value);
+        set_global(
+            &runtime,
+            &mut context,
+            "log",
+            Value::String(JsString::from("")),
+        );
+        set_global(&runtime, &mut context, "seenThis", Value::Bool(false));
+        set_global(&runtime, &mut context, "seenValue", Value::Undefined);
+        let result = context.eval(source).unwrap();
+        output.push(format!(
+            "{label}={}|{}|{}|{}",
+            show(result),
+            string_global(&runtime, &mut context, "log"),
+            show(global_value(&runtime, &mut context, "seenThis")),
+            show(global_value(&runtime, &mut context, "seenValue")),
+        ));
+    }
+
+    let coercion_bomb = context.new_object().unwrap();
+    let coercion_bomb_converter = function(
+        &runtime,
+        &mut context,
+        "(function(){ log = log + 'p'; throw new Error('coerced'); })",
+    );
+    define_data(
+        &mut context,
+        &coercion_bomb,
+        &to_primitive,
+        Value::Object(coercion_bomb_converter.as_object().clone()),
+        true,
+        true,
+    );
+    define_global(
+        &runtime,
+        &mut context,
+        "coercionBomb",
+        Value::Object(coercion_bomb.clone()),
+    );
+    set_global(
+        &runtime,
+        &mut context,
+        "oldValue",
+        Value::Object(coercion_bomb.clone()),
+    );
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    let logical_object_and = context
+        .eval("baseExpr()[compoundKeyExpr()] &&= rhsExpr()")
+        .unwrap();
+    output.push(format!(
+        "logical-object-and={}|{}",
+        show(logical_object_and),
+        string_global(&runtime, &mut context, "log")
+    ));
+
+    for (label, source) in [
+        (
+            "logical-object-or",
+            "baseExpr()[compoundKeyExpr()] ||= rhsExpr()",
+        ),
+        (
+            "logical-object-nullish",
+            "baseExpr()[compoundKeyExpr()] ??= rhsExpr()",
+        ),
+    ] {
+        set_global(
+            &runtime,
+            &mut context,
+            "oldValue",
+            Value::Object(coercion_bomb.clone()),
+        );
+        set_global(
+            &runtime,
+            &mut context,
+            "log",
+            Value::String(JsString::from("")),
+        );
+        let result = context.eval(source).unwrap();
+        runtime.run_gc().unwrap();
+        output.push(format!(
+            "{label}={}|{}",
+            show(Value::Bool(result == Value::Object(coercion_bomb.clone()))),
+            string_global(&runtime, &mut context, "log")
+        ));
+    }
+
+    set_global(&runtime, &mut context, "oldValue", Value::Int(1));
+    for (label, source) in [
+        (
+            "logical-rhs-throw",
+            "baseExpr()[compoundKeyExpr()] &&= throwingRhs()",
+        ),
+        (
+            "logical-key-throw",
+            "baseExpr()[throwingKeyExpr()] ||= rhsExpr()",
+        ),
+        (
+            "logical-getter-throw",
+            "Function.prototype.caller &&= rhsExpr()",
+        ),
+    ] {
+        set_global(
+            &runtime,
+            &mut context,
+            "log",
+            Value::String(JsString::from("")),
+        );
+        let observation = observe(&runtime, &mut context, source);
+        output.push(format!(
+            "{label}={observation}|{}",
+            string_global(&runtime, &mut context, "log")
+        ));
+    }
+
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    let null_logical = observe(
+        &runtime,
+        &mut context,
+        "null[compoundKeyExpr()] ||= rhsExpr()",
+    );
+    output.push(format!(
+        "null-logical={null_logical}|{}",
+        string_global(&runtime, &mut context, "log")
+    ));
 
     set_global(
         &runtime,
@@ -451,6 +746,43 @@ fn rust_observations() -> Vec<String> {
             "(function(){ 'use strict'; return delete Function.prototype; })()"
         )
     ));
+    output.push(format!(
+        "readonly-logical-skip={}",
+        {
+            set_global(
+                &runtime,
+                &mut context,
+                "log",
+                Value::String(JsString::from("")),
+            );
+            let observation = observe(
+                &runtime,
+                &mut context,
+                "(function(){ 'use strict'; return Function.prototype ||= rhsExpr(); })() === Function.prototype",
+            );
+            format!(
+                "{observation}|{}",
+                string_global(&runtime, &mut context, "log")
+            )
+        }
+    ));
+    output.push(format!("readonly-logical-set={}", {
+        set_global(
+            &runtime,
+            &mut context,
+            "log",
+            Value::String(JsString::from("")),
+        );
+        let observation = observe(
+            &runtime,
+            &mut context,
+            "(function(){ 'use strict'; return Function.prototype &&= rhsExpr(); })()",
+        );
+        format!(
+            "{observation}|{}",
+            string_global(&runtime, &mut context, "log")
+        )
+    }));
     output.push(format!(
         "native-setter={}",
         observe(&runtime, &mut context, "Function.prototype.caller = 1")

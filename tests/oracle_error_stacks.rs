@@ -76,6 +76,23 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "Function.prototype.caller += 1",
         ),
         (
+            "strict fixed logical assignment rejection",
+            "\"use strict\";\nFunction.prototype &&= 1",
+        ),
+        (
+            "strict computed logical assignment rejection",
+            "\"use strict\";\nFunction['prototype'] &&= 1",
+        ),
+        (
+            "logical assignment put inherits RHS call site",
+            "\"use strict\";\nFunction.prototype &&= (function(){ return 1; })()",
+        ),
+        ("logical nullish pre-key fault", "null[true] ||= 1"),
+        (
+            "logical getter fault keeps member site",
+            "Function.prototype.caller &&= 1",
+        ),
+        (
             "CR remains a debug column",
             "(function f(){\rreturn 1n + 1;\r})()",
         ),

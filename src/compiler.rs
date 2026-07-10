@@ -121,6 +121,13 @@ enum MemberReference {
     Computed { site: SourceOffset },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LogicalAssignment {
+    And,
+    Or,
+    Nullish,
+}
+
 #[derive(Debug)]
 enum IrOp {
     Bytecode(Instruction),
@@ -560,6 +567,16 @@ impl<'source> Parser<'source> {
             return Ok(());
         }
         self.parse_conditional()?;
+        let logical = match self.current().kind {
+            TokenKind::Punctuator(Punctuator::LogicalAndAssign) => Some(LogicalAssignment::And),
+            TokenKind::Punctuator(Punctuator::LogicalOrAssign) => Some(LogicalAssignment::Or),
+            TokenKind::Punctuator(Punctuator::NullishAssign) => Some(LogicalAssignment::Nullish),
+            _ => None,
+        };
+        if let Some(logical) = logical {
+            return self.parse_logical_member_assignment(logical);
+        }
+
         let assignment_span = self.current().span;
         let compound = match self.current().kind {
             TokenKind::Punctuator(Punctuator::Equal) => None,
@@ -599,6 +616,53 @@ impl<'source> Parser<'source> {
         // identifier assignment such as `x = obj.p = function(){}`.
         self.anonymous_function_definition = None;
         self.emit_member_put(target)
+    }
+
+    /// Lower a logical member assignment with the same two-branch stack shape
+    /// as QuickJS `js_parse_assign_expr2`. The kept member Reference is used
+    /// only by the assignment branch; the short-circuit branch removes its
+    /// base/key operands with `Nip` and returns the original property value.
+    fn parse_logical_member_assignment(&mut self, logical: LogicalAssignment) -> Result<(), Error> {
+        let Some(target) = self.promote_tail_member_get_for_compound()? else {
+            return Err(self.syntax_here("invalid assignment left-hand side"));
+        };
+        let lvalue_depth = match target {
+            MemberReference::Field { .. } => 1,
+            MemberReference::Computed { .. } => 2,
+        };
+
+        self.advance();
+        self.emit_instruction(Instruction::Dup)?;
+        if logical == LogicalAssignment::Nullish {
+            self.emit_instruction(Instruction::IsUndefinedOrNull)?;
+        }
+        let short_circuit = self.emit_instruction(match logical {
+            LogicalAssignment::Or => Instruction::IfTrue(u32::MAX),
+            LogicalAssignment::And | LogicalAssignment::Nullish => Instruction::IfFalse(u32::MAX),
+        })?;
+        let short_circuit_depth = self.current_ir().stack_depth;
+
+        self.emit_instruction(Instruction::Drop)?;
+        self.parse_assignment()?;
+        // Member assignment never applies NamedEvaluation to an anonymous RHS.
+        self.anonymous_function_definition = None;
+        self.emit_member_put(target)?;
+        let end = self.emit_instruction(Instruction::Goto(u32::MAX))?;
+        let joined_depth = self.current_ir().stack_depth;
+
+        self.patch_jump(short_circuit, self.current_ir().ops.len())?;
+        self.current_ir_mut().stack_depth = short_circuit_depth;
+        for _ in 0..lvalue_depth {
+            self.emit_instruction(Instruction::Nip)?;
+        }
+        if self.current_ir().stack_depth != joined_depth {
+            return Err(Error::internal(
+                "logical assignment branches have unequal stack depth",
+            ));
+        }
+        self.patch_jump(end, self.current_ir().ops.len())?;
+        self.current_ir_mut().last_member_reference = None;
+        Ok(())
     }
 
     fn parse_conditional(&mut self) -> Result<(), Error> {
@@ -3147,6 +3211,174 @@ mod tests {
         );
         assert!(context.compile("'use strict'; delete Function").is_err());
         assert!(context.compile("delete Function").is_err());
+    }
+
+    #[test]
+    fn logical_member_assignment_uses_quickjs_branch_cleanup_shapes() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+
+        let fixed = context.compile("Function.fixed &&= 3").unwrap();
+        let fixed_code = runtime.test_function_code(&fixed).unwrap();
+        assert!(
+            fixed_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::GetField2(_)))
+        );
+        assert!(
+            fixed_code
+                .windows(2)
+                .any(|window| matches!(window, [Instruction::Insert2, Instruction::PutField(_)]))
+        );
+        let fixed_branch = fixed_code
+            .iter()
+            .position(|instruction| matches!(instruction, Instruction::IfFalse(_)))
+            .unwrap();
+        let Instruction::IfFalse(fixed_short) = fixed_code[fixed_branch] else {
+            unreachable!();
+        };
+        assert!(matches!(
+            fixed_code[usize::try_from(fixed_short).unwrap()],
+            Instruction::Nip
+        ));
+        assert_eq!(
+            fixed_code
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::Nip))
+                .count(),
+            1
+        );
+
+        let computed = context.compile("Function['computed'] ||= 4").unwrap();
+        let computed_code = runtime.test_function_code(&computed).unwrap();
+        assert!(
+            computed_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::GetArrayEl3))
+        );
+        assert!(
+            computed_code
+                .windows(2)
+                .any(|window| matches!(window, [Instruction::Insert3, Instruction::PutArrayEl]))
+        );
+        let computed_branch = computed_code
+            .iter()
+            .position(|instruction| matches!(instruction, Instruction::IfTrue(_)))
+            .unwrap();
+        let Instruction::IfTrue(computed_short) = computed_code[computed_branch] else {
+            unreachable!();
+        };
+        let computed_short = usize::try_from(computed_short).unwrap();
+        assert!(matches!(computed_code[computed_short], Instruction::Nip));
+        assert!(matches!(
+            computed_code[computed_short + 1],
+            Instruction::Nip
+        ));
+        assert_eq!(
+            computed_code
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::Nip))
+                .count(),
+            2
+        );
+        let computed_goto = computed_code
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instruction::Goto(target) => Some(usize::try_from(*target).unwrap()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(computed_goto, computed_short + 2);
+
+        let nullish = context.compile("Function.nullish ??= 5").unwrap();
+        let nullish_code = runtime.test_function_code(&nullish).unwrap();
+        assert!(nullish_code.windows(3).any(|window| matches!(
+            window,
+            [
+                Instruction::Dup,
+                Instruction::IsUndefinedOrNull,
+                Instruction::IfFalse(_)
+            ]
+        )));
+
+        assert_eq!(
+            context
+                .eval("Function.logic = 0; Function.logic ||= 7")
+                .unwrap(),
+            Value::Int(7)
+        );
+        assert_eq!(
+            context
+                .eval("Function.logic = 0; Function.logic &&= 8")
+                .unwrap(),
+            Value::Int(0)
+        );
+        assert_eq!(
+            context
+                .eval("Function.logic = null; Function.logic ??= 9")
+                .unwrap(),
+            Value::Int(9)
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "Function.left = 1; Function.right = 0; \
+                     Function.left &&= Function.right ||= 9; \
+                     Function.left + Function.right"
+                )
+                .unwrap(),
+            Value::Int(18)
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "Function.outer = 1; Function.inner = 0; \
+                     Function['outer'] += (Function['inner'] ||= 2); \
+                     Function.outer + Function.inner"
+                )
+                .unwrap(),
+            Value::Int(5)
+        );
+
+        let logical_call = context
+            .compile("(Function.callable ||= function(){ return this === Function; })()")
+            .unwrap();
+        let logical_call_code = runtime.test_function_code(&logical_call).unwrap();
+        assert!(
+            logical_call_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Call(0)))
+        );
+        assert!(
+            !logical_call_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::CallMethod(_)))
+        );
+        assert_eq!(
+            context
+                .eval("(Function.callable ||= function(){ return this === Function; })()")
+                .unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            context
+                .eval("delete Function.anon; (Function.anon ??= function(){}).name")
+                .unwrap(),
+            Value::String(JsString::from(""))
+        );
+
+        assert!(context.compile("(Function.fixed) &&= 1").is_ok());
+        assert!(context.compile("(0, Function.fixed) &&= 1").is_err());
+        assert!(
+            context
+                .compile("(true ? Function.fixed : Function.fixed) &&= 1")
+                .is_err()
+        );
+        assert!(
+            context
+                .compile("(Function.fixed || Function.computed) &&= 1")
+                .is_err()
+        );
     }
 
     #[test]

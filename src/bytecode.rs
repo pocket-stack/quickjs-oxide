@@ -74,6 +74,9 @@ pub enum Instruction {
     /// active call frame.
     Delete,
     Drop,
+    /// QuickJS `OP_nip`: discard the value immediately below the stack top,
+    /// preserving the top value (`a b -> b`).
+    Nip,
     Dup,
     Neg,
     Plus,
@@ -149,6 +152,7 @@ impl Instruction {
             | Self::IfTrue(_)
             | Self::Return
             | Self::Throw => (1, 0),
+            Self::Nip => (2, 1),
             Self::SetLocal(_) | Self::SetArg(_) | Self::SetVarRef(_) => (1, 1),
             Self::Dup => (1, 2),
             Self::Neg | Self::Plus | Self::Not | Self::TypeOf | Self::IsUndefinedOrNull => (1, 1),
@@ -414,6 +418,31 @@ mod tests {
             max_stack: u16::MAX,
         };
         assert!(excessive_declared_stack.verify().is_err());
+
+        let valid_nip = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::PushI32(2),
+                Instruction::Nip,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            max_stack: 2,
+        };
+        assert_eq!(valid_nip.verify().unwrap().max_stack, 2);
+
+        let nip_underflow = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::Nip,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            max_stack: 1,
+        };
+        assert!(nip_underflow.verify().is_err());
     }
 
     #[test]

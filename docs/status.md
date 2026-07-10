@@ -61,6 +61,11 @@ claim full parity.
   key is converted exactly once before the getter and RHS. The arithmetic
   operator carries the compound-token source marker; `Insert2`/`Insert3` plus
   the same put opcodes preserve the final value and strict setter semantics.
+  Logical member assignment (`&&=`, `||=`, `??=`) uses the same retained
+  Reference, then matches QuickJS's `Dup`, conditional branch and `Nip`
+  cleanup. The short branch returns the original value without evaluating the
+  RHS or setter; the write branch preserves the RHS value. Unlike arithmetic
+  compound assignment, the logical operator emits no new source marker.
 - Bytecode publication first validates structural operands in every instruction
   (including unreachable code), then verifies reachable control-flow joins and
   stack depth. Runtime publication additionally checks constant kinds, frame
@@ -309,7 +314,7 @@ claim full parity.
 
 The function slice is intentionally narrow. Function declarations/hoisting,
 block scopes, source `let`/`const` declarations and their declaration-
-instantiation rules, general identifier assignment targets, logical/bitwise/
+instantiation rules, general identifier assignment targets, member bitwise/
 shift/exponent compound operators, module
 resolution, computed property-definition naming, mapped
 `arguments`, arrow/async/generator functions and callable Proxy classes
@@ -364,9 +369,9 @@ strict/sloppy global identifier assignment is implemented. Source property
 reads and receiver-preserving method calls are implemented for object/function
 bases, plus exact String index/length reads; simple member assignment and
 property delete cover ordinary objects and the current primitive own-property
-surface. Logical and non-arithmetic compound assignment, identifier compound
-assignment, sloppy direct-identifier delete, the distinct primitive prototype
-graphs and their inherited setters,
+surface. Bitwise, shift and exponent member compound assignment, identifier
+compound assignment, sloppy direct-identifier delete, the distinct primitive
+prototype graphs and their inherited setters,
 Proxy/exotic internal methods, and the full `function_accessors.js` fixture are
 still pending. AggregateError iterable-to-Array, primitive wrapper objects for
 direct Object-prototype method calls, remaining Object prototype methods and
