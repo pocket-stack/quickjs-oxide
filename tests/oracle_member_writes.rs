@@ -29,8 +29,17 @@ Object.defineProperty(proto, "member", {
 const key = {
     [Symbol.toPrimitive](hint) { log += "k(" + hint + ")"; return "member"; }
 };
+Object.defineProperty(proto, "compound", {
+    get() { log += "g"; return 2; },
+    set(value) { log += "s"; seenThis = this === target; seenValue = value; },
+    configurable: true
+});
+const compoundKey = {
+    [Symbol.toPrimitive](hint) { log += "k(" + hint + ")"; return "compound"; }
+};
 function baseExpr() { log += "b"; return target; }
 function keyExpr() { log += "q"; return key; }
+function compoundKeyExpr() { log += "q"; return compoundKey; }
 function rhsExpr() { log += "r"; return 9; }
 
 log = ""; seenThis = false; seenValue = undefined;
@@ -42,6 +51,29 @@ log = "";
 const deleteResult = delete baseExpr()[keyExpr()];
 print("ordered-delete=" + [show(deleteResult), log,
       show(Object.hasOwn(target, "member")), show(target.member)].join("|"));
+
+log = ""; seenThis = false; seenValue = undefined;
+const compoundResult = baseExpr()[compoundKeyExpr()] += rhsExpr();
+print("ordered-compound=" + [show(compoundResult), log, show(seenThis), show(seenValue),
+      show(Object.hasOwn(target, "compound"))].join("|"));
+log = "";
+print("null-compound=" + observe(() => null[compoundKeyExpr()] += rhsExpr()) + "|" + log);
+
+const compoundSymbol = Symbol("compound-key");
+const otherCompoundSymbol = Symbol("compound-key");
+target[compoundSymbol] = 3;
+const symbolKeyObject = {
+    [Symbol.toPrimitive](hint) { log += "k(" + hint + ")"; return compoundSymbol; }
+};
+log = "";
+const objectSymbolCompound = target[symbolKeyObject] += 4;
+print("object-symbol-compound=" + [show(objectSymbolCompound), log,
+      show(target[compoundSymbol]), show(target[otherCompoundSymbol])].join("|"));
+
+target.arithmetic = 20;
+print("arithmetic=" + [show(target.arithmetic += 2), show(target.arithmetic -= 4),
+      show(target.arithmetic *= 3), show(target.arithmetic /= 2),
+      show(target.arithmetic %= 5)].join("|"));
 
 log = "";
 print("null-set=" + observe(() => null[keyExpr()] = rhsExpr()) + "|" + log);
@@ -72,7 +104,9 @@ const otherSymbol = Symbol("same");
 target[symbol] = 1;
 target[otherSymbol] = 2;
 const symbolResult = target[symbol] = 5;
-print("symbol=" + [show(symbolResult), show(target[symbol]), show(target[otherSymbol])].join("|"));
+const symbolCompound = target[symbol] += 2;
+print("symbol=" + [show(symbolResult), show(symbolCompound),
+      show(target[symbol]), show(target[otherSymbol])].join("|"));
 
 let getterCalls = 0;
 Object.defineProperty(target, "deletableGetter", {
@@ -139,6 +173,26 @@ fn rust_observations() -> Vec<String> {
         true,
     );
 
+    let compound_getter = function(
+        &runtime,
+        &mut context,
+        "(function(){ log = log + 'g'; return 2; })",
+    );
+    let compound_setter = function(
+        &runtime,
+        &mut context,
+        "(function(value){ log = log + 's'; seenThis = this === target; seenValue = value; })",
+    );
+    let compound = runtime.intern_property_key("compound").unwrap();
+    define_accessor(
+        &mut context,
+        &proto,
+        &compound,
+        AccessorValue::Callable(compound_getter),
+        AccessorValue::Callable(compound_setter),
+        true,
+    );
+
     let key = context.new_object().unwrap();
     let converter = function(
         &runtime,
@@ -155,12 +209,74 @@ fn rust_observations() -> Vec<String> {
         true,
     );
     define_global(&runtime, &mut context, "key", Value::Object(key));
+    let compound_key = context.new_object().unwrap();
+    let compound_converter = function(
+        &runtime,
+        &mut context,
+        "(function(hint){ log = log + 'k(' + hint + ')'; return 'compound'; })",
+    );
+    define_data(
+        &mut context,
+        &compound_key,
+        &to_primitive,
+        Value::Object(compound_converter.as_object().clone()),
+        true,
+        true,
+    );
+    define_global(
+        &runtime,
+        &mut context,
+        "compoundKey",
+        Value::Object(compound_key),
+    );
+    let compound_symbol = runtime
+        .new_symbol(Some(JsString::from("compound-key")))
+        .unwrap();
+    let other_compound_symbol = runtime
+        .new_symbol(Some(JsString::from("compound-key")))
+        .unwrap();
+    define_global(
+        &runtime,
+        &mut context,
+        "compoundSymbol",
+        Value::Symbol(compound_symbol),
+    );
+    define_global(
+        &runtime,
+        &mut context,
+        "otherCompoundSymbol",
+        Value::Symbol(other_compound_symbol),
+    );
+    let symbol_key_object = context.new_object().unwrap();
+    let symbol_converter = function(
+        &runtime,
+        &mut context,
+        "(function(hint){ log = log + 'k(' + hint + ')'; return compoundSymbol; })",
+    );
+    define_data(
+        &mut context,
+        &symbol_key_object,
+        &to_primitive,
+        Value::Object(symbol_converter.as_object().clone()),
+        true,
+        true,
+    );
+    define_global(
+        &runtime,
+        &mut context,
+        "symbolKeyObject",
+        Value::Object(symbol_key_object),
+    );
     for (name, source) in [
         (
             "baseExpr",
             "(function(){ log = log + 'b'; return target; })",
         ),
         ("keyExpr", "(function(){ log = log + 'q'; return key; })"),
+        (
+            "compoundKeyExpr",
+            "(function(){ log = log + 'q'; return compoundKey; })",
+        ),
         ("rhsExpr", "(function(){ log = log + 'r'; return 9; })"),
     ] {
         let value = function(&runtime, &mut context, source);
@@ -210,6 +326,81 @@ fn rust_observations() -> Vec<String> {
         )),
         show(context.get_property(&target, &member).unwrap()),
     ));
+
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    set_global(&runtime, &mut context, "seenThis", Value::Bool(false));
+    set_global(&runtime, &mut context, "seenValue", Value::Undefined);
+    let compound_result = context
+        .eval("baseExpr()[compoundKeyExpr()] += rhsExpr()")
+        .unwrap();
+    output.push(format!(
+        "ordered-compound={}|{}|{}|{}|{}",
+        show(compound_result),
+        string_global(&runtime, &mut context, "log"),
+        show(global_value(&runtime, &mut context, "seenThis")),
+        show(global_value(&runtime, &mut context, "seenValue")),
+        show(Value::Bool(
+            runtime.has_own_property(&target, &compound).unwrap()
+        )),
+    ));
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    let null_compound = observe(
+        &runtime,
+        &mut context,
+        "null[compoundKeyExpr()] += rhsExpr()",
+    );
+    output.push(format!(
+        "null-compound={null_compound}|{}",
+        string_global(&runtime, &mut context, "log")
+    ));
+
+    context.eval("target[compoundSymbol] = 3").unwrap();
+    set_global(
+        &runtime,
+        &mut context,
+        "log",
+        Value::String(JsString::from("")),
+    );
+    let object_symbol_compound = context.eval("target[symbolKeyObject] += 4").unwrap();
+    runtime.run_gc().unwrap();
+    output.push(format!(
+        "object-symbol-compound={}|{}|{}|{}",
+        show(object_symbol_compound),
+        string_global(&runtime, &mut context, "log"),
+        show(context.eval("target[compoundSymbol]").unwrap()),
+        show(context.eval("target[otherCompoundSymbol]").unwrap()),
+    ));
+
+    let arithmetic = runtime.intern_property_key("arithmetic").unwrap();
+    define_data(
+        &mut context,
+        &target,
+        &arithmetic,
+        Value::Int(20),
+        true,
+        true,
+    );
+    let mut arithmetic_values = Vec::new();
+    for source in [
+        "target.arithmetic += 2",
+        "target.arithmetic -= 4",
+        "target.arithmetic *= 3",
+        "target.arithmetic /= 2",
+        "target.arithmetic %= 5",
+    ] {
+        arithmetic_values.push(show(context.eval(source).unwrap()));
+    }
+    output.push(format!("arithmetic={}", arithmetic_values.join("|")));
 
     set_global(
         &runtime,
@@ -317,9 +508,11 @@ fn rust_observations() -> Vec<String> {
     context.eval("target[symbol] = 1").unwrap();
     context.eval("target[otherSymbol] = 2").unwrap();
     let symbol_result = context.eval("target[symbol] = 5").unwrap();
+    let symbol_compound = context.eval("target[symbol] += 2").unwrap();
     output.push(format!(
-        "symbol={}|{}|{}",
+        "symbol={}|{}|{}|{}",
         show(symbol_result),
+        show(symbol_compound),
         show(context.eval("target[symbol]").unwrap()),
         show(context.eval("target[otherSymbol]").unwrap())
     ));

@@ -975,6 +975,44 @@ impl VmHost for RuntimeVmHost {
         self.get_property_with_key(base, &key, None)
     }
 
+    fn convert_property_key(&mut self, key: Value) -> Result<Completion, Error> {
+        let key = match key {
+            key @ (Value::Int(_) | Value::String(_)) => return Ok(Completion::Return(key)),
+            Value::Symbol(symbol) => {
+                if !symbol.belongs_to(&self.runtime) {
+                    return Err(Error::internal(
+                        "computed property symbol belongs to another runtime",
+                    ));
+                }
+                return Ok(Completion::Return(Value::Symbol(symbol)));
+            }
+            key @ Value::Object(_) => match self
+                .runtime
+                .to_primitive(self.current_realm, key, ToPrimitiveHint::String)
+                .map_err(runtime_error_to_vm_error)?
+            {
+                Completion::Return(key) => key,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            },
+            key => key,
+        };
+        match key {
+            Value::Symbol(symbol) => {
+                if !symbol.belongs_to(&self.runtime) {
+                    return Err(Error::internal(
+                        "computed property symbol belongs to another runtime",
+                    ));
+                }
+                Ok(Completion::Return(Value::Symbol(symbol)))
+            }
+            Value::String(string) => Ok(Completion::Return(Value::String(string))),
+            key => key
+                .to_js_string()
+                .map(Value::String)
+                .map(Completion::Return),
+        }
+    }
+
     fn set_field(
         &mut self,
         base: Value,

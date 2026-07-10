@@ -29,9 +29,12 @@ the pinned differential locks chaining, `ToPropertyKey` order, `this`, String
 index/length reads, and member error locations. Simple member assignment and
 property delete use the corresponding QuickJS lvalue/stack shapes, including
 the intentionally different computed-key conversion order, setter receiver,
-strict rejection and delete-without-getter behavior. Compound/logical
-assignment, direct-identifier delete and the distinct primitive prototype
-graphs remain unfinished slices.
+strict rejection and delete-without-getter behavior. Arithmetic member compound
+assignment follows `GetField2`/`GetArrayEl3` for `+=`, `-=`,
+`*=`, `/=` and `%=` forms, converting a computed object key exactly once before
+the getter and RHS. Logical/non-arithmetic and identifier compound assignment,
+direct-identifier delete, and the distinct primitive prototype graphs remain
+unfinished slices.
 Runtime-wide full/strip-source/strip-debug modes follow QuickJS's immutable
 bytecode publication boundary, and the `qjs` CLI exposes `--strip-source` and
 `-s` with upstream last-option-wins behavior.

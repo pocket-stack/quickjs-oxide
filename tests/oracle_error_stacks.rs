@@ -63,6 +63,19 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "Function.prototype.caller = 1",
         ),
         (
+            "strict fixed compound assignment rejection",
+            "\"use strict\";\nFunction.prototype += 1",
+        ),
+        (
+            "strict computed compound assignment rejection",
+            "\"use strict\";\nFunction['prototype'] += 1",
+        ),
+        ("compound nullish pre-key fault", "null[true] += 1"),
+        (
+            "compound getter fault keeps member site",
+            "Function.prototype.caller += 1",
+        ),
+        (
             "CR remains a debug column",
             "(function f(){\rreturn 1n + 1;\r})()",
         ),

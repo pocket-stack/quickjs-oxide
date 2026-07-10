@@ -560,7 +560,26 @@ impl<'source> Parser<'source> {
             return Ok(());
         }
         self.parse_conditional()?;
-        if !self.is_punctuator(Punctuator::Equal) {
+        let assignment_span = self.current().span;
+        let compound = match self.current().kind {
+            TokenKind::Punctuator(Punctuator::Equal) => None,
+            TokenKind::Punctuator(Punctuator::PlusAssign) => Some(Instruction::Add),
+            TokenKind::Punctuator(Punctuator::MinusAssign) => Some(Instruction::Sub),
+            TokenKind::Punctuator(Punctuator::MultiplyAssign) => Some(Instruction::Mul),
+            TokenKind::Punctuator(Punctuator::DivideAssign) => Some(Instruction::Div),
+            TokenKind::Punctuator(Punctuator::RemainderAssign) => Some(Instruction::Mod),
+            _ => return Ok(()),
+        };
+
+        if let Some(operation) = compound {
+            let Some(target) = self.promote_tail_member_get_for_compound()? else {
+                return Err(self.syntax_here("invalid assignment left-hand side"));
+            };
+            self.advance();
+            self.parse_assignment()?;
+            self.emit_instruction_at(operation, source_offset(assignment_span)?)?;
+            self.anonymous_function_definition = None;
+            self.emit_member_put(target)?;
             return Ok(());
         }
 
@@ -579,17 +598,7 @@ impl<'source> Parser<'source> {
         // anonymous function marker also must not escape to an enclosing
         // identifier assignment such as `x = obj.p = function(){}`.
         self.anonymous_function_definition = None;
-        match target {
-            MemberReference::Field { key, .. } => {
-                self.emit_instruction(Instruction::Insert2)?;
-                self.emit_instruction(Instruction::PutField(key))?;
-            }
-            MemberReference::Computed { .. } => {
-                self.emit_instruction(Instruction::Insert3)?;
-                self.emit_instruction(Instruction::PutArrayEl)?;
-            }
-        }
-        Ok(())
+        self.emit_member_put(target)
     }
 
     fn parse_conditional(&mut self) -> Result<(), Error> {
@@ -966,6 +975,62 @@ impl<'source> Parser<'source> {
                 "member Reference marker did not point to a getter",
             )),
         }
+    }
+
+    /// Keep both the lvalue operands and the old value for compound
+    /// assignment. The computed form also retains the already-converted key,
+    /// exactly matching QuickJS `get_array_el3`.
+    fn promote_tail_member_get_for_compound(&mut self) -> Result<Option<MemberReference>, Error> {
+        let function = self.current_ir_mut();
+        if function.last_member_reference != function.ops.len().checked_sub(1) {
+            return Ok(None);
+        }
+        function.last_member_reference = None;
+        let last = function
+            .ops
+            .last_mut()
+            .ok_or_else(|| Error::internal("member Reference operation disappeared"))?;
+        let site = last
+            .pc_site
+            .ok_or_else(|| Error::internal("member getter has no source site"))?;
+        let (target, extra_depth) = match &mut last.op {
+            IrOp::Bytecode(instruction @ Instruction::GetField(_)) => {
+                let Instruction::GetField(key) = *instruction else {
+                    unreachable!();
+                };
+                *instruction = Instruction::GetField2(key);
+                (MemberReference::Field { key, site }, 1)
+            }
+            IrOp::Bytecode(instruction @ Instruction::GetArrayEl) => {
+                *instruction = Instruction::GetArrayEl3;
+                (MemberReference::Computed { site }, 2)
+            }
+            _ => {
+                return Err(Error::internal(
+                    "member Reference marker did not point to a getter",
+                ));
+            }
+        };
+        function.stack_depth = function
+            .stack_depth
+            .checked_add(extra_depth)
+            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+        function.max_stack = function.max_stack.max(function.stack_depth);
+        Ok(Some(target))
+    }
+
+    fn emit_member_put(&mut self, target: MemberReference) -> Result<(), Error> {
+        match target {
+            MemberReference::Field { key, .. } => {
+                self.emit_instruction(Instruction::Insert2)?;
+                self.emit_instruction(Instruction::PutField(key))?;
+            }
+            MemberReference::Computed { .. } => {
+                self.emit_instruction(Instruction::Insert3)?;
+                self.emit_instruction(Instruction::PutArrayEl)?;
+            }
+        }
+        Ok(())
     }
 
     /// Parse the contents of an already-consumed call/construct `(`.
@@ -3009,6 +3074,38 @@ mod tests {
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::GetArrayEl))
         );
+
+        let fixed_compound = context.compile("Function.fixed += 3").unwrap();
+        let fixed_compound_code = runtime.test_function_code(&fixed_compound).unwrap();
+        assert!(
+            fixed_compound_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::GetField2(_)))
+        );
+        assert!(fixed_compound_code.windows(3).any(|window| matches!(
+            window,
+            [
+                Instruction::Add,
+                Instruction::Insert2,
+                Instruction::PutField(_)
+            ]
+        )));
+
+        let computed_compound = context.compile("Function['computed'] += 4").unwrap();
+        let computed_compound_code = runtime.test_function_code(&computed_compound).unwrap();
+        assert!(
+            computed_compound_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::GetArrayEl3))
+        );
+        assert!(computed_compound_code.windows(3).any(|window| matches!(
+            window,
+            [
+                Instruction::Add,
+                Instruction::Insert3,
+                Instruction::PutArrayEl
+            ]
+        )));
 
         let fixed_delete = context.compile("delete Function.fixed").unwrap();
         let fixed_delete_code = runtime.test_function_code(&fixed_delete).unwrap();

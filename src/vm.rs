@@ -104,6 +104,9 @@ pub(crate) trait VmHost {
     /// `base[key]` after the VM has preserved QuickJS's operand order. The
     /// runtime host owns `ToObject`/`ToPropertyKey` and accessor execution.
     fn get_property(&mut self, base: Value, key: Value) -> Result<Completion, Error>;
+    /// Convert an arbitrary value to the canonical Int/String/Symbol value
+    /// which represents its property key. This can execute user code and throw.
+    fn convert_property_key(&mut self, key: Value) -> Result<Completion, Error>;
     fn set_field(
         &mut self,
         base: Value,
@@ -226,6 +229,12 @@ impl VmHost for DetachedHost<'_> {
     fn get_property(&mut self, _base: Value, _key: Value) -> Result<Completion, Error> {
         Err(Error::internal(
             "detached VM cannot access runtime-owned properties",
+        ))
+    }
+
+    fn convert_property_key(&mut self, _key: Value) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "detached VM cannot convert runtime-owned property keys",
         ))
     }
 
@@ -583,6 +592,46 @@ impl CallFrame {
                             }
                             self.stack.push(value);
                         }
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                }
+                Instruction::GetArrayEl3 => {
+                    let (base, key) = self.pop_pair()?;
+                    let key_is_already_canonical =
+                        matches!(key, Value::Int(_) | Value::String(_) | Value::Symbol(_));
+                    if matches!(base, Value::Null | Value::Undefined) && !key_is_already_canonical {
+                        // QuickJS `get_array_el3` performs this special check
+                        // before ToPropertyKey for non-fast key tags.
+                        return Err(Error::new(ErrorKind::Type, "value has no property"));
+                    }
+                    if matches!(base, Value::Null | Value::Undefined) {
+                        // Reuse the ordinary read path solely for its exact
+                        // fast-key nullish diagnostic.
+                        match host.get_property(base, key)? {
+                            Completion::Return(_) => {
+                                return Err(Error::internal(
+                                    "nullish property read unexpectedly completed",
+                                ));
+                            }
+                            Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                        }
+                    }
+                    let key = match host.convert_property_key(key)? {
+                        Completion::Return(key) => key,
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    };
+                    let value = match host.get_property(base.clone(), key.clone())? {
+                        Completion::Return(value) => value,
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    };
+                    self.stack.push(base);
+                    self.stack.push(key);
+                    self.stack.push(value);
+                }
+                Instruction::ToPropKey => {
+                    let key = self.pop()?;
+                    match host.convert_property_key(key)? {
+                        Completion::Return(key) => self.stack.push(key),
                         Completion::Throw(value) => return Ok(Completion::Throw(value)),
                     }
                 }

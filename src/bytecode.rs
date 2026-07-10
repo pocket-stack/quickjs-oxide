@@ -55,6 +55,12 @@ pub enum Instruction {
     GetArrayEl,
     /// QuickJS `OP_get_array_el2`: `base key -> base value` for method calls.
     GetArrayEl2,
+    /// QuickJS `OP_get_array_el3`: `base raw-key -> base converted-key value`
+    /// for compound/logical assignment without repeated key conversion.
+    GetArrayEl3,
+    /// QuickJS `OP_to_propkey`: observable `ToPropertyKey` while retaining a
+    /// canonical Int/String/Symbol value on the VM stack.
+    ToPropKey,
     /// QuickJS `OP_insert2`: `base value -> value base value`.
     Insert2,
     /// QuickJS `OP_insert3`: `base key value -> value base key value`.
@@ -122,6 +128,8 @@ impl Instruction {
             Self::GetField2(_) => (1, 2),
             Self::GetArrayEl => (2, 1),
             Self::GetArrayEl2 => (2, 2),
+            Self::GetArrayEl3 => (2, 3),
+            Self::ToPropKey => (1, 1),
             Self::Insert2 => (2, 3),
             Self::Insert3 => (3, 4),
             Self::PutField(_) => (2, 0),
