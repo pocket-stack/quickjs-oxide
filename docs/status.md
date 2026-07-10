@@ -1,0 +1,322 @@
+# Implementation status
+
+Last audited: 2026-07-11. The completion definition remains
+[`parity.md`](parity.md); this file records progress and must not be used to
+claim full parity.
+
+## Implemented on the final architecture path
+
+- QuickJS 2026-06-04 release metadata, archive checksum, bytecode version,
+  Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
+- The lexer models parser-selected division/RegExp/template lexical goals,
+  source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
+  template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
+  matching. Unicode identifiers still fail explicitly rather than being
+  accepted incorrectly.
+- Runtime-local atoms preserve exact UTF-16 spellings, cover immediate integer
+  atoms, string/global-symbol interning, unique/private/well-known symbols, and
+  explicit retain/release. Safe handles carry a runtime domain and slot
+  generation while raw table slots use QuickJS-style free-list reuse.
+- Primitive values preserve compact integer vs float values, exact `-0`/NaN
+  equality variants, Latin-1/UTF-16 strings including lone surrogates, and
+  arbitrary-precision BigInts with QuickJS's short/heap normalization and
+  2026-06-04 `asIntN`/`asUintN` behavior.
+- The compiler builds a nested `FunctionIr` tree with unresolved identifier
+  operations, then performs child-first QuickJS-style scope resolution before
+  lowering to stack bytecode. In addition to the primitive expression grammar,
+  the current source path supports anonymous and named ordinary function
+  expressions, simple parameters, `return`/fallthrough, function-local `var`,
+  simple identifier assignment, direct calls, transitive parameter/local and
+  private function-name capture through `ParentClosure` relays, and QuickJS-style
+  contextual `SetName` for direct anonymous initializers and assignments. Named expressions use
+  a per-invocation private self binding; sloppy writes are ignored and strict
+  writes raise the QuickJS-compatible read-only TypeError.
+- Bytecode publication first validates structural operands in every instruction
+  (including unreachable code), then verifies reachable control-flow joins and
+  stack depth. Runtime publication additionally checks constant kinds, frame
+  indexes, private function-name source/name/const relay metadata, forbidden
+  direct self-binding writes, Global/ParentGlobal versus ordinary closure-opcode
+  categories, closure-name atom ownership, and relay consistency before changing
+  the heap.
+- Compiler output is first represented as a runtime-independent function tree,
+  preflight verified, flattened without recursion, and then published as
+  immutable runtime GC nodes. Bytecode nodes own their realm, constant-pool
+  values and child bytecode; a 50,000-deep publication/release test covers the
+  iterative ownership path.
+- Primitive coercion, mixed BigInt comparison/equality, BigInt arithmetic, and
+  string concatenation are covered by a real upstream-oracle differential
+  suite. The implemented VM unary, arithmetic and relational operators now
+  route object operands through completion-aware Number-hint `ToPrimitive`.
+  Binary arithmetic completes the left `ToNumeric` before touching the right;
+  relational comparison preserves the two-sided primitive-conversion order and
+  uses `StringToBigInt` rather than Number rounding for BigInt/String pairs.
+  Addition and abstract equality use the distinct default hint, preserve
+  arbitrary thrown values, and keep QuickJS's observable conversion order.
+- The runtime owns a generational Object/Shape arena. Public Object, Symbol and
+  property-key roots implement Dup/Free through explicit reference counts;
+  heap edges remain raw handles, zero-count teardown is iterative, and
+  QuickJS-style trial deletion removes object/property/prototype cycles.
+- Ordinary objects use immutable shared Shapes containing prototype plus
+  ordered key/flag metadata and parallel per-object property slots. The current
+  internal methods cover complete descriptor validation/storage, data get/set
+  with explicit receiver, delete, own-key order, extensibility, prototype cycle
+  checks, exact lone-surrogate keys, and runtime-domain rejection.
+- Shape caches are weak and unlink by finalized generational Shape ID. Shape
+  and Symbol atom ownership is paired through heap cleanup, including failure
+  paths and runtime teardown.
+- Each Context now owns explicit realm roots for `%Object.prototype%`, a
+  callable `%Function.prototype%`, the global object and the null-prototype
+  global lexical-binding object (`global_var_obj` in QuickJS). Default object
+  allocation uses its realm prototype, and `%Object.prototype%` carries
+  QuickJS's immutable-prototype bit.
+- The global object has QuickJS's dedicated payload and hidden
+  `uninitialized_vars` object. Global data properties and the lexical-binding
+  object can store `PropertySlot::VarRef` cells; define, descriptor lookup,
+  assignment, accessor conversion and delete preserve shared-cell identity.
+  Deleting or converting a global property moves a still-referenced cell back
+  to the hidden object, resets it to Uninitialized, and allows a later data
+  definition to reconnect the same closures. These VarRef, hidden-object,
+  Shape and atom edges participate in reference counting and trial-deletion GC.
+- Unresolved identifiers no longer use a string-key global opcode. Resolution
+  installs one root `Global` closure descriptor and `ParentGlobal` relays on
+  every nested function path; publication interns each exact name and function
+  instantiation binds the root cell in the bytecode's defining realm.
+  `GetVar` reads initialized cells directly, raises ReferenceError for a lexical
+  TDZ, and performs one observable global-object `[[Get]]` for an uninitialized
+  non-lexical cell. `GetVarUndef` suppresses only a genuinely missing binding,
+  so direct parenthesized `typeof name` returns `undefined` while a lexical TDZ,
+  getter throw, or comma/composed reference still throws.
+  Consequently a function invoked from another Context observes its defining
+  realm's global/lexical environment, and global Reference/Type errors use that
+  defining realm's native-error prototypes.
+- Simple identifier assignment supports the QuickJS `PutVar` and `PutVarInit`
+  paths. Mutable lexical cells update directly; lexical TDZ and const writes
+  raise the corresponding ReferenceError or read-only TypeError. Non-lexical
+  writes perform `HasProperty` before the global-object `[[Set]]`, distinguish
+  strict missing names from sloppy creation, preserve non-writable properties,
+  report no-setter rejection, discard normal setter return values, and
+  propagate setter throws. Assignment-expression value preservation lowers to
+  QuickJS's `Dup; PutVar` sequence rather than a synthetic runtime opcode.
+- Script evaluation follows QuickJS's execution boundary: raw bytecode is
+  instantiated as a bytecode-function object in the caller Context, the call
+  frame roots `this`, arguments, locals and the current function, and execution
+  switches to the realm stored on the bytecode. Runtime-owned snapshots keep an
+  explicit bytecode root beside raw constant-pool IDs.
+- Bytecode and native calls share one unified active-frame chain. Each record
+  carries the callable, defining realm, strict/frame flags and typed bytecode or
+  native invocation state; bytecode dispatch updates the current PC before each
+  instruction. Stack-local guards own the function/bytecode roots, validate
+  realm and payload agreement, and restore nested frames across return, throw,
+  engine error and deferred-drop paths. The same chain is now the authoritative
+  input to the implemented synchronous Error-backtrace slice.
+- Runtime-published bytecode owns per-function debug metadata: an independently
+  retained filename atom, the function definition location, an ordered PC-to-
+  line/column table, and an exact source byte range for ordinary function
+  expressions. The root script keeps the QuickJS name `<eval>` and no function
+  source copy. Source locations follow pinned QuickJS rules: only LF advances
+  the debug line and UTF-8 lead bytes, rather than raw bytes, advance the
+  column. PC lookup uses the last entry at or before the active instruction;
+  equal-PC entries are valid and the last one wins. Publication rejects
+  malformed ranges, positions and ordering before interning metadata, while
+  filename atom multiplicity, rollback and GC teardown are explicitly tested.
+- Source-site lowering for the currently implemented grammar preserves the
+  observable markers exercised by calls, explicit and parenthesis-free
+  construction, operators, return/tail-call folding and identifier assignment.
+  `Context::compile_with_filename`, `eval_with_filename` and their option-based
+  variants carry the selected filename through nested bytecode and parse-error
+  metadata.
+- `FClosure`, `Call` and `CallMethod` use QuickJS's stack layouts. Captured
+  arguments and locals are promoted lazily into shared VarRef cells; the parent
+  frame and every descendant closure observe the same cell, repeated closure
+  creation in one invocation reuses it, and separate invocations are isolated.
+- Ordinary function objects expose QuickJS-compatible anonymous, intrinsic or
+  inferred `name`, simple parameter `length`, and the observable `length`, `name`,
+  `prototype` own-key order. The non-configurable writable `prototype` key is
+  installed immediately as typed autoinit storage, but its object and
+  `constructor` back-reference are allocated only by Get, complete descriptor
+  lookup, assignment, or a compatible define. Shape-only own-key/has-own,
+  rejected delete and incompatible define paths do not materialize it. The
+  initializer uses the closure-creation realm's `%Object.prototype%`; an
+  unread function therefore has no eager function/prototype cycle.
+- Source `new`, `new.target`, the verified `Construct` stack opcode, and the
+  Rust `Context::construct`/explicit-new-target APIs implement the ordinary
+  base-constructor path. `newTarget.prototype` uses observable property Get,
+  a non-object result falls back to the newTarget function realm's
+  `%Object.prototype%`, an explicit object return overrides the precreated
+  `this`, and a primitive return falls back to it. Ordinary `Call` supplies an
+  undefined `new.target`.
+- `%Function.prototype%` is a non-constructable native callable returning
+  `undefined`, with `name=""`, `length=0`, no own `prototype`, and
+  `%Object.prototype%` as its prototype. Its implemented QuickJS function-list
+  prefix reaches `caller`, `arguments`, `call`, `apply`, `bind`, and `toString`:
+  both legacy accessors share one frozen, non-extensible `%ThrowTypeError%`
+  rooted by the realm; their getter
+  preserves QuickJS's sloppy ordinary-function compatibility exception while
+  strict reads and every write throw `invalid property access`.
+  `Function.prototype.call` uses actual argc rather than padded native argv,
+  forwards `this` and arguments through the target callable's defining realm,
+  and preserves thrown completions. `Function.prototype.apply` checks the
+  target before touching its array-like argument, implements the normal
+  null/undefined shortcut, Number-hint object conversion and `ToLength`,
+  enforces QuickJS's 65,534 argument cap, and performs ordered ordinary indexed
+  Gets before forwarding. `Function.prototype.bind` validates callable before
+  metadata access, follows QuickJS's own-`length` numeric-only calculation and
+  observable `name` ordering, and installs `length`/`name` as W0E0C1 data
+  properties. Its dedicated BoundFunction payload strongly owns the target,
+  bound receiver and each argument, participates in trial-deletion GC, uses the
+  bind realm's `%Function.prototype%`, snapshots constructability, prepends
+  arguments, preserves the earliest bound receiver, and applies QuickJS's
+  recursive `new.target` replacement without adding a bound frame.
+  `Function.prototype.toString` returns the exact captured bytecode source when
+  present without reading `name`; otherwise it performs the observable name
+  conversion and emits QuickJS's normal/generator/async/async-generator native
+  template. The non-writable, non-enumerable, non-configurable `@@hasInstance`
+  method implements ordinary prototype traversal and delegates a bound target
+  through the full instance-check path, including custom target
+  `Symbol.hasInstance` and thrown completions.
+- Native payloads carry a typed target, cproto descriptor, defining realm and
+  minimum readable argument count; actual argc remains distinct from
+  undefined-padded argv. Generic, constructor-only and
+  constructor-or-function adapters share active native frame bookkeeping,
+  restore it across return/throw/engine-error paths, and keep the mutable
+  object constructor bit independent from cproto and own `length`. Native
+  defining-realm edges participate in trial-deletion GC.
+- Typed autoinit also covers native methods and constant intrinsic strings.
+  The current Object/Function/Error function-list prefixes expose keys and
+  descriptors before allocating their values; ownKeys/has-own/delete remain
+  shape-only. Get/gOPD and a compatible define materialize once in the stored
+  realm; define first checks the lazy flags, so impossible changes to a
+  non-configurable slot are rejected without allocation while configurable
+  builtins can be replaced by data or accessor descriptors. Initializer
+  failure commits an ordinary `undefined` slot while releasing that realm
+  edge.
+- `%Object.prototype%` currently installs the exact initial function-list
+  prefix `toString`, `toLocaleString`, `valueOf`. Completion-aware
+  `ToPrimitive` implements observable `@@toPrimitive` with the exact
+  `"string"`, `"number"`, or `"default"` hint, then the hint-selected ordinary
+  `toString`/`valueOf` Get/Call ordering. It preserves user-thrown values and
+  creates framework TypeErrors in the conversion realm. Core
+  `Object.prototype.toString` tags include Object, Function and Error plus
+  primitive null/undefined tags.
+- The Error intrinsic graph now includes `Error` plus the seven non-Aggregate
+  native Error constructors, their constructor/prototype/global relationships,
+  lazy function-list properties, call-versus-construct active-function rule,
+  observable newTarget prototype lookup and cross-realm fallback. Primitive and
+  ordinary-object message conversion, inherited/undefined `cause`,
+  `Error.prototype.toString`, and class-tag-based `Error.isError` use the native
+  completion path. `Error` instances still share one Error object class tag,
+  while all Error prototype objects remain ordinary objects.
+- Error-class objects now receive QuickJS-style eager own `stack` data on the
+  implemented synchronous native/bytecode paths. Native Error construction
+  captures after message/cause processing and skips only the Error-constructor
+  frame; VM-generated native errors and explicitly thrown Error objects capture
+  before frames unwind when no own `stack` already exists. Backtraces preserve
+  bytecode filenames and PC locations across realms, include native frames,
+  read function names without invoking user getters, and can be recaptured
+  after an own `stack` property is deleted. Syntax errors additionally install
+  own `fileName`, `lineNumber`, and `columnNumber` before `stack`, using the
+  explicit parse location. `EvalOptions::backtrace_barrier` implements the
+  current `JS_EVAL_FLAG_BACKTRACE_BARRIER` behavior by marking only the frame
+  which existed before eval and restoring it across every exit path.
+- Ordinary getter/setter actions retain the callable, original receiver and
+  setter argument across property mutation, invoke through the caller Context,
+  discard normal setter return values, and propagate thrown completions.
+- JavaScript exception transport has a private completion channel and a
+  runtime-owned pending raw-value root. Realms explicitly own `Error.prototype`
+  plus all eight QuickJS native-error prototypes; VM Type/Range/Reference/Syntax
+  faults materialize Error-class objects in the executing bytecode realm and
+  become `Completion::Throw`. Explicit thrown object and Symbol identities
+  transfer through `Context::take_exception` without leaking roots. Engine
+  invariants and explicitly unsupported behavior remain non-catchable errors.
+- Runtime-aware `typeof` reports `"function"` for bytecode callables rather
+  than treating every object as `"object"`.
+- The object core has a dedicated official-QuickJS differential test covering
+  key-order boundaries, descriptor defaults/frozen SameValue, inherited and
+  explicit-receiver writes, prototype constraints, lone surrogates and
+  well-known-vs-registry Symbol identity. A separate Error differential locks
+  constructor/prototype descriptors and chains, call/construct results,
+  message/cause conversion, toString/isError, Object tags and Symbol failures.
+  A separate pinned-oracle Error-stack differential covers nested VM faults,
+  tail-call sites, eager Error construction, parse metadata, assignment marker
+  inheritance, CR/CRLF and Unicode line/column behavior. A Function-prototype
+  differential locks the implemented own-key prefix, poison-accessor identity
+  and frozen thrower, `call` forwarding/throws, lazy define behavior, and
+  `@@hasInstance` ordering, descriptors, short circuits and prototype errors.
+  A separate `apply` differential covers conversion and Get ordering, every
+  abrupt path, holes/inheritance/accessors and the real 65,534/65,535 boundary.
+  A VM object-coercion differential covers Number/default hints, unary and
+  binary operators, BigInt/String relations, abstract equality, left-to-right
+  conversion, Symbol error precedence, arbitrary throws and coercion stacks.
+- `Runtime` and `Context` are distinct; `qjs -e` and file execution use the
+  Rust compiler/VM path and never delegate to an external engine.
+
+## Not implemented yet
+
+The function slice is intentionally narrow. Function declarations/hoisting,
+block scopes, source `let`/`const` declarations and their declaration-
+instantiation rules, general assignment targets and compound operators, module
+resolution, member/method bytecode, computed/method naming, `%Function%`, mapped
+`arguments`, arrow/async/generator functions and callable Proxy classes
+are not yet implemented. Top-level declarations are rejected instead of being
+faked as frame locals. The internal global lexical VarRef path already enforces
+TDZ, mutable and const behavior, but it is currently exercised through
+test-only creation/initialization helpers rather than source `let`/`const`
+syntax. The valid implicit `arguments` binding is likewise
+rejected where supporting it as an ordinary local would be observably wrong;
+this includes a reference to `arguments` inside `function arguments(){...}`, where
+QuickJS resolves the implicit arguments object before the private function name.
+The current `new` parser accepts the implemented primary/new-expression
+constructor heads, but not MemberExpression heads such as `new obj.F()`.
+Derived/class/super construction, `%Function%`, `AggregateError`, other native
+builtin constructor families, Proxy construct dispatch, and Reflect APIs
+remain. Typed target/cproto, data-bearing Error selector, realm, arity padding,
+production BoundFunction allocation and frame foundations exist, but
+specialized getter/setter/F64/iterator cproto adapters and the wider builtin
+table remain.
+
+Explicit `throw`, nested propagation, VM-generated native errors and eager
+Error backtraces share the completion path for the current synchronous slice,
+but catch/finally handler tables, async/generator/Promise frame integration,
+recoverable OOM and backtrace-allocation fallback, interrupt/termination and
+full abrupt-completion semantics remain. Debug/source stripping and the
+`JS_STRIP_DEBUG` / `JS_STRIP_SOURCE` configuration surface are not implemented;
+neither are bytecode debug serialization or the complete Function debug
+surface. In particular `%Function%`, the Function-prototype
+`fileName`/`lineNumber`/`columnNumber` getters and `constructor` link, and the
+rest of the Function intrinsic/constructor table remain pending despite the
+underlying filename, source-range and PC metadata. The current parser does not
+yet produce generator or async bytecode, although the function-kind metadata
+and `toString` fallback distinguish all four QuickJS kinds. Bound dispatch is
+iterative and therefore does not consume the Rust host stack, but exact
+QuickJS runtime-stack accounting and its deep-bound-chain overflow threshold
+are not yet reproduced. VM object coercion is wired through the implemented
+unary, arithmetic, relational, addition and abstract-equality operators and
+now reaches the implemented callable classes through
+`Function.prototype.toString`. Proxy hooks, Date's special default hint
+behavior, OOM/interrupt edges and operators outside the current bytecode slice
+also remain pending.
+
+Accessors are executable through the Rust Context property API, and
+strict/sloppy global identifier assignment is implemented; source
+member/property opcodes, primitive bases, strict property-assignment behavior,
+Proxy/exotic internal methods and the full `function_accessors.js` fixture are
+still pending. AggregateError iterable-to-Array, primitive wrapper objects for
+direct Object-prototype method calls, remaining Object prototype methods and
+uncatchable termination state are also pending. Arrays, object literals and the
+rest of the builtin table build on those layers.
+
+The remaining parity surface also includes the full grammar/opcode set,
+Unicode 17 tables, RegExp bytecode engine, modules, jobs/Promises/async,
+generators, TypedArrays/Atomics, WeakRef/finalization, bytecode version 5 and
+BJSON interoperability, `std`/`os`, workers, REPL/qjsc, and the complete Rust
+and C embedding APIs.
+
+## Reproduce current evidence
+
+```sh
+./scripts/test-parity-slice.sh
+```
+
+That command checksum-verifies and builds the official test-only oracle, runs
+formatting, unit/integration/oracle tests, Clippy, and the Rust-only product
+gate. The oracle is never part of the product dependency graph or runtime.

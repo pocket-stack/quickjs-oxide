@@ -1,0 +1,22 @@
+# Authoritative compatibility baseline. Product builds do not download, compile,
+# link, or execute this source; it is consumed only by explicit oracle tooling.
+
+[quickjs]
+version = "2026-06-04"
+source_url = "https://bellard.org/quickjs/quickjs-2026-06-04.tar.xz"
+source_sha256 = "b376e839b322978313d929fd20663b11ba58b75df5a46c126dd19ea2fa70ad2a"
+bytecode_version = 5
+unicode_version = "17.0.0"
+
+[test262]
+repository = "https://github.com/tc39/test262.git"
+commit = "5c8206929d81b2d3d727ca6aac56c18358c8d790"
+shallow_since = "2025-09-01"
+patch = "tests/test262.patch"
+config = "test262.conf"
+expected_errors = "test262_errors.txt"
+
+[test262_es5]
+branch = "es5-tests"
+config = "test262o.conf"
+expected_errors = "test262o_errors.txt"

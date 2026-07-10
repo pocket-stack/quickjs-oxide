@@ -1,0 +1,13 @@
+quickjs-oxide is an independent Rust implementation targeting observable
+compatibility with QuickJS 2026-06-04. QuickJS source code is not included or
+linked into product builds.
+
+The compatibility reference and algorithmic source map cover QuickJS, whose
+upstream sources state:
+
+  Copyright (c) 2017-2018 Fabrice Bellard
+  Copyright (c) 2017-2018 Charlie Gordon
+  Licensed under the MIT License.
+
+See compat/upstream.toml for the pinned release archive and checksum. Rust
+dependency licenses remain those published by their respective packages.

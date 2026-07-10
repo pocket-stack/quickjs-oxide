@@ -1,0 +1,27 @@
+[package]
+name = "quickjs-oxide"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+description = "A memory-safe Rust rewrite aiming for QuickJS feature parity"
+license = "MIT"
+repository = "https://github.com/pocket-stack/quickjs-oxide"
+
+[dependencies]
+num-bigint = "=0.5.1"
+num-traits = "=0.2.19"
+ryu-js = "=1.0.2"
+
+[lib]
+name = "quickjs_oxide"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qjs"
+path = "src/main.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
