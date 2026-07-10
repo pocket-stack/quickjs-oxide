@@ -36,6 +36,16 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "assignment inherits a private self-binding marker",
             "(function f(){ \"use strict\"; missing = f; })()",
         ),
+        ("fixed member null fault", "null.x"),
+        ("computed member undefined fault", "(void 0)['x']"),
+        (
+            "non-tail method call site",
+            "(function(){ var value = Function.name(); return value; })()",
+        ),
+        (
+            "tail method call site",
+            "(function(){ return Function.name(); })()",
+        ),
         (
             "CR remains a debug column",
             "(function f(){\rreturn 1n + 1;\r})()",

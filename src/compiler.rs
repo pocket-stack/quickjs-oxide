@@ -173,6 +173,10 @@ struct FunctionIr {
     parameters: Vec<String>,
     locals: Vec<String>,
     ops: Vec<SpannedIrOp>,
+    /// Parser-only Reference marker for the final member getter. QuickJS uses
+    /// `last_opcode_pos` for the same rewrite, but an explicit index prevents
+    /// comma/conditional values from accidentally retaining a method receiver.
+    last_member_reference: Option<usize>,
     constants: Vec<IrConstant>,
     closure_variables: Vec<ClosureVariable>,
     stack_depth: usize,
@@ -205,6 +209,7 @@ impl FunctionIr {
             parameters,
             locals: Vec::new(),
             ops: Vec::new(),
+            last_member_reference: None,
             constants: Vec::new(),
             closure_variables: Vec::new(),
             stack_depth: 0,
@@ -322,12 +327,9 @@ impl<'source> Parser<'source> {
                 break;
             }
             if self.current().line_terminator_before {
-                if matches!(
-                    self.current().kind,
-                    TokenKind::Punctuator(Punctuator::LeftBracket) | TokenKind::Template(_)
-                ) {
+                if matches!(self.current().kind, TokenKind::Template(_)) {
                     return Err(self.unsupported_here(
-                        "member and tagged-template continuations are not implemented yet",
+                        "tagged-template continuations are not implemented yet",
                     ));
                 }
                 continue;
@@ -391,7 +393,7 @@ impl<'source> Parser<'source> {
             // source marker to the `return` keyword. Preserve that observable
             // debug site even though this typed VM keeps two instructions.
             if let Some(SpannedIrOp {
-                op: IrOp::Bytecode(Instruction::Call(_)),
+                op: IrOp::Bytecode(Instruction::Call(_) | Instruction::CallMethod(_)),
                 pc_site,
             }) = self.current_ir_mut().ops.last_mut()
             {
@@ -514,6 +516,7 @@ impl<'source> Parser<'source> {
         }
         if has_comma {
             self.anonymous_function_definition = None;
+            self.current_ir_mut().last_member_reference = None;
         }
         Ok(())
     }
@@ -577,12 +580,16 @@ impl<'source> Parser<'source> {
                 "conditional branches have unequal stack depth",
             ));
         }
-        self.patch_jump(end_jump, self.current_ir().ops.len())
+        self.patch_jump(end_jump, self.current_ir().ops.len())?;
+        self.current_ir_mut().last_member_reference = None;
+        Ok(())
     }
 
     fn parse_logical_or(&mut self) -> Result<(), Error> {
         self.parse_logical_and()?;
+        let mut composed = false;
         while self.is_punctuator(Punctuator::LogicalOr) {
+            composed = true;
             self.advance();
             self.emit_instruction(Instruction::Dup)?;
             let end_jump = self.emit_instruction(Instruction::IfTrue(u32::MAX))?;
@@ -594,12 +601,17 @@ impl<'source> Parser<'source> {
         if self.is_punctuator(Punctuator::NullishCoalesce) {
             return Err(self.unsupported_here("nullish coalescing is not implemented yet"));
         }
+        if composed {
+            self.current_ir_mut().last_member_reference = None;
+        }
         Ok(())
     }
 
     fn parse_logical_and(&mut self) -> Result<(), Error> {
         self.parse_equality()?;
+        let mut composed = false;
         while self.is_punctuator(Punctuator::LogicalAnd) {
+            composed = true;
             self.advance();
             self.emit_instruction(Instruction::Dup)?;
             let end_jump = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
@@ -607,6 +619,9 @@ impl<'source> Parser<'source> {
             self.parse_equality()?;
             self.patch_jump(end_jump, self.current_ir().ops.len())?;
             self.anonymous_function_definition = None;
+        }
+        if composed {
+            self.current_ir_mut().last_member_reference = None;
         }
         Ok(())
     }
@@ -745,14 +760,103 @@ impl<'source> Parser<'source> {
 
     fn parse_postfix(&mut self) -> Result<(), Error> {
         self.parse_primary()?;
-        while self.is_punctuator(Punctuator::LeftParen) {
-            let call_span = self.current().span;
-            self.advance();
-            let argument_count = self.parse_call_arguments()?;
-            self.emit_instruction_at(Instruction::Call(argument_count), source_offset(call_span)?)?;
-            self.anonymous_function_definition = None;
+        loop {
+            if self.parse_member_suffix()? {
+                continue;
+            }
+
+            if self.is_punctuator(Punctuator::LeftParen) {
+                let call_span = self.current().span;
+                let is_method = self.promote_last_member_get_for_call()?;
+                self.advance();
+                let argument_count = self.parse_call_arguments()?;
+                let instruction = if is_method {
+                    Instruction::CallMethod(argument_count)
+                } else {
+                    Instruction::Call(argument_count)
+                };
+                self.emit_instruction_at(instruction, source_offset(call_span)?)?;
+                self.anonymous_function_definition = None;
+                continue;
+            }
+            break;
         }
         Ok(())
+    }
+
+    /// Parse one member suffix without accepting a call. This is shared by
+    /// ordinary postfix chains and constructor heads after `new`, matching
+    /// QuickJS's `PF_POSTFIX_CALL` split.
+    fn parse_member_suffix(&mut self) -> Result<bool, Error> {
+        if self.is_punctuator(Punctuator::Dot) {
+            let member_span = self.current().span;
+            self.advance();
+            let token = self.current().clone();
+            let name = match token.kind {
+                TokenKind::Identifier(identifier) => identifier.value,
+                TokenKind::Keyword(keyword) => keyword.as_str().to_owned(),
+                _ => return Err(self.syntax_here("expecting field name")),
+            };
+            self.advance();
+            let key = self.add_constant(IrConstant::Primitive(Value::String(
+                JsString::from_utf8(&name),
+            )))?;
+            let operation =
+                self.emit_instruction_at(Instruction::GetField(key), source_offset(member_span)?)?;
+            self.current_ir_mut().last_member_reference = Some(operation);
+            self.anonymous_function_definition = None;
+            return Ok(true);
+        }
+
+        if self.is_punctuator(Punctuator::LeftBracket) {
+            let member_span = self.current().span;
+            self.advance();
+            self.parse_expression()?;
+            self.expect_punctuator(Punctuator::RightBracket)?;
+            let operation =
+                self.emit_instruction_at(Instruction::GetArrayEl, source_offset(member_span)?)?;
+            self.current_ir_mut().last_member_reference = Some(operation);
+            self.anonymous_function_definition = None;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// QuickJS rewrites the immediately preceding member getter when `(`
+    /// proves that its Reference is being called. The keep form leaves the
+    /// original base below the function so `CallMethod` receives the exact
+    /// receiver without re-evaluating either base or computed key.
+    fn promote_last_member_get_for_call(&mut self) -> Result<bool, Error> {
+        let function = self.current_ir_mut();
+        if function.last_member_reference != function.ops.len().checked_sub(1) {
+            return Ok(false);
+        }
+        let Some(last) = function.ops.last_mut() else {
+            return Ok(false);
+        };
+        let promoted = match &mut last.op {
+            IrOp::Bytecode(instruction @ Instruction::GetField(_)) => {
+                let Instruction::GetField(key) = *instruction else {
+                    unreachable!();
+                };
+                *instruction = Instruction::GetField2(key);
+                true
+            }
+            IrOp::Bytecode(instruction @ Instruction::GetArrayEl) => {
+                *instruction = Instruction::GetArrayEl2;
+                true
+            }
+            _ => false,
+        };
+        if promoted {
+            function.stack_depth = function
+                .stack_depth
+                .checked_add(1)
+                .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+            function.max_stack = function.max_stack.max(function.stack_depth);
+        }
+        function.last_member_reference = None;
+        Ok(promoted)
     }
 
     /// Parse the contents of an already-consumed call/construct `(`.
@@ -805,10 +909,11 @@ impl<'source> Parser<'source> {
             return Ok(());
         }
 
-        // The current grammar has no member access yet, so the constructor
-        // head is one primary/new expression. The stack mirrors QuickJS:
-        // duplicate the constructor as `new.target`, then append arguments.
+        // QuickJS parses the constructor head with calls disabled but member
+        // suffixes enabled. The following `(` therefore belongs to this `new`,
+        // while calls after the completed construction remain postfix calls.
         self.parse_primary()?;
+        while self.parse_member_suffix()? {}
         self.emit_instruction(Instruction::Dup)?;
         let no_arguments_span = self.current().span;
         let (argument_count, construct_span) = if self.is_punctuator(Punctuator::LeftParen) {
@@ -1114,6 +1219,7 @@ impl<'source> Parser<'source> {
     ) -> Result<usize, Error> {
         let (popped, pushed) = operation.stack_effect();
         let function = self.current_ir_mut();
+        function.last_member_reference = None;
         function.stack_depth = function
             .stack_depth
             .checked_sub(popped)
@@ -2027,7 +2133,7 @@ mod tests {
     use crate::lexer::{Position, Span};
     use crate::object::{
         AccessorValue, CompleteOrdinaryPropertyDescriptor, DescriptorField,
-        OrdinaryPropertyDescriptor,
+        OrdinaryPropertyDescriptor, PropertyKey, WellKnownSymbol,
     };
     use crate::runtime::{Runtime, RuntimeError};
     use crate::value::{JsString, Value};
@@ -2621,6 +2727,147 @@ mod tests {
             panic!("function expression did not produce an object");
         };
         assert!(runtime.is_constructor(&function).unwrap());
+    }
+
+    #[test]
+    fn source_members_preserve_quickjs_reads_keys_references_and_method_receivers() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let global = context.global_object().unwrap();
+        let data = |value| OrdinaryPropertyDescriptor {
+            value: DescriptorField::Present(value),
+            writable: DescriptorField::Present(true),
+            enumerable: DescriptorField::Present(true),
+            configurable: DescriptorField::Present(true),
+            ..OrdinaryPropertyDescriptor::new()
+        };
+
+        let base = context.new_object().unwrap();
+        for (name, value) in [("x", Value::Int(7)), ("default", Value::Int(8))] {
+            let key = runtime.intern_property_key(name).unwrap();
+            assert!(
+                context
+                    .define_own_property(&base, &key, &data(value))
+                    .unwrap()
+            );
+        }
+        let base_name = runtime.intern_property_key("base").unwrap();
+        assert!(
+            context
+                .define_own_property(&global, &base_name, &data(Value::Object(base.clone())))
+                .unwrap()
+        );
+
+        let Value::Object(method) = context
+            .eval("(function(){ return this === base; })")
+            .unwrap()
+        else {
+            panic!("method source did not produce a function");
+        };
+        let method_key = runtime.intern_property_key("m").unwrap();
+        assert!(
+            context
+                .define_own_property(&base, &method_key, &data(Value::Object(method)))
+                .unwrap()
+        );
+
+        let Value::Object(getter) = context.eval("(function(){ return this; })").unwrap() else {
+            panic!("getter source did not produce a function");
+        };
+        let getter = runtime.as_callable(&getter).unwrap().unwrap();
+        let getter_key = runtime.intern_property_key("receiver").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &base,
+                    &getter_key,
+                    &OrdinaryPropertyDescriptor {
+                        get: DescriptorField::Present(AccessorValue::Callable(getter)),
+                        set: DescriptorField::Present(AccessorValue::Undefined),
+                        enumerable: DescriptorField::Present(true),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+
+        assert_eq!(context.eval("base.x").unwrap(), Value::Int(7));
+        assert_eq!(context.eval("base['x']").unwrap(), Value::Int(7));
+        assert_eq!(context.eval("base.default").unwrap(), Value::Int(8));
+        assert_eq!(context.eval("base\n.x").unwrap(), Value::Int(7));
+        assert_eq!(context.eval("base\n['x']").unwrap(), Value::Int(7));
+        assert_eq!(
+            context.eval("base.receiver === base").unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(context.eval("base.m()").unwrap(), Value::Bool(true));
+        assert_eq!(context.eval("base['m']()").unwrap(), Value::Bool(true));
+        assert_eq!(context.eval("((base.m))()").unwrap(), Value::Bool(true));
+        assert_eq!(context.eval("(0, base.m)()").unwrap(), Value::Bool(false));
+        assert_eq!(
+            context.eval("(true ? base.m : base.m)()").unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            context.eval("(true && base.m)()").unwrap(),
+            Value::Bool(false)
+        );
+
+        let hint = runtime.intern_property_key("keyHint").unwrap();
+        assert!(
+            context
+                .define_own_property(&global, &hint, &data(Value::String(JsString::from("none"))),)
+                .unwrap()
+        );
+        let Value::Object(to_key) = context
+            .eval("(function(hint){ keyHint = hint; return 'x'; })")
+            .unwrap()
+        else {
+            panic!("ToPropertyKey source did not produce a function");
+        };
+        let key_object = context.new_object().unwrap();
+        let to_primitive =
+            PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::ToPrimitive));
+        assert!(
+            context
+                .define_own_property(&key_object, &to_primitive, &data(Value::Object(to_key)))
+                .unwrap()
+        );
+        let key_name = runtime.intern_property_key("keyObject").unwrap();
+        assert!(
+            context
+                .define_own_property(&global, &key_name, &data(Value::Object(key_object)),)
+                .unwrap()
+        );
+        assert_eq!(context.eval("base[keyObject]").unwrap(), Value::Int(7));
+        assert_eq!(
+            context.eval("keyHint").unwrap(),
+            Value::String(JsString::from("string"))
+        );
+        assert_eq!(
+            context.eval("keyHint = 'none'").unwrap(),
+            Value::String(JsString::from("none"))
+        );
+        assert!(matches!(
+            context.eval("null[keyObject]"),
+            Err(RuntimeError::Exception)
+        ));
+        context.take_exception().unwrap().unwrap();
+        assert_eq!(
+            context.eval("keyHint").unwrap(),
+            Value::String(JsString::from("none"))
+        );
+
+        assert_eq!(context.eval("'abc'.length").unwrap(), Value::Int(3));
+        assert_eq!(
+            context.eval("'abc'[1]").unwrap(),
+            Value::String(JsString::from("b"))
+        );
+        assert!(matches!(
+            context.eval("Function().toString()"),
+            Ok(Value::String(_))
+        ));
     }
 
     #[test]

@@ -23,6 +23,11 @@ constructor/prototype/global descriptors. For the currently supported ordinary
 function grammar it follows QuickJS's exact dynamic-source wrapper, indirect
 global compilation, actual-argc conversion order, call/construct split,
 cross-realm behavior, and `newTarget.prototype` fallback.
+Source-level fixed/computed member reads, receiver-preserving method calls, and
+member constructor heads now lower through QuickJS-shaped property bytecode;
+the pinned differential locks chaining, `ToPropertyKey` order, `this`, String
+index/length reads, and member error locations. Property assignment/delete and
+the distinct primitive prototype graphs remain separate unfinished slices.
 Runtime-wide full/strip-source/strip-debug modes follow QuickJS's immutable
 bytecode publication boundary, and the `qjs` CLI exposes `--strip-source` and
 `-s` with upstream last-option-wins behavior.
@@ -74,6 +79,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_debug_accessors -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_constructor -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_member_reads -- --nocapture
 ```
 
 Or run the complete current gate—including checksum-verified oracle setup,

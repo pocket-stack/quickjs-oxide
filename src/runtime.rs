@@ -367,6 +367,132 @@ struct RuntimeVmHost {
     locals: Vec<FrameBinding>,
 }
 
+enum VmPropertyKeyConversion {
+    Key(PropertyKey),
+    Throw(Value),
+}
+
+impl RuntimeVmHost {
+    /// QuickJS `JS_ValueToAtom` / `JS_ToPropertyKey` at the VM/runtime
+    /// boundary. Object conversion can execute JavaScript and therefore keeps
+    /// an ordinary thrown value distinct from an engine failure.
+    fn property_key_from_value(
+        &mut self,
+        mut value: Value,
+    ) -> Result<VmPropertyKeyConversion, Error> {
+        if matches!(value, Value::Object(_)) {
+            value = match self
+                .runtime
+                .to_primitive(self.current_realm, value, ToPrimitiveHint::String)
+                .map_err(runtime_error_to_vm_error)?
+            {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(VmPropertyKeyConversion::Throw(value)),
+            };
+        }
+
+        let key = match value {
+            Value::Symbol(symbol) => {
+                if !symbol.belongs_to(&self.runtime) {
+                    return Err(Error::internal(
+                        "computed property symbol belongs to another runtime",
+                    ));
+                }
+                PropertyKey::from_borrowed_atom(self.runtime.clone(), symbol.atom())
+                    .map_err(|error| Error::internal(error.to_string()))?
+            }
+            Value::String(string) => self
+                .runtime
+                .intern_property_key_js_string(&string)
+                .map_err(|error| Error::internal(error.to_string()))?,
+            value => {
+                let string = value.to_js_string()?;
+                self.runtime
+                    .intern_property_key_js_string(&string)
+                    .map_err(|error| Error::internal(error.to_string()))?
+            }
+        };
+        Ok(VmPropertyKeyConversion::Key(key))
+    }
+
+    fn get_property_with_key(
+        &mut self,
+        base: Value,
+        key: &PropertyKey,
+        static_name: Option<&JsString>,
+    ) -> Result<Completion, Error> {
+        match &base {
+            Value::Null | Value::Undefined => {
+                let base_name = if matches!(base, Value::Null) {
+                    "null"
+                } else {
+                    "undefined"
+                };
+                let message = static_name.map_or_else(
+                    || format!("cannot read property of {base_name}"),
+                    |name| {
+                        format!(
+                            "cannot read property '{}' of {base_name}",
+                            name.to_utf8_lossy()
+                        )
+                    },
+                );
+                return Err(Error::new(ErrorKind::Type, message));
+            }
+            Value::Object(object) => {
+                let action = self
+                    .runtime
+                    .prepare_get_property_with_receiver(object, key, base.clone())
+                    .map_err(runtime_error_to_vm_error)?;
+                return match action {
+                    PropertyGetAction::Complete(value) => Ok(Completion::Return(value)),
+                    PropertyGetAction::Call { getter, receiver } => self
+                        .runtime
+                        .call_internal(self.current_realm, &getter, receiver, &[])
+                        .map_err(runtime_error_to_vm_error),
+                };
+            }
+            Value::String(string) => {
+                let index = self
+                    .runtime
+                    .0
+                    .state
+                    .borrow()
+                    .atoms
+                    .array_index(key.atom())
+                    .map_err(|error| Error::internal(error.to_string()))?;
+                if let Some(index) = index
+                    && let Ok(index) = usize::try_from(index)
+                    && let Some(unit) = string.utf16_units().nth(index)
+                {
+                    return Ok(Completion::Return(Value::String(JsString::from_utf16([
+                        unit,
+                    ]))));
+                }
+                let length = self
+                    .runtime
+                    .intern_property_key("length")
+                    .map_err(|error| Error::internal(error.to_string()))?;
+                if key == &length {
+                    let length = i32::try_from(string.len())
+                        .map(Value::Int)
+                        .unwrap_or_else(|_| Value::number(string.len() as f64));
+                    return Ok(Completion::Return(length));
+                }
+            }
+            Value::Bool(_)
+            | Value::Int(_)
+            | Value::Float(_)
+            | Value::BigInt(_)
+            | Value::Symbol(_) => {}
+        }
+
+        Err(Error::internal(
+            "primitive prototype property lookup is not implemented yet",
+        ))
+    }
+}
+
 impl VmHost for RuntimeVmHost {
     fn update_active_bytecode_pc(&mut self, pc: BytecodePc) -> Result<(), Error> {
         self.runtime
@@ -684,6 +810,47 @@ impl VmHost for RuntimeVmHost {
                 .call_internal(self.current_realm, &setter, receiver, &[argument])
                 .map_err(runtime_error_to_vm_error),
         }
+    }
+
+    fn get_field(&mut self, base: Value, key_index: u32) -> Result<Completion, Error> {
+        let name = match usize::try_from(key_index)
+            .ok()
+            .and_then(|index| self.constants.get(index))
+        {
+            Some(BytecodeConstant::Value(RawValue::String(name))) => name.clone(),
+            Some(BytecodeConstant::Value(_) | BytecodeConstant::Function(_)) => {
+                return Err(Error::internal(
+                    "field opcode referenced a non-string constant",
+                ));
+            }
+            None => return Err(Error::internal("constant index is out of bounds")),
+        };
+        let key = self
+            .runtime
+            .intern_property_key_js_string(&name)
+            .map_err(|error| Error::internal(error.to_string()))?;
+        self.get_property_with_key(base, &key, Some(&name))
+    }
+
+    fn get_property(&mut self, base: Value, key: Value) -> Result<Completion, Error> {
+        // QuickJS `JS_GetPropertyValue` performs the ToObject null/undefined
+        // check before observable ToPropertyKey conversion.
+        if matches!(base, Value::Null | Value::Undefined) {
+            let base_name = if matches!(base, Value::Null) {
+                "null"
+            } else {
+                "undefined"
+            };
+            return Err(Error::new(
+                ErrorKind::Type,
+                format!("cannot read property of {base_name}"),
+            ));
+        }
+        let key = match self.property_key_from_value(key)? {
+            VmPropertyKeyConversion::Key(key) => key,
+            VmPropertyKeyConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        self.get_property_with_key(base, &key, None)
     }
 
     fn call(
@@ -7136,7 +7303,9 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                     }
                 }
                 crate::bytecode::Instruction::SetName(index)
-                | crate::bytecode::Instruction::ThrowReadOnly(index) => {
+                | crate::bytecode::Instruction::ThrowReadOnly(index)
+                | crate::bytecode::Instruction::GetField(index)
+                | crate::bytecode::Instruction::GetField2(index) => {
                     let index = usize::try_from(*index)
                         .map_err(|_| RuntimeError::Invariant("constant index did not fit usize"))?;
                     let constant = function.constants().get(index).ok_or_else(|| {
@@ -8315,22 +8484,71 @@ mod tests {
     }
 
     #[test]
-    fn publication_rejects_set_name_with_a_non_string_constant() {
+    fn publication_rejects_string_key_opcodes_with_non_string_constants() {
         let runtime = Runtime::new();
         let context = runtime.new_context();
-        let function = UnlinkedFunction::new(
-            vec![
-                Instruction::Undefined,
-                Instruction::SetName(0),
-                Instruction::Return,
-            ],
-            vec![UnlinkedConstant::primitive(Value::Int(1)).unwrap()],
+        for (code, max_stack) in [
+            (
+                vec![
+                    Instruction::Undefined,
+                    Instruction::SetName(0),
+                    Instruction::Return,
+                ],
+                1,
+            ),
+            (
+                vec![
+                    Instruction::Undefined,
+                    Instruction::GetField(0),
+                    Instruction::Return,
+                ],
+                1,
+            ),
+            (
+                vec![
+                    Instruction::Undefined,
+                    Instruction::GetField2(0),
+                    Instruction::Drop,
+                    Instruction::Return,
+                ],
+                2,
+            ),
+        ] {
+            let function = UnlinkedFunction::new(
+                code,
+                vec![UnlinkedConstant::primitive(Value::Int(1)).unwrap()],
+                FunctionMetadata {
+                    max_stack,
+                    ..FunctionMetadata::default()
+                },
+            );
+            assert!(matches!(
+                runtime.publish_unlinked_function(context.realm, function),
+                Err(RuntimeError::Engine(_))
+            ));
+            assert_eq!(runtime.heap_counts().function_bytecode_nodes, 0);
+        }
+
+        let child = UnlinkedFunction::new(
+            vec![Instruction::Undefined, Instruction::Return],
+            Vec::new(),
             FunctionMetadata {
                 max_stack: 1,
                 ..FunctionMetadata::default()
             },
         );
-
+        let function = UnlinkedFunction::new(
+            vec![
+                Instruction::Undefined,
+                Instruction::GetField(0),
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(child)],
+            FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
         assert!(matches!(
             runtime.publish_unlinked_function(context.realm, function),
             Err(RuntimeError::Engine(_))

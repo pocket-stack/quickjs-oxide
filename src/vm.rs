@@ -97,6 +97,13 @@ pub(crate) trait VmHost {
         initialize: bool,
         strict: bool,
     ) -> Result<Completion, Error>;
+    /// Constant-name property access. Keeping the constant-pool index here
+    /// preserves the exact UTF-16 spelling and distinguishes a verified field
+    /// operand from an arbitrary computed value.
+    fn get_field(&mut self, base: Value, key_index: u32) -> Result<Completion, Error>;
+    /// `base[key]` after the VM has preserved QuickJS's operand order. The
+    /// runtime host owns `ToObject`/`ToPropertyKey` and accessor execution.
+    fn get_property(&mut self, base: Value, key: Value) -> Result<Completion, Error>;
     fn call(
         &mut self,
         function: Value,
@@ -187,6 +194,18 @@ impl VmHost for DetachedHost<'_> {
     ) -> Result<Completion, Error> {
         Err(Error::internal(
             "detached VM has no realm global environment",
+        ))
+    }
+
+    fn get_field(&mut self, _base: Value, _key_index: u32) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "detached VM cannot access runtime-owned properties",
+        ))
+    }
+
+    fn get_property(&mut self, _base: Value, _key: Value) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "detached VM cannot access runtime-owned properties",
         ))
     }
 
@@ -482,6 +501,34 @@ impl CallFrame {
                         host.put_global_var(*index, value, initialize, self.strict)?
                     {
                         return Ok(Completion::Throw(value));
+                    }
+                }
+                Instruction::GetField(index) | Instruction::GetField2(index) => {
+                    let keep_receiver = matches!(instruction, Instruction::GetField2(_));
+                    let base = self.pop()?;
+                    let receiver = keep_receiver.then(|| base.clone());
+                    match host.get_field(base, *index)? {
+                        Completion::Return(value) => {
+                            if let Some(receiver) = receiver {
+                                self.stack.push(receiver);
+                            }
+                            self.stack.push(value);
+                        }
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                }
+                Instruction::GetArrayEl | Instruction::GetArrayEl2 => {
+                    let keep_receiver = matches!(instruction, Instruction::GetArrayEl2);
+                    let (base, key) = self.pop_pair()?;
+                    let receiver = keep_receiver.then(|| base.clone());
+                    match host.get_property(base, key)? {
+                        Completion::Return(value) => {
+                            if let Some(receiver) = receiver {
+                                self.stack.push(receiver);
+                            }
+                            self.stack.push(value);
+                        }
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
                     }
                 }
                 Instruction::Drop => {

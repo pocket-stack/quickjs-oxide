@@ -31,6 +31,18 @@ claim full parity.
   contextual `SetName` for direct anonymous initializers and assignments. Named expressions use
   a per-invocation private self binding; sloppy writes are ignored and strict
   writes raise the QuickJS-compatible read-only TypeError.
+- Source `MemberExpression` lowering follows QuickJS's typed
+  `GetField`/`GetField2` and `GetArrayEl`/`GetArrayEl2` split. Fixed and
+  computed reads can be chained across line terminators; a following call
+  rewrites only a live member Reference to the receiver-preserving form and
+  then uses `CallMethod`. Parentheses preserve that Reference, while comma,
+  conditional and logical values invalidate it. Computed reads evaluate the
+  key expression but reject a null/undefined base before observable
+  `ToPropertyKey(String)` conversion; getters and key conversion preserve
+  arbitrary thrown completions and the original receiver. String primitives
+  implement exact UTF-16 indexed own properties and `length`. Other primitive
+  inherited lookup is rejected explicitly until the distinct primitive
+  prototype roots exist, rather than silently skipping them.
 - Bytecode publication first validates structural operands in every instruction
   (including unreachable code), then verifies reachable control-flow joins and
   stack depth. Runtime publication additionally checks constant kinds, frame
@@ -140,7 +152,10 @@ claim full parity.
   unread function therefore has no eager function/prototype cycle.
 - Source `new`, `new.target`, the verified `Construct` stack opcode, and the
   Rust `Context::construct`/explicit-new-target APIs implement the ordinary
-  base-constructor path. `newTarget.prototype` uses observable property Get,
+  base-constructor path. Constructor heads accept fixed/computed member chains
+  with postfix calls disabled, matching QuickJS's split between the call owned
+  by `new` and a call after the completed construction. `newTarget.prototype`
+  uses observable property Get,
   a non-object result falls back to the newTarget function realm's
   `%Object.prototype%`, an explicit object return overrides the precreated
   `this`, and a primitive return falls back to it. Ordinary `Call` supplies an
@@ -277,7 +292,8 @@ claim full parity.
 The function slice is intentionally narrow. Function declarations/hoisting,
 block scopes, source `let`/`const` declarations and their declaration-
 instantiation rules, general assignment targets and compound operators, module
-resolution, member/method bytecode, computed/method naming, mapped
+resolution, member assignment/delete bytecode, computed property-definition
+naming, mapped
 `arguments`, arrow/async/generator functions and callable Proxy classes
 are not yet implemented. Top-level declarations are rejected instead of being
 faked as frame locals. The internal global lexical VarRef path already enforces
@@ -287,8 +303,6 @@ syntax. The valid implicit `arguments` binding is likewise
 rejected where supporting it as an ordinary local would be observably wrong;
 this includes a reference to `arguments` inside `function arguments(){...}`, where
 QuickJS resolves the implicit arguments object before the private function name.
-The current `new` parser accepts the implemented primary/new-expression
-constructor heads, but not MemberExpression heads such as `new obj.F()`.
 Derived/class/super construction, dynamic Generator/Async/AsyncGenerator
 Function constructors, `AggregateError`, other native builtin constructor
 families, Proxy construct dispatch, and Reflect APIs remain. Typed
@@ -328,8 +342,10 @@ behavior, OOM/interrupt edges and operators outside the current bytecode slice
 also remain pending.
 
 Accessors are executable through the Rust Context property API, and
-strict/sloppy global identifier assignment is implemented; source
-member/property opcodes, primitive bases, strict property-assignment behavior,
+strict/sloppy global identifier assignment is implemented. Source property
+reads and receiver-preserving method calls are implemented for object/function
+bases, plus exact String index/length reads; source member assignment/delete,
+the distinct primitive prototype graphs, strict property-assignment behavior,
 Proxy/exotic internal methods and the full `function_accessors.js` fixture are
 still pending. AggregateError iterable-to-Array, primitive wrapper objects for
 direct Object-prototype method calls, remaining Object prototype methods and

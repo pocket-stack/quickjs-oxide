@@ -44,6 +44,17 @@ pub enum Instruction {
     PutVar(u16),
     /// QuickJS `OP_put_var_init`: initialize a lexical global binding.
     PutVarInit(u16),
+    /// QuickJS `OP_get_field`: replace an object-like base with the value of
+    /// one constant string-keyed property.
+    GetField(u32),
+    /// QuickJS `OP_get_field2`: keep the base below the fetched value so a
+    /// following `CallMethod` observes the original reference receiver.
+    GetField2(u32),
+    /// QuickJS `OP_get_array_el`: `base key -> value`, including observable
+    /// `ToPropertyKey` conversion in the runtime host.
+    GetArrayEl,
+    /// QuickJS `OP_get_array_el2`: `base key -> base value` for method calls.
+    GetArrayEl2,
     Drop,
     Dup,
     Neg,
@@ -95,6 +106,10 @@ impl Instruction {
             | Self::GetVar(_)
             | Self::GetVarUndef(_) => (0, 1),
             Self::SetName(_) => (1, 1),
+            Self::GetField(_) => (1, 1),
+            Self::GetField2(_) => (1, 2),
+            Self::GetArrayEl => (2, 1),
+            Self::GetArrayEl2 => (2, 2),
             Self::Call(argument_count) => (*argument_count as usize + 1, 1),
             Self::CallMethod(argument_count) => (*argument_count as usize + 2, 1),
             Self::Construct(argument_count) => (*argument_count as usize + 2, 1),
@@ -152,7 +167,10 @@ impl BytecodeFunction {
     /// must never produce such an error; decoders must reject it before use.
     pub fn verify(&self) -> Result<VerifiedBytecode, Error> {
         for instruction in &self.code {
-            if let Instruction::SetName(index) | Instruction::ThrowReadOnly(index) = instruction
+            if let Instruction::SetName(index)
+            | Instruction::ThrowReadOnly(index)
+            | Instruction::GetField(index)
+            | Instruction::GetField2(index) = instruction
                 && !matches!(self.constant(*index), Some(Value::String(_)))
             {
                 return Err(Error::internal(
@@ -193,7 +211,9 @@ pub(crate) fn verify_parts(
             Instruction::PushConst(index)
             | Instruction::FClosure(index)
             | Instruction::SetName(index)
-            | Instruction::ThrowReadOnly(index) => {
+            | Instruction::ThrowReadOnly(index)
+            | Instruction::GetField(index)
+            | Instruction::GetField2(index) => {
                 let is_valid = usize::try_from(*index)
                     .ok()
                     .is_some_and(|index| index < constant_count);
@@ -414,6 +434,31 @@ mod tests {
             max_stack: 1,
         };
         assert!(non_string_read_only_name.verify().is_err());
+
+        let non_string_field = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Undefined,
+                Instruction::GetField(0),
+                Instruction::Return,
+            ],
+            constants: vec![Value::Int(1)],
+            max_stack: 1,
+        };
+        assert!(non_string_field.verify().is_err());
+
+        let non_string_keep_field = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Undefined,
+                Instruction::GetField2(0),
+                Instruction::Drop,
+                Instruction::Return,
+            ],
+            constants: vec![Value::Int(1)],
+            max_stack: 2,
+        };
+        assert!(non_string_keep_field.verify().is_err());
 
         let bad_jump = BytecodeFunction {
             name: None,
