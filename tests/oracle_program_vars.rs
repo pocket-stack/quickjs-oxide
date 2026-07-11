@@ -88,11 +88,6 @@ const BOUNDARY_CASES: &[BoundaryCase] = &[
         source: "for(var item of 'a');item",
         rust_message: "for-in and for-of loops are not implemented yet",
     },
-    BoundaryCase {
-        description: "Program function declaration",
-        source: "function value(){return 1}value()",
-        rust_message: "top-level function declarations and global bindings are not implemented yet",
-    },
 ];
 
 const ORACLE_PROPERTY_PROBE: &str = r#"

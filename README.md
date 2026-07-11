@@ -49,16 +49,16 @@ compatibility.
 
 The repository has a real lexer-to-VM execution path, core values and objects,
 closures and realms, native errors, a practical expression/control-flow
-subset, and selected built-ins. Simple-name `var`, `let`, and `const`
-declarations now work in Program code; implemented local lexical scopes include
-TDZ and captured-cell behavior.
+subset, and selected built-ins. Simple-name `var`, `let`, `const`, and ordinary
+named function declarations now work in Program code; implemented local
+lexical scopes include TDZ and captured-cell behavior.
 
 Large parts of JavaScript and the QuickJS host surface remain unfinished. The
-current frontier includes Program function declarations and declaration-kind
-interactions, lexical destructuring and environments, advanced functions and
-classes, iterators and async behavior, modules, jobs, workers, the full CLI and
-REPL, `qjsc`, and embedding compatibility. Unsupported paths must fail
-explicitly rather than silently delegate to another engine.
+current frontier includes block/function-body declarations and Annex B,
+lexical destructuring and environments, advanced functions and classes,
+iterators and async behavior, modules, jobs, workers, the full CLI and REPL,
+`qjsc`, and embedding compatibility. Unsupported paths must fail explicitly
+rather than silently delegate to another engine.
 
 See [docs/status.md](docs/status.md) for the exact implemented boundary,
 known gaps, upstream anchors, and reproducible evidence. The acceptance bar for

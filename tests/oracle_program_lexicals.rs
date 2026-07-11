@@ -71,18 +71,11 @@ struct BoundaryCase {
     rust_message: &'static str,
 }
 
-const BOUNDARY_CASES: &[BoundaryCase] = &[
-    BoundaryCase {
-        description: "Program function declaration",
-        source: "function value(){return 1}value()",
-        rust_message: "top-level function declarations and global bindings are not implemented yet",
-    },
-    BoundaryCase {
-        description: "Program lexical destructuring",
-        source: "let [value]=[1];value",
-        rust_message: "lexical destructuring bindings are not implemented yet",
-    },
-];
+const BOUNDARY_CASES: &[BoundaryCase] = &[BoundaryCase {
+    description: "Program lexical destructuring",
+    source: "let [value]=[1];value",
+    rust_message: "lexical destructuring bindings are not implemented yet",
+}];
 
 #[test]
 fn program_lexical_values_match_pinned_quickjs() {

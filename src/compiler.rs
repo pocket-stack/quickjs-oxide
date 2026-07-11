@@ -187,6 +187,12 @@ struct IrGlobalDeclaration {
     name: String,
     is_lexical: bool,
     is_const: bool,
+    /// Child-function constant for a QuickJS
+    /// `JS_VAR_GLOBAL_FUNCTION_DECL`. Ordinary `var` and lexical
+    /// declarations have no declaration-time value.
+    function_constant: Option<u32>,
+    /// Exact root `GLOBAL_DECL` slot allocated during declaration seeding.
+    closure_index: Option<u16>,
 }
 
 #[derive(Debug)]
@@ -350,9 +356,13 @@ struct FunctionIr {
     parent: Option<ParentLink>,
     kind: FunctionKind,
     source: FunctionSourceInfo,
-    /// Intrinsic name of a named function expression, independent of
-    /// contextual `SetName` inference for anonymous definitions.
+    /// Intrinsic function name, independent of contextual `SetName` inference
+    /// for anonymous definitions.
     function_name: Option<String>,
+    /// Whether a named expression may lazily create QuickJS's private
+    /// `JS_VAR_FUNCTION_NAME` self binding. Declarations carry an intrinsic
+    /// name but resolve recursion through their authored environment.
+    private_name_binding: bool,
     /// Lazily allocated private self-binding local.
     function_name_local: Option<u16>,
     parameters: Vec<String>,
@@ -396,6 +406,7 @@ impl FunctionIr {
         kind: FunctionKind,
         source: FunctionSourceInfo,
         function_name: Option<String>,
+        private_name_binding: bool,
         parameters: Vec<String>,
         strict: bool,
     ) -> Result<Self, Error> {
@@ -440,6 +451,7 @@ impl FunctionIr {
             kind,
             source,
             function_name,
+            private_name_binding,
             function_name_local: None,
             parameters,
             locals,
@@ -539,6 +551,12 @@ struct FunctionTree {
     filename: JsString,
 }
 
+struct ParsedFunctionDefinition {
+    constant: u32,
+    child: FunctionId,
+    name: Option<(String, Span)>,
+}
+
 struct Parser<'source> {
     lexer: Lexer<'source>,
     tokens: Vec<Token<'source>>,
@@ -580,6 +598,7 @@ impl<'source> Parser<'source> {
                     range: None,
                 },
                 Some("<eval>".to_owned()),
+                false,
                 Vec::new(),
                 false,
             )?],
@@ -664,9 +683,13 @@ impl<'source> Parser<'source> {
             TokenKind::Keyword(Keyword::Break) => self.parse_loop_jump_statement(false),
             TokenKind::Keyword(Keyword::Continue) => self.parse_loop_jump_statement(true),
             TokenKind::Keyword(Keyword::Function) => {
-                if matches!(self.current_ir().kind, FunctionKind::Script) {
+                if matches!(self.current_ir().kind, FunctionKind::Script)
+                    && position == StatementPosition::ProgramBody
+                {
+                    self.parse_program_function_declaration()
+                } else if matches!(self.current_ir().kind, FunctionKind::Script) {
                     Err(self.unsupported_here(
-                        "top-level function declarations and global bindings are not implemented yet",
+                        "block and single-statement function declarations are not implemented yet",
                     ))
                 } else {
                     Err(self.unsupported_here(
@@ -1515,6 +1538,8 @@ impl<'source> Parser<'source> {
                 name: name.to_owned(),
                 is_lexical: false,
                 is_const: false,
+                function_constant: None,
+                closure_index: None,
             });
         }
         if function
@@ -1629,6 +1654,8 @@ impl<'source> Parser<'source> {
                 name: name.to_owned(),
                 is_lexical: true,
                 is_const,
+                function_constant: None,
+                closure_index: None,
             });
             function.add_binding(
                 scope,
@@ -2900,6 +2927,21 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_function_expression(&mut self) -> Result<(), Error> {
+        let parsed = self.parse_function_definition(false, true)?;
+        self.emit(IrOp::MakeClosure(parsed.constant))?;
+        self.anonymous_function_definition = parsed.name.is_none().then_some(parsed.child);
+        Ok(())
+    }
+
+    /// Parse the common ordinary-function grammar and publish its child
+    /// constant in the defining function. The caller decides whether that
+    /// constant is evaluated in expression position or recorded for Program
+    /// declaration hoisting.
+    fn parse_function_definition(
+        &mut self,
+        require_name: bool,
+        private_name_binding: bool,
+    ) -> Result<ParsedFunctionDefinition, Error> {
         let function_span = self.current().span;
         self.advance()?;
         let function_name_token =
@@ -2911,6 +2953,9 @@ impl<'source> Parser<'source> {
             } else {
                 None
             };
+        if require_name && function_name_token.is_none() {
+            return Err(self.syntax_here("function name expected"));
+        }
         self.expect_punctuator(Punctuator::LeftParen)?;
 
         let mut parameters = Vec::new();
@@ -2982,7 +3027,6 @@ impl<'source> Parser<'source> {
         let function_name = function_name_token
             .as_ref()
             .map(|(identifier, _)| identifier.value.clone());
-        let is_anonymous = function_name.is_none();
         let child = self.functions.len();
         let parent_scope = self.functions[parent].current_scope;
         self.functions.push(FunctionIr::new(
@@ -2997,6 +3041,7 @@ impl<'source> Parser<'source> {
                 range: None,
             },
             function_name,
+            private_name_binding && function_name_token.is_some(),
             parameters,
             strict,
         )?);
@@ -3015,8 +3060,49 @@ impl<'source> Parser<'source> {
         self.current_function = parent;
 
         let constant = self.add_constant(IrConstant::Child(child))?;
-        self.emit(IrOp::MakeClosure(constant))?;
-        self.anonymous_function_definition = is_anonymous.then_some(child);
+        Ok(ParsedFunctionDefinition {
+            constant,
+            child,
+            name: function_name_token.map(|(identifier, span)| (identifier.value, span)),
+        })
+    }
+
+    fn parse_program_function_declaration(&mut self) -> Result<(), Error> {
+        let parsed = self.parse_function_definition(true, false)?;
+        let (name, declaration_span) = parsed
+            .name
+            .ok_or_else(|| Error::internal("required Program function lost its name"))?;
+        let function = &mut self.functions[self.current_function];
+        if !matches!(function.kind, FunctionKind::Script) {
+            return Err(Error::internal(
+                "Program function declaration escaped the root script",
+            ));
+        }
+
+        // QuickJS appends one GLOBAL_FUNCTION_DECL record per syntax node,
+        // including duplicates. It deliberately does not run the ordinary
+        // `define_var` conflict check here, which permits a preceding Program
+        // lexical with the same name.
+        function.global_declarations.push(IrGlobalDeclaration {
+            name: name.clone(),
+            is_lexical: false,
+            is_const: false,
+            function_constant: Some(parsed.constant),
+            closure_index: None,
+        });
+        if function
+            .binding_in_scope(function.var_scope, &name)
+            .is_none()
+        {
+            function.add_binding(
+                function.var_scope,
+                function.current_scope,
+                name,
+                BindingStorage::Global,
+                BindingKind::Normal,
+                Some(declaration_span),
+            );
+        }
         Ok(())
     }
 
@@ -3709,6 +3795,14 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         if function.scopes[function.body_scope.0].kind != expected_body {
             return Err(Error::internal("function body scope kind is malformed"));
         }
+        if function.private_name_binding
+            && (!matches!(function.kind, FunctionKind::Ordinary)
+                || function.function_name.is_none())
+        {
+            return Err(Error::internal(
+                "private function-name capability is malformed",
+            ));
+        }
         match function.kind {
             FunctionKind::Script => {
                 for declaration in &function.global_declarations {
@@ -3735,6 +3829,43 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         return Err(Error::internal(
                             "global declaration has no matching binding identity",
                         ));
+                    }
+                    if let Some(constant) = declaration.function_constant {
+                        if declaration.is_lexical || declaration.is_const {
+                            return Err(Error::internal(
+                                "global function declaration has lexical metadata",
+                            ));
+                        }
+                        let constant = usize::try_from(constant).map_err(|_| {
+                            Error::internal("global function constant is out of bounds")
+                        })?;
+                        if !matches!(function.constants.get(constant), Some(IrConstant::Child(_))) {
+                            return Err(Error::internal(
+                                "global function declaration does not reference child bytecode",
+                            ));
+                        }
+                    }
+                    if let Some(index) = declaration.closure_index {
+                        let descriptor = function
+                            .closure_variables
+                            .get(usize::from(index))
+                            .ok_or_else(|| {
+                                Error::internal("global declaration closure is out of bounds")
+                            })?;
+                        let expected_kind = if declaration.function_constant.is_some() {
+                            ClosureVariableKind::GlobalFunction
+                        } else {
+                            ClosureVariableKind::Normal
+                        };
+                        if descriptor.source != ClosureSource::GlobalDeclaration
+                            || descriptor.is_lexical != declaration.is_lexical
+                            || descriptor.is_const != declaration.is_const
+                            || descriptor.kind != expected_kind
+                        {
+                            return Err(Error::internal(
+                                "global declaration closure metadata disagrees",
+                            ));
+                        }
                     }
                 }
             }
@@ -3976,6 +4107,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         ) {
             (Some(index), [binding])
                 if matches!(function.kind, FunctionKind::Ordinary)
+                    && function.private_name_binding
                     && binding.storage == BindingStorage::Local(index)
                     && binding.storage_scope == function.var_scope
                     && binding.declaration_scope == function.var_scope
@@ -4023,6 +4155,7 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
             tree.functions[function_id].ops[operation_index].op = operation;
         }
     }
+    install_global_function_hoists(tree)?;
     validate_scope_graph(tree)
 }
 
@@ -4041,23 +4174,93 @@ fn seed_global_declarations(tree: &mut FunctionTree) -> Result<(), Error> {
                 declaration.name.clone(),
                 declaration.is_lexical,
                 declaration.is_const,
+                declaration.function_constant.is_some(),
             )
         })
         .collect::<Vec<_>>();
 
-    for (name, is_lexical, is_const) in declarations {
+    for (declaration_index, (name, is_lexical, is_const, is_function)) in
+        declarations.into_iter().enumerate()
+    {
         let name_index = ensure_string_constant(&mut tree.functions[0], &name)?;
-        push_closure_variable(
+        let closure_index = push_closure_variable(
             &mut tree.functions[0],
             ClosureVariable {
                 source: ClosureSource::GlobalDeclaration,
                 name: ClosureVariableName::Constant(name_index),
                 is_lexical,
                 is_const,
-                kind: ClosureVariableKind::Normal,
+                kind: if is_function {
+                    ClosureVariableKind::GlobalFunction
+                } else {
+                    ClosureVariableKind::Normal
+                },
             },
         )?;
+        tree.functions[0].global_declarations[declaration_index].closure_index =
+            Some(closure_index);
     }
+    Ok(())
+}
+
+/// QuickJS emits every Program function initializer before authored body
+/// bytecode. Each declaration retains its own child constant, while the raw
+/// write resolves by name to the first same-name `GLOBAL_DECL` slot.
+fn install_global_function_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
+    let declarations = tree
+        .functions
+        .first()
+        .ok_or_else(|| Error::internal("compiler produced no root function"))?
+        .global_declarations
+        .iter()
+        .filter_map(|declaration| {
+            declaration
+                .function_constant
+                .map(|constant| (declaration.name.clone(), constant))
+        })
+        .collect::<Vec<_>>();
+    if declarations.is_empty() {
+        return Ok(());
+    }
+
+    let mut prefix = Vec::with_capacity(declarations.len().saturating_mul(2));
+    for (name, constant) in declarations {
+        let target = tree.functions[0]
+            .global_declarations
+            .iter()
+            .find(|declaration| declaration.name == name)
+            .and_then(|declaration| declaration.closure_index)
+            .ok_or_else(|| Error::internal("global function hoist target was not seeded"))?;
+        prefix.push(SpannedIrOp {
+            op: IrOp::MakeClosure(constant),
+            pc_site: None,
+        });
+        // PutVarInit is the declaration-time raw VarRef write. It is not an
+        // ordinary assignment and intentionally bypasses TDZ, const, and
+        // global-property setter fallback.
+        prefix.push(SpannedIrOp {
+            op: IrOp::Bytecode(Instruction::PutVarInit(target)),
+            pc_site: None,
+        });
+    }
+
+    let shift = u32::try_from(prefix.len())
+        .map_err(|_| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+    for operation in &mut tree.functions[0].ops {
+        let target = match &mut operation.op {
+            IrOp::Bytecode(
+                Instruction::Goto(target)
+                | Instruction::IfFalse(target)
+                | Instruction::IfTrue(target),
+            ) => target,
+            _ => continue,
+        };
+        *target = target
+            .checked_add(shift)
+            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+    }
+    prefix.append(&mut tree.functions[0].ops);
+    tree.functions[0].ops = prefix;
     Ok(())
 }
 
@@ -4430,17 +4633,16 @@ fn global_declaration_operation(
     access: IdentifierAccess,
     name: &str,
 ) -> Result<IrOp, Error> {
-    let (is_lexical, is_const) = match kind {
-        BindingKind::Normal => (false, false),
-        BindingKind::Lexical { is_const } => (true, is_const),
+    let is_lexical = match kind {
+        BindingKind::Normal => false,
+        BindingKind::Lexical { .. } => true,
         BindingKind::FunctionName { .. } => {
             return Err(Error::internal(
                 "global declaration has function-name binding metadata",
             ));
         }
     };
-    let closure_index =
-        capture_global_declaration_path(tree, consuming_function, name, is_lexical, is_const)?;
+    let closure_index = capture_global_declaration_path(tree, consuming_function, name)?;
     Ok(match access {
         IdentifierAccess::Get => IrOp::Bytecode(Instruction::GetVar(closure_index)),
         IdentifierAccess::GetOrUndefined => IrOp::Bytecode(Instruction::GetVarUndef(closure_index)),
@@ -4465,8 +4667,6 @@ fn capture_global_declaration_path(
     tree: &mut FunctionTree,
     consuming_function: FunctionId,
     name: &str,
-    is_lexical: bool,
-    is_const: bool,
 ) -> Result<u16, Error> {
     let mut path = Vec::new();
     let mut cursor = Some(consuming_function);
@@ -4478,16 +4678,29 @@ fn capture_global_declaration_path(
     }
     path.reverse();
 
-    let mut source = ClosureSource::GlobalDeclaration;
-    let mut final_index = None;
-    for function_id in path {
+    let (root_index, root_descriptor) = tree.functions[0]
+        .global_declarations
+        .iter()
+        .find(|declaration| declaration.name == name)
+        .and_then(|declaration| declaration.closure_index)
+        .and_then(|index| {
+            tree.functions[0]
+                .closure_variables
+                .get(usize::from(index))
+                .copied()
+                .map(|descriptor| (index, descriptor))
+        })
+        .ok_or_else(|| Error::internal("global declaration closure was not seeded"))?;
+    let mut source = ClosureSource::ParentGlobal(root_index);
+    let mut final_index = Some(root_index);
+    for function_id in path.into_iter().skip(1) {
         let name_index = ensure_string_constant(&mut tree.functions[function_id], name)?;
         let descriptor = ClosureVariable {
             source,
             name: ClosureVariableName::Constant(name_index),
-            is_lexical,
-            is_const,
-            kind: ClosureVariableKind::Normal,
+            is_lexical: root_descriptor.is_lexical,
+            is_const: root_descriptor.is_const,
+            kind: root_descriptor.kind,
         };
         let index = ensure_closure_variable(&mut tree.functions[function_id], descriptor)?;
         source = ClosureSource::ParentGlobal(index);
@@ -4568,7 +4781,7 @@ fn find_or_create_own_binding(
             source_span(span),
         ));
     }
-    if function.function_name.as_deref() != Some(name) {
+    if !function.private_name_binding || function.function_name.as_deref() != Some(name) {
         return Ok(None);
     }
 
@@ -5803,6 +6016,7 @@ mod tests {
                 range: None,
             },
             None,
+            false,
             Vec::new(),
             false,
         )
@@ -6519,6 +6733,58 @@ mod tests {
     }
 
     #[test]
+    fn program_functions_keep_descriptors_but_hoist_into_the_first_name_slot() {
+        let script = compile_unlinked_script(
+            "let mixed;function mixed(){return mixed}function repeated(){return 1}function repeated(){return 2}repeated",
+        )
+        .unwrap();
+        assert_eq!(script.closure_variables().len(), 4);
+        assert!(script.closure_variables()[0].is_lexical);
+        assert_eq!(
+            script.closure_variables()[1].kind,
+            ClosureVariableKind::GlobalFunction
+        );
+        assert_eq!(
+            script.closure_variables()[2].kind,
+            ClosureVariableKind::GlobalFunction
+        );
+        assert_eq!(
+            script.closure_variables()[3].kind,
+            ClosureVariableKind::GlobalFunction
+        );
+        assert!(matches!(script.code()[0], Instruction::FClosure(0)));
+        assert!(matches!(script.code()[1], Instruction::PutVarInit(0)));
+        assert!(matches!(script.code()[2], Instruction::FClosure(1)));
+        assert!(matches!(script.code()[3], Instruction::PutVarInit(2)));
+        assert!(matches!(script.code()[4], Instruction::FClosure(2)));
+        assert!(matches!(script.code()[5], Instruction::PutVarInit(2)));
+
+        let children = script
+            .constants()
+            .iter()
+            .filter_map(|constant| constant.as_child())
+            .collect::<Vec<_>>();
+        assert_eq!(children.len(), 3);
+        assert_eq!(children[0].metadata().function_name_local, None);
+        assert_eq!(
+            children[0].closure_variables()[0].source,
+            ClosureSource::ParentGlobal(0)
+        );
+        assert!(children[0].closure_variables()[0].is_lexical);
+        for child in &children[1..] {
+            assert_eq!(child.metadata().function_name_local, None);
+        }
+    }
+
+    #[test]
+    fn program_function_then_lexical_remains_a_source_ordered_syntax_error() {
+        let error = compile_unlinked_script("function clash(){};let clash").unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax);
+        assert_eq!(error.message(), "invalid redefinition of global identifier");
+        assert!(compile_unlinked_script("let clash;function clash(){}").is_ok());
+    }
+
+    #[test]
     fn program_vars_instantiate_persist_and_preserve_existing_properties() {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
@@ -7072,6 +7338,34 @@ mod tests {
             assert_eq!(
                 context
                     .eval("var cycle=function(){return cycle};cycle()===cycle")
+                    .unwrap(),
+                Value::Bool(true)
+            );
+            let counts = runtime.heap_counts();
+            assert_eq!(counts.context_nodes, 1);
+            assert!(counts.var_ref_nodes > 0);
+            assert!(counts.function_bytecode_nodes > 0);
+        }
+
+        assert_eq!(runtime.heap_counts().context_nodes, 1);
+        runtime.run_gc().unwrap();
+        let counts = runtime.heap_counts();
+        assert_eq!(counts.context_nodes, 0);
+        assert_eq!(counts.object_nodes, 0);
+        assert_eq!(counts.shape_nodes, 0);
+        assert_eq!(counts.var_ref_nodes, 0);
+        assert_eq!(counts.function_bytecode_nodes, 0);
+        assert_eq!(counts.live, 0);
+    }
+
+    #[test]
+    fn program_function_declaration_cycle_is_collectable_after_context_drop() {
+        let runtime = Runtime::new();
+        {
+            let mut context = runtime.new_context();
+            assert_eq!(
+                context
+                    .eval("function declarationCycle(){return declarationCycle};declarationCycle()===declarationCycle")
                     .unwrap(),
                 Value::Bool(true)
             );
@@ -10857,6 +11151,7 @@ mod tests {
                 range: None,
             },
             None,
+            false,
             Vec::new(),
             false,
         )

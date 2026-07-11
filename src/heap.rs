@@ -506,6 +506,9 @@ pub enum ClosureVariableKind {
     #[default]
     Normal,
     FunctionName,
+    /// QuickJS `JS_VAR_GLOBAL_FUNCTION_DECL`: a Program function declaration
+    /// whose global-property preflight and creation rules differ from `var`.
+    GlobalFunction,
 }
 
 /// Runtime-independent closure metadata stored beside child bytecode.
@@ -1705,9 +1708,9 @@ impl Heap {
                         "function-name definition disagrees with bytecode metadata",
                     ));
                 }
-            } else if definition.kind == ClosureVariableKind::FunctionName {
+            } else if definition.kind != ClosureVariableKind::Normal {
                 return Err(HeapError::Invariant(
-                    "ordinary local definition uses the function-name binding kind",
+                    "ordinary local definition uses a non-local binding kind",
                 ));
             } else if definition.is_const && !definition.is_lexical {
                 return Err(HeapError::Invariant(
@@ -1800,6 +1803,13 @@ impl Heap {
         }
         let mut global_declaration_names = HashMap::new();
         for descriptor in bytecode.closure_variables.iter().copied() {
+            if descriptor.kind == ClosureVariableKind::GlobalFunction
+                && (descriptor.is_lexical || descriptor.is_const)
+            {
+                return Err(HeapError::Invariant(
+                    "global function declaration descriptor has lexical metadata",
+                ));
+            }
             if descriptor.is_const
                 && !descriptor.is_lexical
                 && descriptor.kind != ClosureVariableKind::FunctionName
@@ -1808,11 +1818,31 @@ impl Heap {
                     "a const closure descriptor must also be lexical",
                 ));
             }
-            if descriptor.source == ClosureSource::GlobalDeclaration
-                && descriptor.kind != ClosureVariableKind::Normal
+            if (descriptor.source == ClosureSource::GlobalDeclaration
+                && !matches!(
+                    descriptor.kind,
+                    ClosureVariableKind::Normal | ClosureVariableKind::GlobalFunction
+                ))
+                || (descriptor.source == ClosureSource::Global
+                    && descriptor.kind != ClosureVariableKind::Normal)
+                || (matches!(descriptor.source, ClosureSource::ParentGlobal(_))
+                    && !matches!(
+                        descriptor.kind,
+                        ClosureVariableKind::Normal | ClosureVariableKind::GlobalFunction
+                    ))
             {
                 return Err(HeapError::Invariant(
                     "global declaration descriptor has non-global binding metadata",
+                ));
+            }
+            if descriptor.kind == ClosureVariableKind::GlobalFunction
+                && !matches!(
+                    descriptor.source,
+                    ClosureSource::GlobalDeclaration | ClosureSource::ParentGlobal(_)
+                )
+            {
+                return Err(HeapError::Invariant(
+                    "global function binding kind escaped a declaration relay",
                 ));
             }
             let requires_name = matches!(
@@ -1824,21 +1854,32 @@ impl Heap {
             let allows_name = requires_name || descriptor.is_lexical;
             if descriptor.source == ClosureSource::GlobalDeclaration
                 && let ClosureVariableName::Atom(atom) = descriptor.name
-                && global_declaration_names
-                    .insert(atom, descriptor.is_lexical)
-                    .is_some_and(|previous_is_lexical| previous_is_lexical || descriptor.is_lexical)
             {
-                return Err(HeapError::Invariant(
-                    "duplicate lexical global declaration descriptor name",
-                ));
+                match global_declaration_names.entry(atom) {
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(descriptor.is_lexical);
+                    }
+                    std::collections::hash_map::Entry::Occupied(entry)
+                        if descriptor.is_lexical
+                            || (*entry.get()
+                                && descriptor.kind != ClosureVariableKind::GlobalFunction) =>
+                    {
+                        return Err(HeapError::Invariant(
+                            "duplicate lexical global declaration descriptor name",
+                        ));
+                    }
+                    std::collections::hash_map::Entry::Occupied(_) => {}
+                }
             }
             if matches!(
                 descriptor.source,
                 ClosureSource::GlobalDeclaration
                     | ClosureSource::Global
                     | ClosureSource::ParentGlobal(_)
-            ) && descriptor.kind != ClosureVariableKind::Normal
-            {
+            ) && !matches!(
+                descriptor.kind,
+                ClosureVariableKind::Normal | ClosureVariableKind::GlobalFunction
+            ) {
                 return Err(HeapError::Invariant(
                     "published global closure descriptor has a non-global binding kind",
                 ));
