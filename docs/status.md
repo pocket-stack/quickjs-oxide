@@ -59,7 +59,8 @@ claim full parity.
   have completed. Raw and cooked UTF-16, malformed-escape commitment,
   continuation anchoring, nested template/Div goal transitions, getter/call/
   coercion ordering, last-substitution source-marker inheritance, and the
-  deferred 65,534-slot bytecode stack limit are pinned to the release. The
+  deferred, reachability-aware 65,534-slot bytecode stack limit are pinned to
+  the release. The
   synthetic concat operations emit no new marker, matching upstream; exact
   expression-statement entry seeding prevents them from inheriting a prior
   statement's marker and preserves the expression start inside composites.
@@ -146,10 +147,13 @@ claim full parity.
   QuickJS's unparenthesized mixing boundary between `??` and `&&`/`||`.
 - Bytecode publication first validates structural operands in every instruction
   (including unreachable code), then verifies reachable control-flow joins and
-  stack depth. Detached bytecode declares its local-frame width rather than
-  inferring it from opcodes; live and dead local operands are bounded by that
-  declaration and QuickJS's 65,534-slot limit. Runtime publication additionally
-  checks constant kinds, frame
+  stack depth. Maximum stack is derived from that control-flow walk rather than
+  the parser's linear emission order, so oversized calls after a terminal
+  return remain valid dead bytecode while the same reachable path raises the
+  QuickJS `InternalError`. Detached bytecode declares its local-frame width
+  rather than inferring it from opcodes; live and dead local operands are
+  bounded by that declaration and QuickJS's 65,534-slot limit. Runtime
+  publication additionally checks constant kinds, frame
   indexes, private function-name source/name/const relay metadata, forbidden
   direct self-binding writes, Global/ParentGlobal versus ordinary closure-opcode
   categories, closure-name atom ownership, and relay consistency before changing

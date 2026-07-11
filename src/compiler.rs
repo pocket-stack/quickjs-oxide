@@ -237,7 +237,6 @@ struct FunctionIr {
     constants: Vec<IrConstant>,
     closure_variables: Vec<ClosureVariable>,
     stack_depth: usize,
-    max_stack: usize,
     strict: bool,
 }
 
@@ -277,7 +276,6 @@ impl FunctionIr {
             constants: Vec::new(),
             closure_variables: Vec::new(),
             stack_depth: 0,
-            max_stack: 0,
             strict,
         }
     }
@@ -1397,7 +1395,6 @@ impl<'source> Parser<'source> {
                 .stack_depth
                 .checked_add(1)
                 .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
-            function.max_stack = function.max_stack.max(function.stack_depth);
         }
         function.last_member_reference = None;
         Ok(promoted)
@@ -1533,7 +1530,6 @@ impl<'source> Parser<'source> {
             .stack_depth
             .checked_add(extra_depth)
             .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
-        function.max_stack = function.max_stack.max(function.stack_depth);
         Ok(Some(target))
     }
 
@@ -2045,7 +2041,6 @@ impl<'source> Parser<'source> {
             .stack_depth
             .checked_add(pushed)
             .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
-        function.max_stack = function.max_stack.max(function.stack_depth);
         let index = function.ops.len();
         function.ops.push(SpannedIrOp {
             op: operation,
@@ -2680,7 +2675,6 @@ fn lower_detached_script(tree: FunctionTree) -> Result<BytecodeFunction, Error> 
             "detached compiler cannot publish global-environment closure variables",
         ));
     }
-    let max_stack = lower_max_stack(function.max_stack)?;
     let code = lower_ops(function.ops)?.code;
     let constants = function
         .constants
@@ -2692,6 +2686,7 @@ fn lower_detached_script(tree: FunctionTree) -> Result<BytecodeFunction, Error> 
             )),
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let max_stack = verify_lowered_max_stack(&code, constants.len())?;
     let bytecode = BytecodeFunction {
         name: Some("<eval>".to_owned()),
         code,
@@ -2721,10 +2716,6 @@ fn lower_unlinked_tree(
         let function = functions[function_id]
             .take()
             .ok_or_else(|| Error::internal("function IR was lowered more than once"))?;
-        // Preserve the source-IR overflow classification used for catchable
-        // QuickJS InternalError before encoding u16 template-call operands or
-        // running the expanded bytecode verifier.
-        lower_max_stack(function.max_stack)?;
         let lowered_ops = lower_ops(function.ops)?;
         let code = lowered_ops.code;
         let constant_count = function.constants.len();
@@ -2740,14 +2731,7 @@ fn lower_unlinked_tree(
                     .ok_or_else(|| Error::internal("child function was not lowered exactly once")),
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let verified =
-            verify_parts(&code, constant_count, MAX_BYTECODE_STACK as u16).map_err(|error| {
-                if error.message() == "declared maximum stack is smaller than required" {
-                    Error::new(ErrorKind::JsInternal, "stack overflow")
-                } else {
-                    error
-                }
-            })?;
+        let max_stack = verify_lowered_max_stack(&code, constant_count)?;
         let metadata = FunctionMetadata {
             argument_count: u16::try_from(function.parameters.len())
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "too many arguments"))?,
@@ -2758,7 +2742,7 @@ fn lower_unlinked_tree(
             function_name_local: function.function_name_local,
             closure_count: u16::try_from(function.closure_variables.len())
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"))?,
-            max_stack: verified.max_stack,
+            max_stack,
             strict: function.strict,
             function_kind: BytecodeFunctionKind::Normal,
             has_prototype: matches!(function.kind, FunctionKind::Ordinary),
@@ -2809,11 +2793,20 @@ fn lower_unlinked_tree(
         .ok_or_else(|| Error::internal("root script was not lowered"))
 }
 
-fn lower_max_stack(max_stack: usize) -> Result<u16, Error> {
-    if max_stack > MAX_BYTECODE_STACK {
-        return Err(Error::new(ErrorKind::JsInternal, "stack overflow"));
-    }
-    u16::try_from(max_stack).map_err(|_| Error::new(ErrorKind::JsInternal, "stack overflow"))
+fn verify_lowered_max_stack(code: &[Instruction], constant_count: usize) -> Result<u16, Error> {
+    verify_parts(code, constant_count, MAX_BYTECODE_STACK as u16)
+        .map(|verified| verified.max_stack)
+        .map_err(|error| {
+            if matches!(
+                error.message(),
+                "declared maximum stack is smaller than required"
+                    | "bytecode stack exceeds u16::MAX"
+            ) {
+                Error::new(ErrorKind::JsInternal, "stack overflow")
+            } else {
+                error
+            }
+        })
 }
 
 struct LoweredOps {
@@ -2868,10 +2861,12 @@ fn lower_ops(operations: Vec<SpannedIrOp>) -> Result<LoweredOps, Error> {
                 pc_sites.push(pc_site);
             }
             IrOp::TemplateCall(argument_count) => {
-                let argument_count = u16::try_from(argument_count).map_err(|_| {
-                    Error::internal("template call escaped bytecode stack validation")
-                })?;
-                code.push(Instruction::CallMethod(argument_count));
+                // QuickJS `emit_u16` writes the low operand bits even when an
+                // unreachable template has more than 65,535 arguments. The
+                // reachability verifier still observes every push on a live
+                // path and rejects its stack before this truncated call can
+                // execute.
+                code.push(Instruction::CallMethod(argument_count as u16));
                 pc_sites.push(pc_site);
             }
             IrOp::PushConstant(index) => {
@@ -6029,7 +6024,7 @@ mod tests {
             Value::String(JsString::from_static("stack overflow"))
         );
 
-        let mut too_many = source;
+        let mut too_many = source.clone();
         let closing_parenthesis = too_many
             .rfind(')')
             .expect("generated call expression has a closing parenthesis");
@@ -6037,6 +6032,9 @@ mod tests {
         let error = compile_unlinked_script(&too_many).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Syntax);
         assert_eq!(error.message(), "Too many call arguments");
+
+        let unreachable = format!("(function(){{ return 1; {source}; }})");
+        compile_unlinked_script(&unreachable).unwrap();
     }
 
     #[test]
@@ -6069,6 +6067,24 @@ mod tests {
         let error = compile_unlinked_script(&later_parser_error).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Syntax);
         assert_eq!(error.message(), "expecting ';'");
+
+        // QuickJS computes stack depth over reachable bytecode PCs. The same
+        // oversized call after a terminal return is encoded but ignored by
+        // the control-flow walk.
+        let unreachable = format!("(function(){{ return 1; {source}; }})");
+        compile_unlinked_script(&unreachable).unwrap();
+
+        // Once argc no longer fits u16, QuickJS encodes its low bits. A live
+        // path has already crossed the stack cap before that call, while dead
+        // bytecode remains valid and must not be diagnosed from the truncated
+        // operand's residual stack effect.
+        let wrapped_substitutions = "${0}".repeat(usize::from(u16::MAX) + 1);
+        let wrapped = format!("`{wrapped_substitutions}`");
+        let error = compile_unlinked_script(&wrapped).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::JsInternal);
+        assert_eq!(error.message(), "stack overflow");
+        let unreachable = format!("(function(){{ return 1; {wrapped}; }})");
+        compile_unlinked_script(&unreachable).unwrap();
     }
 
     #[test]

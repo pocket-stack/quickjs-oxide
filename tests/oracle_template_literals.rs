@@ -248,6 +248,48 @@ fn template_concat_getter_fault_sites_match_pinned_quickjs() {
 }
 
 #[test]
+fn template_stack_limit_uses_reachable_bytecode_like_pinned_quickjs() {
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!("SKIP template stack differential: set QJS_ORACLE to upstream qjs");
+        return;
+    };
+
+    for (count, suffix) in [(65_533, "limit"), (65_536, "wrapped-argc")] {
+        let substitutions = "${0}".repeat(count);
+        let reachable = format!("`{substitutions}`");
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        assert_eq!(context.compile(&reachable), Err(RuntimeError::Exception));
+        assert_eq!(
+            take_rust_error_name_message(&runtime, &mut context),
+            "InternalError|stack overflow"
+        );
+        let upstream = run_oracle_file(&oracle, &reachable, &format!("{suffix}-reachable"));
+        assert!(
+            !upstream.status.success(),
+            "QuickJS accepted stack overflow at {count} substitutions"
+        );
+        assert!(
+            String::from_utf8(upstream.stderr)
+                .unwrap()
+                .starts_with("InternalError: stack overflow"),
+            "QuickJS stack-overflow category drifted at {count} substitutions"
+        );
+
+        let unreachable = format!("(function(){{return 1;{reachable};}})");
+        context
+            .compile(&unreachable)
+            .expect("Rust rejected unreachable oversized template");
+        let upstream = run_oracle_file(&oracle, &unreachable, &format!("{suffix}-unreachable"));
+        assert!(
+            upstream.status.success(),
+            "QuickJS rejected unreachable oversized template: {}",
+            String::from_utf8_lossy(&upstream.stderr)
+        );
+    }
+}
+
+#[test]
 fn tagged_templates_remain_an_explicit_boundary() {
     for source in [
         "tag`x`",
@@ -449,6 +491,38 @@ fn take_rust_error(runtime: &Runtime, context: &mut Context) -> String {
         name.to_utf8_lossy(),
         message.to_utf8_lossy()
     )
+}
+
+fn take_rust_error_name_message(runtime: &Runtime, context: &mut Context) -> String {
+    let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
+        panic!("Rust compiler did not materialize an Error object");
+    };
+    let read = |context: &mut Context, name: &str| {
+        let key = runtime.intern_property_key(name).unwrap();
+        context.get_property(&error, &key).unwrap()
+    };
+    let Value::String(name) = read(context, "name") else {
+        panic!("Rust Error.name was not a string");
+    };
+    let Value::String(message) = read(context, "message") else {
+        panic!("Rust Error.message was not a string");
+    };
+    format!("{}|{}", name.to_utf8_lossy(), message.to_utf8_lossy())
+}
+
+fn run_oracle_file(oracle: &OsStr, source: &str, suffix: &str) -> std::process::Output {
+    let path = std::env::temp_dir().join(format!(
+        "quickjs-oxide-template-stack-{}-{suffix}.js",
+        std::process::id()
+    ));
+    std::fs::write(&path, source).expect("write temporary QuickJS source");
+    let output = Command::new(oracle)
+        .args(["--stack-size", "32M"])
+        .arg(&path)
+        .output()
+        .expect("run QuickJS stack oracle");
+    std::fs::remove_file(path).expect("remove temporary QuickJS source");
+    output
 }
 
 fn oracle_error_observation(oracle: &OsStr, source: &str) -> String {

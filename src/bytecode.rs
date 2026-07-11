@@ -348,6 +348,15 @@ pub(crate) fn verify_parts(
             .checked_add(pushed)
             .ok_or_else(|| Error::internal("bytecode stack depth overflow"))?;
         maximum = maximum.max(next_depth);
+        // QuickJS `compute_stack_size` stops as soon as a reachable PC crosses
+        // JS_STACK_SIZE_MAX. This must win over diagnostics from later
+        // instructions, including the intentionally truncated call operand in
+        // a template with more than 65,535 arguments.
+        if maximum > usize::from(declared_max_stack) {
+            return Err(Error::internal(
+                "declared maximum stack is smaller than required",
+            ));
+        }
 
         match instruction {
             Instruction::Return | Instruction::Throw => {
@@ -379,11 +388,6 @@ pub(crate) fn verify_parts(
     }
     let maximum =
         u16::try_from(maximum).map_err(|_| Error::internal("bytecode stack exceeds u16::MAX"))?;
-    if maximum > declared_max_stack {
-        return Err(Error::internal(
-            "declared maximum stack is smaller than required",
-        ));
-    }
     Ok(VerifiedBytecode { max_stack: maximum })
 }
 
