@@ -615,6 +615,9 @@ impl VarRefData {
 pub enum PrimitiveObjectData {
     Number(f64),
     Boolean(bool),
+    /// One owned atom reference for a genuine local, global, or well-known
+    /// Symbol. `object_atoms` returns it during wrapper finalization.
+    Symbol(Atom),
     BigInt(JsBigInt),
 }
 
@@ -624,6 +627,7 @@ impl PrimitiveObjectData {
         match self {
             Self::Number(_) => PrimitiveKind::Number,
             Self::Boolean(_) => PrimitiveKind::Boolean,
+            Self::Symbol(_) => PrimitiveKind::Symbol,
             Self::BigInt(_) => PrimitiveKind::BigInt,
         }
     }
@@ -692,6 +696,8 @@ pub enum NativeFunctionId {
     PrimitiveConstructor(PrimitiveKind),
     PrimitivePrototypeToString(PrimitiveKind),
     PrimitivePrototypeValueOf(PrimitiveKind),
+    SymbolRegistry(SymbolRegistryKind),
+    SymbolPrototypeDescription,
     BigIntAsN(BigIntAsNKind),
     GlobalNumberParse(NumberParseKind),
     GlobalNumberPredicate(GlobalNumberPredicateKind),
@@ -742,6 +748,13 @@ pub enum PrimitiveKind {
 pub enum BigIntAsNKind {
     AsUintN,
     AsIntN,
+}
+
+/// Static selector shared by `%Symbol%.for` and `%Symbol%.keyFor`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SymbolRegistryKind {
+    For,
+    KeyFor,
 }
 
 impl PrimitiveKind {
@@ -871,6 +884,7 @@ impl NativeFunctionId {
             | Self::ObjectPrototypeValueOf
             | Self::PrimitivePrototypeToString(_)
             | Self::PrimitivePrototypeValueOf(_)
+            | Self::SymbolRegistry(_)
             | Self::GlobalNumberParse(_)
             | Self::GlobalNumberPredicate(_)
             | Self::NumberPredicate(_)
@@ -899,6 +913,9 @@ impl NativeFunctionId {
                 }
             }
             Self::FunctionPrototypeFileName => NativeFunctionDescriptor {
+                cproto: NativeCProto::Getter,
+            },
+            Self::SymbolPrototypeDescription => NativeFunctionDescriptor {
                 cproto: NativeCProto::Getter,
             },
             Self::FunctionPrototypePosition(_) => NativeFunctionDescriptor {
@@ -2896,7 +2913,12 @@ fn object_slot_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
 
 fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
     let payload = match &object.payload {
-        ObjectPayload::Primitive(_) => Vec::new(),
+        ObjectPayload::Primitive(PrimitiveObjectData::Symbol(atom)) => vec![*atom],
+        ObjectPayload::Primitive(
+            PrimitiveObjectData::Number(_)
+            | PrimitiveObjectData::Boolean(_)
+            | PrimitiveObjectData::BigInt(_),
+        ) => Vec::new(),
         ObjectPayload::BoundFunction {
             this_value,
             arguments,
@@ -3061,6 +3083,11 @@ mod tests {
             PrimitiveObjectData::Boolean(false).kind(),
             PrimitiveKind::Boolean
         );
+        let symbol_atom = Atom::from_immediate_integer(47).unwrap();
+        assert_eq!(
+            PrimitiveObjectData::Symbol(symbol_atom).kind(),
+            PrimitiveKind::Symbol
+        );
         assert_eq!(
             PrimitiveObjectData::BigInt(JsBigInt::one()).kind(),
             PrimitiveKind::BigInt
@@ -3099,6 +3126,21 @@ mod tests {
         assert_eq!(object_edges(number_data), vec![RawId::Shape(shape)]);
         assert_eq!(object_atoms(number_data).count(), 0);
 
+        let symbol = heap
+            .allocate_object(ObjectData::primitive(
+                shape,
+                Vec::new(),
+                PrimitiveObjectData::Symbol(symbol_atom),
+            ))
+            .unwrap();
+        let symbol_data = heap.object(symbol).unwrap();
+        assert!(matches!(
+            symbol_data.payload,
+            ObjectPayload::Primitive(PrimitiveObjectData::Symbol(atom)) if atom == symbol_atom
+        ));
+        assert_eq!(object_edges(symbol_data), vec![RawId::Shape(shape)]);
+        assert_eq!(object_atoms(symbol_data).collect::<Vec<_>>(), [symbol_atom]);
+
         let bigint = heap
             .allocate_object(ObjectData::primitive(
                 shape,
@@ -3116,6 +3158,8 @@ mod tests {
         assert_eq!(object_atoms(bigint_data).count(), 0);
 
         heap.release_object(bigint).unwrap();
+        let symbol_cleanup = heap.release_object(symbol).unwrap();
+        assert_eq!(symbol_cleanup.atoms, [symbol_atom]);
         heap.release_object(number).unwrap();
         heap.release_object(boolean).unwrap();
         heap.release_shape(shape).unwrap();
@@ -3139,6 +3183,8 @@ mod tests {
             NativeFunctionId::NumberPrototypeFormat(NumberFormatKind::ToFixed),
             NativeFunctionId::NumberPrototypeFormat(NumberFormatKind::ToPrecision),
             NativeFunctionId::NumberPrototypeFormat(NumberFormatKind::ToLocaleString),
+            NativeFunctionId::SymbolRegistry(SymbolRegistryKind::For),
+            NativeFunctionId::SymbolRegistry(SymbolRegistryKind::KeyFor),
         ];
 
         for target in targets {
@@ -3156,6 +3202,12 @@ mod tests {
             assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);
             assert!(!target.descriptor().cproto.default_is_constructor());
         }
+        assert_eq!(
+            NativeFunctionId::SymbolPrototypeDescription
+                .descriptor()
+                .cproto,
+            NativeCProto::Getter
+        );
     }
 
     fn one_slot_shape(heap: &mut Heap) -> ShapeId {

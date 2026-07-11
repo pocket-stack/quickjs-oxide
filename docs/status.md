@@ -42,11 +42,11 @@ claim full parity.
   key expression but reject a null/undefined base before observable
   `ToPropertyKey(String)` conversion; getters and key conversion preserve
   arbitrary thrown completions and the original receiver. String primitives
-  implement exact UTF-16 indexed own properties and `length`. Number, Boolean
-  and BigInt primitives additionally traverse the current bytecode realm's
-  implemented matching prototype, preserving the raw primitive receiver for
-  strict inherited getters and method calls. Non-index String and Symbol
-  inherited lookup remain explicitly rejected until each distinct primitive
+  implement exact UTF-16 indexed own properties and `length`. Number, Boolean,
+  Symbol and BigInt primitives additionally traverse the current bytecode
+  realm's implemented matching prototype, preserving the raw primitive
+  receiver for strict inherited getters and method calls. Non-index String
+  inherited lookup remains explicitly rejected until its distinct primitive
   class slice exists, rather than silently falling through to the wrong
   prototype.
 - Simple member assignment mirrors QuickJS's lvalue rewrite rather than
@@ -56,9 +56,9 @@ claim full parity.
   `ToPropertyKey` until after the RHS, including for null/undefined bases.
   Ordinary setters receive the original base, discard normal return values and
   preserve throws; strict versus sloppy rejection distinguishes read-only,
-  missing-setter and non-extensible cases. Number, Boolean and BigInt primitive
-  writes first walk their matching realm prototype, invoke inherited setters
-  with the raw receiver, and preserve QuickJS's
+  missing-setter and non-extensible cases. Number, Boolean, Symbol and BigInt
+  primitive writes first walk their matching realm prototype, invoke inherited
+  setters with the raw receiver, and preserve QuickJS's
   read-only/no-setter/not-an-object distinction before the strict/sloppy
   boundary. Member assignment does not apply identifier NamedEvaluation.
   Property `delete` rewrites both fixed and
@@ -204,8 +204,8 @@ claim full parity.
   allocation uses its realm prototype, and `%Object.prototype%` carries
   QuickJS's immutable-prototype bit.
 - The realm root set reserves five typed primitive `class_proto` slots; Number,
-  Boolean and BigInt are enabled, while absent String and Symbol slots remain
-  checked implementation gaps. `%Number.prototype%` is a Number-class wrapper
+  Boolean, Symbol and BigInt are enabled, while the absent String slot remains
+  a checked implementation gap. `%Number.prototype%` is a Number-class wrapper
   containing `+0` and owns the pinned ordered seven-key method surface. Its
   constructor owns the exact ordered 17-key surface: parser aliases captured
   by identity, non-coercing predicates, frozen constants and the final
@@ -213,7 +213,18 @@ claim full parity.
   conversion; construction performs conversion before observing
   `newTarget.prototype` and falling back to the newTarget function realm.
   `%Boolean.prototype%` remains the boxed-`false` three-key graph with its exact
-  `ToBoolean` call/construct behavior. `%BigInt%` is the complete pinned
+  `ToBoolean` call/construct behavior. `%Symbol%` is the complete pinned
+  intrinsic slice: ordinary calls create a fresh symbol from an optional UTF-16
+  description while construction fails before argument conversion. `for` and
+  `keyFor` share a runtime-wide, cross-realm registry; the 13 frozen well-known
+  constructor properties expose runtime-unique identities that remain outside
+  that registry. Its ordinary prototype owns `toString`, `valueOf`, a getter
+  that distinguishes absent and empty `description`, `constructor`,
+  `@@toPrimitive`, and `@@toStringTag`. Genuine wrappers own a retained symbol
+  atom and brand-check independently of prototype identity; wrapper/Object
+  routes, primitive get/set, defining-realm errors, cross-realm identities and
+  teardown participate in reference counting and trial-deletion GC. `%BigInt%`
+  is the complete pinned
   intrinsic slice: ordinary calls perform its distinct constructor conversion,
   construction fails before argument conversion, and `asUintN`/`asIntN`
   preserve `ToIndex`/`ToBigInt` order, signed-limb truncation, allocation guards
@@ -236,13 +247,14 @@ claim full parity.
   QuickJS 2026-06-04 descriptors and direct-delete results. The implemented
   global string-key surface preserves upstream relative own-key order as
   `parseInt`, `parseFloat`, `isNaN`, `isFinite`, the six URI/escape functions,
-  the three constants, `Number`, `Boolean`, `globalThis`, then `BigInt`. This is
-  not a claim that the wider global builtin table is complete.
+  the three constants, `Number`, `Boolean`, `Symbol`, `globalThis`, then
+  `BigInt`. This is not a claim that the wider global builtin table is
+  complete.
 - Every global object owns QuickJS's `[Symbol.toStringTag] = "global"` metadata
-  as a non-writable, non-enumerable, configurable data property. The runtime
-  uses its internal well-known symbol identity because the global `Symbol`
-  constructor is not implemented yet. Symbol-category own-key ordering keeps
-  the property after every string key, and the existing
+  as a non-writable, non-enumerable, configurable data property. The runtime's
+  well-known identity is also exposed as the frozen public
+  `Symbol.toStringTag` property. Symbol-category own-key ordering keeps the
+  global tag after every string key, and the existing
   `%Object.prototype.toString%` path observes its value, deletion, non-string
   replacement and redefinition through the host API.
 - Every realm exposes `globalThis` as a writable, non-enumerable, configurable
@@ -250,9 +262,10 @@ claim full parity.
   global `VarRef` substrate as unresolved identifiers, so assignment, deletion,
   accessor conversion, reconnection, defining-realm lookup and the self-cycle's
   trial-deletion GC behavior remain coherent. Upstream places this property
-  after its still-unimplemented String/Math/Reflect/Symbol/generator slice;
-  the current bootstrap keeps it after Boolean and before BigInt, and it must
-  move later as those intervening intrinsics land.
+  after String/Math/Reflect, Symbol and the generator intrinsics; the current
+  bootstrap preserves the implemented Symbol-before-`globalThis` and
+  `globalThis`-before-BigInt order, and the binding must move later as the
+  remaining intervening intrinsics land.
 - Unresolved identifiers no longer use a string-key global opcode. Resolution
   installs one root `Global` closure descriptor and `ParentGlobal` relays on
   every nested function path; publication interns each exact name and function
@@ -401,24 +414,25 @@ claim full parity.
   `toString`/`valueOf` Get/Call ordering. It preserves user-thrown values and
   creates framework TypeErrors in the conversion realm. Number, Boolean and
   BigInt wrappers feed ordinary default-hint coercion through their implemented
-  `valueOf` and `toString`. `Object.prototype.valueOf` boxes any of these
-  primitives in the native method's defining realm, `toLocaleString` performs
-  the inherited Get/Call with the original primitive receiver, and `toString`
-  boxes in that realm before observing inherited `@@toStringTag` getters.
-  Number and Boolean then use their matching class tags; BigInt obtains its tag
-  from the ordinary prototype and falls back to `[object Object]` when that tag
-  is deleted or non-string. Separate calls allocate distinct wrappers. Core
-  tags also include Object, Function and Error plus primitive null/undefined
-  tags. The global `Object` constructor and String/Symbol boxing through these
-  methods remain unimplemented.
+  `valueOf` and `toString`, while Symbol wrappers use the inherited
+  `@@toPrimitive`. `Object.prototype.valueOf` boxes any of these primitives in
+  the native method's defining realm, `toLocaleString` performs the inherited
+  Get/Call with the original primitive receiver, and `toString` boxes in that
+  realm before observing inherited `@@toStringTag` getters. Number and Boolean
+  then use their matching class tags; Symbol and BigInt obtain their tags from
+  ordinary prototypes and fall back to `[object Object]` when those tags are
+  deleted or non-string. Separate calls allocate distinct wrappers. Core tags
+  also include Object, Function and Error plus primitive null/undefined tags.
+  The global `Object` constructor and String boxing through these methods
+  remain unimplemented.
 - Sloppy ordinary bytecode functions normalize primitive `this` lazily and
-  cache the normalized value in the frame. Number, Boolean and BigInt calls
-  therefore allocate at most one wrapper per invocation, repeated `this` reads
-  preserve identity, escaped wrappers retain the callee realm's matching
+  cache the normalized value in the frame. Number, Boolean, Symbol and BigInt
+  calls therefore allocate at most one wrapper per invocation, repeated `this`
+  reads preserve identity, escaped wrappers retain the callee realm's matching
   prototype, and strict functions continue to observe the raw primitive. The
-  same cached path is used when a sloppy inherited Number/Boolean/BigInt getter
-  or setter receives a primitive receiver; String and Symbol wrapper classes
-  remain explicit gaps.
+  same cached path is used when a sloppy inherited Number/Boolean/Symbol/BigInt
+  getter or setter receives a primitive receiver; the String wrapper class
+  remains an explicit gap.
 - The Error intrinsic graph now includes `Error` plus the seven non-Aggregate
   native Error constructors, their constructor/prototype/global relationships,
   lazy function-list properties, call-versus-construct active-function rule,
@@ -551,22 +565,23 @@ current bytecode slice also remain pending.
 Accessors are executable through the Rust Context property API, and
 strict/sloppy global identifier assignment is implemented. Source property
 reads and receiver-preserving method calls are implemented for object/function
-bases, exact String index/length reads, and the complete Number, Boolean and
-BigInt primitive prototype slices; simple member assignment and property delete
-cover ordinary objects and the current primitive surface. Prefix/postfix update
-expressions
+bases, exact String index/length reads, and the complete Number, Boolean,
+Symbol and BigInt primitive prototype slices; simple member assignment and
+property delete cover ordinary objects and the current primitive surface.
+Prefix/postfix update expressions
 (including QuickJS's valid `++x ** 2` form) are implemented for the current
 identifier and ordinary fixed/computed member References. Sloppy
 direct-identifier delete is implemented
 for the current static scope tree and defining-realm global object. Dynamic
 object-environment lookup/deletion introduced by `with` or direct `eval`, the
-String/Symbol constructor, prototype, wrapper and inherited setter
-graphs, Proxy/exotic internal methods, and the full
+String constructor, prototype, wrapper and inherited setter graph,
+Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. The global `Object`
-constructor, AggregateError iterable-to-Array, String/Symbol primitive
-wrapper objects for direct Object-prototype method calls, remaining Object
-prototype methods and uncatchable termination state are also pending. Arrays, object
-literals and the rest of the builtin table build on those layers.
+constructor, AggregateError iterable-to-Array, String primitive wrapper objects
+for direct Object-prototype method calls, remaining Object prototype methods
+and uncatchable termination state are also pending. Arrays, iterators,
+remaining object-literal forms and the rest of the builtin table build on
+those layers.
 
 The remaining parity surface also includes the full grammar/opcode set,
 Unicode 17 tables, RegExp bytecode engine, modules, jobs/Promises/async,
@@ -579,6 +594,8 @@ and C embedding APIs.
 ```sh
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_boolean_intrinsic -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_symbol_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_parse_kernel -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -601,8 +618,9 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-parity-slice.sh
 ```
 
-The first ten commands run the dedicated Boolean, global BaseObjects, complete
-Number-intrinsic and BigInt-intrinsic differentials. The full gate command
-checksum-verifies and builds the official test-only oracle, runs formatting,
-unit/integration/oracle tests, Clippy, and the Rust-only product gate. The
-oracle is never part of the product dependency graph or runtime.
+The first eleven commands run the dedicated Boolean, Symbol, global
+BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials. The
+full gate command checksum-verifies and builds the official test-only oracle,
+runs formatting, unit/integration/oracle tests, Clippy, and the Rust-only
+product gate. The oracle is never part of the product dependency graph or
+runtime.

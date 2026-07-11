@@ -11,7 +11,7 @@ use std::fmt;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::atom::{Atom, AtomError, AtomKind, AtomTable};
+use crate::atom::{Atom, AtomError, AtomKind, AtomSpelling, AtomTable};
 use crate::bytecode::verify_parts;
 use crate::compiler::{
     CompileOptions, DEFAULT_EVAL_FILENAME, compile_unlinked_script_with_filename,
@@ -29,7 +29,7 @@ use crate::heap::{
     GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError,
     NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
     ObjectData, ObjectId, ObjectKind, ObjectPayload, PrimitiveKind, PrimitiveObjectData,
-    PropertySlot, RawValue, ShapeId, VarRefData, VarRefId,
+    PropertySlot, RawValue, ShapeId, SymbolRegistryKind, VarRefData, VarRefId,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -517,11 +517,16 @@ impl RuntimeVmHost {
                     .map_err(runtime_error_to_vm_error)?;
                 return self.finish_property_get_action(action);
             }
-            Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::BigInt(_) => {
+            Value::Bool(_)
+            | Value::Int(_)
+            | Value::Float(_)
+            | Value::BigInt(_)
+            | Value::Symbol(_) => {
                 let kind = match &base {
                     Value::Bool(_) => PrimitiveKind::Boolean,
                     Value::Int(_) | Value::Float(_) => PrimitiveKind::Number,
                     Value::BigInt(_) => PrimitiveKind::BigInt,
+                    Value::Symbol(_) => PrimitiveKind::Symbol,
                     _ => unreachable!(),
                 };
                 let prototype = self
@@ -562,7 +567,6 @@ impl RuntimeVmHost {
                     return Ok(Completion::Return(length));
                 }
             }
-            Value::Symbol(_) => {}
         }
 
         Err(Error::internal(
@@ -582,11 +586,16 @@ impl RuntimeVmHost {
                 .runtime
                 .prepare_set_property_with_receiver(object, key, value, base.clone())
                 .map_err(runtime_error_to_vm_error)?,
-            Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::BigInt(_) => {
+            Value::Bool(_)
+            | Value::Int(_)
+            | Value::Float(_)
+            | Value::BigInt(_)
+            | Value::Symbol(_) => {
                 let kind = match &base {
                     Value::Bool(_) => PrimitiveKind::Boolean,
                     Value::Int(_) | Value::Float(_) => PrimitiveKind::Number,
                     Value::BigInt(_) => PrimitiveKind::BigInt,
+                    Value::Symbol(_) => PrimitiveKind::Symbol,
                     _ => unreachable!(),
                 };
                 let prototype = self
@@ -625,12 +634,6 @@ impl RuntimeVmHost {
                     .map_err(|error| Error::internal(error.to_string()))?;
                 if key == &length {
                     return Err(Error::new(ErrorKind::Type, "'length' is read-only"));
-                }
-                return Err(Error::new(ErrorKind::Type, "not an object"));
-            }
-            Value::Symbol(_) => {
-                if !strict {
-                    return Ok(Completion::Return(Value::Undefined));
                 }
                 return Err(Error::new(ErrorKind::Type, "not an object"));
             }
@@ -755,11 +758,13 @@ impl VmHost for RuntimeVmHost {
                     .primitive_prototype_for_realm(self.current_realm, PrimitiveKind::BigInt)
                     .map_err(runtime_error_to_vm_error)?,
             ),
-            Value::Undefined
-            | Value::Null
-            | Value::String(_)
-            | Value::Symbol(_)
-            | Value::Object(_) => {
+            Value::Symbol(_) => (
+                PrimitiveKind::Symbol,
+                self.runtime
+                    .primitive_prototype_for_realm(self.current_realm, PrimitiveKind::Symbol)
+                    .map_err(runtime_error_to_vm_error)?,
+            ),
+            Value::Undefined | Value::Null | Value::String(_) | Value::Object(_) => {
                 return Err(Error::internal(
                     "primitive wrapper class is not implemented yet",
                 ));
@@ -1562,6 +1567,11 @@ impl Runtime {
                 Value::Bool(false),
             )
             .expect("initial Boolean.prototype allocation must succeed");
+        // Like BigInt.prototype, QuickJS's Symbol.prototype is an ordinary
+        // object and deliberately has no [[SymbolData]] payload.
+        let symbol_prototype = self
+            .new_object(Some(&object_prototype))
+            .expect("initial Symbol.prototype allocation must succeed");
         // Unlike Number.prototype and Boolean.prototype, QuickJS creates
         // BigInt.prototype as an ordinary object without [[BigIntData]].
         let bigint_prototype = self
@@ -1597,6 +1607,7 @@ impl Runtime {
                     )
                     .with_primitive_prototype(PrimitiveKind::Number, number_prototype.object_id())
                     .with_primitive_prototype(PrimitiveKind::Boolean, boolean_prototype.object_id())
+                    .with_primitive_prototype(PrimitiveKind::Symbol, symbol_prototype.object_id())
                     .with_primitive_prototype(PrimitiveKind::BigInt, bigint_prototype.object_id())
                     .with_error_prototypes(error_prototype.object_id(), native_error_ids),
                 )
@@ -1656,10 +1667,17 @@ impl Runtime {
             &global_object,
         )
         .expect("Boolean intrinsic initialization must succeed");
+        self.initialize_symbol_intrinsic(
+            realm,
+            &function_prototype,
+            &symbol_prototype,
+            &global_object,
+        )
+        .expect("Symbol intrinsic initialization must succeed");
         // Upstream installs `globalThis` after String/Math/Reflect/Symbol and
-        // generator setup, then installs BigInt. The intervening intrinsics
-        // are absent here, but this call boundary preserves the implemented
-        // `Boolean, globalThis, BigInt` relative own-key order.
+        // generator setup, then installs BigInt. The remaining intervening
+        // intrinsics are absent here, but this boundary preserves the
+        // implemented `Boolean, Symbol, globalThis, BigInt` relative order.
         self.initialize_global_this(&global_object)
             .expect("globalThis initialization must succeed");
         self.initialize_bigint_intrinsic(
@@ -1673,6 +1691,7 @@ impl Runtime {
         drop(global_object);
         drop(uninitialized_vars);
         drop(bigint_prototype);
+        drop(symbol_prototype);
         drop(boolean_prototype);
         drop(number_prototype);
         drop(native_error_prototypes);
@@ -1783,6 +1802,32 @@ impl Runtime {
         }
     }
 
+    /// Return a Symbol's exact optional UTF-16 description.
+    ///
+    /// `None` is observably distinct from an explicitly empty description via
+    /// `%Symbol.prototype%.description`, even though both stringify as
+    /// `Symbol()`.
+    pub fn symbol_description(&self, symbol: &SymbolRef) -> Result<Option<JsString>, RuntimeError> {
+        let _operation = self.operation();
+        if !symbol.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("symbol"));
+        }
+        let state = self.0.state.borrow();
+        let info = state.atoms.resolve(symbol.atom())?;
+        if !matches!(info.kind, AtomKind::Symbol | AtomKind::GlobalSymbol) {
+            return Err(RuntimeError::Invariant(
+                "SymbolRef did not refer to a public symbol atom",
+            ));
+        }
+        match info.spelling {
+            AtomSpelling::Text(text) => Ok(Some(text.clone())),
+            AtomSpelling::NoDescription => Ok(None),
+            AtomSpelling::Integer(_) => Err(RuntimeError::Invariant(
+                "symbol atom had an immediate-integer spelling",
+            )),
+        }
+    }
+
     /// Return the exact UTF-16 spelling or symbol description of a key.
     pub fn property_key_to_js_string(&self, key: &PropertyKey) -> Result<JsString, RuntimeError> {
         let _operation = self.operation();
@@ -1829,13 +1874,26 @@ impl Runtime {
         if !prototype.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("primitive prototype"));
         }
-        let data = match (kind, value) {
+        self.validate_value_domain(&value, "primitive wrapper payload")?;
+        // Match by reference so a unique local Symbol root remains alive
+        // until the wrapper has retained its own atom edge.
+        let (data, payload_atom) = match (kind, &value) {
             (PrimitiveKind::Number, Value::Int(value)) => {
-                PrimitiveObjectData::Number(f64::from(value))
+                (PrimitiveObjectData::Number(f64::from(*value)), None)
             }
-            (PrimitiveKind::Number, Value::Float(value)) => PrimitiveObjectData::Number(value),
-            (PrimitiveKind::Boolean, Value::Bool(value)) => PrimitiveObjectData::Boolean(value),
-            (PrimitiveKind::BigInt, Value::BigInt(value)) => PrimitiveObjectData::BigInt(value),
+            (PrimitiveKind::Number, Value::Float(value)) => {
+                (PrimitiveObjectData::Number(*value), None)
+            }
+            (PrimitiveKind::Boolean, Value::Bool(value)) => {
+                (PrimitiveObjectData::Boolean(*value), None)
+            }
+            (PrimitiveKind::Symbol, Value::Symbol(value)) => {
+                let atom = value.atom();
+                (PrimitiveObjectData::Symbol(atom), Some(atom))
+            }
+            (PrimitiveKind::BigInt, Value::BigInt(value)) => {
+                (PrimitiveObjectData::BigInt(value.clone()), None)
+            }
             _ => {
                 return Err(RuntimeError::Invariant(
                     "primitive wrapper class or payload is not implemented yet",
@@ -1844,6 +1902,13 @@ impl Runtime {
         };
         let mut state = self.0.state.borrow_mut();
         let shape = state.get_or_create_shape(Some(prototype.object_id()), &[])?;
+        if let Some(atom) = payload_atom
+            && let Err(error) = state.atoms.retain(atom)
+        {
+            let cleanup = state.heap.release_shape(shape)?;
+            state.apply_cleanup(cleanup)?;
+            return Err(error.into());
+        }
         let object =
             match state
                 .heap
@@ -1851,6 +1916,9 @@ impl Runtime {
             {
                 Ok(object) => object,
                 Err(error) => {
+                    if let Some(atom) = payload_atom {
+                        state.atoms.release(atom)?;
+                    }
                     let cleanup = state.heap.release_shape(shape)?;
                     state.apply_cleanup(cleanup)?;
                     return Err(error.into());
@@ -2339,6 +2407,132 @@ impl Runtime {
         self.define_constructor_relationship(&constructor, boolean_prototype)
     }
 
+    fn initialize_symbol_intrinsic(
+        &self,
+        realm: ContextId,
+        function_prototype: &ObjectRef,
+        symbol_prototype: &ObjectRef,
+        global_object: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        let kind = PrimitiveKind::Symbol;
+        self.define_native_builtin_auto_init(
+            symbol_prototype,
+            realm,
+            NativeFunctionId::PrimitivePrototypeToString(kind),
+            "toString",
+            0,
+            0,
+        )?;
+        self.define_native_builtin_auto_init(
+            symbol_prototype,
+            realm,
+            NativeFunctionId::PrimitivePrototypeValueOf(kind),
+            "valueOf",
+            0,
+            0,
+        )?;
+
+        let to_primitive = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToPrimitive));
+        self.define_native_builtin_auto_init_with_key(
+            symbol_prototype,
+            realm,
+            &to_primitive,
+            NativeFunctionId::PrimitivePrototypeValueOf(kind),
+            "[Symbol.toPrimitive]",
+            1,
+            1,
+            // This is a pinned QuickJS quirk: the table entry is a C function,
+            // but a symbol-named method is installed non-writable.
+            PropertyFlags::data(false, false, true),
+        )?;
+        let to_string_tag = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));
+        if !self.define_own_property(
+            symbol_prototype,
+            &to_string_tag,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(Value::String(JsString::from("Symbol"))),
+                writable: DescriptorField::Present(false),
+                enumerable: DescriptorField::Present(false),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )? {
+            return Err(RuntimeError::Invariant(
+                "Symbol.prototype toStringTag definition was rejected",
+            ));
+        }
+        self.define_native_builtin_getter_on(
+            symbol_prototype,
+            function_prototype,
+            realm,
+            NativeFunctionId::SymbolPrototypeDescription,
+            "description",
+            "get description",
+        )?;
+
+        let constructor = self.new_native_builtin(
+            function_prototype,
+            realm,
+            NativeFunctionId::PrimitiveConstructor(kind),
+            1,
+            "Symbol",
+            0,
+        )?;
+        for (selector, name) in [
+            (SymbolRegistryKind::For, "for"),
+            (SymbolRegistryKind::KeyFor, "keyFor"),
+        ] {
+            self.define_native_builtin_auto_init(
+                constructor.as_object(),
+                realm,
+                NativeFunctionId::SymbolRegistry(selector),
+                name,
+                1,
+                1,
+            )?;
+        }
+        for (name, symbol) in [
+            ("toPrimitive", WellKnownSymbol::ToPrimitive),
+            ("iterator", WellKnownSymbol::Iterator),
+            ("match", WellKnownSymbol::Match),
+            ("matchAll", WellKnownSymbol::MatchAll),
+            ("replace", WellKnownSymbol::Replace),
+            ("search", WellKnownSymbol::Search),
+            ("split", WellKnownSymbol::Split),
+            ("toStringTag", WellKnownSymbol::ToStringTag),
+            ("isConcatSpreadable", WellKnownSymbol::IsConcatSpreadable),
+            ("hasInstance", WellKnownSymbol::HasInstance),
+            ("species", WellKnownSymbol::Species),
+            ("unscopables", WellKnownSymbol::Unscopables),
+            ("asyncIterator", WellKnownSymbol::AsyncIterator),
+        ] {
+            let key = self.intern_property_key(name)?;
+            if !self.define_own_property(
+                constructor.as_object(),
+                &key,
+                &OrdinaryPropertyDescriptor {
+                    value: DescriptorField::Present(Value::Symbol(self.well_known_symbol(symbol))),
+                    writable: DescriptorField::Present(false),
+                    enumerable: DescriptorField::Present(false),
+                    configurable: DescriptorField::Present(false),
+                    ..OrdinaryPropertyDescriptor::new()
+                },
+            )? {
+                return Err(RuntimeError::Invariant(
+                    "Symbol well-known property definition was rejected",
+                ));
+            }
+        }
+        self.define_function_data_property(
+            global_object,
+            "Symbol",
+            Value::Object(constructor.as_object().clone()),
+            true,
+            true,
+        )?;
+        self.define_constructor_relationship(&constructor, symbol_prototype)
+    }
+
     fn initialize_bigint_intrinsic(
         &self,
         realm: ContextId,
@@ -2693,11 +2887,30 @@ impl Runtime {
         property_name: &str,
         getter_name: &str,
     ) -> Result<(), RuntimeError> {
+        self.define_native_builtin_getter_on(
+            function_prototype,
+            function_prototype,
+            realm,
+            target,
+            property_name,
+            getter_name,
+        )
+    }
+
+    fn define_native_builtin_getter_on(
+        &self,
+        object: &ObjectRef,
+        function_prototype: &ObjectRef,
+        realm: ContextId,
+        target: NativeFunctionId,
+        property_name: &str,
+        getter_name: &str,
+    ) -> Result<(), RuntimeError> {
         let getter =
             self.new_native_builtin(function_prototype, realm, target, 0, getter_name, 0)?;
         let key = self.intern_property_key(property_name)?;
         if !self.define_own_property(
-            function_prototype,
+            object,
             &key,
             &OrdinaryPropertyDescriptor {
                 get: DescriptorField::Present(AccessorValue::Callable(getter)),
@@ -5733,17 +5946,22 @@ impl Runtime {
             Value::Object(object) => {
                 self.prepare_get_property_with_receiver(object, key, receiver.clone())?
             }
-            Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::BigInt(_) => {
+            Value::Bool(_)
+            | Value::Int(_)
+            | Value::Float(_)
+            | Value::BigInt(_)
+            | Value::Symbol(_) => {
                 let kind = match &receiver {
                     Value::Bool(_) => PrimitiveKind::Boolean,
                     Value::Int(_) | Value::Float(_) => PrimitiveKind::Number,
                     Value::BigInt(_) => PrimitiveKind::BigInt,
+                    Value::Symbol(_) => PrimitiveKind::Symbol,
                     _ => unreachable!(),
                 };
                 let prototype = self.primitive_prototype_for_realm(realm, kind)?;
                 self.prepare_get_property_with_receiver(&prototype, key, receiver.clone())?
             }
-            Value::Undefined | Value::Null | Value::String(_) | Value::Symbol(_) => {
+            Value::Undefined | Value::Null | Value::String(_) => {
                 return Err(RuntimeError::Engine(Error::internal(
                     "primitive value property lookup is not implemented yet",
                 )));
@@ -6864,6 +7082,27 @@ impl Runtime {
                 "primitive constructor did not receive constructor-or-function invocation",
             ));
         };
+        if kind == PrimitiveKind::Symbol {
+            // Like QuickJS's constructor-or-function C entry, Symbol keeps its
+            // constructor bit but rejects a real new.target before ToString.
+            if !matches!(new_target, Value::Undefined) {
+                return Ok(Completion::Throw(
+                    self.new_not_constructor_error(realm, &new_target)?,
+                ));
+            }
+            let description =
+                if arguments.actual_arg_count == 0 || matches!(argument, Value::Undefined) {
+                    None
+                } else {
+                    match self.native_to_js_string(realm, argument)? {
+                        NativeConversion::Value(value) => Some(value),
+                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                };
+            return Ok(Completion::Return(Value::Symbol(
+                self.new_symbol(description)?,
+            )));
+        }
         if kind == PrimitiveKind::BigInt {
             // BigInt deliberately keeps QuickJS's constructor-or-function
             // cproto bit, but its body rejects any real new.target before
@@ -7060,17 +7299,24 @@ impl Runtime {
                     ObjectPayload::Primitive(PrimitiveObjectData::Number(value))
                         if kind == PrimitiveKind::Number =>
                     {
-                        Some(Value::number(*value))
+                        Some(Ok(Value::number(*value)))
                     }
                     ObjectPayload::Primitive(PrimitiveObjectData::Boolean(value))
                         if kind == PrimitiveKind::Boolean =>
                     {
-                        Some(Value::Bool(*value))
+                        Some(Ok(Value::Bool(*value)))
+                    }
+                    ObjectPayload::Primitive(PrimitiveObjectData::Symbol(atom))
+                        if kind == PrimitiveKind::Symbol =>
+                    {
+                        // Promote the wrapper's raw owning atom only after the
+                        // immutable heap borrow above has ended.
+                        Some(Err(*atom))
                     }
                     ObjectPayload::Primitive(PrimitiveObjectData::BigInt(value))
                         if kind == PrimitiveKind::BigInt =>
                     {
-                        Some(Value::BigInt(value.clone()))
+                        Some(Ok(Value::BigInt(value.clone())))
                     }
                     ObjectPayload::Ordinary
                     | ObjectPayload::Primitive(_)
@@ -7082,6 +7328,10 @@ impl Runtime {
                 }
             };
             if let Some(payload) = payload {
+                let payload = match payload {
+                    Ok(value) => value,
+                    Err(atom) => Value::Symbol(SymbolRef::from_borrowed_atom(self.clone(), atom)?),
+                };
                 return Ok(NativeConversion::Value(payload));
             }
         }
@@ -7155,6 +7405,16 @@ impl Runtime {
             (PrimitiveKind::Boolean, Value::Bool(value)) => Ok(Completion::Return(Value::String(
                 JsString::from(if value { "true" } else { "false" }),
             ))),
+            (PrimitiveKind::Symbol, Value::Symbol(value)) => {
+                let description = self
+                    .symbol_description(&value)?
+                    .unwrap_or_else(|| JsString::from(""));
+                Ok(Completion::Return(Value::String(
+                    JsString::from("Symbol(")
+                        .concat(&description)
+                        .concat(&JsString::from(")")),
+                )))
+            }
             (PrimitiveKind::BigInt, Value::BigInt(value)) => {
                 let radix_argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
                     "BigInt.prototype.toString argv was not padded",
@@ -7351,6 +7611,70 @@ impl Runtime {
         }
     }
 
+    fn call_symbol_registry(
+        &self,
+        realm: ContextId,
+        kind: SymbolRegistryKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Symbol registry method did not receive a generic call",
+            ));
+        };
+        let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "Symbol registry argv was not padded",
+        ))?;
+        match kind {
+            SymbolRegistryKind::For => {
+                let key = match self.native_to_js_string(realm, argument)? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+                Ok(Completion::Return(Value::Symbol(self.symbol_for(&key)?)))
+            }
+            SymbolRegistryKind::KeyFor => {
+                let Value::Symbol(symbol) = argument else {
+                    return Ok(Completion::Throw(self.new_native_error(
+                        realm,
+                        NativeErrorKind::Type,
+                        "not a symbol",
+                    )?));
+                };
+                Ok(Completion::Return(
+                    self.symbol_key_for(symbol)?
+                        .map_or(Value::Undefined, Value::String),
+                ))
+            }
+        }
+    }
+
+    fn call_symbol_prototype_description(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Getter { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Symbol.prototype.description received the wrong native invocation",
+            ));
+        };
+        let value = match self.primitive_this_value(realm, PrimitiveKind::Symbol, this_value)? {
+            NativeConversion::Value(Value::Symbol(value)) => value,
+            NativeConversion::Value(_) => {
+                return Err(RuntimeError::Invariant(
+                    "Symbol brand extraction did not return a Symbol",
+                ));
+            }
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        Ok(Completion::Return(
+            self.symbol_description(&value)?
+                .map_or(Value::Undefined, Value::String),
+        ))
+    }
+
     fn call_primitive_prototype_value_of(
         &self,
         realm: ContextId,
@@ -7387,12 +7711,12 @@ impl Runtime {
                 ObjectPayload::Primitive(PrimitiveObjectData::Boolean(_)) => {
                     JsString::from("Boolean")
                 }
-                // QuickJS's built-in class fallback has no BigInt-wrapper
-                // case. Its standard tag comes exclusively from the inherited
-                // configurable @@toStringTag property.
-                ObjectPayload::Primitive(PrimitiveObjectData::BigInt(_)) => {
-                    JsString::from("Object")
-                }
+                // QuickJS's built-in class fallback has no Symbol- or
+                // BigInt-wrapper case. Their standard tags come exclusively
+                // from inherited configurable @@toStringTag properties.
+                ObjectPayload::Primitive(
+                    PrimitiveObjectData::Symbol(_) | PrimitiveObjectData::BigInt(_),
+                ) => JsString::from("Object"),
                 ObjectPayload::Ordinary | ObjectPayload::GlobalObject { .. } => {
                     JsString::from("Object")
                 }
@@ -7448,8 +7772,15 @@ impl Runtime {
                     NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
                 }
             }
+            value @ Value::Symbol(_) => {
+                let prototype = self.primitive_prototype_for_realm(realm, PrimitiveKind::Symbol)?;
+                let object = self.new_primitive_object(&prototype, PrimitiveKind::Symbol, value)?;
+                match self.object_to_string_tag(realm, &object)? {
+                    NativeConversion::Value(tag) => tag,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                }
+            }
             Value::String(_) => JsString::from("String"),
-            Value::Symbol(_) => JsString::from("Symbol"),
             Value::Object(object) => match self.object_to_string_tag(realm, &object)? {
                 NativeConversion::Value(tag) => tag,
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -7473,7 +7804,12 @@ impl Runtime {
         };
         if !matches!(
             this_value,
-            Value::Object(_) | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::BigInt(_)
+            Value::Object(_)
+                | Value::Bool(_)
+                | Value::Int(_)
+                | Value::Float(_)
+                | Value::BigInt(_)
+                | Value::Symbol(_)
         ) {
             return Err(RuntimeError::Engine(Error::internal(
                 "primitive Object.prototype.toLocaleString is not implemented yet",
@@ -7538,7 +7874,13 @@ impl Runtime {
                     self.new_primitive_object(&prototype, PrimitiveKind::BigInt, value)?,
                 )))
             }
-            Value::String(_) | Value::Symbol(_) => Err(RuntimeError::Engine(Error::internal(
+            value @ Value::Symbol(_) => {
+                let prototype = self.primitive_prototype_for_realm(realm, PrimitiveKind::Symbol)?;
+                Ok(Completion::Return(Value::Object(
+                    self.new_primitive_object(&prototype, PrimitiveKind::Symbol, value)?,
+                )))
+            }
+            Value::String(_) => Err(RuntimeError::Engine(Error::internal(
                 "primitive wrapper objects are not implemented",
             ))),
         }
@@ -7892,6 +8234,12 @@ impl Runtime {
             }
             NativeFunctionId::PrimitivePrototypeValueOf(kind) => {
                 self.call_primitive_prototype_value_of(realm, kind, invocation)
+            }
+            NativeFunctionId::SymbolRegistry(kind) => {
+                self.call_symbol_registry(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::SymbolPrototypeDescription => {
+                self.call_symbol_prototype_description(realm, invocation)
             }
             NativeFunctionId::BigIntAsN(kind) => {
                 self.call_bigint_as_n(realm, kind, invocation, arguments)
@@ -9525,6 +9873,12 @@ impl Context {
             .primitive_prototype_for_realm(self.realm, PrimitiveKind::Boolean)
     }
 
+    /// Return this realm's ordinary `%Symbol.prototype%` root.
+    pub fn symbol_prototype(&self) -> Result<ObjectRef, RuntimeError> {
+        self.runtime
+            .primitive_prototype_for_realm(self.realm, PrimitiveKind::Symbol)
+    }
+
     /// Return this realm's ordinary `%BigInt.prototype%` root.
     pub fn bigint_prototype(&self) -> Result<ObjectRef, RuntimeError> {
         self.runtime
@@ -10277,6 +10631,7 @@ mod tests {
             ObjectPayload::Primitive(PrimitiveObjectData::Boolean(false))
         ));
         let bigint_prototype = context.bigint_prototype().unwrap();
+        let symbol_prototype = context.symbol_prototype().unwrap();
         {
             let state = runtime.0.state.borrow();
             let slots = state
@@ -10292,9 +10647,15 @@ mod tests {
                 slots[PrimitiveKind::BigInt.index()],
                 Some(bigint_prototype.object_id())
             );
-            for kind in [PrimitiveKind::String, PrimitiveKind::Symbol] {
-                assert_eq!(slots[kind.index()], None, "{kind:?} slot was enabled early");
-            }
+            assert_eq!(
+                slots[PrimitiveKind::Symbol.index()],
+                Some(symbol_prototype.object_id())
+            );
+            assert_eq!(
+                slots[PrimitiveKind::String.index()],
+                None,
+                "String slot was enabled early"
+            );
         }
 
         assert_eq!(
@@ -10352,6 +10713,305 @@ mod tests {
             Value::String(JsString::from("true|false"))
         );
         assert_eq!(context.eval("+new Boolean(false)").unwrap(), Value::Int(0));
+    }
+
+    #[test]
+    fn symbol_intrinsic_graph_registry_brand_and_wrapper_match_quickjs() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let constructor = global_callable(&runtime, &mut context, "Symbol");
+        let prototype = context.symbol_prototype().unwrap();
+
+        assert_eq!(
+            runtime.get_prototype_of(constructor.as_object()).unwrap(),
+            Some(context.function_prototype().unwrap())
+        );
+        assert_eq!(
+            runtime.get_prototype_of(&prototype).unwrap(),
+            Some(context.object_prototype().unwrap())
+        );
+        assert!(matches!(
+            &runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .object(prototype.object_id())
+                .unwrap()
+                .payload,
+            ObjectPayload::Ordinary
+        ));
+        assert_eq!(
+            own_key_names(&runtime, constructor.as_object()),
+            [
+                "length",
+                "name",
+                "for",
+                "keyFor",
+                "toPrimitive",
+                "iterator",
+                "match",
+                "matchAll",
+                "replace",
+                "search",
+                "split",
+                "toStringTag",
+                "isConcatSpreadable",
+                "hasInstance",
+                "species",
+                "unscopables",
+                "asyncIterator",
+                "prototype",
+            ]
+        );
+        assert_eq!(
+            own_key_names(&runtime, &prototype),
+            [
+                "toString",
+                "valueOf",
+                "description",
+                "constructor",
+                "Symbol.toPrimitive",
+                "Symbol.toStringTag",
+            ]
+        );
+
+        let to_primitive_key =
+            PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::ToPrimitive));
+        assert!(matches!(
+            runtime
+                .get_own_property(&prototype, &to_primitive_key)
+                .unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Object(_),
+                writable: false,
+                enumerable: false,
+                configurable: true,
+            })
+        ));
+        let description_key = runtime.intern_property_key("description").unwrap();
+        let CompleteOrdinaryPropertyDescriptor::Accessor {
+            get: Some(description_getter),
+            set: None,
+            enumerable: false,
+            configurable: true,
+        } = runtime
+            .get_own_property(&prototype, &description_key)
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("Symbol.prototype.description was not a getter-only accessor");
+        };
+        assert_eq!(
+            runtime
+                .get_prototype_of(description_getter.as_object())
+                .unwrap(),
+            Some(context.function_prototype().unwrap())
+        );
+
+        let Value::Symbol(no_description) =
+            context.call(&constructor, Value::Undefined, &[]).unwrap()
+        else {
+            panic!("Symbol() did not return a Symbol primitive");
+        };
+        let Value::Symbol(empty_description) = context
+            .call(
+                &constructor,
+                Value::Undefined,
+                &[Value::String(JsString::from(""))],
+            )
+            .unwrap()
+        else {
+            panic!("Symbol(\"\") did not return a Symbol primitive");
+        };
+        assert_ne!(no_description, empty_description);
+        assert_eq!(runtime.symbol_description(&no_description).unwrap(), None);
+        assert_eq!(
+            runtime.symbol_description(&empty_description).unwrap(),
+            Some(JsString::from(""))
+        );
+        let ignored_argument = context.new_object().unwrap();
+        assert!(matches!(
+            context.construct(&constructor, &[Value::Object(ignored_argument)]),
+            Err(RuntimeError::Exception)
+        ));
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from("Symbol is not a constructor")
+        );
+
+        let symbol_for = property_callable(&runtime, &mut context, constructor.as_object(), "for");
+        let key_for = property_callable(&runtime, &mut context, constructor.as_object(), "keyFor");
+        let registry_key = Value::String(JsString::from("registry"));
+        let first_registered = context
+            .call(
+                &symbol_for,
+                Value::Undefined,
+                std::slice::from_ref(&registry_key),
+            )
+            .unwrap();
+        let second_registered = context
+            .call(
+                &symbol_for,
+                Value::Null,
+                std::slice::from_ref(&registry_key),
+            )
+            .unwrap();
+        assert_eq!(first_registered, second_registered);
+        assert_eq!(
+            context
+                .call(
+                    &key_for,
+                    Value::Undefined,
+                    std::slice::from_ref(&first_registered),
+                )
+                .unwrap(),
+            registry_key
+        );
+        assert_eq!(
+            context
+                .call(
+                    &key_for,
+                    Value::Undefined,
+                    &[Value::Symbol(no_description.clone())],
+                )
+                .unwrap(),
+            Value::Undefined
+        );
+
+        for (name, symbol) in [
+            ("toPrimitive", WellKnownSymbol::ToPrimitive),
+            ("iterator", WellKnownSymbol::Iterator),
+            ("match", WellKnownSymbol::Match),
+            ("matchAll", WellKnownSymbol::MatchAll),
+            ("replace", WellKnownSymbol::Replace),
+            ("search", WellKnownSymbol::Search),
+            ("split", WellKnownSymbol::Split),
+            ("toStringTag", WellKnownSymbol::ToStringTag),
+            ("isConcatSpreadable", WellKnownSymbol::IsConcatSpreadable),
+            ("hasInstance", WellKnownSymbol::HasInstance),
+            ("species", WellKnownSymbol::Species),
+            ("unscopables", WellKnownSymbol::Unscopables),
+            ("asyncIterator", WellKnownSymbol::AsyncIterator),
+        ] {
+            let key = runtime.intern_property_key(name).unwrap();
+            assert!(matches!(
+                runtime
+                    .get_own_property(constructor.as_object(), &key)
+                    .unwrap(),
+                Some(CompleteOrdinaryPropertyDescriptor::Data {
+                    value: Value::Symbol(value),
+                    writable: false,
+                    enumerable: false,
+                    configurable: false,
+                }) if value == runtime.well_known_symbol(symbol)
+            ));
+        }
+
+        let to_string = property_callable(&runtime, &mut context, &prototype, "toString");
+        let value_of = property_callable(&runtime, &mut context, &prototype, "valueOf");
+        assert_eq!(
+            context
+                .call(&to_string, Value::Symbol(empty_description.clone()), &[],)
+                .unwrap(),
+            Value::String(JsString::from("Symbol()"))
+        );
+        assert_eq!(
+            context
+                .call(&value_of, Value::Symbol(no_description.clone()), &[],)
+                .unwrap(),
+            Value::Symbol(no_description.clone())
+        );
+
+        let object_prototype = context.object_prototype().unwrap();
+        let object_value_of =
+            property_callable(&runtime, &mut context, &object_prototype, "valueOf");
+        let Value::Object(wrapper) = context
+            .call(&object_value_of, Value::Symbol(no_description.clone()), &[])
+            .unwrap()
+        else {
+            panic!("Object.prototype.valueOf did not box a Symbol primitive");
+        };
+        assert_eq!(runtime.get_prototype_of(&wrapper).unwrap(), Some(prototype));
+        assert!(matches!(
+            &runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .object(wrapper.object_id())
+                .unwrap()
+                .payload,
+            ObjectPayload::Primitive(PrimitiveObjectData::Symbol(atom))
+                if atom == &no_description.atom()
+        ));
+        assert_eq!(
+            context
+                .call(&value_of, Value::Object(wrapper), &[])
+                .unwrap(),
+            Value::Symbol(no_description)
+        );
+        assert_eq!(
+            context.eval("Symbol('source').toString()").unwrap(),
+            Value::String(JsString::from("Symbol(source)"))
+        );
+        assert_eq!(
+            context.eval("Symbol('source').description").unwrap(),
+            Value::String(JsString::from("source"))
+        );
+        assert_eq!(
+            context.eval("Symbol().description").unwrap(),
+            Value::Undefined
+        );
+    }
+
+    #[test]
+    fn symbol_wrapper_owns_its_atom_and_realm_until_final_collection() {
+        let runtime = Runtime::new();
+        let (atom, wrapper) = {
+            let mut context = runtime.new_context();
+            let object_prototype = context.object_prototype().unwrap();
+            let object_value_of =
+                property_callable(&runtime, &mut context, &object_prototype, "valueOf");
+            let symbol = runtime
+                .new_symbol(Some(JsString::from("wrapper-only")))
+                .unwrap();
+            let atom = symbol.atom();
+            let Value::Object(wrapper) = context
+                .call(&object_value_of, Value::Symbol(symbol), &[])
+                .unwrap()
+            else {
+                panic!("Object.prototype.valueOf did not return a Symbol wrapper");
+            };
+            (atom, wrapper)
+        };
+
+        runtime.run_gc().unwrap();
+        assert_eq!(
+            runtime.heap_counts().context_nodes,
+            1,
+            "the live wrapper must retain its Symbol prototype realm graph"
+        );
+        assert_eq!(
+            runtime
+                .0
+                .state
+                .borrow()
+                .atoms
+                .resolve(atom)
+                .unwrap()
+                .ref_count,
+            Some(1),
+            "the wrapper must own the local symbol atom after the primitive root drops"
+        );
+
+        drop(wrapper);
+        runtime.run_gc().unwrap();
+        assert_eq!(runtime.heap_counts().live, 0);
+        assert!(
+            runtime.0.state.borrow().atoms.resolve(atom).is_err(),
+            "the final wrapper release must return its symbol atom ownership"
+        );
     }
 
     #[test]
