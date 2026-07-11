@@ -21,6 +21,9 @@ enum StringRepr {
 }
 
 impl JsString {
+    /// QuickJS reserves 30 bits for a string's UTF-16 code-unit length.
+    pub const MAX_LEN: usize = (1 << 30) - 1;
+
     #[must_use]
     pub fn from_utf8(value: &str) -> Self {
         Self::from_utf16(value.encode_utf16())
@@ -37,6 +40,16 @@ impl JsString {
         match latin1 {
             Ok(latin1) => Self(Rc::new(StringRepr::Latin1(latin1.into_boxed_slice()))),
             Err(_) => Self(Rc::new(StringRepr::Utf16(units.into_boxed_slice()))),
+        }
+    }
+
+    /// Build the compact one-code-unit form used by String exotic indices and
+    /// character methods, equivalent to QuickJS's `js_new_string_char`.
+    #[must_use]
+    pub fn from_code_unit(unit: u16) -> Self {
+        match u8::try_from(unit) {
+            Ok(unit) => Self(Rc::new(StringRepr::Latin1(Box::new([unit])))),
+            Err(_) => Self(Rc::new(StringRepr::Utf16(Box::new([unit])))),
         }
     }
 
@@ -84,6 +97,93 @@ impl JsString {
             StringRepr::Latin1(units) => Units::Latin1(units.iter()),
             StringRepr::Utf16(units) => Units::Utf16(units.iter()),
         }
+    }
+
+    /// Return one UTF-16 code unit without decoding or normalizing surrogate
+    /// pairs. This is the equivalent of QuickJS's `string_get` fast path.
+    #[must_use]
+    pub fn code_unit_at(&self, index: usize) -> Option<u16> {
+        match self.0.as_ref() {
+            StringRepr::Latin1(units) => units.get(index).copied().map(u16::from),
+            StringRepr::Utf16(units) => units.get(index).copied(),
+        }
+    }
+
+    /// Return the code point beginning at one UTF-16 code-unit index. A lead
+    /// surrogate is combined only with an immediately following trail
+    /// surrogate; every other code unit is returned unchanged.
+    #[must_use]
+    pub fn code_point_at(&self, index: usize) -> Option<u32> {
+        let first = self.code_unit_at(index)?;
+        if !(0xd800..=0xdbff).contains(&first) {
+            return Some(u32::from(first));
+        }
+        let Some(second) = index
+            .checked_add(1)
+            .and_then(|next| self.code_unit_at(next))
+        else {
+            return Some(u32::from(first));
+        };
+        if !(0xdc00..=0xdfff).contains(&second) {
+            return Some(u32::from(first));
+        }
+        Some(0x1_0000 + ((u32::from(first) - 0xd800) << 10) + (u32::from(second) - 0xdc00))
+    }
+
+    /// Whether every surrogate participates in a valid UTF-16 pair.
+    #[must_use]
+    pub fn is_well_formed(&self) -> bool {
+        self.first_unpaired_surrogate().is_none()
+    }
+
+    /// Replace each unpaired surrogate with U+FFFD. Well-formed strings retain
+    /// their existing compact allocation, matching QuickJS's no-copy path.
+    #[must_use]
+    pub fn to_well_formed(&self) -> Self {
+        let Some(first_invalid) = self.first_unpaired_surrogate() else {
+            return self.clone();
+        };
+        let mut units = self.utf16_units().collect::<Vec<_>>();
+        let mut index = first_invalid;
+        while index < units.len() {
+            let unit = units[index];
+            if (0xd800..=0xdbff).contains(&unit)
+                && units
+                    .get(index + 1)
+                    .is_some_and(|next| (0xdc00..=0xdfff).contains(next))
+            {
+                index += 2;
+            } else {
+                if (0xd800..=0xdfff).contains(&unit) {
+                    units[index] = 0xfffd;
+                }
+                index += 1;
+            }
+        }
+        Self::from_utf16(units)
+    }
+
+    fn first_unpaired_surrogate(&self) -> Option<usize> {
+        let StringRepr::Utf16(units) = self.0.as_ref() else {
+            return None;
+        };
+        let mut index = 0;
+        while index < units.len() {
+            let unit = units[index];
+            if (0xd800..=0xdbff).contains(&unit)
+                && units
+                    .get(index + 1)
+                    .is_some_and(|next| (0xdc00..=0xdfff).contains(next))
+            {
+                index += 2;
+                continue;
+            }
+            if (0xd800..=0xdfff).contains(&unit) {
+                return Some(index);
+            }
+            index += 1;
+        }
+        None
     }
 
     /// Lossy conversion is suitable for terminal diagnostics. It must not be
@@ -453,6 +553,25 @@ mod tests {
         let text = JsString::from_utf16([0xd800, 0x61]);
         assert_eq!(text.utf16_units().collect::<Vec<_>>(), vec![0xd800, 0x61]);
         assert_eq!(text.to_utf8_lossy(), "�a");
+    }
+
+    #[test]
+    fn utf16_index_code_point_and_well_formed_helpers_preserve_quickjs_rules() {
+        let text = JsString::from_utf16([0x41, 0xd83d, 0xde80, 0xd800, 0x42, 0xdc00]);
+        assert_eq!(text.code_unit_at(0), Some(0x41));
+        assert_eq!(text.code_unit_at(6), None);
+        assert_eq!(text.code_point_at(1), Some(0x1f680));
+        assert_eq!(text.code_point_at(2), Some(0xde80));
+        assert_eq!(text.code_point_at(3), Some(0xd800));
+        assert!(!text.is_well_formed());
+        assert_eq!(
+            text.to_well_formed().utf16_units().collect::<Vec<_>>(),
+            vec![0x41, 0xd83d, 0xde80, 0xfffd, 0x42, 0xfffd]
+        );
+
+        let well_formed = JsString::from_utf16([0xd83d, 0xde80]);
+        assert!(well_formed.is_well_formed());
+        assert_eq!(well_formed.to_well_formed(), well_formed);
     }
 
     #[test]

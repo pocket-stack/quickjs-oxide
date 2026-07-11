@@ -483,9 +483,9 @@ fn rooted_string_wrapper_preserves_payload_and_final_release_collects_the_graph(
         ["0", "1", "2", "3", "length"]
     );
 
-    // The hidden String prototype currently publishes only `length`; this
-    // test intentionally makes no claim that String prototype methods retain
-    // the context. It only proves wrapper/payload survival and final cleanup.
+    // The hidden String prototype now publishes the ten-key partial surface;
+    // its saved-method realm edge is tested by the UTF-16-prefix oracle. This
+    // test isolates wrapper/payload survival and final cleanup.
     drop(wrapper);
     runtime.run_gc().unwrap();
     assert_eq!(runtime.heap_counts().live, 0);

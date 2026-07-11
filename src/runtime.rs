@@ -29,7 +29,8 @@ use crate::heap::{
     GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError,
     NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
     ObjectData, ObjectId, ObjectKind, ObjectPayload, PrimitiveKind, PrimitiveObjectData,
-    PropertySlot, RawValue, ShapeId, SymbolRegistryKind, VarRefData, VarRefId,
+    PropertySlot, RawValue, ShapeId, StringCharAtKind, StringWellFormedKind, SymbolRegistryKind,
+    VarRefData, VarRefId,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -166,6 +167,12 @@ struct NativeArguments {
 enum NativeConversion<T> {
     Value(T),
     Throw(Value),
+}
+
+fn checked_string_concat_length(current: usize, additional: usize) -> Option<usize> {
+    current
+        .checked_add(additional)
+        .filter(|length| *length <= JsString::MAX_LEN)
 }
 
 enum Compilation {
@@ -1662,6 +1669,8 @@ impl Runtime {
             &global_object,
         )
         .expect("Boolean intrinsic initialization must succeed");
+        self.initialize_string_utf16_prefix(realm, &string_prototype)
+            .expect("String UTF-16 method-prefix initialization must succeed");
         self.initialize_string_conversion_core(realm, &string_prototype)
             .expect("String conversion-core initialization must succeed");
         self.initialize_symbol_intrinsic(
@@ -2463,8 +2472,9 @@ impl Runtime {
     /// incomplete global constructor. This is not the prefix of QuickJS's
     /// 53-key table: these two brand methods are also the observable
     /// ordinary-ToPrimitive dependency for every generic String prototype
-    /// method. Future String method slices must be initialized in their pinned
-    /// table order before this pair when each fresh context is bootstrapped.
+    /// method. The UTF-16 prefix is already installed first; remaining String
+    /// slices must continue to enter in pinned table order before this pair
+    /// when each fresh context is bootstrapped.
     fn initialize_string_conversion_core(
         &self,
         realm: ContextId,
@@ -2486,6 +2496,57 @@ impl Runtime {
             0,
             0,
         )
+    }
+
+    /// Install QuickJS's first seven String prototype methods in exact table
+    /// order. They precede the conversion brand pair on every fresh realm,
+    /// even though the still-incomplete global `%String%` is not published.
+    fn initialize_string_utf16_prefix(
+        &self,
+        realm: ContextId,
+        string_prototype: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        for (target, name, min_readable_args) in [
+            (
+                NativeFunctionId::StringPrototypeCharAt(StringCharAtKind::At),
+                "at",
+                1,
+            ),
+            (NativeFunctionId::StringPrototypeCharCodeAt, "charCodeAt", 1),
+            (
+                NativeFunctionId::StringPrototypeCharAt(StringCharAtKind::CharAt),
+                "charAt",
+                1,
+            ),
+            (NativeFunctionId::StringPrototypeConcat, "concat", 0),
+            (
+                NativeFunctionId::StringPrototypeCodePointAt,
+                "codePointAt",
+                1,
+            ),
+        ] {
+            self.define_native_builtin_auto_init(
+                string_prototype,
+                realm,
+                target,
+                name,
+                1,
+                min_readable_args,
+            )?;
+        }
+        for (target, name) in [
+            (
+                NativeFunctionId::StringPrototypeWellFormed(StringWellFormedKind::IsWellFormed),
+                "isWellFormed",
+            ),
+            (
+                NativeFunctionId::StringPrototypeWellFormed(StringWellFormedKind::ToWellFormed),
+                "toWellFormed",
+            ),
+        ] {
+            self.define_native_builtin_auto_init(string_prototype, realm, target, name, 0, 0)?;
+        }
+        Ok(())
     }
 
     fn initialize_symbol_intrinsic(
@@ -6128,10 +6189,10 @@ impl Runtime {
         let index = self.0.state.borrow().atoms.array_index(key.atom())?;
         if let Some(index) = index
             && let Ok(index) = usize::try_from(index)
-            && let Some(unit) = string.utf16_units().nth(index)
+            && let Some(unit) = string.code_unit_at(index)
         {
             return Ok(PropertyGetAction::Complete(Value::String(
-                JsString::from_utf16([unit]),
+                JsString::from_code_unit(unit),
             )));
         }
         let length = self.intern_property_key("length")?;
@@ -6242,6 +6303,23 @@ impl Runtime {
                 )?))
             }
         }
+    }
+
+    /// QuickJS's `JS_ToStringCheckObject`: reject nullish receivers with its
+    /// dedicated diagnostic before running any observable ToString steps.
+    fn native_to_string_check_object(
+        &self,
+        realm: ContextId,
+        value: &Value,
+    ) -> Result<NativeConversion<JsString>, RuntimeError> {
+        if matches!(value, Value::Null | Value::Undefined) {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "null or undefined are forbidden",
+            )?));
+        }
+        self.native_to_js_string(realm, value)
     }
 
     fn native_to_dynamic_source_fragment(
@@ -7569,6 +7647,178 @@ impl Runtime {
         )?))
     }
 
+    fn call_string_prototype_char_at(
+        &self,
+        realm: ContextId,
+        selector: StringCharAtKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String character method did not receive a generic invocation",
+            ));
+        };
+        let string = match self.native_to_string_check_object(realm, &this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "String character method argv was not padded",
+        ))?;
+        let mut index = match self.native_to_number(realm, argument)? {
+            NativeConversion::Value(value) => crate::number::to_int32_sat(value),
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let length = i32::try_from(string.len()).map_err(|_| {
+            RuntimeError::Invariant("String length exceeded QuickJS's signed index range")
+        })?;
+        if selector == StringCharAtKind::At && index < 0 {
+            index += length;
+        }
+        if index < 0 || index >= length {
+            return Ok(Completion::Return(match selector {
+                StringCharAtKind::At => Value::Undefined,
+                StringCharAtKind::CharAt => Value::String(JsString::from("")),
+            }));
+        }
+        let index =
+            usize::try_from(index).expect("validated non-negative String index always fits usize");
+        let unit = string.code_unit_at(index).ok_or(RuntimeError::Invariant(
+            "validated String character index did not name a code unit",
+        ))?;
+        Ok(Completion::Return(Value::String(JsString::from_code_unit(
+            unit,
+        ))))
+    }
+
+    fn call_string_prototype_char_code_at(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String charCodeAt did not receive a generic invocation",
+            ));
+        };
+        let string = match self.native_to_string_check_object(realm, &this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "String charCodeAt argv was not padded",
+        ))?;
+        let index = match self.native_to_number(realm, argument)? {
+            NativeConversion::Value(value) => crate::number::to_int32_sat(value),
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let Some(unit) = usize::try_from(index)
+            .ok()
+            .and_then(|index| string.code_unit_at(index))
+        else {
+            return Ok(Completion::Return(Value::Float(f64::NAN)));
+        };
+        Ok(Completion::Return(Value::Int(i32::from(unit))))
+    }
+
+    fn call_string_prototype_code_point_at(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String codePointAt did not receive a generic invocation",
+            ));
+        };
+        let string = match self.native_to_string_check_object(realm, &this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "String codePointAt argv was not padded",
+        ))?;
+        let index = match self.native_to_number(realm, argument)? {
+            NativeConversion::Value(value) => crate::number::to_int32_sat(value),
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let Some(code_point) = usize::try_from(index)
+            .ok()
+            .and_then(|index| string.code_point_at(index))
+        else {
+            return Ok(Completion::Return(Value::Undefined));
+        };
+        Ok(Completion::Return(Value::Int(
+            i32::try_from(code_point).expect("a Unicode code point always fits i32"),
+        )))
+    }
+
+    fn call_string_prototype_concat(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String concat did not receive a generic invocation",
+            ));
+        };
+        let receiver = match self.native_to_string_check_object(realm, &this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        if arguments.actual_arg_count == 0 {
+            return Ok(Completion::Return(Value::String(receiver)));
+        }
+
+        let mut length = receiver.len();
+        let mut chunks = Vec::with_capacity(arguments.actual_arg_count + 1);
+        chunks.push(receiver);
+        for argument in &arguments.readable[..arguments.actual_arg_count] {
+            let chunk = match self.native_to_js_string(realm, argument)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            let Some(next_length) = checked_string_concat_length(length, chunk.len()) else {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Internal,
+                    "string too long",
+                )?));
+            };
+            length = next_length;
+            chunks.push(chunk);
+        }
+        let result = JsString::from_utf16(chunks.iter().flat_map(|chunk| chunk.utf16_units()));
+        debug_assert_eq!(result.len(), length);
+        Ok(Completion::Return(Value::String(result)))
+    }
+
+    fn call_string_prototype_well_formed(
+        &self,
+        realm: ContextId,
+        selector: StringWellFormedKind,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String well-formed method did not receive a generic invocation",
+            ));
+        };
+        let string = match self.native_to_string_check_object(realm, &this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        Ok(Completion::Return(match selector {
+            StringWellFormedKind::IsWellFormed => Value::Bool(string.is_well_formed()),
+            StringWellFormedKind::ToWellFormed => Value::String(string.to_well_formed()),
+        }))
+    }
+
     fn call_primitive_prototype_to_string(
         &self,
         realm: ContextId,
@@ -8471,6 +8721,21 @@ impl Runtime {
             }
             NativeFunctionId::PrimitivePrototypeValueOf(kind) => {
                 self.call_primitive_prototype_value_of(realm, kind, invocation)
+            }
+            NativeFunctionId::StringPrototypeCharAt(selector) => {
+                self.call_string_prototype_char_at(realm, selector, invocation, arguments)
+            }
+            NativeFunctionId::StringPrototypeCharCodeAt => {
+                self.call_string_prototype_char_code_at(realm, invocation, arguments)
+            }
+            NativeFunctionId::StringPrototypeConcat => {
+                self.call_string_prototype_concat(realm, invocation, arguments)
+            }
+            NativeFunctionId::StringPrototypeCodePointAt => {
+                self.call_string_prototype_code_point_at(realm, invocation, arguments)
+            }
+            NativeFunctionId::StringPrototypeWellFormed(selector) => {
+                self.call_string_prototype_well_formed(realm, selector, invocation)
             }
             NativeFunctionId::SymbolRegistry(kind) => {
                 self.call_symbol_registry(realm, kind, invocation, arguments)
@@ -10110,7 +10375,7 @@ impl Context {
             .primitive_prototype_for_realm(self.realm, PrimitiveKind::Boolean)
     }
 
-    /// Return this realm's branded-empty String conversion-core prototype.
+    /// Return this realm's branded-empty partial `%String.prototype%` root.
     pub fn string_prototype(&self) -> Result<ObjectRef, RuntimeError> {
         self.runtime
             .primitive_prototype_for_realm(self.realm, PrimitiveKind::String)
@@ -10496,6 +10761,7 @@ mod tests {
     use super::{
         ActiveFrameKind, CallableExecution, DeferredRefOp, EvalOptions, PropertyGetAction,
         PropertySetAction, Runtime, RuntimeError, ToPrimitiveHint, VarRefRoot,
+        checked_string_concat_length,
     };
 
     fn data_descriptor(
@@ -10986,7 +11252,18 @@ mod tests {
         ));
         assert_eq!(
             own_key_names(&runtime, &string_prototype),
-            ["length", "toString", "valueOf"],
+            [
+                "length",
+                "at",
+                "charCodeAt",
+                "charAt",
+                "concat",
+                "codePointAt",
+                "isWellFormed",
+                "toWellFormed",
+                "toString",
+                "valueOf",
+            ],
             "implemented-key filtered order, not the complete String prototype table"
         );
         let length_key = runtime.intern_property_key("length").unwrap();
@@ -11161,6 +11438,218 @@ mod tests {
     }
 
     #[test]
+    fn string_utf16_method_prefix_matches_quickjs_table_and_code_unit_rules() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let prototype = context.string_prototype().unwrap();
+
+        assert_eq!(
+            own_key_names(&runtime, &prototype),
+            [
+                "length",
+                "at",
+                "charCodeAt",
+                "charAt",
+                "concat",
+                "codePointAt",
+                "isWellFormed",
+                "toWellFormed",
+                "toString",
+                "valueOf",
+            ],
+            "implemented entries must retain their pinned QuickJS table order"
+        );
+
+        let methods = [
+            ("at", 1, NativeCProto::GenericMagic, 1),
+            ("charCodeAt", 1, NativeCProto::Generic, 1),
+            ("charAt", 1, NativeCProto::GenericMagic, 1),
+            ("concat", 1, NativeCProto::Generic, 0),
+            ("codePointAt", 1, NativeCProto::Generic, 1),
+            ("isWellFormed", 0, NativeCProto::Generic, 0),
+            ("toWellFormed", 0, NativeCProto::Generic, 0),
+        ];
+        let length_key = runtime.intern_property_key("length").unwrap();
+        let name_key = runtime.intern_property_key("name").unwrap();
+        for (name, length, cproto, min_readable_args) in methods {
+            let key = runtime.intern_property_key(name).unwrap();
+            assert!(matches!(
+                runtime.get_own_property(&prototype, &key).unwrap(),
+                Some(CompleteOrdinaryPropertyDescriptor::Data {
+                    value: Value::Object(_),
+                    writable: true,
+                    enumerable: false,
+                    configurable: true,
+                })
+            ));
+            let method = property_callable(&runtime, &mut context, &prototype, name);
+            assert!(!runtime.is_constructor(method.as_object()).unwrap());
+            assert!(matches!(
+                runtime
+                    .get_own_property(method.as_object(), &length_key)
+                    .unwrap(),
+                Some(CompleteOrdinaryPropertyDescriptor::Data {
+                    value: Value::Int(value),
+                    writable: false,
+                    enumerable: false,
+                    configurable: true,
+                }) if value == length
+            ));
+            assert!(matches!(
+                runtime
+                    .get_own_property(method.as_object(), &name_key)
+                    .unwrap(),
+                Some(CompleteOrdinaryPropertyDescriptor::Data {
+                    value: Value::String(value),
+                    writable: false,
+                    enumerable: false,
+                    configurable: true,
+                }) if value == JsString::from(name)
+            ));
+            let state = runtime.0.state.borrow();
+            let ObjectPayload::NativeFunction { data } = &state
+                .heap
+                .object(method.as_object().object_id())
+                .unwrap()
+                .payload
+            else {
+                panic!("String method was not a native function: {name}");
+            };
+            assert_eq!(data.target.descriptor().cproto, cproto);
+            assert_eq!(data.min_readable_args, min_readable_args);
+        }
+
+        let payload = JsString::from_utf16([0x41, 0xd83d, 0xde00, 0xd800, 0x5a]);
+        let at = property_callable(&runtime, &mut context, &prototype, "at");
+        assert_eq!(
+            context
+                .call(&at, Value::String(payload.clone()), &[Value::Int(-1)])
+                .unwrap(),
+            Value::String(JsString::from("Z"))
+        );
+        assert_eq!(
+            context
+                .call(&at, Value::String(payload.clone()), &[Value::Int(1)])
+                .unwrap(),
+            Value::String(JsString::from_utf16([0xd83d]))
+        );
+        assert_eq!(
+            context
+                .call(&at, Value::String(payload.clone()), &[Value::Int(5)])
+                .unwrap(),
+            Value::Undefined
+        );
+
+        let char_at = property_callable(&runtime, &mut context, &prototype, "charAt");
+        assert_eq!(
+            context
+                .call(&char_at, Value::String(payload.clone()), &[Value::Int(-1)],)
+                .unwrap(),
+            Value::String(JsString::from(""))
+        );
+        let char_code_at = property_callable(&runtime, &mut context, &prototype, "charCodeAt");
+        assert_eq!(
+            context
+                .call(
+                    &char_code_at,
+                    Value::String(payload.clone()),
+                    &[Value::Int(2)],
+                )
+                .unwrap(),
+            Value::Int(0xde00)
+        );
+        assert!(matches!(
+            context
+                .call(
+                    &char_code_at,
+                    Value::String(payload.clone()),
+                    &[Value::Int(5)],
+                )
+                .unwrap(),
+            Value::Float(value) if value.is_nan()
+        ));
+
+        let code_point_at = property_callable(&runtime, &mut context, &prototype, "codePointAt");
+        assert_eq!(
+            context
+                .call(
+                    &code_point_at,
+                    Value::String(payload.clone()),
+                    &[Value::Int(1)],
+                )
+                .unwrap(),
+            Value::Int(0x1f600)
+        );
+        assert_eq!(
+            context
+                .call(
+                    &code_point_at,
+                    Value::String(payload.clone()),
+                    &[Value::Int(2)],
+                )
+                .unwrap(),
+            Value::Int(0xde00)
+        );
+
+        let concat = property_callable(&runtime, &mut context, &prototype, "concat");
+        assert_eq!(
+            context
+                .call(
+                    &concat,
+                    Value::String(JsString::from("R")),
+                    &[
+                        Value::Undefined,
+                        Value::Null,
+                        Value::Bool(true),
+                        Value::BigInt(JsBigInt::one()),
+                    ],
+                )
+                .unwrap(),
+            Value::String(JsString::from("Rundefinednulltrue1"))
+        );
+        assert_eq!(
+            checked_string_concat_length(JsString::MAX_LEN - 1, 1),
+            Some(JsString::MAX_LEN)
+        );
+        assert_eq!(checked_string_concat_length(JsString::MAX_LEN, 1), None);
+        assert_eq!(checked_string_concat_length(usize::MAX, 1), None);
+
+        let is_well_formed = property_callable(&runtime, &mut context, &prototype, "isWellFormed");
+        let to_well_formed = property_callable(&runtime, &mut context, &prototype, "toWellFormed");
+        assert_eq!(
+            context
+                .call(
+                    &is_well_formed,
+                    Value::String(payload.clone()),
+                    &[Value::Symbol(runtime.new_symbol(None).unwrap())],
+                )
+                .unwrap(),
+            Value::Bool(false),
+            "well-formed methods ignore all actual arguments"
+        );
+        assert_eq!(
+            context
+                .call(&to_well_formed, Value::String(payload), &[])
+                .unwrap(),
+            Value::String(JsString::from_utf16([0x41, 0xd83d, 0xde00, 0xfffd, 0x5a,]))
+        );
+
+        assert_eq!(
+            context.call(&at, Value::Null, &[Value::Int(0)]),
+            Err(RuntimeError::Exception)
+        );
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from("null or undefined are forbidden")
+        );
+        assert_eq!(
+            context.eval("'abc'.at(-1)").unwrap(),
+            Value::String(JsString::from("c"))
+        );
+        assert_eq!(context.eval("'abc'.charCodeAt(1)").unwrap(), Value::Int(98));
+    }
+
+    #[test]
     fn string_conversion_core_brand_lookup_object_routes_and_overrides_match_quickjs_slice() {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
@@ -11171,7 +11660,18 @@ mod tests {
 
         assert_eq!(
             own_key_names(&runtime, &prototype),
-            ["length", "toString", "valueOf"],
+            [
+                "length",
+                "at",
+                "charCodeAt",
+                "charAt",
+                "concat",
+                "codePointAt",
+                "isWellFormed",
+                "toWellFormed",
+                "toString",
+                "valueOf",
+            ],
             "implemented-key filtered order, not the complete String prototype table"
         );
         for name in ["toString", "valueOf"] {

@@ -700,6 +700,11 @@ pub enum NativeFunctionId {
     PrimitiveConstructor(PrimitiveKind),
     PrimitivePrototypeToString(PrimitiveKind),
     PrimitivePrototypeValueOf(PrimitiveKind),
+    StringPrototypeCharAt(StringCharAtKind),
+    StringPrototypeCharCodeAt,
+    StringPrototypeConcat,
+    StringPrototypeCodePointAt,
+    StringPrototypeWellFormed(StringWellFormedKind),
     SymbolRegistry(SymbolRegistryKind),
     SymbolPrototypeDescription,
     BigIntAsN(BigIntAsNKind),
@@ -752,6 +757,23 @@ pub enum PrimitiveKind {
 pub enum BigIntAsNKind {
     AsUintN,
     AsIntN,
+}
+
+/// QuickJS's magic selector shared by `String.prototype.at` and
+/// `String.prototype.charAt`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StringCharAtKind {
+    At,
+    CharAt,
+}
+
+/// Typed selector for the adjacent well-formed UTF-16 methods. QuickJS uses
+/// separate C functions; retaining one Rust family keeps the shared scan
+/// explicit without changing either function's generic C protocol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StringWellFormedKind {
+    IsWellFormed,
+    ToWellFormed,
 }
 
 /// Static selector shared by `%Symbol%.for` and `%Symbol%.keyFor`.
@@ -888,12 +910,19 @@ impl NativeFunctionId {
             | Self::ObjectPrototypeValueOf
             | Self::PrimitivePrototypeToString(_)
             | Self::PrimitivePrototypeValueOf(_)
+            | Self::StringPrototypeCharCodeAt
+            | Self::StringPrototypeConcat
+            | Self::StringPrototypeCodePointAt
+            | Self::StringPrototypeWellFormed(_)
             | Self::SymbolRegistry(_)
             | Self::GlobalNumberParse(_)
             | Self::GlobalNumberPredicate(_)
             | Self::NumberPredicate(_)
             | Self::NumberPrototypeFormat(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::Generic,
+            },
+            Self::StringPrototypeCharAt(_) => NativeFunctionDescriptor {
+                cproto: NativeCProto::GenericMagic,
             },
             Self::GlobalUriCodec(
                 GlobalUriCodecKind::DecodeUri
@@ -3213,6 +3242,11 @@ mod tests {
             NativeFunctionId::NumberPrototypeFormat(NumberFormatKind::ToLocaleString),
             NativeFunctionId::SymbolRegistry(SymbolRegistryKind::For),
             NativeFunctionId::SymbolRegistry(SymbolRegistryKind::KeyFor),
+            NativeFunctionId::StringPrototypeCharCodeAt,
+            NativeFunctionId::StringPrototypeConcat,
+            NativeFunctionId::StringPrototypeCodePointAt,
+            NativeFunctionId::StringPrototypeWellFormed(StringWellFormedKind::IsWellFormed),
+            NativeFunctionId::StringPrototypeWellFormed(StringWellFormedKind::ToWellFormed),
         ];
 
         for target in targets {
@@ -3226,6 +3260,8 @@ mod tests {
             NativeFunctionId::GlobalUriCodec(GlobalUriCodecKind::EncodeUriComponent),
             NativeFunctionId::BigIntAsN(BigIntAsNKind::AsUintN),
             NativeFunctionId::BigIntAsN(BigIntAsNKind::AsIntN),
+            NativeFunctionId::StringPrototypeCharAt(StringCharAtKind::At),
+            NativeFunctionId::StringPrototypeCharAt(StringCharAtKind::CharAt),
         ] {
             assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);
             assert!(!target.descriptor().cproto.default_is_constructor());
