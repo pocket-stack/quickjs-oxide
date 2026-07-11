@@ -37,7 +37,8 @@ claim full parity.
   the current source path supports anonymous and named ordinary function
   expressions, simple parameters, `return`/fallthrough, function-local `var`,
   recursive block statements, `if`/`else` (including nearest-`if` binding),
-  `while`/`do-while`, classic `for (;;)` and unlabeled `break`/`continue`,
+  `while`/`do-while`, classic `for (;;)` and labeled statements with named and
+  unnamed `break`/`continue`,
   simple/arithmetic/exponentiation/shift/bitwise/logical identifier assignment,
   prefix/postfix identifier and member updates, direct calls,
   transitive parameter/local and private function-name capture through
@@ -46,9 +47,11 @@ claim full parity.
   per-invocation private self binding; sloppy writes are ignored and strict
   writes raise the QuickJS-compatible read-only TypeError. Script source
   elements and function/block/single-statement bodies now enter through one
-  QuickJS-shaped statement parser. Each function owns a typed simple-loop
-  subset of QuickJS `BlockEnv`, so nested functions cannot target an enclosing
-  function's loop. Root scripts reserve the unspellable `eval_ret_idx` local at
+  QuickJS-shaped statement parser. Each function owns a typed break-control
+  subset of QuickJS `BlockEnv`, distinguishing regular labeled statements from
+  loops so unnamed jumps skip regular labels while named jumps search outward;
+  nested functions cannot target an enclosing function's controls. Root
+  scripts reserve the unspellable `eval_ret_idx` local at
   slot zero: expression statements store completion, empty blocks preserve it,
   and `if` resets it before its condition. `while` resets once before its header;
   `do-while` targets its reset on every entered iteration, sends `continue` to
@@ -61,10 +64,15 @@ claim full parity.
   discarded; `continue` selects update, test or body according to the missing
   clauses. With both test and update, the relocatable update IR fragment moves
   after the body like QuickJS's optimize pass, retaining Nop source slots and
-  rebasing only internal jumps so inherited debug markers remain exact. Labels,
-  `for-in`/`for-of`/`for-await`, switch, try/catch/finally, lexical declarations,
-  the `in` operator itself, global `var` and function declarations remain
-  separate grammar/runtime slices. The classic head already ports QuickJS's
+  rebasing only internal jumps so inherited debug markers remain exact. A
+  directly attached label becomes the loop's break/continue name; every other
+  label creates a regular break-only control, active duplicates fail before
+  consuming the second label, and the pinned release's outer-wrapper behavior
+  for multiple labels is retained. Labels and jumps emit no synthetic source
+  marker. `for-in`/`for-of`/`for-await`, switch, try/catch/finally, lexical
+  declarations, the `in` operator itself, global `var` and function
+  declarations remain separate grammar/runtime slices. The classic head
+  already ports QuickJS's
   sloppy `is_let(..., DECL_MASK_OTHER)` ambiguity to that explicit lexical
   boundary; declaration masks for loop/branch single-statement bodies remain
   part of the wider lexical-declaration slice.

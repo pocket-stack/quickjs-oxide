@@ -319,6 +319,22 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "for body fault keeps its expression site",
             "for(;true;){\nnull.x;}",
         ),
+        (
+            "regular labeled body fault keeps its expression site",
+            "outer: {\nnull.x;}",
+        ),
+        (
+            "labeled while continue returns to the condition fault site",
+            "Function.i=0; outer: while(Function.i++===0 ? true :\nnull.x){ continue outer; }",
+        ),
+        (
+            "labeled do continue reaches its condition fault site",
+            "outer: do { continue outer; } while(\nnull.x)",
+        ),
+        (
+            "labeled for continue reaches the relocated update fault site",
+            "Function.i=0; outer: for(;Function.i++<1;\nnull.x){ continue outer; }",
+        ),
     ];
 
     for (description, source) in cases {

@@ -202,11 +202,20 @@ struct SpannedIrOp {
     pc_site: Option<SourceOffset>,
 }
 
-/// Parser-only counterpart of QuickJS `BlockEnv` for a simple loop. Each
-/// function owns its own stack so a nested function cannot target an outer
-/// loop. Labels, switch cleanup and finally unwinding remain later slices.
+/// Parser-only counterpart of the breakable-statement part of QuickJS
+/// `BlockEnv`. Each function owns its own stack so a nested function cannot
+/// target an outer statement. Switch cleanup and finally unwinding remain
+/// later slices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BreakControlKind {
+    RegularStatement,
+    Loop,
+}
+
 #[derive(Debug)]
-struct LoopControlContext {
+struct BreakControlContext {
+    kind: BreakControlKind,
+    label_name: Option<String>,
     entry_depth: usize,
     break_jumps: Vec<usize>,
     continue_jumps: Vec<usize>,
@@ -263,7 +272,7 @@ struct FunctionIr {
     last_identifier_reference: Option<usize>,
     constants: Vec<IrConstant>,
     closure_variables: Vec<ClosureVariable>,
-    loop_controls: Vec<LoopControlContext>,
+    break_controls: Vec<BreakControlContext>,
     stack_depth: usize,
     strict: bool,
 }
@@ -303,7 +312,7 @@ impl FunctionIr {
             last_identifier_reference: None,
             constants: Vec::new(),
             closure_variables: Vec::new(),
-            loop_controls: Vec::new(),
+            break_controls: Vec::new(),
             stack_depth: 0,
             strict,
         }
@@ -408,12 +417,16 @@ impl<'source> Parser<'source> {
             return Ok(());
         }
 
+        if let Some(label_name) = self.label_ahead() {
+            return self.parse_labeled_statement(completion, label_name);
+        }
+
         match self.current().kind {
             TokenKind::Punctuator(Punctuator::LeftBrace) => self.parse_block_statement(completion),
             TokenKind::Keyword(Keyword::If) => self.parse_if_statement(completion),
-            TokenKind::Keyword(Keyword::While) => self.parse_while_statement(completion),
-            TokenKind::Keyword(Keyword::Do) => self.parse_do_while_statement(completion),
-            TokenKind::Keyword(Keyword::For) => self.parse_for_statement(completion),
+            TokenKind::Keyword(Keyword::While) => self.parse_while_statement(completion, None),
+            TokenKind::Keyword(Keyword::Do) => self.parse_do_while_statement(completion, None),
+            TokenKind::Keyword(Keyword::For) => self.parse_for_statement(completion, None),
             TokenKind::Keyword(Keyword::Break) => self.parse_loop_jump_statement(false),
             TokenKind::Keyword(Keyword::Continue) => self.parse_loop_jump_statement(true),
             TokenKind::Keyword(Keyword::Function) => {
@@ -445,6 +458,62 @@ impl<'source> Parser<'source> {
             }
             TokenKind::Keyword(Keyword::Throw) => self.parse_throw_statement(),
             _ => self.parse_expression_statement(completion),
+        }
+    }
+
+    fn parse_labeled_statement(
+        &mut self,
+        completion: StatementCompletion,
+        label_name: String,
+    ) -> Result<(), Error> {
+        if self
+            .current_ir()
+            .break_controls
+            .iter()
+            .any(|control| control.label_name.as_deref() == Some(label_name.as_str()))
+        {
+            return Err(self.syntax_here("duplicate label name"));
+        }
+
+        self.advance()?;
+        self.expect_punctuator(Punctuator::Colon)?;
+        match self.current().kind {
+            // QuickJS passes a directly attached label into an iteration
+            // statement's BlockEnv. A second label first becomes a regular
+            // labeled statement, preserving the pinned release's current
+            // multiple-label continue behavior.
+            TokenKind::Keyword(Keyword::While) => {
+                self.parse_while_statement(completion, Some(label_name))
+            }
+            TokenKind::Keyword(Keyword::Do) => {
+                self.parse_do_while_statement(completion, Some(label_name))
+            }
+            TokenKind::Keyword(Keyword::For) => {
+                self.parse_for_statement(completion, Some(label_name))
+            }
+            _ => {
+                let entry_depth = self.current_ir().stack_depth;
+                self.push_break_control(
+                    BreakControlKind::RegularStatement,
+                    Some(label_name),
+                    entry_depth,
+                );
+                self.parse_statement_or_decl(completion)?;
+                self.require_stack_depth(entry_depth, "labeled statement")?;
+
+                let break_target = self.current_ir().ops.len();
+                let control = self.pop_break_control()?;
+                if !control.continue_jumps.is_empty() {
+                    return Err(Error::internal(
+                        "regular labeled statement received a continue jump",
+                    ));
+                }
+                for jump in control.break_jumps {
+                    self.patch_jump(jump, break_target)?;
+                }
+                self.finish_control_statement();
+                Ok(())
+            }
         }
     }
 
@@ -494,9 +563,13 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    fn parse_while_statement(&mut self, completion: StatementCompletion) -> Result<(), Error> {
+    fn parse_while_statement(
+        &mut self,
+        completion: StatementCompletion,
+        label_name: Option<String>,
+    ) -> Result<(), Error> {
         let entry_depth = self.current_ir().stack_depth;
-        self.push_loop_control(entry_depth);
+        self.push_loop_control(entry_depth, label_name);
         self.advance()?;
         if matches!(completion, StatementCompletion::Eval) {
             self.set_eval_ret_undefined()?;
@@ -517,7 +590,7 @@ impl<'source> Parser<'source> {
         ))?;
 
         let break_target = self.current_ir().ops.len();
-        let control = self.pop_loop_control()?;
+        let control = self.pop_break_control()?;
         self.patch_jump(false_jump, break_target)?;
         for jump in control.continue_jumps {
             self.patch_jump(jump, condition_target)?;
@@ -529,9 +602,13 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    fn parse_do_while_statement(&mut self, completion: StatementCompletion) -> Result<(), Error> {
+    fn parse_do_while_statement(
+        &mut self,
+        completion: StatementCompletion,
+        label_name: Option<String>,
+    ) -> Result<(), Error> {
         let entry_depth = self.current_ir().stack_depth;
-        self.push_loop_control(entry_depth);
+        self.push_loop_control(entry_depth, label_name);
         self.advance()?;
 
         // QuickJS targets the reset itself, so every entered iteration starts
@@ -565,7 +642,7 @@ impl<'source> Parser<'source> {
         self.require_stack_depth(entry_depth, "do-while condition")?;
 
         let break_target = self.current_ir().ops.len();
-        let control = self.pop_loop_control()?;
+        let control = self.pop_break_control()?;
         for jump in control.continue_jumps {
             self.patch_jump(jump, condition_target)?;
         }
@@ -576,7 +653,11 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    fn parse_for_statement(&mut self, completion: StatementCompletion) -> Result<(), Error> {
+    fn parse_for_statement(
+        &mut self,
+        completion: StatementCompletion,
+        label_name: Option<String>,
+    ) -> Result<(), Error> {
         let entry_depth = self.current_ir().stack_depth;
         self.advance()?;
         if matches!(completion, StatementCompletion::Eval) {
@@ -615,7 +696,7 @@ impl<'source> Parser<'source> {
         }
         self.expect_punctuator(Punctuator::Semicolon)?;
 
-        self.push_loop_control(entry_depth);
+        self.push_loop_control(entry_depth, label_name);
         let test_target = if self.is_punctuator(Punctuator::Semicolon) {
             None
         } else {
@@ -682,7 +763,7 @@ impl<'source> Parser<'source> {
         };
 
         let break_target = self.current_ir().ops.len();
-        let control = self.pop_loop_control()?;
+        let control = self.pop_break_control()?;
         if let Some((_, false_jump)) = test_target {
             self.patch_jump(false_jump, break_target)?;
         }
@@ -699,51 +780,82 @@ impl<'source> Parser<'source> {
     fn parse_loop_jump_statement(&mut self, is_continue: bool) -> Result<(), Error> {
         self.advance()?;
 
-        if !self.current().line_terminator_before
-            && let TokenKind::Identifier(identifier) = &self.current().kind
+        let label_name = if self.current().line_terminator_before {
+            None
+        } else if let TokenKind::Identifier(identifier) = &self.current().kind
             && !identifier.escaped_reserved_word
         {
-            return Err(self.syntax_here("break/continue label not found"));
-        }
-
-        let Some(control) = self.current_ir().loop_controls.last() else {
-            return Err(self.syntax_here(if is_continue {
+            Some(identifier.value.clone())
+        } else {
+            None
+        };
+        let target = self
+            .current_ir()
+            .break_controls
+            .iter()
+            .rposition(|control| match label_name.as_deref() {
+                Some(label_name) if is_continue => {
+                    control.kind == BreakControlKind::Loop
+                        && control.label_name.as_deref() == Some(label_name)
+                }
+                Some(label_name) => control.label_name.as_deref() == Some(label_name),
+                None if is_continue => control.kind == BreakControlKind::Loop,
+                None => control.kind != BreakControlKind::RegularStatement,
+            });
+        let Some(target) = target else {
+            return Err(self.syntax_here(if label_name.is_some() {
+                "break/continue label not found"
+            } else if is_continue {
                 "continue must be inside loop"
             } else {
                 "break must be inside loop or switch"
             }));
         };
-        let entry_depth = control.entry_depth;
+        let entry_depth = self.current_ir().break_controls[target].entry_depth;
         self.require_stack_depth(entry_depth, "loop jump")?;
         let jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
         let control = self
             .current_ir_mut()
-            .loop_controls
-            .last_mut()
-            .ok_or_else(|| Error::internal("loop control disappeared while emitting jump"))?;
+            .break_controls
+            .get_mut(target)
+            .ok_or_else(|| Error::internal("break control disappeared while emitting jump"))?;
         if is_continue {
             control.continue_jumps.push(jump);
         } else {
             control.break_jumps.push(jump);
         }
+        if label_name.is_some() {
+            self.advance()?;
+        }
         self.consume_statement_terminator()
     }
 
-    fn push_loop_control(&mut self, entry_depth: usize) {
+    fn push_loop_control(&mut self, entry_depth: usize, label_name: Option<String>) {
+        self.push_break_control(BreakControlKind::Loop, label_name, entry_depth);
+    }
+
+    fn push_break_control(
+        &mut self,
+        kind: BreakControlKind,
+        label_name: Option<String>,
+        entry_depth: usize,
+    ) {
         self.current_ir_mut()
-            .loop_controls
-            .push(LoopControlContext {
+            .break_controls
+            .push(BreakControlContext {
+                kind,
+                label_name,
                 entry_depth,
                 break_jumps: Vec::new(),
                 continue_jumps: Vec::new(),
             });
     }
 
-    fn pop_loop_control(&mut self) -> Result<LoopControlContext, Error> {
+    fn pop_break_control(&mut self) -> Result<BreakControlContext, Error> {
         self.current_ir_mut()
-            .loop_controls
+            .break_controls
             .pop()
-            .ok_or_else(|| Error::internal("loop control stack underflow"))
+            .ok_or_else(|| Error::internal("break control stack underflow"))
     }
 
     fn require_stack_depth(&self, expected: usize, construct: &str) -> Result<(), Error> {
@@ -2571,6 +2683,26 @@ impl<'source> Parser<'source> {
         ))
     }
 
+    /// QuickJS `is_label` accepts only a non-reserved Identifier followed by
+    /// `:` using a non-committing simplified scanner. Keep the probe separate
+    /// from the parser token cache; a lexical failure after the identifier is
+    /// still reported later by the real parser in source order.
+    fn label_ahead(&self) -> Option<String> {
+        let TokenKind::Identifier(identifier) = &self.current().kind else {
+            return None;
+        };
+        if identifier.escaped_reserved_word {
+            return None;
+        }
+        let label_name = identifier.value.clone();
+        let mut lexer = self.lexer.clone();
+        lexer.seek(self.current().span.end);
+        let Ok(next) = lexer.next_token() else {
+            return None;
+        };
+        matches!(next.kind, TokenKind::Punctuator(Punctuator::Colon)).then_some(label_name)
+    }
+
     fn at_eof(&self) -> bool {
         matches!(self.current().kind, TokenKind::Eof)
     }
@@ -4282,6 +4414,49 @@ mod tests {
                 "nested function saw an enclosing for loop for {source:?}"
             );
         }
+    }
+
+    #[test]
+    fn labels_use_per_function_quickjs_break_control_search() {
+        assert_eq!(evaluate("plain: 6;"), Value::Int(6));
+        assert_eq!(evaluate("7; empty: ;"), Value::Int(7));
+        assert_eq!(evaluate("outer: { 2; break outer; 3; }"), Value::Int(2));
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){ var i=0; var x=0; outer: for(;i<3;i++){ while(true){ x++; continue outer; } } return i+'|'+x; })()"
+            ),
+            Value::String(JsString::from_static("3|3"))
+        );
+        assert_eq!(
+            evaluate("first: { 1; break first; } first: 2;"),
+            Value::Int(2)
+        );
+
+        for source in [
+            "duplicate: { duplicate: 1; }",
+            "regular: { continue regular; }",
+            "outer: inner: while(true){ continue outer; }",
+            "outer: while(false) (function(){ break outer; })",
+        ] {
+            let error = compile_unlinked_script(source).unwrap_err();
+            assert!(
+                matches!(error.kind(), ErrorKind::Syntax),
+                "label error was not a SyntaxError for {source:?}: {error}"
+            );
+        }
+        let duplicate = compile_unlinked_script("duplicate: { duplicate: 1; }").unwrap_err();
+        assert_eq!(duplicate.message(), "duplicate label name");
+        let multiple =
+            compile_unlinked_script("outer: inner: while(true){ continue outer; }").unwrap_err();
+        assert_eq!(multiple.message(), "break/continue label not found");
+
+        let bytecode = compile_script("outer: while(true){ break outer; }").unwrap();
+        assert!(
+            bytecode
+                .code
+                .iter()
+                .all(|instruction| !matches!(instruction, Instruction::Goto(u32::MAX)))
+        );
     }
 
     #[test]

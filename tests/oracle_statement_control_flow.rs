@@ -341,6 +341,115 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "nested for resets an earlier body completion",
         "for(;;){ 2; for(;false;) 3; break; }",
     ),
+    ("plain label preserves completion", "plain: 6;"),
+    (
+        "empty labeled statement preserves completion",
+        "7; empty: ;",
+    ),
+    (
+        "labeled block break preserves completion",
+        "outer: { 2; break outer; 3; }",
+    ),
+    (
+        "labeled if break exits the regular statement",
+        "outer: if(true){ 4; break outer; 5; }",
+    ),
+    (
+        "unlabeled break skips a regular labeled statement",
+        "while(true){ marked: { 8; break; } 9; }",
+    ),
+    (
+        "unlabeled continue skips a regular labeled statement",
+        "(function(){ var i=0; var x=0; while(i++<2){ marked: { x++; continue; } } return i+'|'+x; })()",
+    ),
+    (
+        "named break crosses a nested loop to a regular label",
+        "outer: { while(true){ 10; break outer; } 9; }",
+    ),
+    (
+        "labeled break exits an outer for from a nested loop",
+        "(function(){ var i=0; outer: for(;i<5;i++){ while(true){ if(i===2) break outer; break; } } return i; })()",
+    ),
+    (
+        "labeled continue reaches an outer while condition",
+        "(function(){ var i=0; var x=0; outer: while(i++<3){ while(true){ x++; continue outer; } } return i+'|'+x; })()",
+    ),
+    (
+        "labeled continue reaches an outer do condition",
+        "(function(){ var i=0; var x=0; outer: do { i++; while(true){ x++; continue outer; } } while(i<3); return i+'|'+x; })()",
+    ),
+    (
+        "labeled continue reaches an outer for update",
+        "(function(){ var i=0; var x=0; outer: for(;i<3;i++){ while(true){ x++; continue outer; } } return i+'|'+x; })()",
+    ),
+    (
+        "break can cross the pinned multiple-label regular wrapper",
+        "outer: inner: while(true){ 11; break outer; }",
+    ),
+    (
+        "continue can target the directly attached inner loop label",
+        "(function(){ var i=0; outer: inner: while(i++<2){ continue inner; } return i; })()",
+    ),
+    (
+        "escaped label and unescaped target share an identifier value",
+        "\\u0061: { 12; break a; }",
+    ),
+    (
+        "unescaped label and escaped target share an identifier value",
+        "a: { 12; break \\u0061; }",
+    ),
+    (
+        "completed label names can be reused",
+        "same: { 1; break same; } same: 2;",
+    ),
+    (
+        "line terminator before a label colon is accepted",
+        "line\n: 13;",
+    ),
+    (
+        "sloppy contextual let can be a label",
+        "let: { 13; break let; }",
+    ),
+    (
+        "sloppy future reserved word can be a label",
+        "package: { 13; break package; }",
+    ),
+    (
+        "break line terminator keeps the restricted production unlabeled",
+        "outer: while(true){ 14; break\nouter; }",
+    ),
+    (
+        "break CR keeps the restricted production unlabeled",
+        "outer: while(true){ 14; break\router; }",
+    ),
+    (
+        "break CRLF keeps the restricted production unlabeled",
+        "outer: while(true){ 14; break\r\nouter; }",
+    ),
+    (
+        "break line separator keeps the restricted production unlabeled",
+        "outer: while(true){ 14; break\u{2028}outer; }",
+    ),
+    (
+        "break paragraph separator keeps the restricted production unlabeled",
+        "outer: while(true){ 14; break\u{2029}outer; }",
+    ),
+    (
+        "break comment terminator keeps the restricted production unlabeled",
+        "outer: while(true){ 14; break/*\n*/outer; }",
+    ),
+    (
+        "function local var remains valid under a label",
+        "(function(){ local: var x=15; return x; })()",
+    ),
+    (
+        "Function constructor parses labels and named break",
+        "Function('var i=0; outer: for(;i<3;i++){if(i===1)break outer;} return i')()",
+    ),
+    (
+        "nested function owns an independent same-name label",
+        "(function(){ outer: while(true){ return (function(){ outer: { return 16; } })(); } })()",
+    ),
 ];
 
 const ERROR_CASES: &[(&str, &str)] = &[
@@ -501,6 +610,67 @@ const ERROR_CASES: &[(&str, &str)] = &[
     (
         "for pre-scan does not let a later lexical error win",
         "for(true token; ; \"unterminated",
+    ),
+    (
+        "duplicate regular label is rejected",
+        "duplicate: { duplicate: 1; }",
+    ),
+    (
+        "duplicate active loop label is rejected",
+        "duplicate: while(false){ duplicate: 1; }",
+    ),
+    (
+        "escaped and unescaped active label names are duplicates",
+        "duplicate: { d\\u0075plicate: 1; }",
+    ),
+    (
+        "duplicate label wins before later lexical failure",
+        "duplicate: { duplicate: \"unterminated",
+    ),
+    (
+        "continue cannot target a regular labeled statement",
+        "regular: { continue regular; }",
+    ),
+    (
+        "outer label in a multiple-label chain is not a continue target",
+        "outer: inner: while(true){ continue outer; }",
+    ),
+    (
+        "missing named break target remains an early error",
+        "while(true){ break missing; }",
+    ),
+    (
+        "missing named continue target remains an early error",
+        "for(;;){ continue missing; }",
+    ),
+    (
+        "outer label is not visible inside a nested function",
+        "outer: while(false) (function(){ break outer; })",
+    ),
+    (
+        "outer continue label is not visible inside a nested function",
+        "outer: for(;false;) (function(){ continue outer; })",
+    ),
+    ("label requires a statement", "missing:"),
+    (
+        "continue line terminator does not consume a regular label name",
+        "regular: { continue\nregular; }",
+    ),
+    (
+        "resolved break target still scans the following lexical error",
+        "outer: while(true){ break outer \"unterminated",
+    ),
+    (
+        "unknown break label wins before a later lexical error",
+        "while(true){ break missing \"unterminated",
+    ),
+    (
+        "escaped reserved word is not consumed as a break label",
+        "while(true){ break \\u0069f; }",
+    ),
+    (
+        "escaped reserved word is not accepted as a statement label",
+        "\\u0069f: 1;",
     ),
 ];
 

@@ -258,6 +258,14 @@ fn template_concat_getter_fault_sites_match_pinned_quickjs() {
             "for test inherits the preceding marker",
             "Function.i=0;\nfor(;`a${3}b`;);",
         ),
+        (
+            "regular label does not replace the body expression marker",
+            "1+2;\nouter: `a${3}b`;",
+        ),
+        (
+            "labeled continue does not replace the relocated update marker",
+            "Function.i=0;\nouter: for(;Function.i++<1;`a${3}b`){4+5; continue outer;}",
+        ),
     ] {
         assert_eq!(
             rust_getter_fault_location(source),
@@ -465,6 +473,26 @@ fn template_stack_limit_uses_reachable_bytecode_like_pinned_quickjs() {
         (
             "for-body-before-break-is-reachable",
             format!("for(;;){{{huge_template};break;}}"),
+            false,
+        ),
+        (
+            "labeled-break-makes-regular-tail-unreachable",
+            format!("outer:{{break outer;{huge_template};}}"),
+            true,
+        ),
+        (
+            "labeled-body-before-break-is-reachable",
+            format!("outer:{{{huge_template};break outer;}}"),
+            false,
+        ),
+        (
+            "outer-labeled-break-makes-for-update-unreachable",
+            format!("outer:for(;true;{huge_template}){{while(true){{break outer;}}}}"),
+            true,
+        ),
+        (
+            "outer-labeled-continue-makes-for-update-reachable",
+            format!("outer:for(;true;{huge_template}){{while(true){{continue outer;}}}}"),
             false,
         ),
     ] {
