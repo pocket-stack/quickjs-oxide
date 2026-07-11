@@ -1922,8 +1922,10 @@ fn symbol_record(runtime: &Runtime, symbol: &SymbolRef) -> String {
         .as_ref()
         .map_or_else(|| "undefined".to_owned(), utf16_units);
     let text = JsString::from("Symbol(")
-        .concat(&description.unwrap_or_else(|| JsString::from("")))
-        .concat(&JsString::from(")"));
+        .try_concat(&description.unwrap_or_else(|| JsString::from("")))
+        .unwrap()
+        .try_concat(&JsString::from(")"))
+        .unwrap();
     format!("{description_units}/{}", utf16_units(&text))
 }
 

@@ -1,4 +1,7 @@
+use std::cell::RefCell;
 use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::iter::FusedIterator;
 use std::rc::Rc;
 
 use num_bigint::BigUint;
@@ -9,20 +12,153 @@ use crate::error::{Error, ErrorKind};
 use crate::object::{ObjectRef, SymbolRef};
 
 /// ECMAScript strings are sequences of UTF-16 code units, not UTF-8 scalar
-/// values. Keeping Latin-1 and UTF-16 representations mirrors `QuickJS`'s compact
-/// 8/16-bit strings while preserving lone surrogates.
-#[derive(Clone, Eq, Hash, PartialEq)]
+/// values. Compact Latin-1/UTF-16 leaves and bounded ropes mirror QuickJS's
+/// current representation while preserving lone surrogates.
+#[derive(Clone)]
 pub struct JsString(Rc<StringRepr>);
 
-#[derive(Eq, Hash, PartialEq)]
+/// Fallible string-kernel operations which map to JavaScript-visible QuickJS
+/// InternalErrors at the VM/native realm boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JsStringError {
+    TooLong,
+}
+
+impl fmt::Display for JsStringError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLong => formatter.write_str("string too long"),
+        }
+    }
+}
+
+impl std::error::Error for JsStringError {}
+
+impl From<JsStringError> for Error {
+    fn from(error: JsStringError) -> Self {
+        match error {
+            JsStringError::TooLong => Error::new(ErrorKind::JsInternal, error.to_string()),
+        }
+    }
+}
+
 enum StringRepr {
     Latin1(Box<[u8]>),
     Utf16(Box<[u16]>),
+    Rope(RopeRepr),
 }
+
+struct RopeRepr {
+    len: usize,
+    is_wide: bool,
+    depth: u8,
+    /// QuickJS rewrites a shared rope to `flat + empty` after ToString while
+    /// retaining its tag and cached depth. The state transition releases the
+    /// old children and preserves that exact observable performance shape.
+    state: RefCell<RopeState>,
+}
+
+enum RopeState {
+    Tree { left: JsString, right: JsString },
+    Linearized { flat: JsString },
+}
+
+struct Utf16Units {
+    stack: [Option<JsString>; 61],
+    stack_len: usize,
+    current_flat: Option<(JsString, usize)>,
+    remaining: usize,
+}
+
+impl Utf16Units {
+    fn new(string: &JsString) -> Self {
+        let mut iterator = Self {
+            stack: std::array::from_fn(|_| None),
+            stack_len: 0,
+            current_flat: None,
+            remaining: string.len(),
+        };
+        iterator.push(string.clone());
+        iterator
+    }
+
+    fn push(&mut self, string: JsString) {
+        assert!(
+            self.stack_len < self.stack.len(),
+            "String rope exceeded its bounded iterator depth"
+        );
+        self.stack[self.stack_len] = Some(string);
+        self.stack_len += 1;
+    }
+
+    fn pop(&mut self) -> Option<JsString> {
+        self.stack_len = self.stack_len.checked_sub(1)?;
+        self.stack[self.stack_len].take()
+    }
+}
+
+impl Iterator for Utf16Units {
+    type Item = u16;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some((flat, index)) = &mut self.current_flat {
+                let unit = match flat.0.as_ref() {
+                    StringRepr::Latin1(units) => units.get(*index).copied().map(u16::from),
+                    StringRepr::Utf16(units) => units.get(*index).copied(),
+                    StringRepr::Rope(_) => {
+                        unreachable!("UTF-16 iterator current node must be flat")
+                    }
+                };
+                if let Some(unit) = unit {
+                    *index += 1;
+                    self.remaining -= 1;
+                    return Some(unit);
+                }
+                self.current_flat = None;
+            }
+
+            let node = self.pop()?;
+            match node.0.as_ref() {
+                StringRepr::Latin1(_) | StringRepr::Utf16(_) => {
+                    self.current_flat = Some((node, 0));
+                }
+                StringRepr::Rope(rope) => match &*rope.state.borrow() {
+                    RopeState::Tree { left, right } => {
+                        self.push(right.clone());
+                        self.push(left.clone());
+                    }
+                    RopeState::Linearized { flat } => self.push(flat.clone()),
+                },
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for Utf16Units {
+    fn len(&self) -> usize {
+        self.remaining
+    }
+}
+
+impl FusedIterator for Utf16Units {}
 
 impl JsString {
     /// QuickJS reserves 30 bits for a string's UTF-16 code-unit length.
     pub const MAX_LEN: usize = (1 << 30) - 1;
+    const ROPE_SHORT_LEN: usize = 512;
+    const ROPE_SHORT2_LEN: usize = 8192;
+    const ROPE_MAX_DEPTH: u8 = 60;
+    const ROPE_BUCKET_LENGTHS: [usize; 44] = [
+        1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597, 2584, 4181, 6765, 10946,
+        17711, 28657, 46368, 75025, 121393, 196418, 317811, 514229, 832040, 1346269, 2178309,
+        3524578, 5702887, 9227465, 14930352, 24157817, 39088169, 63245986, 102334155, 165580141,
+        267914296, 433494437, 701408733, 1134903170,
+    ];
 
     #[must_use]
     pub fn from_utf8(value: &str) -> Self {
@@ -58,6 +194,7 @@ impl JsString {
         match self.0.as_ref() {
             StringRepr::Latin1(units) => units.len(),
             StringRepr::Utf16(units) => units.len(),
+            StringRepr::Rope(rope) => rope.len,
         }
     }
 
@@ -68,44 +205,29 @@ impl JsString {
 
     #[must_use]
     pub fn utf16_units(&self) -> impl ExactSizeIterator<Item = u16> + '_ {
-        enum Units<'a> {
-            Latin1(std::slice::Iter<'a, u8>),
-            Utf16(std::slice::Iter<'a, u16>),
-        }
-
-        impl Iterator for Units<'_> {
-            type Item = u16;
-
-            fn next(&mut self) -> Option<Self::Item> {
-                match self {
-                    Self::Latin1(iter) => iter.next().map(|unit| u16::from(*unit)),
-                    Self::Utf16(iter) => iter.next().copied(),
-                }
-            }
-
-            fn size_hint(&self) -> (usize, Option<usize>) {
-                match self {
-                    Self::Latin1(iter) => iter.size_hint(),
-                    Self::Utf16(iter) => iter.size_hint(),
-                }
-            }
-        }
-
-        impl ExactSizeIterator for Units<'_> {}
-
-        match self.0.as_ref() {
-            StringRepr::Latin1(units) => Units::Latin1(units.iter()),
-            StringRepr::Utf16(units) => Units::Utf16(units.iter()),
-        }
+        Utf16Units::new(self)
     }
 
     /// Return one UTF-16 code unit without decoding or normalizing surrogate
     /// pairs. This is the equivalent of QuickJS's `string_get` fast path.
     #[must_use]
     pub fn code_unit_at(&self, index: usize) -> Option<u16> {
+        if index >= self.len() {
+            return None;
+        }
         match self.0.as_ref() {
             StringRepr::Latin1(units) => units.get(index).copied().map(u16::from),
             StringRepr::Utf16(units) => units.get(index).copied(),
+            StringRepr::Rope(rope) => match &*rope.state.borrow() {
+                RopeState::Linearized { flat } => flat.code_unit_at(index),
+                RopeState::Tree { left, right } => {
+                    if index < left.len() {
+                        left.code_unit_at(index)
+                    } else {
+                        right.code_unit_at(index - left.len())
+                    }
+                }
+            },
         }
     }
 
@@ -164,26 +286,268 @@ impl JsString {
     }
 
     fn first_unpaired_surrogate(&self) -> Option<usize> {
-        let StringRepr::Utf16(units) = self.0.as_ref() else {
+        if !self.is_wide() {
             return None;
-        };
-        let mut index = 0;
-        while index < units.len() {
-            let unit = units[index];
-            if (0xd800..=0xdbff).contains(&unit)
-                && units
-                    .get(index + 1)
-                    .is_some_and(|next| (0xdc00..=0xdfff).contains(next))
-            {
-                index += 2;
-                continue;
+        }
+        let mut units = self.utf16_units().enumerate().peekable();
+        while let Some((index, unit)) = units.next() {
+            if (0xd800..=0xdbff).contains(&unit) {
+                if units
+                    .peek()
+                    .is_some_and(|(_, next)| (0xdc00..=0xdfff).contains(next))
+                {
+                    units.next();
+                    continue;
+                }
+                return Some(index);
             }
             if (0xd800..=0xdfff).contains(&unit) {
                 return Some(index);
             }
-            index += 1;
         }
         None
+    }
+
+    fn is_wide(&self) -> bool {
+        match self.0.as_ref() {
+            StringRepr::Latin1(_) => false,
+            StringRepr::Utf16(_) => true,
+            StringRepr::Rope(rope) => rope.is_wide,
+        }
+    }
+
+    fn depth(&self) -> u8 {
+        match self.0.as_ref() {
+            StringRepr::Latin1(_) | StringRepr::Utf16(_) => 0,
+            StringRepr::Rope(rope) => rope.depth,
+        }
+    }
+
+    pub(crate) fn is_flat(&self) -> bool {
+        matches!(
+            self.0.as_ref(),
+            StringRepr::Latin1(_) | StringRepr::Utf16(_)
+        )
+    }
+
+    fn quickjs_hash(&self, seed: u32) -> u32 {
+        self.utf16_units().fold(seed, |hash, unit| {
+            hash.wrapping_mul(263).wrapping_add(u32::from(unit))
+        })
+    }
+
+    fn rope_children(rope: &RopeRepr) -> (Self, Self) {
+        match &*rope.state.borrow() {
+            RopeState::Tree { left, right } => (left.clone(), right.clone()),
+            RopeState::Linearized { flat } => (flat.clone(), Self::from("")),
+        }
+    }
+
+    fn flat_concat(left: &Self, right: &Self) -> Self {
+        debug_assert!(left.is_flat() && right.is_flat());
+        let len = left
+            .len()
+            .checked_add(right.len())
+            .expect("validated flat String concatenation length overflowed");
+        debug_assert!(len <= Self::MAX_LEN);
+        match (left.0.as_ref(), right.0.as_ref()) {
+            (StringRepr::Latin1(left), StringRepr::Latin1(right)) => {
+                let mut units = Vec::with_capacity(len);
+                units.extend_from_slice(left);
+                units.extend_from_slice(right);
+                Self(Rc::new(StringRepr::Latin1(units.into_boxed_slice())))
+            }
+            (
+                StringRepr::Latin1(_) | StringRepr::Utf16(_),
+                StringRepr::Latin1(_) | StringRepr::Utf16(_),
+            ) => {
+                let units = left
+                    .utf16_units()
+                    .chain(right.utf16_units())
+                    .collect::<Vec<_>>();
+                debug_assert_eq!(units.len(), len);
+                Self(Rc::new(StringRepr::Utf16(units.into_boxed_slice())))
+            }
+            (StringRepr::Rope(_), _) | (_, StringRepr::Rope(_)) => {
+                unreachable!("flat String concatenation received a rope")
+            }
+        }
+    }
+
+    fn new_rope_unbalanced(left: Self, right: Self) -> Result<Self, JsStringError> {
+        let len = left
+            .len()
+            .checked_add(right.len())
+            .filter(|len| *len <= Self::MAX_LEN)
+            .ok_or(JsStringError::TooLong)?;
+        let depth = left
+            .depth()
+            .max(right.depth())
+            .checked_add(1)
+            .expect("String rope depth invariant overflowed");
+        Ok(Self(Rc::new(StringRepr::Rope(RopeRepr {
+            len,
+            is_wide: left.is_wide() || right.is_wide(),
+            depth,
+            state: RefCell::new(RopeState::Tree { left, right }),
+        }))))
+    }
+
+    fn new_rope(left: Self, right: Self) -> Result<Self, JsStringError> {
+        let rope = Self::new_rope_unbalanced(left, right)?;
+        if rope.depth() > Self::ROPE_MAX_DEPTH {
+            rope.rebalance()
+        } else {
+            Ok(rope)
+        }
+    }
+
+    fn rebalance(&self) -> Result<Self, JsStringError> {
+        let mut buckets: [Option<Self>; Self::ROPE_BUCKET_LENGTHS.len()] =
+            std::array::from_fn(|_| None);
+        // Rebalancing is entered for the one temporary depth-61 rope. A
+        // depth-first traversal therefore needs at most 62 pending nodes.
+        let mut pending: [Option<Self>; 62] = std::array::from_fn(|_| None);
+        pending[0] = Some(self.clone());
+        let mut pending_len = 1;
+        while pending_len != 0 {
+            pending_len -= 1;
+            let node = pending[pending_len]
+                .take()
+                .expect("String rope rebalance stack contained a hole");
+            match node.0.as_ref() {
+                StringRepr::Rope(rope) => {
+                    match &*rope.state.borrow() {
+                        RopeState::Tree { left, right } => {
+                            assert!(
+                                pending_len + 2 <= pending.len(),
+                                "String rope exceeded its bounded rebalance depth"
+                            );
+                            pending[pending_len] = Some(right.clone());
+                            pending[pending_len + 1] = Some(left.clone());
+                            pending_len += 2;
+                        }
+                        RopeState::Linearized { flat } => {
+                            assert!(
+                                pending_len < pending.len(),
+                                "String rope exceeded its bounded rebalance depth"
+                            );
+                            pending[pending_len] = Some(flat.clone());
+                            pending_len += 1;
+                        }
+                    }
+                    continue;
+                }
+                StringRepr::Latin1(_) | StringRepr::Utf16(_) if node.is_empty() => continue,
+                StringRepr::Latin1(_) | StringRepr::Utf16(_) => {}
+            }
+
+            let len = node.len();
+            let mut index = 0;
+            let mut prefix = None;
+            while len >= Self::ROPE_BUCKET_LENGTHS[index + 1] {
+                if let Some(bucket) = buckets[index].take() {
+                    prefix = Some(match prefix {
+                        None => bucket,
+                        Some(prefix) => Self::new_rope_unbalanced(bucket, prefix)?,
+                    });
+                }
+                index += 1;
+            }
+            let mut value = match prefix {
+                Some(prefix) => Self::new_rope_unbalanced(prefix, node)?,
+                None => node,
+            };
+            while let Some(bucket) = buckets[index].take() {
+                value = Self::new_rope_unbalanced(bucket, value)?;
+                index += 1;
+            }
+            buckets[index] = Some(value);
+        }
+
+        let mut result = None;
+        for bucket in buckets.into_iter().flatten() {
+            result = Some(match result {
+                None => bucket,
+                Some(result) => Self::new_rope_unbalanced(bucket, result)?,
+            });
+        }
+        Ok(result.unwrap_or_else(|| Self::from("")))
+    }
+
+    /// Return a compact flat string, caching the result on a rope. This is the
+    /// safe-Rust equivalent of QuickJS `js_linearize_string_rope`.
+    #[must_use]
+    pub(crate) fn linearize(&self) -> Self {
+        let StringRepr::Rope(rope) = self.0.as_ref() else {
+            return self.clone();
+        };
+        if let RopeState::Linearized { flat } = &*rope.state.borrow() {
+            return flat.clone();
+        }
+        let flattened = if rope.is_wide {
+            Self(Rc::new(StringRepr::Utf16(
+                self.utf16_units().collect::<Vec<_>>().into_boxed_slice(),
+            )))
+        } else {
+            let units = self
+                .utf16_units()
+                .map(|unit| {
+                    u8::try_from(unit).expect("a narrow String rope contained a wide code unit")
+                })
+                .collect::<Vec<_>>();
+            Self(Rc::new(StringRepr::Latin1(units.into_boxed_slice())))
+        };
+        *rope.state.borrow_mut() = RopeState::Linearized {
+            flat: flattened.clone(),
+        };
+        flattened
+    }
+
+    /// Concatenate with QuickJS's short-flat/rope thresholds, bounded depth,
+    /// Fibonacci rebalance and 30-bit length cap.
+    ///
+    /// # Errors
+    /// Returns [`JsStringError::TooLong`] when the result would exceed
+    /// [`Self::MAX_LEN`] UTF-16 code units.
+    pub fn try_concat(&self, other: &Self) -> Result<Self, JsStringError> {
+        self.len()
+            .checked_add(other.len())
+            .filter(|len| *len <= Self::MAX_LEN)
+            .ok_or(JsStringError::TooLong)?;
+
+        if other.is_flat() {
+            if other.is_empty() {
+                return Ok(self.clone());
+            }
+            if other.len() <= Self::ROPE_SHORT_LEN {
+                if self.is_flat() {
+                    if self.len() <= Self::ROPE_SHORT2_LEN {
+                        return Ok(Self::flat_concat(self, other));
+                    }
+                    return Self::new_rope(self.clone(), other.clone());
+                }
+                if let StringRepr::Rope(rope) = self.0.as_ref() {
+                    let (left, right) = Self::rope_children(rope);
+                    if right.is_flat() && right.len() <= Self::ROPE_SHORT_LEN {
+                        let tail = Self::flat_concat(&right, other);
+                        return Self::new_rope(left, tail);
+                    }
+                }
+            }
+        } else if self.is_flat() {
+            if self.is_empty() {
+                return Ok(other.clone());
+            }
+            if let StringRepr::Rope(rope) = other.0.as_ref() {
+                let (left, right) = Self::rope_children(rope);
+                if left.is_flat() && left.len() <= Self::ROPE_SHORT_LEN {
+                    let head = Self::flat_concat(self, &left);
+                    return Self::new_rope(head, right);
+                }
+            }
+        }
+        Self::new_rope(self.clone(), other.clone())
     }
 
     /// Lossy conversion is suitable for terminal diagnostics. It must not be
@@ -194,10 +558,20 @@ impl JsString {
             .map(|result| result.unwrap_or(char::REPLACEMENT_CHARACTER))
             .collect()
     }
+}
 
-    #[must_use]
-    pub fn concat(&self, other: &Self) -> Self {
-        Self::from_utf16(self.utf16_units().chain(other.utf16_units()))
+impl PartialEq for JsString {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+            || (self.len() == other.len() && self.utf16_units().eq(other.utf16_units()))
+    }
+}
+
+impl Eq for JsString {}
+
+impl Hash for JsString {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u32(self.quickjs_hash(0));
     }
 }
 
@@ -324,7 +698,7 @@ impl Value {
                 }
                 value.to_string()
             }
-            Self::String(value) => return Ok(value.clone()),
+            Self::String(value) => return Ok(value.linearize()),
             Self::Symbol(_) => {
                 return Err(Error::new(
                     ErrorKind::Type,
@@ -535,8 +909,19 @@ impl PartialEq for Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{JsString, Value, number_to_string};
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::rc::Rc;
+
+    use super::{JsString, JsStringError, Value, number_to_string};
     use crate::bigint::JsBigInt;
+    use crate::error::{Error, ErrorKind};
+
+    fn content_hash(value: &JsString) -> u64 {
+        let mut state = DefaultHasher::new();
+        value.hash(&mut state);
+        state.finish()
+    }
 
     #[test]
     fn string_length_counts_utf16_code_units() {
@@ -572,6 +957,185 @@ mod tests {
         let well_formed = JsString::from_utf16([0xd83d, 0xde80]);
         assert!(well_formed.is_well_formed());
         assert_eq!(well_formed.to_well_formed(), well_formed);
+    }
+
+    #[test]
+    fn rope_thresholds_fringe_merges_and_content_identity_match_quickjs() {
+        let flat_8192 = JsString::from_utf8(&"a".repeat(8192));
+        let short_512 = JsString::from_utf8(&"b".repeat(512));
+        let merged_flat = flat_8192.try_concat(&short_512).unwrap();
+        assert!(merged_flat.is_flat());
+        assert_eq!(merged_flat.len(), 8704);
+
+        let flat_8193 = JsString::from_utf8(&"a".repeat(8193));
+        let rope = flat_8193.try_concat(&short_512).unwrap();
+        assert!(!rope.is_flat());
+        assert_eq!(rope.depth(), 1);
+        assert_eq!(rope.code_unit_at(8192), Some(u16::from(b'a')));
+        assert_eq!(rope.code_unit_at(8193), Some(u16::from(b'b')));
+
+        let expected = JsString::from_utf8(&("a".repeat(8193) + &"b".repeat(512)));
+        assert_eq!(rope, expected);
+        assert_eq!(content_hash(&rope), content_hash(&expected));
+        let mut units = rope.utf16_units();
+        assert_eq!(units.len(), rope.len());
+        assert_eq!(units.next(), Some(u16::from(b'a')));
+        assert_eq!(units.len(), rope.len() - 1);
+
+        let one = JsString::from("c");
+        let tail_merged = rope.try_concat(&one).unwrap();
+        assert_eq!(tail_merged.depth(), 1);
+        let super::StringRepr::Rope(tail) = tail_merged.0.as_ref() else {
+            panic!("short right fringe did not remain a rope");
+        };
+        let (_, tail_right) = JsString::rope_children(tail);
+        assert_eq!(tail_right.len(), 513);
+        assert!(tail_right.is_flat());
+
+        let right_513 = JsString::from_utf8(&"z".repeat(513));
+        let threshold_rope = flat_8192.try_concat(&right_513).unwrap();
+        assert!(!threshold_rope.is_flat());
+        let no_tail_merge = threshold_rope.try_concat(&one).unwrap();
+        assert_eq!(no_tail_merge.depth(), 2);
+        let super::StringRepr::Rope(no_tail_merge_rope) = no_tail_merge.0.as_ref() else {
+            panic!("513-unit right fringe did not remain nested");
+        };
+        let (unmerged_left, _) = JsString::rope_children(no_tail_merge_rope);
+        assert!(Rc::ptr_eq(&unmerged_left.0, &threshold_rope.0));
+
+        let left_513_rope = right_513.try_concat(&flat_8192).unwrap();
+        let no_head_merge = one.try_concat(&left_513_rope).unwrap();
+        assert_eq!(no_head_merge.depth(), 2);
+        let super::StringRepr::Rope(no_head_merge_rope) = no_head_merge.0.as_ref() else {
+            panic!("513-unit left fringe did not remain nested");
+        };
+        let (_, unmerged_right) = JsString::rope_children(no_head_merge_rope);
+        assert!(Rc::ptr_eq(&unmerged_right.0, &left_513_rope.0));
+
+        let right_rope = short_512.try_concat(&right_513).unwrap();
+        assert_eq!(right_rope.depth(), 1);
+        let head_merged = one.try_concat(&right_rope).unwrap();
+        assert_eq!(head_merged.depth(), 1);
+        let super::StringRepr::Rope(head) = head_merged.0.as_ref() else {
+            panic!("short left fringe did not remain a rope");
+        };
+        let (head_left, _) = JsString::rope_children(head);
+        assert_eq!(head_left.len(), 513);
+        assert!(head_left.is_flat());
+
+        let empty = JsString::from("");
+        let large_flat = JsString::from_utf8(&"q".repeat(8193));
+        let empty_plus_flat = empty.try_concat(&large_flat).unwrap();
+        assert!(!empty_plus_flat.is_flat());
+        let empty_plus_rope = empty.try_concat(&empty_plus_flat).unwrap();
+        assert!(Rc::ptr_eq(&empty_plus_rope.0, &empty_plus_flat.0));
+        let rope_plus_empty = empty_plus_flat.try_concat(&empty).unwrap();
+        assert!(Rc::ptr_eq(&rope_plus_empty.0, &empty_plus_flat.0));
+
+        let cached_flat = empty_plus_flat.linearize();
+        assert!(cached_flat.is_flat());
+        let cached_concat = empty_plus_flat.try_concat(&JsString::from("!")).unwrap();
+        assert!(!cached_concat.is_flat());
+        assert_eq!(
+            cached_concat.code_unit_at(cached_concat.len() - 1),
+            Some(0x21)
+        );
+    }
+
+    #[test]
+    fn rope_code_points_and_well_formed_scans_cross_leaf_boundaries() {
+        let mut left = vec![u16::from(b'a'); 8192];
+        left.push(0xd83d);
+        let mut right = vec![0xde80];
+        right.extend(std::iter::repeat_n(u16::from(b'b'), 512));
+        let valid = JsString::from_utf16(left)
+            .try_concat(&JsString::from_utf16(right))
+            .unwrap();
+        assert!(!valid.is_flat());
+        assert_eq!(valid.code_point_at(8192), Some(0x1f680));
+        assert!(valid.is_well_formed());
+
+        let invalid =
+            JsString::from_utf16(std::iter::repeat_n(u16::from(b'a'), 8192).chain([0xd800]))
+                .try_concat(&JsString::from_utf16(
+                    [u16::from(b'x')]
+                        .into_iter()
+                        .chain(std::iter::repeat_n(u16::from(b'b'), 512)),
+                ))
+                .unwrap();
+        assert!(!invalid.is_well_formed());
+        let repaired = invalid.to_well_formed();
+        assert_eq!(repaired.code_unit_at(8192), Some(0xfffd));
+        assert_eq!(repaired.len(), invalid.len());
+    }
+
+    #[test]
+    fn rope_rebalances_and_reaches_the_quickjs_length_guard_without_flattening() {
+        let marker_chunk = |index: usize| {
+            let marker = char::from(b'A' + u8::try_from(index % 26).unwrap());
+            JsString::from_utf8(&marker.to_string().repeat(8193))
+        };
+        let mut deep = marker_chunk(0);
+        for index in 1..101 {
+            deep = deep.try_concat(&marker_chunk(index)).unwrap();
+            assert!(deep.depth() <= JsString::ROPE_MAX_DEPTH);
+        }
+        for index in 0..101 {
+            let marker = u16::from(b'A' + u8::try_from(index % 26).unwrap());
+            assert_eq!(deep.code_unit_at(index * 8193), Some(marker));
+            assert_eq!(deep.code_unit_at((index + 1) * 8193 - 1), Some(marker));
+        }
+
+        let mut prepended = marker_chunk(100);
+        for index in (0..100).rev() {
+            prepended = marker_chunk(index).try_concat(&prepended).unwrap();
+            assert!(prepended.depth() <= JsString::ROPE_MAX_DEPTH);
+        }
+        for index in 0..101 {
+            let marker = u16::from(b'A' + u8::try_from(index % 26).unwrap());
+            assert_eq!(prepended.code_unit_at(index * 8193), Some(marker));
+            assert_eq!(prepended.code_unit_at((index + 1) * 8193 - 1), Some(marker));
+        }
+
+        let before_hash = content_hash(&deep);
+        let flat = deep.linearize();
+        assert!(flat.is_flat());
+        assert_eq!(deep, flat);
+        assert_eq!(before_hash, content_hash(&deep));
+        assert_eq!(before_hash, content_hash(&flat));
+
+        let chunk = JsString::from_utf8(&"x".repeat(8193));
+        let mut near_limit = chunk;
+        for _ in 0..16 {
+            near_limit = near_limit.try_concat(&near_limit).unwrap();
+        }
+        assert_eq!(near_limit.len(), 536_936_448);
+        assert!(matches!(
+            near_limit.try_concat(&near_limit),
+            Err(JsStringError::TooLong)
+        ));
+        let error = Error::from(JsStringError::TooLong);
+        assert_eq!(error.kind(), ErrorKind::JsInternal);
+        assert_eq!(error.message(), "string too long");
+
+        let mut powers = Vec::with_capacity(30);
+        let mut power = JsString::from("x");
+        powers.push(power.clone());
+        for _ in 1..30 {
+            power = power.try_concat(&power).unwrap();
+            powers.push(power.clone());
+        }
+        let mut exact_max = JsString::from("");
+        for power in powers.into_iter().rev() {
+            exact_max = exact_max.try_concat(&power).unwrap();
+        }
+        assert_eq!(exact_max.len(), JsString::MAX_LEN);
+        assert!(matches!(
+            exact_max.try_concat(&JsString::from("x")),
+            Err(JsStringError::TooLong)
+        ));
+        let exact_plus_empty = exact_max.try_concat(&JsString::from("")).unwrap();
+        assert!(Rc::ptr_eq(&exact_plus_empty.0, &exact_max.0));
     }
 
     #[test]

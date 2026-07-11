@@ -49,6 +49,15 @@ primitive assignment preserves raw-receiver inherited setters and QuickJS's
 `not an object` versus read-only split. String receivers also participate in
 the three implemented Object-prototype routes, including defining-realm
 boxing, observable `@@toStringTag`, cross-realm brand checks, and collection.
+The shared `JsString` kernel now mirrors QuickJS's compact Latin-1/UTF-16
+leaves and bounded rope representation: the 512/8192 flat-concatenation
+thresholds, short-fringe merging, depth-60 limit, 44 Fibonacci rebalance
+buckets, content equality/hash, cross-leaf UTF-16 access, and cached
+linearization are implemented without putting ropes in the object GC graph.
+VM `+`, `String.prototype.concat`, and the implemented native concatenation
+sites share the checked 30-bit path; property-key/atom publication
+linearizes by UTF-16 content. Public dynamic flat-string construction and
+recoverable allocator failures are still separate unfinished invariants.
 `%Number.prototype%` is the pinned boxed-`+0` Number-class object. The global
 `%Number%` publishes the exact ordered 17/7 constructor/prototype surface:
 call/construct and BigInt conversion, parser aliases captured by identity,
@@ -152,8 +161,8 @@ followed by `DeleteProperty`; strict direct references are early errors. Each
 realm also installs the frozen `Infinity`, `NaN` and `undefined` global data
 properties. Dynamic object-environment resolution through `with`/direct
 `eval`, Proxy/exotic delete dispatch, the global String constructor, the
-remaining 43 String-prototype own keys, and QuickJS's rope/global checked-string
-construction paths remain unfinished slices.
+remaining 43 String-prototype own keys, global checked flat-string construction,
+and recoverable string-allocation failures remain unfinished slices.
 Runtime-wide full/strip-source/strip-debug modes follow QuickJS's immutable
 bytecode publication boundary, and the `qjs` CLI exposes `--strip-source` and
 `-s` with upstream last-option-wins behavior.
@@ -205,6 +214,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_conversion_core -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_utf16_prefix -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_string_rope -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_parse_kernel -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

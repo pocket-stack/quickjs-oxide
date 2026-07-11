@@ -223,8 +223,15 @@ claim full parity.
   non-index reads and writes now traverse the bytecode realm's String prototype
   with the raw receiver, and String receivers use the implemented
   Object-prototype boxing/tag/value routes in the native method's defining
-  realm. Global `%String%`, the remaining 43 prototype own keys, global checked
-  string construction and rope representation stay unpublished.
+  realm. The common String value kernel uses compact Latin-1/UTF-16 leaves plus
+  QuickJS-shaped ropes: 512/8192 flat thresholds, short head/tail merging,
+  depth-60/Fibonacci rebalance, O(1) length, cross-leaf UTF-16 access,
+  content-based equality/hash and cached linearization. VM `+`, native
+  `concat`, and the implemented internal concatenation sites all use its
+  checked 30-bit-length path; atom/property-key publication stores a linearized
+  key.
+  Global `%String%`, the remaining 43 prototype own keys, checked dynamic flat
+  constructors and recoverable allocator failure handling stay unpublished.
   `%Number.prototype%` is a Number-class wrapper
   containing `+0` and owns the pinned ordered seven-key method surface. Its
   constructor owns the exact ordered 17-key surface: parser aliases captured
@@ -593,9 +600,12 @@ property delete cover ordinary objects and the current primitive surface. The
 separate String exotic, UTF-16-prefix and conversion cores cover branded
 empty-prototype and sloppy-this wrappers, UTF-16 virtual own properties, the
 first seven generic code-unit methods, `toString`/`valueOf`, non-index prototype
-lookup and the implemented Object-prototype routes, but do not publish the
-global constructor, remaining 43 own keys or rope/global checked-construction
-paths.
+lookup and the implemented Object-prototype routes. Their shared value kernel
+does publish the pinned flat/rope concat thresholds, bounded Fibonacci
+rebalance, cross-leaf code-unit semantics, content identity, atom
+linearization, and checked VM/native concat errors, but does not publish the
+global constructor, remaining 43 own keys, globally checked dynamic
+construction or recoverable allocator failures.
 Prefix/postfix update expressions
 (including QuickJS's valid `++x ** 2` form) are implemented for the current
 identifier and ordinary fixed/computed member References. Sloppy
@@ -630,6 +640,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_utf16_prefix -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_string_rope -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_parse_kernel -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_number_parsers -- --nocapture
@@ -651,9 +663,10 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-parity-slice.sh
 ```
 
-The first fourteen commands run the dedicated Boolean, Symbol, String-exotic
-substrate, String UTF-16 prefix, String-conversion core, global BaseObjects,
-complete Number-intrinsic and BigInt-intrinsic differentials. The full gate
+The first fifteen commands run the dedicated Boolean, Symbol, String-exotic
+substrate, String UTF-16 prefix, String-conversion core, String-rope kernel,
+global BaseObjects, complete Number-intrinsic and BigInt-intrinsic
+differentials. The full gate
 command checksum-verifies and builds the official test-only oracle, runs
 formatting, unit/integration/oracle tests, Clippy, and the Rust-only product
 gate. The oracle is never part of the product dependency graph or runtime.

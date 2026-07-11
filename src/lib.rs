@@ -36,7 +36,7 @@ pub use object::{
     OrdinaryPropertyDescriptor, PropertyKey, SymbolRef, WellKnownSymbol,
 };
 pub use runtime::{Context, EvalOptions, Runtime, RuntimeError};
-pub use value::{JsString, Value};
+pub use value::{JsString, JsStringError, Value};
 
 /// The exact upstream release whose observable behavior is the compatibility
 /// baseline for this crate.

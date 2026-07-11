@@ -41,8 +41,7 @@ use crate::property::{
     validate_and_apply_property_descriptor,
 };
 use crate::shape::{PropertyFlags, Shape, ShapeEntry, ShapeError};
-use crate::value::JsString;
-use crate::value::Value;
+use crate::value::{JsString, JsStringError, Value};
 use crate::vm::{BytecodePc, CallInput, Completion, ToPrimitiveHint, Vm, VmHost};
 
 static NEXT_RUNTIME_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
@@ -167,12 +166,6 @@ struct NativeArguments {
 enum NativeConversion<T> {
     Value(T),
     Throw(Value),
-}
-
-fn checked_string_concat_length(current: usize, additional: usize) -> Option<usize> {
-    current
-        .checked_add(additional)
-        .filter(|length| *length <= JsString::MAX_LEN)
 }
 
 enum Compilation {
@@ -1355,6 +1348,12 @@ impl From<Error> for RuntimeError {
     }
 }
 
+impl From<JsStringError> for RuntimeError {
+    fn from(error: JsStringError) -> Self {
+        Self::Engine(Error::from(error))
+    }
+}
+
 impl From<AtomError> for RuntimeError {
     fn from(error: AtomError) -> Self {
         Self::Atom(error)
@@ -1905,6 +1904,14 @@ impl Runtime {
         if !prototype.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("primitive prototype"));
         }
+        let value = match (kind, value) {
+            (PrimitiveKind::String, Value::String(value)) => {
+                // QuickJS `JS_ToObject` always linearizes a rope before a
+                // JS_CLASS_STRING wrapper owns its object_data payload.
+                Value::String(value.linearize())
+            }
+            (_, value) => value,
+        };
         self.validate_value_domain(&value, "primitive wrapper payload")?;
         let string_length = match &value {
             Value::String(value) if kind == PrimitiveKind::String => Some(value.len()),
@@ -3898,10 +3905,7 @@ impl Runtime {
         let Ok(index) = usize::try_from(index) else {
             return Ok(None);
         };
-        Ok(value
-            .utf16_units()
-            .nth(index)
-            .map(|unit| JsString::from_utf16([unit])))
+        Ok(value.code_unit_at(index).map(JsString::from_code_unit))
     }
 
     fn string_exotic_length(&self, object: &ObjectRef) -> Result<Option<usize>, RuntimeError> {
@@ -7000,7 +7004,7 @@ impl Runtime {
             Completion::Return(_) => JsString::from(""),
             Completion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let name = JsString::from("bound ").concat(&name);
+        let name = JsString::from("bound ").try_concat(&name)?;
         self.define_function_data_property(
             bound.as_object(),
             "name",
@@ -7085,8 +7089,8 @@ impl Runtime {
             FunctionKind::AsyncGenerator => "async function *",
         };
         let source = JsString::from(prefix)
-            .concat(&name)
-            .concat(&JsString::from("() {\n    [native code]\n}"));
+            .try_concat(&name)?
+            .try_concat(&JsString::from("() {\n    [native code]\n}"))?;
         Ok(Completion::Return(Value::String(source)))
     }
 
@@ -7775,26 +7779,19 @@ impl Runtime {
             return Ok(Completion::Return(Value::String(receiver)));
         }
 
-        let mut length = receiver.len();
-        let mut chunks = Vec::with_capacity(arguments.actual_arg_count + 1);
-        chunks.push(receiver);
+        let mut result = receiver;
         for argument in &arguments.readable[..arguments.actual_arg_count] {
-            let chunk = match self.native_to_js_string(realm, argument)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            let chunk = match argument {
+                // QuickJS `JS_ConcatString` accepts an existing rope without
+                // routing it back through `JS_ToString`/linearization.
+                Value::String(value) => value.clone(),
+                _ => match self.native_to_js_string(realm, argument)? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                },
             };
-            let Some(next_length) = checked_string_concat_length(length, chunk.len()) else {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Internal,
-                    "string too long",
-                )?));
-            };
-            length = next_length;
-            chunks.push(chunk);
+            result = result.try_concat(&chunk).map_err(Error::from)?;
         }
-        let result = JsString::from_utf16(chunks.iter().flat_map(|chunk| chunk.utf16_units()));
-        debug_assert_eq!(result.len(), length);
         Ok(Completion::Return(Value::String(result)))
     }
 
@@ -7884,8 +7881,8 @@ impl Runtime {
                     .unwrap_or_else(|| JsString::from(""));
                 Ok(Completion::Return(Value::String(
                     JsString::from("Symbol(")
-                        .concat(&description)
-                        .concat(&JsString::from(")")),
+                        .try_concat(&description)?
+                        .try_concat(&JsString::from(")"))?,
                 )))
             }
             (PrimitiveKind::BigInt, Value::BigInt(value)) => {
@@ -8270,8 +8267,8 @@ impl Runtime {
             },
         };
         let result = JsString::from("[object ")
-            .concat(&tag)
-            .concat(&JsString::from("]"));
+            .try_concat(&tag)?
+            .try_concat(&JsString::from("]"))?;
         Ok(Completion::Return(Value::String(result)))
     }
 
@@ -8504,7 +8501,8 @@ impl Runtime {
         } else if message.is_empty() {
             name
         } else {
-            name.concat(&JsString::from(": ")).concat(&message)
+            name.try_concat(&JsString::from(": "))?
+                .try_concat(&message)?
         };
         Ok(Completion::Return(Value::String(result)))
     }
@@ -10761,7 +10759,6 @@ mod tests {
     use super::{
         ActiveFrameKind, CallableExecution, DeferredRefOp, EvalOptions, PropertyGetAction,
         PropertySetAction, Runtime, RuntimeError, ToPrimitiveHint, VarRefRoot,
-        checked_string_concat_length,
     };
 
     fn data_descriptor(
@@ -11607,12 +11604,15 @@ mod tests {
                 .unwrap(),
             Value::String(JsString::from("Rundefinednulltrue1"))
         );
-        assert_eq!(
-            checked_string_concat_length(JsString::MAX_LEN - 1, 1),
-            Some(JsString::MAX_LEN)
-        );
-        assert_eq!(checked_string_concat_length(JsString::MAX_LEN, 1), None);
-        assert_eq!(checked_string_concat_length(usize::MAX, 1), None);
+        let mut near_limit = JsString::from_utf8(&"x".repeat(8193));
+        for _ in 0..16 {
+            near_limit = near_limit.try_concat(&near_limit).unwrap();
+        }
+        assert_eq!(near_limit.len(), 536_936_448);
+        assert!(matches!(
+            near_limit.try_concat(&near_limit),
+            Err(crate::value::JsStringError::TooLong)
+        ));
 
         let is_well_formed = property_callable(&runtime, &mut context, &prototype, "isWellFormed");
         let to_well_formed = property_callable(&runtime, &mut context, &prototype, "toWellFormed");
@@ -11647,6 +11647,78 @@ mod tests {
             Value::String(JsString::from("c"))
         );
         assert_eq!(context.eval("'abc'.charCodeAt(1)").unwrap(), Value::Int(98));
+    }
+
+    #[test]
+    fn string_rope_vm_and_native_concat_overflow_use_the_defining_realms() {
+        let runtime = Runtime::new();
+        let mut first = runtime.new_context();
+        let mut second = runtime.new_context();
+        let first_string = first.string_prototype().unwrap();
+        let concat = property_callable(&runtime, &mut first, &first_string, "concat");
+        let internal_error = global_callable(&runtime, &mut first, "InternalError");
+        let prototype_key = runtime.intern_property_key("prototype").unwrap();
+        let Value::Object(first_internal_error_prototype) = first
+            .get_property(internal_error.as_object(), &prototype_key)
+            .unwrap()
+        else {
+            panic!("InternalError.prototype was not an object");
+        };
+
+        let mut near_limit = JsString::from_utf8(&"x".repeat(8193));
+        for _ in 0..16 {
+            near_limit = near_limit.try_concat(&near_limit).unwrap();
+        }
+        assert_eq!(near_limit.len(), 536_936_448);
+        assert!(!near_limit.is_flat());
+
+        let global = first.global_object().unwrap();
+        let near_key = runtime.intern_property_key("nearLimitString").unwrap();
+        assert!(
+            runtime
+                .define_own_property(
+                    &global,
+                    &near_key,
+                    &data_descriptor(Value::String(near_limit.clone()), true, false, true),
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            first.eval("nearLimitString + nearLimitString"),
+            Err(RuntimeError::Exception)
+        );
+        let Some(Value::Object(vm_error)) = first.take_exception().unwrap() else {
+            panic!("VM String overflow did not publish an Error object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&vm_error).unwrap(),
+            Some(first_internal_error_prototype.clone())
+        );
+        let message = runtime.intern_property_key("message").unwrap();
+        assert_eq!(
+            first.get_property(&vm_error, &message).unwrap(),
+            Value::String(JsString::from("string too long"))
+        );
+
+        assert_eq!(
+            second.call(
+                &concat,
+                Value::String(JsString::from("")),
+                &[Value::String(near_limit.clone()), Value::String(near_limit),],
+            ),
+            Err(RuntimeError::Exception)
+        );
+        let Some(Value::Object(native_error)) = second.take_exception().unwrap() else {
+            panic!("native String.concat overflow did not publish an Error object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&native_error).unwrap(),
+            Some(first_internal_error_prototype)
+        );
+        assert_eq!(
+            second.get_property(&native_error, &message).unwrap(),
+            Value::String(JsString::from("string too long"))
+        );
     }
 
     #[test]

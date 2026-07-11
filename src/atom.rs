@@ -347,18 +347,19 @@ impl AtomTable {
     /// Returns [`AtomError::RefCountOverflow`] if an existing atom cannot be
     /// retained, or [`AtomError::TableFull`] if a new atom cannot be assigned.
     pub fn intern_js_string(&mut self, text: &JsString) -> Result<Atom, AtomError> {
+        let text = text.linearize();
         if let Some(atom) =
-            parse_canonical_u32_js_string(text).and_then(Atom::from_immediate_integer)
+            parse_canonical_u32_js_string(&text).and_then(Atom::from_immediate_integer)
         {
             return Ok(atom);
         }
 
-        if let Some(&atom) = self.strings.get(text) {
+        if let Some(&atom) = self.strings.get(&text) {
             return self.retain(atom);
         }
 
         let atom = self.allocate(AtomKind::String, Some(text.clone()), false)?;
-        self.strings.insert(text.clone(), atom);
+        self.strings.insert(text, atom);
         Ok(atom)
     }
 
@@ -398,19 +399,20 @@ impl AtomTable {
     ///
     /// Returns [`AtomError::TableFull`] if a new atom cannot be assigned.
     pub fn intern_static_js_string(&mut self, text: &JsString) -> Result<Atom, AtomError> {
+        let text = text.linearize();
         if let Some(atom) =
-            parse_canonical_u32_js_string(text).and_then(Atom::from_immediate_integer)
+            parse_canonical_u32_js_string(&text).and_then(Atom::from_immediate_integer)
         {
             return Ok(atom);
         }
 
-        if let Some(&atom) = self.strings.get(text) {
+        if let Some(&atom) = self.strings.get(&text) {
             self.pin(atom)?;
             return Ok(atom);
         }
 
         let atom = self.allocate(AtomKind::String, Some(text.clone()), true)?;
-        self.strings.insert(text.clone(), atom);
+        self.strings.insert(text, atom);
         Ok(atom)
     }
 
@@ -431,12 +433,13 @@ impl AtomTable {
     /// Returns [`AtomError::RefCountOverflow`] if an existing symbol cannot be
     /// retained, or [`AtomError::TableFull`] if a new symbol cannot be assigned.
     pub fn intern_global_symbol_js_string(&mut self, key: &JsString) -> Result<Atom, AtomError> {
-        if let Some(&atom) = self.global_symbols.get(key) {
+        let key = key.linearize();
+        if let Some(&atom) = self.global_symbols.get(&key) {
             return self.retain(atom);
         }
 
         let atom = self.allocate(AtomKind::GlobalSymbol, Some(key.clone()), false)?;
-        self.global_symbols.insert(key.clone(), atom);
+        self.global_symbols.insert(key, atom);
         Ok(atom)
     }
 
@@ -458,13 +461,14 @@ impl AtomTable {
         &mut self,
         key: &JsString,
     ) -> Result<Atom, AtomError> {
-        if let Some(&atom) = self.global_symbols.get(key) {
+        let key = key.linearize();
+        if let Some(&atom) = self.global_symbols.get(&key) {
             self.pin(atom)?;
             return Ok(atom);
         }
 
         let atom = self.allocate(AtomKind::GlobalSymbol, Some(key.clone()), true)?;
-        self.global_symbols.insert(key.clone(), atom);
+        self.global_symbols.insert(key, atom);
         Ok(atom)
     }
 
@@ -767,6 +771,7 @@ impl AtomTable {
         text: Option<JsString>,
         pinned: bool,
     ) -> Result<Atom, AtomError> {
+        let text = text.map(|text| text.linearize());
         debug_assert!(kind != AtomKind::String || text.is_some());
         debug_assert!(kind != AtomKind::GlobalSymbol || text.is_some());
 
@@ -1038,6 +1043,39 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0xd800, 0x61]
         );
+    }
+
+    #[test]
+    fn rope_keys_linearize_and_intern_by_utf16_content() {
+        let mut atoms = AtomTable::new();
+        let left = JsString::from_utf8(&"a".repeat(8193));
+        let right = JsString::from_utf8(&"b".repeat(513));
+        let rope = left.try_concat(&right).unwrap();
+        assert!(!rope.is_flat());
+        let flat = JsString::from_utf8(&("a".repeat(8193) + &"b".repeat(513)));
+
+        let first = atoms.intern_js_string(&rope).unwrap();
+        let duplicate = atoms.intern_property_key_js_string(&flat).unwrap();
+        assert_eq!(first, duplicate);
+        assert_eq!(atoms.resolve(first).unwrap().ref_count, Some(2));
+        let AtomSpelling::Text(stored) = atoms.resolve(first).unwrap().spelling else {
+            panic!("rope string atom did not retain text");
+        };
+        assert!(stored.is_flat());
+        assert_eq!(stored, &flat);
+
+        let global_rope = atoms.intern_global_symbol_js_string(&rope).unwrap();
+        let global_flat = atoms.intern_global_symbol_js_string(&flat).unwrap();
+        assert_eq!(global_rope, global_flat);
+        let AtomSpelling::Text(global_stored) = atoms.resolve(global_rope).unwrap().spelling else {
+            panic!("rope global-symbol key did not retain text");
+        };
+        assert!(global_stored.is_flat());
+
+        assert_eq!(atoms.release(first), Ok(ReleaseOutcome::Retained(1)));
+        assert_eq!(atoms.release(duplicate), Ok(ReleaseOutcome::Removed));
+        assert_eq!(atoms.release(global_rope), Ok(ReleaseOutcome::Retained(1)));
+        assert_eq!(atoms.release(global_flat), Ok(ReleaseOutcome::Removed));
     }
 
     #[test]

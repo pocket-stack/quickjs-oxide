@@ -1212,9 +1212,16 @@ impl CallFrame {
             Completion::Throw(value) => return Ok(OperationOutcome::Throw(value)),
         };
         if matches!(left, Value::String(_)) || matches!(right, Value::String(_)) {
-            let left = left.to_js_string()?;
-            let right = right.to_js_string()?;
-            self.stack.push(Value::String(left.concat(&right)));
+            let left = match left {
+                Value::String(value) => value,
+                value => value.to_js_string()?,
+            };
+            let right = match right {
+                Value::String(value) => value,
+                value => value.to_js_string()?,
+            };
+            self.stack
+                .push(Value::String(left.try_concat(&right).map_err(Error::from)?));
         } else {
             let left = to_numeric_primitive(left)?;
             let right = to_numeric_primitive(right)?;
@@ -1393,6 +1400,7 @@ fn bigint_error(error: BigIntError) -> Error {
 #[cfg(test)]
 mod tests {
     use crate::bytecode::{BytecodeFunction, Instruction};
+    use crate::error::ErrorKind;
     use crate::value::{JsString, Value};
 
     use super::{Vm, number_pow, number_to_int32, number_to_uint32};
@@ -1461,6 +1469,41 @@ mod tests {
             Vm::new().execute(&function).unwrap(),
             Value::String(JsString::from("quickjs"))
         );
+    }
+
+    #[test]
+    fn string_addition_builds_ropes_and_reports_the_quickjs_length_error() {
+        let chunk = JsString::from_utf8(&"x".repeat(8193));
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushConst(0),
+                Instruction::PushConst(1),
+                Instruction::Add,
+                Instruction::Return,
+            ],
+            constants: vec![Value::String(chunk.clone()), Value::String(chunk.clone())],
+            max_stack: 2,
+        };
+        let Value::String(rope) = Vm::new().execute(&function).unwrap() else {
+            panic!("large String addition did not return a String");
+        };
+        assert_eq!(rope.len(), 16_386);
+        assert!(!rope.is_flat());
+
+        let mut near_limit = chunk;
+        for _ in 0..16 {
+            near_limit = near_limit.try_concat(&near_limit).unwrap();
+        }
+        let overflow = BytecodeFunction {
+            name: None,
+            code: function.code,
+            constants: vec![Value::String(near_limit.clone()), Value::String(near_limit)],
+            max_stack: 2,
+        };
+        let error = Vm::new().execute(&overflow).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::JsInternal);
+        assert_eq!(error.message(), "string too long");
     }
 
     #[test]
