@@ -67,9 +67,15 @@ Identifier scanning consumes the checksum-pinned QuickJS Unicode 17 compressed
 rules. Direct and valid escaped BMP/astral spellings share the same binding,
 retain their source spans, avoid normalization, and count the 30-bit buffer cap
 in UTF-16 code units. Exhaustive scalar classification and compiler/VM
-differentials are pinned to the official release. Parser-first diagnostic
-priority for malformed identifier escapes remains pending while compilation
-still tokenizes the complete input eagerly. The byte boundary now reproduces
+differentials are pinned to the official release. Compiler token consumption is
+now parser-driven: fallible advances propagate only reached lexical errors,
+unrecognized ASCII remains a raw token, and directive-prologue probes seek back
+and rescan under the selected strict context. This preserves QuickJS's
+transactional malformed-identifier-escape commitment and the tested reserved/
+parser/lexer diagnostic priority, including exact line/column positions.
+Contextual word
+classification for the still-unimplemented module, generator and async grammar
+will extend the same token path. The byte boundary now reproduces
 `JS_NewStringLen`: embedded NUL,
 WTF-8 surrogates, non-BMP pairs, legacy five/six-byte lead handling, and the
 release's unusual invalid-byte replacement/skip rule are preserved. Fallible

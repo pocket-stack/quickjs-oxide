@@ -16,7 +16,10 @@
 //!
 //! Identifier classification uses the checksum-pinned QuickJS Unicode 17
 //! `ID_Start`/`ID_Continue` tables rather than the host or Rust toolchain's
-//! Unicode version.
+//! Unicode version. Identifier escape probes are transactional: a failed
+//! ordinary probe falls back to QuickJS's one-byte raw ASCII token, whereas a
+//! private-name failure and a genuinely invalid non-ASCII character remain
+//! lexical errors for the parser's fallible token advance.
 
 use std::fmt;
 use std::iter::FusedIterator;
@@ -481,6 +484,10 @@ pub enum TokenKind<'a> {
     Template(TemplatePart<'a>),
     RegExp(RegExpLiteral<'a>),
     Punctuator(Punctuator),
+    /// An otherwise unrecognized ASCII byte. QuickJS returns these bytes as
+    /// raw tokens so the parser can choose the context-specific diagnostic;
+    /// non-ASCII invalid input remains a lexical error.
+    RawAscii(u8),
     Eof,
 }
 
@@ -529,6 +536,7 @@ impl fmt::Display for LexError {
 impl std::error::Error for LexError {}
 
 /// Stateful scanner over one UTF-8 source string.
+#[derive(Clone)]
 pub struct Lexer<'a> {
     source: &'a str,
     offset: usize,
@@ -570,6 +578,19 @@ impl<'a> Lexer<'a> {
 
     pub fn current_position(&self) -> Position {
         Position::new(self.offset, self.line, self.column)
+    }
+
+    /// Seeks to a trusted token-start position before rescanning under a new
+    /// lexical context. The caller must provide a position previously produced
+    /// for this source.
+    pub(crate) fn seek(&mut self, position: Position) {
+        debug_assert!(position.byte_offset <= self.source.len());
+        debug_assert!(self.source.is_char_boundary(position.byte_offset));
+        self.offset = position.byte_offset;
+        self.line = position.line;
+        self.column = position.column;
+        self.eof_emitted = false;
+        self.failed = false;
     }
 
     pub fn context(&self) -> LexContext {
@@ -641,7 +662,7 @@ impl<'a> Lexer<'a> {
             }
             c if is_identifier_start(c) || c == '\\' => self.scan_identifier(false)?,
             '#' => self.scan_identifier(true)?,
-            _ => TokenKind::Punctuator(self.scan_punctuator()?),
+            _ => self.scan_punctuator()?,
         };
 
         Ok(Token {
@@ -858,7 +879,11 @@ impl<'a> Lexer<'a> {
                 }
                 let decoded = match self.scan_identifier_escape() {
                     Ok(decoded) => decoded,
-                    Err(error) if first && !private => return Err(error),
+                    Err(_) if first && !private => {
+                        (self.offset, self.line, self.column) = checkpoint;
+                        self.bump_char();
+                        return Ok(TokenKind::RawAscii(b'\\'));
+                    }
                     Err(_) if first => {
                         (self.offset, self.line, self.column) = checkpoint;
                         return Err(self.error_from(
@@ -882,19 +907,15 @@ impl<'a> Lexer<'a> {
                     if !first {
                         break;
                     }
-                    return Err(self.error_from(
-                        start,
-                        if private {
-                            LexErrorKind::InvalidPrivateIdentifier
-                        } else {
-                            LexErrorKind::UnexpectedCharacter
-                        },
-                        if private {
-                            "invalid first character of private name"
-                        } else {
-                            "Unicode escape is not valid at this identifier position"
-                        },
-                    ));
+                    if private {
+                        return Err(self.error_from(
+                            start,
+                            LexErrorKind::InvalidPrivateIdentifier,
+                            "invalid first character of private name",
+                        ));
+                    }
+                    self.bump_char();
+                    return Ok(TokenKind::RawAscii(b'\\'));
                 }
                 let decoded =
                     char::from_u32(decoded).expect("ID_Start/ID_Continue excluded a surrogate");
@@ -1211,7 +1232,7 @@ impl<'a> Lexer<'a> {
             return Err(self.error_from(
                 start,
                 LexErrorKind::InvalidNumber,
-                "identifier characters may not immediately follow a number literal",
+                "invalid number literal",
             ));
         }
         Ok(())
@@ -1235,7 +1256,7 @@ impl<'a> Lexer<'a> {
                 return Err(self.error_from(
                     start,
                     LexErrorKind::UnterminatedString,
-                    "unterminated string literal",
+                    "unexpected end of string",
                 ));
             };
             if ch == separator {
@@ -1249,10 +1270,9 @@ impl<'a> Lexer<'a> {
                 }));
             }
             if matches!(ch, '\r' | '\n') {
-                return Err(self.error_here(
-                    LexErrorKind::UnterminatedString,
-                    "unescaped line terminator in string literal",
-                ));
+                return Err(
+                    self.error_here(LexErrorKind::UnterminatedString, "unexpected end of string")
+                );
             }
             if ch == '\\' {
                 has_escape = true;
@@ -1333,7 +1353,11 @@ impl<'a> Lexer<'a> {
                     return Err(self.error_from(
                         start,
                         LexErrorKind::InvalidEscape,
-                        "legacy octal escape is not allowed in this context",
+                        if self.options.context.strict {
+                            "octal escape sequences are not allowed in strict mode"
+                        } else {
+                            "legacy octal escape is not allowed in this context"
+                        },
                     ));
                 }
                 let value = self.scan_legacy_octal_escape();
@@ -1627,12 +1651,12 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    fn scan_punctuator(&mut self) -> Result<Punctuator, LexError> {
+    fn scan_punctuator(&mut self) -> Result<TokenKind<'a>, LexError> {
         use Punctuator::*;
 
         if self.starts_with("?.") && !self.peek_nth_char(2).is_some_and(|ch| ch.is_ascii_digit()) {
             self.consume_ascii("?.");
-            return Ok(OptionalChain);
+            return Ok(TokenKind::Punctuator(OptionalChain));
         }
 
         const PUNCTUATORS: &[(&str, Punctuator)] = &[
@@ -1697,15 +1721,16 @@ impl<'a> Lexer<'a> {
         for (text, punctuator) in PUNCTUATORS {
             if self.starts_with(text) {
                 self.consume_ascii(text);
-                return Ok(*punctuator);
+                return Ok(TokenKind::Punctuator(*punctuator));
             }
         }
 
         let ch = self.peek_char().expect("called before end of source");
-        Err(self.error_here(
-            LexErrorKind::UnexpectedCharacter,
-            format!("unexpected character U+{:04X}", ch as u32),
-        ))
+        if ch.is_ascii() {
+            self.bump_char();
+            return Ok(TokenKind::RawAscii(ch as u8));
+        }
+        Err(self.error_here(LexErrorKind::UnexpectedCharacter, "unexpected character"))
     }
 }
 
@@ -2019,19 +2044,24 @@ mod tests {
         };
         assert_eq!(identifier.value, "a");
         assert!(identifier.has_escape);
-        assert_eq!(
-            escaped_invalid_tail.next_token().unwrap_err().kind,
-            LexErrorKind::UnexpectedCharacter
-        );
+        assert!(matches!(
+            escaped_invalid_tail.next_token().unwrap().kind,
+            TokenKind::RawAscii(b'\\')
+        ));
 
         assert_eq!(
             Lexer::new("😀").next_token().unwrap_err().kind,
             LexErrorKind::UnexpectedCharacter
         );
-        assert_eq!(
-            Lexer::new(r"\u0300").next_token().unwrap_err().kind,
-            LexErrorKind::UnexpectedCharacter
-        );
+        for source in [r"\u0300", r"\u{}", r"\u{2d}", r"\x61"] {
+            let token = Lexer::new(source).next_token().unwrap();
+            assert!(matches!(token.kind, TokenKind::RawAscii(b'\\')));
+            assert_eq!(token.span.end.byte_offset, 1);
+        }
+        assert!(matches!(
+            Lexer::new("@").next_token().unwrap().kind,
+            TokenKind::RawAscii(b'@')
+        ));
         let mut invalid_tail = Lexer::new("ascii😀");
         assert!(matches!(
             invalid_tail.next_token().unwrap().kind,
@@ -2068,6 +2098,19 @@ mod tests {
             panic!("expected a Unicode private identifier");
         };
         assert_eq!(identifier.value, "π\u{0300}");
+
+        for source in [r"#a\u{}", r"#a\u{2d}", r"#a\uD800"] {
+            let mut lexer = Lexer::new(source);
+            let TokenKind::PrivateIdentifier(identifier) = lexer.next_token().unwrap().kind else {
+                panic!("expected the valid private-name prefix for {source}");
+            };
+            assert_eq!(identifier.value, "a");
+            assert!(identifier.has_escape);
+            assert!(matches!(
+                lexer.next_token().unwrap().kind,
+                TokenKind::RawAscii(b'\\')
+            ));
+        }
     }
 
     #[test]

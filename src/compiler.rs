@@ -6,7 +6,10 @@
 //! functions.  This module keeps the same boundary in typed form: parsing emits
 //! [`IrOp`]s into a recursive [`FunctionIr`] arena, identifier resolution runs
 //! child-first, and only then are VM instructions and recursive unlinked
-//! function constants produced.
+//! function constants produced. The parser owns its Lexer and requests tokens
+//! through fallible advances, so an error on later source cannot preempt a
+//! diagnostic on the current token. Directive-prologue probes clone and seek
+//! the lexer, then the committed stream is rescanned under its strict context.
 
 use crate::bigint::JsBigInt;
 use crate::bytecode::{BytecodeFunction, Instruction, verify_parts};
@@ -18,8 +21,8 @@ use crate::heap::{
     FunctionKind as BytecodeFunctionKind, FunctionMetadata,
 };
 use crate::lexer::{
-    Identifier, Keyword, LexError, LexErrorKind, Lexer, NumberKind, NumericRadix, Punctuator, Span,
-    Token, TokenKind,
+    Identifier, Keyword, LexError, LexErrorKind, Lexer, LexicalGoal, NumberKind, NumericRadix,
+    Punctuator, Span, Token, TokenKind,
 };
 use crate::value::{JsString, JsStringError, Value};
 use num_bigint::BigUint;
@@ -264,6 +267,7 @@ struct FunctionTree {
 }
 
 struct Parser<'source> {
+    lexer: Lexer<'source>,
     tokens: Vec<Token<'source>>,
     cursor: usize,
     current_function: FunctionId,
@@ -282,14 +286,12 @@ impl<'source> Parser<'source> {
                 "source is too large for QuickJS debug metadata",
             ));
         }
-        let tokens = Lexer::new(source).tokenize().map_err(lex_error)?;
-        let strict = directive_prologue_has_use_strict(&tokens);
-        let source_span = tokens
-            .first()
-            .expect("the lexer always emits an EOF token")
-            .span;
+        let mut lexer = Lexer::new(source);
+        let first_token = lexer.next_token().map_err(lex_error)?;
+        let source_span = first_token.span;
         let mut parser = Self {
-            tokens,
+            lexer,
+            tokens: vec![first_token],
             cursor: 0,
             current_function: 0,
             anonymous_function_definition: None,
@@ -304,9 +306,12 @@ impl<'source> Parser<'source> {
                 },
                 Some("<eval>".to_owned()),
                 Vec::new(),
-                strict,
+                false,
             )],
         };
+        let strict = parser.directive_prologue_has_use_strict(0, false)?;
+        parser.relex_current_with_strict(strict)?;
+        parser.functions[0].strict = strict;
         parser.parse_script_body()?;
         Ok(FunctionTree {
             functions: parser.functions,
@@ -319,7 +324,7 @@ impl<'source> Parser<'source> {
         let mut has_completion_value = false;
 
         while !self.at_eof() {
-            if self.consume_punctuator(Punctuator::Semicolon) {
+            if self.consume_punctuator(Punctuator::Semicolon)? {
                 continue;
             }
             if has_completion_value {
@@ -337,16 +342,16 @@ impl<'source> Parser<'source> {
                 ));
             }
             if matches!(self.current().kind, TokenKind::Keyword(Keyword::Return)) {
-                return Err(self.syntax_here("'return' is only valid inside a function body"));
+                return Err(self.syntax_here("return not in a function"));
             }
 
             if matches!(self.current().kind, TokenKind::Keyword(Keyword::Throw)) {
                 let throw_span = self.current().span;
-                self.advance();
+                self.advance()?;
                 if self.current().line_terminator_before {
                     return Err(Error::syntax(
                         "line terminator not allowed after throw",
-                        source_span(throw_span),
+                        source_span(self.current().span),
                     ));
                 }
                 self.parse_expression()?;
@@ -357,7 +362,7 @@ impl<'source> Parser<'source> {
                 has_completion_value = true;
             }
 
-            if self.consume_punctuator(Punctuator::Semicolon) {
+            if self.consume_punctuator(Punctuator::Semicolon)? {
                 continue;
             }
             if self.at_eof() {
@@ -386,7 +391,7 @@ impl<'source> Parser<'source> {
             if self.at_eof() {
                 return Err(self.syntax_here("unterminated function body"));
             }
-            if self.consume_punctuator(Punctuator::Semicolon) {
+            if self.consume_punctuator(Punctuator::Semicolon)? {
                 continue;
             }
 
@@ -417,7 +422,7 @@ impl<'source> Parser<'source> {
 
     fn parse_return_statement(&mut self) -> Result<(), Error> {
         let return_span = self.current().span;
-        self.advance();
+        self.advance()?;
         if self.current().line_terminator_before
             || self.at_eof()
             || self.is_punctuator(Punctuator::Semicolon)
@@ -443,11 +448,11 @@ impl<'source> Parser<'source> {
 
     fn parse_throw_statement(&mut self) -> Result<(), Error> {
         let throw_span = self.current().span;
-        self.advance();
+        self.advance()?;
         if self.current().line_terminator_before {
             return Err(Error::syntax(
                 "line terminator not allowed after throw",
-                source_span(throw_span),
+                source_span(self.current().span),
             ));
         }
         self.parse_expression()?;
@@ -456,19 +461,28 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_var_statement(&mut self) -> Result<(), Error> {
-        self.advance();
+        self.advance()?;
         loop {
             let token = self.current().clone();
             let TokenKind::Identifier(identifier) = token.kind else {
-                return Err(self.syntax_here("expected an identifier in var declaration"));
+                return Err(self.syntax_here("variable name expected"));
             };
-            validate_identifier(
+            validate_identifier_reservation(
                 &identifier,
                 token.span,
                 self.current_ir().strict,
                 IdentifierContext::Variable,
             )?;
-            if identifier.value == "arguments"
+            let strict = self.current_ir().strict;
+            let name = identifier.value;
+            self.advance()?;
+            if strict && matches!(name.as_str(), "eval" | "arguments") {
+                return Err(Error::syntax(
+                    "invalid variable name in strict mode",
+                    source_span(self.current().span),
+                ));
+            }
+            if name == "arguments"
                 && !self
                     .current_ir()
                     .parameters
@@ -479,12 +493,10 @@ impl<'source> Parser<'source> {
                     "the implicit ordinary-function arguments binding is not implemented yet",
                 ));
             }
-            let name = identifier.value;
             self.register_local(&name, token.span)?;
-            self.advance();
 
             let initializer_span = self.current().span;
-            if self.consume_punctuator(Punctuator::Equal) {
+            if self.consume_punctuator(Punctuator::Equal)? {
                 self.parse_assignment()?;
                 if self.anonymous_function_definition.take().is_some() {
                     // QuickJS emits a dummy OP_set_name after an anonymous
@@ -504,7 +516,7 @@ impl<'source> Parser<'source> {
                 )?;
             }
 
-            if !self.consume_punctuator(Punctuator::Comma) {
+            if !self.consume_punctuator(Punctuator::Comma)? {
                 break;
             }
         }
@@ -532,7 +544,7 @@ impl<'source> Parser<'source> {
     }
 
     fn consume_statement_terminator(&mut self, allow_right_brace: bool) -> Result<(), Error> {
-        if self.consume_punctuator(Punctuator::Semicolon)
+        if self.consume_punctuator(Punctuator::Semicolon)?
             || self.at_eof()
             || (allow_right_brace && self.is_punctuator(Punctuator::RightBrace))
             || self.current().line_terminator_before
@@ -551,7 +563,7 @@ impl<'source> Parser<'source> {
         self.parse_assignment()?;
         let mut has_comma = false;
         while self.is_punctuator(Punctuator::Comma) {
-            self.advance();
+            self.advance()?;
             has_comma = true;
             self.emit_instruction(Instruction::Drop)?;
             self.parse_assignment()?;
@@ -611,7 +623,7 @@ impl<'source> Parser<'source> {
 
         if let Some(operation) = compound {
             if let Some(target) = self.promote_tail_identifier_get()? {
-                self.advance();
+                self.advance()?;
                 self.validate_identifier_assignment_target(&target)?;
                 self.parse_assignment()?;
                 self.emit_instruction_at(operation, source_offset(assignment_span)?)?;
@@ -622,7 +634,7 @@ impl<'source> Parser<'source> {
             let Some(target) = self.promote_tail_member_get_for_compound()? else {
                 return Err(self.syntax_here("invalid assignment left-hand side"));
             };
-            self.advance();
+            self.advance()?;
             self.parse_assignment()?;
             self.emit_instruction_at(operation, source_offset(assignment_span)?)?;
             self.anonymous_function_definition = None;
@@ -631,7 +643,7 @@ impl<'source> Parser<'source> {
         }
 
         if let Some(target) = self.take_tail_identifier_reference()? {
-            self.advance();
+            self.advance()?;
             self.validate_identifier_assignment_target(&target)?;
             let rhs_start = self.current_ir().ops.len();
             self.parse_assignment()?;
@@ -654,7 +666,7 @@ impl<'source> Parser<'source> {
         let Some(target) = self.take_tail_member_reference()? else {
             return Err(self.syntax_here("invalid assignment left-hand side"));
         };
-        self.advance();
+        self.advance()?;
         let rhs_start = self.current_ir().ops.len();
         self.parse_assignment()?;
         let site = match target {
@@ -678,7 +690,7 @@ impl<'source> Parser<'source> {
         logical: LogicalAssignment,
         infer_name: bool,
     ) -> Result<(), Error> {
-        self.advance();
+        self.advance()?;
         self.validate_identifier_assignment_target(&target)?;
         self.emit_instruction(Instruction::Dup)?;
         if logical == LogicalAssignment::Nullish {
@@ -740,7 +752,7 @@ impl<'source> Parser<'source> {
             MemberReference::Computed { .. } => 2,
         };
 
-        self.advance();
+        self.advance()?;
         self.emit_instruction(Instruction::Dup)?;
         if logical == LogicalAssignment::Nullish {
             self.emit_instruction(Instruction::IsUndefinedOrNull)?;
@@ -780,7 +792,7 @@ impl<'source> Parser<'source> {
         if !self.is_punctuator(Punctuator::Question) {
             return Ok(());
         }
-        self.advance();
+        self.advance()?;
         self.anonymous_function_definition = None;
 
         let false_jump = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
@@ -813,7 +825,7 @@ impl<'source> Parser<'source> {
         self.parse_logical_or()?;
         let mut short_circuits = Vec::new();
         while self.is_punctuator(Punctuator::NullishCoalesce) {
-            self.advance();
+            self.advance()?;
             self.emit_instruction(Instruction::Dup)?;
             self.emit_instruction(Instruction::IsUndefinedOrNull)?;
             short_circuits.push(self.emit_instruction(Instruction::IfFalse(u32::MAX))?);
@@ -837,7 +849,7 @@ impl<'source> Parser<'source> {
         let mut composed = false;
         while self.is_punctuator(Punctuator::LogicalOr) {
             composed = true;
-            self.advance();
+            self.advance()?;
             self.emit_instruction(Instruction::Dup)?;
             let end_jump = self.emit_instruction(Instruction::IfTrue(u32::MAX))?;
             self.emit_instruction(Instruction::Drop)?;
@@ -860,7 +872,7 @@ impl<'source> Parser<'source> {
         let mut composed = false;
         while self.is_punctuator(Punctuator::LogicalAnd) {
             composed = true;
-            self.advance();
+            self.advance()?;
             self.emit_instruction(Instruction::Dup)?;
             let end_jump = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
             self.emit_instruction(Instruction::Drop)?;
@@ -882,7 +894,7 @@ impl<'source> Parser<'source> {
         self.parse_bitwise_xor()?;
         while self.is_punctuator(Punctuator::BitOr) {
             let operation_span = self.current().span;
-            self.advance();
+            self.advance()?;
             self.parse_bitwise_xor()?;
             self.emit_instruction_at(Instruction::BitOr, source_offset(operation_span)?)?;
             self.anonymous_function_definition = None;
@@ -894,7 +906,7 @@ impl<'source> Parser<'source> {
         self.parse_bitwise_and()?;
         while self.is_punctuator(Punctuator::BitXor) {
             let operation_span = self.current().span;
-            self.advance();
+            self.advance()?;
             self.parse_bitwise_and()?;
             self.emit_instruction_at(Instruction::BitXor, source_offset(operation_span)?)?;
             self.anonymous_function_definition = None;
@@ -906,7 +918,7 @@ impl<'source> Parser<'source> {
         self.parse_equality()?;
         while self.is_punctuator(Punctuator::BitAnd) {
             let operation_span = self.current().span;
-            self.advance();
+            self.advance()?;
             self.parse_equality()?;
             self.emit_instruction_at(Instruction::BitAnd, source_offset(operation_span)?)?;
             self.anonymous_function_definition = None;
@@ -925,7 +937,7 @@ impl<'source> Parser<'source> {
                 TokenKind::Punctuator(Punctuator::StrictNotEqual) => Instruction::StrictNeq,
                 _ => break,
             };
-            self.advance();
+            self.advance()?;
             self.parse_relational()?;
             self.emit_instruction_at(operation, source_offset(operation_span)?)?;
             self.anonymous_function_definition = None;
@@ -944,7 +956,7 @@ impl<'source> Parser<'source> {
                 TokenKind::Punctuator(Punctuator::GreaterEqual) => Instruction::Gte,
                 _ => break,
             };
-            self.advance();
+            self.advance()?;
             self.parse_shift()?;
             self.emit_instruction_at(operation, source_offset(operation_span)?)?;
             self.anonymous_function_definition = None;
@@ -962,7 +974,7 @@ impl<'source> Parser<'source> {
                 TokenKind::Punctuator(Punctuator::UnsignedShiftRight) => Instruction::Shr,
                 _ => break,
             };
-            self.advance();
+            self.advance()?;
             self.parse_additive()?;
             self.emit_instruction_at(operation, source_offset(operation_span)?)?;
             self.anonymous_function_definition = None;
@@ -979,7 +991,7 @@ impl<'source> Parser<'source> {
                 TokenKind::Punctuator(Punctuator::Minus) => Instruction::Sub,
                 _ => break,
             };
-            self.advance();
+            self.advance()?;
             self.parse_multiplicative()?;
             self.emit_instruction_at(operation, source_offset(operation_span)?)?;
             self.anonymous_function_definition = None;
@@ -997,7 +1009,7 @@ impl<'source> Parser<'source> {
                 TokenKind::Punctuator(Punctuator::Remainder) => Instruction::Mod,
                 _ => break,
             };
-            self.advance();
+            self.advance()?;
             self.parse_unary()?;
             self.emit_instruction_at(operation, source_offset(operation_span)?)?;
             self.anonymous_function_definition = None;
@@ -1016,7 +1028,7 @@ impl<'source> Parser<'source> {
         ) {
             let operator_span = self.current().span;
             let increment = self.is_punctuator(Punctuator::Increment);
-            self.advance();
+            self.advance()?;
             // QuickJS passes no power flag for a prefix-update operand. This
             // leaves `**` for the outer update expression, so `++x ** 2` is
             // valid while the operand itself must still be an lvalue.
@@ -1025,7 +1037,7 @@ impl<'source> Parser<'source> {
             return self.parse_power_suffix(power_mode);
         }
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Typeof)) {
-            self.advance();
+            self.advance()?;
             let operand_start = self.current_ir().ops.len();
             self.parse_unary_with_power(PowerMode::Forbidden)?;
 
@@ -1048,7 +1060,7 @@ impl<'source> Parser<'source> {
             return self.parse_power_suffix(power_mode);
         }
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Delete)) {
-            self.advance();
+            self.advance()?;
             let operand_start = self.current_ir().ops.len();
             self.parse_unary_with_power(PowerMode::Forbidden)?;
             if let Some(target) = self.take_tail_member_reference()? {
@@ -1098,7 +1110,7 @@ impl<'source> Parser<'source> {
             TokenKind::Punctuator(Punctuator::BitNot) => Some(Instruction::BitNot),
             TokenKind::Punctuator(Punctuator::Not) => Some(Instruction::Not),
             TokenKind::Keyword(Keyword::Void) => {
-                self.advance();
+                self.advance()?;
                 self.parse_unary_with_power(PowerMode::Forbidden)?;
                 self.emit_instruction(Instruction::Drop)?;
                 self.emit_instruction(Instruction::Undefined)?;
@@ -1108,7 +1120,7 @@ impl<'source> Parser<'source> {
             _ => None,
         };
         if let Some(operation) = operation {
-            self.advance();
+            self.advance()?;
             self.parse_unary_with_power(PowerMode::Forbidden)?;
             if matches!(
                 operation,
@@ -1141,7 +1153,7 @@ impl<'source> Parser<'source> {
         }
 
         let operation_span = self.current().span;
-        self.advance();
+        self.advance()?;
         self.parse_unary_with_power(PowerMode::Allowed)?;
         self.emit_instruction_at(Instruction::Pow, source_offset(operation_span)?)?;
         self.anonymous_function_definition = None;
@@ -1158,7 +1170,7 @@ impl<'source> Parser<'source> {
             if self.is_punctuator(Punctuator::LeftParen) {
                 let call_span = self.current().span;
                 let is_method = self.promote_last_member_get_for_call()?;
-                self.advance();
+                self.advance()?;
                 let argument_count = self.parse_call_arguments()?;
                 let instruction = if is_method {
                     Instruction::CallMethod(argument_count)
@@ -1180,7 +1192,7 @@ impl<'source> Parser<'source> {
             let operator_span = self.current().span;
             let increment = self.is_punctuator(Punctuator::Increment);
             self.lower_update_expression(operator_span, increment, true)?;
-            self.advance();
+            self.advance()?;
         }
         Ok(())
     }
@@ -1236,14 +1248,14 @@ impl<'source> Parser<'source> {
     fn parse_member_suffix(&mut self) -> Result<bool, Error> {
         if self.is_punctuator(Punctuator::Dot) {
             let member_span = self.current().span;
-            self.advance();
+            self.advance()?;
             let token = self.current().clone();
             let name = match token.kind {
                 TokenKind::Identifier(identifier) => identifier.value,
                 TokenKind::Keyword(keyword) => keyword.as_str().to_owned(),
                 _ => return Err(self.syntax_here("expecting field name")),
             };
-            self.advance();
+            self.advance()?;
             let key = self.add_constant(IrConstant::Primitive(Value::String(
                 JsString::try_from_utf8(&name)?,
             )))?;
@@ -1256,7 +1268,7 @@ impl<'source> Parser<'source> {
 
         if self.is_punctuator(Punctuator::LeftBracket) {
             let member_span = self.current().span;
-            self.advance();
+            self.advance()?;
             self.parse_expression()?;
             self.expect_punctuator(Punctuator::RightBracket)?;
             let operation =
@@ -1472,7 +1484,7 @@ impl<'source> Parser<'source> {
     /// Parse the contents of an already-consumed call/construct `(`.
     fn parse_call_arguments(&mut self) -> Result<u16, Error> {
         let mut argument_count = 0_usize;
-        if !self.consume_punctuator(Punctuator::RightParen) {
+        if !self.consume_punctuator(Punctuator::RightParen)? {
             loop {
                 // QuickJS accepts 65,535 encoded arguments and only rejects
                 // the next one in `js_parse_postfix_expr`. The accepted
@@ -1483,11 +1495,11 @@ impl<'source> Parser<'source> {
                 }
                 self.parse_assignment()?;
                 argument_count += 1;
-                if !self.consume_punctuator(Punctuator::Comma) {
+                if !self.consume_punctuator(Punctuator::Comma)? {
                     self.expect_punctuator(Punctuator::RightParen)?;
                     break;
                 }
-                if self.consume_punctuator(Punctuator::RightParen) {
+                if self.consume_punctuator(Punctuator::RightParen)? {
                     break;
                 }
             }
@@ -1498,8 +1510,8 @@ impl<'source> Parser<'source> {
 
     fn parse_new_expression(&mut self) -> Result<(), Error> {
         let new_span = self.current().span;
-        self.advance();
-        if self.consume_punctuator(Punctuator::Dot) {
+        self.advance()?;
+        if self.consume_punctuator(Punctuator::Dot)? {
             let token = self.current().clone();
             let TokenKind::Identifier(identifier) = token.kind else {
                 return Err(self.syntax_here("expecting target"));
@@ -1513,7 +1525,7 @@ impl<'source> Parser<'source> {
                     source_span(new_span),
                 ));
             }
-            self.advance();
+            self.advance()?;
             self.emit_instruction(Instruction::PushNewTarget)?;
             self.anonymous_function_definition = None;
             return Ok(());
@@ -1528,7 +1540,7 @@ impl<'source> Parser<'source> {
         let no_arguments_span = self.current().span;
         let (argument_count, construct_span) = if self.is_punctuator(Punctuator::LeftParen) {
             let call_span = self.current().span;
-            self.advance();
+            self.advance()?;
             (self.parse_call_arguments()?, call_span)
         } else {
             (0, no_arguments_span)
@@ -1546,19 +1558,19 @@ impl<'source> Parser<'source> {
         self.anonymous_function_definition = None;
         match token.kind {
             TokenKind::Keyword(Keyword::Null) => {
-                self.advance();
+                self.advance()?;
                 self.emit_instruction(Instruction::Null)?;
             }
             TokenKind::Keyword(Keyword::False) => {
-                self.advance();
+                self.advance()?;
                 self.emit_instruction(Instruction::PushFalse)?;
             }
             TokenKind::Keyword(Keyword::True) => {
-                self.advance();
+                self.advance()?;
                 self.emit_instruction(Instruction::PushTrue)?;
             }
             TokenKind::Keyword(Keyword::This) => {
-                self.advance();
+                self.advance()?;
                 self.emit_instruction(Instruction::PushThis)?;
             }
             TokenKind::Number(number) => {
@@ -1573,7 +1585,7 @@ impl<'source> Parser<'source> {
                         source_span(token.span),
                     ));
                 }
-                self.advance();
+                self.advance()?;
                 let value = parse_number(&number)
                     .map_err(|message| Error::syntax(message, source_span(token.span)))?;
                 self.emit_value(value)?;
@@ -1585,11 +1597,11 @@ impl<'source> Parser<'source> {
                         source_span(token.span),
                     ));
                 }
-                self.advance();
+                self.advance()?;
                 self.emit_value(Value::String(JsString::try_from_utf16(string.value.utf16)?))?;
             }
             TokenKind::Punctuator(Punctuator::LeftParen) => {
-                self.advance();
+                self.advance()?;
                 self.parse_expression()?;
                 self.expect_punctuator(Punctuator::RightParen)?;
             }
@@ -1600,7 +1612,7 @@ impl<'source> Parser<'source> {
                     self.current_ir().strict,
                     IdentifierContext::Reference,
                 )?;
-                self.advance();
+                self.advance()?;
                 let operation =
                     self.emit_identifier(identifier.value, token.span, IdentifierAccess::Get)?;
                 self.current_ir_mut().last_identifier_reference = Some(operation);
@@ -1626,6 +1638,12 @@ impl<'source> Parser<'source> {
                     punctuator.as_str()
                 )));
             }
+            TokenKind::RawAscii(byte) => {
+                return Err(self.syntax_here(format!(
+                    "unexpected token in expression: '{}'",
+                    char::from(byte)
+                )));
+            }
             TokenKind::Eof => {
                 return Err(self.syntax_here("expected an expression"));
             }
@@ -1635,12 +1653,12 @@ impl<'source> Parser<'source> {
 
     fn parse_function_expression(&mut self) -> Result<(), Error> {
         let function_span = self.current().span;
-        self.advance();
+        self.advance()?;
         let function_name_token =
             if let TokenKind::Identifier(identifier) = self.current().kind.clone() {
                 let span = self.current().span;
                 validate_identifier(&identifier, span, false, IdentifierContext::FunctionName)?;
-                self.advance();
+                self.advance()?;
                 Some((identifier, span))
             } else {
                 None
@@ -1649,7 +1667,7 @@ impl<'source> Parser<'source> {
 
         let mut parameters = Vec::new();
         let mut parameter_tokens = Vec::new();
-        if !self.consume_punctuator(Punctuator::RightParen) {
+        if !self.consume_punctuator(Punctuator::RightParen)? {
             loop {
                 let token = self.current().clone();
                 let TokenKind::Identifier(identifier) = token.kind else {
@@ -1662,9 +1680,9 @@ impl<'source> Parser<'source> {
                     return Err(Error::new(ErrorKind::JsInternal, "too many arguments")
                         .with_span(source_span(token.span)));
                 }
-                self.advance();
-                if !self.consume_punctuator(Punctuator::Comma) {
-                    if !self.consume_punctuator(Punctuator::RightParen) {
+                self.advance()?;
+                if !self.consume_punctuator(Punctuator::Comma)? {
+                    if !self.consume_punctuator(Punctuator::RightParen)? {
                         return Err(Error::syntax(
                             "expecting ','",
                             source_span(self.current().span),
@@ -1682,14 +1700,27 @@ impl<'source> Parser<'source> {
         self.expect_punctuator(Punctuator::LeftBrace)?;
 
         let parent = self.current_function;
-        let strict = self.functions[parent].strict
-            || directive_prologue_has_use_strict(&self.tokens[self.cursor..]);
+        let parent_strict = self.functions[parent].strict;
+        let has_use_strict = self.directive_prologue_has_use_strict(self.cursor, parent_strict)?;
+        let strict = self.functions[parent].strict || has_use_strict;
+        self.relex_current_with_strict(strict)?;
         if strict {
-            if let Some((identifier, span)) = &function_name_token {
-                validate_identifier(identifier, *span, true, IdentifierContext::FunctionName)?;
+            let strict_validation_span = self.current().span;
+            if let Some((identifier, _)) = &function_name_token {
+                validate_identifier(
+                    identifier,
+                    strict_validation_span,
+                    true,
+                    IdentifierContext::FunctionName,
+                )?;
             }
-            for (index, (identifier, span)) in parameter_tokens.iter().enumerate() {
-                validate_identifier(identifier, *span, true, IdentifierContext::Argument)?;
+            for (index, (identifier, _)) in parameter_tokens.iter().enumerate() {
+                validate_identifier(
+                    identifier,
+                    strict_validation_span,
+                    true,
+                    IdentifierContext::Argument,
+                )?;
                 let parameter = &identifier.value;
                 if parameters[..index].contains(parameter) {
                     return Err(Error::syntax(
@@ -1720,6 +1751,9 @@ impl<'source> Parser<'source> {
         self.current_function = child;
         self.parse_function_body()?;
         let closing_brace = self.current().span;
+        let mut parent_context = self.lexer.context();
+        parent_context.strict = self.functions[parent].strict;
+        self.lexer.set_context(parent_context);
         self.expect_punctuator(Punctuator::RightBrace)?;
         self.functions[child].source.range = Some(
             source_offset(function_span)?
@@ -1875,19 +1909,19 @@ impl<'source> Parser<'source> {
     }
 
     fn expect_punctuator(&mut self, punctuator: Punctuator) -> Result<(), Error> {
-        if self.consume_punctuator(punctuator) {
+        if self.consume_punctuator(punctuator)? {
             Ok(())
         } else {
-            Err(self.syntax_here(format!("expected '{}'", punctuator.as_str())))
+            Err(self.syntax_here(format!("expecting '{}'", punctuator.as_str())))
         }
     }
 
-    fn consume_punctuator(&mut self, punctuator: Punctuator) -> bool {
+    fn consume_punctuator(&mut self, punctuator: Punctuator) -> Result<bool, Error> {
         if self.is_punctuator(punctuator) {
-            self.advance();
-            true
+            self.advance()?;
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -1900,13 +1934,87 @@ impl<'source> Parser<'source> {
     }
 
     fn current(&self) -> &Token<'source> {
-        // The lexer always emits exactly one EOF token.
+        // Construction and every advance ensure the current token exists.
         &self.tokens[self.cursor]
     }
 
-    fn advance(&mut self) {
+    fn advance(&mut self) -> Result<(), Error> {
+        self.advance_with_goal(LexicalGoal::Div)
+    }
+
+    fn advance_with_goal(&mut self, goal: LexicalGoal) -> Result<(), Error> {
         if !self.at_eof() {
             self.cursor += 1;
+            self.ensure_token_with_goal(self.cursor, goal)?;
+        }
+        Ok(())
+    }
+
+    fn ensure_token(&mut self, index: usize) -> Result<(), Error> {
+        self.ensure_token_with_goal(index, LexicalGoal::Div)
+    }
+
+    fn ensure_token_with_goal(&mut self, index: usize, goal: LexicalGoal) -> Result<(), Error> {
+        while self.tokens.len() <= index {
+            let token = self.lexer.next_token_with_goal(goal).map_err(lex_error)?;
+            self.tokens.push(token);
+        }
+        Ok(())
+    }
+
+    fn relex_current_with_strict(&mut self, strict: bool) -> Result<(), Error> {
+        let position = self.current().span.start;
+        self.tokens.truncate(self.cursor);
+        self.lexer.seek(position);
+        let mut context = self.lexer.context();
+        context.strict = strict;
+        self.lexer.set_context(context);
+        self.ensure_token(self.cursor)
+    }
+
+    fn directive_prologue_has_use_strict(
+        &self,
+        start: usize,
+        inherited_strict: bool,
+    ) -> Result<bool, Error> {
+        let use_strict = "use strict".encode_utf16().collect::<Vec<_>>();
+        let position = self.tokens[start].span.start;
+        let mut lexer = self.lexer.clone();
+        lexer.seek(position);
+        let mut context = lexer.context();
+        context.strict = inherited_strict;
+        lexer.set_context(context);
+        let mut token = lexer.next_token().map_err(lex_error)?;
+        let mut found_strict = false;
+
+        loop {
+            let candidate = match &token.kind {
+                TokenKind::String(literal) => {
+                    !literal.has_escape && literal.value.utf16 == use_strict
+                }
+                _ => return Ok(found_strict),
+            };
+
+            let next = lexer.next_token().map_err(lex_error)?;
+            let consumed = match &next.kind {
+                TokenKind::Punctuator(Punctuator::Semicolon) => 2,
+                TokenKind::Punctuator(Punctuator::RightBrace) | TokenKind::Eof => 1,
+                _ if next.line_terminator_before && quickjs_directive_asi_token(&next.kind) => 1,
+                _ => return Ok(found_strict),
+            };
+            if candidate {
+                found_strict = true;
+            }
+            token = if consumed == 1 {
+                next
+            } else {
+                lexer.next_token().map_err(lex_error)?
+            };
+            if candidate {
+                let mut context = lexer.context();
+                context.strict = true;
+                lexer.set_context(context);
+            }
         }
     }
 
@@ -1941,19 +2049,7 @@ fn validate_identifier(
     strict: bool,
     context: IdentifierContext,
 ) -> Result<(), Error> {
-    if identifier.escaped_reserved_word
-        || (strict
-            && identifier
-                .keyword_hint
-                .is_some_and(strict_reserved_identifier))
-    {
-        return Err(syntax_atom_error(
-            "'",
-            &identifier.value,
-            "' is a reserved identifier",
-            span,
-        )?);
-    }
+    validate_identifier_reservation(identifier, span, strict, context)?;
     if strict
         && !matches!(context, IdentifierContext::Reference)
         && matches!(identifier.value.as_str(), "eval" | "arguments")
@@ -1963,6 +2059,43 @@ fn validate_identifier(
             IdentifierContext::FunctionName => "invalid function name in strict code",
             IdentifierContext::Argument => "invalid argument name in strict code",
             IdentifierContext::Reference => unreachable!("reference context was excluded"),
+        };
+        return Err(Error::syntax(message, source_span(span)));
+    }
+    Ok(())
+}
+
+fn validate_identifier_reservation(
+    identifier: &Identifier<'_>,
+    span: Span,
+    strict: bool,
+    context: IdentifierContext,
+) -> Result<(), Error> {
+    if identifier.escaped_reserved_word {
+        return Err(syntax_atom_error(
+            "'",
+            &identifier.value,
+            "' is a reserved identifier",
+            span,
+        )?);
+    }
+    if strict
+        && identifier
+            .keyword_hint
+            .is_some_and(strict_reserved_identifier)
+    {
+        let message = match context {
+            IdentifierContext::Reference => {
+                return Err(syntax_atom_error(
+                    "'",
+                    &identifier.value,
+                    "' is a reserved identifier",
+                    span,
+                )?);
+            }
+            IdentifierContext::Variable => "invalid variable name in strict mode",
+            IdentifierContext::FunctionName => "invalid function name in strict code",
+            IdentifierContext::Argument => "invalid argument name in strict code",
         };
         return Err(Error::syntax(message, source_span(span)));
     }
@@ -2677,36 +2810,6 @@ fn parse_number(number: &crate::lexer::NumberLiteral<'_>) -> Result<Value, Strin
         NumberKind::BigInt(_) => unreachable!("handled above"),
     };
     Ok(Value::number(value))
-}
-
-fn directive_prologue_has_use_strict(tokens: &[Token<'_>]) -> bool {
-    let use_strict = "use strict".encode_utf16().collect::<Vec<_>>();
-    let mut cursor = 0;
-
-    loop {
-        let Some(Token {
-            kind: TokenKind::String(literal),
-            ..
-        }) = tokens.get(cursor)
-        else {
-            return false;
-        };
-        let candidate = !literal.has_escape && literal.value.utf16 == use_strict;
-
-        let Some(next) = tokens.get(cursor + 1) else {
-            return false;
-        };
-        let consumed = match next.kind {
-            TokenKind::Punctuator(Punctuator::Semicolon) => 2,
-            TokenKind::Punctuator(Punctuator::RightBrace) | TokenKind::Eof => 1,
-            _ if next.line_terminator_before && quickjs_directive_asi_token(&next.kind) => 1,
-            _ => return false,
-        };
-        if candidate {
-            return true;
-        }
-        cursor += consumed;
-    }
 }
 
 /// Mirrors the token switch in QuickJS 2026-06-04 `js_parse_directives`.
@@ -5381,6 +5484,96 @@ mod tests {
             evaluate_in_context("(function(impl\\u0065ments) { return impl\\u0065ments; })(1)"),
             Value::Int(1)
         );
+    }
+
+    #[test]
+    fn parser_driven_lexing_preserves_quickjs_error_priority_and_locations() {
+        let cases = [
+            (
+                r"(function(){ var \u0069f\u{}=14; })()",
+                "'if' is a reserved identifier",
+                1,
+                18,
+            ),
+            (
+                r"(function(){ var if\u{}=14; })()",
+                "'if' is a reserved identifier",
+                1,
+                18,
+            ),
+            (
+                r"(function(){ var if\x61=1; })()",
+                "variable name expected",
+                1,
+                18,
+            ),
+            (
+                r"(function(){ var \u{}=1; })()",
+                "variable name expected",
+                1,
+                18,
+            ),
+            (r"(function(){ var a\u{}=1; })()", "expecting ';'", 1, 19),
+            (
+                "(function(){ var 'unterminated })()",
+                "unexpected end of string",
+                1,
+                18,
+            ),
+            (
+                "(function(a 'unterminated){})",
+                "unexpected end of string",
+                1,
+                13,
+            ),
+            (
+                "(function(){ return (1 'unterminated); })()",
+                "unexpected end of string",
+                1,
+                24,
+            ),
+            (
+                "(function(eval){ \"use strict\"; \"x\"; \"unterminated })()",
+                "unexpected end of string",
+                1,
+                37,
+            ),
+            (
+                "(function(){ \"use strict\"; (function(eval){ \"x\"; \"unterminated })() })()",
+                "unexpected end of string",
+                1,
+                50,
+            ),
+        ];
+
+        for (source, message, line, column) in cases {
+            let error = compile_unlinked_script(source).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+            assert_eq!(error.message(), message, "{source}");
+            let span = error
+                .span()
+                .unwrap_or_else(|| panic!("missing span for {source}"));
+            assert_eq!(
+                (span.start.line, span.start.column),
+                (line, column),
+                "{source}"
+            );
+        }
+
+        let reached_lex_error =
+            compile_unlinked_script("(function(){ throw\n'unterminated })()").unwrap_err();
+        assert_eq!(reached_lex_error.message(), "unexpected end of string");
+        let reached_span = reached_lex_error.span().unwrap();
+        assert_eq!((reached_span.start.line, reached_span.start.column), (2, 1));
+
+        let raw_token_error =
+            compile_unlinked_script("(function(){ throw\n\\u{}; })()").unwrap_err();
+        assert_eq!(
+            raw_token_error.message(),
+            "line terminator not allowed after throw"
+        );
+        let raw_span = raw_token_error.span().unwrap();
+        assert_eq!((raw_span.start.line, raw_span.start.column), (2, 1));
     }
 
     #[test]

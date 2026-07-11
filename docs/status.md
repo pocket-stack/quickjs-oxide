@@ -16,9 +16,13 @@ claim full parity.
   escaped BMP/astral spellings, ECMAScript `$`/`_` and ZWNJ/ZWJ additions,
   non-normalization, private names, and UTF-16 buffer accounting. Every scalar
   is checked against the official release and execution tests cross the real
-  compiler, resolver, atom and VM path. Malformed-escape token commitment and
-  parser-first diagnostic priority remain pending because the current compiler
-  still tokenizes the complete source before parsing.
+  compiler, resolver, atom and VM path. The compiler consumes tokens on parser
+  demand through fallible advances; true lexical failures propagate only when
+  reached, unrecognized ASCII is retained as a raw token, and directive probes
+  seek back before strict-context rescanning. This matches the pinned
+  malformed-escape commitment and tested reserved/parser/lexer error priority,
+  including line and column. Module/generator/async contextual-word behavior
+  remains with those unimplemented grammar surfaces.
 - Runtime-local atoms preserve exact UTF-16 spellings, cover immediate integer
   atoms, string/global-symbol interning, unique/private/well-known symbols, and
   explicit retain/release. Safe handles carry a runtime domain and slot
@@ -627,10 +631,11 @@ parameters, generator/async kinds, and Proxy new-target realms remain pending.
 Compiler input is still UTF-8,
 so dynamic source containing an unpaired UTF-16 surrogate throws an explicit
 implementation-gap `InternalError` instead of being silently rewritten. The
-parser also tokenizes the complete source eagerly; QuickJS requests tokens
-lazily, so a front-of-file grammar error can currently lose to a later
-overlong token. This remains an explicit error-order parity gap. The current
-parser does not yet produce generator or async bytecode, although the
+parser now requests tokens through fallible advances, and directive probes
+seek back before strict-context rescanning, so current-token grammar errors no
+longer lose to untouched later lexical failures. Contextual word reparsing for
+module/generator/async grammar remains with those unimplemented surfaces. The
+current parser does not yet produce generator or async bytecode, although the
 function-kind metadata and `toString` fallback distinguish all four QuickJS
 kinds. Bound dispatch is iterative and therefore does not consume the Rust host
 stack, but exact QuickJS runtime-stack accounting and its deep-bound-chain
@@ -736,8 +741,9 @@ String-exotic substrate, String UTF-16 prefix, String-conversion core,
 String-rope/byte/native-Error kernels, Unicode identifier core, global
 BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials. The
 atom-Error target contains thirteen pinned-oracle inputs in addition to its
-Rust-side expectation test. The Unicode target checks every scalar plus real
-compiler/runtime cases. The full gate currently discovers all 41
+Rust-side expectation test. The Unicode target checks every scalar, real
+compiler/runtime cases, and the parser-driven identifier diagnostic matrix. The
+full gate currently discovers all 41
 `tests/oracle_*.rs` integration targets,
 checksum-verifies and builds the official test-only oracle, then runs
 the generated-Unicode-table drift check, formatting, unit/integration/oracle
