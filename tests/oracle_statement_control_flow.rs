@@ -252,6 +252,95 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "Function constructor parses do return",
         "Function('do { return 4; } while(false)')()",
     ),
+    ("false for resets completion", "1; for(;false;) 2;"),
+    (
+        "for break preserves body completion",
+        "for(;;){ 3; break; }",
+    ),
+    (
+        "for continue runs update",
+        "(function(){ var sum=0; for(var i=0;i<5;i++){ if(i===2) continue; sum+=i; } return sum; })()",
+    ),
+    (
+        "for var declarator list remains function scoped",
+        "(function(){ for(var i=0,j=1;i<2;i++,j+=2); return i+'|'+j; })()",
+    ),
+    (
+        "for var initializer keeps named evaluation",
+        "(function(){ for(var named=function(){};false;); return named.name; })()",
+    ),
+    (
+        "for break skips update",
+        "(function(){ var i=0; for(;;i++){ break; } return i; })()",
+    ),
+    (
+        "for without test reaches update after its body",
+        "(function(){ var i=0; for(;;i++){ if(i===3) break; } return i; })()",
+    ),
+    (
+        "for without update returns to test",
+        "(function(){ var i=0; for(;i<3;){ i++; } return i; })()",
+    ),
+    (
+        "for comma clauses preserve order",
+        "(function(){ var i=0; var x=0; for(i=0,x=1;i<3;i++,x+=2){} return i+'|'+x; })()",
+    ),
+    (
+        "relocated for update keeps internal conditional targets",
+        "(function(){ var i=0; var x=0; for(;i<3;i++,x+=i===1?10:1){} return x; })()",
+    ),
+    (
+        "for continue preserves the current body completion",
+        "Function.loopIndex=0; for(;Function.loopIndex++<2;){ 9; continue; }",
+    ),
+    (
+        "for init test and update do not become completion",
+        "for(Function.loopIndex=0;Function.loopIndex<1;Function.loopIndex++) 5",
+    ),
+    (
+        "nested for jumps select the nearest loop",
+        "(function(){ var i=0; var j=0; for(;i<3;i++){ for(;;){ j++; break; } continue; j=99; } return i+'|'+j; })()",
+    ),
+    (
+        "Function constructor parses classic for",
+        "Function('var sum=0; for(var i=0;i<4;i++)sum+=i; return sum')()",
+    ),
+    (
+        "for header line terminators do not insert semicolons",
+        "Function.loopIndex=0; for(Function.loopIndex=0\n;Function.loopIndex<2\n;Function.loopIndex++){} Function.loopIndex",
+    ),
+    (
+        "contextual of remains an identifier in classic for",
+        "(function(){ var of=9; for(of=0;of<2;of++); return of; })()",
+    ),
+    (
+        "sloppy let assignment remains an expression in classic for",
+        "(function(){ var let=9; for(let=0;let<2;let++); return let; })()",
+    ),
+    (
+        "escaped let member remains an expression in classic for",
+        "(function(){ var let=Function; for(l\\u0065t.loop=0;l\\u0065t.loop<2;l\\u0065t.loop++); return let.loop; })()",
+    ),
+    (
+        "global sets in for clauses preserve remapped targets",
+        "for(loopGlobal=0;loopGlobal<3;loopGlobal++); loopGlobal",
+    ),
+    (
+        "for clauses execute in init test body update order",
+        "(function(){ var log=''; var i=0; for(log+='i';(log+='t',i<2);(log+='u',i++)){ log+='b'; } return log; })()",
+    ),
+    (
+        "return from for body skips update",
+        "Function.returnUpdate=0; (function(){ for(;;Function.returnUpdate=1) return 7; })(); Function.returnUpdate",
+    ),
+    (
+        "for update does not become completion",
+        "1; Function.loopIndex=0; for(;Function.loopIndex++<1;9);",
+    ),
+    (
+        "nested for resets an earlier body completion",
+        "for(;;){ 2; for(;false;) 3; break; }",
+    ),
 ];
 
 const ERROR_CASES: &[(&str, &str)] = &[
@@ -379,6 +468,39 @@ const ERROR_CASES: &[(&str, &str)] = &[
     (
         "outside continue comment terminator uses restricted-production ASI",
         "continue/*\r\n*/missingLabel",
+    ),
+    ("for requires a left parenthesis", "for true;"),
+    ("for initializer requires its semicolon", "for(1 2;;);"),
+    ("for test requires its semicolon", "for(;true 2;);"),
+    ("for requires a right parenthesis", "for(;;"),
+    ("for requires a body", "for(;;)"),
+    (
+        "outer for is not visible inside a nested function",
+        "for(;false;) (function(){ break; })",
+    ),
+    (
+        "outer for continue is not visible inside a nested function",
+        "for(;false;) (function(){ continue; })",
+    ),
+    (
+        "return remains an early error in a dead for body",
+        "for(;false;) return 1;",
+    ),
+    (
+        "for body continue label is not silently discarded",
+        "for(;;){ continue missing; }",
+    ),
+    (
+        "top-level in with later semicolons stays classic for",
+        "for(Function.item in Function;;);",
+    ),
+    (
+        "top-level of with later semicolons stays classic for",
+        "for(Function.item of Function;;);",
+    ),
+    (
+        "for pre-scan does not let a later lexical error win",
+        "for(true token; ; \"unterminated",
     ),
 ];
 

@@ -158,6 +158,23 @@ enum PowerMode {
     None,
 }
 
+/// QuickJS `PF_IN_ACCEPTED`, kept as parser state so recursive assignment RHS
+/// inherits ExpressionNoIn while parentheses and selected grammar entries can
+/// temporarily restore the ordinary Expression grammar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InMode {
+    Allow,
+    Disallow,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForHeadDelimiter {
+    Parenthesis,
+    Bracket,
+    Brace,
+    Template,
+}
+
 #[derive(Debug)]
 enum IrOp {
     Bytecode(Instruction),
@@ -305,6 +322,7 @@ struct Parser<'source> {
     tokens: Vec<Token<'source>>,
     cursor: usize,
     current_function: FunctionId,
+    in_mode: InMode,
     functions: Vec<FunctionIr>,
     /// Function expression eligible for QuickJS's assignment-name inference.
     /// Operators which make the surrounding expression cease to be an
@@ -328,6 +346,7 @@ impl<'source> Parser<'source> {
             tokens: vec![first_token],
             cursor: 0,
             current_function: 0,
+            in_mode: InMode::Allow,
             anonymous_function_definition: None,
             functions: vec![FunctionIr::new(
                 None,
@@ -394,6 +413,7 @@ impl<'source> Parser<'source> {
             TokenKind::Keyword(Keyword::If) => self.parse_if_statement(completion),
             TokenKind::Keyword(Keyword::While) => self.parse_while_statement(completion),
             TokenKind::Keyword(Keyword::Do) => self.parse_do_while_statement(completion),
+            TokenKind::Keyword(Keyword::For) => self.parse_for_statement(completion),
             TokenKind::Keyword(Keyword::Break) => self.parse_loop_jump_statement(false),
             TokenKind::Keyword(Keyword::Continue) => self.parse_loop_jump_statement(true),
             TokenKind::Keyword(Keyword::Function) => {
@@ -556,6 +576,126 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
+    fn parse_for_statement(&mut self, completion: StatementCompletion) -> Result<(), Error> {
+        let entry_depth = self.current_ir().stack_depth;
+        self.advance()?;
+        if matches!(completion, StatementCompletion::Eval) {
+            self.set_eval_ret_undefined()?;
+        }
+        let classic_head = self.for_head_has_top_level_semicolon();
+        self.expect_punctuator(Punctuator::LeftParen)?;
+
+        // QuickJS parses the classic initializer with PF_IN_ACCEPTED clear.
+        // Keep that mode explicit even while the AllowIn operator itself
+        // remains a later runtime slice.
+        if !self.is_punctuator(Punctuator::Semicolon) {
+            if self.for_head_lexical_declaration_ahead()? {
+                return Err(self.unsupported_here(
+                    "lexical declarations in for heads are not implemented yet",
+                ));
+            }
+            if matches!(self.current().kind, TokenKind::Keyword(Keyword::Var)) {
+                if matches!(self.current_ir().kind, FunctionKind::Script) {
+                    return Err(self.unsupported_here(
+                        "top-level var declarations and global bindings are not implemented yet",
+                    ));
+                }
+                self.advance()?;
+                self.parse_var_declarations_with_in(InMode::Disallow)?;
+            } else {
+                self.parse_expression_no_in()?;
+                self.emit_instruction(Instruction::Drop)?;
+            }
+            self.require_stack_depth(entry_depth, "for initializer")?;
+            if !classic_head {
+                return Err(
+                    self.unsupported_here("for-in and for-of loops are not implemented yet")
+                );
+            }
+        }
+        self.expect_punctuator(Punctuator::Semicolon)?;
+
+        self.push_loop_control(entry_depth);
+        let test_target = if self.is_punctuator(Punctuator::Semicolon) {
+            None
+        } else {
+            let target = self.current_ir().ops.len();
+            self.parse_expression()?;
+            let false_jump = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
+            self.require_stack_depth(entry_depth, "for test")?;
+            Some((target, false_jump))
+        };
+        self.expect_punctuator(Punctuator::Semicolon)?;
+
+        let mut body_skip = None;
+        let mut moved_update = None;
+        let unmoved_continue_target = if self.is_punctuator(Punctuator::RightParen) {
+            test_target.map(|(target, _)| target)
+        } else {
+            body_skip = Some(self.emit_instruction(Instruction::Goto(u32::MAX))?);
+            let update_start = self.current_ir().ops.len();
+            self.parse_expression()?;
+            self.emit_instruction(Instruction::Drop)?;
+            self.require_stack_depth(entry_depth, "for update")?;
+            if let Some((test_target, _)) = test_target {
+                self.emit_instruction(Instruction::Goto(
+                    u32::try_from(test_target)
+                        .map_err(|_| Error::new(ErrorKind::JsInternal, "out of memory"))?,
+                ))?;
+            }
+            if test_target.is_some() {
+                // QuickJS's OPTIMIZE path moves the complete update chunk
+                // after the body. Preserve empty Nop slots at its source
+                // position and relocate only fragment-internal targets; the
+                // backedge to the earlier test remains external.
+                let update_end = self.current_ir().ops.len();
+                let fragment = self.current_ir_mut().ops.split_off(update_start);
+                for _ in 0..fragment.len() {
+                    self.emit_instruction(Instruction::Nop)?;
+                }
+                moved_update = Some((update_start, update_end, fragment));
+                None
+            } else {
+                Some(update_start)
+            }
+        };
+        self.expect_punctuator(Punctuator::RightParen)?;
+
+        let body_target = self.current_ir().ops.len();
+        if let Some(body_skip) = body_skip {
+            self.patch_jump(body_skip, body_target)?;
+        }
+        self.parse_statement_or_decl(completion)?;
+        self.require_stack_depth(entry_depth, "for body")?;
+        let continue_target = if let Some((old_start, old_end, mut fragment)) = moved_update {
+            let target = self.current_ir().ops.len();
+            relocate_ir_fragment(&mut fragment, old_start..old_end, target)?;
+            self.current_ir_mut().ops.extend(fragment);
+            target
+        } else {
+            let target = unmoved_continue_target.unwrap_or(body_target);
+            self.emit_instruction(Instruction::Goto(
+                u32::try_from(target)
+                    .map_err(|_| Error::new(ErrorKind::JsInternal, "out of memory"))?,
+            ))?;
+            target
+        };
+
+        let break_target = self.current_ir().ops.len();
+        let control = self.pop_loop_control()?;
+        if let Some((_, false_jump)) = test_target {
+            self.patch_jump(false_jump, break_target)?;
+        }
+        for jump in control.continue_jumps {
+            self.patch_jump(jump, continue_target)?;
+        }
+        for jump in control.break_jumps {
+            self.patch_jump(jump, break_target)?;
+        }
+        self.finish_control_statement();
+        Ok(())
+    }
+
     fn parse_loop_jump_statement(&mut self, is_continue: bool) -> Result<(), Error> {
         self.advance()?;
 
@@ -705,6 +845,15 @@ impl<'source> Parser<'source> {
 
     fn parse_var_statement(&mut self) -> Result<(), Error> {
         self.advance()?;
+        self.parse_var_declarations_with_in(InMode::Allow)?;
+        self.consume_statement_terminator()
+    }
+
+    fn parse_var_declarations_with_in(&mut self, mode: InMode) -> Result<(), Error> {
+        self.with_in_mode(mode, Self::parse_var_declarations)
+    }
+
+    fn parse_var_declarations(&mut self) -> Result<(), Error> {
         loop {
             let token = self.current().clone();
             let TokenKind::Identifier(identifier) = token.kind else {
@@ -763,7 +912,7 @@ impl<'source> Parser<'source> {
                 break;
             }
         }
-        self.consume_statement_terminator()
+        Ok(())
     }
 
     fn register_local(&mut self, name: &str, span: Span) -> Result<(), Error> {
@@ -799,7 +948,26 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_expression(&mut self) -> Result<(), Error> {
-        self.parse_comma()
+        self.with_in_mode(InMode::Allow, Self::parse_comma)
+    }
+
+    fn parse_expression_no_in(&mut self) -> Result<(), Error> {
+        self.with_in_mode(InMode::Disallow, Self::parse_comma)
+    }
+
+    fn parse_assignment_allow_in(&mut self) -> Result<(), Error> {
+        self.with_in_mode(InMode::Allow, Self::parse_assignment)
+    }
+
+    fn with_in_mode<T>(
+        &mut self,
+        mode: InMode,
+        parse: impl FnOnce(&mut Self) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let previous = std::mem::replace(&mut self.in_mode, mode);
+        let result = parse(self);
+        self.in_mode = previous;
+        result
     }
 
     fn parse_comma(&mut self) -> Result<(), Error> {
@@ -1040,7 +1208,9 @@ impl<'source> Parser<'source> {
 
         let false_jump = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
         let branch_stack = self.current_ir().stack_depth;
-        self.parse_assignment()?;
+        // QuickJS parses the consequent with ordinary AssignmentExpression
+        // even when the surrounding classic-for initializer is NoIn.
+        self.parse_assignment_allow_in()?;
         self.expect_punctuator(Punctuator::Colon)?;
         let end_jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
         let joined_stack = self.current_ir().stack_depth;
@@ -1197,6 +1367,10 @@ impl<'source> Parser<'source> {
                 TokenKind::Punctuator(Punctuator::LessEqual) => Instruction::Lte,
                 TokenKind::Punctuator(Punctuator::Greater) => Instruction::Gt,
                 TokenKind::Punctuator(Punctuator::GreaterEqual) => Instruction::Gte,
+                TokenKind::Keyword(Keyword::In) if self.in_mode == InMode::Disallow => break,
+                TokenKind::Keyword(Keyword::In) => {
+                    return Err(self.unsupported_here("the 'in' operator is not implemented yet"));
+                }
                 _ => break,
             };
             self.advance()?;
@@ -1739,7 +1913,10 @@ impl<'source> Parser<'source> {
                 if argument_count >= MAX_CALL_ARGUMENTS {
                     return Err(self.syntax_here("Too many call arguments"));
                 }
-                self.parse_assignment()?;
+                // Call arguments use AssignmentExpression with `in` enabled,
+                // even when the surrounding expression is a classic-for NoIn
+                // initializer.
+                self.parse_assignment_allow_in()?;
                 argument_count += 1;
                 if !self.consume_punctuator(Punctuator::Comma)? {
                     self.expect_punctuator(Punctuator::RightParen)?;
@@ -2253,6 +2430,147 @@ impl<'source> Parser<'source> {
         matches!(self.current().kind, TokenKind::Punctuator(current) if current == punctuator)
     }
 
+    /// Mirror QuickJS `js_parse_skip_parens_token` for the one decision needed
+    /// by classic `for`: any semicolon at the outer head depth selects classic
+    /// grammar, even when its NoIn initializer later stops at `in` or `of`.
+    /// This is a non-committing probe; lexical failures are encountered again
+    /// by the real parser in source order.
+    fn for_head_has_top_level_semicolon(&self) -> bool {
+        if !self.is_punctuator(Punctuator::LeftParen) {
+            return false;
+        }
+
+        let mut lexer = self.lexer.clone();
+        lexer.seek(self.current().span.start);
+        let mut delimiters = Vec::new();
+        let mut goal = LexicalGoal::Div;
+        let mut regexp_allowed = true;
+        let mut has_semicolon = false;
+
+        loop {
+            let requested_goal = goal;
+            goal = LexicalGoal::Div;
+            let Ok(mut token) = lexer.next_token_with_goal(requested_goal) else {
+                return has_semicolon;
+            };
+            if requested_goal == LexicalGoal::Div
+                && regexp_allowed
+                && matches!(
+                    token.kind,
+                    TokenKind::Punctuator(Punctuator::Divide | Punctuator::DivideAssign)
+                )
+            {
+                lexer.seek(token.span.start);
+                let Ok(regexp) = lexer.next_token_with_goal(LexicalGoal::RegExp) else {
+                    return has_semicolon;
+                };
+                token = regexp;
+            }
+
+            match &token.kind {
+                TokenKind::Punctuator(Punctuator::LeftParen) => {
+                    if delimiters.len() >= 255 {
+                        return has_semicolon;
+                    }
+                    delimiters.push(ForHeadDelimiter::Parenthesis);
+                }
+                TokenKind::Punctuator(Punctuator::LeftBracket) => {
+                    if delimiters.len() >= 255 {
+                        return has_semicolon;
+                    }
+                    delimiters.push(ForHeadDelimiter::Bracket);
+                }
+                TokenKind::Punctuator(Punctuator::LeftBrace) => {
+                    if delimiters.len() >= 255 {
+                        return has_semicolon;
+                    }
+                    delimiters.push(ForHeadDelimiter::Brace);
+                }
+                TokenKind::Punctuator(Punctuator::RightParen) => {
+                    if delimiters.pop() != Some(ForHeadDelimiter::Parenthesis) {
+                        return has_semicolon;
+                    }
+                    if delimiters.is_empty() {
+                        return has_semicolon;
+                    }
+                }
+                TokenKind::Punctuator(Punctuator::RightBracket) => {
+                    if delimiters.pop() != Some(ForHeadDelimiter::Bracket) {
+                        return has_semicolon;
+                    }
+                }
+                TokenKind::Punctuator(Punctuator::RightBrace) => {
+                    if delimiters.last() == Some(&ForHeadDelimiter::Template) {
+                        goal = LexicalGoal::TemplateContinuation;
+                        regexp_allowed = true;
+                        continue;
+                    }
+                    if delimiters.pop() != Some(ForHeadDelimiter::Brace) {
+                        return has_semicolon;
+                    }
+                }
+                TokenKind::Punctuator(Punctuator::Semicolon) if delimiters.len() == 1 => {
+                    has_semicolon = true;
+                }
+                TokenKind::Template(part) => match part.kind {
+                    TemplatePartKind::Head => {
+                        if delimiters.len() >= 255 {
+                            return has_semicolon;
+                        }
+                        delimiters.push(ForHeadDelimiter::Template);
+                    }
+                    TemplatePartKind::Middle => {
+                        if delimiters.last() != Some(&ForHeadDelimiter::Template) {
+                            return has_semicolon;
+                        }
+                    }
+                    TemplatePartKind::Tail => {
+                        if delimiters.pop() != Some(ForHeadDelimiter::Template) {
+                            return has_semicolon;
+                        }
+                    }
+                    TemplatePartKind::NoSubstitution => {}
+                },
+                TokenKind::Eof => return has_semicolon,
+                _ => {}
+            }
+            regexp_allowed = for_head_regexp_allowed_after(&token.kind);
+        }
+    }
+
+    /// QuickJS `is_let(..., DECL_MASK_OTHER)` resolves the sloppy `let`
+    /// ambiguity before parsing a classic-for initializer. In particular,
+    /// `let [` is always lexical and must never silently execute as a member
+    /// assignment while lexical declarations remain an explicit boundary.
+    fn for_head_lexical_declaration_ahead(&self) -> Result<bool, Error> {
+        if matches!(
+            self.current().kind,
+            TokenKind::Keyword(Keyword::Let | Keyword::Const)
+        ) {
+            return Ok(true);
+        }
+        let TokenKind::Identifier(identifier) = &self.current().kind else {
+            return Ok(false);
+        };
+        if identifier.value != "let" || identifier.has_escape {
+            return Ok(false);
+        }
+
+        let mut lexer = self.lexer.clone();
+        lexer.seek(self.current().span.start);
+        lexer.next_token().map_err(lex_error)?;
+        let next = lexer.next_token().map_err(lex_error)?;
+        Ok(matches!(
+            next.kind,
+            TokenKind::Punctuator(Punctuator::LeftBracket | Punctuator::LeftBrace)
+                | TokenKind::Identifier(Identifier {
+                    escaped_reserved_word: false,
+                    ..
+                })
+                | TokenKind::Keyword(Keyword::Let | Keyword::Yield | Keyword::Await)
+        ))
+    }
+
     fn at_eof(&self) -> bool {
         matches!(self.current().kind, TokenKind::Eof)
     }
@@ -2357,6 +2675,32 @@ impl<'source> Parser<'source> {
     fn current_ir_mut(&mut self) -> &mut FunctionIr {
         &mut self.functions[self.current_function]
     }
+}
+
+fn relocate_ir_fragment(
+    operations: &mut [SpannedIrOp],
+    old_range: Range<usize>,
+    new_start: usize,
+) -> Result<(), Error> {
+    for operation in operations {
+        let IrOp::Bytecode(
+            Instruction::Goto(target) | Instruction::IfFalse(target) | Instruction::IfTrue(target),
+        ) = &mut operation.op
+        else {
+            continue;
+        };
+        let Ok(old_target) = usize::try_from(*target) else {
+            continue;
+        };
+        if old_range.contains(&old_target) {
+            let relocated = new_start
+                .checked_add(old_target - old_range.start)
+                .ok_or_else(|| Error::new(ErrorKind::JsInternal, "out of memory"))?;
+            *target = u32::try_from(relocated)
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "out of memory"))?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -3239,6 +3583,33 @@ fn quickjs_directive_asi_token(kind: &TokenKind<'_>) -> bool {
     )
 }
 
+/// QuickJS `is_regexp_allowed`, used only by the non-committing `for`-head
+/// probe. The real parser still owns the eventual lexical goal and diagnostic.
+fn for_head_regexp_allowed_after(kind: &TokenKind<'_>) -> bool {
+    if matches!(
+        kind,
+        TokenKind::Identifier(identifier)
+            if !identifier.has_escape && matches!(identifier.value.as_str(), "of" | "yield")
+    ) {
+        return true;
+    }
+    !matches!(
+        kind,
+        TokenKind::Number(_)
+            | TokenKind::String(_)
+            | TokenKind::RegExp(_)
+            | TokenKind::Identifier(_)
+            | TokenKind::Keyword(Keyword::Null | Keyword::False | Keyword::True | Keyword::This)
+            | TokenKind::Punctuator(
+                Punctuator::RightParen
+                    | Punctuator::RightBracket
+                    | Punctuator::RightBrace
+                    | Punctuator::Increment
+                    | Punctuator::Decrement
+            )
+    )
+}
+
 fn parse_radix_literal(raw: &str, radix: NumericRadix) -> Result<f64, String> {
     let (digits, base) = match radix {
         NumericRadix::Binary => (raw.get(2..).unwrap_or_default(), 2),
@@ -3801,6 +4172,114 @@ mod tests {
             assert!(
                 compile_unlinked_script(source).is_err(),
                 "nested function saw an enclosing loop for {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn classic_for_uses_quickjs_test_update_and_loop_targets() {
+        assert_eq!(evaluate("1; for(;false;) 2"), Value::Undefined);
+        assert_eq!(evaluate("for(;;){ 3; break; }"), Value::Int(3));
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){ var sum=0; for(var i=0;i<5;i++){ if(i===2) continue; sum+=i; } return sum; })()"
+            ),
+            Value::Int(8)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){ var i=0; for(;;i++){ if(i===3) break; } return i; })()"
+            ),
+            Value::Int(3)
+        );
+        assert_eq!(
+            evaluate_in_context("(function(){ var i=9; for(i=0;i<3;i++); return i; })()"),
+            Value::Int(3)
+        );
+        assert_eq!(
+            evaluate_in_context("(function(){ var i=0; for(;i<3;){ i++; } return i; })()"),
+            Value::Int(3)
+        );
+
+        for source in ["for(;;);", "for(;;) continue;"] {
+            let bytecode = compile_script(source).unwrap();
+            assert!(bytecode.code.iter().enumerate().any(|(pc, instruction)| {
+                matches!(instruction, Instruction::Goto(target) if usize::try_from(*target).is_ok_and(|target| target <= pc))
+            }));
+            assert!(
+                bytecode
+                    .code
+                    .iter()
+                    .all(|instruction| !matches!(instruction, Instruction::Goto(u32::MAX)))
+            );
+        }
+
+        for source in [
+            "for(Function.item in Function);",
+            "for(Function.item of Function);",
+            "for(Function.item of /a;b/);",
+            "for(Function.item of 'a;b');",
+            "for(Function.item of `a;b`);",
+            "for(Function.item of `a${1;2}b`);",
+        ] {
+            let error = compile_unlinked_script(source).unwrap_err();
+            assert_eq!(
+                error.message(),
+                "for-in and for-of loops are not implemented yet"
+            );
+        }
+        for source in [
+            "for(Function.item in Function;;);",
+            "for(Function.item of Function;;);",
+        ] {
+            let error = compile_unlinked_script(source).unwrap_err();
+            assert_eq!(error.message(), "expecting ';'");
+        }
+        for source in [
+            "for(Function.flag ? Function.item in Function : false;;);",
+            "for((Function.item in Function);;);",
+            "for(Function(Function.item in Function);;);",
+            "for(;false;); Function.item in Function",
+        ] {
+            let error = compile_unlinked_script(source).unwrap_err();
+            assert_eq!(
+                error.message(),
+                "the 'in' operator is not implemented yet",
+                "AllowIn boundary drifted for {source:?}"
+            );
+        }
+        for source in [
+            "for(Function.flag ? false : Function.item in Function;;);",
+            "for(Function.item = Function.key in Function;;);",
+        ] {
+            let error = compile_unlinked_script(source).unwrap_err();
+            assert_eq!(
+                error.message(),
+                "expecting ';'",
+                "NoIn boundary drifted for {source:?}"
+            );
+        }
+        for source in [
+            "(function(){ var let=Function; for(let[0]=1;false;); })",
+            "(function(){ for(let binding=0;false;); })",
+            "(function(){ for(let\nbinding=0;false;); })",
+            "(function(){ 'use strict'; for(let binding=0;false;); })",
+            "(function(){ for(const binding=0;false;); })",
+        ] {
+            let error = compile_unlinked_script(source).unwrap_err();
+            assert_eq!(
+                error.message(),
+                "lexical declarations in for heads are not implemented yet",
+                "lexical for-head boundary drifted for {source:?}"
+            );
+        }
+        for source in [
+            "for(;;) (function(){ break; })",
+            "for(;;) (function(){ continue; })",
+        ] {
+            assert!(
+                compile_unlinked_script(source).is_err(),
+                "nested function saw an enclosing for loop for {source:?}"
             );
         }
     }

@@ -238,6 +238,26 @@ fn template_concat_getter_fault_sites_match_pinned_quickjs() {
             "function-body expression entry",
             "(function(){ 1+2;\n`a${3}b`; })()",
         ),
+        (
+            "moved for update inherits the body marker",
+            "Function.i=0;\nfor(;Function.i++<1;`a${3}b`){4+5;}",
+        ),
+        (
+            "moved for update after an empty body inherits the test marker",
+            "Function.i=0;\nfor(;Function.i++<1;`a${3}b`);",
+        ),
+        (
+            "unmoved no-test for update inherits the initializer marker",
+            "Function.i=0;\nfor(;;`a${3}b`);",
+        ),
+        (
+            "for initializer inherits the preceding marker",
+            "1+2;\nfor(`a${3}b`;false;);",
+        ),
+        (
+            "for test inherits the preceding marker",
+            "Function.i=0;\nfor(;`a${3}b`;);",
+        ),
     ] {
         assert_eq!(
             rust_getter_fault_location(source),
@@ -406,6 +426,46 @@ fn template_stack_limit_uses_reachable_bytecode_like_pinned_quickjs() {
             "outer-folded-loop-makes-nested-do-unreachable",
             format!("while(false){{do{{{huge_template};}}while(false)}}"),
             true,
+        ),
+        (
+            "for-false-makes-body-unreachable",
+            format!("for(;false;){{{huge_template};}}"),
+            true,
+        ),
+        (
+            "for-string-test-is-not-folded",
+            format!("for(;' ';){{{huge_template};}}"),
+            false,
+        ),
+        (
+            "for-initializer-is-reachable",
+            format!("for({huge_template};false;){{}}"),
+            false,
+        ),
+        (
+            "for-false-makes-update-unreachable",
+            format!("for(;false;{huge_template}){{}}"),
+            true,
+        ),
+        (
+            "for-break-makes-update-unreachable",
+            format!("for(;true;{huge_template}){{break;}}"),
+            true,
+        ),
+        (
+            "for-continue-makes-update-reachable",
+            format!("for(;true;{huge_template}){{continue;}}"),
+            false,
+        ),
+        (
+            "for-break-makes-body-tail-unreachable",
+            format!("for(;;){{break;{huge_template};}}"),
+            true,
+        ),
+        (
+            "for-body-before-break-is-reachable",
+            format!("for(;;){{{huge_template};break;}}"),
+            false,
         ),
     ] {
         let runtime = Runtime::new();

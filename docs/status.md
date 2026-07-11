@@ -37,7 +37,7 @@ claim full parity.
   the current source path supports anonymous and named ordinary function
   expressions, simple parameters, `return`/fallthrough, function-local `var`,
   recursive block statements, `if`/`else` (including nearest-`if` binding),
-  `while`/`do-while`, and unlabeled `break`/`continue`,
+  `while`/`do-while`, classic `for (;;)` and unlabeled `break`/`continue`,
   simple/arithmetic/exponentiation/shift/bitwise/logical identifier assignment,
   prefix/postfix identifier and member updates, direct calls,
   transitive parameter/local and private function-name capture through
@@ -54,9 +54,20 @@ claim full parity.
   `do-while` targets its reset on every entered iteration, sends `continue` to
   the condition and lets `break` skip it. Conditions never become completion
   values, and the `do-while` trailing semicolon is unconditionally optional as
-  in QuickJS. Labels, `for`, switch, try/catch/finally, lexical declarations,
-  global `var` and function declarations remain separate grammar/runtime
-  slices.
+  in QuickJS. Classic `for` uses a non-committing clone-Lexer port of
+  `js_parse_skip_parens_token` to select a head with top-level semicolons,
+  explicitly propagates QuickJS AllowIn/NoIn grammar state, and shares the
+  function-local `var` declaration path. Initializer/test/update values are
+  discarded; `continue` selects update, test or body according to the missing
+  clauses. With both test and update, the relocatable update IR fragment moves
+  after the body like QuickJS's optimize pass, retaining Nop source slots and
+  rebasing only internal jumps so inherited debug markers remain exact. Labels,
+  `for-in`/`for-of`/`for-await`, switch, try/catch/finally, lexical declarations,
+  the `in` operator itself, global `var` and function declarations remain
+  separate grammar/runtime slices. The classic head already ports QuickJS's
+  sloppy `is_let(..., DECL_MASK_OTHER)` ambiguity to that explicit lexical
+  boundary; declaration masks for loop/branch single-statement bodies remain
+  part of the wider lexical-declaration slice.
 - Untagged template literals follow QuickJS `js_parse_template` rather than a
   generic string-interpolation rewrite. A no-substitution template pushes only
   its cooked String. An interpolated template keeps the cooked head as a

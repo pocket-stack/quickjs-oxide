@@ -7,14 +7,17 @@ ES2025 behavior, not merely a JavaScript-like language.
 The repository is still an incomplete rewrite. The current vertical slices
 execute primitive expressions, named ordinary functions and closures, and
 defining-realm global bindings through the real lexer, late scope resolver,
-bytecode and VM. Block statements, `if`/`else`, `while`/`do-while`, and
-unlabeled `break`/`continue` now share the QuickJS statement-parser spine;
+bytecode and VM. Block statements, `if`/`else`, `while`/`do-while`, classic
+`for (;;)` and unlabeled `break`/`continue` now share the QuickJS
+statement-parser spine;
 scripts carry its hidden eval-completion local so empty blocks preserve a prior
 value, `if` and `while` reset at their upstream points, and `do-while` resets on
 every entered iteration. Loop controls are isolated per function, and closed
 infinite-loop bytecode is verified without weakening reachable-fallthrough
-checks. Labels, `for`, switch and abrupt-cleanup constructs remain explicit
-grammar slices.
+checks. Classic `for` mirrors QuickJS's top-level-semicolon probe,
+ExpressionNoIn propagation, update-block relocation and exact continue target.
+Labels, `for-in`/`for-of`/`for-await`, switch and abrupt-cleanup constructs
+remain explicit grammar slices.
 Untagged template literals now follow QuickJS `js_parse_template`: the cooked
 head is retained as the primitive receiver, `concat` is looked up exactly once
 before any substitution, every substitution parses as a full Expression, and

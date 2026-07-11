@@ -303,6 +303,22 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "do continue condition fault keeps its expression site",
             "do { continue; } while(\nnull.x)",
         ),
+        (
+            "for initializer fault keeps its expression site",
+            "for(\nnull.x;;);",
+        ),
+        (
+            "for test fault keeps its expression site",
+            "for(;\nnull.x;);",
+        ),
+        (
+            "for update fault keeps its expression site",
+            "for(;;\nnull.x);",
+        ),
+        (
+            "for body fault keeps its expression site",
+            "for(;true;){\nnull.x;}",
+        ),
     ];
 
     for (description, source) in cases {
