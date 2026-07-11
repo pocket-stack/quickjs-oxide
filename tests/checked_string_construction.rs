@@ -40,3 +40,23 @@ fn string_length_failure_maps_to_quickjs_internal_error() {
     assert_eq!(error.kind(), ErrorKind::JsInternal);
     assert_eq!(error.message(), "string too long");
 }
+
+#[test]
+fn public_byte_codec_preserves_wtf8_and_cesu8_modes() {
+    let value =
+        JsString::try_from_bytes(&[0x41, 0x00, 0xed, 0xa0, 0x80, 0xf0, 0x9f, 0x98, 0x80]).unwrap();
+    assert_eq!(
+        value.utf16_units().collect::<Vec<_>>(),
+        [0x0041, 0x0000, 0xd800, 0xd83d, 0xde00]
+    );
+    assert_eq!(
+        value.try_to_wtf8_bytes().unwrap(),
+        [0x41, 0x00, 0xed, 0xa0, 0x80, 0xf0, 0x9f, 0x98, 0x80]
+    );
+    assert_eq!(
+        value.try_to_cesu8_bytes().unwrap(),
+        [
+            0x41, 0x00, 0xed, 0xa0, 0x80, 0xed, 0xa0, 0xbd, 0xed, 0xb8, 0x80,
+        ]
+    );
+}

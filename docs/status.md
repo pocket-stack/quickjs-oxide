@@ -237,12 +237,18 @@ claim full parity.
   arithmetic. Lexer overflow stops immediately as an `InternalError` with
   message `string too long`, whereas URI validation continues and a later
   `URIError` overrides an earlier output overflow, matching the pinned native
-  loops.
-  Global `%String%`, the remaining 43 prototype own keys,
-  `JS_NewStringLen`-compatible arbitrary-byte/WTF-8 input,
-  `JS_ToCStringLen2`-compatible WTF-8/CESU-8 output, the fixed 256-byte native
-  error formatter, and recoverable allocator failure handling stay
-  unpublished.
+  loops. `try_from_bytes` additionally matches `JS_NewStringLen`'s explicit
+  byte length, embedded NUL, WTF-8 surrogate acceptance, non-BMP pair output,
+  legacy UTF-8 lead shapes and idiosyncratic invalid-run skip. The
+  `try_to_wtf8_bytes`/`try_to_cesu8_bytes` pair emits the payload bytes of
+  `JS_ToCStringLen2` without its synthetic trailing NUL; the normal mode joins
+  valid surrogate pairs even across rope leaves, while CESU-8 encodes each
+  code unit independently. Output reservation is fallible and does not apply
+  the JavaScript String length cap to expanded byte buffers.
+  Global `%String%`, the remaining 43 prototype own keys, Context-level
+  observable `ToString`, borrowed C-pointer/refcount ownership, the fixed
+  256-byte native error formatter, and general recoverable allocator failure
+  handling stay unpublished.
   `%Number.prototype%` is a Number-class wrapper
   containing `+0` and owns the pinned ordered seven-key method surface. Its
   constructor owns the exact ordered 17-key surface: parser aliases captured
@@ -618,10 +624,11 @@ lookup and the implemented Object-prototype routes. Their shared value kernel
 does publish the pinned flat/rope concat thresholds, bounded Fibonacci
 rebalance, cross-leaf code-unit semantics, content identity, atom
 linearization, checked VM/native concat errors, valid-UTF-8/exact-UTF-16
-dynamic constructors, checked lexer/URI/Function-source builders, and their
-distinct overflow ordering. It does not publish the global constructor,
-remaining 43 own keys, arbitrary-byte/WTF-8 construction, C/WTF-8/CESU-8
-export, the fixed native-error formatter, or recoverable allocator failures.
+dynamic constructors, checked lexer/URI/Function-source builders, their
+distinct overflow ordering, arbitrary-byte `JS_NewStringLen` decoding, and
+owned WTF-8/CESU-8 payload export. It does not publish the global constructor,
+remaining 43 own keys, Context/C pointer embedding semantics, the fixed
+native-error formatter, or general recoverable allocator failures.
 Prefix/postfix update expressions
 (including QuickJS's valid `++x ** 2` form) are implemented for the current
 identifier and ordinary fixed/computed member References. Sloppy

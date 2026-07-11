@@ -62,9 +62,14 @@ iterator hints cannot trigger an enormous eager reserve. A shared latched
 UTF-16 builder covers backtraces and Annex-B escaping, while lexer String,
 template and ASCII-identifier buffers, dynamic Function source assembly, and
 URI expansion use checked length paths with their distinct QuickJS error
-ordering. Arbitrary host bytes with `JS_NewStringLen`'s WTF-8/replacement
-rules, C/WTF-8/CESU-8 export, native error's fixed 256-byte formatter, and
-recoverable allocator failures remain unfinished invariants.
+ordering. The byte boundary now reproduces `JS_NewStringLen`: embedded NUL,
+WTF-8 surrogates, non-BMP pairs, legacy five/six-byte lead handling, and the
+release's unusual invalid-byte replacement/skip rule are preserved. Fallible
+owned-byte exporters implement `JS_ToCStringLen2` payload semantics in both
+WTF-8 and CESU-8 modes, including cross-rope surrogate pairs and interior NUL.
+Context-level observable `ToString`, borrowed C-pointer/refcount ABI, native
+error's fixed 256-byte formatter, and general recoverable allocator failures
+remain unfinished invariants.
 `%Number.prototype%` is the pinned boxed-`+0` Number-class object. The global
 `%Number%` publishes the exact ordered 17/7 constructor/prototype surface:
 call/construct and BigInt conversion, parser aliases captured by identity,
@@ -168,9 +173,8 @@ followed by `DeleteProperty`; strict direct references are early errors. Each
 realm also installs the frozen `Infinity`, `NaN` and `undefined` global data
 properties. Dynamic object-environment resolution through `with`/direct
 `eval`, Proxy/exotic delete dispatch, the global String constructor, the
-remaining 43 String-prototype own keys, arbitrary-byte/WTF-8 host String
-construction and C-string export, and recoverable string-allocation failures
-remain unfinished slices.
+remaining 43 String-prototype own keys, the borrowed C-string embedding ABI,
+and general recoverable string-allocation failures remain unfinished slices.
 Runtime-wide full/strip-source/strip-debug modes follow QuickJS's immutable
 bytecode publication boundary, and the `qjs` CLI exposes `--strip-source` and
 `-s` with upstream last-option-wins behavior.
@@ -225,6 +229,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_utf16_prefix -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_rope -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_string_byte_codec -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_parse_kernel -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

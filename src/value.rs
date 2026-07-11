@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::TryReserveError;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::iter::FusedIterator;
@@ -94,6 +95,12 @@ impl JsStringBuilder {
         let additional = value.encode_utf16().count();
         self.ensure_additional(additional)?;
         self.units.extend(value.encode_utf16());
+        Ok(())
+    }
+
+    fn push_latin1(&mut self, value: &[u8]) -> Result<(), JsStringError> {
+        self.ensure_additional(value.len())?;
+        self.units.extend(value.iter().copied().map(u16::from));
         Ok(())
     }
 
@@ -257,6 +264,23 @@ impl JsString {
         Self::try_from_utf16(value.encode_utf16())
     }
 
+    /// Decode the byte-oriented input accepted by QuickJS `JS_NewStringLen`.
+    ///
+    /// This is deliberately not Rust's strict or standard lossy UTF-8
+    /// decoder. Three-byte surrogate encodings are preserved as UTF-16 code
+    /// units, non-BMP scalars become surrogate pairs, and malformed sequences
+    /// use QuickJS's release-pinned replacement-and-skip algorithm.
+    /// Embedded NUL bytes are ordinary U+0000 code units because the input
+    /// length is explicit.
+    ///
+    /// # Errors
+    /// Returns [`JsStringError::TooLong`] when the decoded value exceeds
+    /// [`Self::MAX_LEN`] UTF-16 code units. Recoverable allocation failure for
+    /// String storage remains a separate parity gap.
+    pub fn try_from_bytes(value: &[u8]) -> Result<Self, JsStringError> {
+        Self::try_from_bytes_with_limit(value, Self::MAX_LEN)
+    }
+
     /// Construct one of the engine's trusted static table/literal strings.
     /// Dynamic host input must use [`Self::try_from_utf8`].
     pub(crate) fn from_static(value: &'static str) -> Self {
@@ -297,6 +321,37 @@ impl JsString {
             collected.push(unit);
         }
         Ok(Self::from_validated_utf16(collected))
+    }
+
+    fn try_from_bytes_with_limit(value: &[u8], max_len: usize) -> Result<Self, JsStringError> {
+        let max_len = max_len.min(Self::MAX_LEN);
+        let ascii_len = value.iter().take_while(|byte| **byte < 0x80).count();
+        if ascii_len > max_len {
+            return Err(JsStringError::TooLong);
+        }
+
+        let mut output = JsStringBuilder::with_limit(value.len(), max_len);
+        output.push_latin1(&value[..ascii_len])?;
+        let mut index = ascii_len;
+        while index < value.len() {
+            if value[index] < 0x80 {
+                output.push_code_point(u32::from(value[index]))?;
+                index += 1;
+                continue;
+            }
+
+            match decode_quickjs_utf8(&value[index..]) {
+                Some((code_point, consumed)) if code_point <= 0x10_ffff => {
+                    output.push_code_point(code_point)?;
+                    index += consumed;
+                }
+                Some(_) | None => {
+                    index = skip_quickjs_invalid_utf8(value, index);
+                    output.push_code_point(0xfffd)?;
+                }
+            }
+        }
+        output.finish()
     }
 
     fn from_validated_utf16(units: Vec<u16>) -> Self {
@@ -680,6 +735,60 @@ impl JsString {
         Self::new_rope(self.clone(), other.clone())
     }
 
+    /// Encode the byte slice exposed by QuickJS `JS_ToCStringLen2` when its
+    /// `cesu8` flag is false.
+    ///
+    /// Valid surrogate pairs become standard four-byte UTF-8. Unpaired
+    /// surrogates are deliberately retained as three-byte WTF-8 sequences.
+    /// Embedded U+0000 is returned as an ordinary zero byte; the terminating C
+    /// NUL owned by QuickJS is not part of its reported length and is therefore
+    /// not included in this safe Rust byte vector.
+    ///
+    /// # Errors
+    /// Returns [`TryReserveError`] if the output buffer cannot be reserved.
+    pub fn try_to_wtf8_bytes(&self) -> Result<Vec<u8>, TryReserveError> {
+        self.try_to_quickjs_utf8_bytes(false)
+    }
+
+    /// Encode the byte slice exposed by QuickJS `JS_ToCStringLen2` when its
+    /// `cesu8` flag is true.
+    ///
+    /// Every UTF-16 code unit is encoded independently, so a valid surrogate
+    /// pair occupies two three-byte CESU-8 sequences. Embedded U+0000 is
+    /// retained and no trailing C NUL is included in the returned vector.
+    ///
+    /// # Errors
+    /// Returns [`TryReserveError`] if the output buffer cannot be reserved.
+    pub fn try_to_cesu8_bytes(&self) -> Result<Vec<u8>, TryReserveError> {
+        self.try_to_quickjs_utf8_bytes(true)
+    }
+
+    fn try_to_quickjs_utf8_bytes(&self, cesu8: bool) -> Result<Vec<u8>, TryReserveError> {
+        let encoded_len = quickjs_utf8_length(self.utf16_units(), cesu8);
+        let mut output = Vec::new();
+        output.try_reserve_exact(encoded_len)?;
+
+        let mut units = self.utf16_units().peekable();
+        while let Some(unit) = units.next() {
+            let code_point = if !cesu8
+                && (0xd800..=0xdbff).contains(&unit)
+                && units
+                    .peek()
+                    .is_some_and(|next| (0xdc00..=0xdfff).contains(next))
+            {
+                let low = units
+                    .next()
+                    .expect("peeked low surrogate disappeared from UTF-16 iterator");
+                0x1_0000 + ((u32::from(unit) - 0xd800) << 10) + (u32::from(low) - 0xdc00)
+            } else {
+                u32::from(unit)
+            };
+            push_quickjs_utf8(&mut output, code_point);
+        }
+        debug_assert_eq!(output.len(), encoded_len);
+        Ok(output)
+    }
+
     /// Lossy conversion is suitable for terminal diagnostics. It must not be
     /// used for language-level string comparison or indexing.
     #[must_use]
@@ -687,6 +796,99 @@ impl JsString {
         char::decode_utf16(self.utf16_units())
             .map(|result| result.unwrap_or(char::REPLACEMENT_CHARACTER))
             .collect()
+    }
+}
+
+fn decode_quickjs_utf8(value: &[u8]) -> Option<(u32, usize)> {
+    let first = *value.first()?;
+    if first < 0x80 {
+        return Some((u32::from(first), 1));
+    }
+
+    let (continuation_count, mask, minimum): (usize, u8, u32) = match first {
+        0x00..=0x7f => unreachable!("ASCII byte escaped the fast path"),
+        0xc0..=0xdf => (1, 0x1f, 0x80),
+        0xe0..=0xef => (2, 0x0f, 0x800),
+        0xf0..=0xf7 => (3, 0x07, 0x1_0000),
+        0xf8..=0xfb => (4, 0x03, 0x20_0000),
+        0xfc..=0xfd => (5, 0x01, 0x400_0000),
+        0x80..=0xbf | 0xfe..=0xff => return None,
+    };
+    if value.len() <= continuation_count {
+        return None;
+    }
+
+    let mut code_point = u32::from(first & mask);
+    for &byte in &value[1..=continuation_count] {
+        if !(0x80..=0xbf).contains(&byte) {
+            return None;
+        }
+        code_point = (code_point << 6) | u32::from(byte & 0x3f);
+    }
+    (code_point >= minimum).then_some((code_point, continuation_count + 1))
+}
+
+fn skip_quickjs_invalid_utf8(value: &[u8], mut index: usize) -> usize {
+    while value
+        .get(index)
+        .is_some_and(|byte| (0x80..=0xbf).contains(byte))
+    {
+        index += 1;
+    }
+    if index < value.len() {
+        index += 1;
+        while value
+            .get(index)
+            .is_some_and(|byte| (0x80..=0xbf).contains(byte))
+        {
+            index += 1;
+        }
+    }
+    index
+}
+
+fn quickjs_utf8_length(units: impl Iterator<Item = u16>, cesu8: bool) -> usize {
+    let mut units = units.peekable();
+    let mut length = 0;
+    while let Some(unit) = units.next() {
+        if !cesu8
+            && (0xd800..=0xdbff).contains(&unit)
+            && units
+                .peek()
+                .is_some_and(|next| (0xdc00..=0xdfff).contains(next))
+        {
+            units.next();
+            length += 4;
+        } else {
+            length += match unit {
+                0x0000..=0x007f => 1,
+                0x0080..=0x07ff => 2,
+                0x0800..=0xffff => 3,
+            };
+        }
+    }
+    length
+}
+
+fn push_quickjs_utf8(output: &mut Vec<u8>, code_point: u32) {
+    match code_point {
+        0x0000..=0x007f => output.push(code_point as u8),
+        0x0080..=0x07ff => {
+            output.push((0xc0 | (code_point >> 6)) as u8);
+            output.push((0x80 | (code_point & 0x3f)) as u8);
+        }
+        0x0800..=0xffff => {
+            output.push((0xe0 | (code_point >> 12)) as u8);
+            output.push((0x80 | ((code_point >> 6) & 0x3f)) as u8);
+            output.push((0x80 | (code_point & 0x3f)) as u8);
+        }
+        0x1_0000..=0x10_ffff => {
+            output.push((0xf0 | (code_point >> 18)) as u8);
+            output.push((0x80 | ((code_point >> 12) & 0x3f)) as u8);
+            output.push((0x80 | ((code_point >> 6) & 0x3f)) as u8);
+            output.push((0x80 | (code_point & 0x3f)) as u8);
+        }
+        _ => unreachable!("QuickJS byte encoder received an invalid code point"),
     }
 }
 
@@ -1160,6 +1362,109 @@ mod tests {
         assert_eq!(failed.push_code_point(0x1f600), Err(JsStringError::TooLong));
         assert_eq!(failed.push_utf8("b"), Err(JsStringError::TooLong));
         assert_eq!(failed.finish(), Err(JsStringError::TooLong));
+    }
+
+    #[test]
+    fn quickjs_byte_constructor_preserves_wtf8_and_invalid_skip_rules() {
+        let cases = [
+            (vec![], vec![]),
+            (vec![0x00, 0x41], vec![0x0000, 0x0041]),
+            (vec![0xc3, 0xa9], vec![0x00e9]),
+            (vec![0xc4, 0x80], vec![0x0100]),
+            (vec![0xed, 0xa0, 0x80], vec![0xd800]),
+            (vec![0xed, 0xb0, 0x80], vec![0xdc00]),
+            (vec![0xf0, 0x9f, 0x98, 0x80], vec![0xd83d, 0xde00]),
+            (vec![0x80, 0x41], vec![0xfffd]),
+            (vec![0xff, 0x41], vec![0xfffd, 0x0041]),
+            (vec![0x80, 0x80, 0x41, 0x80, 0x42], vec![0xfffd, 0x0042]),
+            (vec![0x80, 0xc2, 0xa2], vec![0xfffd]),
+            (vec![0xe2, 0x28, 0xa1], vec![0xfffd, 0x0028, 0xfffd]),
+            (vec![0xe2, 0x82], vec![0xfffd]),
+            (vec![0xc0, 0x80, 0x41], vec![0xfffd, 0x0041]),
+            (vec![0xf4, 0x90, 0x80, 0x80, 0x41], vec![0xfffd, 0x0041]),
+            (vec![0xfe, 0x80, 0x41], vec![0xfffd, 0x0041]),
+            (vec![0xf8, 0x88, 0x80, 0x80, 0x80], vec![0xfffd]),
+        ];
+        for (bytes, expected) in cases {
+            let actual = JsString::try_from_bytes(&bytes).unwrap();
+            assert_eq!(
+                actual.utf16_units().collect::<Vec<_>>(),
+                expected,
+                "{bytes:02x?}"
+            );
+        }
+
+        assert!(JsString::try_from_bytes_with_limit(&[0xf0, 0x9f, 0x98, 0x80], 2).is_ok());
+        assert_eq!(
+            JsString::try_from_bytes_with_limit(&[0xf0, 0x9f, 0x98, 0x80], 1),
+            Err(JsStringError::TooLong)
+        );
+        assert!(JsString::try_from_bytes_with_limit(&[0x80, 0x41], 1).is_ok());
+        assert_eq!(
+            JsString::try_from_bytes_with_limit(&[0xff, 0x41], 1),
+            Err(JsStringError::TooLong)
+        );
+        assert_eq!(
+            JsString::try_from_bytes_with_limit(b"ab", 1),
+            Err(JsStringError::TooLong)
+        );
+    }
+
+    #[test]
+    fn quickjs_byte_exports_distinguish_wtf8_from_cesu8_and_roundtrip_utf16() {
+        let value = JsString::try_from_utf16([
+            0x0041, 0x0000, 0x00e9, 0x0800, 0xd800, 0x0042, 0xdc00, 0xd83d, 0xde00,
+        ])
+        .unwrap();
+        assert_eq!(
+            value.try_to_wtf8_bytes().unwrap(),
+            [
+                0x41, 0x00, 0xc3, 0xa9, 0xe0, 0xa0, 0x80, 0xed, 0xa0, 0x80, 0x42, 0xed, 0xb0, 0x80,
+                0xf0, 0x9f, 0x98, 0x80,
+            ]
+        );
+        assert_eq!(
+            value.try_to_cesu8_bytes().unwrap(),
+            [
+                0x41, 0x00, 0xc3, 0xa9, 0xe0, 0xa0, 0x80, 0xed, 0xa0, 0x80, 0x42, 0xed, 0xb0, 0x80,
+                0xed, 0xa0, 0xbd, 0xed, 0xb8, 0x80,
+            ]
+        );
+
+        let all_units = JsString::try_from_utf16(0_u16..=u16::MAX).unwrap();
+        for bytes in [
+            all_units.try_to_wtf8_bytes().unwrap(),
+            all_units.try_to_cesu8_bytes().unwrap(),
+        ] {
+            assert_eq!(JsString::try_from_bytes(&bytes).unwrap(), all_units);
+        }
+
+        let high = JsString::try_from_utf16([0xd83d]).unwrap();
+        let low_and_tail = JsString::try_from_utf16(
+            [0xde00]
+                .into_iter()
+                .chain(std::iter::repeat_n(u16::from(b'b'), 512)),
+        )
+        .unwrap();
+        let across_leaf = JsString::try_from_utf8(&"a".repeat(8193))
+            .unwrap()
+            .try_concat(&high)
+            .unwrap()
+            .try_concat(&low_and_tail)
+            .unwrap();
+        assert!(!across_leaf.is_flat());
+        let flat = JsString::try_from_utf16(
+            std::iter::repeat_n(u16::from(b'a'), 8193)
+                .chain([0xd83d, 0xde00])
+                .chain(std::iter::repeat_n(u16::from(b'b'), 512)),
+        )
+        .unwrap();
+        let wtf8 = across_leaf.try_to_wtf8_bytes().unwrap();
+        assert_eq!(&wtf8[8193..8197], &[0xf0, 0x9f, 0x98, 0x80]);
+        assert_eq!(wtf8, flat.try_to_wtf8_bytes().unwrap());
+        let cesu8 = across_leaf.try_to_cesu8_bytes().unwrap();
+        assert_eq!(&cesu8[8193..8199], &[0xed, 0xa0, 0xbd, 0xed, 0xb8, 0x80]);
+        assert_eq!(cesu8, flat.try_to_cesu8_bytes().unwrap());
     }
 
     #[test]
