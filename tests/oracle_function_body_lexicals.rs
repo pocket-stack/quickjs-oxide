@@ -52,9 +52,72 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "dynamic Function does not capture caller lexical state",
         "(function(){ let callerValue = 1; return Function('return typeof callerValue')(); })()",
     ),
+    (
+        "nested block lexicals shadow without changing the outer binding",
+        "(function(){ let value = 1, inner; { let value = 40; const delta = 2; value += delta; inner = value; } return value + '|' + inner; })()",
+    ),
+    (
+        "captured block lexical outlives its scope",
+        "(function(){ let read; { const value = 42; read = function(){ return value; }; } return read(); })()",
+    ),
+    (
+        "block continue closes one capture before the next scope entry",
+        "(function(){ let first, second; let i = 0; while (i < 2) { let value = ++i; let read = function(){ return value; }; if (i === 1) { first = read; continue; } second = read; } return first() * 10 + second(); })()",
+    ),
+    (
+        "labeled block break preserves its captured lexical",
+        "(function(){ let read; done: { const value = 42; read = function(){ return value; }; break done; } return read(); })()",
+    ),
+    (
+        "nested block lexical may shadow a parameter",
+        "(function(value){ { let value = 42; return value; } })(1)",
+    ),
+    (
+        "QuickJS keeps only the first sibling var declaration scope",
+        "(function(){ { var value; } { var value; let value; } return value === undefined; })()",
+    ),
+    (
+        "Function constructor nested lexical closure",
+        "Function('let read; { const value = 42; read = function(){ return value; }; } return read();')()",
+    ),
+    (
+        "switch fallthrough shares one lexical environment",
+        "(function(){ let read; switch (0) { case 0: let value = 40; read = function(){ return value; }; case 1: value++; break; } return read(); })()",
+    ),
+    (
+        "switch lexical shadows without changing the outer binding",
+        "(function(){ let value = 1, inner; switch (0) { case 0: let value = 42; inner = value; break; } return value + '|' + inner; })()",
+    ),
+    (
+        "switch continue closes one capture before the next scope entry",
+        "(function(){ let first, second; let i = 0; outer: while (i < 2) { switch (0) { case 0: let value = ++i; let read = function(){ return value; }; if (i === 1) { first = read; continue outer; } second = read; break; } } return first() * 10 + second(); })()",
+    ),
 ];
 
-const ERROR_CASES: &[(&str, &str)] = &[
+const SCRIPT_SCOPE_VALUE_CASES: &[(&str, &str, &str)] = &[
+    (
+        "script nested block lexical",
+        "Function.scopeLog = ''; { let value = 40; const delta = 2; Function.scopeLog += value + delta; }",
+        "Function.scopeLog + '|' + typeof value",
+    ),
+    (
+        "script nested switch lexical",
+        "Function.scopeLog = ''; switch (0) { case 0: let value = 40; const delta = 2; Function.scopeLog += value + delta; break; }",
+        "Function.scopeLog + '|' + typeof value",
+    ),
+    (
+        "script captured block cell survives scope exit",
+        "Function.saved = undefined; { let value = 40; Function.saved = function(){ return ++value; }; }",
+        "Function.saved() * 100 + Function.saved()",
+    ),
+    (
+        "script captured switch cell survives scope exit",
+        "Function.saved = undefined; switch (0) { case 0: let value = 40; Function.saved = function(){ return ++value; }; break; }",
+        "Function.saved() * 100 + Function.saved()",
+    ),
+];
+
+const BODY_SCOPE_ERROR_CASES: &[(&str, &str)] = &[
     (
         "direct temporal dead zone read",
         "(function lexicalTdz(){ return value; let value = 1; })()",
@@ -113,6 +176,65 @@ const ERROR_CASES: &[(&str, &str)] = &[
     ),
 ];
 
+const NESTED_SCOPE_ERROR_CASES: &[(&str, &str)] = &[
+    (
+        "nested block temporal dead zone read",
+        "(function blockTdz(){\n  {\n    return value;\n    let value = 1;\n  }\n})()",
+    ),
+    (
+        "nested block typeof temporal dead zone read",
+        "(function blockTypeofTdz(){ { return typeof value; let value = 1; } })()",
+    ),
+    (
+        "nested block direct const write",
+        "(function blockReadonly(){ { const value = 1; value = 2; } })()",
+    ),
+    (
+        "captured block const write after scope exit",
+        "(function blockReadonlyOuter(){ let write; { const value = 1; write = function blockReadonlyInner(){ value = 2; }; } return write; })()()",
+    ),
+    (
+        "block exit participates in late readonly source mapping",
+        "(function blockReadonlyMarker(){\n  {\n    value = 1;\n    const value = 2;\n  }\n})()",
+    ),
+    (
+        "block late readonly mapping crosses a lowered scope exit",
+        "(function blockReadonlyAfterScope(){\n  {\n    value = 1;\n    const value = 2;\n  }\n  99;\n})()",
+    ),
+    (
+        "block branch removal shares lowered scope label state",
+        "(function blockReadonlyBranches(flag){\n  {\n    if (flag) value = 1; else value = 2;\n    const value = 3;\n    99;\n  }\n})(false)",
+    ),
+    (
+        "switch case selector observes the shared temporal dead zone",
+        "(function switchSelectorTdz(){\n  switch (0) {\n    case value:\n      let value = 0;\n      return value;\n  }\n})()",
+    ),
+    (
+        "unselected switch declaration creates a cross-case temporal dead zone",
+        "(function switchCaseTdz(){ switch (1) { case 0: let value = 0; break; case 1: return value; } })()",
+    ),
+    (
+        "switch direct const write",
+        "(function switchReadonly(){ switch (0) { case 0: const value = 1; value = 2; } })()",
+    ),
+    (
+        "captured switch const write after scope exit",
+        "(function switchReadonlyOuter(){ let write; switch (0) { case 0: const value = 1; write = function switchReadonlyInner(){ value = 2; }; break; } return write; })()()",
+    ),
+    (
+        "switch exit participates in late readonly source mapping",
+        "(function switchReadonlyMarker(){\n  switch (0) {\n    case 0:\n      value = 1;\n      const value = 2;\n  }\n})()",
+    ),
+    (
+        "switch late readonly mapping observes the following case operation",
+        "(function switchReadonlyAfterWrite(){\n  switch (0) {\n    case 0:\n      value = 1;\n      const value = 2;\n      99;\n  }\n})()",
+    ),
+    (
+        "switch case label bounds late readonly source mapping",
+        "(function switchReadonlyCaseLabel(){\n  switch (0) {\n    case 0:\n      value = 1;\n    case 1:\n      const value = 2;\n      99;\n  }\n})()",
+    ),
+];
+
 struct BoundaryCase {
     description: &'static str,
     source: &'static str,
@@ -126,16 +248,6 @@ const BOUNDARY_CASES: &[BoundaryCase] = &[
         rust_message: "top-level lexical declarations and global bindings are not implemented yet",
     },
     BoundaryCase {
-        description: "nested block lexical declaration",
-        source: "(function(){ { const nested = 1; nested; } })()",
-        rust_message: "lexical declarations in nested blocks and switch bodies are not implemented yet",
-    },
-    BoundaryCase {
-        description: "switch-body lexical declaration",
-        source: "(function(){ switch (0) { case 0: let nested = 1; nested; } })()",
-        rust_message: "lexical declarations in nested blocks and switch bodies are not implemented yet",
-    },
-    BoundaryCase {
         description: "for-head lexical declaration",
         source: "(function(){ for (let index = 0; index < 1; index++) {} })()",
         rust_message: "lexical declarations in for heads are not implemented yet",
@@ -143,6 +255,16 @@ const BOUNDARY_CASES: &[BoundaryCase] = &[
     BoundaryCase {
         description: "lexical destructuring binding",
         source: "(function(){ const [value] = [1]; return value; })()",
+        rust_message: "lexical destructuring bindings are not implemented yet",
+    },
+    BoundaryCase {
+        description: "nested block lexical destructuring binding",
+        source: "(function(){ { const [value] = [1]; return value; } })()",
+        rust_message: "lexical destructuring bindings are not implemented yet",
+    },
+    BoundaryCase {
+        description: "switch lexical destructuring binding",
+        source: "(function(){ switch (0) { case 0: const [value] = [1]; return value; } })()",
         rust_message: "lexical destructuring bindings are not implemented yet",
     },
 ];
@@ -181,6 +303,34 @@ const SYNTAX_ERROR_CASES: &[(&str, &str)] = &[
         "single statement lexical declaration",
         "(function(){\n  if (true) let value = 1;\n})",
     ),
+    (
+        "duplicate nested block lexical",
+        "(function(){\n  { let value; const value = 1; }\n})",
+    ),
+    (
+        "var before nested block lexical",
+        "(function(){\n  { var value; let value; }\n})",
+    ),
+    (
+        "var after nested block lexical",
+        "(function(){\n  { let value; var value; }\n})",
+    ),
+    (
+        "descendant var conflicts with parent block lexical",
+        "(function(){\n  { let value; { var value; } }\n})",
+    ),
+    (
+        "duplicate switch lexical across cases",
+        "(function(){\n  switch (0) { case 0: let value; break; case 1: const value = 1; }\n})",
+    ),
+    (
+        "switch var before lexical across cases",
+        "(function(){\n  switch (0) { case 0: var value; break; case 1: let value; }\n})",
+    ),
+    (
+        "switch var after lexical across cases",
+        "(function(){\n  switch (0) { case 0: let value; break; case 1: var value; }\n})",
+    ),
 ];
 
 #[test]
@@ -197,6 +347,14 @@ fn ordinary_function_body_lexical_values_match_pinned_quickjs() {
             "function-body lexical value drifted for {description}: {source:?}",
         );
     }
+    for &(description, setup, observation) in SCRIPT_SCOPE_VALUE_CASES {
+        let rust_source = format!("{setup}\n({observation})");
+        assert_eq!(
+            rust_value_observation(&rust_source, description),
+            oracle_script_value_observation(&oracle, setup, observation, description),
+            "script lexical value drifted for {description}: {rust_source:?}",
+        );
+    }
 }
 
 #[test]
@@ -206,9 +364,33 @@ fn lexical_tdz_and_readonly_cli_stacks_match_pinned_quickjs() {
         return;
     };
 
-    for &(description, source) in ERROR_CASES {
+    for &(description, source) in BODY_SCOPE_ERROR_CASES
+        .iter()
+        .chain(NESTED_SCOPE_ERROR_CASES)
+    {
         let rust = run_cli(env!("CARGO_BIN_EXE_qjs").as_ref(), source, description);
         let quickjs = run_cli(&oracle, source, description);
+        assert_eq!(rust.status.code(), quickjs.status.code(), "{description}");
+        assert_eq!(rust.stdout, quickjs.stdout, "{description}");
+        assert_eq!(rust.stderr, quickjs.stderr, "{description}");
+    }
+}
+
+#[test]
+fn nested_lexical_strip_debug_stacks_match_pinned_quickjs() {
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!("SKIP nested lexical StripDebug differential: set QJS_ORACLE to upstream qjs");
+        return;
+    };
+
+    for &(description, source) in NESTED_SCOPE_ERROR_CASES {
+        let rust = run_cli_with_options(
+            env!("CARGO_BIN_EXE_qjs").as_ref(),
+            &["-s"],
+            source,
+            description,
+        );
+        let quickjs = run_cli_with_options(&oracle, &["-s"], source, description);
         assert_eq!(rust.status.code(), quickjs.status.code(), "{description}");
         assert_eq!(rust.stdout, quickjs.stdout, "{description}");
         assert_eq!(rust.stderr, quickjs.stderr, "{description}");
@@ -301,6 +483,32 @@ fn oracle_value_observation(oracle: &OsStr, source: &str, description: &str) -> 
         .to_owned()
 }
 
+fn oracle_script_value_observation(
+    oracle: &OsStr,
+    setup: &str,
+    observation: &str,
+    description: &str,
+) -> String {
+    let script = format!(
+        "{setup}\nvar __qjo_value = ({observation}); print(typeof __qjo_value + '|' + String(__qjo_value));"
+    );
+    let output = Command::new(oracle)
+        .args(["-e", &script])
+        .output()
+        .unwrap_or_else(|error| panic!("could not run QuickJS for {description}: {error}"));
+    assert!(
+        output.status.success(),
+        "pinned QuickJS rejected {description} ({script:?}): {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    String::from_utf8(output.stdout)
+        .unwrap_or_else(|error| {
+            panic!("QuickJS emitted non-UTF-8 output for {description}: {error}")
+        })
+        .trim_end()
+        .to_owned()
+}
+
 fn rust_error_observation(source: &str, description: &str) -> String {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -341,7 +549,17 @@ fn error_string_property(
 }
 
 fn run_cli(program: &OsStr, source: &str, description: &str) -> Output {
+    run_cli_with_options(program, &[], source, description)
+}
+
+fn run_cli_with_options(
+    program: &OsStr,
+    options: &[&str],
+    source: &str,
+    description: &str,
+) -> Output {
     Command::new(program)
+        .args(options)
         .args(["-e", source])
         .output()
         .unwrap_or_else(|error| panic!("could not run CLI for {description}: {error}"))

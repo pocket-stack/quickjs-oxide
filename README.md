@@ -36,8 +36,10 @@ The current repository provides:
   Error objects on the implemented paths;
 - a practical subset of expressions, calls, construction, member access and
   assignment, operators, ordinary function expressions, and control flow;
-- function-local `var`, plus simple identifier `let`/`const` declarations at
-  the top level of an ordinary function body in the current compiler slice;
+- function-local `var`, plus simple identifier `let`/`const` declarations in
+  ordinary function bodies, nested brace blocks, and the shared scope of a
+  `switch` (including nested block/switch locals in scripts), with TDZ and
+  captured-cell cleanup across re-entry, `break`, and `continue`;
 - selected Function, Number, Boolean, Symbol, BigInt, String, Object-prototype,
   global numeric, and URI behavior;
 - filename, source-position, stack, strip-source, and strip-debug support for
@@ -51,9 +53,10 @@ whole. Exact details and evidence live in [docs/status.md](docs/status.md).
 
 Among the capabilities not yet complete are:
 
-- program/global declarations and full declaration instantiation;
-- block- and switch-scoped lexical declarations, lexical declarations in loop
-  heads, destructuring, and per-iteration lexical environments;
+- program/global declaration instantiation, including direct `var`, function,
+  and lexical declarations;
+- lexical declarations in loop heads, destructuring, and per-iteration lexical
+  environments;
 - `for-in`/`for-of`/`for-await` and `try`/`catch`/`finally`;
 - function declarations and hoisting, arrow functions, classes, generators,
   async functions, and the complete `arguments` behavior;

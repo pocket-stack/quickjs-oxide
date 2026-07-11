@@ -248,10 +248,12 @@ enum ForHeadDelimiter {
 #[derive(Debug)]
 enum IrOp {
     Bytecode(Instruction),
-    /// Function-body scope entry is fixed at IR position zero before any
-    /// authored operation. Slots are appended as declarations are discovered,
-    /// then lowering expands the pseudo operation to one TDZ entry per local.
-    EnterBodyLexicalScope(Vec<u16>),
+    /// Typed counterparts of QuickJS `OP_enter_scope` / `OP_leave_scope`.
+    /// They remain scope identities until every declaration and child capture
+    /// is known, then lowering expands entry to lexical TDZ initialization and
+    /// exit to `CloseLocal` for exactly the locals captured by children.
+    EnterScope(ScopeId),
+    LeaveScope(ScopeId),
     /// QuickJS's template parser does not apply the ordinary call parser's
     /// u16 argument guard.  Retain the full count until the bytecode stack
     /// limit has been checked during lowering.
@@ -297,6 +299,10 @@ enum BreakControlKind {
 struct BreakControlContext {
     kind: BreakControlKind,
     label_name: Option<String>,
+    /// Parser scope active when QuickJS pushes this `BlockEnv`. Abrupt jumps
+    /// leave descendant lexical scopes, but keep the matched control's own
+    /// scope active until its shared tail runs.
+    scope: ScopeId,
     entry_depth: usize,
     drop_count: usize,
     break_jumps: Vec<usize>,
@@ -307,7 +313,7 @@ impl IrOp {
     fn stack_effect(&self) -> (usize, usize) {
         match self {
             Self::Bytecode(instruction) => instruction.stack_effect(),
-            Self::EnterBodyLexicalScope(_) => (0, 0),
+            Self::EnterScope(_) | Self::LeaveScope(_) => (0, 0),
             Self::TemplateCall(argument_count) => (argument_count + 2, 1),
             Self::PushConstant(_) | Self::MakeClosure(_) => (0, 1),
             Self::GlobalSet(_) | Self::CapturedLexicalSet(_) => (1, 1),
@@ -414,7 +420,7 @@ impl FunctionIr {
         let var_scope = function_root;
         let ops = if matches!(kind, FunctionKind::Ordinary) {
             vec![SpannedIrOp {
-                op: IrOp::EnterBodyLexicalScope(Vec::new()),
+                op: IrOp::EnterScope(body),
                 pc_site: None,
             }]
         } else {
@@ -500,6 +506,18 @@ impl FunctionIr {
                 });
             }
             scope = self.scopes[scope.0].parent?;
+        }
+    }
+
+    fn scope_is_within(&self, mut scope: ScopeId, ancestor: ScopeId) -> bool {
+        loop {
+            if scope == ancestor {
+                return true;
+            }
+            let Some(parent) = self.scopes[scope.0].parent else {
+                return false;
+            };
+            scope = parent;
         }
     }
 }
@@ -618,12 +636,9 @@ impl<'source> Parser<'source> {
                 StatementPosition::ProgramBody => Err(self.unsupported_here(
                     "top-level lexical declarations and global bindings are not implemented yet",
                 )),
-                StatementPosition::NestedList => Err(self.unsupported_here(
-                    "lexical declarations in nested blocks and switch bodies are not implemented yet",
-                )),
-                StatementPosition::Single => Err(self.syntax_here(
-                    "lexical declarations can't appear in single-statement context",
-                )),
+                StatementPosition::NestedList => self.parse_lexical_statement(),
+                StatementPosition::Single => Err(self
+                    .syntax_here("lexical declarations can't appear in single-statement context")),
             };
         }
 
@@ -1140,17 +1155,30 @@ impl<'source> Parser<'source> {
             }));
         };
         let source_depth = self.current_ir().stack_depth;
-        let drop_count = self.current_ir().break_controls[target + 1..]
-            .iter()
-            .try_fold(0_usize, |count, control| {
-                count
-                    .checked_add(control.drop_count)
-                    .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))
-            })?;
-        for _ in 0..drop_count {
-            self.emit_instruction(Instruction::Drop)?;
+        let current_scope = self.current_ir().current_scope;
+        let (target_scope, entry_depth, crossed_controls) = {
+            let controls = &self.current_ir().break_controls;
+            let target_control = &controls[target];
+            let crossed_controls = controls[target + 1..]
+                .iter()
+                .rev()
+                .map(|control| (control.scope, control.drop_count))
+                .collect::<Vec<_>>();
+            (
+                target_control.scope,
+                target_control.entry_depth,
+                crossed_controls,
+            )
+        };
+        let mut cleanup_scope = current_scope;
+        for (control_scope, drop_count) in crossed_controls {
+            self.emit_scope_closures(cleanup_scope, control_scope)?;
+            cleanup_scope = control_scope;
+            for _ in 0..drop_count {
+                self.emit_instruction(Instruction::Drop)?;
+            }
         }
-        let entry_depth = self.current_ir().break_controls[target].entry_depth;
+        self.emit_scope_closures(cleanup_scope, target_scope)?;
         self.require_stack_depth(entry_depth, "break/continue cleanup")?;
         let jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
         let control = self
@@ -1185,11 +1213,13 @@ impl<'source> Parser<'source> {
         entry_depth: usize,
         drop_count: usize,
     ) {
+        let scope = self.current_ir().current_scope;
         self.current_ir_mut()
             .break_controls
             .push(BreakControlContext {
                 kind,
                 label_name,
+                scope,
                 entry_depth,
                 drop_count,
                 break_jumps: Vec::new(),
@@ -1456,7 +1486,7 @@ impl<'source> Parser<'source> {
     ) -> Result<(), Error> {
         let function = &mut self.functions[self.current_function];
         if function
-            .binding_in_scope(function.body_scope, name)
+            .binding_from_scope(function.current_scope, name)
             .is_some_and(|binding| matches!(binding.kind, BindingKind::Lexical { .. }))
         {
             return Err(Error::syntax(
@@ -1498,17 +1528,18 @@ impl<'source> Parser<'source> {
         is_const: bool,
     ) -> Result<(), Error> {
         let function = &mut self.functions[self.current_function];
-        if !matches!(function.kind, FunctionKind::Ordinary)
-            || function.current_scope != function.body_scope
-        {
+        let scope = function.current_scope;
+        let scope_kind = function.scopes[scope.0].kind;
+        let supported_scope = matches!(scope_kind, ScopeKind::Block | ScopeKind::Switch)
+            || (matches!(scope_kind, ScopeKind::FunctionBody)
+                && matches!(function.kind, FunctionKind::Ordinary)
+                && scope == function.body_scope);
+        if !supported_scope {
             return Err(Error::internal(
-                "body lexical declaration escaped its parser context",
+                "lexical declaration escaped its supported parser scope",
             ));
         }
-        if function
-            .binding_in_scope(function.body_scope, name)
-            .is_some()
-        {
+        if function.binding_in_scope(scope, name).is_some() {
             return Err(Error::syntax(
                 "invalid redefinition of lexical identifier",
                 source_span(conflict_span),
@@ -1516,18 +1547,24 @@ impl<'source> Parser<'source> {
         }
         if let Some(binding) = function.binding_in_scope(function.var_scope, name) {
             let message = match (binding.storage, binding.kind) {
-                (BindingStorage::Argument(_), _) => "invalid redefinition of parameter name",
-                (BindingStorage::Local(_), BindingKind::Normal) => {
+                (BindingStorage::Argument(_), _) if scope == function.body_scope => {
+                    "invalid redefinition of parameter name"
+                }
+                (BindingStorage::Argument(_), _) => "",
+                (BindingStorage::Local(_), BindingKind::Normal)
+                    if function.scope_is_within(binding.declaration_scope, scope) =>
+                {
                     "invalid redefinition of a variable"
                 }
+                (BindingStorage::Local(_), BindingKind::Normal) => "",
                 (BindingStorage::Local(_), BindingKind::FunctionName { .. }) => {
                     // The private named-expression binding lives outside the
-                    // authored body environment and may be shadowed there.
+                    // authored environments and may be shadowed there.
                     ""
                 }
                 (BindingStorage::Local(_), BindingKind::Lexical { .. }) => {
                     return Err(Error::internal(
-                        "body lexical binding leaked into the function var scope",
+                        "lexical binding leaked into the function var scope",
                     ));
                 }
             };
@@ -1543,20 +1580,10 @@ impl<'source> Parser<'source> {
         }
         let index = u16::try_from(function.locals.len())
             .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
-        let Some(SpannedIrOp {
-            op: IrOp::EnterBodyLexicalScope(locals),
-            ..
-        }) = function.ops.first_mut()
-        else {
-            return Err(Error::internal(
-                "ordinary function has no body lexical scope-entry operation",
-            ));
-        };
-        locals.push(index);
         function.locals.push(name.to_owned());
         function.add_binding(
-            function.body_scope,
-            function.body_scope,
+            scope,
+            scope,
             name.to_owned(),
             BindingStorage::Local(index),
             BindingKind::Lexical { is_const },
@@ -3380,6 +3407,10 @@ impl<'source> Parser<'source> {
             kind,
             bindings: Vec::new(),
         });
+        function.ops.push(SpannedIrOp {
+            op: IrOp::EnterScope(scope),
+            pc_site: None,
+        });
         function.current_scope = scope;
         scope
     }
@@ -3389,9 +3420,33 @@ impl<'source> Parser<'source> {
         if function.current_scope != expected {
             return Err(Error::internal("parser scope stack is unbalanced"));
         }
+        function.ops.push(SpannedIrOp {
+            op: IrOp::LeaveScope(expected),
+            pc_site: None,
+        });
         function.current_scope = function.scopes[expected.0]
             .parent
             .ok_or_else(|| Error::internal("cannot pop a function root scope"))?;
+        Ok(())
+    }
+
+    /// Emit the runtime lexical exits which QuickJS's `close_scopes` inserts
+    /// on an abrupt break/continue edge. Parser scope state is intentionally
+    /// unchanged because parsing continues along the unreachable linear path.
+    fn emit_scope_closures(&mut self, mut scope: ScopeId, stop: ScopeId) -> Result<(), Error> {
+        while scope != stop {
+            let parent = self
+                .current_ir()
+                .scopes
+                .get(scope.0)
+                .and_then(|scope| scope.parent)
+                .ok_or_else(|| Error::internal("abrupt scope target is not an ancestor"))?;
+            self.current_ir_mut().ops.push(SpannedIrOp {
+                op: IrOp::LeaveScope(scope),
+                pc_site: None,
+            });
+            scope = parent;
+        }
         Ok(())
     }
 }
@@ -3668,14 +3723,20 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         if binding.name != *local {
                             return Err(Error::internal("local binding metadata is malformed"));
                         }
-                        if matches!(binding.kind, BindingKind::Lexical { .. })
-                            && (!matches!(function.kind, FunctionKind::Ordinary)
-                                || binding.storage_scope != function.body_scope
-                                || binding.declaration_scope != function.body_scope)
-                        {
-                            return Err(Error::internal(
-                                "body lexical binding metadata is malformed",
-                            ));
+                        if matches!(binding.kind, BindingKind::Lexical { .. }) {
+                            let scope_kind = function.scopes[binding.storage_scope.0].kind;
+                            let supported_scope =
+                                matches!(scope_kind, ScopeKind::Block | ScopeKind::Switch)
+                                    || (matches!(scope_kind, ScopeKind::FunctionBody)
+                                        && matches!(function.kind, FunctionKind::Ordinary)
+                                        && binding.storage_scope == function.body_scope);
+                            if binding.storage_scope != binding.declaration_scope
+                                || !supported_scope
+                            {
+                                return Err(Error::internal(
+                                    "lexical binding scope metadata is malformed",
+                                ));
+                            }
                         }
                         if std::mem::replace(&mut seen_locals[index], true) {
                             return Err(Error::internal(
@@ -3737,39 +3798,49 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             }
         }
 
-        let body_lexical_locals = function
-            .bindings
-            .iter()
-            .filter_map(|binding| {
-                matches!(binding.kind, BindingKind::Lexical { .. }).then_some(binding.storage)
-            })
-            .map(|storage| match storage {
-                BindingStorage::Local(index) => Ok(index),
-                BindingStorage::Argument(_) => Err(Error::internal(
-                    "body lexical binding used argument storage",
-                )),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut scope_entries = function.ops.iter().filter_map(|operation| {
-            let IrOp::EnterBodyLexicalScope(locals) = &operation.op else {
-                return None;
+        let mut scope_entries = vec![0_usize; function.scopes.len()];
+        let mut scope_leaves = vec![0_usize; function.scopes.len()];
+        for operation in &function.ops {
+            let (scope, counts) = match operation.op {
+                IrOp::EnterScope(scope) => (scope, &mut scope_entries),
+                IrOp::LeaveScope(scope) => (scope, &mut scope_leaves),
+                _ => continue,
             };
-            Some(locals)
-        });
-        match function.kind {
-            FunctionKind::Script if scope_entries.next().is_none() => {}
-            FunctionKind::Ordinary
-                if scope_entries
-                    .next()
-                    .is_some_and(|locals| *locals == body_lexical_locals)
-                    && scope_entries.next().is_none()
-                    && matches!(
-                        function.ops.first().map(|operation| &operation.op),
-                        Some(IrOp::EnterBodyLexicalScope(_))
-                    ) => {}
-            _ => {
+            let count = counts
+                .get_mut(scope.0)
+                .ok_or_else(|| Error::internal("scope lifecycle target is out of bounds"))?;
+            *count = count
+                .checked_add(1)
+                .ok_or_else(|| Error::new(ErrorKind::JsInternal, "out of memory"))?;
+        }
+        for (scope_index, scope) in function.scopes.iter().enumerate() {
+            let entries = scope_entries[scope_index];
+            let leaves = scope_leaves[scope_index];
+            if scope_index == function.var_scope.0 {
+                if entries != 0 || leaves != 0 {
+                    return Err(Error::internal(
+                        "function root unexpectedly has scope lifecycle operations",
+                    ));
+                }
+            } else if scope_index == function.body_scope.0 {
+                match function.kind {
+                    FunctionKind::Script if entries == 0 && leaves == 0 => {}
+                    FunctionKind::Ordinary
+                        if entries == 1
+                            && leaves == 0
+                            && matches!(
+                                function.ops.first().map(|operation| &operation.op),
+                                Some(IrOp::EnterScope(body)) if *body == function.body_scope
+                            ) => {}
+                    _ => {
+                        return Err(Error::internal(
+                            "function body scope lifecycle metadata is malformed",
+                        ));
+                    }
+                }
+            } else if entries != 1 || leaves == 0 || scope.parent.is_none() {
                 return Err(Error::internal(
-                    "function body lexical scope-entry metadata is malformed",
+                    "nested scope lifecycle metadata is malformed",
                 ));
             }
         }
@@ -3830,23 +3901,30 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
             let operation = resolve_identifier(tree, function_id, scope, &name, span, access)?;
             tree.functions[function_id].ops[operation_index].op = operation;
         }
-        apply_quickjs_late_throw_sites(&mut tree.functions[function_id])?;
     }
     validate_scope_graph(tree)
 }
 
-fn apply_quickjs_late_throw_sites(function: &mut FunctionIr) -> Result<(), Error> {
-    // Maintenance invariant: every new label-bearing IR opcode or
+fn apply_quickjs_late_throw_sites(
+    code: &[Instruction],
+    pc_sites: &mut [Option<SourceOffset>],
+) -> Result<(), Error> {
+    if code.len() != pc_sites.len() {
+        return Err(Error::internal(
+            "lowered instructions and source markers have different lengths",
+        ));
+    }
+    // Maintenance invariant: every new label-bearing instruction or
     // resolve-labels peephole must update this projection and add a pinned
     // fault-stack oracle before that control-flow slice is enabled.
-    let jump_target = |operation: &SpannedIrOp| -> Result<Option<usize>, Error> {
-        let IrOp::Bytecode(
-            Instruction::Goto(target) | Instruction::IfFalse(target) | Instruction::IfTrue(target),
-        ) = operation.op
+    let jump_target = |instruction: &Instruction| -> Result<Option<usize>, Error> {
+        let (Instruction::Goto(target)
+        | Instruction::IfFalse(target)
+        | Instruction::IfTrue(target)) = instruction
         else {
             return Ok(None);
         };
-        usize::try_from(target)
+        usize::try_from(*target)
             .map(Some)
             .map_err(|_| Error::internal("jump target did not fit usize"))
     };
@@ -3859,10 +3937,10 @@ fn apply_quickjs_late_throw_sites(function: &mut FunctionIr) -> Result<(), Error
     // repeats the walk with one shared, cumulatively updated reference table.
     // Project both passes once for the whole function: per-throw simulation is
     // not equivalent when an earlier throw removes a forward branch reference.
-    let mut label_references = vec![0_usize; function.ops.len()];
-    let mut has_physical_label = vec![false; function.ops.len()];
-    for operation in &function.ops {
-        let Some(target) = jump_target(operation)? else {
+    let mut label_references = vec![0_usize; code.len()];
+    let mut has_physical_label = vec![false; code.len()];
+    for instruction in code {
+        let Some(target) = jump_target(instruction)? else {
             continue;
         };
         let references = label_references
@@ -3874,14 +3952,14 @@ fn apply_quickjs_late_throw_sites(function: &mut FunctionIr) -> Result<(), Error
         has_physical_label[target] = true;
     }
 
-    let mut survives_first_pass = vec![false; function.ops.len()];
-    let mut marker_before_label = vec![None; function.ops.len()];
+    let mut survives_first_pass = vec![false; code.len()];
+    let mut marker_before_label = vec![None; code.len()];
     let mut index = 0_usize;
-    while index < function.ops.len() {
+    while index < code.len() {
         survives_first_pass[index] = true;
         let parser_terminal = matches!(
-            function.ops[index].op,
-            IrOp::Bytecode(Instruction::Goto(_) | Instruction::Return | Instruction::Throw)
+            code[index],
+            Instruction::Goto(_) | Instruction::Return | Instruction::Throw
         );
         if !parser_terminal {
             index += 1;
@@ -3890,24 +3968,24 @@ fn apply_quickjs_late_throw_sites(function: &mut FunctionIr) -> Result<(), Error
 
         let mut dead_index = index + 1;
         let mut final_dead_marker = None;
-        while dead_index < function.ops.len() {
+        while dead_index < code.len() {
             // An upstream OP_label precedes the marker attached to our direct
             // target instruction. A still-referenced label ends this dead
             // range before that authored marker is observed.
             if label_references[dead_index] > 0 {
                 break;
             }
-            if function.ops[dead_index].pc_site.is_some() {
-                final_dead_marker = function.ops[dead_index].pc_site;
+            if pc_sites[dead_index].is_some() {
+                final_dead_marker = pc_sites[dead_index];
             }
-            if let Some(target) = jump_target(&function.ops[dead_index])? {
+            if let Some(target) = jump_target(&code[dead_index])? {
                 label_references[target] = label_references[target]
                     .checked_sub(1)
                     .ok_or_else(|| Error::internal("jump label reference count underflow"))?;
             }
             dead_index += 1;
         }
-        if dead_index == function.ops.len() {
+        if dead_index == code.len() {
             break;
         }
         marker_before_label[dead_index] = final_dead_marker;
@@ -3936,14 +4014,11 @@ fn apply_quickjs_late_throw_sites(function: &mut FunctionIr) -> Result<(), Error
                         "jump target did not survive variable resolution",
                     ));
                 }
-                let Some(next_target) = jump_target(&function.ops[target])? else {
+                let Some(next_target) = jump_target(&code[target])? else {
                     followed_ten_gotos = false;
                     break;
                 };
-                if !matches!(
-                    function.ops[target].op,
-                    IrOp::Bytecode(Instruction::Goto(_))
-                ) {
+                if !matches!(code[target], Instruction::Goto(_)) {
                     followed_ten_gotos = false;
                     break;
                 }
@@ -3965,7 +4040,7 @@ fn apply_quickjs_late_throw_sites(function: &mut FunctionIr) -> Result<(), Error
     let mut current_site = None;
     let mut late_throw_sites = Vec::new();
     index = 0;
-    while index < function.ops.len() {
+    while index < code.len() {
         if !survives_first_pass[index] {
             index += 1;
             continue;
@@ -3973,27 +4048,25 @@ fn apply_quickjs_late_throw_sites(function: &mut FunctionIr) -> Result<(), Error
         if marker_before_label[index].is_some() {
             current_site = marker_before_label[index];
         }
-        if function.ops[index].pc_site.is_some() {
-            current_site = function.ops[index].pc_site;
+        if pc_sites[index].is_some() {
+            current_site = pc_sites[index];
         }
 
         // `resolve_labels` folds the same adjacent constant-condition forms
         // as `fold_quickjs_constant_branches`. A non-taken branch releases its
         // forward label before a following late throw is visited; a taken one
         // becomes a terminal Goto whose target reference remains live.
-        let constant_truthy = match function.ops[index].op {
-            IrOp::Bytecode(Instruction::Undefined | Instruction::Null | Instruction::PushFalse) => {
-                Some(false)
-            }
-            IrOp::Bytecode(Instruction::PushTrue) => Some(true),
-            IrOp::Bytecode(Instruction::PushI32(value)) => Some(value != 0),
+        let constant_truthy = match code[index] {
+            Instruction::Undefined | Instruction::Null | Instruction::PushFalse => Some(false),
+            Instruction::PushTrue => Some(true),
+            Instruction::PushI32(value) => Some(value != 0),
             _ => None,
         };
         let mut folded_goto = false;
         let mut terminal_tail = index + 1;
         if let Some(truthy) = constant_truthy
             && let Some(conditional_index) = index.checked_add(1)
-            && conditional_index < function.ops.len()
+            && conditional_index < code.len()
             && survives_first_pass[conditional_index]
             // `code_match` skips source markers but never crosses a physical
             // OP_label, even after earlier rewrites reduce its refcount to
@@ -4001,17 +4074,17 @@ fn apply_quickjs_late_throw_sites(function: &mut FunctionIr) -> Result<(), Error
             // the mutable reference count alone is not an adjacency test.
             && !has_physical_label[conditional_index]
         {
-            let branch = match function.ops[conditional_index].op {
-                IrOp::Bytecode(Instruction::IfFalse(target)) => Some((false, target)),
-                IrOp::Bytecode(Instruction::IfTrue(target)) => Some((true, target)),
+            let branch = match code[conditional_index] {
+                Instruction::IfFalse(target) => Some((false, target)),
+                Instruction::IfTrue(target) => Some((true, target)),
                 _ => None,
             };
             if let Some((branch_on_true, target)) = branch {
                 if marker_before_label[conditional_index].is_some() {
                     current_site = marker_before_label[conditional_index];
                 }
-                if function.ops[conditional_index].pc_site.is_some() {
-                    current_site = function.ops[conditional_index].pc_site;
+                if pc_sites[conditional_index].is_some() {
+                    current_site = pc_sites[conditional_index];
                 }
                 let target = usize::try_from(target)
                     .map_err(|_| Error::internal("jump target did not fit usize"))?;
@@ -4030,7 +4103,7 @@ fn apply_quickjs_late_throw_sites(function: &mut FunctionIr) -> Result<(), Error
         }
 
         let mut followed_target = None;
-        if !folded_goto && let Some(target) = jump_target(&function.ops[index])? {
+        if !folded_goto && let Some(target) = jump_target(&code[index])? {
             followed_target = Some(follow_jump_target(target, &mut label_references)?);
         }
 
@@ -4041,36 +4114,30 @@ fn apply_quickjs_late_throw_sites(function: &mut FunctionIr) -> Result<(), Error
         // readonly throw updates the shared label table.
         if !folded_goto
             && matches!(
-                function.ops[index].op,
-                IrOp::Bytecode(Instruction::IfFalse(_) | Instruction::IfTrue(_))
+                code[index],
+                Instruction::IfFalse(_) | Instruction::IfTrue(_)
             )
             && let Some(effective_target) = followed_target
         {
             let mut goto_index = index + 1;
-            while goto_index < function.ops.len() && !survives_first_pass[goto_index] {
+            while goto_index < code.len() && !survives_first_pass[goto_index] {
                 goto_index += 1;
             }
-            if goto_index < function.ops.len()
+            if goto_index < code.len()
                 && !has_physical_label[goto_index]
-                && matches!(
-                    function.ops[goto_index].op,
-                    IrOp::Bytecode(Instruction::Goto(_))
-                )
+                && matches!(code[goto_index], Instruction::Goto(_))
             {
                 let mut after_goto = goto_index + 1;
-                while after_goto < function.ops.len() && !survives_first_pass[after_goto] {
+                while after_goto < code.len() && !survives_first_pass[after_goto] {
                     after_goto += 1;
                 }
-                let has_effective_label = after_goto < function.ops.len()
+                let has_effective_label = after_goto < code.len()
                     && ((has_physical_label[after_goto] && after_goto == effective_target)
-                        || (matches!(
-                            function.ops[after_goto].op,
-                            IrOp::Bytecode(Instruction::Goto(_))
-                        ) && jump_target(&function.ops[after_goto])?
-                            == Some(effective_target)));
+                        || (matches!(code[after_goto], Instruction::Goto(_))
+                            && jump_target(&code[after_goto])? == Some(effective_target)));
                 if has_effective_label {
-                    if function.ops[goto_index].pc_site.is_some() {
-                        current_site = function.ops[goto_index].pc_site;
+                    if pc_sites[goto_index].is_some() {
+                        current_site = pc_sites[goto_index];
                     }
                     label_references[effective_target] = label_references[effective_target]
                         .checked_sub(1)
@@ -4083,13 +4150,11 @@ fn apply_quickjs_late_throw_sites(function: &mut FunctionIr) -> Result<(), Error
 
         let terminal = folded_goto
             || matches!(
-                function.ops[index].op,
-                IrOp::Bytecode(
-                    Instruction::Goto(_)
-                        | Instruction::Return
-                        | Instruction::Throw
-                        | Instruction::ThrowReadOnly(_)
-                )
+                code[index],
+                Instruction::Goto(_)
+                    | Instruction::Return
+                    | Instruction::Throw
+                    | Instruction::ThrowReadOnly(_)
             );
         if !terminal {
             index += 1;
@@ -4098,7 +4163,7 @@ fn apply_quickjs_late_throw_sites(function: &mut FunctionIr) -> Result<(), Error
 
         let terminal_index = index;
         let mut dead_index = terminal_tail;
-        while dead_index < function.ops.len() {
+        while dead_index < code.len() {
             if !survives_first_pass[dead_index] {
                 dead_index += 1;
                 continue;
@@ -4112,27 +4177,24 @@ fn apply_quickjs_late_throw_sites(function: &mut FunctionIr) -> Result<(), Error
             if label_references[dead_index] > 0 {
                 break;
             }
-            if function.ops[dead_index].pc_site.is_some() {
-                current_site = function.ops[dead_index].pc_site;
+            if pc_sites[dead_index].is_some() {
+                current_site = pc_sites[dead_index];
             }
-            if let Some(target) = jump_target(&function.ops[dead_index])? {
+            if let Some(target) = jump_target(&code[dead_index])? {
                 label_references[target] = label_references[target]
                     .checked_sub(1)
                     .ok_or_else(|| Error::internal("jump label reference count underflow"))?;
             }
             dead_index += 1;
         }
-        if matches!(
-            function.ops[terminal_index].op,
-            IrOp::Bytecode(Instruction::ThrowReadOnly(_))
-        ) {
+        if matches!(code[terminal_index], Instruction::ThrowReadOnly(_)) {
             late_throw_sites.push((terminal_index, current_site));
         }
         index = dead_index;
     }
 
     for (index, site) in late_throw_sites {
-        function.ops[index].pc_site = site;
+        pc_sites[index] = site;
     }
     Ok(())
 }
@@ -4547,6 +4609,82 @@ fn same_closure_storage(left: &ClosureVariable, right: &ClosureVariable) -> bool
     }
 }
 
+#[derive(Debug, Default)]
+struct ScopeLifecycle {
+    enter_locals: Vec<u16>,
+    close_locals: Vec<u16>,
+}
+
+fn captured_locals_by_function(functions: &[FunctionIr]) -> Result<Vec<Vec<bool>>, Error> {
+    let mut captured = functions
+        .iter()
+        .map(|function| vec![false; function.locals.len()])
+        .collect::<Vec<_>>();
+    for (function_id, function) in functions.iter().enumerate().skip(1) {
+        let parent = function
+            .parent
+            .ok_or_else(|| Error::internal("non-root function has no parent while lowering"))?
+            .function;
+        let parent_captured = captured
+            .get_mut(parent)
+            .ok_or_else(|| Error::internal("captured-local parent is out of bounds"))?;
+        for descriptor in &function.closure_variables {
+            let ClosureSource::ParentLocal(index) = descriptor.source else {
+                continue;
+            };
+            let captured = parent_captured.get_mut(usize::from(index)).ok_or_else(|| {
+                Error::internal("child closure captures an out-of-bounds parent local")
+            })?;
+            *captured = true;
+        }
+        if parent >= function_id {
+            return Err(Error::internal(
+                "function parent must precede its child while lowering",
+            ));
+        }
+    }
+    Ok(captured)
+}
+
+fn build_scope_lifecycles(
+    function: &FunctionIr,
+    captured_locals: &[bool],
+) -> Result<Vec<ScopeLifecycle>, Error> {
+    if captured_locals.len() != function.locals.len() {
+        return Err(Error::internal(
+            "captured-local metadata has the wrong length",
+        ));
+    }
+    function
+        .scopes
+        .iter()
+        .map(|scope| {
+            let mut lifecycle = ScopeLifecycle::default();
+            // QuickJS links scope variables newest-first and expands both
+            // enter and leave in that order after variable resolution.
+            for &binding_id in scope.bindings.iter().rev() {
+                let binding = function
+                    .bindings
+                    .get(binding_id.0)
+                    .ok_or_else(|| Error::internal("scope binding is out of bounds"))?;
+                if !matches!(binding.kind, BindingKind::Lexical { .. }) {
+                    continue;
+                }
+                let BindingStorage::Local(index) = binding.storage else {
+                    return Err(Error::internal(
+                        "lexical scope lifecycle referenced an argument",
+                    ));
+                };
+                lifecycle.enter_locals.push(index);
+                if captured_locals[usize::from(index)] {
+                    lifecycle.close_locals.push(index);
+                }
+            }
+            Ok(lifecycle)
+        })
+        .collect()
+}
+
 fn lower_detached_script(tree: FunctionTree) -> Result<BytecodeFunction, Error> {
     let mut functions = tree.functions;
     let function = functions
@@ -4557,7 +4695,9 @@ fn lower_detached_script(tree: FunctionTree) -> Result<BytecodeFunction, Error> 
             "detached compiler cannot publish global-environment closure variables",
         ));
     }
-    let code = lower_ops(function.ops)?.code;
+    let captured_locals = vec![false; function.locals.len()];
+    let scope_lifecycles = build_scope_lifecycles(&function, &captured_locals)?;
+    let code = lower_ops(function.ops, &scope_lifecycles)?.code;
     let constants = function
         .constants
         .into_iter()
@@ -4591,6 +4731,7 @@ fn lower_unlinked_tree(
         filename,
     } = tree;
     let function_count = tree_functions.len();
+    let captured_locals = captured_locals_by_function(&tree_functions)?;
     let mut functions = tree_functions.into_iter().map(Some).collect::<Vec<_>>();
     let mut lowered = (0..function_count).map(|_| None).collect::<Vec<_>>();
 
@@ -4640,7 +4781,13 @@ fn lower_unlinked_tree(
                 }
             };
         }
-        let lowered_ops = lower_ops(function.ops)?;
+        let scope_lifecycles = build_scope_lifecycles(
+            &function,
+            captured_locals
+                .get(function_id)
+                .ok_or_else(|| Error::internal("captured-local function is out of bounds"))?,
+        )?;
+        let lowered_ops = lower_ops(function.ops, &scope_lifecycles)?;
         let code = lowered_ops.code;
         let constant_count = function.constants.len();
         let constants = function
@@ -4740,13 +4887,22 @@ struct LoweredOps {
     pc_sites: Vec<Option<SourceOffset>>,
 }
 
-fn lower_ops(operations: Vec<SpannedIrOp>) -> Result<LoweredOps, Error> {
+fn lower_ops(operations: Vec<SpannedIrOp>, scopes: &[ScopeLifecycle]) -> Result<LoweredOps, Error> {
     let mut offsets = Vec::with_capacity(operations.len() + 1);
     let mut code_len = 0_usize;
     for operation in &operations {
         offsets.push(code_len);
         let emitted = match &operation.op {
-            IrOp::EnterBodyLexicalScope(locals) => locals.len(),
+            IrOp::EnterScope(scope) => scopes
+                .get(scope.0)
+                .ok_or_else(|| Error::internal("scope entry is out of bounds"))?
+                .enter_locals
+                .len(),
+            IrOp::LeaveScope(scope) => scopes
+                .get(scope.0)
+                .ok_or_else(|| Error::internal("scope exit is out of bounds"))?
+                .close_locals
+                .len(),
             IrOp::GlobalSet(_) | IrOp::CapturedLexicalSet(_) => 2,
             _ => 1,
         };
@@ -4771,9 +4927,23 @@ fn lower_ops(operations: Vec<SpannedIrOp>) -> Result<LoweredOps, Error> {
     for operation in operations {
         let SpannedIrOp { op, pc_site } = operation;
         match op {
-            IrOp::EnterBodyLexicalScope(locals) => {
-                for index in locals {
+            IrOp::EnterScope(scope) => {
+                for &index in &scopes
+                    .get(scope.0)
+                    .ok_or_else(|| Error::internal("scope entry is out of bounds"))?
+                    .enter_locals
+                {
                     code.push(Instruction::SetLocalUninitialized(index));
+                    pc_sites.push(None);
+                }
+            }
+            IrOp::LeaveScope(scope) => {
+                for &index in &scopes
+                    .get(scope.0)
+                    .ok_or_else(|| Error::internal("scope exit is out of bounds"))?
+                    .close_locals
+                {
+                    code.push(Instruction::CloseLocal(index));
                     pc_sites.push(None);
                 }
             }
@@ -4829,6 +4999,7 @@ fn lower_ops(operations: Vec<SpannedIrOp>) -> Result<LoweredOps, Error> {
             }
         }
     }
+    apply_quickjs_late_throw_sites(&code, &mut pc_sites)?;
     fold_quickjs_constant_branches(&mut code);
     Ok(LoweredOps { code, pc_sites })
 }
@@ -5604,8 +5775,8 @@ mod tests {
         assert!(matches!(
             outer.code(),
             [
-                Instruction::SetLocalUninitialized(0),
                 Instruction::SetLocalUninitialized(1),
+                Instruction::SetLocalUninitialized(0),
                 Instruction::PushI32(1),
                 Instruction::InitializeLocal(0),
                 Instruction::PushI32(2),
@@ -5664,6 +5835,151 @@ mod tests {
             window,
             [Instruction::GetVarRefCheck(0), Instruction::Return]
         )));
+    }
+
+    #[test]
+    fn nested_block_and_switch_lexicals_lower_scope_lifetimes() {
+        let script = compile_unlinked_script(
+            "(function(){var read;{read=function(){return ++value};let value=40;}return read()*100+read();})()",
+        )
+        .unwrap();
+        let outer = script
+            .constants()
+            .iter()
+            .find_map(|constant| constant.as_child())
+            .expect("script lost its block function");
+        assert!(
+            outer
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::SetLocalUninitialized(1)))
+        );
+        assert!(
+            outer
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::CloseLocal(1)))
+        );
+        let child = outer
+            .constants()
+            .iter()
+            .find_map(|constant| constant.as_child())
+            .expect("block function lost its captured child");
+        assert_eq!(
+            child.closure_variables()[0].source,
+            ClosureSource::ParentLocal(1)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){var read;{read=function(){return ++value};let value=40;}return read()*100+read();})()"
+            ),
+            Value::Int(4142)
+        );
+
+        let switch_script = compile_unlinked_script(
+            "(function(){var read;switch(0){case 0:let value=40;read=function(){return ++value};break;}return read()*100+read();})()",
+        )
+        .unwrap();
+        let switch_function = switch_script
+            .constants()
+            .iter()
+            .find_map(|constant| constant.as_child())
+            .expect("script lost its switch function");
+        assert!(switch_function.code().windows(2).any(|window| matches!(
+            window,
+            [
+                Instruction::PushI32(0),
+                Instruction::SetLocalUninitialized(1)
+            ]
+        )));
+        assert!(
+            switch_function
+                .code()
+                .windows(2)
+                .any(|window| matches!(window, [Instruction::Drop, Instruction::CloseLocal(1)]))
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){var read;switch(0){case 0:let value=40;read=function(){return ++value};break;}return read()*100+read();})()"
+            ),
+            Value::Int(4142)
+        );
+        assert_eq!(evaluate_in_context("{let value=42;value;}"), Value::Int(42));
+        assert_eq!(
+            evaluate_in_context("switch(0){case 0:const value=42;value;}"),
+            Value::Int(42)
+        );
+
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        assert!(matches!(
+            context.eval("(function(){{let value=40;throw function(){return ++value};}})()"),
+            Err(RuntimeError::Exception)
+        ));
+        let Value::Object(thrown) = context.take_exception().unwrap().unwrap() else {
+            panic!("nested lexical throw did not preserve the escaped closure");
+        };
+        let callable = runtime.as_callable(&thrown).unwrap().unwrap();
+        assert_eq!(
+            context.call(&callable, Value::Undefined, &[]).unwrap(),
+            Value::Int(41)
+        );
+        assert_eq!(
+            context.call(&callable, Value::Undefined, &[]).unwrap(),
+            Value::Int(42)
+        );
+    }
+
+    #[test]
+    fn nested_lexical_cleanup_shadowing_and_quickjs_var_quirks_execute() {
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){var first,second,index=0;while(index<2){{let value=index++;if(index===1){first=function(){return ++value};continue;}second=function(){return ++value};}}return first()*100+second()*10+first()+second();})()"
+            ),
+            Value::Int(125)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){var first,second,index=0;outer:while(index<2){switch(0){case 0:let value=index++;if(index===1){first=function(){return ++value};continue outer;}second=function(){return ++value};break outer;}}return first()*100+second()*10+first()+second();})()"
+            ),
+            Value::Int(125)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function self(parameter){var outer='O',result;{let parameter='P',outer='B',self='S';result=parameter+outer+self;}return result+'|'+parameter+'|'+outer+'|'+typeof self;})('p')"
+            ),
+            Value::String(JsString::from_static("PBS|p|O|function"))
+        );
+        for source in [
+            "(function(){var value;{var value;let value;}return 1})()",
+            "(function(value){{var value;let value;}return 1})(0)",
+        ] {
+            assert_eq!(evaluate_in_context(source), Value::Int(1), "{source}");
+        }
+        for (source, message) in [
+            (
+                "(function(){var value;{let value;var value;}})",
+                "invalid redefinition of lexical identifier",
+            ),
+            (
+                "(function(){{var value;}let value;})",
+                "invalid redefinition of a variable",
+            ),
+            (
+                "(function(){let value;{var value;}})",
+                "invalid redefinition of lexical identifier",
+            ),
+            (
+                "(function(){switch(0){case 0:let value;case 1:const value=1;}})",
+                "invalid redefinition of lexical identifier",
+            ),
+        ] {
+            assert_eq!(
+                compile_unlinked_script(source).unwrap_err().message(),
+                message,
+                "{source}"
+            );
+        }
     }
 
     #[test]
@@ -5783,13 +6099,21 @@ mod tests {
 
         for source in [
             "let globalLexical=1",
-            "(function(){{let nested=1}})",
             "(function(){for(let i=0;i<1;i++){} })",
-            "(function(){switch(0){case 0:let inCase=1}})",
             "(function(){let [item]=source})",
+            "(function(){{let [item]=source}})",
+            "(function(){switch(0){case 0:let [item]=source}})",
         ] {
             assert!(compile_unlinked_script(source).is_err(), "{source}");
         }
+        assert_eq!(
+            evaluate_in_context("(function(){{let nested=1;return nested}})()"),
+            Value::Int(1)
+        );
+        assert_eq!(
+            evaluate_in_context("(function(){switch(0){case 0:let inCase=1;return inCase}})()"),
+            Value::Int(1)
+        );
     }
 
     #[test]
@@ -5800,6 +6124,8 @@ mod tests {
         for source in [
             "(function(){return localName;let localName=1})()",
             "(function(){return function probe(){return capturedName};let capturedName=1})()()",
+            "(function(){var read;outer:{read=function(){return blockName};break outer;let blockName=1;}return read();})()",
+            "(function(){var read;switch(1){case 0:let switchName=1;case 1:read=function(){return switchName};break;}return read();})()",
         ] {
             assert_eq!(
                 evaluate_error(&runtime, &mut context, source),
@@ -5813,7 +6139,7 @@ mod tests {
             evaluate_error(
                 &runtime,
                 &mut context,
-                "(function(){const retainedName=1;retainedName=2})()"
+                "(function(){var write;{const retainedName=1;write=function(){retainedName=2};}write();})()"
             ),
             (
                 JsString::from_static("TypeError"),
