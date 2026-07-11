@@ -37,8 +37,8 @@ claim full parity.
   the current source path supports anonymous and named ordinary function
   expressions, simple parameters, `return`/fallthrough, function-local `var`,
   recursive block statements, `if`/`else` (including nearest-`if` binding),
-  `while`/`do-while`, classic `for (;;)` and labeled statements with named and
-  unnamed `break`/`continue`,
+  `while`/`do-while`, classic `for (;;)` loops, `switch` control flow and
+  labeled statements with named and unnamed `break`/`continue`,
   relational `in`/`instanceof`,
   simple/arithmetic/exponentiation/shift/bitwise/logical identifier assignment,
   prefix/postfix identifier and member updates, direct calls,
@@ -49,8 +49,9 @@ claim full parity.
   writes raise the QuickJS-compatible read-only TypeError. Script source
   elements and function/block/single-statement bodies now enter through one
   QuickJS-shaped statement parser. Each function owns a typed break-control
-  subset of QuickJS `BlockEnv`, distinguishing regular labeled statements from
-  loops so unnamed jumps skip regular labels while named jumps search outward;
+  subset of QuickJS `BlockEnv`, distinguishing regular labeled statements,
+  loops and switches so unnamed jumps skip regular labels while named jumps
+  search outward;
   nested functions cannot target an enclosing function's controls. Root
   scripts reserve the unspellable `eval_ret_idx` local at
   slot zero: expression statements store completion, empty blocks preserve it,
@@ -70,8 +71,26 @@ claim full parity.
   label creates a regular break-only control, active duplicates fail before
   consuming the second label, and the pinned release's outer-wrapper behavior
   for multiple labels is retained. Labels and jumps emit no synthetic source
-  marker. `for-in`/`for-of`/`for-await`, switch, try/catch/finally, lexical
-  declarations, global `var` and function declarations remain separate
+  marker. Switch follows QuickJS's retained-discriminant CFG: case expressions
+  are tested in source order with `StrictEq`, including cases after a middle
+  `default`; matched and fallthrough paths share bodies, while the final failed
+  test enters the recorded default or the common tail. The discriminant stays
+  on the operand stack through every body. A local `break` reaches the shared
+  tail Drop, whereas a jump to an outer label or loop emits the typed
+  `BlockEnv.drop_count` cleanup for each crossed switch before its Goto and
+  restores the parser's fallthrough stack shape for later source. Reachable
+  `return` and `throw` consume their completion value and abandon remaining
+  frame values instead of requiring a synthetic switch cleanup, matching the
+  pinned verifier/VM contract. Differentials lock default search versus body
+  order, strict identity without coercion, fallthrough/completion, nested and
+  cross-control cleanup, ASI, function-local `var`, arbitrary thrown values,
+  exact diagnostics and source stacks. Stack-limit probes separately lock the
+  65,534-slot discriminant, retained-body and retained-plus-Dup case-test
+  boundaries, as well as unreachable source after `break`. Source lexical
+  declarations, the single shared CaseBlock scope, cross-case duplicate checks
+  and TDZ remain part of the wider lexical-declaration slice, so this is not
+  yet complete SwitchStatement parity. `for-in`/`for-of`/`for-await`,
+  try/catch/finally, global `var` and function declarations remain separate
   grammar/runtime slices. The classic head
   already ports QuickJS's
   sloppy `is_let(..., DECL_MASK_OTHER)` ambiguity to that explicit lexical
@@ -822,11 +841,13 @@ BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials. The
 atom-Error target contains thirteen pinned-oracle inputs in addition to its
 Rust-side expectation test. The Unicode target checks every scalar, real
 compiler/runtime cases, and the parser-driven identifier diagnostic matrix. A
-separate statement-control-flow target locks block/`if`/loop completion,
-nearest-loop jumps, per-function isolation, ASI/directive boundaries and exact
-diagnostics; the template target locks raw/cooked UTF-16, continuation goals,
-concat lowering/order, diagnostics, tagged-template boundaries, and folded loop
-reachability at the 65,534-slot stack limit. The full gate currently discovers all 43
+  separate statement-control-flow target locks block/`if`/loop completion,
+  nearest-loop jumps, per-function isolation, ASI/directive boundaries and exact
+  diagnostics; the switch target locks case/default search, fallthrough,
+  completion and cross-control cleanup; the template target locks raw/cooked
+  UTF-16, continuation goals, concat lowering/order, diagnostics,
+  tagged-template boundaries, and folded control-flow reachability at the
+  65,534-slot stack limit. The full gate currently discovers all 45
 `tests/oracle_*.rs` integration targets,
 checksum-verifies and builds the official test-only oracle, then runs
 the generated-Unicode-table drift check, formatting, unit/integration/oracle

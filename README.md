@@ -8,7 +8,7 @@ The repository is still an incomplete rewrite. The current vertical slices
 execute primitive expressions, named ordinary functions and closures, and
 defining-realm global bindings through the real lexer, late scope resolver,
 bytecode and VM. Block statements, `if`/`else`, `while`/`do-while`, classic
-`for (;;)` and labeled statements with both named and unnamed
+`for (;;)` loops, `switch` control flow and labeled statements with named and unnamed
 `break`/`continue` now share the QuickJS statement-parser spine;
 scripts carry its hidden eval-completion local so empty blocks preserve a prior
 value, `if` and `while` reset at their upstream points, and `do-while` resets on
@@ -18,8 +18,15 @@ pinned release's direct-loop-label and multiple-label behavior. Closed
 infinite-loop bytecode is verified without weakening reachable-fallthrough
 checks. Classic `for` mirrors QuickJS's top-level-semicolon probe,
 ExpressionNoIn propagation, update-block relocation and exact continue target.
-`for-in`/`for-of`/`for-await`, switch and abrupt-cleanup constructs remain
-explicit grammar slices.
+`switch` retains its discriminant on the operand stack, searches case
+expressions with strict equality across a middle `default`, preserves body
+fallthrough/completion, and uses QuickJS-shaped per-control drop counts when an
+outer `break` or `continue` crosses one or more switches. Terminal
+`return`/`throw` abandon the remaining frame stack as upstream does. Source
+`let`/`const`, the shared CaseBlock lexical scope and TDZ are still an explicit
+later boundary, so this is the switch control-flow core rather than a claim of
+complete SwitchStatement parity. `for-in`/`for-of`/`for-await` and
+try/catch/finally cleanup remain separate grammar slices.
 Untagged template literals now follow QuickJS `js_parse_template`: the cooked
 head is retained as the primitive receiver, `concat` is looked up exactly once
 before any substitution, every substitution parses as a full Expression, and
@@ -347,11 +354,15 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_statement_control_flow -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_switch_control_flow -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_relational_membership -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_template_literals -- --nocapture
 ```
 
-The 35 commands above are direct entry points for a curated evidence set. The
-full gate below currently discovers all 43 `tests/oracle_*.rs` integration
+The 37 commands above are direct entry points for a curated evidence set. The
+full gate below currently discovers all 45 `tests/oracle_*.rs` integration
 targets through Cargo's `--all-targets` run, including suites not repeated in
 this list.
 

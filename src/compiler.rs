@@ -204,12 +204,15 @@ struct SpannedIrOp {
 
 /// Parser-only counterpart of the breakable-statement part of QuickJS
 /// `BlockEnv`. Each function owns its own stack so a nested function cannot
-/// target an outer statement. Switch cleanup and finally unwinding remain
-/// later slices.
+/// target an outer statement. `drop_count` models the values which must be
+/// removed when an abrupt jump crosses a control (the retained switch
+/// discriminant today); iterator cleanup and finally unwinding remain later
+/// slices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BreakControlKind {
     RegularStatement,
     Loop,
+    Switch,
 }
 
 #[derive(Debug)]
@@ -217,6 +220,7 @@ struct BreakControlContext {
     kind: BreakControlKind,
     label_name: Option<String>,
     entry_depth: usize,
+    drop_count: usize,
     break_jumps: Vec<usize>,
     continue_jumps: Vec<usize>,
 }
@@ -427,6 +431,7 @@ impl<'source> Parser<'source> {
             TokenKind::Keyword(Keyword::While) => self.parse_while_statement(completion, None),
             TokenKind::Keyword(Keyword::Do) => self.parse_do_while_statement(completion, None),
             TokenKind::Keyword(Keyword::For) => self.parse_for_statement(completion, None),
+            TokenKind::Keyword(Keyword::Switch) => self.parse_switch_statement(completion),
             TokenKind::Keyword(Keyword::Break) => self.parse_loop_jump_statement(false),
             TokenKind::Keyword(Keyword::Continue) => self.parse_loop_jump_statement(true),
             TokenKind::Keyword(Keyword::Function) => {
@@ -497,6 +502,7 @@ impl<'source> Parser<'source> {
                     BreakControlKind::RegularStatement,
                     Some(label_name),
                     entry_depth,
+                    0,
                 );
                 self.parse_statement_or_decl(completion)?;
                 self.require_stack_depth(entry_depth, "labeled statement")?;
@@ -777,6 +783,111 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
+    /// Lower the pinned QuickJS switch layout while keeping the discriminant
+    /// on the operand stack through every case body. A new case test is placed
+    /// behind the previous body's fallthrough jump; all consecutive matching
+    /// clauses join the same body. The final failed test is patched either to
+    /// the recorded default body or to the shared break/drop tail.
+    fn parse_switch_statement(&mut self, completion: StatementCompletion) -> Result<(), Error> {
+        let outer_depth = self.current_ir().stack_depth;
+        self.advance()?;
+        if matches!(completion, StatementCompletion::Eval) {
+            self.set_eval_ret_undefined()?;
+        }
+        self.expect_punctuator(Punctuator::LeftParen)?;
+        self.parse_expression()?;
+        self.expect_punctuator(Punctuator::RightParen)?;
+
+        let switch_depth = outer_depth
+            .checked_add(1)
+            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+        self.require_stack_depth(switch_depth, "switch discriminant")?;
+        self.push_break_control(BreakControlKind::Switch, None, switch_depth, 1);
+        self.expect_punctuator(Punctuator::LeftBrace)?;
+
+        let mut pending_no_match = None;
+        let mut default_target = None;
+        while !self.is_punctuator(Punctuator::RightBrace) {
+            match self.current().kind {
+                TokenKind::Keyword(Keyword::Case) => {
+                    let previous_no_match = pending_no_match.take();
+                    let fallthrough_jump = if previous_no_match.is_some() {
+                        Some(self.emit_instruction(Instruction::Goto(u32::MAX))?)
+                    } else {
+                        None
+                    };
+                    let test_target = self.current_ir().ops.len();
+                    if let Some(previous_no_match) = previous_no_match {
+                        self.patch_jump(previous_no_match, test_target)?;
+                    }
+
+                    let mut matched_jumps = Vec::new();
+                    loop {
+                        self.advance()?;
+                        self.emit_instruction(Instruction::Dup)?;
+                        self.parse_expression()?;
+                        self.expect_punctuator(Punctuator::Colon)?;
+                        self.emit_instruction(Instruction::StrictEq)?;
+
+                        if matches!(self.current().kind, TokenKind::Keyword(Keyword::Case)) {
+                            matched_jumps
+                                .push(self.emit_instruction(Instruction::IfTrue(u32::MAX))?);
+                        } else {
+                            pending_no_match =
+                                Some(self.emit_instruction(Instruction::IfFalse(u32::MAX))?);
+                            let body_target = self.current_ir().ops.len();
+                            if let Some(fallthrough_jump) = fallthrough_jump {
+                                self.patch_jump(fallthrough_jump, body_target)?;
+                            }
+                            for matched_jump in matched_jumps {
+                                self.patch_jump(matched_jump, body_target)?;
+                            }
+                            self.require_stack_depth(switch_depth, "switch case tests")?;
+                            break;
+                        }
+                    }
+                }
+                TokenKind::Keyword(Keyword::Default) => {
+                    self.advance()?;
+                    self.expect_punctuator(Punctuator::Colon)?;
+                    if default_target.is_some() {
+                        return Err(self.syntax_here("duplicate default"));
+                    }
+                    if pending_no_match.is_none() {
+                        pending_no_match =
+                            Some(self.emit_instruction(Instruction::Goto(u32::MAX))?);
+                    }
+                    default_target = Some(self.current_ir().ops.len());
+                }
+                _ => {
+                    if pending_no_match.is_none() {
+                        return Err(self.syntax_here("invalid switch statement"));
+                    }
+                    self.parse_statement_or_decl(completion)?;
+                    self.require_stack_depth(switch_depth, "switch case body")?;
+                }
+            }
+        }
+        self.advance()?;
+
+        let no_match_target = default_target.unwrap_or(self.current_ir().ops.len());
+        if let Some(pending_no_match) = pending_no_match {
+            self.patch_jump(pending_no_match, no_match_target)?;
+        }
+        let break_target = self.current_ir().ops.len();
+        let control = self.pop_break_control()?;
+        if !control.continue_jumps.is_empty() {
+            return Err(Error::internal("switch received a continue jump"));
+        }
+        for jump in control.break_jumps {
+            self.patch_jump(jump, break_target)?;
+        }
+        self.emit_instruction(Instruction::Drop)?;
+        self.require_stack_depth(outer_depth, "switch tail")?;
+        self.finish_control_statement();
+        Ok(())
+    }
+
     fn parse_loop_jump_statement(&mut self, is_continue: bool) -> Result<(), Error> {
         self.advance()?;
 
@@ -811,8 +922,19 @@ impl<'source> Parser<'source> {
                 "break must be inside loop or switch"
             }));
         };
+        let source_depth = self.current_ir().stack_depth;
+        let drop_count = self.current_ir().break_controls[target + 1..]
+            .iter()
+            .try_fold(0_usize, |count, control| {
+                count
+                    .checked_add(control.drop_count)
+                    .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))
+            })?;
+        for _ in 0..drop_count {
+            self.emit_instruction(Instruction::Drop)?;
+        }
         let entry_depth = self.current_ir().break_controls[target].entry_depth;
-        self.require_stack_depth(entry_depth, "loop jump")?;
+        self.require_stack_depth(entry_depth, "break/continue cleanup")?;
         let jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
         let control = self
             .current_ir_mut()
@@ -827,11 +949,16 @@ impl<'source> Parser<'source> {
         if label_name.is_some() {
             self.advance()?;
         }
-        self.consume_statement_terminator()
+        self.consume_statement_terminator()?;
+        // The emitted jump is terminal, but parsing continues linearly so a
+        // later case body or ordinary unreachable statement must retain the
+        // enclosing control's fallthrough stack shape.
+        self.current_ir_mut().stack_depth = source_depth;
+        Ok(())
     }
 
     fn push_loop_control(&mut self, entry_depth: usize, label_name: Option<String>) {
-        self.push_break_control(BreakControlKind::Loop, label_name, entry_depth);
+        self.push_break_control(BreakControlKind::Loop, label_name, entry_depth, 0);
     }
 
     fn push_break_control(
@@ -839,6 +966,7 @@ impl<'source> Parser<'source> {
         kind: BreakControlKind,
         label_name: Option<String>,
         entry_depth: usize,
+        drop_count: usize,
     ) {
         self.current_ir_mut()
             .break_controls
@@ -846,6 +974,7 @@ impl<'source> Parser<'source> {
                 kind,
                 label_name,
                 entry_depth,
+                drop_count,
                 break_jumps: Vec::new(),
                 continue_jumps: Vec::new(),
             });
@@ -2160,8 +2289,11 @@ impl<'source> Parser<'source> {
             TokenKind::Keyword(Keyword::New) => {
                 self.parse_new_expression()?;
             }
-            TokenKind::Keyword(Keyword::Else) => {
-                return Err(self.syntax_here("unexpected token in expression: 'else'"));
+            TokenKind::Keyword(keyword @ (Keyword::Else | Keyword::Case | Keyword::Default)) => {
+                return Err(self.syntax_here(format!(
+                    "unexpected token in expression: '{}'",
+                    keyword.as_str()
+                )));
             }
             TokenKind::Keyword(keyword) => {
                 return Err(Error::syntax(
@@ -4458,6 +4590,89 @@ mod tests {
                 .iter()
                 .all(|instruction| !matches!(instruction, Instruction::Goto(u32::MAX)))
         );
+    }
+
+    #[test]
+    fn switch_uses_quickjs_case_fallthrough_and_abrupt_cleanup() {
+        assert_eq!(evaluate("1; switch(0){}"), Value::Undefined);
+        assert_eq!(
+            evaluate("switch(2){case 1: 1; case 2: 2; case 3: 3;}"),
+            Value::Int(3)
+        );
+        assert_eq!(
+            evaluate("switch(9){case 1: 1; default: 4; case 2: 2;}"),
+            Value::Int(2)
+        );
+        assert_eq!(
+            evaluate("switch(1){case 1: 1; default: 4; case 2: 2;}"),
+            Value::Int(2)
+        );
+        assert_eq!(
+            evaluate("switch(2){case 1: 1; default: 4; case 2: 2;}"),
+            Value::Int(2)
+        );
+        assert_eq!(
+            evaluate("switch('1'){case 1: 1; default: 2;}"),
+            Value::Int(2)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){var log='';switch((log+='s',2)){case (log+='a',1):log+='A';break;case (log+='b',2):log+='B';break;case (log+='c',3):log+='C';}return log})()"
+            ),
+            Value::String(JsString::from_static("sabB"))
+        );
+        assert_eq!(
+            evaluate("outer: while(true){switch(1){case 1: break outer;}} 7"),
+            Value::Int(7)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){var i=0;outer:while(i++<2){switch(i){case 1:continue outer;default:break;}}return i})()"
+            ),
+            Value::Int(3)
+        );
+        assert_eq!(
+            evaluate_in_context("(function(){switch(1){case 1:return 4;default:return 5;}})()"),
+            Value::Int(4)
+        );
+
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        assert!(matches!(
+            context.eval("switch(1){case 1:throw 4;}"),
+            Err(RuntimeError::Exception)
+        ));
+        assert_eq!(context.take_exception().unwrap(), Some(Value::Int(4)));
+
+        let bytecode =
+            compile_unlinked_script("switch(Function){case Function:1;break;default:2;}").unwrap();
+        assert!(
+            bytecode
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::StrictEq))
+        );
+        assert!(
+            bytecode
+                .code()
+                .iter()
+                .all(|instruction| !matches!(instruction, Instruction::Goto(u32::MAX)))
+        );
+
+        for (source, message) in [
+            ("switch(0){ 1; }", "invalid switch statement"),
+            ("switch(0){default:1;default:2;}", "duplicate default"),
+            ("switch(0){case 0 1;}", "expecting ':'"),
+            (
+                "switch(0){case 0:continue;}",
+                "continue must be inside loop",
+            ),
+        ] {
+            assert_eq!(
+                compile_unlinked_script(source).unwrap_err().message(),
+                message
+            );
+        }
     }
 
     #[test]

@@ -335,6 +335,26 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "labeled for continue reaches the relocated update fault site",
             "Function.i=0; outer: for(;Function.i++<1;\nnull.x){ continue outer; }",
         ),
+        (
+            "switch discriminant fault keeps its expression site",
+            "switch(\nnull.x){}",
+        ),
+        (
+            "switch case-test fault keeps its expression site",
+            "switch(0){case\nnull.x:;}",
+        ),
+        (
+            "switch body fault keeps its expression site",
+            "switch(1){case 1:\nnull.x;}",
+        ),
+        (
+            "switch return fault keeps its operator site",
+            "(function(){switch(1){case 1:return 1n + 1;}})()",
+        ),
+        (
+            "switch terminal read-only write abandons its discriminant",
+            "(function named(){'use strict';switch(1){case 1:named=1;}})()",
+        ),
         ("invalid in uses the operator site", "'key'\nin 1"),
         (
             "invalid instanceof uses the operator site",

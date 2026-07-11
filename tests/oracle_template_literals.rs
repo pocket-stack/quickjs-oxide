@@ -329,7 +329,61 @@ fn template_stack_limit_uses_reachable_bytecode_like_pinned_quickjs() {
     }
 
     let huge_template = format!("`{}`", "${0}".repeat(65_533));
+    let switch_body_boundary = format!("`{}`", "${0}".repeat(65_531));
+    let switch_body_overflow = format!("`{}`", "${0}".repeat(65_532));
+    let switch_case_boundary = format!("`{}`", "${0}".repeat(65_530));
+    let switch_case_overflow = format!("`{}`", "${0}".repeat(65_531));
     for (suffix, source, accepted) in [
+        (
+            "switch-selector-stack-boundary",
+            format!("switch({accepted_boundary}){{}}"),
+            true,
+        ),
+        (
+            "switch-selector-stack-overflow",
+            format!("switch({huge_template}){{}}"),
+            false,
+        ),
+        (
+            "switch-body-retained-selector-boundary",
+            format!("switch(0){{default:{switch_body_boundary};}}"),
+            true,
+        ),
+        (
+            "switch-body-retained-selector-overflow",
+            format!("switch(0){{default:{switch_body_overflow};}}"),
+            false,
+        ),
+        (
+            "switch-case-retained-selector-and-dup-boundary",
+            format!("switch(0){{case {switch_case_boundary}:;}}"),
+            true,
+        ),
+        (
+            "switch-case-retained-selector-and-dup-overflow",
+            format!("switch(0){{case {switch_case_overflow}:;}}"),
+            false,
+        ),
+        (
+            "switch-break-makes-body-tail-unreachable",
+            format!("switch(0){{case 0:break;{huge_template};}}"),
+            true,
+        ),
+        (
+            "switch-body-before-break-is-reachable",
+            format!("switch(0){{case 0:{huge_template};break;}}"),
+            false,
+        ),
+        (
+            "switch-constant-unmatched-body-is-not-folded",
+            format!("switch(0){{case 1:{huge_template};}}"),
+            false,
+        ),
+        (
+            "switch-case-test-is-reachable",
+            format!("switch(0){{case {huge_template}:;}}"),
+            false,
+        ),
         (
             "if-false-folded",
             format!("if(false){{{huge_template};}}"),

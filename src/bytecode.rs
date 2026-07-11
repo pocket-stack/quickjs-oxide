@@ -362,13 +362,11 @@ pub(crate) fn verify_parts(
         }
 
         match instruction {
-            Instruction::Return | Instruction::Throw => {
-                if next_depth != 0 {
-                    return Err(Error::internal(
-                        "function completion leaves temporary values on the bytecode stack",
-                    ));
-                }
-            }
+            // QuickJS terminal completion opcodes consume their completion
+            // value and abandon the rest of the frame stack. In particular,
+            // `return` and `throw` inside a switch leave its discriminant
+            // below that value rather than emitting synthetic cleanup.
+            Instruction::Return | Instruction::Throw => {}
             // QuickJS `OP_throw_error` is terminal and abandons the complete
             // frame stack. A postfix update can legitimately retain its old
             // value below the attempted write when immutable-binding
@@ -504,6 +502,20 @@ mod tests {
             reachable_fallthrough.verify().unwrap_err().message(),
             "bytecode ended without return"
         );
+    }
+
+    #[test]
+    fn verifier_allows_terminal_completion_to_abandon_switch_values() {
+        for completion in [Instruction::Return, Instruction::Throw] {
+            let function = BytecodeFunction {
+                name: None,
+                code: vec![Instruction::PushI32(1), Instruction::PushI32(2), completion],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 2,
+            };
+            assert_eq!(function.verify().unwrap().max_stack, 2);
+        }
     }
 
     #[test]
