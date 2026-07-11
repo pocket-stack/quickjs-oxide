@@ -26,9 +26,9 @@ use crate::heap::{
     ClosureVariableName, ConstructorKind, ContextData, ContextId, DynamicFunctionKind,
     ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo,
     FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, Heap, HeapCleanup, HeapCounts,
-    HeapError, NativeCProto, NativeFunctionId, NumberParseKind, ObjectData, ObjectId, ObjectKind,
-    ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue, ShapeId, VarRefData,
-    VarRefId,
+    HeapError, NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind,
+    NumberPredicateKind, ObjectData, ObjectId, ObjectKind, ObjectPayload, PrimitiveKind,
+    PrimitiveObjectData, PropertySlot, RawValue, ShapeId, VarRefData, VarRefId,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -516,10 +516,15 @@ impl RuntimeVmHost {
                     .map_err(runtime_error_to_vm_error)?;
                 return self.finish_property_get_action(action);
             }
-            Value::Bool(_) => {
+            Value::Bool(_) | Value::Int(_) | Value::Float(_) => {
+                let kind = if matches!(&base, Value::Bool(_)) {
+                    PrimitiveKind::Boolean
+                } else {
+                    PrimitiveKind::Number
+                };
                 let prototype = self
                     .runtime
-                    .primitive_prototype_for_realm(self.current_realm, PrimitiveKind::Boolean)
+                    .primitive_prototype_for_realm(self.current_realm, kind)
                     .map_err(runtime_error_to_vm_error)?;
                 let action = self
                     .runtime
@@ -555,7 +560,7 @@ impl RuntimeVmHost {
                     return Ok(Completion::Return(length));
                 }
             }
-            Value::Int(_) | Value::Float(_) | Value::BigInt(_) | Value::Symbol(_) => {}
+            Value::BigInt(_) | Value::Symbol(_) => {}
         }
 
         Err(Error::internal(
@@ -575,10 +580,15 @@ impl RuntimeVmHost {
                 .runtime
                 .prepare_set_property_with_receiver(object, key, value, base.clone())
                 .map_err(runtime_error_to_vm_error)?,
-            Value::Bool(_) => {
+            Value::Bool(_) | Value::Int(_) | Value::Float(_) => {
+                let kind = if matches!(&base, Value::Bool(_)) {
+                    PrimitiveKind::Boolean
+                } else {
+                    PrimitiveKind::Number
+                };
                 let prototype = self
                     .runtime
-                    .primitive_prototype_for_realm(self.current_realm, PrimitiveKind::Boolean)
+                    .primitive_prototype_for_realm(self.current_realm, kind)
                     .map_err(runtime_error_to_vm_error)?;
                 self.runtime
                     .prepare_set_property_with_receiver(&prototype, key, value, base.clone())
@@ -615,7 +625,7 @@ impl RuntimeVmHost {
                 }
                 return Err(Error::new(ErrorKind::Type, "not an object"));
             }
-            Value::Int(_) | Value::Float(_) | Value::BigInt(_) | Value::Symbol(_) => {
+            Value::BigInt(_) | Value::Symbol(_) => {
                 if !strict {
                     return Ok(Completion::Return(Value::Undefined));
                 }
@@ -730,10 +740,14 @@ impl VmHost for RuntimeVmHost {
                     .primitive_prototype_for_realm(self.current_realm, PrimitiveKind::Boolean)
                     .map_err(runtime_error_to_vm_error)?,
             ),
+            Value::Int(_) | Value::Float(_) => (
+                PrimitiveKind::Number,
+                self.runtime
+                    .primitive_prototype_for_realm(self.current_realm, PrimitiveKind::Number)
+                    .map_err(runtime_error_to_vm_error)?,
+            ),
             Value::Undefined
             | Value::Null
-            | Value::Int(_)
-            | Value::Float(_)
             | Value::BigInt(_)
             | Value::String(_)
             | Value::Symbol(_)
@@ -1530,6 +1544,9 @@ impl Runtime {
                 .expect("native Error prototype name initialization must succeed");
             native_error_prototypes.push(prototype);
         }
+        let number_prototype = self
+            .new_primitive_object(&object_prototype, PrimitiveKind::Number, Value::Int(0))
+            .expect("initial Number.prototype allocation must succeed");
         let boolean_prototype = self
             .new_primitive_object(
                 &object_prototype,
@@ -1565,6 +1582,7 @@ impl Runtime {
                         global_object.object_id(),
                         global_var_object.object_id(),
                     )
+                    .with_primitive_prototype(PrimitiveKind::Number, number_prototype.object_id())
                     .with_primitive_prototype(PrimitiveKind::Boolean, boolean_prototype.object_id())
                     .with_error_prototypes(error_prototype.object_id(), native_error_ids),
                 )
@@ -1603,6 +1621,18 @@ impl Runtime {
             .expect("Function constructor initialization must succeed");
         self.initialize_global_number_parsers(realm, &function_prototype, &global_object)
             .expect("global numeric parser initialization must succeed");
+        // QuickJS publishes the complete global function-list prefix,
+        // including these constants, before constructing Number and Boolean.
+        // Keeping that boundary preserves observable global own-key order.
+        self.initialize_global_primitive_constants(&global_object)
+            .expect("global primitive constant initialization must succeed");
+        self.initialize_number_intrinsic(
+            realm,
+            &function_prototype,
+            &number_prototype,
+            &global_object,
+        )
+        .expect("Number intrinsic initialization must succeed");
         self.initialize_boolean_intrinsic(
             realm,
             &function_prototype,
@@ -1610,12 +1640,11 @@ impl Runtime {
             &global_object,
         )
         .expect("Boolean intrinsic initialization must succeed");
-        self.initialize_global_primitive_constants(&global_object)
-            .expect("global primitive constant initialization must succeed");
         drop(global_var_object);
         drop(global_object);
         drop(uninitialized_vars);
         drop(boolean_prototype);
+        drop(number_prototype);
         drop(native_error_prototypes);
         drop(error_prototype);
         drop(function_prototype);
@@ -1771,6 +1800,10 @@ impl Runtime {
             return Err(RuntimeError::WrongRuntime("primitive prototype"));
         }
         let data = match (kind, value) {
+            (PrimitiveKind::Number, Value::Int(value)) => {
+                PrimitiveObjectData::Number(f64::from(value))
+            }
+            (PrimitiveKind::Number, Value::Float(value)) => PrimitiveObjectData::Number(value),
             (PrimitiveKind::Boolean, Value::Bool(value)) => PrimitiveObjectData::Boolean(value),
             _ => {
                 return Err(RuntimeError::Invariant(
@@ -2114,6 +2147,120 @@ impl Runtime {
             .heap
             .attach_function_constructor(realm, constructor.as_object().object_id())?;
         Ok(())
+    }
+
+    fn initialize_number_intrinsic(
+        &self,
+        realm: ContextId,
+        function_prototype: &ObjectRef,
+        number_prototype: &ObjectRef,
+        global_object: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        let kind = PrimitiveKind::Number;
+        for (target, name, arity) in [
+            (
+                NativeFunctionId::NumberPrototypeFormat(NumberFormatKind::ToExponential),
+                "toExponential",
+                1,
+            ),
+            (
+                NativeFunctionId::NumberPrototypeFormat(NumberFormatKind::ToFixed),
+                "toFixed",
+                1,
+            ),
+            (
+                NativeFunctionId::NumberPrototypeFormat(NumberFormatKind::ToPrecision),
+                "toPrecision",
+                1,
+            ),
+            (
+                NativeFunctionId::PrimitivePrototypeToString(kind),
+                "toString",
+                1,
+            ),
+            (
+                NativeFunctionId::NumberPrototypeFormat(NumberFormatKind::ToLocaleString),
+                "toLocaleString",
+                0,
+            ),
+            (
+                NativeFunctionId::PrimitivePrototypeValueOf(kind),
+                "valueOf",
+                0,
+            ),
+        ] {
+            self.define_native_builtin_auto_init(
+                number_prototype,
+                realm,
+                target,
+                name,
+                arity,
+                arity,
+            )?;
+        }
+
+        let constructor = self.new_native_builtin(
+            function_prototype,
+            realm,
+            NativeFunctionId::PrimitiveConstructor(kind),
+            1,
+            "Number",
+            1,
+        )?;
+        // Upstream captures the already-published global parser callables by
+        // identity before adding the remaining Number statics.
+        for name in ["parseInt", "parseFloat"] {
+            let key = self.intern_property_key(name)?;
+            let value = match self.get_property_in_realm(realm, global_object, &key)? {
+                Completion::Return(value @ Value::Object(_)) => value,
+                Completion::Return(_) => {
+                    return Err(RuntimeError::Invariant(
+                        "global numeric parser was not an object during Number bootstrap",
+                    ));
+                }
+                Completion::Throw(_) => {
+                    return Err(RuntimeError::Invariant(
+                        "global numeric parser lookup threw during Number bootstrap",
+                    ));
+                }
+            };
+            self.define_function_data_property(constructor.as_object(), name, value, true, true)?;
+        }
+        for (predicate, name) in [
+            (NumberPredicateKind::IsNaN, "isNaN"),
+            (NumberPredicateKind::IsFinite, "isFinite"),
+            (NumberPredicateKind::IsInteger, "isInteger"),
+            (NumberPredicateKind::IsSafeInteger, "isSafeInteger"),
+        ] {
+            self.define_native_builtin_auto_init(
+                constructor.as_object(),
+                realm,
+                NativeFunctionId::NumberPredicate(predicate),
+                name,
+                1,
+                1,
+            )?;
+        }
+        for (name, value) in [
+            ("MAX_VALUE", Value::Float(f64::MAX)),
+            ("MIN_VALUE", Value::Float(f64::from_bits(1))),
+            ("NaN", Value::Float(f64::NAN)),
+            ("NEGATIVE_INFINITY", Value::Float(f64::NEG_INFINITY)),
+            ("POSITIVE_INFINITY", Value::Float(f64::INFINITY)),
+            ("EPSILON", Value::Float(f64::EPSILON)),
+            ("MAX_SAFE_INTEGER", Value::Float(9_007_199_254_740_991.0)),
+            ("MIN_SAFE_INTEGER", Value::Float(-9_007_199_254_740_991.0)),
+        ] {
+            self.define_function_data_property(constructor.as_object(), name, value, false, false)?;
+        }
+        self.define_function_data_property(
+            global_object,
+            "Number",
+            Value::Object(constructor.as_object().clone()),
+            true,
+            true,
+        )?;
+        self.define_constructor_relationship(&constructor, number_prototype)
     }
 
     fn initialize_boolean_intrinsic(
@@ -5405,15 +5552,17 @@ impl Runtime {
             Value::Object(object) => {
                 self.prepare_get_property_with_receiver(object, key, receiver.clone())?
             }
-            Value::Bool(_) => {
-                let prototype =
-                    self.primitive_prototype_for_realm(realm, PrimitiveKind::Boolean)?;
+            Value::Bool(_) | Value::Int(_) | Value::Float(_) => {
+                let kind = if matches!(&receiver, Value::Bool(_)) {
+                    PrimitiveKind::Boolean
+                } else {
+                    PrimitiveKind::Number
+                };
+                let prototype = self.primitive_prototype_for_realm(realm, kind)?;
                 self.prepare_get_property_with_receiver(&prototype, key, receiver.clone())?
             }
             Value::Undefined
             | Value::Null
-            | Value::Int(_)
-            | Value::Float(_)
             | Value::BigInt(_)
             | Value::String(_)
             | Value::Symbol(_) => {
@@ -5517,6 +5666,40 @@ impl Runtime {
         } else {
             value.clone()
         };
+        match value.to_number() {
+            Ok(value) => Ok(NativeConversion::Value(value)),
+            Err(error) => {
+                let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
+                    return Err(RuntimeError::Engine(error));
+                };
+                Ok(NativeConversion::Throw(self.new_native_error(
+                    realm,
+                    kind,
+                    error.message(),
+                )?))
+            }
+        }
+    }
+
+    /// QuickJS's `%Number%` constructor uses `ToNumeric`, then converts a
+    /// BigInt result to binary64. Ordinary `ToNumber` deliberately remains
+    /// stricter and continues to reject BigInt everywhere else.
+    fn native_to_number_constructor_value(
+        &self,
+        realm: ContextId,
+        value: &Value,
+    ) -> Result<NativeConversion<f64>, RuntimeError> {
+        let value = if matches!(value, Value::Object(_)) {
+            match self.to_primitive(realm, value.clone(), ToPrimitiveHint::Number)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+            }
+        } else {
+            value.clone()
+        };
+        if let Value::BigInt(value) = &value {
+            return Ok(NativeConversion::Value(value.to_f64()));
+        }
         match value.to_number() {
             Ok(value) => Ok(NativeConversion::Value(value)),
             Err(error) => {
@@ -6338,25 +6521,32 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        if kind != PrimitiveKind::Boolean {
-            return Err(RuntimeError::Invariant(
-                "unimplemented primitive constructor reached native dispatch",
-            ));
-        }
-        let value = arguments
-            .readable
-            .first()
-            .ok_or(RuntimeError::Invariant(
-                "Boolean constructor readable argv was not padded to one",
-            ))?
-            .to_boolean();
+        let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "primitive constructor readable argv was not padded to one",
+        ))?;
+        let value = match kind {
+            PrimitiveKind::Boolean => Value::Bool(argument.to_boolean()),
+            PrimitiveKind::Number if arguments.actual_arg_count == 0 => Value::Int(0),
+            PrimitiveKind::Number => {
+                let value = match self.native_to_number_constructor_value(realm, argument)? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+                Value::number(value)
+            }
+            PrimitiveKind::String | PrimitiveKind::Symbol | PrimitiveKind::BigInt => {
+                return Err(RuntimeError::Invariant(
+                    "unimplemented primitive constructor reached native dispatch",
+                ));
+            }
+        };
         let NativeInvocation::Construct { new_target } = invocation else {
             return Err(RuntimeError::Invariant(
                 "primitive constructor did not receive constructor-or-function invocation",
             ));
         };
         if matches!(new_target, Value::Undefined) {
-            return Ok(Completion::Return(Value::Bool(value)));
+            return Ok(Completion::Return(value));
         }
         let Value::Object(new_target) = new_target else {
             return Err(RuntimeError::Invariant(
@@ -6375,7 +6565,7 @@ impl Runtime {
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
             };
         Ok(Completion::Return(Value::Object(
-            self.new_primitive_object(&prototype, kind, Value::Bool(value))?,
+            self.new_primitive_object(&prototype, kind, value)?,
         )))
     }
 
@@ -6435,6 +6625,11 @@ impl Runtime {
             let payload = {
                 let state = self.0.state.borrow();
                 match &state.heap.object(object.object_id())?.payload {
+                    ObjectPayload::Primitive(PrimitiveObjectData::Number(value))
+                        if kind == PrimitiveKind::Number =>
+                    {
+                        Some(Value::number(*value))
+                    }
                     ObjectPayload::Primitive(PrimitiveObjectData::Boolean(value))
                         if kind == PrimitiveKind::Boolean =>
                     {
@@ -6472,6 +6667,7 @@ impl Runtime {
         realm: ContextId,
         kind: PrimitiveKind,
         invocation: NativeInvocation,
+        arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
         let NativeInvocation::Call { this_value } = invocation else {
             return Err(RuntimeError::Invariant(
@@ -6483,6 +6679,42 @@ impl Runtime {
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
         match (kind, value) {
+            (PrimitiveKind::Number, value @ (Value::Int(_) | Value::Float(_))) => {
+                let number = value.as_number().ok_or(RuntimeError::Invariant(
+                    "Number brand extraction did not return a Number",
+                ))?;
+                let radix_argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
+                    "Number.prototype.toString argv was not padded",
+                ))?;
+                let radix = if matches!(radix_argument, Value::Undefined) {
+                    10
+                } else {
+                    let radix = match self.native_to_number(realm, radix_argument)? {
+                        NativeConversion::Value(value) => crate::number::to_int32_sat(value),
+                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                    };
+                    if !(2..=36).contains(&radix) {
+                        return Ok(Completion::Throw(self.new_native_error(
+                            realm,
+                            NativeErrorKind::Range,
+                            "radix must be between 2 and 36",
+                        )?));
+                    }
+                    u32::try_from(radix).expect("a Number radix between 2 and 36 always fits u32")
+                };
+                let formatted =
+                    crate::number::to_string_radix(number, radix).map_err(|error| match error {
+                        crate::number::NumberFormatError::InvalidRadix => RuntimeError::Invariant(
+                            "validated Number radix was rejected by the formatter",
+                        ),
+                        crate::number::NumberFormatError::InvalidDigits => RuntimeError::Invariant(
+                            "Number radix formatting reported a digit-count error",
+                        ),
+                    })?;
+                Ok(Completion::Return(Value::String(JsString::from(
+                    formatted.as_str(),
+                ))))
+            }
             (PrimitiveKind::Boolean, Value::Bool(value)) => Ok(Completion::Return(Value::String(
                 JsString::from(if value { "true" } else { "false" }),
             ))),
@@ -6490,6 +6722,120 @@ impl Runtime {
                 "unimplemented primitive toString reached native dispatch",
             )),
         }
+    }
+
+    fn finish_number_format(
+        &self,
+        realm: ContextId,
+        result: Result<String, crate::number::NumberFormatError>,
+    ) -> Result<Completion, RuntimeError> {
+        match result {
+            Ok(value) => Ok(Completion::Return(Value::String(JsString::from(
+                value.as_str(),
+            )))),
+            Err(crate::number::NumberFormatError::InvalidDigits) => Ok(Completion::Throw(
+                self.new_native_error(realm, NativeErrorKind::Range, "invalid number of digits")?,
+            )),
+            Err(crate::number::NumberFormatError::InvalidRadix) => {
+                Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Range,
+                    "radix must be between 2 and 36",
+                )?))
+            }
+        }
+    }
+
+    fn call_number_prototype_format(
+        &self,
+        realm: ContextId,
+        kind: NumberFormatKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Number prototype formatter did not receive a generic invocation",
+            ));
+        };
+        // QuickJS performs the receiver brand check before touching any
+        // argument, including user-code coercion on the digit/radix value.
+        let value = match self.primitive_this_value(realm, PrimitiveKind::Number, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let number = value.as_number().ok_or(RuntimeError::Invariant(
+            "Number formatter brand extraction did not return a Number",
+        ))?;
+
+        let result = match kind {
+            NumberFormatKind::ToLocaleString => crate::number::to_string_radix(number, 10),
+            NumberFormatKind::ToFixed => {
+                let digits = arguments.readable.first().ok_or(RuntimeError::Invariant(
+                    "Number.prototype.toFixed argv was not padded",
+                ))?;
+                let digits = match self.native_to_number(realm, digits)? {
+                    NativeConversion::Value(value) => crate::number::to_int32_sat(value),
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+                crate::number::to_fixed(number, digits)
+            }
+            NumberFormatKind::ToExponential => {
+                let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
+                    "Number.prototype.toExponential argv was not padded",
+                ))?;
+                // The pinned C implementation runs ToInt32Sat even for
+                // undefined, then records undefined as the FREE-format case.
+                let converted = match self.native_to_number(realm, argument)? {
+                    NativeConversion::Value(value) => crate::number::to_int32_sat(value),
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+                let digits = (!matches!(argument, Value::Undefined)).then_some(converted);
+                crate::number::to_exponential(number, digits)
+            }
+            NumberFormatKind::ToPrecision => {
+                let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
+                    "Number.prototype.toPrecision argv was not padded",
+                ))?;
+                let precision = if matches!(argument, Value::Undefined) {
+                    None
+                } else {
+                    match self.native_to_number(realm, argument)? {
+                        NativeConversion::Value(value) => Some(crate::number::to_int32_sat(value)),
+                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                };
+                crate::number::to_precision(number, precision)
+            }
+        };
+        self.finish_number_format(realm, result)
+    }
+
+    fn call_number_predicate(
+        &self,
+        kind: NumberPredicateKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Number predicate did not receive a generic invocation",
+            ));
+        };
+        let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "Number predicate argv was not padded",
+        ))?;
+        let result = argument.as_number().is_some_and(|number| match kind {
+            NumberPredicateKind::IsNaN => number.is_nan(),
+            NumberPredicateKind::IsFinite => number.is_finite(),
+            NumberPredicateKind::IsInteger => number.is_finite() && number.fract() == 0.0,
+            NumberPredicateKind::IsSafeInteger => {
+                number.is_finite()
+                    && number.fract() == 0.0
+                    && number.abs() <= 9_007_199_254_740_991.0
+            }
+        });
+        Ok(Completion::Return(Value::Bool(result)))
     }
 
     fn call_primitive_prototype_value_of(
@@ -6568,7 +6914,14 @@ impl Runtime {
                     NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
                 }
             }
-            Value::Int(_) | Value::Float(_) => JsString::from("Number"),
+            value @ (Value::Int(_) | Value::Float(_)) => {
+                let prototype = self.primitive_prototype_for_realm(realm, PrimitiveKind::Number)?;
+                let object = self.new_primitive_object(&prototype, PrimitiveKind::Number, value)?;
+                match self.object_to_string_tag(realm, &object)? {
+                    NativeConversion::Value(tag) => tag,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                }
+            }
             Value::BigInt(_) => JsString::from("BigInt"),
             Value::String(_) => JsString::from("String"),
             Value::Symbol(_) => JsString::from("Symbol"),
@@ -6593,7 +6946,10 @@ impl Runtime {
                 "Object.prototype.toLocaleString did not receive a generic invocation",
             ));
         };
-        if !matches!(this_value, Value::Object(_) | Value::Bool(_)) {
+        if !matches!(
+            this_value,
+            Value::Object(_) | Value::Bool(_) | Value::Int(_) | Value::Float(_)
+        ) {
             return Err(RuntimeError::Engine(Error::internal(
                 "primitive Object.prototype.toLocaleString is not implemented yet",
             )));
@@ -6645,13 +7001,15 @@ impl Runtime {
                     self.new_primitive_object(&prototype, PrimitiveKind::Boolean, value)?,
                 )))
             }
-            Value::Int(_)
-            | Value::Float(_)
-            | Value::BigInt(_)
-            | Value::String(_)
-            | Value::Symbol(_) => Err(RuntimeError::Engine(Error::internal(
-                "primitive wrapper objects are not implemented",
-            ))),
+            value @ (Value::Int(_) | Value::Float(_)) => {
+                let prototype = self.primitive_prototype_for_realm(realm, PrimitiveKind::Number)?;
+                Ok(Completion::Return(Value::Object(
+                    self.new_primitive_object(&prototype, PrimitiveKind::Number, value)?,
+                )))
+            }
+            Value::BigInt(_) | Value::String(_) | Value::Symbol(_) => Err(RuntimeError::Engine(
+                Error::internal("primitive wrapper objects are not implemented"),
+            )),
         }
     }
 
@@ -6999,7 +7357,7 @@ impl Runtime {
                 self.call_primitive_constructor(realm, kind, invocation, arguments)
             }
             NativeFunctionId::PrimitivePrototypeToString(kind) => {
-                self.call_primitive_prototype_to_string(realm, kind, invocation)
+                self.call_primitive_prototype_to_string(realm, kind, invocation, arguments)
             }
             NativeFunctionId::PrimitivePrototypeValueOf(kind) => {
                 self.call_primitive_prototype_value_of(realm, kind, invocation)
@@ -7007,10 +7365,11 @@ impl Runtime {
             NativeFunctionId::GlobalNumberParse(kind) => {
                 self.call_global_number_parse(realm, kind, invocation, arguments)
             }
-            NativeFunctionId::NumberPredicate(_) | NativeFunctionId::NumberPrototypeFormat(_) => {
-                Err(RuntimeError::Invariant(
-                    "unpublished Number native reached dispatch",
-                ))
+            NativeFunctionId::NumberPredicate(kind) => {
+                self.call_number_predicate(kind, invocation, arguments)
+            }
+            NativeFunctionId::NumberPrototypeFormat(kind) => {
+                self.call_number_prototype_format(realm, kind, invocation, arguments)
             }
             NativeFunctionId::ErrorConstructor(kind) => {
                 self.call_error_constructor(realm, kind, invocation, arguments)
@@ -8614,6 +8973,12 @@ impl Context {
         )?)
     }
 
+    /// Return this realm's boxed-+0 `%Number.prototype%` root.
+    pub fn number_prototype(&self) -> Result<ObjectRef, RuntimeError> {
+        self.runtime
+            .primitive_prototype_for_realm(self.realm, PrimitiveKind::Number)
+    }
+
     /// Return this realm's boxed-false `%Boolean.prototype%` root.
     pub fn boolean_prototype(&self) -> Result<ObjectRef, RuntimeError> {
         self.runtime
@@ -9190,6 +9555,148 @@ mod tests {
     }
 
     #[test]
+    fn number_intrinsic_graph_payload_constants_and_aliases_match_quickjs() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let global = context.global_object().unwrap();
+        let constructor = global_callable(&runtime, &mut context, "Number");
+        let prototype = context.number_prototype().unwrap();
+
+        assert_eq!(
+            runtime.get_prototype_of(constructor.as_object()).unwrap(),
+            Some(context.function_prototype().unwrap())
+        );
+        assert_eq!(
+            runtime.get_prototype_of(&prototype).unwrap(),
+            Some(context.object_prototype().unwrap())
+        );
+        assert_eq!(
+            own_key_names(&runtime, constructor.as_object()),
+            [
+                "length",
+                "name",
+                "parseInt",
+                "parseFloat",
+                "isNaN",
+                "isFinite",
+                "isInteger",
+                "isSafeInteger",
+                "MAX_VALUE",
+                "MIN_VALUE",
+                "NaN",
+                "NEGATIVE_INFINITY",
+                "POSITIVE_INFINITY",
+                "EPSILON",
+                "MAX_SAFE_INTEGER",
+                "MIN_SAFE_INTEGER",
+                "prototype",
+            ]
+        );
+        assert_eq!(
+            own_key_names(&runtime, &prototype),
+            [
+                "toExponential",
+                "toFixed",
+                "toPrecision",
+                "toString",
+                "toLocaleString",
+                "valueOf",
+                "constructor",
+            ]
+        );
+        assert!(matches!(
+            &runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .object(prototype.object_id())
+                .unwrap()
+                .payload,
+            ObjectPayload::Primitive(PrimitiveObjectData::Number(value))
+                if value.to_bits() == 0.0_f64.to_bits()
+        ));
+        assert_eq!(
+            runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .context(context.realm)
+                .unwrap()
+                .primitive_prototypes[PrimitiveKind::Number.index()],
+            Some(prototype.object_id())
+        );
+
+        for name in ["parseInt", "parseFloat"] {
+            let key = runtime.intern_property_key(name).unwrap();
+            let global_value = context.get_property(&global, &key).unwrap();
+            let static_value = context.get_property(constructor.as_object(), &key).unwrap();
+            let (Value::Object(global_value), Value::Object(static_value)) =
+                (global_value, static_value)
+            else {
+                panic!("Number.{name} alias was not an object");
+            };
+            assert_eq!(static_value, global_value, "Number.{name} identity");
+        }
+
+        for (name, expected) in [
+            ("MAX_VALUE", f64::MAX),
+            ("MIN_VALUE", f64::from_bits(1)),
+            ("NaN", f64::NAN),
+            ("NEGATIVE_INFINITY", f64::NEG_INFINITY),
+            ("POSITIVE_INFINITY", f64::INFINITY),
+            ("EPSILON", f64::EPSILON),
+            ("MAX_SAFE_INTEGER", 9_007_199_254_740_991.0),
+            ("MIN_SAFE_INTEGER", -9_007_199_254_740_991.0),
+        ] {
+            let key = runtime.intern_property_key(name).unwrap();
+            assert!(
+                matches!(
+                    runtime
+                        .get_own_property(constructor.as_object(), &key)
+                        .unwrap(),
+                    Some(CompleteOrdinaryPropertyDescriptor::Data {
+                        value,
+                        writable: false,
+                        enumerable: false,
+                        configurable: false,
+                    }) if value.same_value(&Value::Float(expected))
+                ),
+                "Number.{name}"
+            );
+        }
+
+        assert_eq!(
+            context.call(&constructor, Value::Undefined, &[]).unwrap(),
+            Value::Int(0)
+        );
+        let explicit_undefined = context
+            .call(&constructor, Value::Undefined, &[Value::Undefined])
+            .unwrap();
+        assert!(matches!(explicit_undefined, Value::Float(value) if value.is_nan()));
+        let Value::Object(wrapper) = context
+            .construct(&constructor, &[Value::Float(-0.0)])
+            .unwrap()
+        else {
+            panic!("new Number did not return an object");
+        };
+        assert_eq!(runtime.get_prototype_of(&wrapper).unwrap(), Some(prototype));
+        assert!(matches!(
+            &runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .object(wrapper.object_id())
+                .unwrap()
+                .payload,
+            ObjectPayload::Primitive(PrimitiveObjectData::Number(value))
+                if value.to_bits() == (-0.0_f64).to_bits()
+        ));
+    }
+
+    #[test]
     fn boolean_intrinsic_graph_payload_and_brand_methods_match_quickjs() {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
@@ -9235,7 +9742,6 @@ mod tests {
                 Some(prototype.object_id())
             );
             for kind in [
-                PrimitiveKind::Number,
                 PrimitiveKind::String,
                 PrimitiveKind::Symbol,
                 PrimitiveKind::BigInt,
@@ -9624,6 +10130,33 @@ mod tests {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
         let global = context.global_object().unwrap();
+        let supported_global_prefix = own_key_names(&runtime, &global)
+            .into_iter()
+            .filter(|name| {
+                matches!(
+                    name.as_str(),
+                    "parseInt"
+                        | "parseFloat"
+                        | "Infinity"
+                        | "NaN"
+                        | "undefined"
+                        | "Number"
+                        | "Boolean"
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            supported_global_prefix,
+            [
+                "parseInt",
+                "parseFloat",
+                "Infinity",
+                "NaN",
+                "undefined",
+                "Number",
+                "Boolean",
+            ]
+        );
         for (name, expected) in [
             ("undefined", Value::Undefined),
             ("NaN", Value::Float(f64::NAN)),
@@ -15154,11 +15687,25 @@ mod tests {
             context.call(&sloppy, Value::Undefined, &[]).unwrap(),
             Value::Object(global)
         );
+        let boxed_number = context.call(&sloppy, Value::Int(1), &[]).unwrap();
+        let Value::Object(boxed_number) = boxed_number else {
+            panic!("sloppy Number this did not escape as a wrapper");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&boxed_number).unwrap(),
+            Some(context.number_prototype().unwrap())
+        );
         assert!(matches!(
-            context.call(&sloppy, Value::Int(1), &[]),
-            Err(RuntimeError::Engine(_))
+            &runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .object(boxed_number.object_id())
+                .unwrap()
+                .payload,
+            ObjectPayload::Primitive(PrimitiveObjectData::Number(value)) if *value == 1.0
         ));
-        assert!(!context.has_exception());
         let ignores_this = runtime
             .publish_unlinked_function(
                 context.realm,

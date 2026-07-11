@@ -25,21 +25,23 @@ global compilation, actual-argc conversion order, call/construct split,
 cross-realm behavior, and `newTarget.prototype` fallback.
 
 The primitive-class substrate now reserves typed realm-local `class_proto`
-slots for Number, String, Boolean, Symbol, and BigInt, while enabling only the
-semantically complete Boolean slot. `%Boolean.prototype%` is the pinned
-boxed-`false` Boolean-class object, and the global `%Boolean%` implements the
-exact call/construct split, descriptors, `toString`, `valueOf`, wrapper
-coercion, custom and cross-realm `newTarget.prototype`, and defining-realm
-fallback. Boolean primitive member lookup traverses that realm's prototype
-without eagerly boxing and preserves the raw receiver for strict inherited
-getters and setters; sloppy ordinary functions instead create one cached
-wrapper per invocation. Boolean wrappers also participate in
-`Object.prototype.toString`, `toLocaleString`, and `valueOf`, including
-observable `@@toStringTag`, cross-realm boxing, and the runtime's reference
-counting/cycle graph. Number, String, Symbol, and BigInt constructors,
-prototype roots, wrappers, and inherited lookup remain explicit gaps, and the
-global `Object` constructor is not yet published; this is Boolean parity, not
-five-class primitive-graph parity.
+slots for Number, String, Boolean, Symbol, and BigInt, with semantically
+complete Number and Boolean slots enabled. `%Number.prototype%` is the pinned
+boxed-`+0` Number-class object. The global `%Number%` publishes the exact
+ordered 17/7 constructor/prototype surface: call/construct and BigInt
+conversion, parser aliases captured by identity, non-coercing predicates,
+frozen constants, radix 2–36 `toString`, fixed/exponential/precision formats,
+`toLocaleString`, `valueOf`, custom/cross-realm `newTarget.prototype`, and
+defining-realm fallback. `%Boolean%` retains its exact boxed-`false` graph and
+call/construct behavior. Number and Boolean primitive member lookup traverses
+the current realm's matching prototype without eager boxing and preserves the
+raw receiver for strict inherited getters and setters; sloppy ordinary
+functions instead create one cached wrapper per invocation. Both wrapper
+classes participate in `Object.prototype.toString`, `toLocaleString`, and
+`valueOf`, including observable `@@toStringTag`, cross-realm boxing, and the
+runtime's reference-counting/cycle graph. String, Symbol, and BigInt wrapper
+graphs remain explicit gaps, and the global `Object` constructor is not yet
+published.
 
 Source-level fixed/computed member reads, receiver-preserving method calls, and
 member constructor heads now lower through QuickJS-shaped property bytecode;
@@ -65,19 +67,18 @@ pinned differential locking the observed libc-`pow` results. Its BigInt path
 preserves negative-exponent errors, constant shortcuts, and exact limb
 preallocation boundaries.
 The crate-wide Number-to-string path now uses a safe-Rust rewrite of pinned
-QuickJS `dtoa.c`: exact BigUint rational arithmetic implements decimal FREE
-formatting today and has tested-but-not-yet-published radix 2–36, fixed,
-exponential, and precision entry points ready for the complete `%Number%`
-intrinsic. FREE uses ties-to-even shortest-roundtrip selection, while explicit
-digit modes use ties-away-from-zero. A deterministic bit-pattern differential
-locks those strings against QuickJS, and BigInt has a separately differenced
-ties-to-even/overflow conversion for the future `Number(BigInt)` path. The
-global `parseInt` and `parseFloat` functions now use a matching UTF-16 parser
+QuickJS `dtoa.c`: exact BigUint rational arithmetic backs the published
+`%Number.prototype%` decimal FREE, radix 2–36, fixed, exponential, and
+precision methods. FREE uses ties-to-even shortest-roundtrip selection, while
+explicit digit modes use ties-away-from-zero. Deterministic bit-pattern and
+intrinsic differentials lock those strings against QuickJS, and BigInt has a
+separately differenced ties-to-even/overflow conversion used by
+`Number(BigInt)`. The global `parseInt` and `parseFloat` functions now use a
+matching UTF-16 parser
 substrate with QuickJS's prefix scans, radix conversion order, signed zero,
 bounded mantissa tables, and even its observable 38-digit decimal truncation;
-their native objects are ready to be captured by identity as `Number` statics.
-The Number realm prototype remains absent until that alias capture and the full
-17/7 constructor/prototype surface can be published atomically.
+their native objects are captured by identity as `Number.parseInt` and
+`Number.parseFloat`.
 Binary `??` uses QuickJS's shared short-circuit join for a chain, preserves the
 selected operand without coercion, and enforces the unparenthesized
 `??`/`&&`/`||` mixing restriction. The same arithmetic, exponentiation, shift,
@@ -96,8 +97,8 @@ local, closure, private function-name and implicit-`arguments` paths return
 followed by `DeleteProperty`; strict direct references are early errors. Each
 realm also installs the frozen `Infinity`, `NaN` and `undefined` global data
 properties. Dynamic object-environment resolution through `with`/direct
-`eval`, Proxy/exotic delete dispatch, and the remaining Number/String/Symbol/
-BigInt primitive prototype graphs remain unfinished slices.
+`eval`, Proxy/exotic delete dispatch, and the remaining String/Symbol/BigInt
+primitive prototype graphs remain unfinished slices.
 Runtime-wide full/strip-source/strip-debug modes follow QuickJS's immutable
 bytecode publication boundary, and the `qjs` CLI exposes `--strip-source` and
 `-s` with upstream last-option-wins behavior.
@@ -145,6 +146,10 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_parse_kernel -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_number_parsers -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_number_intrinsic -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_number_constructor_conversion -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_power_numbers -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
