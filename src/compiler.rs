@@ -131,6 +131,14 @@ enum StatementCompletion {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatementPosition {
+    ProgramBody,
+    FunctionBody,
+    NestedList,
+    Single,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ScopeKind {
     FunctionRoot,
     FunctionBody,
@@ -151,6 +159,7 @@ struct IrScope {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BindingKind {
     Normal,
+    Lexical { is_const: bool },
     FunctionName { is_const: bool },
 }
 
@@ -183,6 +192,7 @@ enum IdentifierAccess {
     Get,
     GetOrUndefined,
     Delete,
+    Initialize,
     Put,
     Set,
 }
@@ -238,6 +248,10 @@ enum ForHeadDelimiter {
 #[derive(Debug)]
 enum IrOp {
     Bytecode(Instruction),
+    /// Function-body scope entry is fixed at IR position zero before any
+    /// authored operation. Slots are appended as declarations are discovered,
+    /// then lowering expands the pseudo operation to one TDZ entry per local.
+    EnterBodyLexicalScope(Vec<u16>),
     /// QuickJS's template parser does not apply the ordinary call parser's
     /// u16 argument guard.  Retain the full count until the bytecode stack
     /// limit has been checked during lowering.
@@ -247,6 +261,9 @@ enum IrOp {
     /// Lowering-only assignment-expression form. QuickJS has no `set_var`;
     /// this expands to `dup; put_var` before verification/publication.
     GlobalSet(u16),
+    /// QuickJS has no value-preserving checked VarRef write. Keep the typed
+    /// operation unresolved until lowering expands it to `dup; put_var_ref_check`.
+    CapturedLexicalSet(u16),
     Identifier {
         name: String,
         span: Span,
@@ -290,16 +307,17 @@ impl IrOp {
     fn stack_effect(&self) -> (usize, usize) {
         match self {
             Self::Bytecode(instruction) => instruction.stack_effect(),
+            Self::EnterBodyLexicalScope(_) => (0, 0),
             Self::TemplateCall(argument_count) => (argument_count + 2, 1),
             Self::PushConstant(_) | Self::MakeClosure(_) => (0, 1),
-            Self::GlobalSet(_) => (1, 1),
+            Self::GlobalSet(_) | Self::CapturedLexicalSet(_) => (1, 1),
             Self::Identifier {
                 access:
                     IdentifierAccess::Get | IdentifierAccess::GetOrUndefined | IdentifierAccess::Delete,
                 ..
             } => (0, 1),
             Self::Identifier {
-                access: IdentifierAccess::Put,
+                access: IdentifierAccess::Initialize | IdentifierAccess::Put,
                 ..
             } => (1, 0),
             Self::Identifier {
@@ -394,6 +412,14 @@ impl FunctionIr {
         ];
         let current_scope = body;
         let var_scope = function_root;
+        let ops = if matches!(kind, FunctionKind::Ordinary) {
+            vec![SpannedIrOp {
+                op: IrOp::EnterBodyLexicalScope(Vec::new()),
+                pc_site: None,
+            }]
+        } else {
+            Vec::new()
+        };
         let mut function = Self {
             parent,
             kind,
@@ -408,7 +434,7 @@ impl FunctionIr {
             var_scope,
             body_scope: body,
             eval_ret_local,
-            ops: Vec::new(),
+            ops,
             last_member_reference: None,
             last_identifier_reference: None,
             constants: Vec::new(),
@@ -543,7 +569,10 @@ impl<'source> Parser<'source> {
 
     fn parse_script_body(&mut self) -> Result<(), Error> {
         while !self.at_eof() {
-            self.parse_statement_or_decl(StatementCompletion::Eval)?;
+            self.parse_statement_or_decl(
+                StatementCompletion::Eval,
+                StatementPosition::ProgramBody,
+            )?;
         }
 
         self.emit_instruction(Instruction::GetLocal(self.eval_ret_local()?))?;
@@ -556,7 +585,10 @@ impl<'source> Parser<'source> {
             if self.at_eof() {
                 return Err(self.syntax_here("unterminated function body"));
             }
-            self.parse_statement_or_decl(StatementCompletion::Discard)?;
+            self.parse_statement_or_decl(
+                StatementCompletion::Discard,
+                StatementPosition::FunctionBody,
+            )?;
         }
 
         // QuickJS ends ordinary function bytecode with `return_undef`. It may
@@ -571,9 +603,28 @@ impl<'source> Parser<'source> {
     /// single-statement branches through `js_parse_statement_or_decl`. Keep
     /// the same spine so completion handling, ASI and later declaration masks
     /// have one parser boundary instead of diverging script/function loops.
-    fn parse_statement_or_decl(&mut self, completion: StatementCompletion) -> Result<(), Error> {
+    fn parse_statement_or_decl(
+        &mut self,
+        completion: StatementCompletion,
+        position: StatementPosition,
+    ) -> Result<(), Error> {
         if self.consume_punctuator(Punctuator::Semicolon)? {
             return Ok(());
+        }
+
+        if self.lexical_declaration_ahead(position != StatementPosition::Single)? {
+            return match position {
+                StatementPosition::FunctionBody => self.parse_lexical_statement(),
+                StatementPosition::ProgramBody => Err(self.unsupported_here(
+                    "top-level lexical declarations and global bindings are not implemented yet",
+                )),
+                StatementPosition::NestedList => Err(self.unsupported_here(
+                    "lexical declarations in nested blocks and switch bodies are not implemented yet",
+                )),
+                StatementPosition::Single => Err(self.syntax_here(
+                    "lexical declarations can't appear in single-statement context",
+                )),
+            };
         }
 
         if let Some(label_name) = self.label_ahead() {
@@ -659,7 +710,7 @@ impl<'source> Parser<'source> {
                     entry_depth,
                     0,
                 );
-                self.parse_statement_or_decl(completion)?;
+                self.parse_statement_or_decl(completion, StatementPosition::Single)?;
                 self.require_stack_depth(entry_depth, "labeled statement")?;
 
                 let break_target = self.current_ir().ops.len();
@@ -685,7 +736,7 @@ impl<'source> Parser<'source> {
         }
         let scope = self.push_scope(ScopeKind::Block);
         while !self.is_punctuator(Punctuator::RightBrace) {
-            self.parse_statement_or_decl(completion)?;
+            self.parse_statement_or_decl(completion, StatementPosition::NestedList)?;
         }
         self.advance()?;
         self.pop_scope(scope)
@@ -703,7 +754,7 @@ impl<'source> Parser<'source> {
 
         let false_jump = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
         let branch_stack = self.current_ir().stack_depth;
-        self.parse_statement_or_decl(completion)?;
+        self.parse_statement_or_decl(completion, StatementPosition::Single)?;
         let joined_stack = self.current_ir().stack_depth;
 
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Else)) {
@@ -711,7 +762,7 @@ impl<'source> Parser<'source> {
             self.advance()?;
             self.patch_jump(false_jump, self.current_ir().ops.len())?;
             self.current_ir_mut().stack_depth = branch_stack;
-            self.parse_statement_or_decl(completion)?;
+            self.parse_statement_or_decl(completion, StatementPosition::Single)?;
             if self.current_ir().stack_depth != joined_stack {
                 return Err(Error::internal("if branches have unequal stack depth"));
             }
@@ -750,7 +801,7 @@ impl<'source> Parser<'source> {
         let false_jump = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
         self.require_stack_depth(entry_depth, "while condition")?;
 
-        self.parse_statement_or_decl(completion)?;
+        self.parse_statement_or_decl(completion, StatementPosition::Single)?;
         self.require_stack_depth(entry_depth, "while body")?;
         self.emit_instruction(Instruction::Goto(
             u32::try_from(condition_target)
@@ -786,7 +837,7 @@ impl<'source> Parser<'source> {
         if matches!(completion, StatementCompletion::Eval) {
             self.set_eval_ret_undefined()?;
         }
-        self.parse_statement_or_decl(completion)?;
+        self.parse_statement_or_decl(completion, StatementPosition::Single)?;
         self.require_stack_depth(entry_depth, "do-while body")?;
 
         let condition_target = self.current_ir().ops.len();
@@ -839,7 +890,7 @@ impl<'source> Parser<'source> {
         // Keep that mode explicit even while the AllowIn operator itself
         // remains a later runtime slice.
         if !self.is_punctuator(Punctuator::Semicolon) {
-            if self.for_head_lexical_declaration_ahead()? {
+            if self.lexical_declaration_ahead(true)? {
                 return Err(self.unsupported_here(
                     "lexical declarations in for heads are not implemented yet",
                 ));
@@ -915,7 +966,7 @@ impl<'source> Parser<'source> {
         if let Some(body_skip) = body_skip {
             self.patch_jump(body_skip, body_target)?;
         }
-        self.parse_statement_or_decl(completion)?;
+        self.parse_statement_or_decl(completion, StatementPosition::Single)?;
         self.require_stack_depth(entry_depth, "for body")?;
         let continue_target = if let Some((old_start, old_end, mut fragment)) = moved_update {
             let target = self.current_ir().ops.len();
@@ -1028,7 +1079,7 @@ impl<'source> Parser<'source> {
                     if pending_no_match.is_none() {
                         return Err(self.syntax_here("invalid switch statement"));
                     }
-                    self.parse_statement_or_decl(completion)?;
+                    self.parse_statement_or_decl(completion, StatementPosition::NestedList)?;
                     self.require_stack_depth(switch_depth, "switch case body")?;
                 }
             }
@@ -1250,6 +1301,81 @@ impl<'source> Parser<'source> {
         self.consume_statement_terminator()
     }
 
+    fn parse_lexical_statement(&mut self) -> Result<(), Error> {
+        let is_const = matches!(self.current().kind, TokenKind::Keyword(Keyword::Const));
+        self.advance()?;
+
+        loop {
+            if matches!(
+                self.current().kind,
+                TokenKind::Punctuator(Punctuator::LeftBrace | Punctuator::LeftBracket)
+            ) {
+                return Err(
+                    self.unsupported_here("lexical destructuring bindings are not implemented yet")
+                );
+            }
+
+            let token = self.current().clone();
+            let TokenKind::Identifier(identifier) = token.kind else {
+                return Err(self.syntax_here("variable name expected"));
+            };
+            validate_identifier_reservation(
+                &identifier,
+                token.span,
+                self.current_ir().strict,
+                IdentifierContext::Variable,
+            )?;
+            if identifier.value == "let" {
+                return Err(Error::syntax(
+                    "'let' is not a valid lexical identifier",
+                    source_span(token.span),
+                ));
+            }
+            let name = identifier.value;
+            let strict = self.current_ir().strict;
+            self.advance()?;
+            if strict && matches!(name.as_str(), "eval" | "arguments") {
+                return Err(Error::syntax(
+                    "invalid variable name in strict mode",
+                    source_span(self.current().span),
+                ));
+            }
+            self.register_lexical_local(&name, token.span, self.current().span, is_const)?;
+
+            let initializer_site = if self.consume_punctuator(Punctuator::Equal)? {
+                let site = source_offset(self.tokens[self.cursor - 1].span)?;
+                self.parse_assignment()?;
+                if self.anonymous_function_definition.take().is_some() {
+                    let name_constant = self.add_constant(IrConstant::Primitive(Value::String(
+                        JsString::try_from_utf8(&name)?,
+                    )))?;
+                    self.emit_instruction(Instruction::SetName(name_constant))?;
+                }
+                site
+            } else {
+                if is_const {
+                    return Err(Error::syntax(
+                        "missing initializer for const variable",
+                        source_span(self.current().span),
+                    ));
+                }
+                self.emit_instruction(Instruction::Undefined)?;
+                source_offset(token.span)?
+            };
+            self.emit_identifier_at(
+                name,
+                token.span,
+                IdentifierAccess::Initialize,
+                initializer_site,
+            )?;
+
+            if !self.consume_punctuator(Punctuator::Comma)? {
+                break;
+            }
+        }
+        self.consume_statement_terminator()
+    }
+
     fn parse_var_statement(&mut self) -> Result<(), Error> {
         self.advance()?;
         self.parse_var_declarations_with_in(InMode::Allow)?;
@@ -1292,7 +1418,7 @@ impl<'source> Parser<'source> {
                     "the implicit ordinary-function arguments binding is not implemented yet",
                 ));
             }
-            self.register_local(&name, token.span)?;
+            self.register_local(&name, token.span, self.current().span)?;
 
             let initializer_span = self.current().span;
             if self.consume_punctuator(Punctuator::Equal)? {
@@ -1322,8 +1448,22 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    fn register_local(&mut self, name: &str, span: Span) -> Result<(), Error> {
+    fn register_local(
+        &mut self,
+        name: &str,
+        declaration_span: Span,
+        conflict_span: Span,
+    ) -> Result<(), Error> {
         let function = &mut self.functions[self.current_function];
+        if function
+            .binding_in_scope(function.body_scope, name)
+            .is_some_and(|binding| matches!(binding.kind, BindingKind::Lexical { .. }))
+        {
+            return Err(Error::syntax(
+                "invalid redefinition of lexical identifier",
+                source_span(conflict_span),
+            ));
+        }
         if function
             .binding_in_scope(function.var_scope, name)
             .is_some()
@@ -1333,7 +1473,7 @@ impl<'source> Parser<'source> {
         if function.locals.len() >= MAX_LOCAL_VARIABLES {
             return Err(
                 Error::new(ErrorKind::JsInternal, "too many local variables")
-                    .with_span(source_span(span)),
+                    .with_span(source_span(declaration_span)),
             );
         }
         let index = u16::try_from(function.locals.len())
@@ -1345,7 +1485,82 @@ impl<'source> Parser<'source> {
             name.to_owned(),
             BindingStorage::Local(index),
             BindingKind::Normal,
-            Some(span),
+            Some(declaration_span),
+        );
+        Ok(())
+    }
+
+    fn register_lexical_local(
+        &mut self,
+        name: &str,
+        declaration_span: Span,
+        conflict_span: Span,
+        is_const: bool,
+    ) -> Result<(), Error> {
+        let function = &mut self.functions[self.current_function];
+        if !matches!(function.kind, FunctionKind::Ordinary)
+            || function.current_scope != function.body_scope
+        {
+            return Err(Error::internal(
+                "body lexical declaration escaped its parser context",
+            ));
+        }
+        if function
+            .binding_in_scope(function.body_scope, name)
+            .is_some()
+        {
+            return Err(Error::syntax(
+                "invalid redefinition of lexical identifier",
+                source_span(conflict_span),
+            ));
+        }
+        if let Some(binding) = function.binding_in_scope(function.var_scope, name) {
+            let message = match (binding.storage, binding.kind) {
+                (BindingStorage::Argument(_), _) => "invalid redefinition of parameter name",
+                (BindingStorage::Local(_), BindingKind::Normal) => {
+                    "invalid redefinition of a variable"
+                }
+                (BindingStorage::Local(_), BindingKind::FunctionName { .. }) => {
+                    // The private named-expression binding lives outside the
+                    // authored body environment and may be shadowed there.
+                    ""
+                }
+                (BindingStorage::Local(_), BindingKind::Lexical { .. }) => {
+                    return Err(Error::internal(
+                        "body lexical binding leaked into the function var scope",
+                    ));
+                }
+            };
+            if !message.is_empty() {
+                return Err(Error::syntax(message, source_span(conflict_span)));
+            }
+        }
+        if function.locals.len() >= MAX_LOCAL_VARIABLES {
+            return Err(
+                Error::new(ErrorKind::JsInternal, "too many local variables")
+                    .with_span(source_span(declaration_span)),
+            );
+        }
+        let index = u16::try_from(function.locals.len())
+            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+        let Some(SpannedIrOp {
+            op: IrOp::EnterBodyLexicalScope(locals),
+            ..
+        }) = function.ops.first_mut()
+        else {
+            return Err(Error::internal(
+                "ordinary function has no body lexical scope-entry operation",
+            ));
+        };
+        locals.push(index);
+        function.locals.push(name.to_owned());
+        function.add_binding(
+            function.body_scope,
+            function.body_scope,
+            name.to_owned(),
+            BindingStorage::Local(index),
+            BindingKind::Lexical { is_const },
+            Some(declaration_span),
         );
         Ok(())
     }
@@ -2993,11 +3208,11 @@ impl<'source> Parser<'source> {
         }
     }
 
-    /// QuickJS `is_let(..., DECL_MASK_OTHER)` resolves the sloppy `let`
-    /// ambiguity before parsing a classic-for initializer. In particular,
-    /// `let [` is always lexical and must never silently execute as a member
-    /// assignment while lexical declarations remain an explicit boundary.
-    fn for_head_lexical_declaration_ahead(&self) -> Result<bool, Error> {
+    /// QuickJS `is_let(..., DECL_MASK_OTHER)` resolves sloppy `let` before the
+    /// statement parser chooses declaration or expression grammar. In
+    /// particular, `let [` is always lexical and must never silently execute
+    /// as a member assignment while destructuring remains an explicit boundary.
+    fn lexical_declaration_ahead(&self, allow_line_terminated_other: bool) -> Result<bool, Error> {
         if matches!(
             self.current().kind,
             TokenKind::Keyword(Keyword::Let | Keyword::Const)
@@ -3015,15 +3230,20 @@ impl<'source> Parser<'source> {
         lexer.seek(self.current().span.start);
         lexer.next_token().map_err(lex_error)?;
         let next = lexer.next_token().map_err(lex_error)?;
-        Ok(matches!(
-            next.kind,
-            TokenKind::Punctuator(Punctuator::LeftBracket | Punctuator::LeftBrace)
+        let other_declaration_start = matches!(
+            &next.kind,
+            TokenKind::Punctuator(Punctuator::LeftBrace)
                 | TokenKind::Identifier(Identifier {
                     escaped_reserved_word: false,
                     ..
                 })
                 | TokenKind::Keyword(Keyword::Let | Keyword::Yield | Keyword::Await)
-        ))
+        );
+        Ok(
+            matches!(&next.kind, TokenKind::Punctuator(Punctuator::LeftBracket))
+                || (other_declaration_start
+                    && (!next.line_terminator_before || allow_line_terminated_other)),
+        )
     }
 
     /// QuickJS `is_label` accepts only a non-reserved Identifier followed by
@@ -3448,6 +3668,15 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         if binding.name != *local {
                             return Err(Error::internal("local binding metadata is malformed"));
                         }
+                        if matches!(binding.kind, BindingKind::Lexical { .. })
+                            && (!matches!(function.kind, FunctionKind::Ordinary)
+                                || binding.storage_scope != function.body_scope
+                                || binding.declaration_scope != function.body_scope)
+                        {
+                            return Err(Error::internal(
+                                "body lexical binding metadata is malformed",
+                            ));
+                        }
                         if std::mem::replace(&mut seen_locals[index], true) {
                             return Err(Error::internal(
                                 "local slot has more than one binding identity",
@@ -3508,6 +3737,43 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             }
         }
 
+        let body_lexical_locals = function
+            .bindings
+            .iter()
+            .filter_map(|binding| {
+                matches!(binding.kind, BindingKind::Lexical { .. }).then_some(binding.storage)
+            })
+            .map(|storage| match storage {
+                BindingStorage::Local(index) => Ok(index),
+                BindingStorage::Argument(_) => Err(Error::internal(
+                    "body lexical binding used argument storage",
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut scope_entries = function.ops.iter().filter_map(|operation| {
+            let IrOp::EnterBodyLexicalScope(locals) = &operation.op else {
+                return None;
+            };
+            Some(locals)
+        });
+        match function.kind {
+            FunctionKind::Script if scope_entries.next().is_none() => {}
+            FunctionKind::Ordinary
+                if scope_entries
+                    .next()
+                    .is_some_and(|locals| *locals == body_lexical_locals)
+                    && scope_entries.next().is_none()
+                    && matches!(
+                        function.ops.first().map(|operation| &operation.op),
+                        Some(IrOp::EnterBodyLexicalScope(_))
+                    ) => {}
+            _ => {
+                return Err(Error::internal(
+                    "function body lexical scope-entry metadata is malformed",
+                ));
+            }
+        }
+
         let function_name_bindings = function
             .bindings
             .iter()
@@ -3562,26 +3828,313 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
 
         for (operation_index, name, span, scope, access) in unresolved {
             let operation = resolve_identifier(tree, function_id, scope, &name, span, access)?;
-            if matches!(operation, IrOp::Bytecode(Instruction::ThrowReadOnly(_)))
-                && let Some(return_site) = tree.functions[function_id]
-                    .ops
-                    .get(operation_index + 1)
-                    .and_then(|operation| {
-                        matches!(operation.op, IrOp::Bytecode(Instruction::Return))
-                            .then_some(operation.pc_site)
-                            .flatten()
-                    })
-            {
-                // QuickJS emits the return source marker after parsing its
-                // expression. When late scope resolution replaces the final
-                // write with terminal OP_throw_error, that marker becomes the
-                // observable fault site instead of the expression's marker.
-                tree.functions[function_id].ops[operation_index].pc_site = Some(return_site);
-            }
             tree.functions[function_id].ops[operation_index].op = operation;
         }
+        apply_quickjs_late_throw_sites(&mut tree.functions[function_id])?;
     }
     validate_scope_graph(tree)
+}
+
+fn apply_quickjs_late_throw_sites(function: &mut FunctionIr) -> Result<(), Error> {
+    // Maintenance invariant: every new label-bearing IR opcode or
+    // resolve-labels peephole must update this projection and add a pinned
+    // fault-stack oracle before that control-flow slice is enabled.
+    let jump_target = |operation: &SpannedIrOp| -> Result<Option<usize>, Error> {
+        let IrOp::Bytecode(
+            Instruction::Goto(target) | Instruction::IfFalse(target) | Instruction::IfTrue(target),
+        ) = operation.op
+        else {
+            return Ok(None);
+        };
+        usize::try_from(target)
+            .map(Some)
+            .map_err(|_| Error::internal("jump target did not fit usize"))
+    };
+
+    // `resolve_scope_var` introduces terminal OP_throw_error only after
+    // parsing. QuickJS then performs two relevant linear rewrites.
+    // `resolve_variables` first drops source after parser-authored terminals,
+    // updating label reference counts for jumps in that dead range.
+    // `resolve_labels` recognizes every newly introduced throw as terminal and
+    // repeats the walk with one shared, cumulatively updated reference table.
+    // Project both passes once for the whole function: per-throw simulation is
+    // not equivalent when an earlier throw removes a forward branch reference.
+    let mut label_references = vec![0_usize; function.ops.len()];
+    let mut has_physical_label = vec![false; function.ops.len()];
+    for operation in &function.ops {
+        let Some(target) = jump_target(operation)? else {
+            continue;
+        };
+        let references = label_references
+            .get_mut(target)
+            .ok_or_else(|| Error::internal("jump target is out of bounds"))?;
+        *references = references
+            .checked_add(1)
+            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "out of memory"))?;
+        has_physical_label[target] = true;
+    }
+
+    let mut survives_first_pass = vec![false; function.ops.len()];
+    let mut marker_before_label = vec![None; function.ops.len()];
+    let mut index = 0_usize;
+    while index < function.ops.len() {
+        survives_first_pass[index] = true;
+        let parser_terminal = matches!(
+            function.ops[index].op,
+            IrOp::Bytecode(Instruction::Goto(_) | Instruction::Return | Instruction::Throw)
+        );
+        if !parser_terminal {
+            index += 1;
+            continue;
+        }
+
+        let mut dead_index = index + 1;
+        let mut final_dead_marker = None;
+        while dead_index < function.ops.len() {
+            // An upstream OP_label precedes the marker attached to our direct
+            // target instruction. A still-referenced label ends this dead
+            // range before that authored marker is observed.
+            if label_references[dead_index] > 0 {
+                break;
+            }
+            if function.ops[dead_index].pc_site.is_some() {
+                final_dead_marker = function.ops[dead_index].pc_site;
+            }
+            if let Some(target) = jump_target(&function.ops[dead_index])? {
+                label_references[target] = label_references[target]
+                    .checked_sub(1)
+                    .ok_or_else(|| Error::internal("jump label reference count underflow"))?;
+            }
+            dead_index += 1;
+        }
+        if dead_index == function.ops.len() {
+            break;
+        }
+        marker_before_label[dead_index] = final_dead_marker;
+        index = dead_index;
+    }
+
+    let follow_jump_target =
+        |initial_target: usize, references: &mut [usize]| -> Result<usize, Error> {
+            let initial = initial_target;
+            let initial_references = references
+                .get_mut(initial)
+                .ok_or_else(|| Error::internal("jump target is out of bounds"))?;
+            *initial_references = initial_references
+                .checked_sub(1)
+                .ok_or_else(|| Error::internal("jump label reference count underflow"))?;
+
+            let mut target = initial;
+            let mut followed_ten_gotos = true;
+            for _ in 0..10 {
+                if !survives_first_pass
+                    .get(target)
+                    .copied()
+                    .ok_or_else(|| Error::internal("jump target is out of bounds"))?
+                {
+                    return Err(Error::internal(
+                        "jump target did not survive variable resolution",
+                    ));
+                }
+                let Some(next_target) = jump_target(&function.ops[target])? else {
+                    followed_ten_gotos = false;
+                    break;
+                };
+                if !matches!(
+                    function.ops[target].op,
+                    IrOp::Bytecode(Instruction::Goto(_))
+                ) {
+                    followed_ten_gotos = false;
+                    break;
+                }
+                target = next_target;
+            }
+            // Preserve QuickJS's cycle workaround after ten chained gotos.
+            if followed_ten_gotos {
+                target = initial;
+            }
+            let final_references = references
+                .get_mut(target)
+                .ok_or_else(|| Error::internal("jump target is out of bounds"))?;
+            *final_references = final_references
+                .checked_add(1)
+                .ok_or_else(|| Error::new(ErrorKind::JsInternal, "out of memory"))?;
+            Ok(target)
+        };
+
+    let mut current_site = None;
+    let mut late_throw_sites = Vec::new();
+    index = 0;
+    while index < function.ops.len() {
+        if !survives_first_pass[index] {
+            index += 1;
+            continue;
+        }
+        if marker_before_label[index].is_some() {
+            current_site = marker_before_label[index];
+        }
+        if function.ops[index].pc_site.is_some() {
+            current_site = function.ops[index].pc_site;
+        }
+
+        // `resolve_labels` folds the same adjacent constant-condition forms
+        // as `fold_quickjs_constant_branches`. A non-taken branch releases its
+        // forward label before a following late throw is visited; a taken one
+        // becomes a terminal Goto whose target reference remains live.
+        let constant_truthy = match function.ops[index].op {
+            IrOp::Bytecode(Instruction::Undefined | Instruction::Null | Instruction::PushFalse) => {
+                Some(false)
+            }
+            IrOp::Bytecode(Instruction::PushTrue) => Some(true),
+            IrOp::Bytecode(Instruction::PushI32(value)) => Some(value != 0),
+            _ => None,
+        };
+        let mut folded_goto = false;
+        let mut terminal_tail = index + 1;
+        if let Some(truthy) = constant_truthy
+            && let Some(conditional_index) = index.checked_add(1)
+            && conditional_index < function.ops.len()
+            && survives_first_pass[conditional_index]
+            // `code_match` skips source markers but never crosses a physical
+            // OP_label, even after earlier rewrites reduce its refcount to
+            // zero. Direct-target IR therefore needs an immutable label bit;
+            // the mutable reference count alone is not an adjacency test.
+            && !has_physical_label[conditional_index]
+        {
+            let branch = match function.ops[conditional_index].op {
+                IrOp::Bytecode(Instruction::IfFalse(target)) => Some((false, target)),
+                IrOp::Bytecode(Instruction::IfTrue(target)) => Some((true, target)),
+                _ => None,
+            };
+            if let Some((branch_on_true, target)) = branch {
+                if marker_before_label[conditional_index].is_some() {
+                    current_site = marker_before_label[conditional_index];
+                }
+                if function.ops[conditional_index].pc_site.is_some() {
+                    current_site = function.ops[conditional_index].pc_site;
+                }
+                let target = usize::try_from(target)
+                    .map_err(|_| Error::internal("jump target did not fit usize"))?;
+                terminal_tail = conditional_index + 1;
+                if truthy == branch_on_true {
+                    follow_jump_target(target, &mut label_references)?;
+                    folded_goto = true;
+                } else {
+                    label_references[target] = label_references[target]
+                        .checked_sub(1)
+                        .ok_or_else(|| Error::internal("jump label reference count underflow"))?;
+                    index = terminal_tail;
+                    continue;
+                }
+            }
+        }
+
+        let mut followed_target = None;
+        if !folded_goto && let Some(target) = jump_target(&function.ops[index])? {
+            followed_target = Some(follow_jump_target(target, &mut label_references)?);
+        }
+
+        // QuickJS also folds `if_x(l1); goto(l2); label(l1)` to the opposite
+        // conditional targeting `l2`. The Goto is consumed, its existing l2
+        // reference is reused by the conditional, and l1 loses the reference
+        // transferred above. This must happen before either branch's late
+        // readonly throw updates the shared label table.
+        if !folded_goto
+            && matches!(
+                function.ops[index].op,
+                IrOp::Bytecode(Instruction::IfFalse(_) | Instruction::IfTrue(_))
+            )
+            && let Some(effective_target) = followed_target
+        {
+            let mut goto_index = index + 1;
+            while goto_index < function.ops.len() && !survives_first_pass[goto_index] {
+                goto_index += 1;
+            }
+            if goto_index < function.ops.len()
+                && !has_physical_label[goto_index]
+                && matches!(
+                    function.ops[goto_index].op,
+                    IrOp::Bytecode(Instruction::Goto(_))
+                )
+            {
+                let mut after_goto = goto_index + 1;
+                while after_goto < function.ops.len() && !survives_first_pass[after_goto] {
+                    after_goto += 1;
+                }
+                let has_effective_label = after_goto < function.ops.len()
+                    && ((has_physical_label[after_goto] && after_goto == effective_target)
+                        || (matches!(
+                            function.ops[after_goto].op,
+                            IrOp::Bytecode(Instruction::Goto(_))
+                        ) && jump_target(&function.ops[after_goto])?
+                            == Some(effective_target)));
+                if has_effective_label {
+                    if function.ops[goto_index].pc_site.is_some() {
+                        current_site = function.ops[goto_index].pc_site;
+                    }
+                    label_references[effective_target] = label_references[effective_target]
+                        .checked_sub(1)
+                        .ok_or_else(|| Error::internal("jump label reference count underflow"))?;
+                    index = after_goto;
+                    continue;
+                }
+            }
+        }
+
+        let terminal = folded_goto
+            || matches!(
+                function.ops[index].op,
+                IrOp::Bytecode(
+                    Instruction::Goto(_)
+                        | Instruction::Return
+                        | Instruction::Throw
+                        | Instruction::ThrowReadOnly(_)
+                )
+            );
+        if !terminal {
+            index += 1;
+            continue;
+        }
+
+        let terminal_index = index;
+        let mut dead_index = terminal_tail;
+        while dead_index < function.ops.len() {
+            if !survives_first_pass[dead_index] {
+                dead_index += 1;
+                continue;
+            }
+            // The first pass emits its final removed marker before the label,
+            // so the second pass observes it even when another live reference
+            // makes that label the stopping point.
+            if marker_before_label[dead_index].is_some() {
+                current_site = marker_before_label[dead_index];
+            }
+            if label_references[dead_index] > 0 {
+                break;
+            }
+            if function.ops[dead_index].pc_site.is_some() {
+                current_site = function.ops[dead_index].pc_site;
+            }
+            if let Some(target) = jump_target(&function.ops[dead_index])? {
+                label_references[target] = label_references[target]
+                    .checked_sub(1)
+                    .ok_or_else(|| Error::internal("jump label reference count underflow"))?;
+            }
+            dead_index += 1;
+        }
+        if matches!(
+            function.ops[terminal_index].op,
+            IrOp::Bytecode(Instruction::ThrowReadOnly(_))
+        ) {
+            late_throw_sites.push((terminal_index, current_site));
+        }
+        index = dead_index;
+    }
+
+    for (index, site) in late_throw_sites {
+        function.ops[index].pc_site = site;
+    }
+    Ok(())
 }
 
 fn resolve_identifier(
@@ -3617,6 +4170,11 @@ fn resolve_identifier(
                     IrOp::Bytecode(Instruction::GetVarUndef(closure_index))
                 }
                 IdentifierAccess::Delete => IrOp::Bytecode(Instruction::DeleteVar(closure_index)),
+                IdentifierAccess::Initialize => {
+                    return Err(Error::internal(
+                        "lexical initializer did not resolve to its owning local",
+                    ));
+                }
                 IdentifierAccess::Put => IrOp::Bytecode(Instruction::PutVar(closure_index)),
                 IdentifierAccess::Set => IrOp::GlobalSet(closure_index),
             });
@@ -3632,14 +4190,13 @@ fn resolve_identifier(
     };
     let (closure_index, kind) =
         capture_binding_path(tree, defining_function, function_id, binding, name)?;
-    closure_binding_instruction(
+    closure_binding_operation(
         &mut tree.functions[function_id],
         closure_index,
         kind,
         access,
         name,
     )
-    .map(IrOp::Bytecode)
 }
 
 /// Install the same Global -> ParentGlobal relay chain QuickJS creates while
@@ -3761,6 +4318,9 @@ fn binding_instruction(
         (BindingStorage::Argument(_) | BindingStorage::Local(_), _, IdentifierAccess::Delete) => {
             Ok(Instruction::PushFalse)
         }
+        (BindingStorage::Argument(_), _, IdentifierAccess::Initialize) => Err(Error::internal(
+            "lexical initializer resolved to an argument binding",
+        )),
         (BindingStorage::Argument(index), _, IdentifierAccess::Put) => {
             Ok(Instruction::PutArg(index))
         }
@@ -3769,14 +4329,49 @@ fn binding_instruction(
         }
         (
             BindingStorage::Local(index),
-            _,
+            BindingKind::Normal | BindingKind::FunctionName { .. },
             IdentifierAccess::Get | IdentifierAccess::GetOrUndefined,
         ) => Ok(Instruction::GetLocal(index)),
+        (
+            BindingStorage::Local(index),
+            BindingKind::Lexical { .. },
+            IdentifierAccess::Get | IdentifierAccess::GetOrUndefined,
+        ) => Ok(Instruction::GetLocalCheck(index)),
+        (
+            BindingStorage::Local(index),
+            BindingKind::Lexical { .. },
+            IdentifierAccess::Initialize,
+        ) => Ok(Instruction::InitializeLocal(index)),
+        (
+            BindingStorage::Local(_),
+            BindingKind::Normal | BindingKind::FunctionName { .. },
+            IdentifierAccess::Initialize,
+        ) => Err(Error::internal(
+            "lexical initializer resolved to an ordinary local",
+        )),
         (BindingStorage::Local(index), BindingKind::Normal, IdentifierAccess::Put) => {
             Ok(Instruction::PutLocal(index))
         }
         (BindingStorage::Local(index), BindingKind::Normal, IdentifierAccess::Set) => {
             Ok(Instruction::SetLocal(index))
+        }
+        (
+            BindingStorage::Local(index),
+            BindingKind::Lexical { is_const: false },
+            IdentifierAccess::Put,
+        ) => Ok(Instruction::PutLocalCheck(index)),
+        (
+            BindingStorage::Local(index),
+            BindingKind::Lexical { is_const: false },
+            IdentifierAccess::Set,
+        ) => Ok(Instruction::SetLocalCheck(index)),
+        (
+            BindingStorage::Local(_),
+            BindingKind::Lexical { is_const: true },
+            IdentifierAccess::Put | IdentifierAccess::Set,
+        ) => {
+            let name = ensure_string_constant(function, name)?;
+            Ok(Instruction::ThrowReadOnly(name))
         }
         (
             BindingStorage::Local(_),
@@ -3786,22 +4381,46 @@ fn binding_instruction(
     }
 }
 
-fn closure_binding_instruction(
+fn closure_binding_operation(
     function: &mut FunctionIr,
     index: u16,
     kind: BindingKind,
     access: IdentifierAccess,
     name: &str,
-) -> Result<Instruction, Error> {
+) -> Result<IrOp, Error> {
     match (kind, access) {
-        (_, IdentifierAccess::Get | IdentifierAccess::GetOrUndefined) => {
-            Ok(Instruction::GetVarRef(index))
+        (
+            BindingKind::Normal | BindingKind::FunctionName { .. },
+            IdentifierAccess::Get | IdentifierAccess::GetOrUndefined,
+        ) => Ok(IrOp::Bytecode(Instruction::GetVarRef(index))),
+        (BindingKind::Lexical { .. }, IdentifierAccess::Get | IdentifierAccess::GetOrUndefined) => {
+            Ok(IrOp::Bytecode(Instruction::GetVarRefCheck(index)))
         }
-        (_, IdentifierAccess::Delete) => Ok(Instruction::PushFalse),
-        (BindingKind::Normal, IdentifierAccess::Put) => Ok(Instruction::PutVarRef(index)),
-        (BindingKind::Normal, IdentifierAccess::Set) => Ok(Instruction::SetVarRef(index)),
+        (_, IdentifierAccess::Delete) => Ok(IrOp::Bytecode(Instruction::PushFalse)),
+        (_, IdentifierAccess::Initialize) => Err(Error::internal(
+            "lexical initializer crossed a function boundary",
+        )),
+        (BindingKind::Normal, IdentifierAccess::Put) => {
+            Ok(IrOp::Bytecode(Instruction::PutVarRef(index)))
+        }
+        (BindingKind::Normal, IdentifierAccess::Set) => {
+            Ok(IrOp::Bytecode(Instruction::SetVarRef(index)))
+        }
+        (BindingKind::Lexical { is_const: false }, IdentifierAccess::Put) => {
+            Ok(IrOp::Bytecode(Instruction::PutVarRefCheck(index)))
+        }
+        (BindingKind::Lexical { is_const: false }, IdentifierAccess::Set) => {
+            Ok(IrOp::CapturedLexicalSet(index))
+        }
+        (
+            BindingKind::Lexical { is_const: true },
+            IdentifierAccess::Put | IdentifierAccess::Set,
+        ) => {
+            let name = ensure_string_constant(function, name)?;
+            Ok(IrOp::Bytecode(Instruction::ThrowReadOnly(name)))
+        }
         (BindingKind::FunctionName { is_const }, IdentifierAccess::Put | IdentifierAccess::Set) => {
-            function_name_write_instruction(function, name, is_const, access)
+            function_name_write_instruction(function, name, is_const, access).map(IrOp::Bytecode)
         }
     }
 }
@@ -3819,7 +4438,10 @@ fn function_name_write_instruction(
     Ok(match access {
         IdentifierAccess::Put => Instruction::Drop,
         IdentifierAccess::Set => Instruction::Nop,
-        IdentifierAccess::Get | IdentifierAccess::GetOrUndefined | IdentifierAccess::Delete => {
+        IdentifierAccess::Get
+        | IdentifierAccess::GetOrUndefined
+        | IdentifierAccess::Delete
+        | IdentifierAccess::Initialize => {
             return Err(Error::internal(
                 "function-name write received a read access",
             ));
@@ -3829,7 +4451,7 @@ fn function_name_write_instruction(
 
 const fn closure_kind(kind: BindingKind) -> ClosureVariableKind {
     match kind {
-        BindingKind::Normal => ClosureVariableKind::Normal,
+        BindingKind::Normal | BindingKind::Lexical { .. } => ClosureVariableKind::Normal,
         BindingKind::FunctionName { .. } => ClosureVariableKind::FunctionName,
     }
 }
@@ -3860,7 +4482,10 @@ fn capture_binding_path(
     let mut final_index = None;
     for function_id in path {
         let function = &mut tree.functions[function_id];
-        let descriptor_name = if matches!(kind, BindingKind::FunctionName { .. }) {
+        let descriptor_name = if matches!(
+            kind,
+            BindingKind::Lexical { .. } | BindingKind::FunctionName { .. }
+        ) {
             ClosureVariableName::Constant(ensure_string_constant(function, name)?)
         } else {
             ClosureVariableName::None
@@ -3868,8 +4493,12 @@ fn capture_binding_path(
         let descriptor = ClosureVariable {
             source,
             name: descriptor_name,
-            is_lexical: false,
-            is_const: matches!(kind, BindingKind::FunctionName { is_const: true }),
+            is_lexical: matches!(kind, BindingKind::Lexical { .. }),
+            is_const: matches!(
+                kind,
+                BindingKind::Lexical { is_const: true }
+                    | BindingKind::FunctionName { is_const: true }
+            ),
             kind: closure_kind(kind),
         };
         let index = ensure_closure_variable(function, descriptor)?;
@@ -3966,9 +4595,16 @@ fn lower_unlinked_tree(
     let mut lowered = (0..function_count).map(|_| None).collect::<Vec<_>>();
 
     for function_id in (0..function_count).rev() {
-        let function = functions[function_id]
+        let mut function = functions[function_id]
             .take()
             .ok_or_else(|| Error::internal("function IR was lowered more than once"))?;
+        if debug_info == DebugInfoMode::StripDebug {
+            for descriptor in &mut function.closure_variables {
+                if descriptor.is_lexical && descriptor.kind == ClosureVariableKind::Normal {
+                    descriptor.name = ClosureVariableName::None;
+                }
+            }
+        }
         let argument_definitions = function
             .parameters
             .iter()
@@ -3988,8 +4624,21 @@ fn lower_unlinked_tree(
             let definition = local_definitions
                 .get_mut(usize::from(index))
                 .ok_or_else(|| Error::internal("local binding definition is out of bounds"))?;
-            *definition =
-                UnlinkedVariableDefinition::ordinary(Some(JsString::try_from_utf8(&binding.name)?));
+            let name = if debug_info == DebugInfoMode::StripDebug
+                && matches!(binding.kind, BindingKind::Lexical { .. })
+            {
+                None
+            } else {
+                Some(JsString::try_from_utf8(&binding.name)?)
+            };
+            *definition = match binding.kind {
+                BindingKind::Lexical { is_const } => {
+                    UnlinkedVariableDefinition::lexical(name, is_const)
+                }
+                BindingKind::Normal | BindingKind::FunctionName { .. } => {
+                    UnlinkedVariableDefinition::ordinary(name)
+                }
+            };
         }
         let lowered_ops = lower_ops(function.ops)?;
         let code = lowered_ops.code;
@@ -4096,12 +4745,13 @@ fn lower_ops(operations: Vec<SpannedIrOp>) -> Result<LoweredOps, Error> {
     let mut code_len = 0_usize;
     for operation in &operations {
         offsets.push(code_len);
+        let emitted = match &operation.op {
+            IrOp::EnterBodyLexicalScope(locals) => locals.len(),
+            IrOp::GlobalSet(_) | IrOp::CapturedLexicalSet(_) => 2,
+            _ => 1,
+        };
         code_len = code_len
-            .checked_add(if matches!(operation.op, IrOp::GlobalSet(_)) {
-                2
-            } else {
-                1
-            })
+            .checked_add(emitted)
             .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
     }
     offsets.push(code_len);
@@ -4121,6 +4771,12 @@ fn lower_ops(operations: Vec<SpannedIrOp>) -> Result<LoweredOps, Error> {
     for operation in operations {
         let SpannedIrOp { op, pc_site } = operation;
         match op {
+            IrOp::EnterBodyLexicalScope(locals) => {
+                for index in locals {
+                    code.push(Instruction::SetLocalUninitialized(index));
+                    pc_sites.push(None);
+                }
+            }
             IrOp::Bytecode(Instruction::Goto(target)) => {
                 code.push(Instruction::Goto(remap_target(target)?));
                 pc_sites.push(pc_site);
@@ -4158,6 +4814,12 @@ fn lower_ops(operations: Vec<SpannedIrOp>) -> Result<LoweredOps, Error> {
                 code.push(Instruction::Dup);
                 pc_sites.push(pc_site);
                 code.push(Instruction::PutVar(index));
+                pc_sites.push(None);
+            }
+            IrOp::CapturedLexicalSet(index) => {
+                code.push(Instruction::Dup);
+                pc_sites.push(pc_site);
+                code.push(Instruction::PutVarRefCheck(index));
                 pc_sites.push(None);
             }
             IrOp::Identifier { .. } => {
@@ -4432,7 +5094,7 @@ mod tests {
         AccessorValue, CompleteOrdinaryPropertyDescriptor, DescriptorField,
         OrdinaryPropertyDescriptor, PropertyKey, WellKnownSymbol,
     };
-    use crate::runtime::{Runtime, RuntimeError};
+    use crate::runtime::{Context, Runtime, RuntimeError};
     use crate::value::{JsString, Value};
     use crate::vm::Vm;
 
@@ -4837,6 +5499,30 @@ mod tests {
         Runtime::new().new_context().eval(source).unwrap()
     }
 
+    fn evaluate_error(
+        runtime: &Runtime,
+        context: &mut Context,
+        source: &str,
+    ) -> (JsString, JsString) {
+        assert_eq!(
+            context.eval(source),
+            Err(RuntimeError::Exception),
+            "{source}"
+        );
+        let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
+            panic!("source did not throw an Error object: {source}");
+        };
+        let name = runtime.intern_property_key("name").unwrap();
+        let message = runtime.intern_property_key("message").unwrap();
+        let Value::String(name) = context.get_property(&error, &name).unwrap() else {
+            panic!("Error.name was not a string: {source}");
+        };
+        let Value::String(message) = context.get_property(&error, &message).unwrap() else {
+            panic!("Error.message was not a string: {source}");
+        };
+        (name, message)
+    }
+
     fn evaluate_function_name(source: &str) -> (JsString, bool, bool, bool) {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
@@ -4854,6 +5540,286 @@ mod tests {
             panic!("function name did not have the ordinary data descriptor");
         };
         (value, writable, enumerable, configurable)
+    }
+
+    #[test]
+    fn ordinary_function_body_lexicals_execute_local_capture_and_constructor_paths() {
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){let x=1,y=x+1,z;return x*10+y+(typeof z==='undefined'?0:100)})()"
+            ),
+            Value::Int(12)
+        );
+        assert_eq!(
+            evaluate_in_context("(function(){let arguments=3;let eval=4;return arguments+eval})()"),
+            Value::Int(7)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){var read=function(){return x};let x=7;return read()})()"
+            ),
+            Value::Int(7)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){let x=function(){return x};return x()===x&&x.name==='x'})()"
+            ),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){let x=1;var next=function(){x+=1;return x};return next()*10+next()})()"
+            ),
+            Value::Int(23)
+        );
+        assert_eq!(
+            evaluate_in_context("(function(){const x=4;return function(){return x}()})()"),
+            Value::Int(4)
+        );
+        assert_eq!(
+            evaluate_in_context("Function('let x=1;const y=2;return x+y')()"),
+            Value::Int(3)
+        );
+        assert_eq!(
+            evaluate_in_context("(function(){var result=delete x;let x=1;return result})()"),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            evaluate_in_context("(function(){const x=0;return x&&=missing})()"),
+            Value::Int(0)
+        );
+    }
+
+    #[test]
+    fn lexical_lowering_publishes_tdz_vardefs_and_checked_capture_relays() {
+        let script = compile_unlinked_script(
+            "(function(){let x=1;const y=2;return function(){x+=y;return x}})",
+        )
+        .unwrap();
+        let outer = script
+            .constants()
+            .iter()
+            .find_map(|constant| constant.as_child())
+            .expect("script lost its outer function");
+        assert!(matches!(
+            outer.code(),
+            [
+                Instruction::SetLocalUninitialized(0),
+                Instruction::SetLocalUninitialized(1),
+                Instruction::PushI32(1),
+                Instruction::InitializeLocal(0),
+                Instruction::PushI32(2),
+                Instruction::InitializeLocal(1),
+                ..
+            ]
+        ));
+        assert_eq!(outer.local_definitions().len(), 2);
+        assert_eq!(
+            outer.local_definitions()[0].name.as_ref(),
+            Some(&JsString::from_static("x"))
+        );
+        assert!(outer.local_definitions()[0].is_lexical);
+        assert!(!outer.local_definitions()[0].is_const);
+        assert_eq!(
+            outer.local_definitions()[1].name.as_ref(),
+            Some(&JsString::from_static("y"))
+        );
+        assert!(outer.local_definitions()[1].is_lexical);
+        assert!(outer.local_definitions()[1].is_const);
+
+        let inner = outer
+            .constants()
+            .iter()
+            .find_map(|constant| constant.as_child())
+            .expect("outer function lost its captured child");
+        assert_eq!(inner.closure_variables().len(), 2);
+        for (index, expected_name, is_const) in [(0, "x", false), (1, "y", true)] {
+            let descriptor = inner.closure_variables()[index];
+            assert_eq!(
+                descriptor.source,
+                ClosureSource::ParentLocal(u16::try_from(index).unwrap())
+            );
+            assert!(descriptor.is_lexical);
+            assert_eq!(descriptor.is_const, is_const);
+            assert_eq!(descriptor.kind, ClosureVariableKind::Normal);
+            let ClosureVariableName::Constant(name) = descriptor.name else {
+                panic!("lexical descriptor lost its source name");
+            };
+            assert_eq!(
+                inner.constants()[usize::try_from(name).unwrap()].as_primitive(),
+                Some(&Value::String(JsString::from_static(expected_name)))
+            );
+        }
+        assert!(inner.code().windows(5).any(|window| matches!(
+            window,
+            [
+                Instruction::GetVarRefCheck(0),
+                Instruction::GetVarRefCheck(1),
+                Instruction::Add,
+                Instruction::Dup,
+                Instruction::PutVarRefCheck(0),
+            ]
+        )));
+        assert!(inner.code().windows(2).any(|window| matches!(
+            window,
+            [Instruction::GetVarRefCheck(0), Instruction::Return]
+        )));
+    }
+
+    #[test]
+    fn lexical_tdz_and_readonly_errors_follow_checked_local_and_capture_order() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        for source in [
+            "(function(){return x;let x=1})()",
+            "(function(){return typeof x;let x=1})()",
+            "(function(){x=1;let x})()",
+            "(function(){return function(){return x};let x=1})()()",
+            "(function(){var set=function(){x=1};set();let x})()",
+            "(function(){var add=function(){x+=missing};add();const x=1})()",
+        ] {
+            assert_eq!(
+                evaluate_error(&runtime, &mut context, source),
+                (
+                    JsString::from_static("ReferenceError"),
+                    JsString::from_static("x is not initialized")
+                ),
+                "{source}"
+            );
+        }
+        for source in [
+            "(function(){const x=1;x=2})()",
+            "(function(){const x=1;return function(){x=2}})()()",
+            "(function(){var set=function(){x=1};set();const x=2})()",
+        ] {
+            assert_eq!(
+                evaluate_error(&runtime, &mut context, source),
+                (
+                    JsString::from_static("TypeError"),
+                    JsString::from_static("'x' is read-only")
+                ),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn lexical_parser_matches_redefinition_priority_contextual_let_and_boundaries() {
+        let syntax_cases = [
+            (
+                "(function(){\nlet x;\nlet x;\n})",
+                "invalid redefinition of lexical identifier",
+                3,
+                6,
+            ),
+            (
+                "(function(){\nvar x;\nlet x;\n})",
+                "invalid redefinition of a variable",
+                3,
+                6,
+            ),
+            (
+                "(function(){\nlet x;\nvar x;\n})",
+                "invalid redefinition of lexical identifier",
+                3,
+                6,
+            ),
+            (
+                "(function(x){\nlet x;\n})",
+                "invalid redefinition of parameter name",
+                2,
+                6,
+            ),
+            (
+                "(function(){\nconst x;\n})",
+                "missing initializer for const variable",
+                2,
+                8,
+            ),
+        ];
+        for (source, message, line, column) in syntax_cases {
+            let error = compile_unlinked_script(source).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+            assert_eq!(error.message(), message, "{source}");
+            let span = error.span().expect("syntax error lost its source span");
+            assert_eq!(
+                (span.start.line, span.start.column),
+                (line, column),
+                "{source}"
+            );
+        }
+        for (source, message) in [
+            (
+                "(function(){let let=1})",
+                "'let' is not a valid lexical identifier",
+            ),
+            (
+                "(function(){'use strict';let eval=1})",
+                "invalid variable name in strict mode",
+            ),
+            (
+                "(function(){if(true) let x=1})",
+                "lexical declarations can't appear in single-statement context",
+            ),
+        ] {
+            assert_eq!(
+                compile_unlinked_script(source).unwrap_err().message(),
+                message
+            );
+        }
+
+        assert_eq!(
+            evaluate_in_context("(function(){var let=0;let=2;return let})()"),
+            Value::Int(2)
+        );
+        assert_eq!(
+            evaluate_in_context("(function(){var x=0;if(false) let\nx=1;return x})()"),
+            Value::Int(1)
+        );
+        assert_eq!(
+            evaluate_in_context("(function named(){let named=3;return named})()"),
+            Value::Int(3)
+        );
+
+        for source in [
+            "let globalLexical=1",
+            "(function(){{let nested=1}})",
+            "(function(){for(let i=0;i<1;i++){} })",
+            "(function(){switch(0){case 0:let inCase=1}})",
+            "(function(){let [item]=source})",
+        ] {
+            assert!(compile_unlinked_script(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn strip_debug_removes_lexical_tdz_names_but_not_readonly_atoms() {
+        let runtime = Runtime::new();
+        runtime.set_debug_info_mode(DebugInfoMode::StripDebug);
+        let mut context = runtime.new_context();
+        for source in [
+            "(function(){return localName;let localName=1})()",
+            "(function(){return function probe(){return capturedName};let capturedName=1})()()",
+        ] {
+            assert_eq!(
+                evaluate_error(&runtime, &mut context, source),
+                (
+                    JsString::from_static("ReferenceError"),
+                    JsString::from_static("lexical variable is not initialized")
+                )
+            );
+        }
+        assert_eq!(
+            evaluate_error(
+                &runtime,
+                &mut context,
+                "(function(){const retainedName=1;retainedName=2})()"
+            ),
+            (
+                JsString::from_static("TypeError"),
+                JsString::from_static("'retainedName' is read-only")
+            )
+        );
     }
 
     #[test]
