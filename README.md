@@ -26,21 +26,27 @@ cross-realm behavior, and `newTarget.prototype` fallback.
 
 The primitive-class substrate now reserves typed realm-local `class_proto`
 slots for Number, String, Boolean, Symbol, and BigInt, with semantically
-complete Number and Boolean slots enabled. `%Number.prototype%` is the pinned
-boxed-`+0` Number-class object. The global `%Number%` publishes the exact
-ordered 17/7 constructor/prototype surface: call/construct and BigInt
+complete Number, Boolean, and BigInt slots enabled. `%Number.prototype%` is
+the pinned boxed-`+0` Number-class object. The global `%Number%` publishes the
+exact ordered 17/7 constructor/prototype surface: call/construct and BigInt
 conversion, parser aliases captured by identity, non-coercing predicates,
 frozen constants, radix 2–36 `toString`, fixed/exponential/precision formats,
 `toLocaleString`, `valueOf`, custom/cross-realm `newTarget.prototype`, and
 defining-realm fallback. `%Boolean%` retains its exact boxed-`false` graph and
-call/construct behavior. Number and Boolean primitive member lookup traverses
-the current realm's matching prototype without eager boxing and preserves the
+call/construct behavior. `%BigInt%` provides the pinned call-only constructor
+conversion, rejects `new` before converting its argument, and preserves the
+release's signed-limb and preallocation quirks in `asUintN`/`asIntN`. Its
+ordinary prototype publishes `toString`, `valueOf`, `constructor`, and
+`@@toStringTag`; boxed BigInt payloads and Object-prototype routes preserve the
+same brand, tag-deletion, cross-realm, and collection behavior as upstream.
+Number, Boolean, and BigInt primitive member lookup and assignment traverse
+the current realm's matching prototype without eager boxing and preserve the
 raw receiver for strict inherited getters and setters; sloppy ordinary
-functions instead create one cached wrapper per invocation. Both wrapper
-classes participate in `Object.prototype.toString`, `toLocaleString`, and
+functions instead create one cached wrapper per invocation. Their boxed
+instances participate in `Object.prototype.toString`, `toLocaleString`, and
 `valueOf`, including observable `@@toStringTag`, cross-realm boxing, and the
-runtime's reference-counting/cycle graph. String, Symbol, and BigInt wrapper
-graphs remain explicit gaps, and the global `Object` constructor is not yet
+runtime's reference-counting/cycle graph. String and Symbol wrapper graphs
+remain explicit gaps, and the global `Object` constructor is not yet
 published.
 
 Source-level fixed/computed member reads, receiver-preserving method calls, and
@@ -94,8 +100,9 @@ property keyed by the runtime's well-known `Symbol.toStringTag`, with value
 `"global"`. The host-visible `%Object.prototype.toString%` path therefore
 reports `[object global]` while preserving symbol-category own-key ordering.
 The later `globalThis` binding is a writable, non-enumerable, configurable own
-data property that self-references its realm's global object; the public
-`Symbol` constructor is not exposed yet.
+data property that self-references its realm's global object. The implemented
+relative constructor tail is `Number`, `Boolean`, `globalThis`, then `BigInt`;
+the public `Symbol` constructor is not exposed yet.
 Binary `??` uses QuickJS's shared short-circuit join for a chain, preserves the
 selected operand without coercion, and enforces the unparenthesized
 `??`/`&&`/`||` mixing restriction. The same arithmetic, exponentiation, shift,
@@ -114,7 +121,7 @@ local, closure, private function-name and implicit-`arguments` paths return
 followed by `DeleteProperty`; strict direct references are early errors. Each
 realm also installs the frozen `Infinity`, `NaN` and `undefined` global data
 properties. Dynamic object-environment resolution through `with`/direct
-`eval`, Proxy/exotic delete dispatch, and the remaining String/Symbol/BigInt
+`eval`, Proxy/exotic delete dispatch, and the remaining String/Symbol
 primitive prototype graphs remain unfinished slices.
 Runtime-wide full/strip-source/strip-debug modes follow QuickJS's immutable
 bytecode publication boundary, and the `qjs` CLI exposes `--strip-source` and
@@ -171,6 +178,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_to_string_tag -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_this -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_bigint_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

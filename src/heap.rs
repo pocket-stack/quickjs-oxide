@@ -615,6 +615,7 @@ impl VarRefData {
 pub enum PrimitiveObjectData {
     Number(f64),
     Boolean(bool),
+    BigInt(JsBigInt),
 }
 
 impl PrimitiveObjectData {
@@ -623,6 +624,7 @@ impl PrimitiveObjectData {
         match self {
             Self::Number(_) => PrimitiveKind::Number,
             Self::Boolean(_) => PrimitiveKind::Boolean,
+            Self::BigInt(_) => PrimitiveKind::BigInt,
         }
     }
 }
@@ -690,6 +692,7 @@ pub enum NativeFunctionId {
     PrimitiveConstructor(PrimitiveKind),
     PrimitivePrototypeToString(PrimitiveKind),
     PrimitivePrototypeValueOf(PrimitiveKind),
+    BigIntAsN(BigIntAsNKind),
     GlobalNumberParse(NumberParseKind),
     GlobalNumberPredicate(GlobalNumberPredicateKind),
     GlobalUriCodec(GlobalUriCodecKind),
@@ -732,6 +735,13 @@ pub enum PrimitiveKind {
     Boolean,
     Symbol,
     BigInt,
+}
+
+/// Magic selector shared by `%BigInt%.asUintN` and `%BigInt%.asIntN`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BigIntAsNKind {
+    AsUintN,
+    AsIntN,
 }
 
 impl PrimitiveKind {
@@ -873,6 +883,9 @@ impl NativeFunctionId {
                 | GlobalUriCodecKind::EncodeUri
                 | GlobalUriCodecKind::EncodeUriComponent,
             ) => NativeFunctionDescriptor {
+                cproto: NativeCProto::GenericMagic,
+            },
+            Self::BigIntAsN(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::GenericMagic,
             },
             Self::GlobalUriCodec(GlobalUriCodecKind::Escape | GlobalUriCodecKind::Unescape) => {
@@ -3048,6 +3061,10 @@ mod tests {
             PrimitiveObjectData::Boolean(false).kind(),
             PrimitiveKind::Boolean
         );
+        assert_eq!(
+            PrimitiveObjectData::BigInt(JsBigInt::one()).kind(),
+            PrimitiveKind::BigInt
+        );
 
         let mut invalid = ObjectData::primitive(shape, Vec::new(), number_payload.clone());
         invalid.kind = ObjectKind::Ordinary;
@@ -3082,6 +3099,23 @@ mod tests {
         assert_eq!(object_edges(number_data), vec![RawId::Shape(shape)]);
         assert_eq!(object_atoms(number_data).count(), 0);
 
+        let bigint = heap
+            .allocate_object(ObjectData::primitive(
+                shape,
+                Vec::new(),
+                PrimitiveObjectData::BigInt(JsBigInt::from(i64::MAX)),
+            ))
+            .unwrap();
+        let bigint_data = heap.object(bigint).unwrap();
+        assert!(matches!(
+            &bigint_data.payload,
+            ObjectPayload::Primitive(PrimitiveObjectData::BigInt(value))
+                if value == &JsBigInt::from(i64::MAX)
+        ));
+        assert_eq!(object_edges(bigint_data), vec![RawId::Shape(shape)]);
+        assert_eq!(object_atoms(bigint_data).count(), 0);
+
+        heap.release_object(bigint).unwrap();
         heap.release_object(number).unwrap();
         heap.release_object(boolean).unwrap();
         heap.release_shape(shape).unwrap();
@@ -3116,6 +3150,8 @@ mod tests {
             NativeFunctionId::GlobalUriCodec(GlobalUriCodecKind::DecodeUriComponent),
             NativeFunctionId::GlobalUriCodec(GlobalUriCodecKind::EncodeUri),
             NativeFunctionId::GlobalUriCodec(GlobalUriCodecKind::EncodeUriComponent),
+            NativeFunctionId::BigIntAsN(BigIntAsNKind::AsUintN),
+            NativeFunctionId::BigIntAsN(BigIntAsNKind::AsIntN),
         ] {
             assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);
             assert!(!target.descriptor().cproto.default_is_constructor());

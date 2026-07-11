@@ -22,14 +22,14 @@ use crate::function::{
     FunctionBytecodeRef, UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug,
 };
 use crate::heap::{
-    AutoInitProperty, BytecodeConstant, ClosureSource, ClosureVariable, ClosureVariableKind,
-    ClosureVariableName, ConstructorKind, ContextData, ContextId, DynamicFunctionKind,
-    ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo,
-    FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind,
-    GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError, NativeCProto, NativeFunctionId,
-    NumberFormatKind, NumberParseKind, NumberPredicateKind, ObjectData, ObjectId, ObjectKind,
-    ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue, ShapeId, VarRefData,
-    VarRefId,
+    AutoInitProperty, BigIntAsNKind, BytecodeConstant, ClosureSource, ClosureVariable,
+    ClosureVariableKind, ClosureVariableName, ConstructorKind, ContextData, ContextId,
+    DynamicFunctionKind, ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId,
+    FunctionDebugInfo, FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats,
+    GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError,
+    NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
+    ObjectData, ObjectId, ObjectKind, ObjectPayload, PrimitiveKind, PrimitiveObjectData,
+    PropertySlot, RawValue, ShapeId, VarRefData, VarRefId,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -517,11 +517,12 @@ impl RuntimeVmHost {
                     .map_err(runtime_error_to_vm_error)?;
                 return self.finish_property_get_action(action);
             }
-            Value::Bool(_) | Value::Int(_) | Value::Float(_) => {
-                let kind = if matches!(&base, Value::Bool(_)) {
-                    PrimitiveKind::Boolean
-                } else {
-                    PrimitiveKind::Number
+            Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::BigInt(_) => {
+                let kind = match &base {
+                    Value::Bool(_) => PrimitiveKind::Boolean,
+                    Value::Int(_) | Value::Float(_) => PrimitiveKind::Number,
+                    Value::BigInt(_) => PrimitiveKind::BigInt,
+                    _ => unreachable!(),
                 };
                 let prototype = self
                     .runtime
@@ -561,7 +562,7 @@ impl RuntimeVmHost {
                     return Ok(Completion::Return(length));
                 }
             }
-            Value::BigInt(_) | Value::Symbol(_) => {}
+            Value::Symbol(_) => {}
         }
 
         Err(Error::internal(
@@ -581,11 +582,12 @@ impl RuntimeVmHost {
                 .runtime
                 .prepare_set_property_with_receiver(object, key, value, base.clone())
                 .map_err(runtime_error_to_vm_error)?,
-            Value::Bool(_) | Value::Int(_) | Value::Float(_) => {
-                let kind = if matches!(&base, Value::Bool(_)) {
-                    PrimitiveKind::Boolean
-                } else {
-                    PrimitiveKind::Number
+            Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::BigInt(_) => {
+                let kind = match &base {
+                    Value::Bool(_) => PrimitiveKind::Boolean,
+                    Value::Int(_) | Value::Float(_) => PrimitiveKind::Number,
+                    Value::BigInt(_) => PrimitiveKind::BigInt,
+                    _ => unreachable!(),
                 };
                 let prototype = self
                     .runtime
@@ -626,7 +628,7 @@ impl RuntimeVmHost {
                 }
                 return Err(Error::new(ErrorKind::Type, "not an object"));
             }
-            Value::BigInt(_) | Value::Symbol(_) => {
+            Value::Symbol(_) => {
                 if !strict {
                     return Ok(Completion::Return(Value::Undefined));
                 }
@@ -747,9 +749,14 @@ impl VmHost for RuntimeVmHost {
                     .primitive_prototype_for_realm(self.current_realm, PrimitiveKind::Number)
                     .map_err(runtime_error_to_vm_error)?,
             ),
+            Value::BigInt(_) => (
+                PrimitiveKind::BigInt,
+                self.runtime
+                    .primitive_prototype_for_realm(self.current_realm, PrimitiveKind::BigInt)
+                    .map_err(runtime_error_to_vm_error)?,
+            ),
             Value::Undefined
             | Value::Null
-            | Value::BigInt(_)
             | Value::String(_)
             | Value::Symbol(_)
             | Value::Object(_) => {
@@ -1555,6 +1562,11 @@ impl Runtime {
                 Value::Bool(false),
             )
             .expect("initial Boolean.prototype allocation must succeed");
+        // Unlike Number.prototype and Boolean.prototype, QuickJS creates
+        // BigInt.prototype as an ordinary object without [[BigIntData]].
+        let bigint_prototype = self
+            .new_object(Some(&object_prototype))
+            .expect("initial BigInt.prototype allocation must succeed");
         let native_error_ids =
             std::array::from_fn(|index| native_error_prototypes[index].object_id());
         let uninitialized_vars = self
@@ -1585,6 +1597,7 @@ impl Runtime {
                     )
                     .with_primitive_prototype(PrimitiveKind::Number, number_prototype.object_id())
                     .with_primitive_prototype(PrimitiveKind::Boolean, boolean_prototype.object_id())
+                    .with_primitive_prototype(PrimitiveKind::BigInt, bigint_prototype.object_id())
                     .with_error_prototypes(error_prototype.object_id(), native_error_ids),
                 )
                 .expect("initial realm allocation must succeed")
@@ -1643,15 +1656,23 @@ impl Runtime {
             &global_object,
         )
         .expect("Boolean intrinsic initialization must succeed");
-        // Upstream installs `globalThis` after the later String/Math/Reflect/
-        // Symbol/generator slice and before BigInt. Those intervening
-        // intrinsics are not present yet, so keep it after the last currently
-        // implemented global constructor to preserve relative own-key order.
+        // Upstream installs `globalThis` after String/Math/Reflect/Symbol and
+        // generator setup, then installs BigInt. The intervening intrinsics
+        // are absent here, but this call boundary preserves the implemented
+        // `Boolean, globalThis, BigInt` relative own-key order.
         self.initialize_global_this(&global_object)
             .expect("globalThis initialization must succeed");
+        self.initialize_bigint_intrinsic(
+            realm,
+            &function_prototype,
+            &bigint_prototype,
+            &global_object,
+        )
+        .expect("BigInt intrinsic initialization must succeed");
         drop(global_var_object);
         drop(global_object);
         drop(uninitialized_vars);
+        drop(bigint_prototype);
         drop(boolean_prototype);
         drop(number_prototype);
         drop(native_error_prototypes);
@@ -1814,6 +1835,7 @@ impl Runtime {
             }
             (PrimitiveKind::Number, Value::Float(value)) => PrimitiveObjectData::Number(value),
             (PrimitiveKind::Boolean, Value::Bool(value)) => PrimitiveObjectData::Boolean(value),
+            (PrimitiveKind::BigInt, Value::BigInt(value)) => PrimitiveObjectData::BigInt(value),
             _ => {
                 return Err(RuntimeError::Invariant(
                     "primitive wrapper class or payload is not implemented yet",
@@ -2315,6 +2337,81 @@ impl Runtime {
             true,
         )?;
         self.define_constructor_relationship(&constructor, boolean_prototype)
+    }
+
+    fn initialize_bigint_intrinsic(
+        &self,
+        realm: ContextId,
+        function_prototype: &ObjectRef,
+        bigint_prototype: &ObjectRef,
+        global_object: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        let kind = PrimitiveKind::BigInt;
+        // `js_bigint_proto_funcs` is installed before the constructor
+        // back-reference. toString has observable length zero even though its
+        // C handler reads one optional, padded radix argument.
+        self.define_native_builtin_auto_init(
+            bigint_prototype,
+            realm,
+            NativeFunctionId::PrimitivePrototypeToString(kind),
+            "toString",
+            0,
+            1,
+        )?;
+        self.define_native_builtin_auto_init(
+            bigint_prototype,
+            realm,
+            NativeFunctionId::PrimitivePrototypeValueOf(kind),
+            "valueOf",
+            0,
+            0,
+        )?;
+        let tag = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));
+        if !self.define_own_property(
+            bigint_prototype,
+            &tag,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(Value::String(JsString::from("BigInt"))),
+                writable: DescriptorField::Present(false),
+                enumerable: DescriptorField::Present(false),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )? {
+            return Err(RuntimeError::Invariant(
+                "BigInt.prototype toStringTag definition was rejected",
+            ));
+        }
+
+        let constructor = self.new_native_builtin(
+            function_prototype,
+            realm,
+            NativeFunctionId::PrimitiveConstructor(kind),
+            1,
+            "BigInt",
+            1,
+        )?;
+        for (selector, name) in [
+            (BigIntAsNKind::AsUintN, "asUintN"),
+            (BigIntAsNKind::AsIntN, "asIntN"),
+        ] {
+            self.define_native_builtin_auto_init(
+                constructor.as_object(),
+                realm,
+                NativeFunctionId::BigIntAsN(selector),
+                name,
+                2,
+                2,
+            )?;
+        }
+        self.define_function_data_property(
+            global_object,
+            "BigInt",
+            Value::Object(constructor.as_object().clone()),
+            true,
+            true,
+        )?;
+        self.define_constructor_relationship(&constructor, bigint_prototype)
     }
 
     fn initialize_global_functions_prefix(
@@ -5636,20 +5733,17 @@ impl Runtime {
             Value::Object(object) => {
                 self.prepare_get_property_with_receiver(object, key, receiver.clone())?
             }
-            Value::Bool(_) | Value::Int(_) | Value::Float(_) => {
-                let kind = if matches!(&receiver, Value::Bool(_)) {
-                    PrimitiveKind::Boolean
-                } else {
-                    PrimitiveKind::Number
+            Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::BigInt(_) => {
+                let kind = match &receiver {
+                    Value::Bool(_) => PrimitiveKind::Boolean,
+                    Value::Int(_) | Value::Float(_) => PrimitiveKind::Number,
+                    Value::BigInt(_) => PrimitiveKind::BigInt,
+                    _ => unreachable!(),
                 };
                 let prototype = self.primitive_prototype_for_realm(realm, kind)?;
                 self.prepare_get_property_with_receiver(&prototype, key, receiver.clone())?
             }
-            Value::Undefined
-            | Value::Null
-            | Value::BigInt(_)
-            | Value::String(_)
-            | Value::Symbol(_) => {
+            Value::Undefined | Value::Null | Value::String(_) | Value::Symbol(_) => {
                 return Err(RuntimeError::Engine(Error::internal(
                     "primitive value property lookup is not implemented yet",
                 )));
@@ -5797,6 +5891,163 @@ impl Runtime {
                 )?))
             }
         }
+    }
+
+    fn native_bigint_from_string(
+        &self,
+        realm: ContextId,
+        value: &JsString,
+    ) -> Result<NativeConversion<crate::bigint::JsBigInt>, RuntimeError> {
+        let units = value.utf16_units().collect::<Vec<_>>();
+        let Ok(value) = String::from_utf16(&units) else {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Syntax,
+                "invalid bigint literal",
+            )?));
+        };
+        match crate::bigint::JsBigInt::parse_js_string(&value) {
+            Ok(value) => Ok(NativeConversion::Value(value)),
+            Err(crate::bigint::BigIntError::InvalidSyntax) => Ok(NativeConversion::Throw(
+                self.new_native_error(realm, NativeErrorKind::Syntax, "invalid bigint literal")?,
+            )),
+            Err(
+                crate::bigint::BigIntError::BigIntTooLarge
+                | crate::bigint::BigIntError::AllocationTooLarge,
+            ) => Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Range,
+                "BigInt is too large to allocate",
+            )?)),
+            Err(error) => Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Range,
+                &error.to_string(),
+            )?)),
+        }
+    }
+
+    /// QuickJS `JS_ToBigInt`: Numbers, null, undefined and Symbols are
+    /// rejected, while Boolean and String inputs are accepted after ordered
+    /// number-hint `ToPrimitive` for objects.
+    fn native_to_bigint(
+        &self,
+        realm: ContextId,
+        value: &Value,
+    ) -> Result<NativeConversion<crate::bigint::JsBigInt>, RuntimeError> {
+        let value = if matches!(value, Value::Object(_)) {
+            match self.to_primitive(realm, value.clone(), ToPrimitiveHint::Number)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+            }
+        } else {
+            value.clone()
+        };
+        match value {
+            Value::BigInt(value) => Ok(NativeConversion::Value(value)),
+            Value::Bool(value) => Ok(NativeConversion::Value(crate::bigint::JsBigInt::from(
+                i64::from(value),
+            ))),
+            Value::String(value) => self.native_bigint_from_string(realm, &value),
+            Value::Undefined
+            | Value::Null
+            | Value::Int(_)
+            | Value::Float(_)
+            | Value::Symbol(_)
+            | Value::Object(_) => Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "cannot convert to bigint",
+            )?)),
+        }
+    }
+
+    /// BigInt constructor conversion differs from ordinary `ToBigInt` by
+    /// accepting integral Number values and by using the pinned capitalized
+    /// TypeError spelling for unsupported primitives.
+    fn native_to_bigint_constructor_value(
+        &self,
+        realm: ContextId,
+        value: &Value,
+    ) -> Result<NativeConversion<crate::bigint::JsBigInt>, RuntimeError> {
+        let value = if matches!(value, Value::Object(_)) {
+            match self.to_primitive(realm, value.clone(), ToPrimitiveHint::Number)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+            }
+        } else {
+            value.clone()
+        };
+        match value {
+            Value::Int(value) => Ok(NativeConversion::Value(crate::bigint::JsBigInt::from(
+                value,
+            ))),
+            Value::Bool(value) => Ok(NativeConversion::Value(crate::bigint::JsBigInt::from(
+                i64::from(value),
+            ))),
+            Value::BigInt(value) => Ok(NativeConversion::Value(value)),
+            Value::Float(value) if !value.is_finite() => {
+                Ok(NativeConversion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Range,
+                    "cannot convert NaN or Infinity to BigInt",
+                )?))
+            }
+            Value::Float(value) if value.fract() != 0.0 => {
+                Ok(NativeConversion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Range,
+                    "cannot convert to BigInt: not an integer",
+                )?))
+            }
+            Value::Float(value) => {
+                let value = crate::bigint::JsBigInt::from_integral_f64(value).ok_or(
+                    RuntimeError::Invariant("finite integral f64 could not become a BigInt"),
+                )?;
+                Ok(NativeConversion::Value(value))
+            }
+            Value::String(value) => self.native_bigint_from_string(realm, &value),
+            Value::Undefined | Value::Null | Value::Symbol(_) | Value::Object(_) => {
+                Ok(NativeConversion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "cannot convert to BigInt",
+                )?))
+            }
+        }
+    }
+
+    /// Pinned QuickJS `JS_ToIndex`: saturating ToInt64 followed by the
+    /// non-negative MAX_SAFE_INTEGER range check.
+    fn native_to_index(
+        &self,
+        realm: ContextId,
+        value: &Value,
+    ) -> Result<NativeConversion<u64>, RuntimeError> {
+        const MAX_SAFE_INTEGER: i64 = (1_i64 << 53) - 1;
+        let number = match self.native_to_number(realm, value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        let value = if number.is_nan() {
+            0
+        } else if number < i64::MIN as f64 {
+            i64::MIN
+        } else if number >= 2_f64.powi(63) {
+            i64::MAX
+        } else {
+            number as i64
+        };
+        if !(0..=MAX_SAFE_INTEGER).contains(&value) {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Range,
+                "invalid array index",
+            )?));
+        }
+        Ok(NativeConversion::Value(
+            u64::try_from(value).expect("validated non-negative ToIndex value fits u64"),
+        ))
     }
 
     fn native_to_length(
@@ -6608,6 +6859,26 @@ impl Runtime {
         let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
             "primitive constructor readable argv was not padded to one",
         ))?;
+        let NativeInvocation::Construct { new_target } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "primitive constructor did not receive constructor-or-function invocation",
+            ));
+        };
+        if kind == PrimitiveKind::BigInt {
+            // BigInt deliberately keeps QuickJS's constructor-or-function
+            // cproto bit, but its body rejects any real new.target before
+            // touching the argument.
+            if !matches!(new_target, Value::Undefined) {
+                return Ok(Completion::Throw(
+                    self.new_not_constructor_error(realm, &new_target)?,
+                ));
+            }
+            let value = match self.native_to_bigint_constructor_value(realm, argument)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            return Ok(Completion::Return(Value::BigInt(value)));
+        }
         let value = match kind {
             PrimitiveKind::Boolean => Value::Bool(argument.to_boolean()),
             PrimitiveKind::Number if arguments.actual_arg_count == 0 => Value::Int(0),
@@ -6623,11 +6894,6 @@ impl Runtime {
                     "unimplemented primitive constructor reached native dispatch",
                 ));
             }
-        };
-        let NativeInvocation::Construct { new_target } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "primitive constructor did not receive constructor-or-function invocation",
-            ));
         };
         if matches!(new_target, Value::Undefined) {
             return Ok(Completion::Return(value));
@@ -6651,6 +6917,25 @@ impl Runtime {
         Ok(Completion::Return(Value::Object(
             self.new_primitive_object(&prototype, kind, value)?,
         )))
+    }
+
+    fn new_not_constructor_error(
+        &self,
+        realm: ContextId,
+        target: &Value,
+    ) -> Result<Value, RuntimeError> {
+        let name = if let Value::Object(object) = target {
+            let name = self.intern_property_key("name")?;
+            raw_string_property_one_level(&self.0.state.borrow(), object.object_id(), name.atom())?
+                .map(truncate_backtrace_c_string)
+        } else {
+            None
+        };
+        let message = name.map_or_else(
+            || "not a constructor".to_owned(),
+            |name| format!("{} is not a constructor", name.to_utf8_lossy()),
+        );
+        self.new_native_error(realm, NativeErrorKind::Type, &message)
     }
 
     fn call_global_number_parse(
@@ -6782,6 +7067,11 @@ impl Runtime {
                     {
                         Some(Value::Bool(*value))
                     }
+                    ObjectPayload::Primitive(PrimitiveObjectData::BigInt(value))
+                        if kind == PrimitiveKind::BigInt =>
+                    {
+                        Some(Value::BigInt(value.clone()))
+                    }
                     ObjectPayload::Ordinary
                     | ObjectPayload::Primitive(_)
                     | ObjectPayload::GlobalObject { .. }
@@ -6865,6 +7155,42 @@ impl Runtime {
             (PrimitiveKind::Boolean, Value::Bool(value)) => Ok(Completion::Return(Value::String(
                 JsString::from(if value { "true" } else { "false" }),
             ))),
+            (PrimitiveKind::BigInt, Value::BigInt(value)) => {
+                let radix_argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
+                    "BigInt.prototype.toString argv was not padded",
+                ))?;
+                let radix = if matches!(radix_argument, Value::Undefined) {
+                    10
+                } else {
+                    let radix = match self.native_to_number(realm, radix_argument)? {
+                        NativeConversion::Value(value) => crate::number::to_int32_sat(value),
+                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                    };
+                    if !(2..=36).contains(&radix) {
+                        return Ok(Completion::Throw(self.new_native_error(
+                            realm,
+                            NativeErrorKind::Range,
+                            "radix must be between 2 and 36",
+                        )?));
+                    }
+                    u32::try_from(radix).expect("a BigInt radix between 2 and 36 fits u32")
+                };
+                if value.exceeds_allocation_limit()
+                    && (value.is_negative() || !radix.is_power_of_two())
+                {
+                    return Ok(Completion::Throw(self.new_native_error(
+                        realm,
+                        NativeErrorKind::Range,
+                        "BigInt is too large to allocate",
+                    )?));
+                }
+                let text = value
+                    .to_string_radix(radix)
+                    .map_err(|_| RuntimeError::Invariant("validated BigInt radix was rejected"))?;
+                Ok(Completion::Return(Value::String(JsString::from(
+                    text.as_str(),
+                ))))
+            }
             _ => Err(RuntimeError::Invariant(
                 "unimplemented primitive toString reached native dispatch",
             )),
@@ -6985,6 +7311,46 @@ impl Runtime {
         Ok(Completion::Return(Value::Bool(result)))
     }
 
+    fn call_bigint_as_n(
+        &self,
+        realm: ContextId,
+        kind: BigIntAsNKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "BigInt truncation method did not receive a generic call",
+            ));
+        };
+        let bits = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "BigInt truncation bits argument was not padded",
+        ))?;
+        let bits = match self.native_to_index(realm, bits)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let value = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
+            "BigInt truncation value argument was not padded",
+        ))?;
+        let value = match self.native_to_bigint(realm, value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let value = match kind {
+            BigIntAsNKind::AsUintN => value.as_uint_n(bits),
+            BigIntAsNKind::AsIntN => value.as_int_n(bits),
+        };
+        match value {
+            Ok(value) => Ok(Completion::Return(Value::BigInt(value))),
+            Err(_) => Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Range,
+                "BigInt is too large to allocate",
+            )?)),
+        }
+    }
+
     fn call_primitive_prototype_value_of(
         &self,
         realm: ContextId,
@@ -7015,13 +7381,18 @@ impl Runtime {
                 | ObjectPayload::BoundFunction { .. }
                 | ObjectPayload::BytecodeFunction { .. } => JsString::from("Function"),
                 ObjectPayload::Error => JsString::from("Error"),
-                ObjectPayload::Primitive(data) => JsString::from(match data.kind() {
-                    PrimitiveKind::Number => "Number",
-                    PrimitiveKind::String => "String",
-                    PrimitiveKind::Boolean => "Boolean",
-                    PrimitiveKind::Symbol => "Symbol",
-                    PrimitiveKind::BigInt => "BigInt",
-                }),
+                ObjectPayload::Primitive(PrimitiveObjectData::Number(_)) => {
+                    JsString::from("Number")
+                }
+                ObjectPayload::Primitive(PrimitiveObjectData::Boolean(_)) => {
+                    JsString::from("Boolean")
+                }
+                // QuickJS's built-in class fallback has no BigInt-wrapper
+                // case. Its standard tag comes exclusively from the inherited
+                // configurable @@toStringTag property.
+                ObjectPayload::Primitive(PrimitiveObjectData::BigInt(_)) => {
+                    JsString::from("Object")
+                }
                 ObjectPayload::Ordinary | ObjectPayload::GlobalObject { .. } => {
                     JsString::from("Object")
                 }
@@ -7069,7 +7440,14 @@ impl Runtime {
                     NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
                 }
             }
-            Value::BigInt(_) => JsString::from("BigInt"),
+            value @ Value::BigInt(_) => {
+                let prototype = self.primitive_prototype_for_realm(realm, PrimitiveKind::BigInt)?;
+                let object = self.new_primitive_object(&prototype, PrimitiveKind::BigInt, value)?;
+                match self.object_to_string_tag(realm, &object)? {
+                    NativeConversion::Value(tag) => tag,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                }
+            }
             Value::String(_) => JsString::from("String"),
             Value::Symbol(_) => JsString::from("Symbol"),
             Value::Object(object) => match self.object_to_string_tag(realm, &object)? {
@@ -7095,7 +7473,7 @@ impl Runtime {
         };
         if !matches!(
             this_value,
-            Value::Object(_) | Value::Bool(_) | Value::Int(_) | Value::Float(_)
+            Value::Object(_) | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::BigInt(_)
         ) {
             return Err(RuntimeError::Engine(Error::internal(
                 "primitive Object.prototype.toLocaleString is not implemented yet",
@@ -7154,9 +7532,15 @@ impl Runtime {
                     self.new_primitive_object(&prototype, PrimitiveKind::Number, value)?,
                 )))
             }
-            Value::BigInt(_) | Value::String(_) | Value::Symbol(_) => Err(RuntimeError::Engine(
-                Error::internal("primitive wrapper objects are not implemented"),
-            )),
+            value @ Value::BigInt(_) => {
+                let prototype = self.primitive_prototype_for_realm(realm, PrimitiveKind::BigInt)?;
+                Ok(Completion::Return(Value::Object(
+                    self.new_primitive_object(&prototype, PrimitiveKind::BigInt, value)?,
+                )))
+            }
+            Value::String(_) | Value::Symbol(_) => Err(RuntimeError::Engine(Error::internal(
+                "primitive wrapper objects are not implemented",
+            ))),
         }
     }
 
@@ -7508,6 +7892,9 @@ impl Runtime {
             }
             NativeFunctionId::PrimitivePrototypeValueOf(kind) => {
                 self.call_primitive_prototype_value_of(realm, kind, invocation)
+            }
+            NativeFunctionId::BigIntAsN(kind) => {
+                self.call_bigint_as_n(realm, kind, invocation, arguments)
             }
             NativeFunctionId::GlobalNumberParse(kind) => {
                 self.call_global_number_parse(realm, kind, invocation, arguments)
@@ -9138,6 +9525,12 @@ impl Context {
             .primitive_prototype_for_realm(self.realm, PrimitiveKind::Boolean)
     }
 
+    /// Return this realm's ordinary `%BigInt.prototype%` root.
+    pub fn bigint_prototype(&self) -> Result<ObjectRef, RuntimeError> {
+        self.runtime
+            .primitive_prototype_for_realm(self.realm, PrimitiveKind::BigInt)
+    }
+
     /// Return this realm's `%Function%` constructor root.
     pub fn function_constructor(&self) -> Result<CallableRef, RuntimeError> {
         let object = self
@@ -9883,6 +10276,7 @@ mod tests {
                 .payload,
             ObjectPayload::Primitive(PrimitiveObjectData::Boolean(false))
         ));
+        let bigint_prototype = context.bigint_prototype().unwrap();
         {
             let state = runtime.0.state.borrow();
             let slots = state
@@ -9894,11 +10288,11 @@ mod tests {
                 slots[PrimitiveKind::Boolean.index()],
                 Some(prototype.object_id())
             );
-            for kind in [
-                PrimitiveKind::String,
-                PrimitiveKind::Symbol,
-                PrimitiveKind::BigInt,
-            ] {
+            assert_eq!(
+                slots[PrimitiveKind::BigInt.index()],
+                Some(bigint_prototype.object_id())
+            );
+            for kind in [PrimitiveKind::String, PrimitiveKind::Symbol] {
                 assert_eq!(slots[kind.index()], None, "{kind:?} slot was enabled early");
             }
         }
@@ -9958,6 +10352,160 @@ mod tests {
             Value::String(JsString::from("true|false"))
         );
         assert_eq!(context.eval("+new Boolean(false)").unwrap(), Value::Int(0));
+    }
+
+    #[test]
+    fn bigint_intrinsic_graph_conversion_truncation_and_wrappers_match_quickjs() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let constructor = global_callable(&runtime, &mut context, "BigInt");
+        let prototype = context.bigint_prototype().unwrap();
+
+        assert_eq!(
+            runtime.get_prototype_of(constructor.as_object()).unwrap(),
+            Some(context.function_prototype().unwrap())
+        );
+        assert_eq!(
+            runtime.get_prototype_of(&prototype).unwrap(),
+            Some(context.object_prototype().unwrap())
+        );
+        assert!(matches!(
+            &runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .object(prototype.object_id())
+                .unwrap()
+                .payload,
+            ObjectPayload::Ordinary
+        ));
+
+        let to_string_key = runtime.intern_property_key("toString").unwrap();
+        let value_of_key = runtime.intern_property_key("valueOf").unwrap();
+        let constructor_key = runtime.intern_property_key("constructor").unwrap();
+        let tag_key = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::ToStringTag));
+        assert_eq!(
+            runtime.own_property_keys(&prototype).unwrap(),
+            [
+                to_string_key,
+                value_of_key,
+                constructor_key,
+                tag_key.clone(),
+            ]
+        );
+        assert!(matches!(
+            runtime.get_own_property(&prototype, &tag_key).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::String(value),
+                writable: false,
+                enumerable: false,
+                configurable: true,
+            }) if value == JsString::from("BigInt")
+        ));
+        assert_eq!(
+            own_key_names(&runtime, constructor.as_object()),
+            ["length", "name", "asUintN", "asIntN", "prototype"]
+        );
+
+        assert_eq!(
+            context
+                .call(&constructor, Value::Undefined, &[Value::Int(42)])
+                .unwrap(),
+            Value::BigInt(JsBigInt::from(42))
+        );
+        assert_eq!(
+            context
+                .call(
+                    &constructor,
+                    Value::Undefined,
+                    &[Value::String(JsString::from("0x10000000000000000"))],
+                )
+                .unwrap(),
+            Value::BigInt(JsBigInt::parse_js_string("0x10000000000000000").unwrap())
+        );
+        assert!(matches!(
+            context.construct(&constructor, &[Value::Int(1)]),
+            Err(RuntimeError::Exception)
+        ));
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from("BigInt is not a constructor")
+        );
+
+        let as_uint_n =
+            property_callable(&runtime, &mut context, constructor.as_object(), "asUintN");
+        let as_int_n = property_callable(&runtime, &mut context, constructor.as_object(), "asIntN");
+        assert_eq!(
+            context
+                .call(
+                    &as_uint_n,
+                    Value::Undefined,
+                    &[Value::Int(64), Value::BigInt(JsBigInt::from(-1))],
+                )
+                .unwrap(),
+            Value::BigInt(JsBigInt::from(-1))
+        );
+        assert_eq!(
+            context
+                .call(
+                    &as_int_n,
+                    Value::Undefined,
+                    &[Value::Int(8), Value::BigInt(JsBigInt::from(255))],
+                )
+                .unwrap(),
+            Value::BigInt(JsBigInt::from(-1))
+        );
+
+        let to_string = property_callable(&runtime, &mut context, &prototype, "toString");
+        let value_of = property_callable(&runtime, &mut context, &prototype, "valueOf");
+        assert_eq!(
+            context
+                .call(
+                    &to_string,
+                    Value::BigInt(JsBigInt::from(255)),
+                    &[Value::Int(16)],
+                )
+                .unwrap(),
+            Value::String(JsString::from("ff"))
+        );
+        assert!(matches!(
+            context.call(&value_of, Value::Object(prototype.clone()), &[]),
+            Err(RuntimeError::Exception)
+        ));
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from("not a BigInt")
+        );
+
+        let object_prototype = context.object_prototype().unwrap();
+        let object_value_of =
+            property_callable(&runtime, &mut context, &object_prototype, "valueOf");
+        let Value::Object(wrapper) = context
+            .call(&object_value_of, Value::BigInt(JsBigInt::from(123)), &[])
+            .unwrap()
+        else {
+            panic!("Object.prototype.valueOf did not box a BigInt primitive");
+        };
+        assert_eq!(runtime.get_prototype_of(&wrapper).unwrap(), Some(prototype));
+        assert!(matches!(
+            &runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .object(wrapper.object_id())
+                .unwrap()
+                .payload,
+            ObjectPayload::Primitive(PrimitiveObjectData::BigInt(value))
+                if value == &JsBigInt::from(123)
+        ));
+        assert_eq!(
+            context
+                .call(&value_of, Value::Object(wrapper), &[])
+                .unwrap(),
+            Value::BigInt(JsBigInt::from(123))
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ use std::rc::Rc;
 use std::str::FromStr;
 
 use num_bigint::{BigInt, BigUint, Sign};
-use num_traits::{One, ToPrimitive, Zero};
+use num_traits::{FromPrimitive, One, ToPrimitive, Zero};
 
 /// `QuickJS` normally limits a BigInt allocation to
 /// `(1024 * 1024) / JS_LIMB_BITS` limbs.
@@ -113,6 +113,19 @@ impl JsBigInt {
         Ok(Self::normalize(value))
     }
 
+    /// Convert an exactly integral finite binary64 value to a BigInt.
+    ///
+    /// This is the Number-only branch of QuickJS's BigInt constructor. The
+    /// caller retains responsibility for selecting the distinct non-integer
+    /// and non-finite JavaScript errors.
+    #[must_use]
+    pub fn from_integral_f64(value: f64) -> Option<Self> {
+        if !value.is_finite() || value.fract() != 0.0 {
+            return None;
+        }
+        BigInt::from_f64(value).map(Self::normalize)
+    }
+
     /// Parse the string form accepted by the ECMAScript `BigInt` constructor.
     ///
     /// Leading and trailing ECMAScript whitespace is ignored. The empty string
@@ -122,8 +135,8 @@ impl JsBigInt {
     ///
     /// # Errors
     ///
-    /// Returns [`BigIntError::InvalidSyntax`] for malformed input and
-    /// [`BigIntError::BigIntTooLarge`] for values beyond the upstream limit.
+    /// Returns [`BigIntError::InvalidSyntax`] for malformed input and an
+    /// allocation-size error for values beyond the upstream limit.
     pub fn parse_js_string(source: &str) -> Result<Self, BigIntError> {
         let source = source.trim_matches(is_ecmascript_whitespace);
         if source.is_empty() {
@@ -163,7 +176,7 @@ impl JsBigInt {
     /// # Errors
     ///
     /// Returns [`BigIntError::InvalidRadix`],
-    /// [`BigIntError::InvalidSyntax`], or [`BigIntError::BigIntTooLarge`].
+    /// [`BigIntError::InvalidSyntax`], or an allocation-size error.
     pub fn parse_radix(source: &str, radix: u32) -> Result<Self, BigIntError> {
         validate_radix(radix)?;
         let (negative, digits) = match source.as_bytes().first().copied() {
@@ -592,8 +605,14 @@ impl JsBigInt {
     }
 
     /// `QuickJS` 2026-06-04 behavior for `BigInt.asIntN(bits, value)`.
-    #[must_use]
-    pub fn as_int_n(&self, bits: u64) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BigIntError::AllocationTooLarge`] when truncation would
+    /// allocate the 16,385th nominal limb. The pinned release still returns
+    /// an already-extended input unchanged once `bits` reaches its storage
+    /// width, so that early return remains deliberately ahead of the guard.
+    pub fn as_int_n(&self, bits: u64) -> Result<Self, BigIntError> {
         self.as_n(bits, true)
     }
 
@@ -604,8 +623,12 @@ impl JsBigInt {
     /// negative value is returned unchanged for `bits >= 64`; heap truncation
     /// at a multiple of 64 can likewise produce a negative value. These are
     /// observable compatibility requirements for the selected baseline.
-    #[must_use]
-    pub fn as_uint_n(&self, bits: u64) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BigIntError::AllocationTooLarge`] at the same guarded
+    /// truncation boundary as [`Self::as_int_n`].
+    pub fn as_uint_n(&self, bits: u64) -> Result<Self, BigIntError> {
         self.as_n(bits, false)
     }
 
@@ -745,19 +768,27 @@ impl JsBigInt {
         }
     }
 
-    fn as_n(&self, bits: u64, signed: bool) -> Self {
+    fn as_n(&self, bits: u64, signed: bool) -> Result<Self, BigIntError> {
         if bits == 0 {
-            return Self::zero();
+            return Ok(Self::zero());
         }
 
         // This early return is representation-dependent in upstream. In
         // particular, asUintN(128, -1n) returns -1n in QuickJS 2026-06-04.
         let storage_bits = self.signed_limb_len() * BIGINT_LIMB_BITS;
         if bits >= storage_bits {
-            return self.clone();
+            return Ok(self.clone());
         }
 
-        // At this point bits < storage_bits <= MAX_BIGINT_BITS.
+        let allocated_limbs = bits
+            .checked_add(BIGINT_LIMB_BITS - 1)
+            .ok_or(BigIntError::AllocationTooLarge)?
+            / BIGINT_LIMB_BITS;
+        if allocated_limbs > MAX_BIGINT_LIMBS {
+            return Err(BigIntError::AllocationTooLarge);
+        }
+
+        // At this point bits is within the nominal allocation guard.
         let bits_usize = usize::try_from(bits).expect("bounded BigInt bit width fits usize");
         let modulus = BigInt::one() << bits_usize;
         let mut truncated = self.as_bigint().as_ref() % &modulus;
@@ -775,7 +806,7 @@ impl JsBigInt {
                 truncated -= modulus;
             }
         }
-        Self::normalize(truncated)
+        Ok(Self::normalize(truncated))
     }
 }
 
@@ -899,8 +930,26 @@ fn parse_digits(digits: &str, radix: u32, negative: bool) -> Result<JsBigInt, Bi
     if significant_digits.is_empty() {
         return Ok(JsBigInt::zero());
     }
-    if u64::try_from(significant_digits.len()).unwrap_or(u64::MAX) > MAX_BIGINT_BITS {
-        return Err(BigIntError::BigIntTooLarge);
+    let digit_count = u64::try_from(significant_digits.len()).unwrap_or(u64::MAX);
+    if digit_count > MAX_BIGINT_BITS {
+        return Err(BigIntError::AllocationTooLarge);
+    }
+
+    // `js_bigint_from_string` allocates from a conservative source-width
+    // estimate before it parses any digits. The extra sign limb makes an
+    // estimate of exactly MAX_BIGINT_BITS fail even when the normalized value
+    // would fit in 16,384 limbs. This is observable at the first failing
+    // lengths for bases 2, 8, 10 and 16, so checking only the final value's
+    // signed limb length is insufficient.
+    let log2_radix = u64::from(u32::BITS - (radix - 1).leading_zeros());
+    let estimated_bits = if radix == 10 {
+        (digit_count * 27).div_ceil(8)
+    } else {
+        digit_count * log2_radix
+    };
+    let estimated_limbs = estimated_bits / BIGINT_LIMB_BITS + 1;
+    if estimated_limbs > MAX_BIGINT_LIMBS {
+        return Err(BigIntError::AllocationTooLarge);
     }
 
     let magnitude = BigUint::parse_bytes(significant_digits.as_bytes(), radix)
@@ -985,7 +1034,7 @@ fn is_ecmascript_whitespace(character: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{BigIntError, JsBigInt, MAX_BIGINT_BITS, MAX_BIGINT_LIMBS};
+    use super::{BIGINT_LIMB_BITS, BigIntError, JsBigInt, MAX_BIGINT_BITS, MAX_BIGINT_LIMBS};
 
     fn bigint(source: &str) -> JsBigInt {
         JsBigInt::parse_js_string(source).unwrap()
@@ -1095,6 +1144,30 @@ mod tests {
         assert_eq!(
             JsBigInt::parse_radix("-ff", 16).unwrap(),
             JsBigInt::from(-255)
+        );
+    }
+
+    #[test]
+    fn parsing_preserves_the_upstream_conservative_allocation_guard() {
+        for (prefix, digit, first_failing_length) in [
+            ("0b", '1', 1_048_576),
+            ("0o", '7', 349_526),
+            ("", '9', 310_689),
+            ("0x", 'f', 262_144),
+        ] {
+            let source = format!("{prefix}{}", digit.to_string().repeat(first_failing_length));
+            assert_eq!(
+                JsBigInt::parse_js_string(&source),
+                Err(BigIntError::AllocationTooLarge),
+                "radix spelling starting with {prefix:?} crossed the wrong allocation boundary"
+            );
+        }
+
+        let leading_zeroes = format!("0x{}1", "0".repeat(262_144));
+        assert_eq!(
+            JsBigInt::parse_js_string(&leading_zeroes).unwrap(),
+            JsBigInt::one(),
+            "leading zeroes must be discarded before the conservative guard"
         );
     }
 
@@ -1391,19 +1464,22 @@ mod tests {
 
     #[test]
     fn as_int_n_truncates_and_sign_extends() {
-        assert_eq!(JsBigInt::from(257).as_int_n(8), JsBigInt::one());
-        assert_eq!(JsBigInt::from(255).as_int_n(8), JsBigInt::from(-1));
-        assert_eq!(JsBigInt::from(-129).as_int_n(8), JsBigInt::from(127));
+        assert_eq!(JsBigInt::from(257).as_int_n(8).unwrap(), JsBigInt::one());
+        assert_eq!(JsBigInt::from(255).as_int_n(8).unwrap(), JsBigInt::from(-1));
         assert_eq!(
-            bigint("18446744073709551616").as_int_n(65),
+            JsBigInt::from(-129).as_int_n(8).unwrap(),
+            JsBigInt::from(127)
+        );
+        assert_eq!(
+            bigint("18446744073709551616").as_int_n(65).unwrap(),
             bigint("-18446744073709551616")
         );
         assert_eq!(
-            bigint("36893488147419103231").as_int_n(65),
+            bigint("36893488147419103231").as_int_n(65).unwrap(),
             JsBigInt::from(-1)
         );
         assert_eq!(
-            bigint("999999999999999999999").as_int_n(0),
+            bigint("999999999999999999999").as_int_n(0).unwrap(),
             JsBigInt::zero()
         );
     }
@@ -1412,26 +1488,111 @@ mod tests {
     fn quickjs_2026_as_uint_n_preserves_signed_limb_quirks() {
         // These results were verified against qjs 2026-06-04. They differ from
         // ECMA-262/Node, but observable baseline parity takes precedence here.
-        assert_eq!(JsBigInt::from(-1).as_uint_n(64), JsBigInt::from(-1));
-        assert_eq!(JsBigInt::from(-1).as_uint_n(128), JsBigInt::from(-1));
         assert_eq!(
-            bigint("9223372036854775808").as_uint_n(64),
-            JsBigInt::from(i64::MIN)
-        );
-        assert_eq!(
-            bigint("18446744073709551615").as_uint_n(64),
+            JsBigInt::from(-1).as_uint_n(64).unwrap(),
             JsBigInt::from(-1)
         );
         assert_eq!(
-            bigint("-18446744073709551616").as_uint_n(128),
+            JsBigInt::from(-1).as_uint_n(128).unwrap(),
+            JsBigInt::from(-1)
+        );
+        assert_eq!(
+            bigint("9223372036854775808").as_uint_n(64).unwrap(),
+            JsBigInt::from(i64::MIN)
+        );
+        assert_eq!(
+            bigint("18446744073709551615").as_uint_n(64).unwrap(),
+            JsBigInt::from(-1)
+        );
+        assert_eq!(
+            bigint("-18446744073709551616").as_uint_n(128).unwrap(),
             bigint("-18446744073709551616")
         );
         // Non-limb-aligned truncation clears the spare sign bits and is
         // positive, matching js_bigint_asUintN's logical shift path.
         assert_eq!(
-            bigint("-18446744073709551616").as_uint_n(65),
+            bigint("-18446744073709551616").as_uint_n(65).unwrap(),
             bigint("18446744073709551616")
         );
+    }
+
+    #[test]
+    fn as_n_preserves_the_extended_limb_allocation_gap() {
+        let extended = JsBigInt::one()
+            .shl(&JsBigInt::from(MAX_BIGINT_BITS - 1))
+            .unwrap();
+        assert_eq!(extended.signed_limb_len(), MAX_BIGINT_LIMBS + 1);
+
+        assert_eq!(
+            extended.as_uint_n(MAX_BIGINT_BITS - 1).unwrap(),
+            JsBigInt::zero()
+        );
+        assert_eq!(
+            extended.as_int_n(MAX_BIGINT_BITS - 1).unwrap(),
+            JsBigInt::zero()
+        );
+
+        let at_nominal_limit = extended.as_uint_n(MAX_BIGINT_BITS).unwrap();
+        let exact_negative = JsBigInt::normalize(-extended.to_bigint());
+        assert_eq!(at_nominal_limit, exact_negative);
+        assert_eq!(extended.as_int_n(MAX_BIGINT_BITS).unwrap(), exact_negative);
+
+        for bits in MAX_BIGINT_BITS + 1..MAX_BIGINT_BITS + BIGINT_LIMB_BITS {
+            assert_eq!(
+                extended.as_uint_n(bits),
+                Err(BigIntError::AllocationTooLarge)
+            );
+            assert_eq!(
+                extended.as_int_n(bits),
+                Err(BigIntError::AllocationTooLarge)
+            );
+        }
+        assert_eq!(
+            extended
+                .as_uint_n(MAX_BIGINT_BITS + BIGINT_LIMB_BITS)
+                .unwrap(),
+            extended
+        );
+        assert_eq!(
+            extended
+                .as_int_n(MAX_BIGINT_BITS + BIGINT_LIMB_BITS + 1)
+                .unwrap(),
+            extended
+        );
+        assert_eq!(extended.as_uint_n(u64::MAX).unwrap(), extended);
+    }
+
+    #[test]
+    fn integral_f64_conversion_preserves_the_exact_binary_value() {
+        assert_eq!(JsBigInt::from_integral_f64(-0.0).unwrap(), JsBigInt::zero());
+        assert_eq!(
+            JsBigInt::from_integral_f64(9_007_199_254_740_991.0).unwrap(),
+            bigint("9007199254740991")
+        );
+        assert_eq!(
+            JsBigInt::from_integral_f64(9_007_199_254_740_992.0).unwrap(),
+            bigint("9007199254740992")
+        );
+        assert_eq!(
+            JsBigInt::from_integral_f64(9_007_199_254_740_994.0).unwrap(),
+            bigint("9007199254740994")
+        );
+
+        let max_finite = JsBigInt::one()
+            .shl(&JsBigInt::from(1024))
+            .unwrap()
+            .sub(&JsBigInt::one().shl(&JsBigInt::from(971)).unwrap())
+            .unwrap();
+        assert_eq!(JsBigInt::from_integral_f64(f64::MAX).unwrap(), max_finite);
+        assert_eq!(
+            JsBigInt::from_integral_f64(f64::MIN).unwrap(),
+            max_finite.neg().unwrap()
+        );
+
+        assert!(JsBigInt::from_integral_f64(1.5).is_none());
+        assert!(JsBigInt::from_integral_f64(f64::NAN).is_none());
+        assert!(JsBigInt::from_integral_f64(f64::INFINITY).is_none());
+        assert!(JsBigInt::from_integral_f64(f64::NEG_INFINITY).is_none());
     }
 
     #[test]

@@ -33,6 +33,7 @@ const IMPLEMENTED_GLOBALS: &[&str] = &[
     "Number",
     "Boolean",
     "globalThis",
+    "BigInt",
 ];
 
 const ORACLE_PROBE: &str = r#"
@@ -50,7 +51,7 @@ var implemented = [
     "TypeError", "URIError", "InternalError", "Function", "parseInt",
     "parseFloat", "isNaN", "isFinite", "decodeURI", "decodeURIComponent",
     "encodeURI", "encodeURIComponent", "escape", "unescape", "Infinity",
-    "NaN", "undefined", "Number", "Boolean", "globalThis"
+    "NaN", "undefined", "Number", "Boolean", "globalThis", "BigInt"
 ];
 var keys = Reflect.ownKeys(root);
 var firstSymbol = keys.findIndex(function(key) { return typeof key === "symbol"; });
@@ -159,7 +160,7 @@ print("reconnect=" + [
 
 const EXPECTED_OBSERVATIONS: &[&str] = &[
     "initial=true|101|true|true",
-    "keys=Error,EvalError,RangeError,ReferenceError,SyntaxError,TypeError,URIError,InternalError,Function,parseInt,parseFloat,isNaN,isFinite,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,unescape,Infinity,NaN,undefined,Number,Boolean,globalThis|true|true",
+    "keys=Error,EvalError,RangeError,ReferenceError,SyntaxError,TypeError,URIError,InternalError,Function,parseInt,parseFloat,isNaN,isFinite,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,unescape,Infinity,NaN,undefined,Number,Boolean,globalThis,BigInt|true|true",
     "assignment=17|101",
     "delete=true|true|undefined",
     "strict-missing=ReferenceError:'globalThis' is not defined:true|true",
