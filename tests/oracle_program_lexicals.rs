@@ -73,11 +73,6 @@ struct BoundaryCase {
 
 const BOUNDARY_CASES: &[BoundaryCase] = &[
     BoundaryCase {
-        description: "Program var declaration",
-        source: "var value=1;value",
-        rust_message: "top-level var declarations and global bindings are not implemented yet",
-    },
-    BoundaryCase {
         description: "Program function declaration",
         source: "function value(){return 1}value()",
         rust_message: "top-level function declarations and global bindings are not implemented yet",

@@ -19,7 +19,7 @@
 //! atoms in [`HeapCleanup::atoms`] so the caller can release them without
 //! making this low-level arena depend on `AtomTable` mutability or callbacks.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::rc::Rc;
@@ -1798,13 +1798,21 @@ impl Heap {
             }
             *count -= 1;
         }
-        let mut global_declaration_names = HashSet::new();
+        let mut global_declaration_names = HashMap::new();
         for descriptor in bytecode.closure_variables.iter().copied() {
-            if descriptor.source == ClosureSource::GlobalDeclaration
-                && (!descriptor.is_lexical || descriptor.kind != ClosureVariableKind::Normal)
+            if descriptor.is_const
+                && !descriptor.is_lexical
+                && descriptor.kind != ClosureVariableKind::FunctionName
             {
                 return Err(HeapError::Invariant(
-                    "implemented global declaration descriptor is not lexical",
+                    "a const closure descriptor must also be lexical",
+                ));
+            }
+            if descriptor.source == ClosureSource::GlobalDeclaration
+                && descriptor.kind != ClosureVariableKind::Normal
+            {
+                return Err(HeapError::Invariant(
+                    "global declaration descriptor has non-global binding metadata",
                 ));
             }
             let requires_name = matches!(
@@ -1816,10 +1824,12 @@ impl Heap {
             let allows_name = requires_name || descriptor.is_lexical;
             if descriptor.source == ClosureSource::GlobalDeclaration
                 && let ClosureVariableName::Atom(atom) = descriptor.name
-                && !global_declaration_names.insert(atom)
+                && global_declaration_names
+                    .insert(atom, descriptor.is_lexical)
+                    .is_some_and(|previous_is_lexical| previous_is_lexical || descriptor.is_lexical)
             {
                 return Err(HeapError::Invariant(
-                    "duplicate global declaration descriptor name",
+                    "duplicate lexical global declaration descriptor name",
                 ));
             }
             if matches!(
@@ -3804,6 +3814,23 @@ mod tests {
                 Err(HeapError::Invariant(_))
             ));
         }
+
+        let mut non_lexical_const = bytecode(&code, context, Vec::new(), vec![name]);
+        non_lexical_const.metadata.closure_count = 1;
+        non_lexical_const.closure_variables = vec![ClosureVariable {
+            source: ClosureSource::GlobalDeclaration,
+            name: ClosureVariableName::Atom(name),
+            is_lexical: false,
+            is_const: true,
+            kind: ClosureVariableKind::Normal,
+        }]
+        .into();
+        assert_eq!(
+            heap.allocate_function_bytecode(non_lexical_const),
+            Err(HeapError::Invariant(
+                "a const closure descriptor must also be lexical"
+            ))
+        );
 
         let mut published = bytecode(&code, context, Vec::new(), vec![name]);
         published.metadata.closure_count = 1;

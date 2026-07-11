@@ -183,6 +183,13 @@ struct IrBinding {
 }
 
 #[derive(Debug)]
+struct IrGlobalDeclaration {
+    name: String,
+    is_lexical: bool,
+    is_const: bool,
+}
+
+#[derive(Debug)]
 enum IrConstant {
     Primitive(Value),
     Child(FunctionId),
@@ -352,6 +359,7 @@ struct FunctionIr {
     locals: Vec<String>,
     scopes: Vec<IrScope>,
     bindings: Vec<IrBinding>,
+    global_declarations: Vec<IrGlobalDeclaration>,
     current_scope: ScopeId,
     var_scope: ScopeId,
     body_scope: ScopeId,
@@ -437,6 +445,7 @@ impl FunctionIr {
             locals,
             scopes,
             bindings: Vec::new(),
+            global_declarations: Vec::new(),
             current_scope,
             var_scope,
             body_scope: body,
@@ -665,15 +674,7 @@ impl<'source> Parser<'source> {
                     ))
                 }
             }
-            TokenKind::Keyword(Keyword::Var) => {
-                if matches!(self.current_ir().kind, FunctionKind::Script) {
-                    Err(self.unsupported_here(
-                        "top-level var declarations and global bindings are not implemented yet",
-                    ))
-                } else {
-                    self.parse_var_statement()
-                }
-            }
+            TokenKind::Keyword(Keyword::Var) => self.parse_var_statement(),
             TokenKind::Keyword(Keyword::Return) => {
                 if matches!(self.current_ir().kind, FunctionKind::Script) {
                     Err(self.syntax_here("return not in a function"))
@@ -913,11 +914,6 @@ impl<'source> Parser<'source> {
                 }
                 self.parse_lexical_declarations_with_in(InMode::Disallow)?;
             } else if matches!(self.current().kind, TokenKind::Keyword(Keyword::Var)) {
-                if matches!(self.current_ir().kind, FunctionKind::Script) {
-                    return Err(self.unsupported_here(
-                        "top-level var declarations and global bindings are not implemented yet",
-                    ));
-                }
                 self.advance()?;
                 self.parse_var_declarations_with_in(InMode::Disallow)?;
             } else {
@@ -1456,7 +1452,8 @@ impl<'source> Parser<'source> {
                     source_span(self.current().span),
                 ));
             }
-            if name == "arguments"
+            if matches!(self.current_ir().kind, FunctionKind::Ordinary)
+                && name == "arguments"
                 && !self
                     .current_ir()
                     .parameters
@@ -1467,7 +1464,7 @@ impl<'source> Parser<'source> {
                     "the implicit ordinary-function arguments binding is not implemented yet",
                 ));
             }
-            self.register_local(&name, token.span, self.current().span)?;
+            self.register_var_binding(&name, token.span, self.current().span)?;
 
             let initializer_span = self.current().span;
             if self.consume_punctuator(Punctuator::Equal)? {
@@ -1497,7 +1494,7 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    fn register_local(
+    fn register_var_binding(
         &mut self,
         name: &str,
         declaration_span: Span,
@@ -1513,10 +1510,28 @@ impl<'source> Parser<'source> {
                 source_span(conflict_span),
             ));
         }
+        if matches!(function.kind, FunctionKind::Script) {
+            function.global_declarations.push(IrGlobalDeclaration {
+                name: name.to_owned(),
+                is_lexical: false,
+                is_const: false,
+            });
+        }
         if function
             .binding_in_scope(function.var_scope, name)
             .is_some()
         {
+            return Ok(());
+        }
+        if matches!(function.kind, FunctionKind::Script) {
+            function.add_binding(
+                function.var_scope,
+                function.current_scope,
+                name.to_owned(),
+                BindingStorage::Global,
+                BindingKind::Normal,
+                Some(declaration_span),
+            );
             return Ok(());
         }
         if function.locals.len() >= MAX_LOCAL_VARIABLES {
@@ -1593,9 +1608,15 @@ impl<'source> Parser<'source> {
                         "lexical binding leaked into the function var scope",
                     ));
                 }
+                (BindingStorage::Global, BindingKind::Normal)
+                    if function.scope_is_within(binding.declaration_scope, scope) =>
+                {
+                    "invalid redefinition of global identifier"
+                }
+                (BindingStorage::Global, BindingKind::Normal) => "",
                 (BindingStorage::Global, _) => {
                     return Err(Error::internal(
-                        "global binding leaked into the function var scope",
+                        "non-var global binding leaked into the function var scope",
                     ));
                 }
             };
@@ -1604,6 +1625,11 @@ impl<'source> Parser<'source> {
             }
         }
         if is_global {
+            function.global_declarations.push(IrGlobalDeclaration {
+                name: name.to_owned(),
+                is_lexical: true,
+                is_const,
+            });
             function.add_binding(
                 scope,
                 scope,
@@ -3683,6 +3709,42 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         if function.scopes[function.body_scope.0].kind != expected_body {
             return Err(Error::internal("function body scope kind is malformed"));
         }
+        match function.kind {
+            FunctionKind::Script => {
+                for declaration in &function.global_declarations {
+                    let binding = if declaration.is_lexical {
+                        function.binding_in_scope(function.body_scope, &declaration.name)
+                    } else {
+                        function.binding_in_scope(function.var_scope, &declaration.name)
+                    };
+                    let expected_kind = if declaration.is_lexical {
+                        BindingKind::Lexical {
+                            is_const: declaration.is_const,
+                        }
+                    } else {
+                        if declaration.is_const {
+                            return Err(Error::internal(
+                                "ordinary global declaration is marked const",
+                            ));
+                        }
+                        BindingKind::Normal
+                    };
+                    if binding.is_none_or(|binding| {
+                        binding.storage != BindingStorage::Global || binding.kind != expected_kind
+                    }) {
+                        return Err(Error::internal(
+                            "global declaration has no matching binding identity",
+                        ));
+                    }
+                }
+            }
+            FunctionKind::Ordinary if function.global_declarations.is_empty() => {}
+            FunctionKind::Ordinary => {
+                return Err(Error::internal(
+                    "ordinary function contains Program global declarations",
+                ));
+            }
+        }
         if let Some(parent_link) = function.parent {
             let parent = tree
                 .functions
@@ -3789,16 +3851,17 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         }
                     }
                     BindingStorage::Global => {
+                        let valid_lexical = matches!(binding.kind, BindingKind::Lexical { .. })
+                            && binding.storage_scope == function.body_scope
+                            && binding.declaration_scope == function.body_scope
+                            && function.scopes[binding.storage_scope.0].kind
+                                == ScopeKind::ProgramBody;
+                        let valid_var = binding.kind == BindingKind::Normal
+                            && binding.storage_scope == function.var_scope;
                         if !matches!(function.kind, FunctionKind::Script)
-                            || binding.storage_scope != function.body_scope
-                            || binding.declaration_scope != function.body_scope
-                            || function.scopes[binding.storage_scope.0].kind
-                                != ScopeKind::ProgramBody
-                            || !matches!(binding.kind, BindingKind::Lexical { .. })
+                            || (!valid_lexical && !valid_var)
                         {
-                            return Err(Error::internal(
-                                "global lexical binding metadata is malformed",
-                            ));
+                            return Err(Error::internal("global binding metadata is malformed"));
                         }
                     }
                 }
@@ -3971,27 +4034,25 @@ fn seed_global_declarations(tree: &mut FunctionTree) -> Result<(), Error> {
         .functions
         .first()
         .ok_or_else(|| Error::internal("compiler produced no root function"))?
-        .bindings
+        .global_declarations
         .iter()
-        .filter_map(|binding| {
-            let BindingStorage::Global = binding.storage else {
-                return None;
-            };
-            let BindingKind::Lexical { is_const } = binding.kind else {
-                return None;
-            };
-            Some((binding.name.clone(), is_const))
+        .map(|declaration| {
+            (
+                declaration.name.clone(),
+                declaration.is_lexical,
+                declaration.is_const,
+            )
         })
         .collect::<Vec<_>>();
 
-    for (name, is_const) in declarations {
+    for (name, is_lexical, is_const) in declarations {
         let name_index = ensure_string_constant(&mut tree.functions[0], &name)?;
-        ensure_closure_variable(
+        push_closure_variable(
             &mut tree.functions[0],
             ClosureVariable {
                 source: ClosureSource::GlobalDeclaration,
                 name: ClosureVariableName::Constant(name_index),
-                is_lexical: true,
+                is_lexical,
                 is_const,
                 kind: ClosureVariableKind::Normal,
             },
@@ -4369,27 +4430,42 @@ fn global_declaration_operation(
     access: IdentifierAccess,
     name: &str,
 ) -> Result<IrOp, Error> {
-    let BindingKind::Lexical { is_const } = kind else {
-        return Err(Error::internal("global declaration binding is not lexical"));
+    let (is_lexical, is_const) = match kind {
+        BindingKind::Normal => (false, false),
+        BindingKind::Lexical { is_const } => (true, is_const),
+        BindingKind::FunctionName { .. } => {
+            return Err(Error::internal(
+                "global declaration has function-name binding metadata",
+            ));
+        }
     };
-    let closure_index = capture_global_declaration_path(tree, consuming_function, name, is_const)?;
+    let closure_index =
+        capture_global_declaration_path(tree, consuming_function, name, is_lexical, is_const)?;
     Ok(match access {
         IdentifierAccess::Get => IrOp::Bytecode(Instruction::GetVar(closure_index)),
         IdentifierAccess::GetOrUndefined => IrOp::Bytecode(Instruction::GetVarUndef(closure_index)),
         IdentifierAccess::Delete => IrOp::Bytecode(Instruction::DeleteVar(closure_index)),
-        IdentifierAccess::Initialize => IrOp::Bytecode(Instruction::PutVarInit(closure_index)),
+        IdentifierAccess::Initialize if is_lexical => {
+            IrOp::Bytecode(Instruction::PutVarInit(closure_index))
+        }
+        IdentifierAccess::Initialize => {
+            return Err(Error::internal(
+                "ordinary global declaration used lexical initialization",
+            ));
+        }
         IdentifierAccess::Put => IrOp::Bytecode(Instruction::PutVar(closure_index)),
         IdentifierAccess::Set => IrOp::GlobalSet(closure_index),
     })
 }
 
 /// Install QuickJS's `GLOBAL_DECL -> PARENT_GLOBAL` chain for a Program
-/// lexical binding. The root descriptor triggers declaration instantiation;
+/// binding. The root descriptor triggers declaration instantiation;
 /// descendants reuse that exact VarRef without repeating the definition.
 fn capture_global_declaration_path(
     tree: &mut FunctionTree,
     consuming_function: FunctionId,
     name: &str,
+    is_lexical: bool,
     is_const: bool,
 ) -> Result<u16, Error> {
     let mut path = Vec::new();
@@ -4409,7 +4485,7 @@ fn capture_global_declaration_path(
         let descriptor = ClosureVariable {
             source,
             name: ClosureVariableName::Constant(name_index),
-            is_lexical: true,
+            is_lexical,
             is_const,
             kind: ClosureVariableKind::Normal,
         };
@@ -4757,6 +4833,13 @@ fn ensure_closure_variable(
         return u16::try_from(index)
             .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"));
     }
+    push_closure_variable(function, descriptor)
+}
+
+fn push_closure_variable(
+    function: &mut FunctionIr,
+    descriptor: ClosureVariable,
+) -> Result<u16, Error> {
     if function.closure_variables.len() >= MAX_LOCAL_VARIABLES {
         return Err(Error::new(
             ErrorKind::JsInternal,
@@ -6364,6 +6447,649 @@ mod tests {
             stripped_child.closure_variables()[0].name,
             ClosureVariableName::Constant(_)
         ));
+    }
+
+    #[test]
+    fn program_vars_keep_every_source_ordered_global_declaration() {
+        let source = "var first;{var first;var second=function(){return later}}if(false)var later=3;for(var loop=0;false;){}";
+        let script = compile_unlinked_script(source).unwrap();
+        assert_eq!(script.local_definitions().len(), 1);
+
+        let declaration_names = script
+            .closure_variables()
+            .iter()
+            .map(|descriptor| {
+                assert_eq!(descriptor.source, ClosureSource::GlobalDeclaration);
+                assert!(!descriptor.is_lexical);
+                assert!(!descriptor.is_const);
+                assert_eq!(descriptor.kind, ClosureVariableKind::Normal);
+                let ClosureVariableName::Constant(index) = descriptor.name else {
+                    panic!("global var declaration lost its semantic name");
+                };
+                let Value::String(name) = script.constants()[index as usize]
+                    .as_primitive()
+                    .expect("global var declaration name is not primitive")
+                else {
+                    panic!("global var declaration name is not a string");
+                };
+                name.to_utf8_lossy()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            declaration_names,
+            ["first", "first", "second", "later", "loop"]
+        );
+        assert_eq!(
+            script
+                .code()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::PutVar(_)))
+                .count(),
+            3
+        );
+        assert!(
+            !script
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::PutVarInit(_)))
+        );
+
+        let child = script
+            .constants()
+            .iter()
+            .find_map(|constant| constant.as_child())
+            .expect("global var initializer lost its child function");
+        assert_eq!(child.closure_variables().len(), 1);
+        assert_eq!(
+            child.closure_variables()[0].source,
+            ClosureSource::ParentGlobal(3)
+        );
+        assert!(!child.closure_variables()[0].is_lexical);
+
+        let stripped = compile_unlinked_script_with_filename(
+            source,
+            "<global-var-strip>",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        assert!(stripped.closure_variables().iter().all(|descriptor| {
+            descriptor.source == ClosureSource::GlobalDeclaration
+                && matches!(descriptor.name, ClosureVariableName::Constant(_))
+        }));
+    }
+
+    #[test]
+    fn program_vars_instantiate_persist_and_preserve_existing_properties() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        assert_eq!(
+            context
+                .eval("var value;var value=2;if(false){var dormant=3}for(var loop=0;loop<2;loop++){};value+'|'+typeof dormant+'|'+loop")
+                .unwrap(),
+            Value::String(JsString::from_static("2|undefined|2"))
+        );
+        let global = context.global_object().unwrap();
+        for (name, value) in [
+            ("value", Value::Int(2)),
+            ("dormant", Value::Undefined),
+            ("loop", Value::Int(2)),
+        ] {
+            let key = runtime.intern_property_key(name).unwrap();
+            assert_eq!(
+                context.get_own_property(&global, &key).unwrap(),
+                Some(CompleteOrdinaryPropertyDescriptor::Data {
+                    value,
+                    writable: true,
+                    enumerable: true,
+                    configurable: false,
+                })
+            );
+        }
+        assert_eq!(context.eval("var value;value").unwrap(), Value::Int(2));
+        assert_eq!(
+            context
+                .eval("var captured=1,read=function(){return captured};captured=4;read()")
+                .unwrap(),
+            Value::Int(4)
+        );
+        assert_eq!(context.eval("delete value").unwrap(), Value::Bool(false));
+
+        assert_eq!(context.eval("hostValue=7").unwrap(), Value::Int(7));
+        let host = runtime.intern_property_key("hostValue").unwrap();
+        assert_eq!(
+            context.eval("var hostValue;hostValue").unwrap(),
+            Value::Int(7)
+        );
+        assert_eq!(
+            context.get_own_property(&global, &host).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Int(7),
+                writable: true,
+                enumerable: true,
+                configurable: true,
+            })
+        );
+        assert_eq!(
+            context
+                .eval("Function.hostRead=function(){return hostValue};var hostValue=8;delete hostValue")
+                .unwrap(),
+            Value::Bool(true)
+        );
+        assert!(matches!(
+            context.eval("Function.hostRead()"),
+            Err(RuntimeError::Exception)
+        ));
+        context.take_exception().unwrap().unwrap();
+        assert_eq!(
+            context.eval("var hostValue;hostValue").unwrap(),
+            Value::Undefined
+        );
+        assert_eq!(
+            context.eval("Function.hostRead()").unwrap(),
+            Value::Undefined
+        );
+        assert_eq!(
+            context.get_own_property(&global, &host).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Undefined,
+                writable: true,
+                enumerable: true,
+                configurable: false,
+            })
+        );
+
+        let fixed = runtime.intern_property_key("fixedVar").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &global,
+                    &fixed,
+                    &OrdinaryPropertyDescriptor {
+                        value: DescriptorField::Present(Value::Int(1)),
+                        writable: DescriptorField::Present(false),
+                        enumerable: DescriptorField::Present(false),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context.eval("var fixedVar;fixedVar").unwrap(),
+            Value::Int(1)
+        );
+        assert_eq!(
+            context.eval("var fixedVar=2;fixedVar").unwrap(),
+            Value::Int(1)
+        );
+        assert!(matches!(
+            context.eval("'use strict';var fixedVar=2"),
+            Err(RuntimeError::Exception)
+        ));
+        context.take_exception().unwrap().unwrap();
+        assert_eq!(
+            context.get_own_property(&global, &fixed).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Int(1),
+                writable: false,
+                enumerable: false,
+                configurable: true,
+            })
+        );
+
+        assert_eq!(
+            context.eval("Function.varSetterHits=0").unwrap(),
+            Value::Int(0)
+        );
+        let Value::Object(setter) = context
+            .eval("(function(value){Function.varSetterHits=value})")
+            .unwrap()
+        else {
+            panic!("global var accessor probe did not create a setter");
+        };
+        let setter = runtime.as_callable(&setter).unwrap().unwrap();
+        let accessor = runtime.intern_property_key("accessorVar").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &global,
+                    &accessor,
+                    &OrdinaryPropertyDescriptor {
+                        get: DescriptorField::Present(AccessorValue::Undefined),
+                        set: DescriptorField::Present(AccessorValue::Callable(setter.clone())),
+                        enumerable: DescriptorField::Present(false),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context
+                .eval("var accessorVar;Function.varSetterHits")
+                .unwrap(),
+            Value::Int(0),
+            "a var without initializer must not invoke an existing setter"
+        );
+        assert_eq!(
+            context
+                .eval("var accessorVar=9;Function.varSetterHits")
+                .unwrap(),
+            Value::Int(9)
+        );
+        assert_eq!(
+            context.get_own_property(&global, &accessor).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Accessor {
+                get: None,
+                set: Some(setter),
+                enumerable: false,
+                configurable: true,
+            })
+        );
+
+        let mut inherited = runtime.new_context();
+        let inherited_key = runtime.intern_property_key("inheritedVar").unwrap();
+        let prototype = inherited.object_prototype().unwrap();
+        assert!(
+            inherited
+                .define_own_property(
+                    &prototype,
+                    &inherited_key,
+                    &OrdinaryPropertyDescriptor {
+                        value: DescriptorField::Present(Value::Int(5)),
+                        writable: DescriptorField::Present(true),
+                        enumerable: DescriptorField::Present(true),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            inherited.eval("var inheritedVar;inheritedVar").unwrap(),
+            Value::Undefined
+        );
+        let inherited_global = inherited.global_object().unwrap();
+        assert_eq!(
+            inherited
+                .get_own_property(&inherited_global, &inherited_key)
+                .unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Undefined,
+                writable: true,
+                enumerable: true,
+                configurable: false,
+            })
+        );
+
+        let mut auto_init = runtime.new_context();
+        assert_eq!(
+            auto_init.eval("var Number;typeof Number").unwrap(),
+            Value::String(JsString::from_static("function"))
+        );
+        assert_eq!(
+            auto_init.eval("var Number=9;Number").unwrap(),
+            Value::Int(9)
+        );
+        let number = runtime.intern_property_key("Number").unwrap();
+        let auto_init_global = auto_init.global_object().unwrap();
+        assert_eq!(
+            auto_init
+                .get_own_property(&auto_init_global, &number)
+                .unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Int(9),
+                writable: true,
+                enumerable: false,
+                configurable: true,
+            })
+        );
+    }
+
+    #[test]
+    fn program_var_preflight_conflicts_and_parser_scope_match_quickjs() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        assert_eq!(
+            context.eval("let existingLexical=1").unwrap(),
+            Value::Undefined
+        );
+        assert!(matches!(
+            context.eval("var existingLexical"),
+            Err(RuntimeError::Exception)
+        ));
+        let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
+            panic!("global var/lexical conflict did not throw an Error object");
+        };
+        let name = runtime.intern_property_key("name").unwrap();
+        let message = runtime.intern_property_key("message").unwrap();
+        assert_eq!(
+            context.get_property(&error, &name).unwrap(),
+            Value::String(JsString::from_static("SyntaxError"))
+        );
+        assert_eq!(
+            context.get_property(&error, &message).unwrap(),
+            Value::String(JsString::from_static("redeclaration of 'existingLexical'"))
+        );
+        assert_eq!(
+            context.eval("globalThis.varMarker=0").unwrap(),
+            Value::Int(0)
+        );
+        assert!(matches!(
+            context.eval("varMarker=1;var freshBefore=(varMarker=2),existingLexical=(varMarker=3),freshAfter=(varMarker=4)"),
+            Err(RuntimeError::Exception)
+        ));
+        context.take_exception().unwrap().unwrap();
+        assert_eq!(context.eval("varMarker").unwrap(), Value::Int(0));
+        assert_eq!(
+            context
+                .eval("typeof freshBefore+'|'+typeof freshAfter")
+                .unwrap(),
+            Value::String(JsString::from_static("undefined|undefined"))
+        );
+
+        let mut sealed = runtime.new_context();
+        assert_eq!(
+            sealed.eval("let sealedLexical=1").unwrap(),
+            Value::Undefined
+        );
+        let sealed_global = sealed.global_object().unwrap();
+        runtime.prevent_extensions(&sealed_global).unwrap();
+        assert!(matches!(
+            sealed.eval("var sealedLexical"),
+            Err(RuntimeError::Exception)
+        ));
+        let Value::Object(error) = sealed.take_exception().unwrap().unwrap() else {
+            panic!("sealed global var declaration did not throw an Error object");
+        };
+        assert_eq!(
+            sealed.get_property(&error, &name).unwrap(),
+            Value::String(JsString::from_static("TypeError"))
+        );
+        assert_eq!(
+            sealed.get_property(&error, &message).unwrap(),
+            Value::String(JsString::from_static(
+                "cannot define variable 'sealedLexical'"
+            ))
+        );
+
+        let mut atomic = runtime.new_context();
+        assert_eq!(
+            atomic
+                .eval("globalThis.atomicExisting=5;globalThis.atomicMarker=0")
+                .unwrap(),
+            Value::Int(0)
+        );
+        let atomic_global = atomic.global_object().unwrap();
+        runtime.prevent_extensions(&atomic_global).unwrap();
+        assert!(matches!(
+            atomic.eval("atomicMarker=1;var atomicExisting=6,atomicMissing=7"),
+            Err(RuntimeError::Exception)
+        ));
+        atomic.take_exception().unwrap().unwrap();
+        assert_eq!(atomic.eval("atomicMarker").unwrap(), Value::Int(0));
+        assert_eq!(atomic.eval("atomicExisting").unwrap(), Value::Int(5));
+        assert_eq!(
+            atomic.eval("typeof atomicMissing").unwrap(),
+            Value::String(JsString::from_static("undefined"))
+        );
+
+        for (source, expected) in [
+            (
+                "let conflict;var conflict",
+                "invalid redefinition of lexical identifier",
+            ),
+            (
+                "var conflict;let conflict",
+                "invalid redefinition of global identifier",
+            ),
+            (
+                "{var conflict;var conflict;let conflict}",
+                "invalid redefinition of global identifier",
+            ),
+            (
+                "{let conflict;var conflict}",
+                "invalid redefinition of lexical identifier",
+            ),
+        ] {
+            assert_eq!(
+                compile_unlinked_script(source).unwrap_err().message(),
+                expected,
+                "{source}"
+            );
+        }
+        for source in [
+            "var allowed;{var allowed;let allowed}",
+            "{var sibling}{var sibling;let sibling}",
+            "{let shadow}var shadow",
+        ] {
+            compile_unlinked_script(source).unwrap();
+        }
+    }
+
+    #[test]
+    fn program_var_cross_realm_instantiation_and_fallback_match_quickjs() {
+        let runtime = Runtime::new();
+        let mut defining = runtime.new_context();
+        let mut caller = runtime.new_context();
+
+        let fresh = defining.compile("var crossVar=41;crossVar+1").unwrap();
+        assert_eq!(caller.execute(&fresh).unwrap(), Value::Int(42));
+        assert_eq!(
+            defining.eval("typeof crossVar").unwrap(),
+            Value::String(JsString::from_static("undefined"))
+        );
+        assert_eq!(caller.eval("crossVar").unwrap(), Value::Int(41));
+
+        assert_eq!(
+            defining.eval("crossData='A'").unwrap(),
+            Value::String(JsString::from_static("A"))
+        );
+        assert_eq!(
+            caller.eval("crossData='B'").unwrap(),
+            Value::String(JsString::from_static("B"))
+        );
+        let data = defining
+            .compile("var crossData='written';crossData")
+            .unwrap();
+        assert_eq!(
+            caller.execute(&data).unwrap(),
+            Value::String(JsString::from_static("written"))
+        );
+        assert_eq!(
+            defining.eval("crossData").unwrap(),
+            Value::String(JsString::from_static("A"))
+        );
+        assert_eq!(
+            caller.eval("crossData").unwrap(),
+            Value::String(JsString::from_static("written"))
+        );
+
+        assert_eq!(
+            defining.eval("Function.aSeen='none'").unwrap(),
+            Value::String(JsString::from_static("none"))
+        );
+        assert_eq!(
+            caller.eval("Function.bSeen='none'").unwrap(),
+            Value::String(JsString::from_static("none"))
+        );
+        let Value::Object(a_getter) = defining.eval("(function(){return 'Aget'})").unwrap() else {
+            panic!("defining realm accessor getter was not callable");
+        };
+        let Value::Object(a_setter) = defining
+            .eval("(function(value){Function.aSeen=value})")
+            .unwrap()
+        else {
+            panic!("defining realm accessor setter was not callable");
+        };
+        let Value::Object(b_getter) = caller.eval("(function(){return 'Bget'})").unwrap() else {
+            panic!("caller realm accessor getter was not callable");
+        };
+        let Value::Object(b_setter) = caller
+            .eval("(function(value){Function.bSeen=value})")
+            .unwrap()
+        else {
+            panic!("caller realm accessor setter was not callable");
+        };
+        let a_getter = runtime.as_callable(&a_getter).unwrap().unwrap();
+        let a_setter = runtime.as_callable(&a_setter).unwrap().unwrap();
+        let b_getter = runtime.as_callable(&b_getter).unwrap().unwrap();
+        let b_setter = runtime.as_callable(&b_setter).unwrap().unwrap();
+        let accessor = runtime.intern_property_key("crossAccessor").unwrap();
+        for (context, getter, setter) in [
+            (&mut defining, a_getter, a_setter),
+            (&mut caller, b_getter, b_setter),
+        ] {
+            let global = context.global_object().unwrap();
+            assert!(
+                context
+                    .define_own_property(
+                        &global,
+                        &accessor,
+                        &OrdinaryPropertyDescriptor {
+                            get: DescriptorField::Present(AccessorValue::Callable(getter)),
+                            set: DescriptorField::Present(AccessorValue::Callable(setter)),
+                            enumerable: DescriptorField::Present(true),
+                            configurable: DescriptorField::Present(true),
+                            ..OrdinaryPropertyDescriptor::new()
+                        },
+                    )
+                    .unwrap()
+            );
+        }
+        let accessor_script = defining
+            .compile("var crossAccessor='written';crossAccessor")
+            .unwrap();
+        assert_eq!(
+            caller.execute(&accessor_script).unwrap(),
+            Value::String(JsString::from_static("Aget"))
+        );
+        assert_eq!(
+            defining.eval("crossAccessor+'|'+Function.aSeen").unwrap(),
+            Value::String(JsString::from_static("Aget|written"))
+        );
+        assert_eq!(
+            caller.eval("crossAccessor+'|'+Function.bSeen").unwrap(),
+            Value::String(JsString::from_static("Bget|none"))
+        );
+
+        let readonly = runtime.intern_property_key("crossReadonly").unwrap();
+        let defining_global = defining.global_object().unwrap();
+        assert!(
+            defining
+                .define_own_property(
+                    &defining_global,
+                    &readonly,
+                    &OrdinaryPropertyDescriptor {
+                        value: DescriptorField::Present(Value::Int(1)),
+                        writable: DescriptorField::Present(false),
+                        enumerable: DescriptorField::Present(true),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        let caller_global = caller.global_object().unwrap();
+        assert!(
+            caller
+                .define_own_property(
+                    &caller_global,
+                    &readonly,
+                    &OrdinaryPropertyDescriptor {
+                        get: DescriptorField::Present(AccessorValue::Undefined),
+                        set: DescriptorField::Present(AccessorValue::Undefined),
+                        enumerable: DescriptorField::Present(true),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        let Value::Object(defining_type_prototype) = defining.eval("TypeError.prototype").unwrap()
+        else {
+            panic!("defining TypeError.prototype was not an object");
+        };
+        let readonly_script = defining
+            .compile("'use strict';var crossReadonly=2")
+            .unwrap();
+        assert!(matches!(
+            caller.execute(&readonly_script),
+            Err(RuntimeError::Exception)
+        ));
+        let Value::Object(error) = caller.take_exception().unwrap().unwrap() else {
+            panic!("cross-realm var initializer did not throw an Error object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&error).unwrap(),
+            Some(defining_type_prototype)
+        );
+
+        let mut syntax_caller = runtime.new_context();
+        syntax_caller.eval("let crossConflict=1").unwrap();
+        let Value::Object(syntax_prototype) = syntax_caller.eval("SyntaxError.prototype").unwrap()
+        else {
+            panic!("caller SyntaxError.prototype was not an object");
+        };
+        let conflict = defining.compile("var crossConflict").unwrap();
+        assert!(matches!(
+            syntax_caller.execute(&conflict),
+            Err(RuntimeError::Exception)
+        ));
+        let Value::Object(error) = syntax_caller.take_exception().unwrap().unwrap() else {
+            panic!("cross-realm var conflict did not throw an Error object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&error).unwrap(),
+            Some(syntax_prototype)
+        );
+
+        let mut type_caller = runtime.new_context();
+        let Value::Object(type_prototype) = type_caller.eval("TypeError.prototype").unwrap() else {
+            panic!("caller TypeError.prototype was not an object");
+        };
+        let type_global = type_caller.global_object().unwrap();
+        runtime.prevent_extensions(&type_global).unwrap();
+        let missing = defining.compile("var missingCrossVar").unwrap();
+        assert!(matches!(
+            type_caller.execute(&missing),
+            Err(RuntimeError::Exception)
+        ));
+        let Value::Object(error) = type_caller.take_exception().unwrap().unwrap() else {
+            panic!("cross-realm non-extensible var did not throw an Error object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&error).unwrap(),
+            Some(type_prototype)
+        );
+    }
+
+    #[test]
+    fn program_var_function_cell_cycle_is_collectable_after_context_drop() {
+        let runtime = Runtime::new();
+        {
+            let mut context = runtime.new_context();
+            assert_eq!(
+                context
+                    .eval("var cycle=function(){return cycle};cycle()===cycle")
+                    .unwrap(),
+                Value::Bool(true)
+            );
+            let counts = runtime.heap_counts();
+            assert_eq!(counts.context_nodes, 1);
+            assert!(counts.var_ref_nodes > 0);
+            assert!(counts.function_bytecode_nodes > 0);
+        }
+
+        assert_eq!(runtime.heap_counts().context_nodes, 1);
+        runtime.run_gc().unwrap();
+        let counts = runtime.heap_counts();
+        assert_eq!(counts.context_nodes, 0);
+        assert_eq!(counts.object_nodes, 0);
+        assert_eq!(counts.shape_nodes, 0);
+        assert_eq!(counts.var_ref_nodes, 0);
+        assert_eq!(counts.function_bytecode_nodes, 0);
+        assert_eq!(counts.live, 0);
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! intrinsics extend this boundary; they are not hidden in the compiler or VM.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
 use std::rc::Rc;
@@ -3799,13 +3799,17 @@ impl Runtime {
                 ));
             };
             if descriptor.source == ClosureSource::GlobalDeclaration {
-                if !descriptor.is_lexical || descriptor.kind != ClosureVariableKind::Normal {
+                if descriptor.kind != ClosureVariableKind::Normal {
                     return Err(RuntimeError::Invariant(
-                        "implemented global declaration is not a lexical binding",
+                        "global declaration has non-global binding metadata",
                     ));
                 }
                 let key = PropertyKey::from_borrowed_atom(self.clone(), name)?;
-                self.check_global_lexical_declaration(caller_realm, &key)?;
+                if descriptor.is_lexical {
+                    self.check_global_lexical_declaration(caller_realm, &key)?;
+                } else {
+                    self.check_global_var_declaration(caller_realm, &key)?;
+                }
             }
         }
         let mut slots = Vec::with_capacity(descriptors.len());
@@ -3818,12 +3822,16 @@ impl Runtime {
             let root = match descriptor.source {
                 ClosureSource::GlobalDeclaration => {
                     let key = PropertyKey::from_borrowed_atom(self.clone(), name)?;
-                    self.create_global_lexical_binding(
-                        caller_realm,
-                        &key,
-                        descriptor.is_const,
-                        None,
-                    )?
+                    if descriptor.is_lexical {
+                        self.create_global_lexical_binding(
+                            caller_realm,
+                            &key,
+                            descriptor.is_const,
+                            None,
+                        )?
+                    } else {
+                        self.create_global_var_binding(caller_realm, &key)?
+                    }
                 }
                 ClosureSource::Global => self.resolve_global_var(caller_realm, name)?,
                 ClosureSource::ParentLocal(_)
@@ -3865,6 +3873,44 @@ impl Runtime {
             return Err(RuntimeError::Engine(error));
         }
         Ok(())
+    }
+
+    fn check_global_var_declaration(
+        &self,
+        realm: ContextId,
+        key: &PropertyKey,
+    ) -> Result<(), RuntimeError> {
+        let conflict = {
+            let state = self.0.state.borrow();
+            let context = state.heap.context(realm)?;
+            let lexical = state.heap.object(context.global_var_object)?;
+            let lexical_shape = state.heap.shape(lexical.shape)?;
+            let global = state.heap.object(context.global_object)?;
+            let global_shape = state.heap.shape(global.shape)?;
+            if global_shape.find(key.atom()).is_none() && !global.extensible {
+                Some(ErrorKind::Type)
+            } else if lexical_shape.find(key.atom()).is_some() {
+                Some(ErrorKind::Syntax)
+            } else {
+                None
+            }
+        };
+        match conflict {
+            Some(ErrorKind::Type) => {
+                let error =
+                    self.native_atom_error(ErrorKind::Type, "cannot define variable '", key, "'")?;
+                Err(RuntimeError::Engine(error))
+            }
+            Some(ErrorKind::Syntax) => {
+                let error =
+                    self.native_atom_error(ErrorKind::Syntax, "redeclaration of '", key, "'")?;
+                Err(RuntimeError::Engine(error))
+            }
+            Some(_) => Err(RuntimeError::Invariant(
+                "global var preflight produced an impossible error kind",
+            )),
+            None => Ok(()),
+        }
     }
 
     fn resolve_global_var(&self, realm: ContextId, name: Atom) -> Result<VarRefRoot, RuntimeError> {
@@ -4008,6 +4054,60 @@ impl Runtime {
             &global_var_object,
             key,
             PropertyFlags::data(!is_const, true, true),
+            PropertySlot::VarRef(root.id()),
+        )?;
+        Ok(root)
+    }
+
+    fn create_global_var_binding(
+        &self,
+        realm: ContextId,
+        key: &PropertyKey,
+    ) -> Result<VarRefRoot, RuntimeError> {
+        let (global_object, hidden) = {
+            let state = self.0.state.borrow();
+            let context = state.heap.context(realm)?;
+            let global = state.heap.object(context.global_object)?;
+            let ObjectPayload::GlobalObject { uninitialized_vars } = global.payload else {
+                return Err(RuntimeError::Invariant(
+                    "realm global object has no unresolved-name table",
+                ));
+            };
+            (context.global_object, uninitialized_vars)
+        };
+        let root = self.resolve_global_var(realm, key.atom())?;
+        let global_object = ObjectRef::from_borrowed_handle(self.clone(), global_object)?;
+        if self.has_own_property(&global_object, key)? {
+            return Ok(root);
+        }
+        if !self.is_extensible(&global_object)? {
+            return Err(RuntimeError::Invariant(
+                "global object became non-extensible after var preflight",
+            ));
+        }
+
+        let hidden = ObjectRef::from_borrowed_handle(self.clone(), hidden)?;
+        let Some(hidden_root) = self.own_var_ref_root(&hidden, key)? else {
+            return Err(RuntimeError::Invariant(
+                "new global var has no unresolved VarRef",
+            ));
+        };
+        if hidden_root.id() != root.id() {
+            return Err(RuntimeError::Invariant(
+                "new global var resolved a different hidden VarRef",
+            ));
+        }
+        if !self.delete_property(&hidden, key)? {
+            return Err(RuntimeError::Invariant(
+                "hidden global VarRef property was not configurable",
+            ));
+        }
+        self.write_var_ref(&root, Value::Undefined)?;
+        self.set_var_ref_metadata(&root, false, false, ClosureVariableKind::Normal)?;
+        self.store_property_slot(
+            &global_object,
+            key,
+            PropertyFlags::data(true, true, false),
             PropertySlot::VarRef(root.id()),
         )?;
         Ok(root)
@@ -10535,13 +10635,13 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                 "a const closure descriptor must also be lexical",
             )));
         }
-        let mut global_declaration_names = HashSet::new();
+        let mut global_declaration_names = HashMap::new();
         for descriptor in function.closure_variables() {
             if descriptor.source == ClosureSource::GlobalDeclaration
-                && (!descriptor.is_lexical || descriptor.kind != ClosureVariableKind::Normal)
+                && descriptor.kind != ClosureVariableKind::Normal
             {
                 return Err(RuntimeError::Engine(Error::internal(
-                    "implemented global declaration descriptor is not lexical",
+                    "global declaration descriptor has non-global binding metadata",
                 )));
             }
             let requires_name = descriptor.kind == ClosureVariableKind::FunctionName
@@ -10558,9 +10658,13 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                         "global declaration descriptor has no name",
                     ))
                 })?;
-                if !global_declaration_names.insert(name.utf16_units().collect::<Vec<_>>()) {
+                let key = name.utf16_units().collect::<Vec<_>>();
+                if global_declaration_names
+                    .insert(key, descriptor.is_lexical)
+                    .is_some_and(|previous_is_lexical| previous_is_lexical || descriptor.is_lexical)
+                {
                     return Err(RuntimeError::Engine(Error::internal(
-                        "duplicate global declaration descriptor name",
+                        "duplicate lexical global declaration descriptor name",
                     )));
                 }
             }
@@ -10802,6 +10906,16 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                 {
                     return Err(RuntimeError::Engine(Error::internal(
                         "global closure opcode referenced a non-global closure descriptor",
+                    )));
+                }
+                crate::bytecode::Instruction::PutVarInit(index)
+                    if function
+                        .closure_variables()
+                        .get(usize::from(*index))
+                        .is_some_and(|descriptor| !descriptor.is_lexical) =>
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "global lexical initializer referenced an ordinary descriptor",
                     )));
                 }
                 crate::bytecode::Instruction::GetLocal(index)
@@ -21070,6 +21184,12 @@ mod tests {
                 Instruction::SetVarRef(0),
                 Instruction::Return,
             ],
+            vec![
+                Instruction::PushI32(1),
+                Instruction::PutVarInit(0),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
         ] {
             reject(UnlinkedFunction::new_with_closure_variables(
                 code,
@@ -21094,7 +21214,7 @@ mod tests {
     }
 
     #[test]
-    fn publication_rejects_duplicate_global_declaration_descriptors() {
+    fn publication_rejects_duplicate_lexical_global_declaration_descriptors() {
         let runtime = Runtime::new();
         let context = runtime.new_context();
         let descriptor = ClosureVariable {
@@ -21123,6 +21243,48 @@ mod tests {
             Err(RuntimeError::Engine(_))
         ));
         assert_eq!(runtime.heap_counts().function_bytecode_nodes, 0);
+    }
+
+    #[test]
+    fn publication_accepts_duplicate_program_var_declaration_descriptors() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let descriptor = ClosureVariable {
+            source: ClosureSource::GlobalDeclaration,
+            name: ClosureVariableName::Constant(0),
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+        };
+        let function = UnlinkedFunction::new_with_closure_variables(
+            vec![Instruction::GetVar(0), Instruction::Return],
+            vec![
+                UnlinkedConstant::primitive(Value::String(JsString::from_static("duplicateVar")))
+                    .unwrap(),
+            ],
+            FunctionMetadata {
+                closure_count: 2,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![descriptor, descriptor],
+        );
+        let function = runtime
+            .publish_unlinked_function(context.realm, function)
+            .unwrap();
+
+        assert_eq!(context.execute(&function).unwrap(), Value::Undefined);
+        let key = runtime.intern_property_key("duplicateVar").unwrap();
+        let global = context.global_object().unwrap();
+        assert_eq!(
+            context.get_own_property(&global, &key).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Undefined,
+                writable: true,
+                enumerable: true,
+                configurable: false,
+            })
+        );
     }
 
     #[test]
