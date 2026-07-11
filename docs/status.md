@@ -129,6 +129,17 @@ claim full parity.
   covered by a real upstream-oracle differential suite. The implemented VM
   unary, arithmetic, exponentiation, bitwise, shift and relational operators
   route object operands through completion-aware Number-hint `ToPrimitive`.
+  Decimal Number-to-string now routes through the shared safe-Rust formatter
+  substrate rather than an external dtoa crate. Its exact BigUint rational
+  rewrite follows pinned `dtoa.c` FREE RNDN selection and also stages radix
+  2–36, FRAC/FIXED RNDNA, forced exponent, precision and `ToInt32Sat` entry
+  points without publishing `%Number%` early. A pinned differential reconstructs
+  85 raw binary64 bit patterns and compares 4,250 radix/fixed/exponential/
+  precision strings, including subnormals, signed zero and non-finite values.
+  BigInt-to-binary64 is a distinct ties-to-even path with signed-infinity
+  overflow and its own constructor-oriented differential; ordinary `ToNumber`
+  still correctly rejects BigInt. The Number realm slot remains absent until
+  global parser identity aliases and the full intrinsic graph are ready.
   Unary `~` and binary `&`, `^`, `|` match QuickJS's signed modulo-2^32
   `ToInt32` Number path and its infinite-width BigInt two's-complement path.
   Right-associative `**` is parsed

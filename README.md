@@ -64,6 +64,16 @@ Rust `f64::powf` plus QuickJS's `±1`/non-finite-exponent correction, with a
 pinned differential locking the observed libc-`pow` results. Its BigInt path
 preserves negative-exponent errors, constant shortcuts, and exact limb
 preallocation boundaries.
+The crate-wide Number-to-string path now uses a safe-Rust rewrite of pinned
+QuickJS `dtoa.c`: exact BigUint rational arithmetic implements decimal FREE
+formatting today and has tested-but-not-yet-published radix 2–36, fixed,
+exponential, and precision entry points ready for the complete `%Number%`
+intrinsic. FREE uses ties-to-even shortest-roundtrip selection, while explicit
+digit modes use ties-away-from-zero. A deterministic bit-pattern differential
+locks those strings against QuickJS, and BigInt has a separately differenced
+ties-to-even/overflow conversion for the future `Number(BigInt)` path. The
+Number realm prototype remains absent until its parser aliases and full 17/7
+constructor/prototype surface can be published atomically.
 Binary `??` uses QuickJS's shared short-circuit join for a chain, preserves the
 selected operand without coercion, and enforces the unparenthesized
 `??`/`&&`/`||` mixing restriction. The same arithmetic, exponentiation, shift,

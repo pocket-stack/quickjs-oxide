@@ -613,6 +613,7 @@ impl VarRefData {
 /// prematurely generic raw-value container.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PrimitiveObjectData {
+    Number(f64),
     Boolean(bool),
 }
 
@@ -620,6 +621,7 @@ impl PrimitiveObjectData {
     #[must_use]
     pub const fn kind(&self) -> PrimitiveKind {
         match self {
+            Self::Number(_) => PrimitiveKind::Number,
             Self::Boolean(_) => PrimitiveKind::Boolean,
         }
     }
@@ -688,6 +690,9 @@ pub enum NativeFunctionId {
     PrimitiveConstructor(PrimitiveKind),
     PrimitivePrototypeToString(PrimitiveKind),
     PrimitivePrototypeValueOf(PrimitiveKind),
+    GlobalNumberParse(NumberParseKind),
+    NumberPredicate(NumberPredicateKind),
+    NumberPrototypeFormat(NumberFormatKind),
     ErrorConstructor(ErrorConstructorKind),
     ErrorPrototypeToString,
     ErrorIsError,
@@ -734,6 +739,33 @@ impl PrimitiveKind {
     pub const fn index(self) -> usize {
         self as usize
     }
+}
+
+/// Global numeric prefix parsers which are also captured by `%Number%` as
+/// identity-preserving `parseInt` and `parseFloat` aliases.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NumberParseKind {
+    ParseInt,
+    ParseFloat,
+}
+
+/// Non-coercing numeric predicates installed as static `%Number%` methods.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NumberPredicateKind {
+    IsNaN,
+    IsFinite,
+    IsInteger,
+    IsSafeInteger,
+}
+
+/// Number-specific prototype formatting operations. The ordinary `toString`
+/// and `valueOf` methods continue to use the shared primitive selectors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NumberFormatKind {
+    ToExponential,
+    ToFixed,
+    ToPrecision,
+    ToLocaleString,
 }
 
 /// Typed replacement for the magic selector shared by QuickJS's function
@@ -807,7 +839,10 @@ impl NativeFunctionId {
             | Self::ObjectPrototypeToLocaleString
             | Self::ObjectPrototypeValueOf
             | Self::PrimitivePrototypeToString(_)
-            | Self::PrimitivePrototypeValueOf(_) => NativeFunctionDescriptor {
+            | Self::PrimitivePrototypeValueOf(_)
+            | Self::GlobalNumberParse(_)
+            | Self::NumberPredicate(_)
+            | Self::NumberPrototypeFormat(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::Generic,
             },
             Self::FunctionConstructor(_) | Self::PrimitiveConstructor(_) => {
@@ -2972,8 +3007,14 @@ mod tests {
     fn primitive_object_payload_category_is_structurally_validated() {
         let mut heap = Heap::new();
         let shape = empty_shape(&mut heap);
-        let mut invalid =
-            ObjectData::primitive(shape, Vec::new(), PrimitiveObjectData::Boolean(false));
+        let number_payload = PrimitiveObjectData::Number(f64::NAN);
+        assert_eq!(number_payload.kind(), PrimitiveKind::Number);
+        assert_eq!(
+            PrimitiveObjectData::Boolean(false).kind(),
+            PrimitiveKind::Boolean
+        );
+
+        let mut invalid = ObjectData::primitive(shape, Vec::new(), number_payload.clone());
         invalid.kind = ObjectKind::Ordinary;
         assert_eq!(
             heap.allocate_object(invalid),
@@ -2983,7 +3024,7 @@ mod tests {
         );
         assert_eq!(heap.counts().object_nodes, 0);
 
-        let object = heap
+        let boolean = heap
             .allocate_object(ObjectData::primitive(
                 shape,
                 Vec::new(),
@@ -2991,12 +3032,46 @@ mod tests {
             ))
             .unwrap();
         assert!(matches!(
-            heap.object(object).unwrap().payload,
+            heap.object(boolean).unwrap().payload,
             ObjectPayload::Primitive(PrimitiveObjectData::Boolean(false))
         ));
-        heap.release_object(object).unwrap();
+
+        let number = heap
+            .allocate_object(ObjectData::primitive(shape, Vec::new(), number_payload))
+            .unwrap();
+        let number_data = heap.object(number).unwrap();
+        assert!(matches!(
+            &number_data.payload,
+            ObjectPayload::Primitive(PrimitiveObjectData::Number(value)) if value.is_nan()
+        ));
+        assert_eq!(object_edges(number_data), vec![RawId::Shape(shape)]);
+        assert_eq!(object_atoms(number_data).count(), 0);
+
+        heap.release_object(number).unwrap();
+        heap.release_object(boolean).unwrap();
         heap.release_shape(shape).unwrap();
         assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn number_native_selectors_use_generic_cproto() {
+        let targets = [
+            NativeFunctionId::GlobalNumberParse(NumberParseKind::ParseInt),
+            NativeFunctionId::GlobalNumberParse(NumberParseKind::ParseFloat),
+            NativeFunctionId::NumberPredicate(NumberPredicateKind::IsNaN),
+            NativeFunctionId::NumberPredicate(NumberPredicateKind::IsFinite),
+            NativeFunctionId::NumberPredicate(NumberPredicateKind::IsInteger),
+            NativeFunctionId::NumberPredicate(NumberPredicateKind::IsSafeInteger),
+            NativeFunctionId::NumberPrototypeFormat(NumberFormatKind::ToExponential),
+            NativeFunctionId::NumberPrototypeFormat(NumberFormatKind::ToFixed),
+            NativeFunctionId::NumberPrototypeFormat(NumberFormatKind::ToPrecision),
+            NativeFunctionId::NumberPrototypeFormat(NumberFormatKind::ToLocaleString),
+        ];
+
+        for target in targets {
+            assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
     }
 
     fn one_slot_shape(heap: &mut Heap) -> ShapeId {

@@ -303,19 +303,8 @@ impl Value {
 
 #[must_use]
 pub fn number_to_string(value: f64) -> String {
-    if value.is_nan() {
-        return "NaN".to_owned();
-    }
-    if value == f64::INFINITY {
-        return "Infinity".to_owned();
-    }
-    if value == f64::NEG_INFINITY {
-        return "-Infinity".to_owned();
-    }
-    if value == 0.0 {
-        return "0".to_owned();
-    }
-    ryu_js::Buffer::new().format(value).to_owned()
+    crate::number::to_string_radix(value, 10)
+        .expect("decimal is always a valid Number formatting radix")
 }
 
 fn string_to_number(value: &JsString) -> f64 {

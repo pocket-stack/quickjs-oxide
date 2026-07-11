@@ -6934,6 +6934,11 @@ impl Runtime {
             NativeFunctionId::PrimitivePrototypeValueOf(kind) => {
                 self.call_primitive_prototype_value_of(realm, kind, invocation)
             }
+            NativeFunctionId::GlobalNumberParse(_)
+            | NativeFunctionId::NumberPredicate(_)
+            | NativeFunctionId::NumberPrototypeFormat(_) => Err(RuntimeError::Invariant(
+                "unpublished Number native reached dispatch",
+            )),
             NativeFunctionId::ErrorConstructor(kind) => {
                 self.call_error_constructor(realm, kind, invocation, arguments)
             }

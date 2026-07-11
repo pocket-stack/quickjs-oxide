@@ -14,6 +14,7 @@ pub mod error;
 pub mod function;
 pub mod heap;
 pub mod lexer;
+pub mod number;
 pub mod object;
 pub mod property;
 pub mod runtime;

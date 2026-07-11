@@ -211,6 +211,23 @@ impl JsBigInt {
         }
     }
 
+    /// Convert this integer to the nearest IEEE-754 binary64 value.
+    ///
+    /// This is the conversion used by the `Number` constructor's `ToNumeric`
+    /// path. It is deliberately separate from ordinary `ToNumber`, which must
+    /// continue to reject BigInt primitives. `num-bigint` retains sticky lower
+    /// bits before the final hardware conversion, yielding round-to-nearest,
+    /// ties-to-even and signed infinity on overflow like pinned QuickJS.
+    #[must_use]
+    pub fn to_f64(&self) -> f64 {
+        match &self.0 {
+            BigIntRepr::Short(value) => *value as f64,
+            BigIntRepr::Heap(value) => value
+                .to_f64()
+                .expect("an arbitrary-precision integer always has an f64 image"),
+        }
+    }
+
     /// The unsigned magnitude bit length (`0` for zero).
     #[must_use]
     pub fn magnitude_bits(&self) -> u64 {
@@ -1353,6 +1370,23 @@ mod tests {
             bigint("123456789012345678901234567890"),
             bigint("123456789012345678901234567890")
         );
+    }
+
+    #[test]
+    fn conversion_to_f64_rounds_ties_to_even_and_overflows_like_quickjs() {
+        assert_eq!(JsBigInt::from(42).to_f64(), 42.0);
+        assert_eq!(bigint("9007199254740993").to_f64(), 9_007_199_254_740_992.0);
+        assert_eq!(bigint("9007199254740995").to_f64(), 9_007_199_254_740_996.0);
+        assert_eq!(
+            bigint("-9007199254740995").to_f64(),
+            -9_007_199_254_740_996.0
+        );
+
+        let two_to_1023 = JsBigInt::one().shl(&JsBigInt::from(1023)).unwrap();
+        assert_eq!(two_to_1023.to_f64(), 2.0_f64.powi(1023));
+        let two_to_1024 = two_to_1023.shl(&JsBigInt::one()).unwrap();
+        assert_eq!(two_to_1024.to_f64(), f64::INFINITY);
+        assert_eq!(two_to_1024.neg().unwrap().to_f64(), f64::NEG_INFINITY);
     }
 
     #[test]
