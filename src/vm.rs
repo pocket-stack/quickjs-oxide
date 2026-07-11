@@ -84,6 +84,10 @@ pub(crate) trait VmHost {
     /// a no-op.
     fn ensure_backtrace(&mut self, value: &Value) -> Result<(), Error>;
     fn load_constant(&mut self, index: u32) -> Result<Value, Error>;
+    /// Build the atom-named diagnostic for `ThrowReadOnly`. Runtime execution
+    /// resolves the constant through its atom table; detached execution has no
+    /// table and formats the verified String constant directly.
+    fn read_only_error(&mut self, index: u32) -> Result<Error, Error>;
     fn type_of(&mut self, value: &Value) -> Result<&'static str, Error>;
     fn box_primitive(&mut self, value: Value) -> Result<Value, Error>;
     fn to_primitive(&mut self, value: Value, hint: ToPrimitiveHint) -> Result<Completion, Error>;
@@ -168,6 +172,19 @@ impl VmHost for DetachedHost<'_> {
             .constant(index)
             .cloned()
             .ok_or_else(|| Error::internal("constant index is out of bounds"))
+    }
+
+    fn read_only_error(&mut self, index: u32) -> Result<Error, Error> {
+        let Value::String(name) = self.load_constant(index)? else {
+            return Err(Error::internal(
+                "read-only binding opcode referenced a non-string constant",
+            ));
+        };
+        let mut message = crate::error::NativeErrorMessage::new();
+        message.push_utf8("'");
+        name.push_atom_get_str_to(&mut message);
+        message.push_utf8("' is read-only");
+        Ok(Error::from_native_message(ErrorKind::Type, message))
     }
 
     fn type_of(&mut self, value: &Value) -> Result<&'static str, Error> {
@@ -504,15 +521,7 @@ impl CallFrame {
                 }
                 Instruction::ThrowReadOnly(index) => {
                     self.pop()?;
-                    let Value::String(name) = host.load_constant(*index)? else {
-                        return Err(Error::internal(
-                            "read-only binding opcode referenced a non-string constant",
-                        ));
-                    };
-                    return Err(Error::new(
-                        ErrorKind::Type,
-                        format!("'{name}' is read-only"),
-                    ));
+                    return Err(host.read_only_error(*index)?);
                 }
                 Instruction::Undefined => self.stack.push(Value::Undefined),
                 Instruction::Null => self.stack.push(Value::Null),

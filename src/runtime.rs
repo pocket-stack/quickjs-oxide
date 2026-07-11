@@ -17,7 +17,7 @@ use crate::compiler::{
     CompileOptions, DEFAULT_EVAL_FILENAME, compile_unlinked_script_with_filename,
 };
 use crate::debug::{DebugInfoMode, LineColumn, QuickJsSourceLocator};
-use crate::error::{Error, ErrorKind, NativeErrorKind};
+use crate::error::{Error, ErrorKind, NativeErrorKind, NativeErrorMessage};
 use crate::function::{
     FunctionBytecodeRef, UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug,
 };
@@ -166,66 +166,6 @@ struct NativeArguments {
 enum NativeConversion<T> {
     Value(T),
     Throw(Value),
-}
-
-/// QuickJS formats every native `JS_Throw*Error` message through
-/// `char buf[256]` before constructing the JavaScript String. Keep the raw
-/// byte boundary here: truncation may split UTF-8 and `JS_NewString` then
-/// applies the engine's WTF-8/replacement decoder to the retained prefix.
-struct NativeErrorMessage {
-    bytes: [u8; 256],
-    len: usize,
-}
-
-impl NativeErrorMessage {
-    fn new() -> Self {
-        Self {
-            bytes: [0; 256],
-            len: 0,
-        }
-    }
-
-    fn from_utf8(value: &str) -> Self {
-        let mut message = Self::new();
-        message.push_c_string_bytes(value.bytes());
-        message
-    }
-
-    fn push_bytes(&mut self, bytes: impl IntoIterator<Item = u8>) {
-        for byte in bytes {
-            if self.len == self.bytes.len() - 1 {
-                break;
-            }
-            self.bytes[self.len] = byte;
-            self.len += 1;
-        }
-    }
-
-    fn push_c_string_bytes(&mut self, bytes: impl IntoIterator<Item = u8>) {
-        for byte in bytes {
-            if byte == 0 || self.len == self.bytes.len() - 1 {
-                break;
-            }
-            self.bytes[self.len] = byte;
-            self.len += 1;
-        }
-    }
-
-    fn push_utf8(&mut self, value: &str) {
-        self.push_bytes(value.bytes());
-    }
-
-    fn push_js_c_string(&mut self, value: &JsString) {
-        self.push_c_string_bytes(value.wtf8_bytes());
-    }
-
-    fn into_js_string(self) -> Result<JsString, JsStringError> {
-        let visible_len = self.bytes[..self.len]
-            .iter()
-            .position(|byte| *byte == 0)
-            .unwrap_or(self.len);
-        JsString::try_from_bytes(&self.bytes[..visible_len])
-    }
 }
 
 enum Compilation {
@@ -486,7 +426,7 @@ enum VmPropertyKeyConversion {
 }
 
 impl RuntimeVmHost {
-    fn constant_property_key(&self, index: u32) -> Result<(JsString, PropertyKey), Error> {
+    fn constant_property_key(&self, index: u32) -> Result<PropertyKey, Error> {
         let name = match usize::try_from(index)
             .ok()
             .and_then(|index| self.constants.get(index))
@@ -503,7 +443,7 @@ impl RuntimeVmHost {
             .runtime
             .intern_property_key_js_string(&name)
             .map_err(|error| Error::internal(error.to_string()))?;
-        Ok((name, key))
+        Ok(key)
     }
 
     /// QuickJS `JS_ValueToAtom` / `JS_ToPropertyKey` at the VM/runtime
@@ -570,20 +510,21 @@ impl RuntimeVmHost {
         match action {
             PropertySetAction::Complete => Ok(Completion::Return(Value::Undefined)),
             PropertySetAction::Rejected(_) if !strict => Ok(Completion::Return(Value::Undefined)),
-            PropertySetAction::Rejected(rejection) => {
-                let message = match rejection {
-                    PropertySetRejection::ReadOnly => {
-                        let name = self
-                            .runtime
-                            .property_key_to_js_string(key)
-                            .map_err(runtime_error_to_vm_error)?;
-                        format!("'{}' is read-only", name.to_utf8_lossy())
-                    }
-                    PropertySetRejection::NoSetter => "no setter for property".to_owned(),
-                    PropertySetRejection::NotExtensible => "object is not extensible".to_owned(),
-                    PropertySetRejection::NotObject => "not an object".to_owned(),
-                };
-                Err(Error::new(ErrorKind::Type, message))
+            PropertySetAction::Rejected(PropertySetRejection::ReadOnly) => {
+                let error = self
+                    .runtime
+                    .native_atom_error(ErrorKind::Type, "'", key, "' is read-only")
+                    .map_err(runtime_error_to_vm_error)?;
+                Err(error)
+            }
+            PropertySetAction::Rejected(PropertySetRejection::NoSetter) => {
+                Err(Error::new(ErrorKind::Type, "no setter for property"))
+            }
+            PropertySetAction::Rejected(PropertySetRejection::NotExtensible) => {
+                Err(Error::new(ErrorKind::Type, "object is not extensible"))
+            }
+            PropertySetAction::Rejected(PropertySetRejection::NotObject) => {
+                Err(Error::new(ErrorKind::Type, "not an object"))
             }
             PropertySetAction::Call {
                 setter,
@@ -600,7 +541,7 @@ impl RuntimeVmHost {
         &mut self,
         base: Value,
         key: &PropertyKey,
-        static_name: Option<&JsString>,
+        static_name: bool,
     ) -> Result<Completion, Error> {
         match &base {
             Value::Null | Value::Undefined => {
@@ -609,16 +550,23 @@ impl RuntimeVmHost {
                 } else {
                     "undefined"
                 };
-                let message = static_name.map_or_else(
-                    || format!("cannot read property of {base_name}"),
-                    |name| {
-                        format!(
-                            "cannot read property '{}' of {base_name}",
-                            name.to_utf8_lossy()
-                        )
-                    },
-                );
-                Err(Error::new(ErrorKind::Type, message))
+                if static_name {
+                    let suffix = if matches!(base, Value::Null) {
+                        "' of null"
+                    } else {
+                        "' of undefined"
+                    };
+                    let error = self
+                        .runtime
+                        .native_atom_error(ErrorKind::Type, "cannot read property '", key, suffix)
+                        .map_err(runtime_error_to_vm_error)?;
+                    Err(error)
+                } else {
+                    Err(Error::new(
+                        ErrorKind::Type,
+                        format!("cannot read property of {base_name}"),
+                    ))
+                }
             }
             Value::Object(object) => {
                 let action = self
@@ -697,22 +645,16 @@ impl RuntimeVmHost {
                     .map_err(runtime_error_to_vm_error)?
             }
             Value::Null | Value::Undefined => {
-                let base_name = if matches!(base, Value::Null) {
-                    "null"
+                let suffix = if matches!(base, Value::Null) {
+                    "' of null"
                 } else {
-                    "undefined"
+                    "' of undefined"
                 };
-                let name = self
+                let error = self
                     .runtime
-                    .property_key_to_js_string(key)
+                    .native_atom_error(ErrorKind::Type, "cannot set property '", key, suffix)
                     .map_err(runtime_error_to_vm_error)?;
-                return Err(Error::new(
-                    ErrorKind::Type,
-                    format!(
-                        "cannot set property '{}' of {base_name}",
-                        name.to_utf8_lossy()
-                    ),
-                ));
+                return Err(error);
             }
             Value::String(_) => {
                 // Primitive String [[Set]] walks the realm's class prototype
@@ -806,6 +748,13 @@ impl VmHost for RuntimeVmHost {
         }
     }
 
+    fn read_only_error(&mut self, index: u32) -> Result<Error, Error> {
+        let key = self.constant_property_key(index)?;
+        self.runtime
+            .native_atom_error(ErrorKind::Type, "'", &key, "' is read-only")
+            .map_err(runtime_error_to_vm_error)
+    }
+
     fn type_of(&mut self, value: &Value) -> Result<&'static str, Error> {
         let Value::Object(object) = value else {
             return Ok(value.type_of());
@@ -884,7 +833,7 @@ impl VmHost for RuntimeVmHost {
             Error::internal("engine fault reached JavaScript error materialization")
         })?;
         self.runtime
-            .new_native_error(self.current_realm, kind, error.message())
+            .new_native_error_from_error(self.current_realm, kind, &error)
             .map_err(runtime_error_to_vm_error)
     }
 
@@ -1006,15 +955,12 @@ impl VmHost for RuntimeVmHost {
 
         let key = PropertyKey::from_borrowed_atom(self.runtime.clone(), atom)
             .map_err(|error| Error::internal(error.to_string()))?;
-        let name = self
-            .runtime
-            .property_key_to_js_string(&key)
-            .map_err(runtime_error_to_vm_error)?;
         if cell.is_lexical {
-            return Err(Error::new(
-                ErrorKind::Reference,
-                format!("{} is not initialized", name.to_utf8_lossy()),
-            ));
+            let error = self
+                .runtime
+                .native_atom_error(ErrorKind::Reference, "", &key, " is not initialized")
+                .map_err(runtime_error_to_vm_error)?;
+            return Err(error);
         }
         let global_object = self
             .runtime
@@ -1028,10 +974,11 @@ impl VmHost for RuntimeVmHost {
             return Ok(completion);
         }
         if throw_if_missing {
-            Err(Error::new(
-                ErrorKind::Reference,
-                format!("'{}' is not defined", name.to_utf8_lossy()),
-            ))
+            let error = self
+                .runtime
+                .native_atom_error(ErrorKind::Reference, "'", &key, "' is not defined")
+                .map_err(runtime_error_to_vm_error)?;
+            Err(error)
         } else {
             Ok(Completion::Return(Value::Undefined))
         }
@@ -1118,23 +1065,20 @@ impl VmHost for RuntimeVmHost {
             .clone();
         let key = PropertyKey::from_borrowed_atom(self.runtime.clone(), atom)
             .map_err(|error| Error::internal(error.to_string()))?;
-        let name = self
-            .runtime
-            .property_key_to_js_string(&key)
-            .map_err(runtime_error_to_vm_error)?;
-
         if cell.is_lexical {
             if matches!(cell.value, RawValue::Uninitialized) && !initialize {
-                return Err(Error::new(
-                    ErrorKind::Reference,
-                    format!("{} is not initialized", name.to_utf8_lossy()),
-                ));
+                let error = self
+                    .runtime
+                    .native_atom_error(ErrorKind::Reference, "", &key, " is not initialized")
+                    .map_err(runtime_error_to_vm_error)?;
+                return Err(error);
             }
             if cell.is_const && !initialize {
-                return Err(Error::new(
-                    ErrorKind::Type,
-                    format!("'{}' is read-only", name.to_utf8_lossy()),
-                ));
+                let error = self
+                    .runtime
+                    .native_atom_error(ErrorKind::Type, "'", &key, "' is read-only")
+                    .map_err(runtime_error_to_vm_error)?;
+                return Err(error);
             }
             self.runtime
                 .write_var_ref(root, value)
@@ -1158,10 +1102,11 @@ impl VmHost for RuntimeVmHost {
             .has_property(&global_object, &key)
             .map_err(runtime_error_to_vm_error)?;
         if strict && !exists {
-            return Err(Error::new(
-                ErrorKind::Reference,
-                format!("'{}' is not defined", name.to_utf8_lossy()),
-            ));
+            let error = self
+                .runtime
+                .native_atom_error(ErrorKind::Reference, "'", &key, "' is not defined")
+                .map_err(runtime_error_to_vm_error)?;
+            return Err(error);
         }
         match self
             .runtime
@@ -1170,10 +1115,13 @@ impl VmHost for RuntimeVmHost {
         {
             PropertySetAction::Complete => Ok(Completion::Return(Value::Undefined)),
             PropertySetAction::Rejected(_) if !strict => Ok(Completion::Return(Value::Undefined)),
-            PropertySetAction::Rejected(PropertySetRejection::ReadOnly) => Err(Error::new(
-                ErrorKind::Type,
-                format!("'{}' is read-only", name.to_utf8_lossy()),
-            )),
+            PropertySetAction::Rejected(PropertySetRejection::ReadOnly) => {
+                let error = self
+                    .runtime
+                    .native_atom_error(ErrorKind::Type, "'", &key, "' is read-only")
+                    .map_err(runtime_error_to_vm_error)?;
+                Err(error)
+            }
             PropertySetAction::Rejected(PropertySetRejection::NoSetter) => {
                 Err(Error::new(ErrorKind::Type, "no setter for property"))
             }
@@ -1195,8 +1143,8 @@ impl VmHost for RuntimeVmHost {
     }
 
     fn get_field(&mut self, base: Value, key_index: u32) -> Result<Completion, Error> {
-        let (name, key) = self.constant_property_key(key_index)?;
-        self.get_property_with_key(base, &key, Some(&name))
+        let key = self.constant_property_key(key_index)?;
+        self.get_property_with_key(base, &key, true)
     }
 
     fn get_property(&mut self, base: Value, key: Value) -> Result<Completion, Error> {
@@ -1217,7 +1165,7 @@ impl VmHost for RuntimeVmHost {
             VmPropertyKeyConversion::Key(key) => key,
             VmPropertyKeyConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        self.get_property_with_key(base, &key, None)
+        self.get_property_with_key(base, &key, false)
     }
 
     fn convert_property_key(&mut self, key: Value) -> Result<Completion, Error> {
@@ -1265,7 +1213,7 @@ impl VmHost for RuntimeVmHost {
         value: Value,
         strict: bool,
     ) -> Result<Completion, Error> {
-        let (_, key) = self.constant_property_key(key_index)?;
+        let key = self.constant_property_key(key_index)?;
         self.set_property_with_key(base, &key, value, strict)
     }
 
@@ -1951,6 +1899,28 @@ impl Runtime {
             return Err(RuntimeError::WrongRuntime("property key"));
         }
         Ok(self.0.state.borrow().atoms.to_js_string(key.atom())?)
+    }
+
+    fn native_atom_error(
+        &self,
+        kind: ErrorKind,
+        prefix: &str,
+        key: &PropertyKey,
+        suffix: &str,
+    ) -> Result<Error, RuntimeError> {
+        let _operation = self.operation();
+        if !key.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("property key"));
+        }
+        let mut message = NativeErrorMessage::new();
+        message.push_utf8(prefix);
+        self.0
+            .state
+            .borrow()
+            .atoms
+            .push_atom_get_str(key.atom(), &mut message)?;
+        message.push_utf8(suffix);
+        Ok(Error::from_native_message(kind, message))
     }
 
     /// Allocate an ordinary object whose prototype is `prototype` or null.
@@ -3236,6 +3206,19 @@ impl Runtime {
         self.new_native_error_from_message(realm, kind, NativeErrorMessage::from_utf8(message))
     }
 
+    fn new_native_error_from_error(
+        &self,
+        realm: ContextId,
+        kind: NativeErrorKind,
+        error: &Error,
+    ) -> Result<Value, RuntimeError> {
+        let message = error
+            .native_message()
+            .cloned()
+            .unwrap_or_else(|| NativeErrorMessage::from_utf8(error.message()));
+        self.new_native_error_from_message(realm, kind, message)
+    }
+
     fn new_native_error_from_message(
         &self,
         realm: ContextId,
@@ -3259,17 +3242,17 @@ impl Runtime {
     /// `JS_ThrowError2(..., add_backtrace = FALSE)` construction path used by
     /// parser diagnostics, which prepend their explicit filename location
     /// before adding the active frame chain.
-    fn new_native_error_without_backtrace(
+    fn new_native_error_without_backtrace_from_error(
         &self,
         realm: ContextId,
         kind: NativeErrorKind,
-        message: &str,
+        error: &Error,
     ) -> Result<Value, RuntimeError> {
-        self.new_native_error_without_backtrace_from_message(
-            realm,
-            kind,
-            NativeErrorMessage::from_utf8(message),
-        )
+        let message = error
+            .native_message()
+            .cloned()
+            .unwrap_or_else(|| NativeErrorMessage::from_utf8(error.message()));
+        self.new_native_error_without_backtrace_from_message(realm, kind, message)
     }
 
     fn new_native_error_without_backtrace_from_message(
@@ -3291,7 +3274,7 @@ impl Runtime {
             &object,
             &key,
             &OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(Value::String(message.into_js_string()?)),
+                value: DescriptorField::Present(Value::String(message.to_js_string()?)),
                 writable: DescriptorField::Present(true),
                 enumerable: DescriptorField::Present(false),
                 configurable: DescriptorField::Present(true),
@@ -3485,6 +3468,29 @@ impl Runtime {
         initial_value: Option<Value>,
     ) -> Result<(), RuntimeError> {
         let key = self.intern_property_key(name)?;
+        self.create_global_lexical_for_key_test(realm, &key, is_const, initial_value)
+    }
+
+    #[cfg(test)]
+    fn create_global_lexical_js_string_for_test(
+        &self,
+        realm: ContextId,
+        name: &JsString,
+        is_const: bool,
+        initial_value: Option<Value>,
+    ) -> Result<(), RuntimeError> {
+        let key = self.intern_property_key_js_string(name)?;
+        self.create_global_lexical_for_key_test(realm, &key, is_const, initial_value)
+    }
+
+    #[cfg(test)]
+    fn create_global_lexical_for_key_test(
+        &self,
+        realm: ContextId,
+        key: &PropertyKey,
+        is_const: bool,
+        initial_value: Option<Value>,
+    ) -> Result<(), RuntimeError> {
         let (global_var_object, global_object, hidden) = {
             let state = self.0.state.borrow();
             let context = state.heap.context(realm)?;
@@ -3501,14 +3507,14 @@ impl Runtime {
             )
         };
         let global_var_object = ObjectRef::from_borrowed_handle(self.clone(), global_var_object)?;
-        if self.has_own_property(&global_var_object, &key)? {
+        if self.has_own_property(&global_var_object, key)? {
             return Err(RuntimeError::Invariant(
                 "test attempted to redeclare a global lexical binding",
             ));
         }
         let hidden = ObjectRef::from_borrowed_handle(self.clone(), hidden)?;
         let global_object = ObjectRef::from_borrowed_handle(self.clone(), global_object)?;
-        let root = if let Some(root) = self.own_var_ref_root(&global_object, &key)? {
+        let root = if let Some(root) = self.own_var_ref_root(&global_object, key)? {
             let (flags, value) = {
                 let state = self.0.state.borrow();
                 let object = state.heap.object(global_object.object_id())?;
@@ -3525,14 +3531,14 @@ impl Runtime {
                 self.new_var_ref(value, false, !flags.writable, ClosureVariableKind::Normal)?;
             self.store_property_slot(
                 &global_object,
-                &key,
+                key,
                 flags,
                 PropertySlot::VarRef(replacement.id()),
             )?;
             self.reset_var_ref_uninitialized(&root)?;
             root
-        } else if let Some(root) = self.own_var_ref_root(&hidden, &key)? {
-            if !self.delete_property(&hidden, &key)? {
+        } else if let Some(root) = self.own_var_ref_root(&hidden, key)? {
+            if !self.delete_property(&hidden, key)? {
                 return Err(RuntimeError::Invariant(
                     "hidden global VarRef property was not configurable",
                 ));
@@ -3547,7 +3553,7 @@ impl Runtime {
         }
         self.store_property_slot(
             &global_var_object,
-            &key,
+            key,
             PropertyFlags::data(!is_const, true, true),
             PropertySlot::VarRef(root.id()),
         )
@@ -4128,11 +4134,12 @@ impl Runtime {
             PropertySnapshot::VarRef { var_ref, flags } => {
                 let value = self.0.state.borrow().heap.var_ref(var_ref)?.value.clone();
                 if matches!(value, RawValue::Uninitialized) {
-                    let name = self.property_key_to_js_string(key)?.to_utf8_lossy();
-                    return Err(RuntimeError::Engine(Error::new(
+                    return Err(RuntimeError::Engine(self.native_atom_error(
                         ErrorKind::Reference,
-                        format!("{name} is not initialized"),
-                    )));
+                        "",
+                        key,
+                        " is not initialized",
+                    )?));
                 }
                 Ok(Some(CompleteOrdinaryPropertyDescriptor::Data {
                     value: self.root_raw_value(&value)?,
@@ -5023,9 +5030,9 @@ impl Runtime {
                     None
                 };
                 let exception = if error.kind() == ErrorKind::Syntax {
-                    self.new_native_error_without_backtrace(realm, kind, error.message())?
+                    self.new_native_error_without_backtrace_from_error(realm, kind, &error)?
                 } else {
-                    self.new_native_error(realm, kind, error.message())?
+                    self.new_native_error_from_error(realm, kind, &error)?
                 };
                 self.ensure_error_backtrace(&exception, false, explicit_location)?;
                 return Ok(Compilation::Throw(exception));
@@ -6104,7 +6111,7 @@ impl Runtime {
             {
                 let kind = NativeErrorKind::from_javascript_error(error.kind())
                     .expect("guard proved this is a JavaScript-visible native error");
-                let value = self.new_native_error(realm, kind, error.message())?;
+                let value = self.new_native_error_from_error(realm, kind, &error)?;
                 Ok(Completion::Throw(value))
             }
             result => result,
@@ -6442,11 +6449,9 @@ impl Runtime {
                 let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
                     return Err(RuntimeError::Engine(error));
                 };
-                Ok(NativeConversion::Throw(self.new_native_error(
-                    realm,
-                    kind,
-                    error.message(),
-                )?))
+                Ok(NativeConversion::Throw(
+                    self.new_native_error_from_error(realm, kind, &error)?,
+                ))
             }
         }
     }
@@ -6507,11 +6512,9 @@ impl Runtime {
                 let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
                     return Err(RuntimeError::Engine(error));
                 };
-                Ok(NativeConversion::Throw(self.new_native_error(
-                    realm,
-                    kind,
-                    error.message(),
-                )?))
+                Ok(NativeConversion::Throw(
+                    self.new_native_error_from_error(realm, kind, &error)?,
+                ))
             }
         }
     }
@@ -6541,11 +6544,9 @@ impl Runtime {
                 let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
                     return Err(RuntimeError::Engine(error));
                 };
-                Ok(NativeConversion::Throw(self.new_native_error(
-                    realm,
-                    kind,
-                    error.message(),
-                )?))
+                Ok(NativeConversion::Throw(
+                    self.new_native_error_from_error(realm, kind, &error)?,
+                ))
             }
         }
     }
@@ -7615,7 +7616,7 @@ impl Runtime {
         };
         let mut message = NativeErrorMessage::new();
         if let Some(name) = name {
-            message.push_js_c_string(&name);
+            name.push_c_string_to(&mut message);
             message.push_utf8(" is not a constructor");
         } else {
             message.push_utf8("not a constructor");
@@ -10825,7 +10826,7 @@ impl Context {
                     .expect("guard proved this is a JavaScript-visible native error");
                 let exception = self
                     .runtime
-                    .new_native_error(self.realm, kind, error.message())?;
+                    .new_native_error_from_error(self.realm, kind, &error)?;
                 self.runtime
                     .ensure_error_backtrace(&exception, false, None)?;
                 self.runtime.set_pending_exception(exception)?;
@@ -10898,7 +10899,7 @@ mod tests {
     use crate::JsBigInt;
     use crate::bytecode::{BytecodeFunction, Instruction};
     use crate::debug::{DebugInfoMode, LineColumn, Pc2LineEntry, Pc2LineTable};
-    use crate::error::NativeErrorKind;
+    use crate::error::{Error, ErrorKind, NativeErrorKind, NativeErrorMessage};
     use crate::function::{UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug};
     use crate::heap::{
         ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
@@ -10914,8 +10915,7 @@ mod tests {
 
     use super::{
         ActiveFrameKind, CallableExecution, DeferredRefOp, DynamicSourceBuilder, EvalOptions,
-        NativeErrorMessage, PropertyGetAction, PropertySetAction, Runtime, RuntimeError,
-        ToPrimitiveHint, VarRefRoot,
+        PropertyGetAction, PropertySetAction, Runtime, RuntimeError, ToPrimitiveHint, VarRefRoot,
     };
 
     #[test]
@@ -10925,7 +10925,7 @@ mod tests {
         embedded_nul.push_bytes([0, b'T', b'A', b'I', b'L']);
         assert_eq!(
             embedded_nul
-                .into_js_string()
+                .to_js_string()
                 .unwrap()
                 .utf16_units()
                 .collect::<Vec<_>>(),
@@ -10936,7 +10936,7 @@ mod tests {
         invalid_run.push_c_string_bytes([0x80, b'A', 0, b'B']);
         assert_eq!(
             invalid_run
-                .into_js_string()
+                .to_js_string()
                 .unwrap()
                 .utf16_units()
                 .collect::<Vec<_>>(),
@@ -10947,11 +10947,173 @@ mod tests {
         surrogate.push_c_string_bytes([0xed, 0xa0, 0x80, 0]);
         assert_eq!(
             surrogate
-                .into_js_string()
+                .to_js_string()
                 .unwrap()
                 .utf16_units()
                 .collect::<Vec<_>>(),
             [0xd800]
+        );
+    }
+
+    #[test]
+    fn native_error_sidecar_survives_atom_and_parser_materializers() {
+        fn message_units(
+            runtime: &Runtime,
+            context: &mut super::Context,
+            error: Value,
+        ) -> Vec<u16> {
+            let Value::Object(error) = error else {
+                panic!("native Error materializer did not return an object");
+            };
+            let key = runtime.intern_property_key("message").unwrap();
+            let Value::String(message) = context.get_property(&error, &key).unwrap() else {
+                panic!("native Error message was not a String");
+            };
+            message.utf16_units().collect()
+        }
+
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let spelling = JsString::try_from_utf16(
+            vec![u16::from(b'A'); 55]
+                .into_iter()
+                .chain([0xd83d, 0xde42]),
+        )
+        .unwrap();
+        let key = runtime.intern_property_key_js_string(&spelling).unwrap();
+        let atom_error = runtime
+            .native_atom_error(ErrorKind::Reference, "'", &key, "' is not defined")
+            .unwrap();
+        assert_eq!(
+            atom_error.message(),
+            format!("'{}�' is not defined", "A".repeat(55))
+        );
+        let materialized = runtime
+            .new_native_error_from_error(
+                context.realm,
+                NativeErrorKind::Reference,
+                &atom_error.clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            message_units(&runtime, &mut context, materialized),
+            [
+                vec![u16::from(b'\'')],
+                vec![u16::from(b'A'); 55],
+                vec![0xd83d],
+                "' is not defined".encode_utf16().collect(),
+            ]
+            .concat()
+        );
+
+        let mut raw = NativeErrorMessage::new();
+        raw.push_bytes([0xed, 0xa0, 0x80]);
+        let syntax_error = Error::from_native_message(ErrorKind::Syntax, raw);
+        let materialized = runtime
+            .new_native_error_without_backtrace_from_error(
+                context.realm,
+                NativeErrorKind::Syntax,
+                &syntax_error,
+            )
+            .unwrap();
+        assert_eq!(
+            message_units(&runtime, &mut context, materialized),
+            vec![0xd800]
+        );
+    }
+
+    #[test]
+    fn atom_named_vm_and_global_errors_use_the_runtime_atom_table() {
+        fn expected(prefix: &str, suffix: &str) -> Vec<u16> {
+            [
+                prefix.encode_utf16().collect(),
+                vec![u16::from(b'A'); 55],
+                vec![0xd83d],
+                suffix.encode_utf16().collect(),
+            ]
+            .concat()
+        }
+
+        fn global_get(
+            runtime: &Runtime,
+            context: &super::Context,
+            name: &JsString,
+            is_lexical: bool,
+        ) -> crate::FunctionBytecodeRef {
+            runtime
+                .publish_unlinked_function(
+                    context.realm,
+                    UnlinkedFunction::new_with_closure_variables(
+                        vec![Instruction::GetVar(0), Instruction::Return],
+                        vec![UnlinkedConstant::primitive(Value::String(name.clone())).unwrap()],
+                        FunctionMetadata {
+                            closure_count: 1,
+                            max_stack: 1,
+                            strict: true,
+                            ..FunctionMetadata::default()
+                        },
+                        vec![ClosureVariable {
+                            source: ClosureSource::Global,
+                            name: ClosureVariableName::Constant(0),
+                            is_lexical,
+                            is_const: false,
+                            kind: ClosureVariableKind::Normal,
+                        }],
+                    ),
+                )
+                .unwrap()
+        }
+
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let name = JsString::try_from_utf16(
+            vec![u16::from(b'A'); 55]
+                .into_iter()
+                .chain([0xd83d, 0xde42]),
+        )
+        .unwrap();
+
+        let read_only = runtime
+            .publish_unlinked_function(
+                context.realm,
+                UnlinkedFunction::new(
+                    vec![Instruction::Undefined, Instruction::ThrowReadOnly(0)],
+                    vec![UnlinkedConstant::primitive(Value::String(name.clone())).unwrap()],
+                    FunctionMetadata {
+                        max_stack: 1,
+                        strict: true,
+                        ..FunctionMetadata::default()
+                    },
+                ),
+            )
+            .unwrap();
+        assert_eq!(context.execute(&read_only), Err(RuntimeError::Exception));
+        assert_eq!(
+            take_error_message(&runtime, &mut context)
+                .utf16_units()
+                .collect::<Vec<_>>(),
+            expected("'", "' is read-only")
+        );
+
+        let missing = global_get(&runtime, &context, &name, false);
+        assert_eq!(context.execute(&missing), Err(RuntimeError::Exception));
+        assert_eq!(
+            take_error_message(&runtime, &mut context)
+                .utf16_units()
+                .collect::<Vec<_>>(),
+            expected("'", "' is not defined")
+        );
+
+        runtime
+            .create_global_lexical_js_string_for_test(context.realm, &name, false, None)
+            .unwrap();
+        let tdz = global_get(&runtime, &context, &name, true);
+        assert_eq!(context.execute(&tdz), Err(RuntimeError::Exception));
+        assert_eq!(
+            take_error_message(&runtime, &mut context)
+                .utf16_units()
+                .collect::<Vec<_>>(),
+            expected("", " is not initialized")
         );
     }
 

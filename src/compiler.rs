@@ -11,7 +11,7 @@
 use crate::bigint::JsBigInt;
 use crate::bytecode::{BytecodeFunction, Instruction, verify_parts};
 use crate::debug::{DebugInfoMode, Pc2LineEntry, Pc2LineTable, QuickJsSourceLocator, SourceOffset};
-use crate::error::{Error, ErrorKind, SourceLocation, SourceSpan};
+use crate::error::{Error, ErrorKind, NativeErrorMessage, SourceLocation, SourceSpan};
 use crate::function::{UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug};
 use crate::heap::{
     ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
@@ -21,7 +21,7 @@ use crate::lexer::{
     Identifier, Keyword, LexError, LexErrorKind, Lexer, NumberKind, NumericRadix, Punctuator, Span,
     Token, TokenKind,
 };
-use crate::value::{JsString, Value};
+use crate::value::{JsString, JsStringError, Value};
 use num_bigint::BigUint;
 use num_traits::ToPrimitive;
 use std::ops::Range;
@@ -462,7 +462,12 @@ impl<'source> Parser<'source> {
             let TokenKind::Identifier(identifier) = token.kind else {
                 return Err(self.syntax_here("expected an identifier in var declaration"));
             };
-            validate_identifier(&identifier, token.span, self.current_ir().strict, true)?;
+            validate_identifier(
+                &identifier,
+                token.span,
+                self.current_ir().strict,
+                IdentifierContext::Variable,
+            )?;
             if identifier.value == "arguments"
                 && !self
                     .current_ir()
@@ -1589,7 +1594,12 @@ impl<'source> Parser<'source> {
                 self.expect_punctuator(Punctuator::RightParen)?;
             }
             TokenKind::Identifier(identifier) => {
-                validate_identifier(&identifier, token.span, self.current_ir().strict, false)?;
+                validate_identifier(
+                    &identifier,
+                    token.span,
+                    self.current_ir().strict,
+                    IdentifierContext::Reference,
+                )?;
                 self.advance();
                 let operation =
                     self.emit_identifier(identifier.value, token.span, IdentifierAccess::Get)?;
@@ -1629,7 +1639,7 @@ impl<'source> Parser<'source> {
         let function_name_token =
             if let TokenKind::Identifier(identifier) = self.current().kind.clone() {
                 let span = self.current().span;
-                validate_identifier(&identifier, span, false, true)?;
+                validate_identifier(&identifier, span, false, IdentifierContext::FunctionName)?;
                 self.advance();
                 Some((identifier, span))
             } else {
@@ -1645,7 +1655,7 @@ impl<'source> Parser<'source> {
                 let TokenKind::Identifier(identifier) = token.kind else {
                     return Err(self.syntax_here("missing formal parameter"));
                 };
-                validate_identifier(&identifier, token.span, false, true)?;
+                validate_identifier(&identifier, token.span, false, IdentifierContext::Argument)?;
                 parameter_tokens.push((identifier.clone(), token.span));
                 parameters.push(identifier.value);
                 if parameters.len() > MAX_LOCAL_VARIABLES {
@@ -1676,10 +1686,10 @@ impl<'source> Parser<'source> {
             || directive_prologue_has_use_strict(&self.tokens[self.cursor..]);
         if strict {
             if let Some((identifier, span)) = &function_name_token {
-                validate_identifier(identifier, *span, true, true)?;
+                validate_identifier(identifier, *span, true, IdentifierContext::FunctionName)?;
             }
             for (index, (identifier, span)) in parameter_tokens.iter().enumerate() {
-                validate_identifier(identifier, *span, true, true)?;
+                validate_identifier(identifier, *span, true, IdentifierContext::Argument)?;
                 let parameter = &identifier.value;
                 if parameters[..index].contains(parameter) {
                     return Err(Error::syntax(
@@ -1917,11 +1927,19 @@ impl<'source> Parser<'source> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum IdentifierContext {
+    Reference,
+    Variable,
+    FunctionName,
+    Argument,
+}
+
 fn validate_identifier(
     identifier: &Identifier<'_>,
     span: Span,
     strict: bool,
-    binding: bool,
+    context: IdentifierContext,
 ) -> Result<(), Error> {
     if identifier.escaped_reserved_word
         || (strict
@@ -1929,21 +1947,40 @@ fn validate_identifier(
                 .keyword_hint
                 .is_some_and(strict_reserved_identifier))
     {
-        return Err(Error::syntax(
-            format!("'{}' is a reserved identifier", identifier.value),
-            source_span(span),
-        ));
+        return Err(syntax_atom_error(
+            "'",
+            &identifier.value,
+            "' is a reserved identifier",
+            span,
+        )?);
     }
-    if binding && strict && matches!(identifier.value.as_str(), "eval" | "arguments") {
-        return Err(Error::syntax(
-            format!(
-                "'{}' is not a valid strict-mode binding name",
-                identifier.value
-            ),
-            source_span(span),
-        ));
+    if strict
+        && !matches!(context, IdentifierContext::Reference)
+        && matches!(identifier.value.as_str(), "eval" | "arguments")
+    {
+        let message = match context {
+            IdentifierContext::Variable => "invalid variable name in strict mode",
+            IdentifierContext::FunctionName => "invalid function name in strict code",
+            IdentifierContext::Argument => "invalid argument name in strict code",
+            IdentifierContext::Reference => unreachable!("reference context was excluded"),
+        };
+        return Err(Error::syntax(message, source_span(span)));
     }
     Ok(())
+}
+
+fn syntax_atom_error(
+    prefix: &str,
+    atom: &str,
+    suffix: &str,
+    span: Span,
+) -> Result<Error, JsStringError> {
+    let atom = JsString::try_from_utf8(atom)?;
+    let mut message = NativeErrorMessage::new();
+    message.push_utf8(prefix);
+    atom.push_atom_get_str_to(&mut message);
+    message.push_utf8(suffix);
+    Ok(Error::from_native_message(ErrorKind::Syntax, message).with_span(source_span(span)))
 }
 
 const fn strict_reserved_identifier(keyword: Keyword) -> bool {

@@ -250,12 +250,25 @@ claim full parity.
   `JS_NewString`, and a split UTF-8 tail is decoded with the same replacement
   rules. The migrated not-constructor `%s` route streams the exact WTF-8
   function name, stops that argument at NUL, then continues its literal
-  suffix.
+  suffix. A private byte-message sidecar now crosses compiler and VM `Error`
+  transport without re-encoding through the public UTF-8 diagnostic cache.
+  The current atom-named Type, Reference and Syntax diagnostics additionally
+  reproduce `JS_AtomGetStr(..., char[64], 64)`. For table-backed text atoms,
+  only narrow all-ASCII spellings use the unbounded atom-pointer fast path; all
+  other text spellings use the scratch path, encode each UTF-16 code unit
+  independently, and stop before starting a unit once 58 bytes have already
+  been written. Argument NUL still stops `%s`
+  while the literal suffix continues, and the result then enters the shared
+  255-byte outer buffer. The migrated callers cover ordinary/global read-only
+  writes, fixed-name nullish reads, nullish writes, missing bindings, TDZ and
+  VarRef descriptor reads, VM `ThrowReadOnly`, and reserved-identifier
+  validation.
   Global `%String%`, the remaining 43 prototype own keys, Context-level
-  observable `ToString`, borrowed C-pointer/refcount ownership, remaining
-  segmented native-error formats and the atom-specific 64-byte scratch
-  boundary, and general recoverable allocator failure handling stay
-  unpublished.
+  observable `ToString`, borrowed C-pointer/refcount ownership, native atom
+  diagnostics attached to not-yet-implemented Array/private-field/module/
+  global-declaration surfaces, exact byte-sidecar migration for the remaining
+  numeric-parser and lexer diagnostic builders, and general recoverable
+  allocator failure handling stay unpublished.
   `%Number.prototype%` is a Number-class wrapper
   containing `+0` and owns the pinned ordered seven-key method surface. Its
   constructor owns the exact ordered 17-key surface: parser aliases captured
@@ -526,10 +539,14 @@ claim full parity.
   message/cause conversion, toString/isError, Object tags and Symbol failures.
   A separate pinned-oracle Error-stack differential covers nested VM faults,
   tail-call sites, eager Error construction, parse metadata, assignment marker
-  inheritance, CR/CRLF and Unicode line/column behavior. A Function-prototype
-  differential locks the implemented own-key prefix, poison-accessor identity
-  and frozen thrower, `call` forwarding/throws, lazy define behavior, and
-  `@@hasInstance` ordering, descriptors, short circuits and prototype errors.
+  inheritance, CR/CRLF and Unicode line/column behavior. A thirteen-input native
+  atom-Error differential drives a real strict read-only property assignment
+  and locks the narrow-ASCII fast path, byte-57/58 scratch boundary, UTF-16
+  surrogate-pair split, `%s` NUL handling, literal suffix and outer 255-byte
+  truncation against the pinned oracle. A Function-prototype differential locks
+  the implemented own-key prefix, poison-accessor identity and frozen thrower,
+  `call` forwarding/throws, lazy define behavior, and `@@hasInstance` ordering,
+  descriptors, short circuits and prototype errors.
   A separate `apply` differential covers conversion and Get ordering, every
   abrupt path, holes/inheritance/accessors and the real 65,534/65,535 boundary.
   A VM object-coercion differential covers Number/default hints, unary,
@@ -634,11 +651,14 @@ linearization, checked VM/native concat errors, valid-UTF-8/exact-UTF-16
 dynamic constructors, checked lexer/URI/Function-source builders, their
 distinct overflow ordering, arbitrary-byte `JS_NewStringLen` decoding, and
 owned WTF-8/CESU-8 payload export. Native Errors additionally share the
-255-byte visible payload of QuickJS's fixed formatter, with the exact
-not-constructor dynamic-name route. It does not publish the global
-constructor, remaining 43 own keys, Context/C pointer embedding semantics,
-the remaining native-error format/atom scratch paths, or general recoverable
-allocator failures.
+255-byte visible payload of QuickJS's fixed formatter; sidecar-bearing messages
+retain exact raw bytes across compiler/VM Error transport. They also implement
+the not-constructor dynamic name plus the current `JS_AtomGetStr`-backed
+read-only/nullish/binding/TDZ/reserved-identifier diagnostics. It does not
+publish the global constructor,
+remaining 43 own keys, Context/C pointer embedding semantics, atom diagnostics belonging
+to unimplemented language/builtin surfaces, exact byte-sidecar construction
+for every parser/lexer diagnostic, or general recoverable allocator failures.
 Prefix/postfix update expressions
 (including QuickJS's valid `++x ** 2` form) are implemented for the current
 identifier and ordinary fixed/computed member References. Sloppy
@@ -679,6 +699,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_native_error_format -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_native_error_atom_format -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_parse_kernel -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_number_parsers -- --nocapture
@@ -700,10 +722,12 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-parity-slice.sh
 ```
 
-The first seventeen commands run the dedicated Boolean, Symbol, String-exotic
-substrate, String UTF-16 prefix, String-conversion core, String-rope/byte/error
-kernels, global BaseObjects, complete Number-intrinsic and BigInt-intrinsic
-differentials. The full gate command checksum-verifies and builds the official
-test-only oracle, runs formatting, unit/integration/oracle tests, Clippy, and
-the Rust-only product gate. The oracle is never part of the product dependency
-graph or runtime.
+The eighteen direct commands above run the dedicated Boolean, Symbol,
+String-exotic substrate, String UTF-16 prefix, String-conversion core,
+String-rope/byte/native-Error kernels, global BaseObjects, complete Number-
+intrinsic and BigInt-intrinsic differentials. The atom-Error target contains
+thirteen pinned-oracle inputs in addition to its Rust-side expectation test. The
+full gate currently discovers all 40 `tests/oracle_*.rs` integration targets,
+checksum-verifies and builds the official test-only oracle, then runs
+formatting, unit/integration/oracle tests, Clippy, and the Rust-only product
+gate. The oracle is never part of the product dependency graph or runtime.

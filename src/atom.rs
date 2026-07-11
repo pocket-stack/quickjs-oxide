@@ -24,6 +24,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::error::NativeErrorMessage;
 use crate::value::{JsString, JsStringError};
 
 /// The tag used by `QuickJS` for immediate, non-negative integer atoms.
@@ -750,6 +751,28 @@ impl AtomTable {
         }
     }
 
+    /// Append the C-string argument produced by QuickJS
+    /// `JS_AtomGetStr(..., char buf[64], 64)` to a native Error formatter.
+    /// Integer and null atoms use their dedicated spellings, while table-backed
+    /// atoms preserve the exact flat narrow/wide representation selected when
+    /// they were interned.
+    pub(crate) fn push_atom_get_str(
+        &self,
+        atom: Atom,
+        output: &mut NativeErrorMessage,
+    ) -> Result<(), AtomError> {
+        if atom.is_null() {
+            output.push_utf8("<null>");
+            return Ok(());
+        }
+        match self.resolve(atom)?.spelling {
+            AtomSpelling::Integer(value) => output.push_utf8(&value.to_string()),
+            AtomSpelling::Text(text) => text.push_atom_get_str_to(output),
+            AtomSpelling::NoDescription => {}
+        }
+        Ok(())
+    }
+
     /// If `atom` is an ECMAScript array index, return its numeric value.
     ///
     /// The valid range is `0..=2^32 - 2`. Values through `2^31 - 1` are
@@ -1041,6 +1064,28 @@ mod tests {
         assert_eq!(atoms.to_string(integer).unwrap(), "42");
         assert_eq!(atoms.to_string(no_description).unwrap(), "");
         assert_eq!(atoms.resolve(Atom::NULL), Err(AtomError::NullAtom));
+    }
+
+    #[test]
+    fn atom_get_str_dispatches_null_integer_and_missing_description() {
+        let mut atoms = AtomTable::new();
+        let integer = atoms.intern("2147483647").unwrap();
+        let no_description = atoms.new_symbol(None).unwrap();
+
+        for (atom, expected) in [
+            (Atom::NULL, "<null>"),
+            (integer, "2147483647"),
+            (no_description, ""),
+        ] {
+            let mut message = NativeErrorMessage::new();
+            message.push_utf8("[");
+            atoms.push_atom_get_str(atom, &mut message).unwrap();
+            message.push_utf8("]");
+            assert_eq!(
+                message.to_js_string().unwrap().to_utf8_lossy(),
+                format!("[{expected}]")
+            );
+        }
     }
 
     #[test]

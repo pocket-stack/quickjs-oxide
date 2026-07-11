@@ -738,6 +738,22 @@ const QUICKJS_ACCEPTED_DIRECTIVE_EDGES: &[(&str, &str)] = &[
 ];
 
 const RUNTIME_ERROR_CASES: &[(&str, &str)] = &[
+    (
+        "strict variable binding syntax message",
+        "(function(){ 'use strict'; var eval; })",
+    ),
+    (
+        "strict argument binding syntax message",
+        "(function(arguments){ 'use strict'; })",
+    ),
+    (
+        "strict function-name syntax message",
+        "(function eval(){ 'use strict'; })",
+    ),
+    (
+        "strict reserved identifier syntax message",
+        "(function(){ 'use strict'; var impl\\u0065ments; })",
+    ),
     ("logical before nullish syntax message", "1 || 2 ?? 3"),
     ("nullish before logical syntax message", "1 ?? 2 || 3"),
     ("unparenthesized unary power syntax message", "-2 ** 2"),

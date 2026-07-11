@@ -70,9 +70,20 @@ WTF-8 and CESU-8 modes, including cross-rope surrogate pairs and interior NUL.
 Native Error construction now shares QuickJS's `char[256]` byte boundary:
 the 255-byte payload may split UTF-8 before `JS_NewString` decoding, and the
 implemented not-constructor `%s` path preserves WTF-8, C-string NUL and suffix
-ordering. Context-level observable `ToString`, borrowed C-pointer/refcount
-ABI, the remaining segmented native-error/64-byte atom formatting paths, and
-general recoverable allocator failures remain unfinished invariants.
+ordering. Sidecar-bearing native messages preserve exact raw bytes across
+compiler/VM `Error` transport without round-tripping through Rust UTF-8. The
+implemented atom-named Type, Reference and Syntax diagnostics also reproduce
+`JS_AtomGetStr`'s `char[64]` formatting. For table-backed text atoms, only
+narrow all-ASCII spellings bypass the scratch buffer; every other text spelling
+is encoded one UTF-16 code unit at a time and stops before starting a unit at
+byte 58, while `%s` NUL and literal-suffix ordering remain intact before the
+outer 255-byte cap. This covers the current read-only, fixed-name nullish reads,
+nullish writes, missing-binding, TDZ, VM read-only and reserved-identifier paths.
+Context-level observable `ToString`, borrowed C-pointer/refcount ABI, native-error
+callers belonging to unimplemented Array/private-field/module/global-
+declaration surfaces, exact byte-sidecar migration for the remaining numeric-
+parser and lexer diagnostics, and general recoverable allocator failures remain
+unfinished invariants.
 `%Number.prototype%` is the pinned boxed-`+0` Number-class object. The global
 `%Number%` publishes the exact ordered 17/7 constructor/prototype surface:
 call/construct and BigInt conversion, parser aliases captured by identity,
@@ -214,8 +225,8 @@ cargo run --bin qjs -- -e '(function(a) { return a + 1; })(41)'
 ```
 
 `qjs -e` intentionally follows upstream and does not print the expression's
-completion value. To run the current differential suites against a separately
-built official release:
+completion value. To run a curated set of the current differential suites
+against a separately built official release:
 
 ```sh
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -236,6 +247,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_byte_codec -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_native_error_format -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_native_error_atom_format -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_parse_kernel -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -281,6 +294,11 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_member_writes -- --nocapture
 ```
+
+The 32 commands above are direct entry points for a curated evidence set. The
+full gate below currently discovers all 40 `tests/oracle_*.rs` integration
+targets through Cargo's `--all-targets` run, including suites not repeated in
+this list.
 
 Or run the complete current gate—including checksum-verified oracle setup,
 formatting, tests, Clippy, and the Rust-only dependency audit—with one command:

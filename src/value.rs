@@ -9,7 +9,7 @@ use num_bigint::BigUint;
 use num_traits::ToPrimitive;
 
 use crate::bigint::JsBigInt;
-use crate::error::{Error, ErrorKind};
+use crate::error::{Error, ErrorKind, NativeErrorMessage};
 use crate::object::{ObjectRef, SymbolRef};
 
 /// ECMAScript strings are sequences of UTF-16 code units, not UTF-8 scalar
@@ -275,6 +275,18 @@ impl Iterator for QuickJsUtf8Bytes {
 }
 
 impl FusedIterator for QuickJsUtf8Bytes {}
+
+impl NativeErrorMessage {
+    pub(crate) fn to_js_string(&self) -> Result<JsString, JsStringError> {
+        JsString::try_from_bytes(self.visible_bytes())
+    }
+
+    pub(crate) fn to_utf8_lossy(&self) -> String {
+        self.to_js_string()
+            .expect("a 255-byte native Error message cannot exceed the String length limit")
+            .to_utf8_lossy()
+    }
+}
 
 impl JsString {
     /// QuickJS reserves 30 bits for a string's UTF-16 code-unit length.
@@ -830,6 +842,37 @@ impl JsString {
         QuickJsUtf8Bytes::new(self, false)
     }
 
+    pub(crate) fn push_c_string_to(&self, output: &mut NativeErrorMessage) {
+        output.push_c_string_bytes(self.wtf8_bytes());
+    }
+
+    /// Reproduce `JS_AtomGetStr(..., char buf[64], 64)` as consumed by a C
+    /// `%s` native-error argument. Narrow all-ASCII atoms bypass the scratch
+    /// buffer; every other text atom is encoded one UTF-16 code unit at a time
+    /// and stops before starting a unit once 58 bytes have already been written.
+    pub(crate) fn push_atom_get_str_to(&self, output: &mut NativeErrorMessage) {
+        let atom = self.linearize();
+        if !atom.is_wide() && atom.utf16_units().all(|unit| unit < 0x80) {
+            atom.push_c_string_to(output);
+            return;
+        }
+
+        const ATOM_BUFFER_SIZE: usize = 64;
+        const UTF8_CHAR_LEN_MAX: usize = 6;
+        let mut scratch = [0_u8; ATOM_BUFFER_SIZE];
+        let mut len = 0;
+        for unit in atom.utf16_units() {
+            if len >= ATOM_BUFFER_SIZE - UTF8_CHAR_LEN_MAX {
+                break;
+            }
+            let mut encoded = [0_u8; 4];
+            let encoded_len = encode_quickjs_utf8(&mut encoded, u32::from(unit));
+            scratch[len..len + encoded_len].copy_from_slice(&encoded[..encoded_len]);
+            len += encoded_len;
+        }
+        output.push_c_string_bytes(scratch[..len].iter().copied());
+    }
+
     /// Lossy conversion is suitable for terminal diagnostics. It must not be
     /// used for language-level string comparison or indexing.
     #[must_use]
@@ -1287,9 +1330,9 @@ mod tests {
     use std::hash::{Hash, Hasher};
     use std::rc::Rc;
 
-    use super::{JsString, JsStringBuilder, JsStringError, Value, number_to_string};
+    use super::{JsString, JsStringBuilder, JsStringError, StringRepr, Value, number_to_string};
     use crate::bigint::JsBigInt;
-    use crate::error::{Error, ErrorKind};
+    use crate::error::{Error, ErrorKind, NativeErrorMessage};
 
     fn content_hash(value: &JsString) -> u64 {
         let mut state = DefaultHasher::new();
@@ -1512,6 +1555,102 @@ mod tests {
         let cesu8 = across_leaf.try_to_cesu8_bytes().unwrap();
         assert_eq!(&cesu8[8193..8199], &[0xed, 0xa0, 0xbd, 0xed, 0xb8, 0x80]);
         assert_eq!(cesu8, flat.try_to_cesu8_bytes().unwrap());
+    }
+
+    #[test]
+    fn atom_get_str_preserves_ascii_fast_path_and_non_ascii_scratch_boundary() {
+        fn format_read_only(units: impl IntoIterator<Item = u16>) -> Vec<u16> {
+            let atom = JsString::try_from_utf16(units).unwrap();
+            let mut message = NativeErrorMessage::new();
+            message.push_utf8("'");
+            atom.push_atom_get_str_to(&mut message);
+            message.push_utf8("' is read-only");
+            message.to_js_string().unwrap().utf16_units().collect()
+        }
+
+        let suffix = "' is read-only".encode_utf16().collect::<Vec<_>>();
+        let cases = [
+            (
+                vec![u16::from(b'A'); 70],
+                [
+                    vec![u16::from(b'\'')],
+                    vec![u16::from(b'A'); 70],
+                    suffix.clone(),
+                ]
+                .concat(),
+            ),
+            (
+                [vec![u16::from(b'A'); 57], vec![0x00e9]].concat(),
+                [
+                    vec![u16::from(b'\'')],
+                    vec![u16::from(b'A'); 57],
+                    vec![0x00e9],
+                    suffix.clone(),
+                ]
+                .concat(),
+            ),
+            (
+                [vec![u16::from(b'A'); 58], vec![0x00e9]].concat(),
+                [
+                    vec![u16::from(b'\'')],
+                    vec![u16::from(b'A'); 58],
+                    suffix.clone(),
+                ]
+                .concat(),
+            ),
+            (
+                [vec![u16::from(b'A'); 54], vec![0xd83d, 0xde42]].concat(),
+                [
+                    vec![u16::from(b'\'')],
+                    vec![u16::from(b'A'); 54],
+                    vec![0xd83d, 0xde42],
+                    suffix.clone(),
+                ]
+                .concat(),
+            ),
+            (
+                [vec![u16::from(b'A'); 55], vec![0xd83d, 0xde42]].concat(),
+                [
+                    vec![u16::from(b'\'')],
+                    vec![u16::from(b'A'); 55],
+                    vec![0xd83d],
+                    suffix.clone(),
+                ]
+                .concat(),
+            ),
+            (
+                vec![u16::from(b'A'), 0, u16::from(b'B')],
+                [vec![u16::from(b'\''), u16::from(b'A')], suffix.clone()].concat(),
+            ),
+            (
+                vec![0x00e9, 0, u16::from(b'B')],
+                [vec![u16::from(b'\''), 0x00e9], suffix].concat(),
+            ),
+        ];
+        for (units, expected) in cases {
+            assert_eq!(format_read_only(units.clone()), expected, "{units:04x?}");
+        }
+
+        let wide_ascii = JsString(Rc::new(StringRepr::Utf16(
+            vec![u16::from(b'A'); 70].into_boxed_slice(),
+        )));
+        let mut message = NativeErrorMessage::new();
+        message.push_utf8("'");
+        wide_ascii.push_atom_get_str_to(&mut message);
+        message.push_utf8("' is read-only");
+        assert_eq!(
+            message
+                .to_js_string()
+                .unwrap()
+                .utf16_units()
+                .collect::<Vec<_>>(),
+            [
+                vec![u16::from(b'\'')],
+                vec![u16::from(b'A'); 58],
+                "' is read-only".encode_utf16().collect(),
+            ]
+            .concat()
+        );
     }
 
     #[test]
