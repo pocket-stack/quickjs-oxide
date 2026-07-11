@@ -346,6 +346,10 @@ pub enum AutoInitProperty {
 pub struct ContextData {
     pub object_prototype: ObjectId,
     pub function_prototype: ObjectId,
+    /// Realm-local equivalents of QuickJS `class_proto[JS_CLASS_*]` for the
+    /// five primitive wrapper classes. An absent entry remains an explicit
+    /// implementation gap rather than inheriting from the wrong prototype.
+    pub primitive_prototypes: [Option<ObjectId>; PrimitiveKind::COUNT],
     /// `%Function%`, published after the cyclic realm bootstrap has created
     /// `%Function.prototype%` and the global object.
     pub function_constructor: Option<ObjectId>,
@@ -374,6 +378,7 @@ impl ContextData {
         Self {
             object_prototype,
             function_prototype,
+            primitive_prototypes: [None; PrimitiveKind::COUNT],
             function_constructor: None,
             throw_type_error: None,
             global_object,
@@ -384,6 +389,17 @@ impl ContextData {
             intrinsics: Vec::new(),
             initial_shapes: Vec::new(),
         }
+    }
+
+    /// Attach one implemented primitive wrapper prototype to this realm.
+    #[must_use]
+    pub const fn with_primitive_prototype(
+        mut self,
+        kind: PrimitiveKind,
+        prototype: ObjectId,
+    ) -> Self {
+        self.primitive_prototypes[kind.index()] = Some(prototype);
+        self
     }
 
     /// Attach the Error intrinsic prototype graph to this realm.
@@ -590,10 +606,31 @@ impl VarRefData {
     }
 }
 
+/// Internal primitive payload carried by implemented wrapper classes.
+///
+/// New variants are added only with their complete class slice so Symbol atom
+/// ownership and String exotic storage cannot be accidentally skipped by a
+/// prematurely generic raw-value container.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PrimitiveObjectData {
+    Boolean(bool),
+}
+
+impl PrimitiveObjectData {
+    #[must_use]
+    pub const fn kind(&self) -> PrimitiveKind {
+        match self {
+            Self::Boolean(_) => PrimitiveKind::Boolean,
+        }
+    }
+}
+
 /// Class-specific edges stored alongside an object's ordinary properties.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ObjectPayload {
     Ordinary,
+    /// QuickJS `JSObject.u.object_data` for implemented primitive wrappers.
+    Primitive(PrimitiveObjectData),
     /// Realm global object and its hidden table of unresolved global VarRefs.
     GlobalObject {
         uninitialized_vars: ObjectId,
@@ -623,6 +660,7 @@ pub enum ObjectPayload {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ObjectKind {
     Ordinary,
+    Primitive,
     GlobalObject,
     Error,
     NativeFunction,
@@ -647,6 +685,9 @@ pub enum NativeFunctionId {
     ObjectPrototypeToString,
     ObjectPrototypeToLocaleString,
     ObjectPrototypeValueOf,
+    PrimitiveConstructor(PrimitiveKind),
+    PrimitivePrototypeToString(PrimitiveKind),
+    PrimitivePrototypeValueOf(PrimitiveKind),
     ErrorConstructor(ErrorConstructorKind),
     ErrorPrototypeToString,
     ErrorIsError,
@@ -668,6 +709,31 @@ pub enum DynamicFunctionKind {
     Generator,
     Async,
     AsyncGenerator,
+}
+
+/// QuickJS primitive wrapper classes which own one realm-local prototype root.
+///
+/// The complete typed table is present up front, but runtime initialization may
+/// leave entries absent until that class reaches a feature-parity milestone.
+/// Callers must therefore reject an absent entry instead of falling through to
+/// `%Object.prototype%` and silently changing observable behavior.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum PrimitiveKind {
+    Number,
+    String,
+    Boolean,
+    Symbol,
+    BigInt,
+}
+
+impl PrimitiveKind {
+    pub const COUNT: usize = 5;
+
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self as usize
+    }
 }
 
 /// Typed replacement for the magic selector shared by QuickJS's function
@@ -739,12 +805,16 @@ impl NativeFunctionId {
             | Self::FunctionPrototypeHasInstance
             | Self::ObjectPrototypeToString
             | Self::ObjectPrototypeToLocaleString
-            | Self::ObjectPrototypeValueOf => NativeFunctionDescriptor {
+            | Self::ObjectPrototypeValueOf
+            | Self::PrimitivePrototypeToString(_)
+            | Self::PrimitivePrototypeValueOf(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::Generic,
             },
-            Self::FunctionConstructor(_) => NativeFunctionDescriptor {
-                cproto: NativeCProto::ConstructorOrFunctionMagic,
-            },
+            Self::FunctionConstructor(_) | Self::PrimitiveConstructor(_) => {
+                NativeFunctionDescriptor {
+                    cproto: NativeCProto::ConstructorOrFunctionMagic,
+                }
+            }
             Self::FunctionPrototypeFileName => NativeFunctionDescriptor {
                 cproto: NativeCProto::Getter,
             },
@@ -815,6 +885,25 @@ impl ObjectData {
             is_constructor: false,
             kind: ObjectKind::Ordinary,
             payload: ObjectPayload::Ordinary,
+        }
+    }
+
+    /// Construct one extensible primitive wrapper object with its validated
+    /// internal primitive data slot.
+    #[must_use]
+    pub const fn primitive(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        data: PrimitiveObjectData,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::Primitive,
+            payload: ObjectPayload::Primitive(data),
         }
     }
 
@@ -1310,6 +1399,7 @@ impl Heap {
                 ));
             }
             ObjectPayload::Ordinary
+            | ObjectPayload::Primitive(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
             | ObjectPayload::BoundFunction { .. }
@@ -2102,6 +2192,7 @@ impl Heap {
         if !matches!(
             (object.kind, &object.payload),
             (ObjectKind::Ordinary, ObjectPayload::Ordinary)
+                | (ObjectKind::Primitive, ObjectPayload::Primitive(_))
                 | (ObjectKind::GlobalObject, ObjectPayload::GlobalObject { .. })
                 | (ObjectKind::Error, ObjectPayload::Error)
                 | (
@@ -2550,6 +2641,7 @@ impl Heap {
 fn object_edges(object: &ObjectData) -> Vec<RawId> {
     let closure_count = match &object.payload {
         ObjectPayload::Ordinary
+        | ObjectPayload::Primitive(_)
         | ObjectPayload::GlobalObject { .. }
         | ObjectPayload::Error
         | ObjectPayload::NativeFunction { .. } => 0,
@@ -2568,7 +2660,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
     }
     edges.push(RawId::Shape(object.shape));
     match &object.payload {
-        ObjectPayload::Ordinary | ObjectPayload::Error => {}
+        ObjectPayload::Ordinary | ObjectPayload::Primitive(_) | ObjectPayload::Error => {}
         ObjectPayload::GlobalObject { uninitialized_vars } => {
             edges.push(RawId::Object(*uninitialized_vars))
         }
@@ -2653,6 +2745,7 @@ fn raw_value_edges(value: &RawValue) -> Vec<RawId> {
 fn context_edges(context: &ContextData) -> Vec<RawId> {
     let mut edges = Vec::with_capacity(
         7usize
+            .saturating_add(PrimitiveKind::COUNT)
             .saturating_add(NativeErrorKind::COUNT)
             .saturating_add(context.global_objects.len())
             .saturating_add(context.intrinsics.len())
@@ -2660,6 +2753,14 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     );
     edges.push(RawId::Object(context.object_prototype));
     edges.push(RawId::Object(context.function_prototype));
+    edges.extend(
+        context
+            .primitive_prototypes
+            .iter()
+            .flatten()
+            .copied()
+            .map(RawId::Object),
+    );
     edges.extend(context.function_constructor.map(RawId::Object));
     edges.extend(context.throw_type_error.map(RawId::Object));
     edges.push(RawId::Object(context.global_object));
@@ -2712,6 +2813,7 @@ fn object_slot_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
 
 fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
     let payload = match &object.payload {
+        ObjectPayload::Primitive(_) => Vec::new(),
         ObjectPayload::BoundFunction {
             this_value,
             arguments,
@@ -2863,6 +2965,37 @@ mod tests {
         heap.release_shape(native_shape).unwrap();
         heap.release_shape(shape).unwrap();
         heap.run_gc().unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn primitive_object_payload_category_is_structurally_validated() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let mut invalid =
+            ObjectData::primitive(shape, Vec::new(), PrimitiveObjectData::Boolean(false));
+        invalid.kind = ObjectKind::Ordinary;
+        assert_eq!(
+            heap.allocate_object(invalid),
+            Err(HeapError::Invariant(
+                "object kind does not match its class payload"
+            ))
+        );
+        assert_eq!(heap.counts().object_nodes, 0);
+
+        let object = heap
+            .allocate_object(ObjectData::primitive(
+                shape,
+                Vec::new(),
+                PrimitiveObjectData::Boolean(false),
+            ))
+            .unwrap();
+        assert!(matches!(
+            heap.object(object).unwrap().payload,
+            ObjectPayload::Primitive(PrimitiveObjectData::Boolean(false))
+        ));
+        heap.release_object(object).unwrap();
+        heap.release_shape(shape).unwrap();
         assert_eq!(heap.counts().live, 0);
     }
 

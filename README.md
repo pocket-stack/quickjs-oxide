@@ -23,6 +23,24 @@ constructor/prototype/global descriptors. For the currently supported ordinary
 function grammar it follows QuickJS's exact dynamic-source wrapper, indirect
 global compilation, actual-argc conversion order, call/construct split,
 cross-realm behavior, and `newTarget.prototype` fallback.
+
+The primitive-class substrate now reserves typed realm-local `class_proto`
+slots for Number, String, Boolean, Symbol, and BigInt, while enabling only the
+semantically complete Boolean slot. `%Boolean.prototype%` is the pinned
+boxed-`false` Boolean-class object, and the global `%Boolean%` implements the
+exact call/construct split, descriptors, `toString`, `valueOf`, wrapper
+coercion, custom and cross-realm `newTarget.prototype`, and defining-realm
+fallback. Boolean primitive member lookup traverses that realm's prototype
+without eagerly boxing and preserves the raw receiver for strict inherited
+getters and setters; sloppy ordinary functions instead create one cached
+wrapper per invocation. Boolean wrappers also participate in
+`Object.prototype.toString`, `toLocaleString`, and `valueOf`, including
+observable `@@toStringTag`, cross-realm boxing, and the runtime's reference
+counting/cycle graph. Number, String, Symbol, and BigInt constructors,
+prototype roots, wrappers, and inherited lookup remain explicit gaps, and the
+global `Object` constructor is not yet published; this is Boolean parity, not
+five-class primitive-graph parity.
+
 Source-level fixed/computed member reads, receiver-preserving method calls, and
 member constructor heads now lower through QuickJS-shaped property bytecode;
 the pinned differential locks chaining, `ToPropertyKey` order, `this`, String
@@ -64,8 +82,8 @@ local, closure, private function-name and implicit-`arguments` paths return
 followed by `DeleteProperty`; strict direct references are early errors. Each
 realm also installs the frozen `Infinity`, `NaN` and `undefined` global data
 properties. Dynamic object-environment resolution through `with`/direct
-`eval`, Proxy/exotic delete dispatch, and the distinct primitive prototype
-graphs remain unfinished slices.
+`eval`, Proxy/exotic delete dispatch, and the remaining Number/String/Symbol/
+BigInt primitive prototype graphs remain unfinished slices.
 Runtime-wide full/strip-source/strip-debug modes follow QuickJS's immutable
 bytecode publication boundary, and the `qjs` CLI exposes `--strip-source` and
 `-s` with upstream last-option-wins behavior.
@@ -107,6 +125,8 @@ built official release:
 ```sh
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_primitives -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_boolean_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_power_numbers -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

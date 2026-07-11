@@ -85,6 +85,7 @@ pub(crate) trait VmHost {
     fn ensure_backtrace(&mut self, value: &Value) -> Result<(), Error>;
     fn load_constant(&mut self, index: u32) -> Result<Value, Error>;
     fn type_of(&mut self, value: &Value) -> Result<&'static str, Error>;
+    fn box_primitive(&mut self, value: Value) -> Result<Value, Error>;
     fn to_primitive(&mut self, value: Value, hint: ToPrimitiveHint) -> Result<Completion, Error>;
     fn materialize_error(&mut self, error: Error) -> Result<Value, Error>;
     fn instantiate_closure(&mut self, index: u32) -> Result<Value, Error>;
@@ -171,6 +172,12 @@ impl VmHost for DetachedHost<'_> {
 
     fn type_of(&mut self, value: &Value) -> Result<&'static str, Error> {
         Ok(value.type_of())
+    }
+
+    fn box_primitive(&mut self, _value: Value) -> Result<Value, Error> {
+        Err(Error::internal(
+            "detached VM has no primitive wrapper intrinsics",
+        ))
     }
 
     fn to_primitive(&mut self, value: Value, _hint: ToPrimitiveHint) -> Result<Completion, Error> {
@@ -406,6 +413,7 @@ struct CallFrame {
     _callee_realm: Option<ContextId>,
     _current_function: Option<ObjectRef>,
     this_value: Value,
+    normalized_this: Option<Value>,
     new_target: Value,
     strict: bool,
     callee_global: Option<ObjectRef>,
@@ -419,6 +427,7 @@ impl CallFrame {
             _callee_realm: None,
             _current_function: None,
             this_value: Value::Undefined,
+            normalized_this: None,
             new_target: Value::Undefined,
             strict: true,
             callee_global: None,
@@ -440,6 +449,7 @@ impl CallFrame {
             _callee_realm: Some(callee_realm),
             _current_function: Some(current_function),
             this_value,
+            normalized_this: None,
             new_target,
             strict: metadata.strict,
             callee_global: Some(callee_global),
@@ -509,7 +519,7 @@ impl CallFrame {
                 Instruction::PushFalse => self.stack.push(Value::Bool(false)),
                 Instruction::PushTrue => self.stack.push(Value::Bool(true)),
                 Instruction::PushThis => {
-                    let value = self.normalized_this()?;
+                    let value = self.normalized_this(host)?;
                     self.stack.push(value);
                 }
                 Instruction::PushNewTarget => self.stack.push(self.new_target.clone()),
@@ -983,7 +993,10 @@ impl CallFrame {
         Ok(self.stack.split_off(start))
     }
 
-    fn normalized_this(&self) -> Result<Value, Error> {
+    fn normalized_this(&mut self, host: &mut impl VmHost) -> Result<Value, Error> {
+        if let Some(value) = &self.normalized_this {
+            return Ok(value.clone());
+        }
         if self.strict || matches!(self.this_value, Value::Object(_)) {
             return Ok(self.this_value.clone());
         }
@@ -995,9 +1008,9 @@ impl CallFrame {
                 .map(Value::Object)
                 .ok_or_else(|| Error::internal("sloppy frame has no callee global object"));
         }
-        Err(Error::internal(
-            "sloppy this coercion requires primitive wrapper intrinsics",
-        ))
+        let value = host.box_primitive(self.this_value.clone())?;
+        self.normalized_this = Some(value.clone());
+        Ok(value)
     }
 
     fn pop_pair(&mut self) -> Result<(Value, Value), Error> {

@@ -27,7 +27,7 @@ use crate::heap::{
     ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo,
     FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, Heap, HeapCleanup, HeapCounts,
     HeapError, NativeCProto, NativeFunctionId, ObjectData, ObjectId, ObjectKind, ObjectPayload,
-    PropertySlot, RawValue, ShapeId, VarRefData, VarRefId,
+    PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue, ShapeId, VarRefData, VarRefId,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -217,6 +217,7 @@ enum PropertySetRejection {
     ReadOnly,
     NoSetter,
     NotExtensible,
+    NotObject,
 }
 
 /// Immutable VM inputs detached from the runtime `RefCell` borrow.
@@ -435,6 +436,54 @@ impl RuntimeVmHost {
         Ok(VmPropertyKeyConversion::Key(key))
     }
 
+    fn finish_property_get_action(
+        &mut self,
+        action: PropertyGetAction,
+    ) -> Result<Completion, Error> {
+        match action {
+            PropertyGetAction::Complete(value) => Ok(Completion::Return(value)),
+            PropertyGetAction::Call { getter, receiver } => self
+                .runtime
+                .call_internal(self.current_realm, &getter, receiver, &[])
+                .map_err(runtime_error_to_vm_error),
+        }
+    }
+
+    fn finish_property_set_action(
+        &mut self,
+        action: PropertySetAction,
+        key: &PropertyKey,
+        strict: bool,
+    ) -> Result<Completion, Error> {
+        match action {
+            PropertySetAction::Complete => Ok(Completion::Return(Value::Undefined)),
+            PropertySetAction::Rejected(_) if !strict => Ok(Completion::Return(Value::Undefined)),
+            PropertySetAction::Rejected(rejection) => {
+                let message = match rejection {
+                    PropertySetRejection::ReadOnly => {
+                        let name = self
+                            .runtime
+                            .property_key_to_js_string(key)
+                            .map_err(runtime_error_to_vm_error)?;
+                        format!("'{}' is read-only", name.to_utf8_lossy())
+                    }
+                    PropertySetRejection::NoSetter => "no setter for property".to_owned(),
+                    PropertySetRejection::NotExtensible => "object is not extensible".to_owned(),
+                    PropertySetRejection::NotObject => "not an object".to_owned(),
+                };
+                Err(Error::new(ErrorKind::Type, message))
+            }
+            PropertySetAction::Call {
+                setter,
+                receiver,
+                argument,
+            } => self
+                .runtime
+                .call_internal(self.current_realm, &setter, receiver, &[argument])
+                .map_err(runtime_error_to_vm_error),
+        }
+    }
+
     fn get_property_with_key(
         &mut self,
         base: Value,
@@ -464,13 +513,18 @@ impl RuntimeVmHost {
                     .runtime
                     .prepare_get_property_with_receiver(object, key, base.clone())
                     .map_err(runtime_error_to_vm_error)?;
-                return match action {
-                    PropertyGetAction::Complete(value) => Ok(Completion::Return(value)),
-                    PropertyGetAction::Call { getter, receiver } => self
-                        .runtime
-                        .call_internal(self.current_realm, &getter, receiver, &[])
-                        .map_err(runtime_error_to_vm_error),
-                };
+                return self.finish_property_get_action(action);
+            }
+            Value::Bool(_) => {
+                let prototype = self
+                    .runtime
+                    .primitive_prototype_for_realm(self.current_realm, PrimitiveKind::Boolean)
+                    .map_err(runtime_error_to_vm_error)?;
+                let action = self
+                    .runtime
+                    .prepare_get_property_with_receiver(&prototype, key, base.clone())
+                    .map_err(runtime_error_to_vm_error)?;
+                return self.finish_property_get_action(action);
             }
             Value::String(string) => {
                 let index = self
@@ -500,11 +554,7 @@ impl RuntimeVmHost {
                     return Ok(Completion::Return(length));
                 }
             }
-            Value::Bool(_)
-            | Value::Int(_)
-            | Value::Float(_)
-            | Value::BigInt(_)
-            | Value::Symbol(_) => {}
+            Value::Int(_) | Value::Float(_) | Value::BigInt(_) | Value::Symbol(_) => {}
         }
 
         Err(Error::internal(
@@ -519,8 +569,21 @@ impl RuntimeVmHost {
         value: Value,
         strict: bool,
     ) -> Result<Completion, Error> {
-        let Value::Object(object) = &base else {
-            if matches!(base, Value::Null | Value::Undefined) {
+        let action = match &base {
+            Value::Object(object) => self
+                .runtime
+                .prepare_set_property_with_receiver(object, key, value, base.clone())
+                .map_err(runtime_error_to_vm_error)?,
+            Value::Bool(_) => {
+                let prototype = self
+                    .runtime
+                    .primitive_prototype_for_realm(self.current_realm, PrimitiveKind::Boolean)
+                    .map_err(runtime_error_to_vm_error)?;
+                self.runtime
+                    .prepare_set_property_with_receiver(&prototype, key, value, base.clone())
+                    .map_err(runtime_error_to_vm_error)?
+            }
+            Value::Null | Value::Undefined => {
                 let base_name = if matches!(base, Value::Null) {
                     "null"
                 } else {
@@ -538,10 +601,10 @@ impl RuntimeVmHost {
                     ),
                 ));
             }
-            if !strict {
-                return Ok(Completion::Return(Value::Undefined));
-            }
-            if matches!(base, Value::String(_)) {
+            Value::String(_) => {
+                if !strict {
+                    return Ok(Completion::Return(Value::Undefined));
+                }
                 let length = self
                     .runtime
                     .intern_property_key("length")
@@ -549,40 +612,16 @@ impl RuntimeVmHost {
                 if key == &length {
                     return Err(Error::new(ErrorKind::Type, "'length' is read-only"));
                 }
+                return Err(Error::new(ErrorKind::Type, "not an object"));
             }
-            return Err(Error::new(ErrorKind::Type, "not an object"));
+            Value::Int(_) | Value::Float(_) | Value::BigInt(_) | Value::Symbol(_) => {
+                if !strict {
+                    return Ok(Completion::Return(Value::Undefined));
+                }
+                return Err(Error::new(ErrorKind::Type, "not an object"));
+            }
         };
-
-        match self
-            .runtime
-            .prepare_set_property_with_receiver(object, key, value, base.clone())
-            .map_err(runtime_error_to_vm_error)?
-        {
-            PropertySetAction::Complete => Ok(Completion::Return(Value::Undefined)),
-            PropertySetAction::Rejected(_) if !strict => Ok(Completion::Return(Value::Undefined)),
-            PropertySetAction::Rejected(rejection) => {
-                let message = match rejection {
-                    PropertySetRejection::ReadOnly => {
-                        let name = self
-                            .runtime
-                            .property_key_to_js_string(key)
-                            .map_err(runtime_error_to_vm_error)?;
-                        format!("'{}' is read-only", name.to_utf8_lossy())
-                    }
-                    PropertySetRejection::NoSetter => "no setter for property".to_owned(),
-                    PropertySetRejection::NotExtensible => "object is not extensible".to_owned(),
-                };
-                Err(Error::new(ErrorKind::Type, message))
-            }
-            PropertySetAction::Call {
-                setter,
-                receiver,
-                argument,
-            } => self
-                .runtime
-                .call_internal(self.current_realm, &setter, receiver, &[argument])
-                .map_err(runtime_error_to_vm_error),
-        }
+        self.finish_property_set_action(action, key, strict)
     }
 
     fn delete_property_with_key(
@@ -675,10 +714,38 @@ impl VmHost for RuntimeVmHost {
             ObjectPayload::NativeFunction { .. }
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. } => "function",
-            ObjectPayload::Ordinary | ObjectPayload::GlobalObject { .. } | ObjectPayload::Error => {
-                "object"
-            }
+            ObjectPayload::Ordinary
+            | ObjectPayload::Primitive(_)
+            | ObjectPayload::GlobalObject { .. }
+            | ObjectPayload::Error => "object",
         })
+    }
+
+    fn box_primitive(&mut self, value: Value) -> Result<Value, Error> {
+        let (kind, prototype) = match &value {
+            Value::Bool(_) => (
+                PrimitiveKind::Boolean,
+                self.runtime
+                    .primitive_prototype_for_realm(self.current_realm, PrimitiveKind::Boolean)
+                    .map_err(runtime_error_to_vm_error)?,
+            ),
+            Value::Undefined
+            | Value::Null
+            | Value::Int(_)
+            | Value::Float(_)
+            | Value::BigInt(_)
+            | Value::String(_)
+            | Value::Symbol(_)
+            | Value::Object(_) => {
+                return Err(Error::internal(
+                    "primitive wrapper class is not implemented yet",
+                ));
+            }
+        };
+        self.runtime
+            .new_primitive_object(&prototype, kind, value)
+            .map(Value::Object)
+            .map_err(runtime_error_to_vm_error)
     }
 
     fn to_primitive(&mut self, value: Value, hint: ToPrimitiveHint) -> Result<Completion, Error> {
@@ -988,6 +1055,9 @@ impl VmHost for RuntimeVmHost {
             PropertySetAction::Rejected(PropertySetRejection::NotExtensible) => {
                 Err(Error::new(ErrorKind::Type, "object is not extensible"))
             }
+            PropertySetAction::Rejected(PropertySetRejection::NotObject) => Err(Error::internal(
+                "global object assignment produced a primitive receiver rejection",
+            )),
             PropertySetAction::Call {
                 setter,
                 receiver,
@@ -1459,6 +1529,13 @@ impl Runtime {
                 .expect("native Error prototype name initialization must succeed");
             native_error_prototypes.push(prototype);
         }
+        let boolean_prototype = self
+            .new_primitive_object(
+                &object_prototype,
+                PrimitiveKind::Boolean,
+                Value::Bool(false),
+            )
+            .expect("initial Boolean.prototype allocation must succeed");
         let native_error_ids =
             std::array::from_fn(|index| native_error_prototypes[index].object_id());
         let uninitialized_vars = self
@@ -1487,6 +1564,7 @@ impl Runtime {
                         global_object.object_id(),
                         global_var_object.object_id(),
                     )
+                    .with_primitive_prototype(PrimitiveKind::Boolean, boolean_prototype.object_id())
                     .with_error_prototypes(error_prototype.object_id(), native_error_ids),
                 )
                 .expect("initial realm allocation must succeed")
@@ -1522,11 +1600,19 @@ impl Runtime {
         .expect("Error intrinsic initialization must succeed");
         self.initialize_function_constructor(realm, &function_prototype, &global_object)
             .expect("Function constructor initialization must succeed");
+        self.initialize_boolean_intrinsic(
+            realm,
+            &function_prototype,
+            &boolean_prototype,
+            &global_object,
+        )
+        .expect("Boolean intrinsic initialization must succeed");
         self.initialize_global_primitive_constants(&global_object)
             .expect("global primitive constant initialization must succeed");
         drop(global_var_object);
         drop(global_object);
         drop(uninitialized_vars);
+        drop(boolean_prototype);
         drop(native_error_prototypes);
         drop(error_prototype);
         drop(function_prototype);
@@ -1665,6 +1751,44 @@ impl Runtime {
                 return Err(error.into());
             }
         };
+        let cleanup = state.heap.release_shape(shape)?;
+        state.apply_cleanup(cleanup)?;
+        drop(state);
+        Ok(ObjectRef::from_owned_handle(self.clone(), object))
+    }
+
+    fn new_primitive_object(
+        &self,
+        prototype: &ObjectRef,
+        kind: PrimitiveKind,
+        value: Value,
+    ) -> Result<ObjectRef, RuntimeError> {
+        let _operation = self.operation();
+        if !prototype.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("primitive prototype"));
+        }
+        let data = match (kind, value) {
+            (PrimitiveKind::Boolean, Value::Bool(value)) => PrimitiveObjectData::Boolean(value),
+            _ => {
+                return Err(RuntimeError::Invariant(
+                    "primitive wrapper class or payload is not implemented yet",
+                ));
+            }
+        };
+        let mut state = self.0.state.borrow_mut();
+        let shape = state.get_or_create_shape(Some(prototype.object_id()), &[])?;
+        let object =
+            match state
+                .heap
+                .allocate_object(ObjectData::primitive(shape, Vec::new(), data))
+            {
+                Ok(object) => object,
+                Err(error) => {
+                    let cleanup = state.heap.release_shape(shape)?;
+                    state.apply_cleanup(cleanup)?;
+                    return Err(error.into());
+                }
+            };
         let cleanup = state.heap.release_shape(shape)?;
         state.apply_cleanup(cleanup)?;
         drop(state);
@@ -1987,6 +2111,51 @@ impl Runtime {
             .heap
             .attach_function_constructor(realm, constructor.as_object().object_id())?;
         Ok(())
+    }
+
+    fn initialize_boolean_intrinsic(
+        &self,
+        realm: ContextId,
+        function_prototype: &ObjectRef,
+        boolean_prototype: &ObjectRef,
+        global_object: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        let kind = PrimitiveKind::Boolean;
+        // QuickJS installs the complete Boolean prototype table before the
+        // constructor back-reference, which fixes own-key order as
+        // `toString,valueOf,constructor`.
+        self.define_native_builtin_auto_init(
+            boolean_prototype,
+            realm,
+            NativeFunctionId::PrimitivePrototypeToString(kind),
+            "toString",
+            0,
+            0,
+        )?;
+        self.define_native_builtin_auto_init(
+            boolean_prototype,
+            realm,
+            NativeFunctionId::PrimitivePrototypeValueOf(kind),
+            "valueOf",
+            0,
+            0,
+        )?;
+        let constructor = self.new_native_builtin(
+            function_prototype,
+            realm,
+            NativeFunctionId::PrimitiveConstructor(kind),
+            1,
+            "Boolean",
+            1,
+        )?;
+        self.define_function_data_property(
+            global_object,
+            "Boolean",
+            Value::Object(constructor.as_object().clone()),
+            true,
+            true,
+        )?;
+        self.define_constructor_relationship(&constructor, boolean_prototype)
     }
 
     fn initialize_global_primitive_constants(
@@ -3329,7 +3498,7 @@ impl Runtime {
         }
 
         let Value::Object(receiver) = receiver else {
-            return Ok(PropertySetAction::Rejected(PropertySetRejection::ReadOnly));
+            return Ok(PropertySetAction::Rejected(PropertySetRejection::NotObject));
         };
         let descriptor = match self.get_own_property(&receiver, key)? {
             Some(CompleteOrdinaryPropertyDescriptor::Data {
@@ -3506,6 +3675,7 @@ impl Runtime {
                     }
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::Primitive(_)
                 | ObjectPayload::Error
                 | ObjectPayload::NativeFunction { .. }
                 | ObjectPayload::BoundFunction { .. }
@@ -4386,6 +4556,7 @@ impl Runtime {
                     ..
                 } => (*bytecode, closure_slots.clone()),
                 ObjectPayload::Ordinary
+                | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error => {
                     return Err(RuntimeError::Engine(Error::new(
@@ -4442,6 +4613,24 @@ impl Runtime {
             self.clone(),
             global_object,
         )?)
+    }
+
+    fn primitive_prototype_for_realm(
+        &self,
+        realm: ContextId,
+        kind: PrimitiveKind,
+    ) -> Result<ObjectRef, RuntimeError> {
+        let prototype = self
+            .0
+            .state
+            .borrow()
+            .heap
+            .context(realm)?
+            .primitive_prototypes[kind.index()]
+        .ok_or(RuntimeError::Invariant(
+            "primitive prototype is not implemented in this realm",
+        ))?;
+        Ok(ObjectRef::from_borrowed_handle(self.clone(), prototype)?)
     }
 
     fn concatenate_bound_arguments(
@@ -4844,6 +5033,7 @@ impl Runtime {
                     ));
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error => {
                     return Err(RuntimeError::Engine(Error::new(
@@ -5170,6 +5360,41 @@ impl Runtime {
             .unwrap_or(Completion::Return(Value::Undefined)))
     }
 
+    fn get_value_property_in_realm(
+        &self,
+        realm: ContextId,
+        receiver: Value,
+        key: &PropertyKey,
+    ) -> Result<Completion, RuntimeError> {
+        let action = match &receiver {
+            Value::Object(object) => {
+                self.prepare_get_property_with_receiver(object, key, receiver.clone())?
+            }
+            Value::Bool(_) => {
+                let prototype =
+                    self.primitive_prototype_for_realm(realm, PrimitiveKind::Boolean)?;
+                self.prepare_get_property_with_receiver(&prototype, key, receiver.clone())?
+            }
+            Value::Undefined
+            | Value::Null
+            | Value::Int(_)
+            | Value::Float(_)
+            | Value::BigInt(_)
+            | Value::String(_)
+            | Value::Symbol(_) => {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "primitive value property lookup is not implemented yet",
+                )));
+            }
+        };
+        match action {
+            PropertyGetAction::Complete(value) => Ok(Completion::Return(value)),
+            PropertyGetAction::Call { getter, receiver } => {
+                self.call_internal(realm, &getter, receiver, &[])
+            }
+        }
+    }
+
     fn get_property_or_missing_in_realm(
         &self,
         realm: ContextId,
@@ -5396,6 +5621,7 @@ impl Runtime {
                             !metadata.strict && metadata.has_prototype
                         }
                         ObjectPayload::Ordinary
+                        | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
                         | ObjectPayload::Error
                         | ObjectPayload::BoundFunction { .. }
@@ -5758,6 +5984,7 @@ impl Runtime {
                     (true, None, FunctionKind::Normal)
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error => (false, None, FunctionKind::Normal),
             }
@@ -5921,6 +6148,7 @@ impl Runtime {
                         ObjectPayload::NativeFunction { .. }
                         | ObjectPayload::BytecodeFunction { .. } => None,
                         ObjectPayload::Ordinary
+                        | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
                         | ObjectPayload::Error => {
                             return Err(RuntimeError::Invariant(
@@ -6013,6 +6241,7 @@ impl Runtime {
                             ))
                         }
                         ObjectPayload::Ordinary
+                        | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
                         | ObjectPayload::Error
                         | ObjectPayload::NativeFunction { .. }
@@ -6067,6 +6296,182 @@ impl Runtime {
         result
     }
 
+    fn call_primitive_constructor(
+        &self,
+        realm: ContextId,
+        kind: PrimitiveKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        if kind != PrimitiveKind::Boolean {
+            return Err(RuntimeError::Invariant(
+                "unimplemented primitive constructor reached native dispatch",
+            ));
+        }
+        let value = arguments
+            .readable
+            .first()
+            .ok_or(RuntimeError::Invariant(
+                "Boolean constructor readable argv was not padded to one",
+            ))?
+            .to_boolean();
+        let NativeInvocation::Construct { new_target } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "primitive constructor did not receive constructor-or-function invocation",
+            ));
+        };
+        if matches!(new_target, Value::Undefined) {
+            return Ok(Completion::Return(Value::Bool(value)));
+        }
+        let Value::Object(new_target) = new_target else {
+            return Err(RuntimeError::Invariant(
+                "primitive constructor new.target was neither undefined nor an object",
+            ));
+        };
+        let new_target = self.callable_from_value(Value::Object(new_target))?;
+        let prototype_key = self.intern_property_key("prototype")?;
+        let prototype =
+            match self.get_property_in_realm(realm, new_target.as_object(), &prototype_key)? {
+                Completion::Return(Value::Object(prototype)) => prototype,
+                Completion::Return(_) => {
+                    let fallback_realm = self.callable_realm(&new_target)?;
+                    self.primitive_prototype_for_realm(fallback_realm, kind)?
+                }
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+        Ok(Completion::Return(Value::Object(
+            self.new_primitive_object(&prototype, kind, Value::Bool(value))?,
+        )))
+    }
+
+    fn primitive_this_value(
+        &self,
+        realm: ContextId,
+        kind: PrimitiveKind,
+        this_value: Value,
+    ) -> Result<NativeConversion<Value>, RuntimeError> {
+        let direct = matches!(
+            (&this_value, kind),
+            (Value::Int(_) | Value::Float(_), PrimitiveKind::Number)
+                | (Value::String(_), PrimitiveKind::String)
+                | (Value::Bool(_), PrimitiveKind::Boolean)
+                | (Value::Symbol(_), PrimitiveKind::Symbol)
+                | (Value::BigInt(_), PrimitiveKind::BigInt)
+        );
+        if direct {
+            return Ok(NativeConversion::Value(this_value));
+        }
+        if let Value::Object(object) = &this_value {
+            let payload = {
+                let state = self.0.state.borrow();
+                match &state.heap.object(object.object_id())?.payload {
+                    ObjectPayload::Primitive(PrimitiveObjectData::Boolean(value))
+                        if kind == PrimitiveKind::Boolean =>
+                    {
+                        Some(Value::Bool(*value))
+                    }
+                    ObjectPayload::Ordinary
+                    | ObjectPayload::Primitive(_)
+                    | ObjectPayload::GlobalObject { .. }
+                    | ObjectPayload::Error
+                    | ObjectPayload::NativeFunction { .. }
+                    | ObjectPayload::BoundFunction { .. }
+                    | ObjectPayload::BytecodeFunction { .. } => None,
+                }
+            };
+            if let Some(payload) = payload {
+                return Ok(NativeConversion::Value(payload));
+            }
+        }
+        let message = match kind {
+            PrimitiveKind::Number => "not a number",
+            PrimitiveKind::String => "not a string",
+            PrimitiveKind::Boolean => "not a boolean",
+            PrimitiveKind::Symbol => "not a symbol",
+            PrimitiveKind::BigInt => "not a BigInt",
+        };
+        Ok(NativeConversion::Throw(self.new_native_error(
+            realm,
+            NativeErrorKind::Type,
+            message,
+        )?))
+    }
+
+    fn call_primitive_prototype_to_string(
+        &self,
+        realm: ContextId,
+        kind: PrimitiveKind,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "primitive toString did not receive a generic invocation",
+            ));
+        };
+        let value = match self.primitive_this_value(realm, kind, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        match (kind, value) {
+            (PrimitiveKind::Boolean, Value::Bool(value)) => Ok(Completion::Return(Value::String(
+                JsString::from(if value { "true" } else { "false" }),
+            ))),
+            _ => Err(RuntimeError::Invariant(
+                "unimplemented primitive toString reached native dispatch",
+            )),
+        }
+    }
+
+    fn call_primitive_prototype_value_of(
+        &self,
+        realm: ContextId,
+        kind: PrimitiveKind,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "primitive valueOf did not receive a generic invocation",
+            ));
+        };
+        match self.primitive_this_value(realm, kind, this_value)? {
+            NativeConversion::Value(value) => Ok(Completion::Return(value)),
+            NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
+        }
+    }
+
+    fn object_to_string_tag(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+    ) -> Result<NativeConversion<JsString>, RuntimeError> {
+        let default_tag = {
+            let state = self.0.state.borrow();
+            let object_data = state.heap.object(object.object_id())?;
+            match &object_data.payload {
+                ObjectPayload::NativeFunction { .. }
+                | ObjectPayload::BoundFunction { .. }
+                | ObjectPayload::BytecodeFunction { .. } => JsString::from("Function"),
+                ObjectPayload::Error => JsString::from("Error"),
+                ObjectPayload::Primitive(data) => JsString::from(match data.kind() {
+                    PrimitiveKind::Number => "Number",
+                    PrimitiveKind::String => "String",
+                    PrimitiveKind::Boolean => "Boolean",
+                    PrimitiveKind::Symbol => "Symbol",
+                    PrimitiveKind::BigInt => "BigInt",
+                }),
+                ObjectPayload::Ordinary | ObjectPayload::GlobalObject { .. } => {
+                    JsString::from("Object")
+                }
+            }
+        };
+        let to_string_tag = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));
+        match self.get_property_in_realm(realm, object, &to_string_tag)? {
+            Completion::Return(Value::String(tag)) => Ok(NativeConversion::Value(tag)),
+            Completion::Return(_) => Ok(NativeConversion::Value(default_tag)),
+            Completion::Throw(value) => Ok(NativeConversion::Throw(value)),
+        }
+    }
+
     fn call_object_prototype_to_string(
         &self,
         realm: ContextId,
@@ -6080,33 +6485,27 @@ impl Runtime {
         let tag = match this_value {
             Value::Undefined => JsString::from("Undefined"),
             Value::Null => JsString::from("Null"),
-            Value::Bool(_) => JsString::from("Boolean"),
+            Value::Bool(value) => {
+                let prototype =
+                    self.primitive_prototype_for_realm(realm, PrimitiveKind::Boolean)?;
+                let object = self.new_primitive_object(
+                    &prototype,
+                    PrimitiveKind::Boolean,
+                    Value::Bool(value),
+                )?;
+                match self.object_to_string_tag(realm, &object)? {
+                    NativeConversion::Value(tag) => tag,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                }
+            }
             Value::Int(_) | Value::Float(_) => JsString::from("Number"),
             Value::BigInt(_) => JsString::from("BigInt"),
             Value::String(_) => JsString::from("String"),
             Value::Symbol(_) => JsString::from("Symbol"),
-            Value::Object(object) => {
-                let default_tag = {
-                    let state = self.0.state.borrow();
-                    let object_data = state.heap.object(object.object_id())?;
-                    match object_data.payload {
-                        ObjectPayload::NativeFunction { .. }
-                        | ObjectPayload::BoundFunction { .. }
-                        | ObjectPayload::BytecodeFunction { .. } => JsString::from("Function"),
-                        ObjectPayload::Error => JsString::from("Error"),
-                        ObjectPayload::Ordinary | ObjectPayload::GlobalObject { .. } => {
-                            JsString::from("Object")
-                        }
-                    }
-                };
-                let to_string_tag =
-                    PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));
-                match self.get_property_in_realm(realm, &object, &to_string_tag)? {
-                    Completion::Return(Value::String(tag)) => tag,
-                    Completion::Return(_) => default_tag,
-                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                }
-            }
+            Value::Object(object) => match self.object_to_string_tag(realm, &object)? {
+                NativeConversion::Value(tag) => tag,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            },
         };
         let result = JsString::from("[object ")
             .concat(&tag)
@@ -6124,16 +6523,17 @@ impl Runtime {
                 "Object.prototype.toLocaleString did not receive a generic invocation",
             ));
         };
-        let Value::Object(object) = this_value else {
+        if !matches!(this_value, Value::Object(_) | Value::Bool(_)) {
             return Err(RuntimeError::Engine(Error::internal(
-                "primitive boxing for Object.prototype.toLocaleString is not implemented",
+                "primitive Object.prototype.toLocaleString is not implemented yet",
             )));
-        };
+        }
         let to_string = self.intern_property_key("toString")?;
-        let method = match self.get_property_in_realm(realm, &object, &to_string)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
+        let method =
+            match self.get_value_property_in_realm(realm, this_value.clone(), &to_string)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
         let Value::Object(method) = method else {
             return Ok(Completion::Throw(self.new_native_error(
                 realm,
@@ -6148,7 +6548,7 @@ impl Runtime {
                 "not a function",
             )?));
         };
-        self.call_internal(realm, &method, Value::Object(object), &[])
+        self.call_internal(realm, &method, this_value, &[])
     }
 
     fn call_object_prototype_value_of(
@@ -6168,8 +6568,14 @@ impl Runtime {
                 NativeErrorKind::Type,
                 "cannot convert to object",
             )?)),
-            Value::Bool(_)
-            | Value::Int(_)
+            value @ Value::Bool(_) => {
+                let prototype =
+                    self.primitive_prototype_for_realm(realm, PrimitiveKind::Boolean)?;
+                Ok(Completion::Return(Value::Object(
+                    self.new_primitive_object(&prototype, PrimitiveKind::Boolean, value)?,
+                )))
+            }
+            Value::Int(_)
             | Value::Float(_)
             | Value::BigInt(_)
             | Value::String(_)
@@ -6519,6 +6925,15 @@ impl Runtime {
             NativeFunctionId::ObjectPrototypeValueOf => {
                 self.call_object_prototype_value_of(realm, invocation)
             }
+            NativeFunctionId::PrimitiveConstructor(kind) => {
+                self.call_primitive_constructor(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::PrimitivePrototypeToString(kind) => {
+                self.call_primitive_prototype_to_string(realm, kind, invocation)
+            }
+            NativeFunctionId::PrimitivePrototypeValueOf(kind) => {
+                self.call_primitive_prototype_value_of(realm, kind, invocation)
+            }
             NativeFunctionId::ErrorConstructor(kind) => {
                 self.call_error_constructor(realm, kind, invocation, arguments)
             }
@@ -6681,6 +7096,7 @@ impl Runtime {
             match state.heap.object(object.object_id())?.payload {
                 ObjectPayload::GlobalObject { uninitialized_vars } => Some(uninitialized_vars),
                 ObjectPayload::Ordinary
+                | ObjectPayload::Primitive(_)
                 | ObjectPayload::Error
                 | ObjectPayload::NativeFunction { .. }
                 | ObjectPayload::BoundFunction { .. }
@@ -8120,6 +8536,12 @@ impl Context {
         )?)
     }
 
+    /// Return this realm's boxed-false `%Boolean.prototype%` root.
+    pub fn boolean_prototype(&self) -> Result<ObjectRef, RuntimeError> {
+        self.runtime
+            .primitive_prototype_for_realm(self.realm, PrimitiveKind::Boolean)
+    }
+
     /// Return this realm's `%Function%` constructor root.
     pub fn function_constructor(&self) -> Result<CallableRef, RuntimeError> {
         let object = self
@@ -8476,7 +8898,7 @@ mod tests {
     use crate::heap::{
         ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
         DynamicFunctionKind, FunctionDebugPosition, FunctionMetadata, NativeCProto,
-        NativeFunctionId, ObjectPayload,
+        NativeFunctionId, ObjectPayload, PrimitiveKind, PrimitiveObjectData,
     };
     use crate::object::{
         AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField,
@@ -8563,6 +8985,22 @@ mod tests {
             .unwrap_or_else(|| panic!("global {name} was not callable"))
     }
 
+    fn property_callable(
+        runtime: &Runtime,
+        context: &mut super::Context,
+        object: &crate::ObjectRef,
+        name: &str,
+    ) -> CallableRef {
+        let key = runtime.intern_property_key(name).unwrap();
+        let Value::Object(value) = context.get_property(object, &key).unwrap() else {
+            panic!("property {name} was not an object");
+        };
+        runtime
+            .as_callable(&value)
+            .unwrap()
+            .unwrap_or_else(|| panic!("property {name} was not callable"))
+    }
+
     fn own_key_names(runtime: &Runtime, object: &crate::ObjectRef) -> Vec<String> {
         runtime
             .own_property_keys(object)
@@ -8592,6 +9030,17 @@ mod tests {
             panic!("stack was not a string");
         };
         stack
+    }
+
+    fn take_error_message(runtime: &Runtime, context: &mut super::Context) -> JsString {
+        let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
+            panic!("pending exception was not an Error object");
+        };
+        let message = runtime.intern_property_key("message").unwrap();
+        let Value::String(message) = context.get_property(&error, &message).unwrap() else {
+            panic!("Error.message was not a string");
+        };
+        message
     }
 
     fn bytecode_callable(
@@ -8653,6 +9102,118 @@ mod tests {
     }
 
     #[test]
+    fn boolean_intrinsic_graph_payload_and_brand_methods_match_quickjs() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let constructor = global_callable(&runtime, &mut context, "Boolean");
+        let prototype = context.boolean_prototype().unwrap();
+
+        assert_eq!(
+            runtime.get_prototype_of(constructor.as_object()).unwrap(),
+            Some(context.function_prototype().unwrap())
+        );
+        assert_eq!(
+            runtime.get_prototype_of(&prototype).unwrap(),
+            Some(context.object_prototype().unwrap())
+        );
+        assert_eq!(
+            own_key_names(&runtime, constructor.as_object()),
+            ["length", "name", "prototype"]
+        );
+        assert_eq!(
+            own_key_names(&runtime, &prototype),
+            ["toString", "valueOf", "constructor"]
+        );
+        assert!(matches!(
+            &runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .object(prototype.object_id())
+                .unwrap()
+                .payload,
+            ObjectPayload::Primitive(PrimitiveObjectData::Boolean(false))
+        ));
+        {
+            let state = runtime.0.state.borrow();
+            let slots = state
+                .heap
+                .context(context.realm)
+                .unwrap()
+                .primitive_prototypes;
+            assert_eq!(
+                slots[PrimitiveKind::Boolean.index()],
+                Some(prototype.object_id())
+            );
+            for kind in [
+                PrimitiveKind::Number,
+                PrimitiveKind::String,
+                PrimitiveKind::Symbol,
+                PrimitiveKind::BigInt,
+            ] {
+                assert_eq!(slots[kind.index()], None, "{kind:?} slot was enabled early");
+            }
+        }
+
+        assert_eq!(
+            context.call(&constructor, Value::Undefined, &[]).unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            context
+                .call(&constructor, Value::Undefined, &[Value::Int(1)])
+                .unwrap(),
+            Value::Bool(true)
+        );
+        let wrapper = context
+            .construct(&constructor, &[Value::Bool(false)])
+            .unwrap();
+        let Value::Object(wrapper) = wrapper else {
+            panic!("new Boolean did not return an object");
+        };
+        assert_eq!(runtime.own_property_keys(&wrapper).unwrap(), []);
+        assert_eq!(
+            runtime.get_prototype_of(&wrapper).unwrap(),
+            Some(prototype.clone())
+        );
+        let value_of = property_callable(&runtime, &mut context, &prototype, "valueOf");
+        let to_string = property_callable(&runtime, &mut context, &prototype, "toString");
+        assert_eq!(
+            context
+                .call(&value_of, Value::Object(wrapper.clone()), &[])
+                .unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            context
+                .call(&to_string, Value::Object(wrapper.clone()), &[])
+                .unwrap(),
+            Value::String(JsString::from("false"))
+        );
+        assert_eq!(
+            context.call(&value_of, Value::Bool(true), &[]).unwrap(),
+            Value::Bool(true)
+        );
+        let spoof = runtime.new_object(Some(&prototype)).unwrap();
+        assert!(matches!(
+            context.call(&value_of, Value::Object(spoof), &[]),
+            Err(RuntimeError::Exception)
+        ));
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from("not a boolean")
+        );
+        assert_eq!(
+            context
+                .eval("true.toString() + '|' + false.valueOf()")
+                .unwrap(),
+            Value::String(JsString::from("true|false"))
+        );
+        assert_eq!(context.eval("+new Boolean(false)").unwrap(), Value::Int(0));
+    }
+
+    #[test]
     fn global_primitive_constants_match_quickjs_frozen_descriptors() {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
@@ -8693,6 +9254,554 @@ mod tests {
             context.eval("this").unwrap(),
             Value::Object(context.global_object().unwrap())
         );
+    }
+
+    #[test]
+    fn boolean_wrappers_lookup_and_new_target_use_the_required_realms() {
+        let runtime = Runtime::new();
+        let mut first = runtime.new_context();
+        let mut second = runtime.new_context();
+        let first_constructor = global_callable(&runtime, &mut first, "Boolean");
+        let second_constructor = global_callable(&runtime, &mut second, "Boolean");
+        let first_prototype = first.boolean_prototype().unwrap();
+        let second_prototype = second.boolean_prototype().unwrap();
+        let first_object_prototype = first.object_prototype().unwrap();
+        let first_object_value_of =
+            property_callable(&runtime, &mut first, &first_object_prototype, "valueOf");
+        let Value::Object(method_wrapper) = second
+            .call(&first_object_value_of, Value::Bool(false), &[])
+            .unwrap()
+        else {
+            panic!("cross-realm Object.prototype.valueOf did not box Boolean");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&method_wrapper).unwrap(),
+            Some(first_prototype.clone())
+        );
+
+        let Value::Object(cross_wrapper) = second
+            .construct_with_new_target(
+                &first_constructor,
+                &second_constructor,
+                &[Value::Bool(true)],
+            )
+            .unwrap()
+        else {
+            panic!("cross-realm Boolean construction did not return an object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&cross_wrapper).unwrap(),
+            Some(second_prototype.clone())
+        );
+        let second_value_of =
+            property_callable(&runtime, &mut second, &second_prototype, "valueOf");
+        assert_eq!(
+            first
+                .call(&second_value_of, Value::Object(cross_wrapper.clone()), &[],)
+                .unwrap(),
+            Value::Bool(true)
+        );
+
+        let marker = runtime.intern_property_key("realmMarker").unwrap();
+        assert!(
+            first
+                .define_own_property(
+                    &first_prototype,
+                    &marker,
+                    &data_descriptor(Value::Int(1), true, false, true),
+                )
+                .unwrap()
+        );
+        assert!(
+            second
+                .define_own_property(
+                    &second_prototype,
+                    &marker,
+                    &data_descriptor(Value::Int(2), true, false, true),
+                )
+                .unwrap()
+        );
+        let callable = |runtime: &Runtime, context: &mut super::Context, source: &str| {
+            let Value::Object(function) = context.eval(source).unwrap() else {
+                panic!("realm lookup probe did not produce a function");
+            };
+            runtime.as_callable(&function).unwrap().unwrap()
+        };
+        let first_reader = callable(
+            &runtime,
+            &mut first,
+            "(function(){ return true.realmMarker; })",
+        );
+        let second_reader = callable(
+            &runtime,
+            &mut second,
+            "(function(){ return true.realmMarker; })",
+        );
+        assert_eq!(
+            second.call(&first_reader, Value::Undefined, &[]).unwrap(),
+            Value::Int(1)
+        );
+        assert_eq!(
+            first.call(&second_reader, Value::Undefined, &[]).unwrap(),
+            Value::Int(2)
+        );
+
+        let custom_prototype = second.new_object().unwrap();
+        let new_target = runtime
+            .new_bound_native_function(
+                &second.function_prototype().unwrap(),
+                second.realm,
+                NativeFunctionId::ConstructorProbe,
+                0,
+            )
+            .unwrap();
+        let prototype_key = runtime.intern_property_key("prototype").unwrap();
+        assert!(
+            second
+                .define_own_property(
+                    new_target.as_object(),
+                    &prototype_key,
+                    &data_descriptor(Value::Object(custom_prototype.clone()), true, false, true,),
+                )
+                .unwrap()
+        );
+        let Value::Object(custom_wrapper) = first
+            .construct_with_new_target(&first_constructor, &new_target, &[Value::Bool(false)])
+            .unwrap()
+        else {
+            panic!("custom newTarget did not produce a Boolean wrapper");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&custom_wrapper).unwrap(),
+            Some(custom_prototype)
+        );
+        assert!(
+            second
+                .define_own_property(
+                    new_target.as_object(),
+                    &prototype_key,
+                    &OrdinaryPropertyDescriptor {
+                        value: DescriptorField::Present(Value::Int(1)),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        let Value::Object(fallback_wrapper) = first
+            .construct_with_new_target(&first_constructor, &new_target, &[Value::Bool(false)])
+            .unwrap()
+        else {
+            panic!("fallback newTarget did not produce a Boolean wrapper");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&fallback_wrapper).unwrap(),
+            Some(second_prototype.clone())
+        );
+        let throwing_getter = bytecode_callable(
+            &runtime,
+            &second,
+            vec![Instruction::PushI32(77), Instruction::Throw],
+            FunctionMetadata {
+                max_stack: 1,
+                strict: true,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(
+            second
+                .define_own_property(
+                    new_target.as_object(),
+                    &prototype_key,
+                    &OrdinaryPropertyDescriptor {
+                        get: DescriptorField::Present(AccessorValue::Callable(throwing_getter)),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            first
+                .construct_with_new_target(&first_constructor, &new_target, &[Value::Bool(false)],),
+            Err(RuntimeError::Exception)
+        );
+        assert_eq!(first.take_exception().unwrap(), Some(Value::Int(77)));
+
+        let escaped_this = callable(&runtime, &mut first, "(function(){ return this; })");
+        let Value::Object(boxed_this) =
+            second.call(&escaped_this, Value::Bool(false), &[]).unwrap()
+        else {
+            panic!("sloppy Boolean this did not escape as a wrapper");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&boxed_this).unwrap(),
+            Some(first_prototype)
+        );
+        let stable_this = callable(
+            &runtime,
+            &mut first,
+            "(function(){ return this === this; })",
+        );
+        assert_eq!(
+            second.call(&stable_this, Value::Bool(false), &[]).unwrap(),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn boolean_primitive_accessors_writes_and_delete_preserve_raw_receiver_semantics() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let prototype = context.boolean_prototype().unwrap();
+        let value_of = property_callable(&runtime, &mut context, &prototype, "valueOf");
+        let strict_getter = bytecode_callable(
+            &runtime,
+            &context,
+            vec![Instruction::PushThis, Instruction::Return],
+            FunctionMetadata {
+                max_stack: 1,
+                strict: true,
+                ..FunctionMetadata::default()
+            },
+        );
+        let sloppy_getter = bytecode_callable(
+            &runtime,
+            &context,
+            vec![Instruction::PushThis, Instruction::Return],
+            FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        for (name, getter) in [
+            ("strictReceiver", strict_getter),
+            ("sloppyReceiver", sloppy_getter),
+        ] {
+            let key = runtime.intern_property_key(name).unwrap();
+            assert!(
+                context
+                    .define_own_property(
+                        &prototype,
+                        &key,
+                        &OrdinaryPropertyDescriptor {
+                            get: DescriptorField::Present(AccessorValue::Callable(getter)),
+                            configurable: DescriptorField::Present(true),
+                            ..OrdinaryPropertyDescriptor::new()
+                        },
+                    )
+                    .unwrap()
+            );
+        }
+        assert_eq!(
+            context.eval("false.strictReceiver").unwrap(),
+            Value::Bool(false)
+        );
+        let Value::Object(sloppy_receiver) = context.eval("false.sloppyReceiver").unwrap() else {
+            panic!("sloppy primitive getter did not receive a Boolean wrapper");
+        };
+        assert_eq!(
+            context
+                .call(&value_of, Value::Object(sloppy_receiver), &[])
+                .unwrap(),
+            Value::Bool(false)
+        );
+
+        let strict_setter = bytecode_callable(
+            &runtime,
+            &context,
+            vec![Instruction::PushThis, Instruction::Throw],
+            FunctionMetadata {
+                argument_count: 1,
+                max_stack: 1,
+                strict: true,
+                ..FunctionMetadata::default()
+            },
+        );
+        let sloppy_setter = bytecode_callable(
+            &runtime,
+            &context,
+            vec![Instruction::PushThis, Instruction::Throw],
+            FunctionMetadata {
+                argument_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        for (name, setter) in [("strictSink", strict_setter), ("sloppySink", sloppy_setter)] {
+            let key = runtime.intern_property_key(name).unwrap();
+            assert!(
+                context
+                    .define_own_property(
+                        &prototype,
+                        &key,
+                        &OrdinaryPropertyDescriptor {
+                            set: DescriptorField::Present(AccessorValue::Callable(setter)),
+                            configurable: DescriptorField::Present(true),
+                            ..OrdinaryPropertyDescriptor::new()
+                        },
+                    )
+                    .unwrap()
+            );
+        }
+        assert_eq!(
+            context.eval("false.strictSink = 7"),
+            Err(RuntimeError::Exception)
+        );
+        assert_eq!(context.take_exception().unwrap(), Some(Value::Bool(false)));
+        assert_eq!(
+            context.eval("false.sloppySink = 7"),
+            Err(RuntimeError::Exception)
+        );
+        let Some(Value::Object(sloppy_receiver)) = context.take_exception().unwrap() else {
+            panic!("sloppy primitive setter did not receive a Boolean wrapper");
+        };
+        assert_eq!(
+            context
+                .call(&value_of, Value::Object(sloppy_receiver), &[])
+                .unwrap(),
+            Value::Bool(false)
+        );
+
+        let writable = runtime.intern_property_key("writablePrimitive").unwrap();
+        let read_only = runtime.intern_property_key("readOnlyPrimitive").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &prototype,
+                    &writable,
+                    &data_descriptor(Value::Int(1), true, false, true),
+                )
+                .unwrap()
+        );
+        assert!(
+            context
+                .define_own_property(
+                    &prototype,
+                    &read_only,
+                    &data_descriptor(Value::Int(1), false, false, true),
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context.eval("false.writablePrimitive = 7").unwrap(),
+            Value::Int(7)
+        );
+        assert_eq!(
+            context.eval("false.writablePrimitive").unwrap(),
+            Value::Int(1)
+        );
+        assert_eq!(
+            context.eval("'use strict'; false.writablePrimitive = 7"),
+            Err(RuntimeError::Exception)
+        );
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from("not an object")
+        );
+        assert_eq!(
+            context.eval("'use strict'; false.readOnlyPrimitive = 7"),
+            Err(RuntimeError::Exception)
+        );
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from("'readOnlyPrimitive' is read-only")
+        );
+        assert_eq!(
+            context.eval("delete false.writablePrimitive").unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            context.eval("false.writablePrimitive").unwrap(),
+            Value::Int(1)
+        );
+    }
+
+    #[test]
+    fn object_prototype_boolean_methods_box_only_the_quickjs_paths() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let object_prototype = context.object_prototype().unwrap();
+        let boolean_prototype = context.boolean_prototype().unwrap();
+        let object_to_string =
+            property_callable(&runtime, &mut context, &object_prototype, "toString");
+        let object_value_of =
+            property_callable(&runtime, &mut context, &object_prototype, "valueOf");
+        let object_to_locale_string =
+            property_callable(&runtime, &mut context, &object_prototype, "toLocaleString");
+        let boolean_value_of =
+            property_callable(&runtime, &mut context, &boolean_prototype, "valueOf");
+
+        assert_eq!(
+            context
+                .call(&object_to_string, Value::Bool(false), &[])
+                .unwrap(),
+            Value::String(JsString::from("[object Boolean]"))
+        );
+        assert_eq!(
+            context
+                .call(&object_to_locale_string, Value::Bool(false), &[])
+                .unwrap(),
+            Value::String(JsString::from("false"))
+        );
+        let Value::Object(first_wrapper) = context
+            .call(&object_value_of, Value::Bool(false), &[])
+            .unwrap()
+        else {
+            panic!("Object.prototype.valueOf did not box Boolean primitive");
+        };
+        let Value::Object(second_wrapper) = context
+            .call(&object_value_of, Value::Bool(false), &[])
+            .unwrap()
+        else {
+            panic!("second Object.prototype.valueOf did not box Boolean primitive");
+        };
+        assert_ne!(first_wrapper, second_wrapper);
+        assert_eq!(
+            runtime.get_prototype_of(&first_wrapper).unwrap(),
+            Some(boolean_prototype.clone())
+        );
+        assert_eq!(
+            context
+                .call(&boolean_value_of, Value::Object(first_wrapper), &[])
+                .unwrap(),
+            Value::Bool(false)
+        );
+
+        let tag_receiver = runtime.intern_property_key("tagReceiver").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &context.global_object().unwrap(),
+                    &tag_receiver,
+                    &data_descriptor(Value::Undefined, true, true, true),
+                )
+                .unwrap()
+        );
+        let Value::Object(tag_getter) = context
+            .eval(
+                "(function(){ 'use strict'; tagReceiver = typeof this; return 'CustomBoolean'; })",
+            )
+            .unwrap()
+        else {
+            panic!("@@toStringTag probe did not produce a function");
+        };
+        let tag_getter = runtime.as_callable(&tag_getter).unwrap().unwrap();
+        let to_string_tag =
+            PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::ToStringTag));
+        assert!(
+            context
+                .define_own_property(
+                    &boolean_prototype,
+                    &to_string_tag,
+                    &OrdinaryPropertyDescriptor {
+                        get: DescriptorField::Present(AccessorValue::Callable(tag_getter)),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context
+                .call(&object_to_string, Value::Bool(false), &[])
+                .unwrap(),
+            Value::String(JsString::from("[object CustomBoolean]"))
+        );
+        assert_eq!(
+            context
+                .get_property(&context.global_object().unwrap(), &tag_receiver)
+                .unwrap(),
+            Value::String(JsString::from("object"))
+        );
+
+        let locale_receiver = runtime.intern_property_key("localeReceiver").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &context.global_object().unwrap(),
+                    &locale_receiver,
+                    &data_descriptor(Value::Undefined, true, true, true),
+                )
+                .unwrap()
+        );
+        let Value::Object(locale_method) = context
+            .eval("(function(){ 'use strict'; return typeof this; })")
+            .unwrap()
+        else {
+            panic!("toLocaleString method probe did not produce a function");
+        };
+        let locale_method = runtime.as_callable(&locale_method).unwrap().unwrap();
+        let locale_method_key = runtime.intern_property_key("localeMethod").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &context.global_object().unwrap(),
+                    &locale_method_key,
+                    &data_descriptor(
+                        Value::Object(locale_method.as_object().clone()),
+                        true,
+                        true,
+                        true,
+                    ),
+                )
+                .unwrap()
+        );
+        let Value::Object(locale_getter) = context
+            .eval(
+                "(function(){ 'use strict'; localeReceiver = typeof this; return localeMethod; })",
+            )
+            .unwrap()
+        else {
+            panic!("toLocaleString getter probe did not produce a function");
+        };
+        let locale_getter = runtime.as_callable(&locale_getter).unwrap().unwrap();
+        let to_string_key = runtime.intern_property_key("toString").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &boolean_prototype,
+                    &to_string_key,
+                    &OrdinaryPropertyDescriptor {
+                        get: DescriptorField::Present(AccessorValue::Callable(locale_getter)),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context
+                .call(&object_to_locale_string, Value::Bool(false), &[])
+                .unwrap(),
+            Value::String(JsString::from("boolean"))
+        );
+        assert_eq!(
+            context
+                .get_property(&context.global_object().unwrap(), &locale_receiver)
+                .unwrap(),
+            Value::String(JsString::from("boolean"))
+        );
+    }
+
+    #[test]
+    fn boolean_wrapper_keeps_its_realm_graph_alive_until_collection() {
+        let runtime = Runtime::new();
+        let wrapper = {
+            let mut context = runtime.new_context();
+            let constructor = global_callable(&runtime, &mut context, "Boolean");
+            let Value::Object(wrapper) = context
+                .construct(&constructor, &[Value::Bool(true)])
+                .unwrap()
+            else {
+                panic!("Boolean construction did not return a wrapper");
+            };
+            wrapper
+        };
+        runtime.run_gc().unwrap();
+        assert_eq!(runtime.heap_counts().context_nodes, 1);
+        drop(wrapper);
+        runtime.run_gc().unwrap();
+        assert_eq!(runtime.heap_counts().live, 0);
     }
 
     #[test]
