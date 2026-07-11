@@ -36,8 +36,8 @@ claim full parity.
   Scope zero owns arguments and function-scoped storage, while every script or
   ordinary function has a distinct authored-body scope. Non-empty blocks,
   `if`, classic `for`, and `switch` add typed parser/IR scopes at the pinned
-  QuickJS boundaries; the populated body/block/switch lifetimes are described
-  below. Unresolved identifier reads and every lvalue rewrite
+  QuickJS boundaries; the populated body/block/for/switch lifetimes are
+  described below. Unresolved identifier reads and every lvalue rewrite
   retain their original use-site scope, and each child function records its
   parent's definition-site scope. Resolution walks children in source-order
   DFS postorder, searches each ancestor from that frozen definition scope, and
@@ -47,24 +47,27 @@ claim full parity.
   the private named-function binding remains a lazy root local.
 
   Source lexical population now covers simple-name `let` and `const` lists in
-  three authored environments: an ordinary function body (including a normal
-  `%Function%` constructor body), every non-empty nested brace block, and the
-  one CaseBlock scope shared by every clause of a `switch`. Nested block and
-  switch locals work in both ordinary functions and scripts even though direct
-  Program/global lexical declarations remain unsupported. `let` without an
-  initializer performs explicit `undefined` initialization, `const` requires
-  an initializer, and anonymous function initializers retain contextual
-  NamedEvaluation. Registration occurs before each initializer is parsed;
-  duplicate names are rejected within one lexical scope, all switch clauses
-  participate in the same duplicate check, and shadowing an outer lexical,
-  parameter, or private named-function binding is allowed where QuickJS allows
-  it. Body-scope parameter conflicts and the pinned release's asymmetric
-  first-declaration-scope `var` conflict behavior are preserved for earlier and
-  later `var` declarations. The declaration probe retains QuickJS's contextual
-  sloppy-`let` and LineTerminator rule: statement-list positions recognize the
-  declaration form, while a single-statement position keeps a line-terminated
-  ambiguous `let` as an identifier expression and rejects an unambiguous
-  lexical declaration with the pinned diagnostic.
+  four authored environments: an ordinary function body (including a normal
+  `%Function%` constructor body), every non-empty nested brace block, the one
+  CaseBlock scope shared by every clause of a `switch`, and the initializer
+  scope of a classic `for (;;)` loop. Block, switch, and classic-for locals work
+  in scripts even though direct Program/global lexical declarations remain
+  unsupported. `let` without an initializer performs explicit `undefined`
+  initialization, `const` requires an initializer, and anonymous function
+  initializers retain contextual NamedEvaluation. Registration occurs before
+  each initializer is parsed; duplicate names are rejected within one lexical
+  scope, all switch clauses participate in the same duplicate check, and
+  shadowing an outer lexical, parameter, or private named-function binding is
+  allowed where QuickJS allows it. A `var` in the loop body or another
+  descendant still conflicts with the head lexical, while a function-scoped
+  binding outside the loop may be shadowed by it. Body-scope parameter
+  conflicts and the pinned release's asymmetric first-declaration-scope `var`
+  conflict behavior are preserved for earlier and later `var` declarations.
+  The declaration probe retains QuickJS's contextual sloppy-`let` and
+  LineTerminator rule: statement-list positions and classic heads recognize
+  the declaration form, while a single-statement position keeps a
+  line-terminated ambiguous `let` as an identifier expression and rejects an
+  unambiguous lexical declaration with the pinned diagnostic.
 
   Scope lifetime is represented in IR by typed `EnterScope(ScopeId)` and
   `LeaveScope(ScopeId)` operations rather than by a body-only slot list. After
@@ -85,22 +88,39 @@ claim full parity.
   part in the same pinned QuickJS dead-code, label-threading, and source-marker
   rules.
 
+  A classic-for head has one authored `EnterScope`, before its initializer; it
+  is not re-entered or reset to TDZ on every iteration. For a captured head
+  binding, QuickJS closes the initializer cell before the first test, closes
+  the current cell on normal body fallthrough before the update, and closes
+  the final cell at the shared loop-exit tail. `CloseLocal` detaches the current
+  VarRef while leaving its value in the frame slot, so a later capture creates
+  the next cell without reinitializing the binding. `break` reaches the final
+  tail close. In QuickJS 2026-06-04, however, a `continue` targeting that same
+  classic loop jumps directly to its update or test and skips the normal-body
+  close for the head scope; descendant block/switch cells are still closed.
+  Consequently a captured head binding can be shared across the continued and
+  following iteration. The implementation and oracle deliberately preserve
+  this pinned `/* XXX: check continue case */` behavior rather than silently
+  substituting the specification's expected fresh cell.
+
   `return` and an uncaught `throw` do not emit lexical leave operations;
   whole-frame teardown detaches their captured locals, as in QuickJS. A future
   same-function `try`/`catch` slice must also preserve the pinned release's
   observable quirk that a caught `throw` does not close the intervening block
   scope before control resumes; `try`/`catch` is not implemented yet.
 
-  The pinned source anchors for this slice are `quickjs.c` 23933
+  The pinned source anchors for this slice are `quickjs.c` 17571
+  (`close_lexical_var`), 23933
   (`find_var_in_child_scope`), 23989/24035/24047
   (`push_scope`/`pop_scope`/`close_scopes`), 24186 and 26096
   (`define_var`/`js_define_var`), 28225 (`emit_break`), 28378
-  (`js_parse_block`), 29172 (SwitchStatement), and 34281/34315
+  (`js_parse_block`), 29004-29147 (classic `for`, including initializer and
+  normal-body closes plus the `continue` quirk), 29172 (SwitchStatement), and
+  34281/34315
   (`OP_enter_scope`/`OP_leave_scope` expansion) in QuickJS 2026-06-04.
-  Direct Program/global lexicals, lexical loop heads and per-iteration
-  environments, destructuring, single-statement lexical declarations, and
-  catch/class scopes remain explicit boundaries rather than falling back to
-  `var` or global storage.
+  Direct Program/global lexicals, `for-in`/`for-of`/`for-await`, destructuring,
+  single-statement lexical declarations, and catch/class scopes remain explicit
+  boundaries rather than falling back to `var` or global storage.
 
   The immutable function format and VM provide the lexical-frame substrate for
   this compiler slice. Published bytecode owns
@@ -128,8 +148,9 @@ claim full parity.
   `Dup; PutVarRefCheck`; transitive `ParentClosure` relays retain the lexical
   name and flags required by publication preflight. Full and strip-source modes
   retain lexical vardef/relay names for TDZ diagnostics. Strip-debug removes
-  those debug names on every relay while retaining the `ThrowReadOnly` atom,
-  so TDZ becomes generic but const assignment remains named. Full and
+  those debug names on every relay, including classic-for captures, while
+  retaining the `ThrowReadOnly` atom, so TDZ becomes generic but const
+  assignment remains named. Full and
   strip-source error stacks also project QuickJS's two late resolver passes
   when a const write becomes terminal: dead-code marker inheritance, mutable
   label references, Goto threading, constant tests, physical-label barriers,
@@ -142,7 +163,7 @@ claim full parity.
   primitive expression grammar,
   the current source path supports anonymous and named ordinary function
   expressions, simple parameters, `return`/fallthrough, function-local `var`,
-  the simple-name body/block/switch `let`/`const` slice above,
+  the simple-name body/block/switch/classic-for-head `let`/`const` slice above,
   recursive block statements, `if`/`else` (including nearest-`if` binding),
   `while`/`do-while`, classic `for (;;)` loops, `switch` control flow and
   labeled statements with named and unnamed `break`/`continue`,
@@ -169,7 +190,11 @@ claim full parity.
   in QuickJS. Classic `for` uses a non-committing clone-Lexer port of
   `js_parse_skip_parens_token` to select a head with top-level semicolons,
   explicitly propagates QuickJS AllowIn/NoIn grammar state, and shares the
-  function-local `var` declaration path. Initializer/test/update values are
+  function-local `var` declaration path. Its simple-name lexical declarations
+  use the same NoIn initializer grammar, conflict registration, TDZ,
+  NamedEvaluation, closure, read-only, and StripDebug paths in scripts,
+  ordinary functions, and normal `%Function%` constructor bodies.
+  Initializer/test/update values are
   discarded; `continue` selects update, test or body according to the missing
   clauses. With both test and update, the relocatable update IR fragment moves
   after the body like QuickJS's optimize pass, retaining Nop source slots and
@@ -203,10 +228,9 @@ claim full parity.
   try/catch/finally, global `var` and function declarations remain separate
   grammar/runtime slices. The classic head
   already ports QuickJS's sloppy `is_let(..., DECL_MASK_OTHER)` ambiguity to
-  that explicit lexical boundary. The shared statement parser applies the
-  corresponding list-versus-single-statement mask. Actual lexical loop heads,
-  per-iteration environments, destructuring, and catch/finally scopes remain
-  later slices.
+  the implemented simple-name lexical head. The shared statement parser applies
+  the corresponding list-versus-single-statement mask. Destructuring and
+  catch/finally scopes remain later slices.
 - Untagged template literals follow QuickJS `js_parse_template` rather than a
   generic string-interpolation rewrite. A no-substitution template pushes only
   its cooked String. An interpolated template keeps the cooked head as a
@@ -797,32 +821,38 @@ claim full parity.
   closure cells, normal and abrupt `CloseLocal`, fresh block re-entry, mutable
   and const write priority, contextual sloppy `let`, exact early conflicts and
   locations, named initialization, normal `%Function%` bodies, nested script
-  locals, shared switch conflicts, explicit global/loop-head/destructuring
+  locals, shared switch conflicts, classic-for single-entry/cell lifetimes and
+  pinned continue behavior, explicit global/nonclassic-for/destructuring
   boundaries, and strip-debug name removal without losing read-only atoms.
   The companion `oracle_function_body_lexicals` target compares ordinary and
   normal-`Function` body/block/switch values, nested script block/switch locals,
   direct and transitive closure cells, repeated-entry and break/continue scope
   exits, cross-case TDZ/conflicts, TDZ/read-only CLI stacks, and the intentionally
-  unsupported direct-global/loop-head/destructuring boundaries with the pinned
-  release.
+  unsupported direct-global/destructuring boundaries with the pinned release.
+  The `oracle_for_lexicals` target separately locks classic-head initialization
+  and NoIn parsing, ordinary and normal-`Function` values, script-local and
+  cross-eval captures, initializer/body/update cell identity, the pinned
+  shared-head-cell continue quirk, labeled jumps through a nested switch,
+  conflicts, exact full/StripDebug TDZ and read-only stacks, and explicit
+  `for-in`/`for-of`/destructuring boundaries.
 - `Runtime` and `Context` are distinct; `qjs -e` and file execution use the
   Rust compiler/VM path and never delegate to an external engine.
 
 ## Not implemented yet
 
 The language slice is intentionally narrow. Function declarations/hoisting,
-global lexical declaration instantiation, lexical declarations in loop heads,
-per-iteration environments, destructuring, try/catch/finally, other general
-assignment targets, module resolution, computed property-definition naming,
-mapped `arguments`, arrow/async/generator functions and callable Proxy classes
-are not yet implemented. Top-level Program declarations are rejected instead
-of being faked as frame locals. Source `let`/`const` is currently limited to
-simple identifier lists in authored ordinary-function bodies, non-empty nested
-brace blocks, and shared switch scopes; the nested forms also work in scripts,
-and the body forms are available through the normal `%Function%` constructor.
-Single-statement declarations, lexical loop heads, destructuring, catch/class
-lexical environments, and loop per-iteration lifetimes remain later compiler
-slices. The internal
+global lexical declaration instantiation, `for-in`/`for-of`/`for-await`,
+destructuring, try/catch/finally, other general assignment targets, module
+resolution, computed property-definition naming, mapped `arguments`,
+arrow/async/generator functions and callable Proxy classes are not yet
+implemented. Top-level Program declarations are rejected instead of being
+faked as frame locals. Source `let`/`const` is currently limited to simple
+identifier lists in authored ordinary-function bodies, non-empty nested brace
+blocks, shared switch scopes, and classic `for (;;)` heads. The nested and
+classic-for forms also work in scripts, and ordinary bodies including classic
+heads are available through the normal `%Function%` constructor.
+Single-statement declarations, nonclassic lexical loop heads, destructuring,
+and catch/class lexical environments remain later compiler slices. The internal
 global lexical VarRef path already enforces TDZ, mutable and const behavior, but
 it is still exercised through test-only creation and initialization helpers
 rather than source Program declarations. Ordinary reads and calls of the valid
@@ -855,9 +885,9 @@ lexical vardef and captured-relay names while retaining atoms needed by
 read-only execution; bytecode debug serialization remains pending. The normal
 `%Function%` graph is present, but dynamic formal parameters remain limited to
 simple identifiers and bodies to the current statement, expression, and
-simple body/block/switch lexical-declaration grammar; implicit `arguments`,
-default/rest/destructuring parameters, generator/async kinds, and Proxy
-new-target realms remain pending.
+simple body/block/switch/classic-for-head lexical-declaration grammar; implicit
+`arguments`, default/rest/destructuring parameters, generator/async kinds, and
+Proxy new-target realms remain pending.
 Compiler input is still UTF-8,
 so dynamic source containing an unpaired UTF-16 surrogate throws an explicit
 implementation-gap `InternalError` instead of being silently rewritten. The
@@ -966,6 +996,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_constructor_conversion -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_lexicals -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_for_lexicals -- --nocapture
 
 ./scripts/test-parity-slice.sh
 ```
@@ -974,10 +1006,10 @@ The direct commands above run the dedicated Boolean, Symbol,
 String-exotic substrate, String UTF-16 prefix, String-conversion core,
 String-rope/byte/native-Error kernels, Unicode identifier core, global
 BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials, and
-the body/block/switch lexical-scope slice. The atom-Error target contains
-thirteen pinned-oracle inputs in addition to its Rust-side expectation test. The
-Unicode target checks every scalar, real compiler/runtime cases, and the
-parser-driven identifier diagnostic matrix. A
+the body/block/switch/classic-for lexical-scope slice. The atom-Error target
+contains thirteen pinned-oracle inputs in addition to its Rust-side expectation
+test. The Unicode target checks every scalar, real compiler/runtime cases, and
+the parser-driven identifier diagnostic matrix. A
 separate statement-control-flow target locks block/`if`/loop completion,
 nearest-loop jumps, per-function isolation, ASI/directive boundaries and exact
 diagnostics; the switch target locks case/default search, fallthrough,

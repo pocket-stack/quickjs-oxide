@@ -37,9 +37,10 @@ The current repository provides:
 - a practical subset of expressions, calls, construction, member access and
   assignment, operators, ordinary function expressions, and control flow;
 - function-local `var`, plus simple identifier `let`/`const` declarations in
-  ordinary function bodies, nested brace blocks, and the shared scope of a
-  `switch` (including nested block/switch locals in scripts), with TDZ and
-  captured-cell cleanup across re-entry, `break`, and `continue`;
+  ordinary function bodies, nested brace blocks, the shared scope of a
+  `switch`, and classic `for` heads (including the nested forms in scripts),
+  with TDZ and pinned-QuickJS captured-cell lifetimes across re-entry and
+  abrupt control flow;
 - selected Function, Number, Boolean, Symbol, BigInt, String, Object-prototype,
   global numeric, and URI behavior;
 - filename, source-position, stack, strip-source, and strip-debug support for
@@ -55,8 +56,8 @@ Among the capabilities not yet complete are:
 
 - program/global declaration instantiation, including direct `var`, function,
   and lexical declarations;
-- lexical declarations in loop heads, destructuring, and per-iteration lexical
-  environments;
+- lexical destructuring, including destructuring in loop heads, and the
+  remaining lexical environments;
 - `for-in`/`for-of`/`for-await` and `try`/`catch`/`finally`;
 - function declarations and hoisting, arrow functions, classes, generators,
   async functions, and the complete `arguments` behavior;

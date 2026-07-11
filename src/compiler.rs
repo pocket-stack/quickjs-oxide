@@ -899,6 +899,7 @@ impl<'source> Parser<'source> {
         }
         let classic_head = self.for_head_has_top_level_semicolon();
         self.expect_punctuator(Punctuator::LeftParen)?;
+        let outer_scope = self.current_ir().current_scope;
         let scope = self.push_scope(ScopeKind::For);
 
         // QuickJS parses the classic initializer with PF_IN_ACCEPTED clear.
@@ -906,11 +907,13 @@ impl<'source> Parser<'source> {
         // remains a later runtime slice.
         if !self.is_punctuator(Punctuator::Semicolon) {
             if self.lexical_declaration_ahead(true)? {
-                return Err(self.unsupported_here(
-                    "lexical declarations in for heads are not implemented yet",
-                ));
-            }
-            if matches!(self.current().kind, TokenKind::Keyword(Keyword::Var)) {
+                if !classic_head {
+                    return Err(
+                        self.unsupported_here("for-in and for-of loops are not implemented yet")
+                    );
+                }
+                self.parse_lexical_declarations_with_in(InMode::Disallow)?;
+            } else if matches!(self.current().kind, TokenKind::Keyword(Keyword::Var)) {
                 if matches!(self.current_ir().kind, FunctionKind::Script) {
                     return Err(self.unsupported_here(
                         "top-level var declarations and global bindings are not implemented yet",
@@ -928,6 +931,9 @@ impl<'source> Parser<'source> {
                     self.unsupported_here("for-in and for-of loops are not implemented yet")
                 );
             }
+            // Detach any initializer capture before the first test while the
+            // initialized value remains in the local slot for the iteration.
+            self.emit_scope_closures(scope, outer_scope)?;
         }
         self.expect_punctuator(Punctuator::Semicolon)?;
 
@@ -983,6 +989,11 @@ impl<'source> Parser<'source> {
         }
         self.parse_statement_or_decl(completion, StatementPosition::Single)?;
         self.require_stack_depth(entry_depth, "for body")?;
+        // Normal fallthrough closes the current head-binding cell before the
+        // update creates the next iteration's cell. A `continue` targets the
+        // update/test below and intentionally skips this close, preserving the
+        // pinned release's observable `XXX: check continue` behavior.
+        self.emit_scope_closures(scope, outer_scope)?;
         let continue_target = if let Some((old_start, old_end, mut fragment)) = moved_update {
             let target = self.current_ir().ops.len();
             relocate_ir_fragment(&mut fragment, old_start..old_end, target)?;
@@ -1332,6 +1343,15 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_lexical_statement(&mut self) -> Result<(), Error> {
+        self.parse_lexical_declarations_with_in(InMode::Allow)?;
+        self.consume_statement_terminator()
+    }
+
+    fn parse_lexical_declarations_with_in(&mut self, mode: InMode) -> Result<(), Error> {
+        self.with_in_mode(mode, Self::parse_lexical_declarations)
+    }
+
+    fn parse_lexical_declarations(&mut self) -> Result<(), Error> {
         let is_const = matches!(self.current().kind, TokenKind::Keyword(Keyword::Const));
         self.advance()?;
 
@@ -1403,7 +1423,7 @@ impl<'source> Parser<'source> {
                 break;
             }
         }
-        self.consume_statement_terminator()
+        Ok(())
     }
 
     fn parse_var_statement(&mut self) -> Result<(), Error> {
@@ -1530,10 +1550,12 @@ impl<'source> Parser<'source> {
         let function = &mut self.functions[self.current_function];
         let scope = function.current_scope;
         let scope_kind = function.scopes[scope.0].kind;
-        let supported_scope = matches!(scope_kind, ScopeKind::Block | ScopeKind::Switch)
-            || (matches!(scope_kind, ScopeKind::FunctionBody)
-                && matches!(function.kind, FunctionKind::Ordinary)
-                && scope == function.body_scope);
+        let supported_scope = matches!(
+            scope_kind,
+            ScopeKind::Block | ScopeKind::For | ScopeKind::Switch
+        ) || (matches!(scope_kind, ScopeKind::FunctionBody)
+            && matches!(function.kind, FunctionKind::Ordinary)
+            && scope == function.body_scope);
         if !supported_scope {
             return Err(Error::internal(
                 "lexical declaration escaped its supported parser scope",
@@ -3726,10 +3748,12 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         if matches!(binding.kind, BindingKind::Lexical { .. }) {
                             let scope_kind = function.scopes[binding.storage_scope.0].kind;
                             let supported_scope =
-                                matches!(scope_kind, ScopeKind::Block | ScopeKind::Switch)
-                                    || (matches!(scope_kind, ScopeKind::FunctionBody)
-                                        && matches!(function.kind, FunctionKind::Ordinary)
-                                        && binding.storage_scope == function.body_scope);
+                                matches!(
+                                    scope_kind,
+                                    ScopeKind::Block | ScopeKind::For | ScopeKind::Switch
+                                ) || (matches!(scope_kind, ScopeKind::FunctionBody)
+                                    && matches!(function.kind, FunctionKind::Ordinary)
+                                    && binding.storage_scope == function.body_scope);
                             if binding.storage_scope != binding.declaration_scope
                                 || !supported_scope
                             {
@@ -6099,7 +6123,6 @@ mod tests {
 
         for source in [
             "let globalLexical=1",
-            "(function(){for(let i=0;i<1;i++){} })",
             "(function(){let [item]=source})",
             "(function(){{let [item]=source}})",
             "(function(){switch(0){case 0:let [item]=source}})",
@@ -6694,20 +6717,26 @@ mod tests {
                 "NoIn boundary drifted for {source:?}"
             );
         }
+        let destructuring =
+            compile_unlinked_script("(function(){ var let=Function; for(let[0]=1;false;); })")
+                .unwrap_err();
+        assert_eq!(
+            destructuring.message(),
+            "lexical destructuring bindings are not implemented yet"
+        );
         for source in [
-            "(function(){ var let=Function; for(let[0]=1;false;); })",
             "(function(){ for(let binding=0;false;); })",
             "(function(){ for(let\nbinding=0;false;); })",
             "(function(){ 'use strict'; for(let binding=0;false;); })",
             "(function(){ for(const binding=0;false;); })",
         ] {
-            let error = compile_unlinked_script(source).unwrap_err();
-            assert_eq!(
-                error.message(),
-                "lexical declarations in for heads are not implemented yet",
-                "lexical for-head boundary drifted for {source:?}"
-            );
+            compile_unlinked_script(source)
+                .unwrap_or_else(|error| panic!("lexical for head rejected {source:?}: {error}"));
         }
+        assert_eq!(
+            evaluate_in_context("(function(){var let=0;for(let=0;let<3;let++);return let;})()"),
+            Value::Int(3)
+        );
         for source in [
             "for(;;) (function(){ break; })",
             "for(;;) (function(){ continue; })",
@@ -6716,6 +6745,178 @@ mod tests {
                 compile_unlinked_script(source).is_err(),
                 "nested function saw an enclosing for loop for {source:?}"
             );
+        }
+    }
+
+    #[test]
+    fn classic_for_lexicals_close_captured_cells_at_quickjs_boundaries() {
+        let script = compile_unlinked_script(
+            "(function(){var read;for(let value=0;value<1;value++){read=function(){return value}}return read;})",
+        )
+        .unwrap();
+        let outer = script
+            .constants()
+            .iter()
+            .find_map(|constant| constant.as_child())
+            .expect("script lost its lexical-for function");
+        assert_eq!(
+            outer
+                .code()
+                .iter()
+                .filter(|instruction| {
+                    matches!(instruction, Instruction::SetLocalUninitialized(1))
+                })
+                .count(),
+            1
+        );
+        assert_eq!(
+            outer
+                .code()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::CloseLocal(1)))
+                .count(),
+            3,
+            "initializer, normal body fallthrough, and loop exit each need a close site"
+        );
+        let reader = outer
+            .constants()
+            .iter()
+            .find_map(|constant| constant.as_child())
+            .expect("lexical-for function lost its captured reader");
+        assert_eq!(
+            reader.closure_variables()[0].source,
+            ClosureSource::ParentLocal(1)
+        );
+
+        let two_binding_script = compile_unlinked_script(
+            "(function(){var readLeft,readRight;for(let left=0,right=2;left<1;(left++,right+=left===1?2:1)){readLeft=function(){return left};readRight=function(){return right};}return readLeft()*10+readRight();})()",
+        )
+        .unwrap();
+        let two_binding = two_binding_script
+            .constants()
+            .iter()
+            .find_map(|constant| constant.as_child())
+            .expect("script lost its two-binding lexical-for function");
+        for index in [2, 3] {
+            assert_eq!(
+                two_binding
+                    .code()
+                    .iter()
+                    .filter(|instruction| matches!(instruction, Instruction::CloseLocal(found) if *found == index))
+                    .count(),
+                3,
+                "captured head local {index} lost one static close site"
+            );
+        }
+        assert!(two_binding.code().iter().all(|instruction| !matches!(
+            instruction,
+            Instruction::Goto(u32::MAX)
+                | Instruction::IfFalse(u32::MAX)
+                | Instruction::IfTrue(u32::MAX)
+        )));
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){var readLeft,readRight;for(let left=0,right=2;left<1;(left++,right+=left===1?2:1)){readLeft=function(){return left};readRight=function(){return right};}return readLeft()*10+readRight();})()"
+            ),
+            Value::Int(2)
+        );
+
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){var first,second,third;for(let value=0;value<3;value++){if(value===0)first=function(){return value};else if(value===1)second=function(){return value};else third=function(){return value};}return first()*100+second()*10+third();})()"
+            ),
+            Value::Int(12)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){var first,second,third;for(let value=0;value<3;value++){if(value===0)first=function(){return value};else if(value===1)second=function(){return value};else third=function(){return value};continue;}return first()*100+second()*10+third();})()"
+            ),
+            Value::Int(333)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){var first,second,third;for(let value=0;value<3;value++){if(value===0)first=function(){return value};else if(value===1)second=function(){return value};else third=function(){return value};if(value===0)continue;}return first()*100+second()*10+third();})()"
+            ),
+            Value::Int(112)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){var initial,body;for(let value=(initial=function(){return value},0);value<1;value++){body=function(){return value};value=5;}return initial()*10+body();})()"
+            ),
+            Value::Int(5)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){var body0,update0,body1;for(let value=0;value<2;(update0=update0||function(){return value},value++)){if(value===0)body0=function(){return value};else body1=function(){return value};}return body0()*100+update0()*10+body1();})()"
+            ),
+            Value::Int(11)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "Function.saved=undefined;for(let value=0;value<1;value++){Function.saved=function(){return value};}Function.saved()*10+(typeof value==='undefined')"
+            ),
+            Value::Int(1)
+        );
+    }
+
+    #[test]
+    fn classic_for_lexicals_match_tdz_const_shadow_and_conflict_rules() {
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){let value=9,result;for(let value=0;value<1;value++)result=value;return value*10+result;})()"
+            ),
+            Value::Int(90)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){var total=0;for(let left=0,right=3;left<right;left++,right--)total+=left+right;return total;})()"
+            ),
+            Value::Int(6)
+        );
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        for (source, name) in [
+            ("(function(){for(let value=value;false;);})()", "value"),
+            (
+                "(function(){for(let first=second,second=1;false;);})()",
+                "second",
+            ),
+        ] {
+            assert_eq!(
+                evaluate_error(&runtime, &mut context, source),
+                (
+                    JsString::from_static("ReferenceError"),
+                    JsString::try_from_utf8(&format!("{name} is not initialized")).unwrap()
+                ),
+                "{source}"
+            );
+        }
+        for (source, message) in [
+            (
+                "(function(){for(let value=0;value<1;value++){var value;}})",
+                "invalid redefinition of lexical identifier",
+            ),
+            (
+                "(function(){for(let value=0,value=1;false;);})",
+                "invalid redefinition of lexical identifier",
+            ),
+            (
+                "(function(){for(const value;false;);})",
+                "missing initializer for const variable",
+            ),
+        ] {
+            assert_eq!(
+                compile_unlinked_script(source).unwrap_err().message(),
+                message,
+                "{source}"
+            );
+        }
+        for source in [
+            "(function(value){for(let value=0;false;);return value;})(7)",
+            "(function(){var value=7;for(let value=0;false;);return value;})()",
+            "(function(){for(let value=0;false;);var value=7;return value;})()",
+        ] {
+            assert_eq!(evaluate_in_context(source), Value::Int(7), "{source}");
         }
     }
 

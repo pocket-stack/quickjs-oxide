@@ -248,11 +248,6 @@ const BOUNDARY_CASES: &[BoundaryCase] = &[
         rust_message: "top-level lexical declarations and global bindings are not implemented yet",
     },
     BoundaryCase {
-        description: "for-head lexical declaration",
-        source: "(function(){ for (let index = 0; index < 1; index++) {} })()",
-        rust_message: "lexical declarations in for heads are not implemented yet",
-    },
-    BoundaryCase {
         description: "lexical destructuring binding",
         source: "(function(){ const [value] = [1]; return value; })()",
         rust_message: "lexical destructuring bindings are not implemented yet",
