@@ -287,6 +287,55 @@ fn template_stack_limit_uses_reachable_bytecode_like_pinned_quickjs() {
             String::from_utf8_lossy(&upstream.stderr)
         );
     }
+
+    let huge_template = format!("`{}`", "${0}".repeat(65_533));
+    for (suffix, source, accepted) in [
+        (
+            "if-false-folded",
+            format!("if(false){{{huge_template};}}"),
+            true,
+        ),
+        (
+            "if-true-else-folded",
+            format!("if(true){{}}else{{{huge_template};}}"),
+            true,
+        ),
+        (
+            "empty-string-not-folded",
+            format!("if(''){{{huge_template};}}"),
+            false,
+        ),
+        (
+            "float-not-folded",
+            format!("if(0.5){{{huge_template};}}"),
+            false,
+        ),
+    ] {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let rust = context.compile(&source);
+        let upstream = run_oracle_file(&oracle, &source, suffix);
+        if accepted {
+            rust.unwrap_or_else(|error| panic!("Rust rejected {suffix}: {error}"));
+            assert!(
+                upstream.status.success(),
+                "QuickJS rejected {suffix}: {}",
+                String::from_utf8_lossy(&upstream.stderr)
+            );
+        } else {
+            assert_eq!(rust, Err(RuntimeError::Exception));
+            assert_eq!(
+                take_rust_error_name_message(&runtime, &mut context),
+                "InternalError|stack overflow"
+            );
+            assert!(
+                String::from_utf8(upstream.stderr)
+                    .unwrap()
+                    .starts_with("InternalError: stack overflow"),
+                "QuickJS stack-overflow category drifted for {suffix}"
+            );
+        }
+    }
 }
 
 #[test]

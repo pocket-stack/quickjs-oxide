@@ -147,13 +147,17 @@ claim full parity.
   QuickJS's unparenthesized mixing boundary between `??` and `&&`/`||`.
 - Bytecode publication first validates structural operands in every instruction
   (including unreachable code), then verifies reachable control-flow joins and
-  stack depth. Maximum stack is derived from that control-flow walk rather than
-  the parser's linear emission order, so oversized calls after a terminal
-  return remain valid dead bytecode while the same reachable path raises the
-  QuickJS `InternalError`. Detached bytecode declares its local-frame width
-  rather than inferring it from opcodes; live and dead local operands are
-  bounded by that declaration and QuickJS's 65,534-slot limit. Runtime
-  publication additionally checks constant kinds, frame
+  stack depth. Compiler lowering first mirrors QuickJS `resolve_labels` for its
+  exact direct Boolean/Null/Undefined/Int32 constant-condition set, replacing
+  the adjacent push/branch slots with `Nop`/`Goto`; String, Float and BigInt
+  conditions deliberately remain dynamic branches. Maximum stack is derived
+  from the resulting control-flow walk rather than the parser's linear emission
+  order, so folded dead arms and oversized calls after a terminal return remain
+  valid dead bytecode while the same reachable path raises the QuickJS
+  `InternalError`. Detached bytecode declares its local-frame width rather than
+  inferring it from opcodes; live and dead local operands are bounded by that
+  declaration and QuickJS's 65,534-slot limit. Runtime publication additionally
+  checks constant kinds, frame
   indexes, private function-name source/name/const relay metadata, forbidden
   direct self-binding writes, Global/ParentGlobal versus ordinary closure-opcode
   categories, closure-name atom ownership, and relay consistency before changing

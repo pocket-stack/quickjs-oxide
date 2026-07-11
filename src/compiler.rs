@@ -2890,7 +2890,51 @@ fn lower_ops(operations: Vec<SpannedIrOp>) -> Result<LoweredOps, Error> {
             }
         }
     }
+    fold_quickjs_constant_branches(&mut code);
     Ok(LoweredOps { code, pc_sites })
+}
+
+/// QuickJS `resolve_labels` folds this deliberately narrow constant set before
+/// `compute_stack_size`. Keep instruction slots stable with Nops so existing
+/// IR-index jump remapping and debug PCs remain valid.
+fn fold_quickjs_constant_branches(code: &mut [Instruction]) {
+    let mut targeted = vec![false; code.len()];
+    for instruction in code.iter() {
+        if let Instruction::Goto(target)
+        | Instruction::IfFalse(target)
+        | Instruction::IfTrue(target) = instruction
+            && let Ok(target) = usize::try_from(*target)
+            && let Some(targeted) = targeted.get_mut(target)
+        {
+            *targeted = true;
+        }
+    }
+
+    for pc in 0..code.len().saturating_sub(1) {
+        // A hostile or hand-built control-flow edge may enter the conditional
+        // without executing its adjacent constant. Compiler-generated QuickJS
+        // patterns never do, but skipping preserves the verifier trust boundary.
+        if targeted[pc + 1] {
+            continue;
+        }
+        let truthy = match code[pc] {
+            Instruction::Undefined | Instruction::Null | Instruction::PushFalse => false,
+            Instruction::PushTrue => true,
+            Instruction::PushI32(value) => value != 0,
+            _ => continue,
+        };
+        let (branch_on_true, target) = match code[pc + 1] {
+            Instruction::IfFalse(target) => (false, target),
+            Instruction::IfTrue(target) => (true, target),
+            _ => continue,
+        };
+        code[pc] = if truthy == branch_on_true {
+            Instruction::Goto(target)
+        } else {
+            Instruction::Nop
+        };
+        code[pc + 1] = Instruction::Nop;
+    }
 }
 
 fn build_unlinked_debug(
@@ -3494,7 +3538,7 @@ mod tests {
             bytecode
                 .code
                 .iter()
-                .any(|instruction| matches!(instruction, Instruction::IfFalse(_)))
+                .all(|instruction| !matches!(instruction, Instruction::IfFalse(_)))
         );
         assert!(
             bytecode
@@ -3512,6 +3556,34 @@ mod tests {
             bytecode.code.get(bytecode.code.len() - 2),
             Some(Instruction::GetLocal(0))
         ));
+
+        for source in [
+            "if (false) 1",
+            "if (true) 1",
+            "if (null) 1",
+            "if (void 0) 1",
+            "if (0) 1",
+            "if (1) 1",
+        ] {
+            let bytecode = compile_script(source).unwrap();
+            assert!(
+                bytecode.code.iter().all(|instruction| !matches!(
+                    instruction,
+                    Instruction::IfFalse(_) | Instruction::IfTrue(_)
+                )),
+                "QuickJS constant branch did not fold for {source:?}"
+            );
+        }
+        for source in ["if ('') 1", "if (0.5) 1"] {
+            let bytecode = compile_script(source).unwrap();
+            assert!(
+                bytecode
+                    .code
+                    .iter()
+                    .any(|instruction| matches!(instruction, Instruction::IfFalse(_))),
+                "QuickJS intentionally does not fold {source:?}"
+            );
+        }
 
         let root = compile_unlinked_script("(function(){ 1; })").unwrap();
         assert_eq!(root.metadata().local_count, 1);
