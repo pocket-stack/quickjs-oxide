@@ -152,6 +152,13 @@ claim full parity.
   Number predicates: both apply completion-aware `ToNumber`, ignore `this` and
   extra arguments, preserve arbitrary conversion throws, and materialize
   framework errors in their defining realm.
+  The next six global function-list entries implement URI encode/decode and
+  Annex-B escape/unescape through a safe-Rust UTF-16 kernel. URI decoding
+  preserves reserved `%XX` spelling for `decodeURI`, validates QuickJS's
+  percent-encoded UTF-8 state machine and exact URIError messages; encoding
+  validates surrogate pairing and emits uppercase UTF-8 escapes. The legacy
+  pair deliberately works on individual code units and leaves malformed
+  escapes literal.
   Unary `~` and binary `&`, `^`, `|` match QuickJS's signed modulo-2^32
   `ToInt32` Number path and its infinite-width BigInt two's-complement path.
   Right-associative `**` is parsed
@@ -221,9 +228,9 @@ claim full parity.
   non-enumerable, non-configurable global data properties, matching the pinned
   QuickJS 2026-06-04 descriptors and direct-delete results. The implemented
   global-table subset preserves upstream relative own-key order as
-  `parseInt`, `parseFloat`, `isNaN`, `isFinite`, the three constants, `Number`,
-  then `Boolean`. This is not a claim that the wider global builtin table is
-  complete.
+  `parseInt`, `parseFloat`, `isNaN`, `isFinite`, the six URI/escape functions,
+  the three constants, `Number`, then `Boolean`. This is not a claim that the
+  wider global builtin table is complete.
 - Unresolved identifiers no longer use a string-key global opcode. Resolution
   installs one root `Global` closure descriptor and `ParentGlobal` relays on
   every nested function path; publication interns each exact name and function
@@ -554,6 +561,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_numeric_predicates -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_global_uri_codecs -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_constructor_conversion -- --nocapture
@@ -561,8 +570,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-parity-slice.sh
 ```
 
-The first six commands run the dedicated Boolean, global-numeric and complete
-Number-intrinsic differentials. The full gate command checksum-verifies and
-builds the official test-only oracle, runs formatting,
+The first seven commands run the dedicated Boolean, global BaseObjects and
+complete Number-intrinsic differentials. The full gate command
+checksum-verifies and builds the official test-only oracle, runs formatting,
 unit/integration/oracle tests, Clippy, and the Rust-only product gate. The
 oracle is never part of the product dependency graph or runtime.

@@ -26,9 +26,10 @@ use crate::heap::{
     ClosureVariableName, ConstructorKind, ContextData, ContextId, DynamicFunctionKind,
     ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo,
     FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind,
-    Heap, HeapCleanup, HeapCounts, HeapError, NativeCProto, NativeFunctionId, NumberFormatKind,
-    NumberParseKind, NumberPredicateKind, ObjectData, ObjectId, ObjectKind, ObjectPayload,
-    PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue, ShapeId, VarRefData, VarRefId,
+    GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError, NativeCProto, NativeFunctionId,
+    NumberFormatKind, NumberParseKind, NumberPredicateKind, ObjectData, ObjectId, ObjectKind,
+    ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue, ShapeId, VarRefData,
+    VarRefId,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -1619,8 +1620,8 @@ impl Runtime {
         .expect("Error intrinsic initialization must succeed");
         self.initialize_function_constructor(realm, &function_prototype, &global_object)
             .expect("Function constructor initialization must succeed");
-        self.initialize_global_number_functions(realm, &function_prototype, &global_object)
-            .expect("global numeric function initialization must succeed");
+        self.initialize_global_functions_prefix(realm, &function_prototype, &global_object)
+            .expect("global function-list prefix initialization must succeed");
         // QuickJS publishes the complete global function-list prefix,
         // including these constants, before constructing Number and Boolean.
         // Keeping that boundary preserves observable global own-key order.
@@ -2308,7 +2309,7 @@ impl Runtime {
         self.define_constructor_relationship(&constructor, boolean_prototype)
     }
 
-    fn initialize_global_number_functions(
+    fn initialize_global_functions_prefix(
         &self,
         realm: ContextId,
         function_prototype: &ObjectRef,
@@ -2345,6 +2346,23 @@ impl Runtime {
                 global_object,
                 realm,
                 NativeFunctionId::GlobalNumberPredicate(kind),
+                name,
+                1,
+                1,
+            )?;
+        }
+        for (kind, name) in [
+            (GlobalUriCodecKind::DecodeUri, "decodeURI"),
+            (GlobalUriCodecKind::DecodeUriComponent, "decodeURIComponent"),
+            (GlobalUriCodecKind::EncodeUri, "encodeURI"),
+            (GlobalUriCodecKind::EncodeUriComponent, "encodeURIComponent"),
+            (GlobalUriCodecKind::Escape, "escape"),
+            (GlobalUriCodecKind::Unescape, "unescape"),
+        ] {
+            self.define_native_builtin_auto_init(
+                global_object,
+                realm,
+                NativeFunctionId::GlobalUriCodec(kind),
                 name,
                 1,
                 1,
@@ -6643,6 +6661,43 @@ impl Runtime {
         Ok(Completion::Return(Value::Bool(result)))
     }
 
+    fn call_global_uri_codec(
+        &self,
+        realm: ContextId,
+        kind: GlobalUriCodecKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "global URI codec did not receive a generic call",
+            ));
+        };
+        let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "global URI codec argv was not padded",
+        ))?;
+        let input = match self.native_to_js_string(realm, argument)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let result = match kind {
+            GlobalUriCodecKind::DecodeUri => crate::uri::decode(&input, false),
+            GlobalUriCodecKind::DecodeUriComponent => crate::uri::decode(&input, true),
+            GlobalUriCodecKind::EncodeUri => crate::uri::encode(&input, false),
+            GlobalUriCodecKind::EncodeUriComponent => crate::uri::encode(&input, true),
+            GlobalUriCodecKind::Escape => Ok(crate::uri::escape(&input)),
+            GlobalUriCodecKind::Unescape => Ok(crate::uri::unescape(&input)),
+        };
+        match result {
+            Ok(value) => Ok(Completion::Return(Value::String(value))),
+            Err(error) => Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Uri,
+                error.message(),
+            )?)),
+        }
+    }
+
     fn primitive_this_value(
         &self,
         realm: ContextId,
@@ -7406,6 +7461,9 @@ impl Runtime {
             }
             NativeFunctionId::GlobalNumberPredicate(kind) => {
                 self.call_global_number_predicate(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::GlobalUriCodec(kind) => {
+                self.call_global_uri_codec(realm, kind, invocation, arguments)
             }
             NativeFunctionId::NumberPredicate(kind) => {
                 self.call_number_predicate(kind, invocation, arguments)
@@ -10272,6 +10330,117 @@ mod tests {
     }
 
     #[test]
+    fn global_uri_codecs_match_quickjs_graph_and_utf16_kernel() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let global = context.global_object().unwrap();
+        let names = [
+            "decodeURI",
+            "decodeURIComponent",
+            "encodeURI",
+            "encodeURIComponent",
+            "escape",
+            "unescape",
+        ];
+        for name in names {
+            let key = runtime.intern_property_key(name).unwrap();
+            assert!(runtime.is_auto_init_own_property(&global, &key).unwrap());
+            let callable = global_callable(&runtime, &mut context, name);
+            assert_eq!(
+                own_key_names(&runtime, callable.as_object()),
+                ["length", "name"]
+            );
+            assert_eq!(
+                runtime.get_prototype_of(callable.as_object()).unwrap(),
+                Some(context.function_prototype().unwrap())
+            );
+            assert!(!runtime.is_constructor(callable.as_object()).unwrap());
+            assert_eq!(
+                own_data_value(&runtime, callable.as_object(), "length"),
+                Value::Int(1)
+            );
+            assert_eq!(
+                own_data_value(&runtime, callable.as_object(), "name"),
+                Value::String(JsString::from(name))
+            );
+            assert!(matches!(
+                runtime.get_own_property(&global, &key).unwrap(),
+                Some(CompleteOrdinaryPropertyDescriptor::Data {
+                    writable: true,
+                    enumerable: false,
+                    configurable: true,
+                    ..
+                })
+            ));
+        }
+
+        for (name, input, expected) in [
+            ("decodeURI", "%2f%20", "%2f "),
+            ("decodeURIComponent", "%2f%20", "/ "),
+            ("encodeURI", ";/ ?", ";/%20?"),
+            ("encodeURIComponent", ";/ ?", "%3B%2F%20%3F"),
+            ("unescape", "%E9%u0100", "éĀ"),
+        ] {
+            let callable = global_callable(&runtime, &mut context, name);
+            assert_eq!(
+                context
+                    .call(
+                        &callable,
+                        Value::Null,
+                        &[Value::String(JsString::from(input)), Value::Int(99)],
+                    )
+                    .unwrap(),
+                Value::String(JsString::from(expected))
+            );
+        }
+        let escape = global_callable(&runtime, &mut context, "escape");
+        assert_eq!(
+            context
+                .call(
+                    &escape,
+                    Value::Undefined,
+                    &[Value::String(JsString::from_utf16([
+                        0x00e9, 0xd83d, 0xde00,
+                    ]))],
+                )
+                .unwrap(),
+            Value::String(JsString::from("%E9%uD83D%uDE00"))
+        );
+
+        for (name, input, message) in [
+            ("decodeURI", "%", "expecting hex digit"),
+            ("decodeURIComponent", "%E0%A0", "expecting %"),
+        ] {
+            let callable = global_callable(&runtime, &mut context, name);
+            assert_eq!(
+                context.call(
+                    &callable,
+                    Value::Undefined,
+                    &[Value::String(JsString::from(input))],
+                ),
+                Err(RuntimeError::Exception)
+            );
+            assert_eq!(
+                take_error_message(&runtime, &mut context),
+                JsString::from(message)
+            );
+        }
+        let encode = global_callable(&runtime, &mut context, "encodeURI");
+        assert_eq!(
+            context.call(
+                &encode,
+                Value::Undefined,
+                &[Value::String(JsString::from_utf16([0xdc00]))],
+            ),
+            Err(RuntimeError::Exception)
+        );
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from("invalid character")
+        );
+    }
+
+    #[test]
     fn global_primitive_constants_match_quickjs_frozen_descriptors() {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
@@ -10285,6 +10454,12 @@ mod tests {
                         | "parseFloat"
                         | "isNaN"
                         | "isFinite"
+                        | "decodeURI"
+                        | "decodeURIComponent"
+                        | "encodeURI"
+                        | "encodeURIComponent"
+                        | "escape"
+                        | "unescape"
                         | "Infinity"
                         | "NaN"
                         | "undefined"
@@ -10300,6 +10475,12 @@ mod tests {
                 "parseFloat",
                 "isNaN",
                 "isFinite",
+                "decodeURI",
+                "decodeURIComponent",
+                "encodeURI",
+                "encodeURIComponent",
+                "escape",
+                "unescape",
                 "Infinity",
                 "NaN",
                 "undefined",

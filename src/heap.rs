@@ -692,6 +692,7 @@ pub enum NativeFunctionId {
     PrimitivePrototypeValueOf(PrimitiveKind),
     GlobalNumberParse(NumberParseKind),
     GlobalNumberPredicate(GlobalNumberPredicateKind),
+    GlobalUriCodec(GlobalUriCodecKind),
     NumberPredicate(NumberPredicateKind),
     NumberPrototypeFormat(NumberFormatKind),
     ErrorConstructor(ErrorConstructorKind),
@@ -756,6 +757,17 @@ pub enum NumberParseKind {
 pub enum GlobalNumberPredicateKind {
     IsNaN,
     IsFinite,
+}
+
+/// QuickJS global URI percent codecs and Annex-B escape helpers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GlobalUriCodecKind {
+    DecodeUri,
+    DecodeUriComponent,
+    EncodeUri,
+    EncodeUriComponent,
+    Escape,
+    Unescape,
 }
 
 /// Non-coercing numeric predicates installed as static `%Number%` methods.
@@ -855,6 +867,19 @@ impl NativeFunctionId {
             | Self::NumberPrototypeFormat(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::Generic,
             },
+            Self::GlobalUriCodec(
+                GlobalUriCodecKind::DecodeUri
+                | GlobalUriCodecKind::DecodeUriComponent
+                | GlobalUriCodecKind::EncodeUri
+                | GlobalUriCodecKind::EncodeUriComponent,
+            ) => NativeFunctionDescriptor {
+                cproto: NativeCProto::GenericMagic,
+            },
+            Self::GlobalUriCodec(GlobalUriCodecKind::Escape | GlobalUriCodecKind::Unescape) => {
+                NativeFunctionDescriptor {
+                    cproto: NativeCProto::Generic,
+                }
+            }
             Self::FunctionConstructor(_) | Self::PrimitiveConstructor(_) => {
                 NativeFunctionDescriptor {
                     cproto: NativeCProto::ConstructorOrFunctionMagic,
@@ -3064,12 +3089,14 @@ mod tests {
     }
 
     #[test]
-    fn number_native_selectors_use_generic_cproto() {
+    fn numeric_and_uri_native_selectors_use_pinned_cproto() {
         let targets = [
             NativeFunctionId::GlobalNumberParse(NumberParseKind::ParseInt),
             NativeFunctionId::GlobalNumberParse(NumberParseKind::ParseFloat),
             NativeFunctionId::GlobalNumberPredicate(GlobalNumberPredicateKind::IsNaN),
             NativeFunctionId::GlobalNumberPredicate(GlobalNumberPredicateKind::IsFinite),
+            NativeFunctionId::GlobalUriCodec(GlobalUriCodecKind::Escape),
+            NativeFunctionId::GlobalUriCodec(GlobalUriCodecKind::Unescape),
             NativeFunctionId::NumberPredicate(NumberPredicateKind::IsNaN),
             NativeFunctionId::NumberPredicate(NumberPredicateKind::IsFinite),
             NativeFunctionId::NumberPredicate(NumberPredicateKind::IsInteger),
@@ -3082,6 +3109,15 @@ mod tests {
 
         for target in targets {
             assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
+        for target in [
+            NativeFunctionId::GlobalUriCodec(GlobalUriCodecKind::DecodeUri),
+            NativeFunctionId::GlobalUriCodec(GlobalUriCodecKind::DecodeUriComponent),
+            NativeFunctionId::GlobalUriCodec(GlobalUriCodecKind::EncodeUri),
+            NativeFunctionId::GlobalUriCodec(GlobalUriCodecKind::EncodeUriComponent),
+        ] {
+            assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);
             assert!(!target.descriptor().cproto.default_is_constructor());
         }
     }

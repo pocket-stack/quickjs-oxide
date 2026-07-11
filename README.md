@@ -82,6 +82,13 @@ their native objects are captured by identity as `Number.parseInt` and
 coercing natives: they apply ordered `ToNumber`, preserve object conversion
 and defining-realm errors, and remain observably distinct from the
 non-coercing `Number.isNaN`/`Number.isFinite` statics.
+The same pinned global-function prefix includes `decodeURI`,
+`decodeURIComponent`, `encodeURI`, `encodeURIComponent`, `escape`, and
+`unescape`. Their safe-Rust codec operates directly on ECMAScript UTF-16 code
+units: URI decoding preserves reserved escape spelling, validates
+percent-encoded UTF-8 and throws the exact URIError variants; URI encoding
+enforces surrogate pairs, while the Annex-B pair retains its permissive
+`%XX`/`%uXXXX` code-unit behavior.
 Binary `??` uses QuickJS's shared short-circuit join for a chain, preserves the
 selected operand without coercion, and enforces the unparenthesized
 `??`/`&&`/`||` mixing restriction. The same arithmetic, exponentiation, shift,
@@ -151,6 +158,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_number_parsers -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_numeric_predicates -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_global_uri_codecs -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
