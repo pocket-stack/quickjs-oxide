@@ -89,6 +89,11 @@ units: URI decoding preserves reserved escape spelling, validates
 percent-encoded UTF-8 and throws the exact URIError variants; URI encoding
 enforces surrogate pairs, while the Annex-B pair retains its permissive
 `%XX`/`%uXXXX` code-unit behavior.
+Each realm also installs QuickJS's configurable, read-only global-object own
+property keyed by the runtime's well-known `Symbol.toStringTag`, with value
+`"global"`. The host-visible `%Object.prototype.toString%` path therefore
+reports `[object global]` while preserving symbol-category own-key ordering;
+this slice does not yet expose the `globalThis` binding or `Symbol` constructor.
 Binary `??` uses QuickJS's shared short-circuit join for a chain, preserves the
 selected operand without coercion, and enforces the unparenthesized
 `??`/`&&`/`||` mixing restriction. The same arithmetic, exponentiation, shift,
@@ -160,6 +165,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_numeric_predicates -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_uri_codecs -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_global_to_string_tag -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

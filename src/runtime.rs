@@ -1622,11 +1622,13 @@ impl Runtime {
             .expect("Function constructor initialization must succeed");
         self.initialize_global_functions_prefix(realm, &function_prototype, &global_object)
             .expect("global function-list prefix initialization must succeed");
-        // QuickJS publishes the complete global function-list prefix,
-        // including these constants, before constructing Number and Boolean.
-        // Keeping that boundary preserves observable global own-key order.
+        // QuickJS's `js_global_funcs` table places these constants immediately
+        // before @@toStringTag; the complete table precedes Number and Boolean.
+        // Preserve the implemented entries' relative bootstrap order here.
         self.initialize_global_primitive_constants(&global_object)
             .expect("global primitive constant initialization must succeed");
+        self.initialize_global_to_string_tag(&global_object)
+            .expect("global toStringTag initialization must succeed");
         self.initialize_number_intrinsic(
             realm,
             &function_prototype,
@@ -2375,14 +2377,38 @@ impl Runtime {
         &self,
         global_object: &ObjectRef,
     ) -> Result<(), RuntimeError> {
-        // Tail of QuickJS `js_global_funcs`: all three are non-writable,
-        // non-enumerable and non-configurable global data properties.
+        // QuickJS `js_global_funcs` entries immediately before @@toStringTag:
+        // all three are non-writable, non-enumerable and non-configurable.
         for (name, value) in [
             ("Infinity", Value::Float(f64::INFINITY)),
             ("NaN", Value::Float(f64::NAN)),
             ("undefined", Value::Undefined),
         ] {
             self.define_function_data_property(global_object, name, value, false, false)?;
+        }
+        Ok(())
+    }
+
+    fn initialize_global_to_string_tag(
+        &self,
+        global_object: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        let key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));
+        let defined = self.define_own_property(
+            global_object,
+            &key,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(Value::String(JsString::from("global"))),
+                writable: DescriptorField::Present(false),
+                enumerable: DescriptorField::Present(false),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )?;
+        if !defined {
+            return Err(RuntimeError::Invariant(
+                "global toStringTag definition was rejected",
+            ));
         }
         Ok(())
     }
@@ -10513,6 +10539,44 @@ mod tests {
                 Value::Bool(false)
             );
         }
+    }
+
+    #[test]
+    fn global_to_string_tag_matches_quickjs_descriptor_and_class_tag() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let global = context.global_object().unwrap();
+        let tag = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::ToStringTag));
+        assert!(matches!(
+            runtime.get_own_property(&global, &tag).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::String(value),
+                writable: false,
+                enumerable: false,
+                configurable: true,
+            }) if value == JsString::from("global")
+        ));
+        assert_eq!(
+            runtime.own_property_keys(&global).unwrap().last(),
+            Some(&tag)
+        );
+
+        let object_prototype = context.object_prototype().unwrap();
+        let object_to_string =
+            property_callable(&runtime, &mut context, &object_prototype, "toString");
+        assert_eq!(
+            context
+                .call(&object_to_string, Value::Object(global.clone()), &[],)
+                .unwrap(),
+            Value::String(JsString::from("[object global]"))
+        );
+        assert!(runtime.delete_property(&global, &tag).unwrap());
+        assert_eq!(
+            context
+                .call(&object_to_string, Value::Object(global), &[])
+                .unwrap(),
+            Value::String(JsString::from("[object Object]"))
+        );
     }
 
     #[test]

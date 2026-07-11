@@ -231,6 +231,13 @@ claim full parity.
   `parseInt`, `parseFloat`, `isNaN`, `isFinite`, the six URI/escape functions,
   the three constants, `Number`, then `Boolean`. This is not a claim that the
   wider global builtin table is complete.
+- Every global object owns QuickJS's `[Symbol.toStringTag] = "global"` metadata
+  as a non-writable, non-enumerable, configurable data property. The runtime
+  uses its internal well-known symbol identity because the `globalThis` binding
+  and global `Symbol` constructor are not implemented yet. Symbol-category
+  own-key ordering keeps the property after every string key, and the existing
+  `%Object.prototype.toString%` path observes its value, deletion, non-string
+  replacement and redefinition through the host API.
 - Unresolved identifiers no longer use a string-key global opcode. Resolution
   installs one root `Global` closure descriptor and `ParentGlobal` relays on
   every nested function path; publication interns each exact name and function
@@ -563,6 +570,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_uri_codecs -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_global_to_string_tag -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_constructor_conversion -- --nocapture
@@ -570,7 +579,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-parity-slice.sh
 ```
 
-The first seven commands run the dedicated Boolean, global BaseObjects and
+The first eight commands run the dedicated Boolean, global BaseObjects and
 complete Number-intrinsic differentials. The full gate command
 checksum-verifies and builds the official test-only oracle, runs formatting,
 unit/integration/oracle tests, Clippy, and the Rust-only product gate. The
