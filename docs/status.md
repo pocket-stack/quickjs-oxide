@@ -138,8 +138,17 @@ claim full parity.
   precision strings, including subnormals, signed zero and non-finite values.
   BigInt-to-binary64 is a distinct ties-to-even path with signed-infinity
   overflow and its own constructor-oriented differential; ordinary `ToNumber`
-  still correctly rejects BigInt. The Number realm slot remains absent until
-  global parser identity aliases and the full intrinsic graph are ready.
+  still correctly rejects BigInt. Global `parseInt`/`parseFloat` are now real
+  realm-bound native functions with pinned name/length/global descriptors.
+  Their shared UTF-16 substrate implements `ToString`-after-call prefix scans,
+  parseInt's modulo-2^32 radix, radix 2–36, Infinity, signed zero and the full
+  pinned `ATOD_MAX_DIGITS` table; this deliberately preserves QuickJS's
+  observable non-power-of-two digit truncation rather than silently substituting
+  another engine's rounding. Kernel and source-execution differentials compare
+  raw binary64 results and complete native error frames; runtime tests also lock
+  cross-realm error ownership and abrupt input-before-radix conversion. The
+  Number realm slot remains absent until these exact callable identities can be
+  captured with the full intrinsic graph.
   Unary `~` and binary `&`, `^`, `|` match QuickJS's signed modulo-2^32
   `ToInt32` Number path and its infinite-width BigInt two's-complement path.
   Right-associative `**` is parsed
@@ -530,11 +539,16 @@ and C embedding APIs.
 ```sh
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_boolean_intrinsic -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_number_parse_kernel -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_global_number_parsers -- --nocapture
 
 ./scripts/test-parity-slice.sh
 ```
 
-The first command runs the dedicated Boolean intrinsic differential. The full
-gate command checksum-verifies and builds the official test-only oracle, runs
-formatting, unit/integration/oracle tests, Clippy, and the Rust-only product
-gate. The oracle is never part of the product dependency graph or runtime.
+The first three commands run the dedicated Boolean and numeric-parser
+differentials. The full gate command checksum-verifies and builds the official
+test-only oracle, runs formatting, unit/integration/oracle tests, Clippy, and
+the Rust-only product gate. The oracle is never part of the product dependency
+graph or runtime.

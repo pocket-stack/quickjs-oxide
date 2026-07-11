@@ -15,6 +15,7 @@ pub mod function;
 pub mod heap;
 pub mod lexer;
 pub mod number;
+pub mod number_parse;
 pub mod object;
 pub mod property;
 pub mod runtime;

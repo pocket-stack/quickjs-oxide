@@ -26,8 +26,9 @@ use crate::heap::{
     ClosureVariableName, ConstructorKind, ContextData, ContextId, DynamicFunctionKind,
     ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo,
     FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, Heap, HeapCleanup, HeapCounts,
-    HeapError, NativeCProto, NativeFunctionId, ObjectData, ObjectId, ObjectKind, ObjectPayload,
-    PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue, ShapeId, VarRefData, VarRefId,
+    HeapError, NativeCProto, NativeFunctionId, NumberParseKind, ObjectData, ObjectId, ObjectKind,
+    ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue, ShapeId, VarRefData,
+    VarRefId,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -1600,6 +1601,8 @@ impl Runtime {
         .expect("Error intrinsic initialization must succeed");
         self.initialize_function_constructor(realm, &function_prototype, &global_object)
             .expect("Function constructor initialization must succeed");
+        self.initialize_global_number_parsers(realm, &function_prototype, &global_object)
+            .expect("global numeric parser initialization must succeed");
         self.initialize_boolean_intrinsic(
             realm,
             &function_prototype,
@@ -2156,6 +2159,38 @@ impl Runtime {
             true,
         )?;
         self.define_constructor_relationship(&constructor, boolean_prototype)
+    }
+
+    fn initialize_global_number_parsers(
+        &self,
+        realm: ContextId,
+        function_prototype: &ObjectRef,
+        global_object: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        // QuickJS publishes these global functions before `%Number%`, whose
+        // static parseInt/parseFloat properties capture the same callable
+        // identities during Number initialization.
+        for (kind, name, arity) in [
+            (NumberParseKind::ParseInt, "parseInt", 2),
+            (NumberParseKind::ParseFloat, "parseFloat", 1),
+        ] {
+            let callable = self.new_native_builtin(
+                function_prototype,
+                realm,
+                NativeFunctionId::GlobalNumberParse(kind),
+                arity,
+                name,
+                i32::from(arity),
+            )?;
+            self.define_function_data_property(
+                global_object,
+                name,
+                Value::Object(callable.as_object().clone()),
+                true,
+                true,
+            )?;
+        }
+        Ok(())
     }
 
     fn initialize_global_primitive_constants(
@@ -6344,6 +6379,41 @@ impl Runtime {
         )))
     }
 
+    fn call_global_number_parse(
+        &self,
+        realm: ContextId,
+        kind: NumberParseKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "global numeric parser did not receive a generic call",
+            ));
+        };
+        let input = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "global numeric parser argv was not padded",
+        ))?;
+        let input = match self.native_to_js_string(realm, input)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let result = match kind {
+            NumberParseKind::ParseFloat => crate::number_parse::parse_float(&input),
+            NumberParseKind::ParseInt => {
+                let radix = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
+                    "parseInt radix argv was not padded",
+                ))?;
+                let radix = match self.native_to_number(realm, radix)? {
+                    NativeConversion::Value(value) => crate::number::to_int32(value),
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+                crate::number_parse::parse_int(&input, radix)
+            }
+        };
+        Ok(Completion::Return(Value::number(result)))
+    }
+
     fn primitive_this_value(
         &self,
         realm: ContextId,
@@ -6934,11 +7004,14 @@ impl Runtime {
             NativeFunctionId::PrimitivePrototypeValueOf(kind) => {
                 self.call_primitive_prototype_value_of(realm, kind, invocation)
             }
-            NativeFunctionId::GlobalNumberParse(_)
-            | NativeFunctionId::NumberPredicate(_)
-            | NativeFunctionId::NumberPrototypeFormat(_) => Err(RuntimeError::Invariant(
-                "unpublished Number native reached dispatch",
-            )),
+            NativeFunctionId::GlobalNumberParse(kind) => {
+                self.call_global_number_parse(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::NumberPredicate(_) | NativeFunctionId::NumberPrototypeFormat(_) => {
+                Err(RuntimeError::Invariant(
+                    "unpublished Number native reached dispatch",
+                ))
+            }
             NativeFunctionId::ErrorConstructor(kind) => {
                 self.call_error_constructor(realm, kind, invocation, arguments)
             }
@@ -8990,6 +9063,16 @@ mod tests {
             .unwrap_or_else(|| panic!("global {name} was not callable"))
     }
 
+    fn eval_callable(runtime: &Runtime, context: &mut super::Context, source: &str) -> CallableRef {
+        let Value::Object(object) = context.eval(source).unwrap() else {
+            panic!("callable source did not produce an object: {source:?}");
+        };
+        runtime
+            .as_callable(&object)
+            .unwrap()
+            .unwrap_or_else(|| panic!("source did not produce a callable: {source:?}"))
+    }
+
     fn property_callable(
         runtime: &Runtime,
         context: &mut super::Context,
@@ -9216,6 +9299,324 @@ mod tests {
             Value::String(JsString::from("true|false"))
         );
         assert_eq!(context.eval("+new Boolean(false)").unwrap(), Value::Int(0));
+    }
+
+    #[test]
+    fn global_numeric_parsers_match_quickjs_graph_conversion_order_and_results() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let global = context.global_object().unwrap();
+        let parse_int = global_callable(&runtime, &mut context, "parseInt");
+        let parse_float = global_callable(&runtime, &mut context, "parseFloat");
+
+        for (name, callable, length) in
+            [("parseInt", &parse_int, 2), ("parseFloat", &parse_float, 1)]
+        {
+            assert_eq!(
+                own_key_names(&runtime, callable.as_object()),
+                ["length", "name"]
+            );
+            assert_eq!(
+                runtime.get_prototype_of(callable.as_object()).unwrap(),
+                Some(context.function_prototype().unwrap())
+            );
+            assert!(!runtime.is_constructor(callable.as_object()).unwrap());
+            assert_eq!(
+                own_data_value(&runtime, callable.as_object(), "length"),
+                Value::Int(length)
+            );
+            assert_eq!(
+                own_data_value(&runtime, callable.as_object(), "name"),
+                Value::String(JsString::from(name))
+            );
+            for property in ["length", "name"] {
+                let property = runtime.intern_property_key(property).unwrap();
+                assert!(matches!(
+                    runtime
+                        .get_own_property(callable.as_object(), &property)
+                        .unwrap(),
+                    Some(CompleteOrdinaryPropertyDescriptor::Data {
+                        writable: false,
+                        enumerable: false,
+                        configurable: true,
+                        ..
+                    })
+                ));
+            }
+            let key = runtime.intern_property_key(name).unwrap();
+            assert!(matches!(
+                runtime.get_own_property(&global, &key).unwrap(),
+                Some(CompleteOrdinaryPropertyDescriptor::Data {
+                    writable: true,
+                    enumerable: false,
+                    configurable: true,
+                    ..
+                })
+            ));
+        }
+
+        assert_eq!(
+            context
+                .call(
+                    &parse_int,
+                    Value::Bool(true),
+                    &[Value::String(JsString::from("0x10"))],
+                )
+                .unwrap(),
+            Value::Int(16)
+        );
+        assert_eq!(
+            context
+                .call(
+                    &parse_int,
+                    Value::Undefined,
+                    &[
+                        Value::String(JsString::from("10")),
+                        Value::Float(4_294_967_298.0),
+                    ],
+                )
+                .unwrap(),
+            Value::Int(2)
+        );
+        assert_eq!(
+            context
+                .call(
+                    &parse_float,
+                    Value::Undefined,
+                    &[Value::String(JsString::from(
+                        "1.0000000000000001110223024625156540423631668090820313",
+                    ))],
+                )
+                .unwrap(),
+            Value::Int(1)
+        );
+        let Value::Float(negative_zero) = context
+            .call(
+                &parse_int,
+                Value::Undefined,
+                &[Value::String(JsString::from("-0"))],
+            )
+            .unwrap()
+        else {
+            panic!("parseInt('-0') did not preserve the float tag");
+        };
+        assert_eq!(negative_zero.to_bits(), (-0.0_f64).to_bits());
+
+        let log_key = runtime.intern_property_key("parseLog").unwrap();
+        assert!(
+            runtime
+                .define_own_property(
+                    &global,
+                    &log_key,
+                    &data_descriptor(Value::String(JsString::from("")), true, true, true),
+                )
+                .unwrap()
+        );
+        let to_primitive =
+            PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::ToPrimitive));
+        let input = context.new_object().unwrap();
+        let input_conversion = eval_callable(
+            &runtime,
+            &mut context,
+            "(function(hint) { parseLog = parseLog + 'input:' + hint + '|'; return '10'; })",
+        );
+        assert!(
+            runtime
+                .define_own_property(
+                    &input,
+                    &to_primitive,
+                    &data_descriptor(
+                        Value::Object(input_conversion.as_object().clone()),
+                        true,
+                        false,
+                        true,
+                    ),
+                )
+                .unwrap()
+        );
+        let radix = context.new_object().unwrap();
+        let radix_conversion = eval_callable(
+            &runtime,
+            &mut context,
+            "(function(hint) { parseLog = parseLog + 'radix:' + hint + '|'; return 2; })",
+        );
+        assert!(
+            runtime
+                .define_own_property(
+                    &radix,
+                    &to_primitive,
+                    &data_descriptor(
+                        Value::Object(radix_conversion.as_object().clone()),
+                        true,
+                        false,
+                        true,
+                    ),
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context
+                .call(
+                    &parse_int,
+                    Value::Undefined,
+                    &[Value::Object(input.clone()), Value::Object(radix)],
+                )
+                .unwrap(),
+            Value::Int(2)
+        );
+        assert_eq!(
+            context.get_property(&global, &log_key).unwrap(),
+            Value::String(JsString::from("input:string|radix:number|"))
+        );
+
+        assert!(
+            runtime
+                .define_own_property(
+                    &global,
+                    &log_key,
+                    &data_descriptor(Value::String(JsString::from("")), true, true, true),
+                )
+                .unwrap()
+        );
+        let throwing_input = context.new_object().unwrap();
+        let input_throw = eval_callable(
+            &runtime,
+            &mut context,
+            "(function(hint) { parseLog = parseLog + 'input-throw:' + hint + '|'; throw 'input boom'; })",
+        );
+        assert!(
+            runtime
+                .define_own_property(
+                    &throwing_input,
+                    &to_primitive,
+                    &data_descriptor(
+                        Value::Object(input_throw.as_object().clone()),
+                        true,
+                        false,
+                        true,
+                    ),
+                )
+                .unwrap()
+        );
+        let late_radix = context.new_object().unwrap();
+        let late_radix_conversion = eval_callable(
+            &runtime,
+            &mut context,
+            "(function() { parseLog = parseLog + 'late-radix|'; return 2; })",
+        );
+        assert!(
+            runtime
+                .define_own_property(
+                    &late_radix,
+                    &to_primitive,
+                    &data_descriptor(
+                        Value::Object(late_radix_conversion.as_object().clone()),
+                        true,
+                        false,
+                        true,
+                    ),
+                )
+                .unwrap()
+        );
+        assert!(matches!(
+            context.call(
+                &parse_int,
+                Value::Undefined,
+                &[Value::Object(throwing_input), Value::Object(late_radix),],
+            ),
+            Err(RuntimeError::Exception)
+        ));
+        assert_eq!(
+            context.take_exception().unwrap(),
+            Some(Value::String(JsString::from("input boom")))
+        );
+        assert_eq!(
+            context.get_property(&global, &log_key).unwrap(),
+            Value::String(JsString::from("input-throw:string|"))
+        );
+
+        let symbol = runtime.new_symbol(Some(JsString::from("parse"))).unwrap();
+        assert!(
+            runtime
+                .define_own_property(
+                    &global,
+                    &log_key,
+                    &data_descriptor(Value::String(JsString::from("")), true, true, true),
+                )
+                .unwrap()
+        );
+        let symbol_radix = context.new_object().unwrap();
+        let symbol_radix_conversion = eval_callable(
+            &runtime,
+            &mut context,
+            "(function() { parseLog = parseLog + 'symbol-radix|'; return 2; })",
+        );
+        assert!(
+            runtime
+                .define_own_property(
+                    &symbol_radix,
+                    &to_primitive,
+                    &data_descriptor(
+                        Value::Object(symbol_radix_conversion.as_object().clone()),
+                        true,
+                        false,
+                        true,
+                    ),
+                )
+                .unwrap()
+        );
+        assert!(matches!(
+            context.call(
+                &parse_int,
+                Value::Undefined,
+                &[Value::Symbol(symbol.clone()), Value::Object(symbol_radix),],
+            ),
+            Err(RuntimeError::Exception)
+        ));
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from("cannot convert symbol to string")
+        );
+        assert_eq!(
+            context.get_property(&global, &log_key).unwrap(),
+            Value::String(JsString::from(""))
+        );
+        assert!(matches!(
+            context.call(&parse_float, Value::Undefined, &[Value::Symbol(symbol)],),
+            Err(RuntimeError::Exception)
+        ));
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from("cannot convert symbol to string")
+        );
+
+        let type_error = global_callable(&runtime, &mut context, "TypeError");
+        let prototype_key = runtime.intern_property_key("prototype").unwrap();
+        let Value::Object(defining_type_error_prototype) = context
+            .get_property(type_error.as_object(), &prototype_key)
+            .unwrap()
+        else {
+            panic!("defining TypeError.prototype was not an object");
+        };
+        let mut caller = runtime.new_context();
+        assert_eq!(
+            caller.call(
+                &parse_int,
+                Value::Undefined,
+                &[
+                    Value::String(JsString::from("10")),
+                    Value::BigInt(JsBigInt::one()),
+                ],
+            ),
+            Err(RuntimeError::Exception)
+        );
+        let Value::Object(error) = caller.take_exception().unwrap().unwrap() else {
+            panic!("cross-realm parseInt did not throw an Error object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&error).unwrap(),
+            Some(defining_type_error_prototype)
+        );
     }
 
     #[test]

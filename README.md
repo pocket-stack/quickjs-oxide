@@ -72,8 +72,12 @@ intrinsic. FREE uses ties-to-even shortest-roundtrip selection, while explicit
 digit modes use ties-away-from-zero. A deterministic bit-pattern differential
 locks those strings against QuickJS, and BigInt has a separately differenced
 ties-to-even/overflow conversion for the future `Number(BigInt)` path. The
-Number realm prototype remains absent until its parser aliases and full 17/7
-constructor/prototype surface can be published atomically.
+global `parseInt` and `parseFloat` functions now use a matching UTF-16 parser
+substrate with QuickJS's prefix scans, radix conversion order, signed zero,
+bounded mantissa tables, and even its observable 38-digit decimal truncation;
+their native objects are ready to be captured by identity as `Number` statics.
+The Number realm prototype remains absent until that alias capture and the full
+17/7 constructor/prototype surface can be published atomically.
 Binary `??` uses QuickJS's shared short-circuit join for a chain, preserves the
 selected operand without coercion, and enforces the unparenthesized
 `??`/`&&`/`||` mixing restriction. The same arithmetic, exponentiation, shift,
@@ -137,6 +141,10 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_primitives -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_boolean_intrinsic -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_number_parse_kernel -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_global_number_parsers -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_power_numbers -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

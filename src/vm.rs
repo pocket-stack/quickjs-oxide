@@ -1332,25 +1332,8 @@ fn to_numeric_primitive(value: Value) -> Result<NumericValue, Error> {
 
 /// ECMAScript `ToInt32`, matching QuickJS's modulo-2^32 conversion for every
 /// finite IEEE-754 input and its zero result for NaN and infinities.
-#[allow(clippy::cast_possible_truncation)]
 fn number_to_int32(value: f64) -> i32 {
-    if !value.is_finite() || value == 0.0 {
-        return 0;
-    }
-
-    const TWO_TO_31: f64 = 2_147_483_648.0;
-    const TWO_TO_32: f64 = 4_294_967_296.0;
-    let modulo = value.trunc() % TWO_TO_32;
-    let unsigned = if modulo < 0.0 {
-        modulo + TWO_TO_32
-    } else {
-        modulo
-    };
-    if unsigned >= TWO_TO_31 {
-        (unsigned - TWO_TO_32) as i32
-    } else {
-        unsigned as i32
-    }
+    crate::number::to_int32(value)
 }
 
 fn number_to_uint32(value: f64) -> u32 {
