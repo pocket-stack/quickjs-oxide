@@ -324,7 +324,6 @@ pub(crate) fn verify_parts(
     let mut depths = vec![None; code.len()];
     let mut worklist = VecDeque::from([(0_usize, 0_usize)]);
     let mut maximum = 0_usize;
-    let mut has_termination = false;
 
     while let Some((pc, depth)) = worklist.pop_front() {
         let slot = depths
@@ -365,13 +364,12 @@ pub(crate) fn verify_parts(
                         "function completion leaves temporary values on the bytecode stack",
                     ));
                 }
-                has_termination = true;
             }
             // QuickJS `OP_throw_error` is terminal and abandons the complete
             // frame stack. A postfix update can legitimately retain its old
             // value below the attempted write when immutable-binding
             // resolution replaces that write with this instruction.
-            Instruction::ThrowReadOnly(_) => has_termination = true,
+            Instruction::ThrowReadOnly(_) => {}
             Instruction::Goto(target) => {
                 enqueue_target(&mut worklist, *target, next_depth, code.len())?;
             }
@@ -383,9 +381,6 @@ pub(crate) fn verify_parts(
         }
     }
 
-    if !has_termination {
-        return Err(Error::internal("bytecode has no reachable return or throw"));
-    }
     let maximum =
         u16::try_from(maximum).map_err(|_| Error::internal("bytecode stack exceeds u16::MAX"))?;
     Ok(VerifiedBytecode { max_stack: maximum })
@@ -453,6 +448,30 @@ mod tests {
             max_stack: 1,
         };
         assert_eq!(function.verify().unwrap().max_stack, 1);
+    }
+
+    #[test]
+    fn verifier_accepts_closed_non_terminating_control_flow() {
+        let cycle = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::Goto(0)],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 0,
+        };
+        assert_eq!(cycle.verify().unwrap().max_stack, 0);
+
+        let reachable_fallthrough = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::Nop],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 0,
+        };
+        assert_eq!(
+            reachable_fallthrough.verify().unwrap_err().message(),
+            "bytecode ended without return"
+        );
     }
 
     #[test]

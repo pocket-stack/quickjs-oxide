@@ -254,6 +254,18 @@ fn template_stack_limit_uses_reachable_bytecode_like_pinned_quickjs() {
         return;
     };
 
+    let accepted_boundary = format!("`{}`", "${0}".repeat(65_532));
+    Runtime::new()
+        .new_context()
+        .compile(&accepted_boundary)
+        .expect("Rust rejected the reachable QuickJS template stack boundary");
+    let upstream = run_oracle_file(&oracle, &accepted_boundary, "reachable-boundary");
+    assert!(
+        upstream.status.success(),
+        "QuickJS rejected its reachable template stack boundary: {}",
+        String::from_utf8_lossy(&upstream.stderr)
+    );
+
     for (count, suffix) in [(65_533, "limit"), (65_536, "wrapped-argc")] {
         let substitutions = "${0}".repeat(count);
         let reachable = format!("`{substitutions}`");
@@ -309,6 +321,91 @@ fn template_stack_limit_uses_reachable_bytecode_like_pinned_quickjs() {
             "float-not-folded",
             format!("if(0.5){{{huge_template};}}"),
             false,
+        ),
+        (
+            "while-false-folded",
+            format!("while(false){{{huge_template};}}"),
+            true,
+        ),
+        (
+            "while-null-folded",
+            format!("while(null){{{huge_template};}}"),
+            true,
+        ),
+        (
+            "while-int-zero-folded",
+            format!("while(0){{{huge_template};}}"),
+            true,
+        ),
+        (
+            "while-void-zero-folded",
+            format!("while(void 0){{{huge_template};}}"),
+            true,
+        ),
+        (
+            "while-empty-string-not-folded",
+            format!("while(''){{{huge_template};}}"),
+            false,
+        ),
+        (
+            "while-float-not-folded",
+            format!("while(0.5){{{huge_template};}}"),
+            false,
+        ),
+        (
+            "while-bigint-not-folded",
+            format!("while(0n){{{huge_template};}}"),
+            false,
+        ),
+        (
+            "while-identifier-not-folded",
+            format!("while(undefined){{{huge_template};}}"),
+            false,
+        ),
+        (
+            "while-negative-zero-not-folded",
+            format!("while(-0){{{huge_template};}}"),
+            false,
+        ),
+        (
+            "while-not-expression-not-folded",
+            format!("while(!1){{{huge_template};}}"),
+            false,
+        ),
+        (
+            "do-body-is-reachable",
+            format!("do{{{huge_template};}}while(false)"),
+            false,
+        ),
+        (
+            "while-break-makes-tail-unreachable",
+            format!("while(true){{break;{huge_template};}}"),
+            true,
+        ),
+        (
+            "while-dynamic-condition-break-makes-tail-unreachable",
+            format!("while(''){{break;{huge_template};}}"),
+            true,
+        ),
+        (
+            "while-body-before-break-is-reachable",
+            format!("while(true){{{huge_template};break;}}"),
+            false,
+        ),
+        (
+            "do-break-makes-tail-unreachable",
+            format!("do{{break;{huge_template};}}while(false)"),
+            true,
+        ),
+        (
+            "do-continue-makes-tail-unreachable",
+            format!("do{{continue;{huge_template};}}while(false)"),
+            true,
+        ),
+        (
+            "outer-folded-loop-makes-nested-do-unreachable",
+            format!("while(false){{do{{{huge_template};}}while(false)}}"),
+            true,
         ),
     ] {
         let runtime = Runtime::new();

@@ -287,6 +287,22 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "UTF-8 columns count lead bytes",
             "(function f(){ \"é🙂中\"; return 1n + 1; })()",
         ),
+        (
+            "while condition fault keeps its expression site",
+            "while(\nnull.x) {}",
+        ),
+        (
+            "while body fault keeps its expression site",
+            "while(true){\nnull.x;}",
+        ),
+        (
+            "do body fault keeps its expression site",
+            "do {\nnull.x;} while(false)",
+        ),
+        (
+            "do continue condition fault keeps its expression site",
+            "do { continue; } while(\nnull.x)",
+        ),
     ];
 
     for (description, source) in cases {

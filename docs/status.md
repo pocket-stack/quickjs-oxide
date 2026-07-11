@@ -36,7 +36,8 @@ claim full parity.
   lowering to stack bytecode. In addition to the primitive expression grammar,
   the current source path supports anonymous and named ordinary function
   expressions, simple parameters, `return`/fallthrough, function-local `var`,
-  recursive block statements and `if`/`else` (including nearest-`if` binding),
+  recursive block statements, `if`/`else` (including nearest-`if` binding),
+  `while`/`do-while`, and unlabeled `break`/`continue`,
   simple/arithmetic/exponentiation/shift/bitwise/logical identifier assignment,
   prefix/postfix identifier and member updates, direct calls,
   transitive parameter/local and private function-name capture through
@@ -45,11 +46,17 @@ claim full parity.
   per-invocation private self binding; sloppy writes are ignored and strict
   writes raise the QuickJS-compatible read-only TypeError. Script source
   elements and function/block/single-statement bodies now enter through one
-  QuickJS-shaped statement parser. Root scripts reserve the unspellable
-  `eval_ret_idx` local at slot zero: expression statements store completion,
-  empty blocks preserve it, and `if` resets it before its condition. Loops,
-  switch, try/catch/finally, lexical declarations, global `var` and function
-  declarations remain separate grammar/runtime slices.
+  QuickJS-shaped statement parser. Each function owns a typed simple-loop
+  subset of QuickJS `BlockEnv`, so nested functions cannot target an enclosing
+  function's loop. Root scripts reserve the unspellable `eval_ret_idx` local at
+  slot zero: expression statements store completion, empty blocks preserve it,
+  and `if` resets it before its condition. `while` resets once before its header;
+  `do-while` targets its reset on every entered iteration, sends `continue` to
+  the condition and lets `break` skip it. Conditions never become completion
+  values, and the `do-while` trailing semicolon is unconditionally optional as
+  in QuickJS. Labels, `for`, switch, try/catch/finally, lexical declarations,
+  global `var` and function declarations remain separate grammar/runtime
+  slices.
 - Untagged template literals follow QuickJS `js_parse_template` rather than a
   generic string-interpolation rewrite. A no-substitution template pushes only
   its cooked String. An interpolated template keeps the cooked head as a
@@ -154,7 +161,9 @@ claim full parity.
   from the resulting control-flow walk rather than the parser's linear emission
   order, so folded dead arms and oversized calls after a terminal return remain
   valid dead bytecode while the same reachable path raises the QuickJS
-  `InternalError`. Detached bytecode declares its local-frame width rather than
+  `InternalError`. Closed non-terminating control-flow graphs are valid, while a
+  reachable fallthrough beyond the bytecode end is still rejected. Detached
+  bytecode declares its local-frame width rather than
   inferring it from opcodes; live and dead local operands are bounded by that
   declaration and QuickJS's 65,534-slot limit. Runtime publication additionally
   checks constant kinds, frame
@@ -776,10 +785,11 @@ BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials. The
 atom-Error target contains thirteen pinned-oracle inputs in addition to its
 Rust-side expectation test. The Unicode target checks every scalar, real
 compiler/runtime cases, and the parser-driven identifier diagnostic matrix. A
-separate statement-control-flow target locks block/`if` completion, branch
-effects, ASI/directive boundaries and exact diagnostics; the template target
-locks raw/cooked UTF-16, continuation goals, concat lowering/order, diagnostics
-and tagged-template boundaries. The full gate currently discovers all 43
+separate statement-control-flow target locks block/`if`/loop completion,
+nearest-loop jumps, per-function isolation, ASI/directive boundaries and exact
+diagnostics; the template target locks raw/cooked UTF-16, continuation goals,
+concat lowering/order, diagnostics, tagged-template boundaries, and folded loop
+reachability at the 65,534-slot stack limit. The full gate currently discovers all 43
 `tests/oracle_*.rs` integration targets,
 checksum-verifies and builds the official test-only oracle, then runs
 the generated-Unicode-table drift check, formatting, unit/integration/oracle

@@ -185,6 +185,16 @@ struct SpannedIrOp {
     pc_site: Option<SourceOffset>,
 }
 
+/// Parser-only counterpart of QuickJS `BlockEnv` for a simple loop. Each
+/// function owns its own stack so a nested function cannot target an outer
+/// loop. Labels, switch cleanup and finally unwinding remain later slices.
+#[derive(Debug)]
+struct LoopControlContext {
+    entry_depth: usize,
+    break_jumps: Vec<usize>,
+    continue_jumps: Vec<usize>,
+}
+
 impl IrOp {
     fn stack_effect(&self) -> (usize, usize) {
         match self {
@@ -236,6 +246,7 @@ struct FunctionIr {
     last_identifier_reference: Option<usize>,
     constants: Vec<IrConstant>,
     closure_variables: Vec<ClosureVariable>,
+    loop_controls: Vec<LoopControlContext>,
     stack_depth: usize,
     strict: bool,
 }
@@ -275,6 +286,7 @@ impl FunctionIr {
             last_identifier_reference: None,
             constants: Vec::new(),
             closure_variables: Vec::new(),
+            loop_controls: Vec::new(),
             stack_depth: 0,
             strict,
         }
@@ -380,6 +392,10 @@ impl<'source> Parser<'source> {
         match self.current().kind {
             TokenKind::Punctuator(Punctuator::LeftBrace) => self.parse_block_statement(completion),
             TokenKind::Keyword(Keyword::If) => self.parse_if_statement(completion),
+            TokenKind::Keyword(Keyword::While) => self.parse_while_statement(completion),
+            TokenKind::Keyword(Keyword::Do) => self.parse_do_while_statement(completion),
+            TokenKind::Keyword(Keyword::Break) => self.parse_loop_jump_statement(false),
+            TokenKind::Keyword(Keyword::Continue) => self.parse_loop_jump_statement(true),
             TokenKind::Keyword(Keyword::Function) => {
                 if matches!(self.current_ir().kind, FunctionKind::Script) {
                     Err(self.unsupported_here(
@@ -456,6 +472,154 @@ impl<'source> Parser<'source> {
         self.current_ir_mut().last_identifier_reference = None;
         self.anonymous_function_definition = None;
         Ok(())
+    }
+
+    fn parse_while_statement(&mut self, completion: StatementCompletion) -> Result<(), Error> {
+        let entry_depth = self.current_ir().stack_depth;
+        self.push_loop_control(entry_depth);
+        self.advance()?;
+        if matches!(completion, StatementCompletion::Eval) {
+            self.set_eval_ret_undefined()?;
+        }
+
+        let condition_target = self.current_ir().ops.len();
+        self.expect_punctuator(Punctuator::LeftParen)?;
+        self.parse_expression()?;
+        self.expect_punctuator(Punctuator::RightParen)?;
+        let false_jump = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
+        self.require_stack_depth(entry_depth, "while condition")?;
+
+        self.parse_statement_or_decl(completion)?;
+        self.require_stack_depth(entry_depth, "while body")?;
+        self.emit_instruction(Instruction::Goto(
+            u32::try_from(condition_target)
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "out of memory"))?,
+        ))?;
+
+        let break_target = self.current_ir().ops.len();
+        let control = self.pop_loop_control()?;
+        self.patch_jump(false_jump, break_target)?;
+        for jump in control.continue_jumps {
+            self.patch_jump(jump, condition_target)?;
+        }
+        for jump in control.break_jumps {
+            self.patch_jump(jump, break_target)?;
+        }
+        self.finish_control_statement();
+        Ok(())
+    }
+
+    fn parse_do_while_statement(&mut self, completion: StatementCompletion) -> Result<(), Error> {
+        let entry_depth = self.current_ir().stack_depth;
+        self.push_loop_control(entry_depth);
+        self.advance()?;
+
+        // QuickJS targets the reset itself, so every entered iteration starts
+        // with an undefined eval completion. A continue instead targets the
+        // condition below and does not repeat this reset prematurely.
+        let body_target = self.current_ir().ops.len();
+        if matches!(completion, StatementCompletion::Eval) {
+            self.set_eval_ret_undefined()?;
+        }
+        self.parse_statement_or_decl(completion)?;
+        self.require_stack_depth(entry_depth, "do-while body")?;
+
+        let condition_target = self.current_ir().ops.len();
+        if !matches!(self.current().kind, TokenKind::Keyword(Keyword::While)) {
+            // `js_parse_expect(TOK_WHILE)` formats the non-ASCII token through
+            // `%c`; preserve the pinned release's observable replacement-char
+            // diagnostic, including its missing closing quote.
+            return Err(self.syntax_here("expecting '�"));
+        }
+        self.advance()?;
+        self.expect_punctuator(Punctuator::LeftParen)?;
+        self.parse_expression()?;
+        self.expect_punctuator(Punctuator::RightParen)?;
+        // Unlike an ordinary statement terminator, the trailing semicolon is
+        // unconditionally optional, even before a same-line expression.
+        self.consume_punctuator(Punctuator::Semicolon)?;
+        self.emit_instruction(Instruction::IfTrue(
+            u32::try_from(body_target)
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "out of memory"))?,
+        ))?;
+        self.require_stack_depth(entry_depth, "do-while condition")?;
+
+        let break_target = self.current_ir().ops.len();
+        let control = self.pop_loop_control()?;
+        for jump in control.continue_jumps {
+            self.patch_jump(jump, condition_target)?;
+        }
+        for jump in control.break_jumps {
+            self.patch_jump(jump, break_target)?;
+        }
+        self.finish_control_statement();
+        Ok(())
+    }
+
+    fn parse_loop_jump_statement(&mut self, is_continue: bool) -> Result<(), Error> {
+        self.advance()?;
+
+        if !self.current().line_terminator_before
+            && let TokenKind::Identifier(identifier) = &self.current().kind
+            && !identifier.escaped_reserved_word
+        {
+            return Err(self.syntax_here("break/continue label not found"));
+        }
+
+        let Some(control) = self.current_ir().loop_controls.last() else {
+            return Err(self.syntax_here(if is_continue {
+                "continue must be inside loop"
+            } else {
+                "break must be inside loop or switch"
+            }));
+        };
+        let entry_depth = control.entry_depth;
+        self.require_stack_depth(entry_depth, "loop jump")?;
+        let jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
+        let control = self
+            .current_ir_mut()
+            .loop_controls
+            .last_mut()
+            .ok_or_else(|| Error::internal("loop control disappeared while emitting jump"))?;
+        if is_continue {
+            control.continue_jumps.push(jump);
+        } else {
+            control.break_jumps.push(jump);
+        }
+        self.consume_statement_terminator()
+    }
+
+    fn push_loop_control(&mut self, entry_depth: usize) {
+        self.current_ir_mut()
+            .loop_controls
+            .push(LoopControlContext {
+                entry_depth,
+                break_jumps: Vec::new(),
+                continue_jumps: Vec::new(),
+            });
+    }
+
+    fn pop_loop_control(&mut self) -> Result<LoopControlContext, Error> {
+        self.current_ir_mut()
+            .loop_controls
+            .pop()
+            .ok_or_else(|| Error::internal("loop control stack underflow"))
+    }
+
+    fn require_stack_depth(&self, expected: usize, construct: &str) -> Result<(), Error> {
+        if self.current_ir().stack_depth == expected {
+            Ok(())
+        } else {
+            Err(Error::internal(format!(
+                "{construct} changed the enclosing stack depth"
+            )))
+        }
+    }
+
+    fn finish_control_statement(&mut self) {
+        self.current_ir_mut().last_member_reference = None;
+        self.current_ir_mut().last_identifier_reference = None;
+        self.anonymous_function_definition = None;
     }
 
     fn parse_expression_statement(&mut self, completion: StatementCompletion) -> Result<(), Error> {
@@ -3589,6 +3753,56 @@ mod tests {
         assert_eq!(root.metadata().local_count, 1);
         let ordinary = root.constants()[0].as_child().unwrap();
         assert_eq!(ordinary.metadata().local_count, 0);
+    }
+
+    #[test]
+    fn while_and_do_while_use_per_function_quickjs_loop_controls() {
+        assert_eq!(evaluate("1; while (false) 2"), Value::Undefined);
+        assert_eq!(evaluate("while (true) { 3; break; }"), Value::Int(3));
+        assert_eq!(evaluate("do 4; while (false)"), Value::Int(4));
+        assert_eq!(
+            evaluate_in_context("do { break; } while (missing)"),
+            Value::Undefined
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){ var i=0; var total=0; while(i<5){ i++; if(i===3) continue; total+=i; } return total; })()"
+            ),
+            Value::Int(12)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){ var i=0; do { i++; if(i<3) continue; } while(i<3); return i; })()"
+            ),
+            Value::Int(3)
+        );
+
+        // Constant folding turns these into closed backward-edge CFGs. They
+        // must compile and verify, but deliberately must not be executed.
+        for source in ["while(true);", "while(true) continue;", "do{}while(true)"] {
+            let bytecode = compile_script(source).unwrap();
+            assert!(bytecode.code.iter().enumerate().any(|(pc, instruction)| {
+                matches!(instruction, Instruction::Goto(target) if usize::try_from(*target).is_ok_and(|target| target <= pc))
+            }));
+            assert!(
+                bytecode
+                    .code
+                    .iter()
+                    .all(|instruction| !matches!(instruction, Instruction::Goto(u32::MAX)))
+            );
+        }
+
+        for source in [
+            "(function(){ break; })",
+            "(function(){ continue; })",
+            "while(false) (function(){ break; })",
+            "do (function(){ continue; }); while(false)",
+        ] {
+            assert!(
+                compile_unlinked_script(source).is_err(),
+                "nested function saw an enclosing loop for {source:?}"
+            );
+        }
     }
 
     #[test]

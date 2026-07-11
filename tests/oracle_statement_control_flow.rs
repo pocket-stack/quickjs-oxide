@@ -152,6 +152,106 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "paragraph separator participates in if ASI",
         "if (false)\u{2029}1;\u{2029}else\u{2029}2;",
     ),
+    ("false while resets completion", "1; while (false) 2;"),
+    ("empty false while resets completion", "1; while (false);"),
+    (
+        "break preserves body completion",
+        "while (true) { 3; break; }",
+    ),
+    (
+        "nested while resets an earlier body completion",
+        "while(true){ 2; while(false) 3; break; }",
+    ),
+    (
+        "nested do preserves its final body completion",
+        "while(true){ do 2; while(false); break; }",
+    ),
+    (
+        "while condition does not become the completion",
+        "1; while((5,false));",
+    ),
+    (
+        "do condition does not replace its body completion",
+        "do 2; while((3,false))",
+    ),
+    (
+        "while iteration and continue order",
+        "(function(){ var i=0; var sum=0; while(i<5){ i++; if(i===3) continue; sum+=i; } return sum; })()",
+    ),
+    (
+        "while continue preserves the current body completion",
+        "Function.loopIndex=0; while(Function.loopIndex++<2){ 9; continue; }",
+    ),
+    (
+        "nested loop jumps select the nearest loop",
+        "(function(){ var i=0; var j=0; while(i<3){ i++; while(true){ j++; break; } continue; j=99; } return i+'|'+j; })()",
+    ),
+    ("do body executes once", "do 2; while(false)"),
+    (
+        "empty do resets an earlier completion",
+        "1; do; while(false)",
+    ),
+    (
+        "do break leaves its reset completion",
+        "1; do break; while(false)",
+    ),
+    (
+        "do continue preserves its body completion",
+        "do { 9; continue; } while(false)",
+    ),
+    (
+        "do break skips its condition",
+        "(function(){ var x=0; do { break; } while(x++); return x; })()",
+    ),
+    (
+        "do continue reaches its condition",
+        "(function(){ var x=0; do { continue; } while(x++<1); return x; })()",
+    ),
+    (
+        "do resets completion for every iteration",
+        "Function.loopIndex=0; do { if(Function.loopIndex++===0) 7; } while(Function.loopIndex<2)",
+    ),
+    (
+        "do trailing semicolon is optional before same-line source",
+        "do {} while(false) 9",
+    ),
+    ("do body uses line-terminator ASI", "do 1\nwhile(false)"),
+    (
+        "break line terminator starts unreachable source",
+        "while(true){ break\nmissingAfterBreak; }",
+    ),
+    (
+        "break CR starts unreachable source",
+        "while(true){ break\rmissingAfterBreak; }",
+    ),
+    (
+        "break CRLF starts unreachable source",
+        "while(true){ break\r\nmissingAfterBreak; }",
+    ),
+    (
+        "break line separator starts unreachable source",
+        "while(true){ break\u{2028}missingAfterBreak; }",
+    ),
+    (
+        "break paragraph separator starts unreachable source",
+        "while(true){ break\u{2029}missingAfterBreak; }",
+    ),
+    (
+        "continue block-comment line terminator starts unreachable source",
+        "do { continue/*\n*/missingAfterContinue; } while(false)",
+    ),
+    (
+        "continue CRLF comment starts unreachable source",
+        "do { continue/*\r\n*/missingAfterContinue; } while(false)",
+    ),
+    (
+        "Function constructor parses while jumps",
+        "Function('var i=0; while(i<3)i++; return i')()",
+    ),
+    (
+        "Function constructor parses do return",
+        "Function('do { return 4; } while(false)')()",
+    ),
 ];
 
 const ERROR_CASES: &[(&str, &str)] = &[
@@ -215,6 +315,70 @@ const ERROR_CASES: &[(&str, &str)] = &[
     (
         "line separator throw restriction uses QuickJS debug coordinates",
         "if (true) throw\u{2028}1;",
+    ),
+    ("break outside a loop", "break"),
+    ("continue outside a loop", "continue"),
+    (
+        "outer loop is not visible inside a nested function",
+        "while(false) (function(){ break; })",
+    ),
+    (
+        "outer do loop is not visible inside a nested function",
+        "do (function(){ continue; }); while(false)",
+    ),
+    ("do requires while", "do {}"),
+    (
+        "do preserves QuickJS non-ASCII expect diagnostic",
+        "do{} false",
+    ),
+    ("while requires a left parenthesis", "while true;"),
+    ("while requires a right parenthesis", "while (true;"),
+    ("while requires a body", "while (true)"),
+    ("do expression body still requires ASI", "do 1 while(false)"),
+    (
+        "do condition requires a left parenthesis",
+        "do{}while false",
+    ),
+    (
+        "unimplemented break label is not silently discarded",
+        "while(true){ break missing; }",
+    ),
+    (
+        "unimplemented continue label is not silently discarded",
+        "while(true){ continue missing; }",
+    ),
+    (
+        "return remains an early error in a dead loop body",
+        "while(false) return 1;",
+    ),
+    (
+        "break scans the following lexical error first",
+        "break \"unterminated",
+    ),
+    (
+        "in-loop break scans the following lexical error first",
+        "while(false){ break \"unterminated",
+    ),
+    (
+        "outside break LF uses restricted-production ASI",
+        "break\nmissingLabel",
+    ),
+    (
+        "outside break CR keeps QuickJS debug coordinates",
+        "break\rmissingLabel",
+    ),
+    ("outside break CRLF advances at LF", "break\r\nmissingLabel"),
+    (
+        "outside break line separator keeps QuickJS debug coordinates",
+        "break\u{2028}missingLabel",
+    ),
+    (
+        "outside break paragraph separator keeps QuickJS debug coordinates",
+        "break\u{2029}missingLabel",
+    ),
+    (
+        "outside continue comment terminator uses restricted-production ASI",
+        "continue/*\r\n*/missingLabel",
     ),
 ];
 
