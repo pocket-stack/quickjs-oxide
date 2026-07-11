@@ -1643,6 +1643,12 @@ impl Runtime {
             &global_object,
         )
         .expect("Boolean intrinsic initialization must succeed");
+        // Upstream installs `globalThis` after the later String/Math/Reflect/
+        // Symbol/generator slice and before BigInt. Those intervening
+        // intrinsics are not present yet, so keep it after the last currently
+        // implemented global constructor to preserve relative own-key order.
+        self.initialize_global_this(&global_object)
+            .expect("globalThis initialization must succeed");
         drop(global_var_object);
         drop(global_object);
         drop(uninitialized_vars);
@@ -2408,6 +2414,27 @@ impl Runtime {
         if !defined {
             return Err(RuntimeError::Invariant(
                 "global toStringTag definition was rejected",
+            ));
+        }
+        Ok(())
+    }
+
+    fn initialize_global_this(&self, global_object: &ObjectRef) -> Result<(), RuntimeError> {
+        let key = self.intern_property_key("globalThis")?;
+        let defined = self.define_own_property(
+            global_object,
+            &key,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(Value::Object(global_object.clone())),
+                writable: DescriptorField::Present(true),
+                enumerable: DescriptorField::Present(false),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )?;
+        if !defined {
+            return Err(RuntimeError::Invariant(
+                "globalThis definition was rejected",
             ));
         }
         Ok(())
@@ -10577,6 +10604,61 @@ mod tests {
                 .unwrap(),
             Value::String(JsString::from("[object Object]"))
         );
+    }
+
+    #[test]
+    fn global_this_matches_quickjs_identity_descriptor_and_mutation() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let global = context.global_object().unwrap();
+        let key = runtime.intern_property_key("globalThis").unwrap();
+        assert!(matches!(
+            runtime.get_own_property(&global, &key).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Object(value),
+                writable: true,
+                enumerable: false,
+                configurable: true,
+            }) if value == global
+        ));
+        assert_eq!(
+            context
+                .eval("globalThis === globalThis.globalThis")
+                .unwrap(),
+            Value::Bool(true)
+        );
+
+        assert!(context.set_property(&global, &key, Value::Int(17)).unwrap());
+        assert_eq!(context.eval("globalThis").unwrap(), Value::Int(17));
+        assert!(matches!(
+            runtime.get_own_property(&global, &key).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Int(17),
+                writable: true,
+                enumerable: false,
+                configurable: true,
+            })
+        ));
+
+        assert!(runtime.delete_property(&global, &key).unwrap());
+        assert_eq!(
+            context.eval("typeof globalThis").unwrap(),
+            Value::String(JsString::from("undefined"))
+        );
+        assert!(
+            context
+                .set_property(&global, &key, Value::Object(global.clone()))
+                .unwrap()
+        );
+        assert!(matches!(
+            runtime.get_own_property(&global, &key).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Object(value),
+                writable: true,
+                enumerable: true,
+                configurable: true,
+            }) if value == global
+        ));
     }
 
     #[test]

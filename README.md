@@ -92,8 +92,10 @@ enforces surrogate pairs, while the Annex-B pair retains its permissive
 Each realm also installs QuickJS's configurable, read-only global-object own
 property keyed by the runtime's well-known `Symbol.toStringTag`, with value
 `"global"`. The host-visible `%Object.prototype.toString%` path therefore
-reports `[object global]` while preserving symbol-category own-key ordering;
-this slice does not yet expose the `globalThis` binding or `Symbol` constructor.
+reports `[object global]` while preserving symbol-category own-key ordering.
+The later `globalThis` binding is a writable, non-enumerable, configurable own
+data property that self-references its realm's global object; the public
+`Symbol` constructor is not exposed yet.
 Binary `??` uses QuickJS's shared short-circuit join for a chain, preserves the
 selected operand without coercion, and enforces the unparenthesized
 `??`/`&&`/`||` mixing restriction. The same arithmetic, exponentiation, shift,
@@ -167,6 +169,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_uri_codecs -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_to_string_tag -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_global_this -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

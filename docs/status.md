@@ -227,17 +227,25 @@ claim full parity.
 - Every realm installs `Infinity`, `NaN` and `undefined` as non-writable,
   non-enumerable, non-configurable global data properties, matching the pinned
   QuickJS 2026-06-04 descriptors and direct-delete results. The implemented
-  global-table subset preserves upstream relative own-key order as
+  global string-key surface preserves upstream relative own-key order as
   `parseInt`, `parseFloat`, `isNaN`, `isFinite`, the six URI/escape functions,
-  the three constants, `Number`, then `Boolean`. This is not a claim that the
-  wider global builtin table is complete.
+  the three constants, `Number`, `Boolean`, then `globalThis`. This is not a
+  claim that the wider global builtin table is complete.
 - Every global object owns QuickJS's `[Symbol.toStringTag] = "global"` metadata
   as a non-writable, non-enumerable, configurable data property. The runtime
-  uses its internal well-known symbol identity because the `globalThis` binding
-  and global `Symbol` constructor are not implemented yet. Symbol-category
-  own-key ordering keeps the property after every string key, and the existing
+  uses its internal well-known symbol identity because the global `Symbol`
+  constructor is not implemented yet. Symbol-category own-key ordering keeps
+  the property after every string key, and the existing
   `%Object.prototype.toString%` path observes its value, deletion, non-string
   replacement and redefinition through the host API.
+- Every realm exposes `globalThis` as a writable, non-enumerable, configurable
+  own property whose value is that realm's global object. It uses the same
+  global `VarRef` substrate as unresolved identifiers, so assignment, deletion,
+  accessor conversion, reconnection, defining-realm lookup and the self-cycle's
+  trial-deletion GC behavior remain coherent. Upstream places this property
+  after its still-unimplemented String/Math/Reflect/Symbol/generator slice;
+  the current bootstrap keeps it after the latest implemented constructor and
+  must move later as those intervening intrinsics land.
 - Unresolved identifiers no longer use a string-key global opcode. Resolution
   installs one root `Global` closure descriptor and `ParentGlobal` relays on
   every nested function path; publication interns each exact name and function
@@ -572,6 +580,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_to_string_tag -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_global_this -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_constructor_conversion -- --nocapture
@@ -579,7 +589,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-parity-slice.sh
 ```
 
-The first eight commands run the dedicated Boolean, global BaseObjects and
+The first nine commands run the dedicated Boolean, global BaseObjects and
 complete Number-intrinsic differentials. The full gate command
 checksum-verifies and builds the official test-only oracle, runs formatting,
 unit/integration/oracle tests, Clippy, and the Rust-only product gate. The
