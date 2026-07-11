@@ -195,6 +195,12 @@ struct IrGlobalDeclaration {
     closure_index: Option<u16>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct IrHoistedFunction {
+    binding: BindingId,
+    constant: u32,
+}
+
 #[derive(Debug)]
 enum IrConstant {
     Primitive(Value),
@@ -370,6 +376,15 @@ struct FunctionIr {
     scopes: Vec<IrScope>,
     bindings: Vec<IrBinding>,
     global_declarations: Vec<IrGlobalDeclaration>,
+    /// Last direct function declaration attached to each ordinary
+    /// function-scoped argument/local binding.
+    hoisted_functions: Vec<IrHoistedFunction>,
+    function_hoists_installed: bool,
+    /// A source `var arguments` cannot be classified until the complete
+    /// ordinary body is known: QuickJS gives it the same local as a direct
+    /// `function arguments(){}` declaration, but otherwise it denotes the
+    /// still-unsupported implicit arguments object.
+    deferred_implicit_arguments_var: Option<Span>,
     current_scope: ScopeId,
     var_scope: ScopeId,
     body_scope: ScopeId,
@@ -458,6 +473,9 @@ impl FunctionIr {
             scopes,
             bindings: Vec::new(),
             global_declarations: Vec::new(),
+            hoisted_functions: Vec::new(),
+            function_hoists_installed: false,
+            deferred_implicit_arguments_var: None,
             current_scope,
             var_scope,
             body_scope: body,
@@ -638,12 +656,34 @@ impl<'source> Parser<'source> {
             )?;
         }
 
+        self.finish_deferred_implicit_arguments_var()?;
+
         // QuickJS ends ordinary function bytecode with `return_undef`. It may
         // be unreachable after an explicit return, but keeps fallthrough
         // behavior structural and gives every function a terminal opcode.
         self.emit_instruction(Instruction::Undefined)?;
         self.emit_instruction(Instruction::Return)?;
         Ok(())
+    }
+
+    fn finish_deferred_implicit_arguments_var(&mut self) -> Result<(), Error> {
+        let function = self.current_ir_mut();
+        let Some(span) = function.deferred_implicit_arguments_var.take() else {
+            return Ok(());
+        };
+        let supplied_by_body_declaration = function.hoisted_functions.iter().any(|hoist| {
+            function
+                .bindings
+                .get(hoist.binding.0)
+                .is_some_and(|binding| binding.name == "arguments")
+        });
+        if supplied_by_body_declaration {
+            return Ok(());
+        }
+        Err(Error::syntax(
+            "the implicit ordinary-function arguments binding is not implemented yet",
+            source_span(span),
+        ))
     }
 
     /// QuickJS funnels program elements, function bodies, block bodies and
@@ -687,6 +727,10 @@ impl<'source> Parser<'source> {
                     && position == StatementPosition::ProgramBody
                 {
                     self.parse_program_function_declaration()
+                } else if matches!(self.current_ir().kind, FunctionKind::Ordinary)
+                    && position == StatementPosition::FunctionBody
+                {
+                    self.parse_function_body_declaration()
                 } else if matches!(self.current_ir().kind, FunctionKind::Script) {
                     Err(self.unsupported_here(
                         "block and single-statement function declarations are not implemented yet",
@@ -1483,9 +1527,14 @@ impl<'source> Parser<'source> {
                     .iter()
                     .any(|parameter| parameter == "arguments")
             {
-                return Err(self.unsupported_here(
-                    "the implicit ordinary-function arguments binding is not implemented yet",
-                ));
+                // A later (or earlier) direct `function arguments(){}` changes
+                // this from the implicit arguments object into an ordinary
+                // hoisted body local. Defer the unsupported boundary until the
+                // complete body has been parsed so both source orders agree.
+                let span = self.current().span;
+                self.current_ir_mut()
+                    .deferred_implicit_arguments_var
+                    .get_or_insert(span);
             }
             self.register_var_binding(&name, token.span, self.current().span)?;
 
@@ -3106,6 +3155,53 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
+    fn parse_function_body_declaration(&mut self) -> Result<(), Error> {
+        let parsed = self.parse_function_definition(true, false)?;
+        let (name, declaration_span) = parsed
+            .name
+            .ok_or_else(|| Error::internal("required function declaration lost its name"))?;
+        if !matches!(self.current_ir().kind, FunctionKind::Ordinary) {
+            return Err(Error::internal(
+                "function-body declaration escaped its ordinary function",
+            ));
+        }
+        let conflict_span = self.current().span;
+        self.register_var_binding(&name, declaration_span, conflict_span)?;
+
+        let function = &mut self.functions[self.current_function];
+        let binding = function.scopes[function.var_scope.0]
+            .bindings
+            .iter()
+            .rev()
+            .copied()
+            .find(|binding| function.bindings[binding.0].name == name)
+            .ok_or_else(|| Error::internal("function declaration binding was not registered"))?;
+        let metadata = &function.bindings[binding.0];
+        if metadata.kind != BindingKind::Normal
+            || !matches!(
+                metadata.storage,
+                BindingStorage::Argument(_) | BindingStorage::Local(_)
+            )
+        {
+            return Err(Error::internal(
+                "function declaration did not resolve to an ordinary frame binding",
+            ));
+        }
+        if let Some(existing) = function
+            .hoisted_functions
+            .iter_mut()
+            .find(|hoist| hoist.binding == binding)
+        {
+            existing.constant = parsed.constant;
+        } else {
+            function.hoisted_functions.push(IrHoistedFunction {
+                binding,
+                constant: parsed.constant,
+            });
+        }
+        Ok(())
+    }
+
     fn emit_value(&mut self, value: Value) -> Result<(), Error> {
         self.emit_value_with_site(value, None)
     }
@@ -3803,6 +3899,96 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 "private function-name capability is malformed",
             ));
         }
+        if matches!(function.kind, FunctionKind::Script)
+            && (!function.hoisted_functions.is_empty() || function.function_hoists_installed)
+        {
+            return Err(Error::internal(
+                "root script contains ordinary function-body hoists",
+            ));
+        }
+        if function.deferred_implicit_arguments_var.is_some() {
+            return Err(Error::internal(
+                "ordinary function retained a deferred arguments var classification",
+            ));
+        }
+        let mut seen_hoisted_bindings = vec![false; function.bindings.len()];
+        for hoist in &function.hoisted_functions {
+            let binding = function
+                .bindings
+                .get(hoist.binding.0)
+                .ok_or_else(|| Error::internal("hoisted function binding is out of bounds"))?;
+            if std::mem::replace(&mut seen_hoisted_bindings[hoist.binding.0], true)
+                || binding.storage_scope != function.var_scope
+                || binding.kind != BindingKind::Normal
+                || !matches!(
+                    binding.storage,
+                    BindingStorage::Argument(_) | BindingStorage::Local(_)
+                )
+            {
+                return Err(Error::internal(
+                    "hoisted function has malformed frame binding metadata",
+                ));
+            }
+            let constant = usize::try_from(hoist.constant)
+                .map_err(|_| Error::internal("hoisted function constant is out of bounds"))?;
+            let Some(IrConstant::Child(child)) = function.constants.get(constant) else {
+                return Err(Error::internal(
+                    "hoisted function does not reference child bytecode",
+                ));
+            };
+            let child = tree
+                .functions
+                .get(*child)
+                .ok_or_else(|| Error::internal("hoisted child function is out of bounds"))?;
+            if child.function_name.as_deref() != Some(binding.name.as_str())
+                || child.private_name_binding
+            {
+                return Err(Error::internal(
+                    "hoisted child name metadata disagrees with its binding",
+                ));
+            }
+        }
+        if function.function_hoists_installed {
+            for (ordinal, hoist) in ordered_hoisted_functions(function)?.into_iter().enumerate() {
+                let closure_pc = ordinal
+                    .checked_mul(2)
+                    .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+                if !matches!(
+                    function.ops.get(closure_pc),
+                    Some(SpannedIrOp {
+                        op: IrOp::MakeClosure(constant),
+                        pc_site: None,
+                    }) if *constant == hoist.constant
+                ) {
+                    return Err(Error::internal(
+                        "installed function hoist lost its child closure",
+                    ));
+                }
+                let binding = &function.bindings[hoist.binding.0];
+                let write_matches = match binding.storage {
+                    BindingStorage::Argument(index) => matches!(
+                        function.ops.get(closure_pc + 1),
+                        Some(SpannedIrOp {
+                            op: IrOp::Bytecode(Instruction::PutArg(target)),
+                            pc_site: None,
+                        }) if *target == index
+                    ),
+                    BindingStorage::Local(index) => matches!(
+                        function.ops.get(closure_pc + 1),
+                        Some(SpannedIrOp {
+                            op: IrOp::Bytecode(Instruction::PutLocal(target)),
+                            pc_site: None,
+                        }) if *target == index
+                    ),
+                    BindingStorage::Global => false,
+                };
+                if !write_matches {
+                    return Err(Error::internal(
+                        "installed function hoist targeted the wrong frame slot",
+                    ));
+                }
+            }
+        }
         match function.kind {
             FunctionKind::Script => {
                 for declaration in &function.global_declarations {
@@ -4074,13 +4260,18 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                     ));
                 }
             } else if scope_index == function.body_scope.0 {
+                let body_entry = if function.function_hoists_installed {
+                    function.hoisted_functions.len().saturating_mul(2)
+                } else {
+                    0
+                };
                 match function.kind {
                     FunctionKind::Script if entries == 0 && leaves == 0 => {}
                     FunctionKind::Ordinary
                         if entries == 1
                             && leaves == 0
                             && matches!(
-                                function.ops.first().map(|operation| &operation.op),
+                                function.ops.get(body_entry).map(|operation| &operation.op),
                                 Some(IrOp::EnterScope(body)) if *body == function.body_scope
                             ) => {}
                     _ => {
@@ -4156,6 +4347,7 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
         }
     }
     install_global_function_hoists(tree)?;
+    install_function_body_hoists(tree)?;
     validate_scope_graph(tree)
 }
 
@@ -4244,9 +4436,73 @@ fn install_global_function_hoists(tree: &mut FunctionTree) -> Result<(), Error> 
         });
     }
 
+    prepend_hoist_prefix(&mut tree.functions[0], prefix)
+}
+
+/// QuickJS stores the last direct body declaration on its argument/local
+/// binding, then initializes arguments in slot order followed by root locals
+/// in slot order when entering the function body.
+fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
+    for function_id in 1..tree.functions.len() {
+        let hoists = ordered_hoisted_functions(&tree.functions[function_id])?;
+        let mut prefix = Vec::with_capacity(hoists.len().saturating_mul(2));
+        for hoist in hoists {
+            let binding = &tree.functions[function_id].bindings[hoist.binding.0];
+            prefix.push(SpannedIrOp {
+                op: IrOp::MakeClosure(hoist.constant),
+                pc_site: None,
+            });
+            let instruction = match binding.storage {
+                BindingStorage::Argument(index) => Instruction::PutArg(index),
+                BindingStorage::Local(index) => Instruction::PutLocal(index),
+                BindingStorage::Global => {
+                    return Err(Error::internal(
+                        "ordinary function hoist targeted global storage",
+                    ));
+                }
+            };
+            prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(instruction),
+                pc_site: None,
+            });
+        }
+        prepend_hoist_prefix(&mut tree.functions[function_id], prefix)?;
+        tree.functions[function_id].function_hoists_installed = true;
+    }
+    Ok(())
+}
+
+fn ordered_hoisted_functions(function: &FunctionIr) -> Result<Vec<IrHoistedFunction>, Error> {
+    let mut hoists = function.hoisted_functions.clone();
+    for hoist in &hoists {
+        let binding = function
+            .bindings
+            .get(hoist.binding.0)
+            .ok_or_else(|| Error::internal("hoisted function binding is out of bounds"))?;
+        if matches!(binding.storage, BindingStorage::Global) {
+            return Err(Error::internal(
+                "ordinary function hoist targeted global storage",
+            ));
+        }
+    }
+    hoists.sort_by_key(|hoist| match function.bindings[hoist.binding.0].storage {
+        BindingStorage::Argument(index) => (0_u8, index),
+        BindingStorage::Local(index) => (1_u8, index),
+        BindingStorage::Global => unreachable!("validated above"),
+    });
+    Ok(hoists)
+}
+
+fn prepend_hoist_prefix(
+    function: &mut FunctionIr,
+    mut prefix: Vec<SpannedIrOp>,
+) -> Result<(), Error> {
+    if prefix.is_empty() {
+        return Ok(());
+    }
     let shift = u32::try_from(prefix.len())
         .map_err(|_| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
-    for operation in &mut tree.functions[0].ops {
+    for operation in &mut function.ops {
         let target = match &mut operation.op {
             IrOp::Bytecode(
                 Instruction::Goto(target)
@@ -4259,8 +4515,8 @@ fn install_global_function_hoists(tree: &mut FunctionTree) -> Result<(), Error> 
             .checked_add(shift)
             .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
     }
-    prefix.append(&mut tree.functions[0].ops);
-    tree.functions[0].ops = prefix;
+    prefix.append(&mut function.ops);
+    function.ops = prefix;
     Ok(())
 }
 
@@ -9282,6 +9538,97 @@ mod tests {
             panic!("function expression did not produce an object");
         };
         assert!(runtime.is_constructor(&function).unwrap());
+    }
+
+    #[test]
+    fn direct_function_body_declarations_hoist_into_argument_and_local_bindings() {
+        for (source, expected) in [
+            (
+                "(function(){return before();function before(){return 1}})()",
+                Value::Int(1),
+            ),
+            (
+                "(function(parameter){function local(){return later}function parameter(){return 10}function local(){return later+1}let later=2;return parameter()+local()})(0)",
+                Value::Int(13),
+            ),
+            (
+                "(function(){function arguments(){return 4}return arguments()})()",
+                Value::Int(4),
+            ),
+            (
+                "(function(){var arguments;function arguments(){return 6}return arguments()})()",
+                Value::Int(6),
+            ),
+            (
+                "(function(){function arguments(){return 7}var arguments;return arguments()})()",
+                Value::Int(7),
+            ),
+            (
+                "(function(){var arguments=function(){return 9};function arguments(){return 8}return arguments()})()",
+                Value::Int(9),
+            ),
+            (
+                "(function named(){function named(){return 5}return named()})()",
+                Value::Int(5),
+            ),
+            (
+                "(function(){'use strict';function mutable(){mutable=6;return mutable}return mutable()})()",
+                Value::Int(6),
+            ),
+            (
+                "(function(){if(false)return 0;function branch(){return 2}var count=0;while(count<1)count++;return branch()+count})()",
+                Value::Int(3),
+            ),
+        ] {
+            assert_eq!(evaluate_in_context(source), expected, "{source}");
+        }
+
+        let script = compile_unlinked_script(
+            "(function(first,second){var local;function local(){}function second(){}function first(){}function local(){return 1}})",
+        )
+        .unwrap();
+        let outer = script.constants()[0].as_child().unwrap();
+        assert!(matches!(outer.code()[0], Instruction::FClosure(2)));
+        assert!(matches!(outer.code()[1], Instruction::PutArg(0)));
+        assert!(matches!(outer.code()[2], Instruction::FClosure(1)));
+        assert!(matches!(outer.code()[3], Instruction::PutArg(1)));
+        assert!(matches!(outer.code()[4], Instruction::FClosure(3)));
+        assert!(matches!(outer.code()[5], Instruction::PutLocal(0)));
+        for child in outer
+            .constants()
+            .iter()
+            .filter_map(|value| value.as_child())
+        {
+            assert_eq!(child.metadata().function_name_local, None);
+        }
+    }
+
+    #[test]
+    fn direct_function_body_declaration_conflicts_match_quickjs_order() {
+        for (source, message) in [
+            (
+                "(function(){function conflict(){};let conflict})",
+                "invalid redefinition of a variable",
+            ),
+            (
+                "(function(){let conflict;function conflict(){}})",
+                "invalid redefinition of lexical identifier",
+            ),
+            (
+                "(function(conflict){function conflict(){};let conflict})",
+                "invalid redefinition of parameter name",
+            ),
+            (
+                "(function(){'use strict';function eval(){}})",
+                "invalid function name in strict code",
+            ),
+        ] {
+            assert_eq!(
+                compile_unlinked_script(source).unwrap_err().message(),
+                message,
+                "{source}"
+            );
+        }
     }
 
     #[test]

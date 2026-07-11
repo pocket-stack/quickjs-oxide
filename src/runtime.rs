@@ -1483,7 +1483,20 @@ impl VmHost for RuntimeVmHost {
             .locals
             .get_mut(usize::from(index))
             .ok_or_else(|| Error::internal("local index is out of bounds"))?;
-        if matches!(binding, FrameBinding::Captured(_)) {
+        if let FrameBinding::Captured(root) = binding {
+            let raw = self
+                .runtime
+                .raw_var_ref_value(root)
+                .map_err(runtime_error_to_vm_error)?;
+            if matches!(raw, RawValue::Uninitialized) {
+                // QuickJS creates direct FunctionBody declaration closures
+                // before expanding the body scope's lexical TDZ entries. A
+                // child may therefore capture this first uninitialized cell
+                // before SetLocalUninitialized reaches it; entering that same
+                // initial lifetime is a no-op. A live initialized capture still
+                // proves that a later lifetime skipped CloseLocal.
+                return Ok(());
+            }
             return Err(Error::internal(
                 "captured local entered a new lexical lifetime before CloseLocal",
             ));
@@ -20818,6 +20831,75 @@ mod tests {
         drop(child_callable);
         runtime.run_gc().unwrap();
         assert_eq!(runtime.test_atom_count(), baseline_atoms);
+    }
+
+    #[test]
+    fn lexical_scope_entry_rejects_an_initialized_capture_without_close_local() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let child = UnlinkedFunction::new_with_closure_variables(
+            vec![Instruction::Undefined, Instruction::Return],
+            vec![
+                UnlinkedConstant::primitive(Value::String(JsString::from_static(
+                    "reenteredLexical",
+                )))
+                .unwrap(),
+            ],
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentLocal(0),
+                name: ClosureVariableName::Constant(0),
+                is_lexical: true,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        );
+        let parent = UnlinkedFunction::new(
+            vec![
+                Instruction::SetLocalUninitialized(0),
+                Instruction::FClosure(0),
+                Instruction::Drop,
+                Instruction::PushI32(1),
+                Instruction::InitializeLocal(0),
+                Instruction::SetLocalUninitialized(0),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(child)],
+            FunctionMetadata {
+                local_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_variable_definitions(
+            Vec::new(),
+            vec![UnlinkedVariableDefinition::lexical(
+                Some(JsString::from_static("reenteredLexical")),
+                false,
+            )],
+        );
+        let parent = runtime
+            .publish_unlinked_function(context.realm, parent)
+            .unwrap();
+        let parent = runtime
+            .new_bytecode_closure(context.realm, &parent)
+            .unwrap();
+        let RuntimeError::Engine(error) = context
+            .call(&parent, Value::Undefined, &[])
+            .expect_err("initialized captured lifetime was accepted without CloseLocal")
+        else {
+            panic!("initialized captured lifetime did not report an engine invariant");
+        };
+        assert_eq!(error.kind(), ErrorKind::Internal);
+        assert_eq!(
+            error.message(),
+            "captured local entered a new lexical lifetime before CloseLocal"
+        );
     }
 
     #[test]

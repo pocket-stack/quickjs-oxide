@@ -113,10 +113,6 @@ const UNSUPPORTED_BOUNDARY_CASES: &[(&str, &str)] = &[
         "unsupportedLabel:function unsupportedLabelled(){}",
     ),
     (
-        "ordinary function-body declaration",
-        "(function(){function unsupportedNested(){}})",
-    ),
-    (
         "async Program function declaration",
         "async function unsupportedAsync(){}",
     ),
