@@ -168,6 +168,66 @@ enum NativeConversion<T> {
     Throw(Value),
 }
 
+/// QuickJS formats every native `JS_Throw*Error` message through
+/// `char buf[256]` before constructing the JavaScript String. Keep the raw
+/// byte boundary here: truncation may split UTF-8 and `JS_NewString` then
+/// applies the engine's WTF-8/replacement decoder to the retained prefix.
+struct NativeErrorMessage {
+    bytes: [u8; 256],
+    len: usize,
+}
+
+impl NativeErrorMessage {
+    fn new() -> Self {
+        Self {
+            bytes: [0; 256],
+            len: 0,
+        }
+    }
+
+    fn from_utf8(value: &str) -> Self {
+        let mut message = Self::new();
+        message.push_c_string_bytes(value.bytes());
+        message
+    }
+
+    fn push_bytes(&mut self, bytes: impl IntoIterator<Item = u8>) {
+        for byte in bytes {
+            if self.len == self.bytes.len() - 1 {
+                break;
+            }
+            self.bytes[self.len] = byte;
+            self.len += 1;
+        }
+    }
+
+    fn push_c_string_bytes(&mut self, bytes: impl IntoIterator<Item = u8>) {
+        for byte in bytes {
+            if byte == 0 || self.len == self.bytes.len() - 1 {
+                break;
+            }
+            self.bytes[self.len] = byte;
+            self.len += 1;
+        }
+    }
+
+    fn push_utf8(&mut self, value: &str) {
+        self.push_bytes(value.bytes());
+    }
+
+    fn push_js_c_string(&mut self, value: &JsString) {
+        self.push_c_string_bytes(value.wtf8_bytes());
+    }
+
+    fn into_js_string(self) -> Result<JsString, JsStringError> {
+        let visible_len = self.bytes[..self.len]
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(self.len);
+        JsString::try_from_bytes(&self.bytes[..visible_len])
+    }
+}
+
 enum Compilation {
     Published(FunctionBytecodeRef),
     Throw(Value),
@@ -3173,7 +3233,16 @@ impl Runtime {
         kind: NativeErrorKind,
         message: &str,
     ) -> Result<Value, RuntimeError> {
-        let value = self.new_native_error_without_backtrace(realm, kind, message)?;
+        self.new_native_error_from_message(realm, kind, NativeErrorMessage::from_utf8(message))
+    }
+
+    fn new_native_error_from_message(
+        &self,
+        realm: ContextId,
+        kind: NativeErrorKind,
+        message: NativeErrorMessage,
+    ) -> Result<Value, RuntimeError> {
+        let value = self.new_native_error_without_backtrace_from_message(realm, kind, message)?;
         let capture_now = self
             .0
             .state
@@ -3196,6 +3265,19 @@ impl Runtime {
         kind: NativeErrorKind,
         message: &str,
     ) -> Result<Value, RuntimeError> {
+        self.new_native_error_without_backtrace_from_message(
+            realm,
+            kind,
+            NativeErrorMessage::from_utf8(message),
+        )
+    }
+
+    fn new_native_error_without_backtrace_from_message(
+        &self,
+        realm: ContextId,
+        kind: NativeErrorKind,
+        message: NativeErrorMessage,
+    ) -> Result<Value, RuntimeError> {
         let prototype = {
             let state = self.0.state.borrow();
             state.heap.context(realm)?.native_error_prototypes[kind.index()].ok_or(
@@ -3209,7 +3291,7 @@ impl Runtime {
             &object,
             &key,
             &OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(Value::String(JsString::try_from_utf8(message)?)),
+                value: DescriptorField::Present(Value::String(message.into_js_string()?)),
                 writable: DescriptorField::Present(true),
                 enumerable: DescriptorField::Present(false),
                 configurable: DescriptorField::Present(true),
@@ -5677,12 +5759,22 @@ impl Runtime {
         new_target: Value,
         arguments: &[Value],
     ) -> Result<Completion, RuntimeError> {
-        let constructor = self.constructor_from_value(function)?;
-        let new_target = self.constructor_from_value(new_target)?;
+        let constructor = match self.constructor_from_value(caller_realm, function)? {
+            NativeConversion::Value(constructor) => constructor,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let new_target = match self.constructor_from_value(caller_realm, new_target)? {
+            NativeConversion::Value(new_target) => new_target,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
         self.construct_internal(caller_realm, &constructor, &new_target, arguments)
     }
 
-    fn constructor_from_value(&self, value: Value) -> Result<CallableRef, RuntimeError> {
+    fn constructor_from_value(
+        &self,
+        caller_realm: ContextId,
+        value: Value,
+    ) -> Result<NativeConversion<CallableRef>, RuntimeError> {
         let Value::Object(object) = value else {
             return Err(RuntimeError::Engine(Error::new(
                 ErrorKind::Type,
@@ -5704,8 +5796,9 @@ impl Runtime {
             (callable, object_data.is_constructor)
         };
         if !is_constructor {
-            return Err(RuntimeError::Engine(
-                self.not_constructor_error(&object, is_callable)?,
+            let value = Value::Object(object);
+            return Ok(NativeConversion::Throw(
+                self.new_not_constructor_error(caller_realm, &value)?,
             ));
         }
         if !is_callable {
@@ -5714,27 +5807,9 @@ impl Runtime {
                 "not a function",
             )));
         }
-        Ok(CallableRef::from_validated_object(object))
-    }
-
-    fn not_constructor_error(
-        &self,
-        object: &ObjectRef,
-        is_callable: bool,
-    ) -> Result<Error, RuntimeError> {
-        let message = if is_callable {
-            let name = self.intern_property_key("name")?;
-            match self.get_own_property(object, &name)? {
-                Some(CompleteOrdinaryPropertyDescriptor::Data {
-                    value: Value::String(name),
-                    ..
-                }) => format!("{} is not a constructor", name.to_utf8_lossy()),
-                _ => "not a constructor".to_owned(),
-            }
-        } else {
-            "not a constructor".to_owned()
-        };
-        Ok(Error::new(ErrorKind::Type, message))
+        Ok(NativeConversion::Value(CallableRef::from_validated_object(
+            object,
+        )))
     }
 
     fn construct_internal(
@@ -5756,14 +5831,16 @@ impl Runtime {
         let mut arguments = arguments.to_vec();
         loop {
             if !self.is_constructor(constructor.as_object())? {
-                return Err(RuntimeError::Engine(
-                    self.not_constructor_error(constructor.as_object(), true)?,
-                ));
+                return Ok(Completion::Throw(self.new_not_constructor_error(
+                    caller_realm,
+                    &Value::Object(constructor.as_object().clone()),
+                )?));
             }
             if !self.is_constructor(new_target.as_object())? {
-                return Err(RuntimeError::Engine(
-                    self.not_constructor_error(new_target.as_object(), true)?,
-                ));
+                return Ok(Completion::Throw(self.new_not_constructor_error(
+                    caller_realm,
+                    &Value::Object(new_target.as_object().clone()),
+                )?));
             }
 
             match self.bytecode_for_callable(&constructor)? {
@@ -7527,19 +7604,23 @@ impl Runtime {
         realm: ContextId,
         target: &Value,
     ) -> Result<Value, RuntimeError> {
-        let name = if let Value::Object(object) = target {
+        let name = if let Value::Object(object) = target
+            && self.as_callable(object)?.is_some()
+        {
             let name = self.intern_property_key("name")?;
             raw_string_property_one_level(&self.0.state.borrow(), object.object_id(), name.atom())?
-                .map(truncate_backtrace_c_string)
-                .transpose()?
+                .filter(JsString::is_flat)
         } else {
             None
         };
-        let message = name.map_or_else(
-            || "not a constructor".to_owned(),
-            |name| format!("{} is not a constructor", name.to_utf8_lossy()),
-        );
-        self.new_native_error(realm, NativeErrorKind::Type, &message)
+        let mut message = NativeErrorMessage::new();
+        if let Some(name) = name {
+            message.push_js_c_string(&name);
+            message.push_utf8(" is not a constructor");
+        } else {
+            message.push_utf8("not a constructor");
+        }
+        self.new_native_error_from_message(realm, NativeErrorKind::Type, message)
     }
 
     fn call_global_number_parse(
@@ -10833,8 +10914,46 @@ mod tests {
 
     use super::{
         ActiveFrameKind, CallableExecution, DeferredRefOp, DynamicSourceBuilder, EvalOptions,
-        PropertyGetAction, PropertySetAction, Runtime, RuntimeError, ToPrimitiveHint, VarRefRoot,
+        NativeErrorMessage, PropertyGetAction, PropertySetAction, Runtime, RuntimeError,
+        ToPrimitiveHint, VarRefRoot,
     };
+
+    #[test]
+    fn native_error_message_preserves_raw_printf_and_js_new_string_boundaries() {
+        let mut embedded_nul = NativeErrorMessage::new();
+        embedded_nul.push_utf8("P");
+        embedded_nul.push_bytes([0, b'T', b'A', b'I', b'L']);
+        assert_eq!(
+            embedded_nul
+                .into_js_string()
+                .unwrap()
+                .utf16_units()
+                .collect::<Vec<_>>(),
+            [u16::from(b'P')]
+        );
+
+        let mut invalid_run = NativeErrorMessage::new();
+        invalid_run.push_c_string_bytes([0x80, b'A', 0, b'B']);
+        assert_eq!(
+            invalid_run
+                .into_js_string()
+                .unwrap()
+                .utf16_units()
+                .collect::<Vec<_>>(),
+            [0xfffd]
+        );
+
+        let mut surrogate = NativeErrorMessage::new();
+        surrogate.push_c_string_bytes([0xed, 0xa0, 0x80, 0]);
+        assert_eq!(
+            surrogate
+                .into_js_string()
+                .unwrap()
+                .utf16_units()
+                .collect::<Vec<_>>(),
+            [0xd800]
+        );
+    }
 
     #[test]
     fn dynamic_source_builder_latches_utf16_length_failure() {

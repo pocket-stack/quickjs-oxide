@@ -71,6 +71,14 @@ struct Utf16Units {
     remaining: usize,
 }
 
+struct QuickJsUtf8Bytes {
+    units: std::iter::Peekable<Utf16Units>,
+    cesu8: bool,
+    pending: [u8; 4],
+    pending_index: usize,
+    pending_len: usize,
+}
+
 pub(crate) struct JsStringBuilder {
     units: Vec<u16>,
     limit: usize,
@@ -221,6 +229,52 @@ impl ExactSizeIterator for Utf16Units {
 }
 
 impl FusedIterator for Utf16Units {}
+
+impl QuickJsUtf8Bytes {
+    fn new(string: &JsString, cesu8: bool) -> Self {
+        Self {
+            units: Utf16Units::new(string).peekable(),
+            cesu8,
+            pending: [0; 4],
+            pending_index: 0,
+            pending_len: 0,
+        }
+    }
+}
+
+impl Iterator for QuickJsUtf8Bytes {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pending_index < self.pending_len {
+            let byte = self.pending[self.pending_index];
+            self.pending_index += 1;
+            return Some(byte);
+        }
+
+        let unit = self.units.next()?;
+        let code_point = if !self.cesu8
+            && (0xd800..=0xdbff).contains(&unit)
+            && self
+                .units
+                .peek()
+                .is_some_and(|next| (0xdc00..=0xdfff).contains(next))
+        {
+            let low = self
+                .units
+                .next()
+                .expect("peeked low surrogate disappeared from UTF-16 iterator");
+            0x1_0000 + ((u32::from(unit) - 0xd800) << 10) + (u32::from(low) - 0xdc00)
+        } else {
+            u32::from(unit)
+        };
+        self.pending_len = encode_quickjs_utf8(&mut self.pending, code_point);
+        self.pending_index = 1;
+        Some(self.pending[0])
+    }
+}
+
+impl FusedIterator for QuickJsUtf8Bytes {}
 
 impl JsString {
     /// QuickJS reserves 30 bits for a string's UTF-16 code-unit length.
@@ -767,26 +821,13 @@ impl JsString {
         let encoded_len = quickjs_utf8_length(self.utf16_units(), cesu8);
         let mut output = Vec::new();
         output.try_reserve_exact(encoded_len)?;
-
-        let mut units = self.utf16_units().peekable();
-        while let Some(unit) = units.next() {
-            let code_point = if !cesu8
-                && (0xd800..=0xdbff).contains(&unit)
-                && units
-                    .peek()
-                    .is_some_and(|next| (0xdc00..=0xdfff).contains(next))
-            {
-                let low = units
-                    .next()
-                    .expect("peeked low surrogate disappeared from UTF-16 iterator");
-                0x1_0000 + ((u32::from(unit) - 0xd800) << 10) + (u32::from(low) - 0xdc00)
-            } else {
-                u32::from(unit)
-            };
-            push_quickjs_utf8(&mut output, code_point);
-        }
+        output.extend(QuickJsUtf8Bytes::new(self, cesu8));
         debug_assert_eq!(output.len(), encoded_len);
         Ok(output)
+    }
+
+    pub(crate) fn wtf8_bytes(&self) -> impl Iterator<Item = u8> {
+        QuickJsUtf8Bytes::new(self, false)
     }
 
     /// Lossy conversion is suitable for terminal diagnostics. It must not be
@@ -870,23 +911,29 @@ fn quickjs_utf8_length(units: impl Iterator<Item = u16>, cesu8: bool) -> usize {
     length
 }
 
-fn push_quickjs_utf8(output: &mut Vec<u8>, code_point: u32) {
+fn encode_quickjs_utf8(output: &mut [u8; 4], code_point: u32) -> usize {
     match code_point {
-        0x0000..=0x007f => output.push(code_point as u8),
+        0x0000..=0x007f => {
+            output[0] = code_point as u8;
+            1
+        }
         0x0080..=0x07ff => {
-            output.push((0xc0 | (code_point >> 6)) as u8);
-            output.push((0x80 | (code_point & 0x3f)) as u8);
+            output[0] = (0xc0 | (code_point >> 6)) as u8;
+            output[1] = (0x80 | (code_point & 0x3f)) as u8;
+            2
         }
         0x0800..=0xffff => {
-            output.push((0xe0 | (code_point >> 12)) as u8);
-            output.push((0x80 | ((code_point >> 6) & 0x3f)) as u8);
-            output.push((0x80 | (code_point & 0x3f)) as u8);
+            output[0] = (0xe0 | (code_point >> 12)) as u8;
+            output[1] = (0x80 | ((code_point >> 6) & 0x3f)) as u8;
+            output[2] = (0x80 | (code_point & 0x3f)) as u8;
+            3
         }
         0x1_0000..=0x10_ffff => {
-            output.push((0xf0 | (code_point >> 18)) as u8);
-            output.push((0x80 | ((code_point >> 12) & 0x3f)) as u8);
-            output.push((0x80 | ((code_point >> 6) & 0x3f)) as u8);
-            output.push((0x80 | (code_point & 0x3f)) as u8);
+            output[0] = (0xf0 | (code_point >> 18)) as u8;
+            output[1] = (0x80 | ((code_point >> 12) & 0x3f)) as u8;
+            output[2] = (0x80 | ((code_point >> 6) & 0x3f)) as u8;
+            output[3] = (0x80 | (code_point & 0x3f)) as u8;
+            4
         }
         _ => unreachable!("QuickJS byte encoder received an invalid code point"),
     }

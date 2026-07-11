@@ -67,9 +67,12 @@ WTF-8 surrogates, non-BMP pairs, legacy five/six-byte lead handling, and the
 release's unusual invalid-byte replacement/skip rule are preserved. Fallible
 owned-byte exporters implement `JS_ToCStringLen2` payload semantics in both
 WTF-8 and CESU-8 modes, including cross-rope surrogate pairs and interior NUL.
-Context-level observable `ToString`, borrowed C-pointer/refcount ABI, native
-error's fixed 256-byte formatter, and general recoverable allocator failures
-remain unfinished invariants.
+Native Error construction now shares QuickJS's `char[256]` byte boundary:
+the 255-byte payload may split UTF-8 before `JS_NewString` decoding, and the
+implemented not-constructor `%s` path preserves WTF-8, C-string NUL and suffix
+ordering. Context-level observable `ToString`, borrowed C-pointer/refcount
+ABI, the remaining segmented native-error/64-byte atom formatting paths, and
+general recoverable allocator failures remain unfinished invariants.
 `%Number.prototype%` is the pinned boxed-`+0` Number-class object. The global
 `%Number%` publishes the exact ordered 17/7 constructor/prototype surface:
 call/construct and BigInt conversion, parser aliases captured by identity,
@@ -231,6 +234,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_rope -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_byte_codec -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_native_error_format -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_parse_kernel -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
