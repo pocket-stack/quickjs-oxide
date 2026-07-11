@@ -508,14 +508,14 @@ impl RuntimeVmHost {
                         )
                     },
                 );
-                return Err(Error::new(ErrorKind::Type, message));
+                Err(Error::new(ErrorKind::Type, message))
             }
             Value::Object(object) => {
                 let action = self
                     .runtime
                     .prepare_get_property_with_receiver(object, key, base.clone())
                     .map_err(runtime_error_to_vm_error)?;
-                return self.finish_property_get_action(action);
+                self.finish_property_get_action(action)
             }
             Value::Bool(_)
             | Value::Int(_)
@@ -537,41 +537,21 @@ impl RuntimeVmHost {
                     .runtime
                     .prepare_get_property_with_receiver(&prototype, key, base.clone())
                     .map_err(runtime_error_to_vm_error)?;
-                return self.finish_property_get_action(action);
+                self.finish_property_get_action(action)
             }
             Value::String(string) => {
-                let index = self
+                let action = self
                     .runtime
-                    .0
-                    .state
-                    .borrow()
-                    .atoms
-                    .array_index(key.atom())
-                    .map_err(|error| Error::internal(error.to_string()))?;
-                if let Some(index) = index
-                    && let Ok(index) = usize::try_from(index)
-                    && let Some(unit) = string.utf16_units().nth(index)
-                {
-                    return Ok(Completion::Return(Value::String(JsString::from_utf16([
-                        unit,
-                    ]))));
-                }
-                let length = self
-                    .runtime
-                    .intern_property_key("length")
-                    .map_err(|error| Error::internal(error.to_string()))?;
-                if key == &length {
-                    let length = i32::try_from(string.len())
-                        .map(Value::Int)
-                        .unwrap_or_else(|_| Value::number(string.len() as f64));
-                    return Ok(Completion::Return(length));
-                }
+                    .prepare_get_string_property_with_receiver(
+                        self.current_realm,
+                        string,
+                        key,
+                        base.clone(),
+                    )
+                    .map_err(runtime_error_to_vm_error)?;
+                self.finish_property_get_action(action)
             }
         }
-
-        Err(Error::internal(
-            "primitive prototype property lookup is not implemented yet",
-        ))
     }
 
     fn set_property_with_key(
@@ -625,17 +605,18 @@ impl RuntimeVmHost {
                 ));
             }
             Value::String(_) => {
-                if !strict {
-                    return Ok(Completion::Return(Value::Undefined));
-                }
-                let length = self
+                // Primitive String [[Set]] walks the realm's class prototype
+                // with the raw receiver. The virtual character indices are a
+                // boxing/get-own concern, so absent an inherited setter their
+                // strict assignment still reports `not an object`; the real
+                // non-writable prototype `length` reports read-only.
+                let prototype = self
                     .runtime
-                    .intern_property_key("length")
-                    .map_err(|error| Error::internal(error.to_string()))?;
-                if key == &length {
-                    return Err(Error::new(ErrorKind::Type, "'length' is read-only"));
-                }
-                return Err(Error::new(ErrorKind::Type, "not an object"));
+                    .primitive_prototype_for_realm(self.current_realm, PrimitiveKind::String)
+                    .map_err(runtime_error_to_vm_error)?;
+                self.runtime
+                    .prepare_set_property_with_receiver(&prototype, key, value, base.clone())
+                    .map_err(runtime_error_to_vm_error)?
             }
         };
         self.finish_property_set_action(action, key, strict)
@@ -1681,6 +1662,8 @@ impl Runtime {
             &global_object,
         )
         .expect("Boolean intrinsic initialization must succeed");
+        self.initialize_string_conversion_core(realm, &string_prototype)
+            .expect("String conversion-core initialization must succeed");
         self.initialize_symbol_intrinsic(
             realm,
             &function_prototype,
@@ -2474,6 +2457,35 @@ impl Runtime {
             true,
         )?;
         self.define_constructor_relationship(&constructor, boolean_prototype)
+    }
+
+    /// Install the implemented String conversion pair without publishing the
+    /// incomplete global constructor. This is not the prefix of QuickJS's
+    /// 53-key table: these two brand methods are also the observable
+    /// ordinary-ToPrimitive dependency for every generic String prototype
+    /// method. Future String method slices must be initialized in their pinned
+    /// table order before this pair when each fresh context is bootstrapped.
+    fn initialize_string_conversion_core(
+        &self,
+        realm: ContextId,
+        string_prototype: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        self.define_native_builtin_auto_init(
+            string_prototype,
+            realm,
+            NativeFunctionId::PrimitivePrototypeToString(PrimitiveKind::String),
+            "toString",
+            0,
+            0,
+        )?;
+        self.define_native_builtin_auto_init(
+            string_prototype,
+            realm,
+            NativeFunctionId::PrimitivePrototypeValueOf(PrimitiveKind::String),
+            "valueOf",
+            0,
+            0,
+        )
     }
 
     fn initialize_symbol_intrinsic(
@@ -6106,6 +6118,33 @@ impl Runtime {
             .unwrap_or(Completion::Return(Value::Undefined)))
     }
 
+    fn prepare_get_string_property_with_receiver(
+        &self,
+        realm: ContextId,
+        string: &JsString,
+        key: &PropertyKey,
+        receiver: Value,
+    ) -> Result<PropertyGetAction, RuntimeError> {
+        let index = self.0.state.borrow().atoms.array_index(key.atom())?;
+        if let Some(index) = index
+            && let Ok(index) = usize::try_from(index)
+            && let Some(unit) = string.utf16_units().nth(index)
+        {
+            return Ok(PropertyGetAction::Complete(Value::String(
+                JsString::from_utf16([unit]),
+            )));
+        }
+        let length = self.intern_property_key("length")?;
+        if key == &length {
+            let length = i32::try_from(string.len())
+                .map(Value::Int)
+                .unwrap_or_else(|_| Value::number(string.len() as f64));
+            return Ok(PropertyGetAction::Complete(length));
+        }
+        let prototype = self.primitive_prototype_for_realm(realm, PrimitiveKind::String)?;
+        self.prepare_get_property_with_receiver(&prototype, key, receiver)
+    }
+
     fn get_value_property_in_realm(
         &self,
         realm: ContextId,
@@ -6116,6 +6155,12 @@ impl Runtime {
             Value::Object(object) => {
                 self.prepare_get_property_with_receiver(object, key, receiver.clone())?
             }
+            Value::String(string) => self.prepare_get_string_property_with_receiver(
+                realm,
+                string,
+                key,
+                receiver.clone(),
+            )?,
             Value::Bool(_)
             | Value::Int(_)
             | Value::Float(_)
@@ -6131,7 +6176,7 @@ impl Runtime {
                 let prototype = self.primitive_prototype_for_realm(realm, kind)?;
                 self.prepare_get_property_with_receiver(&prototype, key, receiver.clone())?
             }
-            Value::Undefined | Value::Null | Value::String(_) => {
+            Value::Undefined | Value::Null => {
                 return Err(RuntimeError::Engine(Error::internal(
                     "primitive value property lookup is not implemented yet",
                 )));
@@ -6574,8 +6619,8 @@ impl Runtime {
                 | Value::Bool(_)
                 | Value::Int(_)
                 | Value::Float(_)
-                | Value::BigInt(_)
                 | Value::String(_)
+                | Value::BigInt(_)
                 | Value::Symbol(_) => false,
             }
         } else {
@@ -7471,6 +7516,11 @@ impl Runtime {
                     {
                         Some(Ok(Value::number(*value)))
                     }
+                    ObjectPayload::Primitive(PrimitiveObjectData::String(value))
+                        if kind == PrimitiveKind::String =>
+                    {
+                        Some(Ok(Value::String(value.clone())))
+                    }
                     ObjectPayload::Primitive(PrimitiveObjectData::Boolean(value))
                         if kind == PrimitiveKind::Boolean =>
                     {
@@ -7571,6 +7621,9 @@ impl Runtime {
                 Ok(Completion::Return(Value::String(JsString::from(
                     formatted.as_str(),
                 ))))
+            }
+            (PrimitiveKind::String, Value::String(value)) => {
+                Ok(Completion::Return(Value::String(value)))
             }
             (PrimitiveKind::Boolean, Value::Bool(value)) => Ok(Completion::Return(Value::String(
                 JsString::from(if value { "true" } else { "false" }),
@@ -7953,7 +8006,14 @@ impl Runtime {
                     NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
                 }
             }
-            Value::String(_) => JsString::from("String"),
+            value @ Value::String(_) => {
+                let prototype = self.primitive_prototype_for_realm(realm, PrimitiveKind::String)?;
+                let object = self.new_primitive_object(&prototype, PrimitiveKind::String, value)?;
+                match self.object_to_string_tag(realm, &object)? {
+                    NativeConversion::Value(tag) => tag,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                }
+            }
             Value::Object(object) => match self.object_to_string_tag(realm, &object)? {
                 NativeConversion::Value(tag) => tag,
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -7981,6 +8041,7 @@ impl Runtime {
                 | Value::Bool(_)
                 | Value::Int(_)
                 | Value::Float(_)
+                | Value::String(_)
                 | Value::BigInt(_)
                 | Value::Symbol(_)
         ) {
@@ -8041,6 +8102,12 @@ impl Runtime {
                     self.new_primitive_object(&prototype, PrimitiveKind::Number, value)?,
                 )))
             }
+            value @ Value::String(_) => {
+                let prototype = self.primitive_prototype_for_realm(realm, PrimitiveKind::String)?;
+                Ok(Completion::Return(Value::Object(
+                    self.new_primitive_object(&prototype, PrimitiveKind::String, value)?,
+                )))
+            }
             value @ Value::BigInt(_) => {
                 let prototype = self.primitive_prototype_for_realm(realm, PrimitiveKind::BigInt)?;
                 Ok(Completion::Return(Value::Object(
@@ -8053,9 +8120,6 @@ impl Runtime {
                     self.new_primitive_object(&prototype, PrimitiveKind::Symbol, value)?,
                 )))
             }
-            Value::String(_) => Err(RuntimeError::Engine(Error::internal(
-                "primitive wrapper objects are not implemented",
-            ))),
         }
     }
 
@@ -10046,6 +10110,12 @@ impl Context {
             .primitive_prototype_for_realm(self.realm, PrimitiveKind::Boolean)
     }
 
+    /// Return this realm's branded-empty String conversion-core prototype.
+    pub fn string_prototype(&self) -> Result<ObjectRef, RuntimeError> {
+        self.runtime
+            .primitive_prototype_for_realm(self.realm, PrimitiveKind::String)
+    }
+
     /// Return this realm's ordinary `%Symbol.prototype%` root.
     pub fn symbol_prototype(&self) -> Result<ObjectRef, RuntimeError> {
         self.runtime
@@ -10425,7 +10495,7 @@ mod tests {
 
     use super::{
         ActiveFrameKind, CallableExecution, DeferredRefOp, EvalOptions, PropertyGetAction,
-        PropertySetAction, Runtime, RuntimeError, VarRefRoot,
+        PropertySetAction, Runtime, RuntimeError, ToPrimitiveHint, VarRefRoot,
     };
 
     fn data_descriptor(
@@ -10914,7 +10984,11 @@ mod tests {
                 .payload,
             ObjectPayload::Primitive(PrimitiveObjectData::String(value)) if value.is_empty()
         ));
-        assert_eq!(own_key_names(&runtime, &string_prototype), ["length"]);
+        assert_eq!(
+            own_key_names(&runtime, &string_prototype),
+            ["length", "toString", "valueOf"],
+            "implemented-key filtered order, not the complete String prototype table"
+        );
         let length_key = runtime.intern_property_key("length").unwrap();
         assert_eq!(
             runtime
@@ -11084,6 +11158,217 @@ mod tests {
             own_key_names(&runtime, &escaped),
             ["0", "1", "2", "3", "length"]
         );
+    }
+
+    #[test]
+    fn string_conversion_core_brand_lookup_object_routes_and_overrides_match_quickjs_slice() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let prototype = context.string_prototype().unwrap();
+        let object_prototype = context.object_prototype().unwrap();
+        let to_string = property_callable(&runtime, &mut context, &prototype, "toString");
+        let value_of = property_callable(&runtime, &mut context, &prototype, "valueOf");
+
+        assert_eq!(
+            own_key_names(&runtime, &prototype),
+            ["length", "toString", "valueOf"],
+            "implemented-key filtered order, not the complete String prototype table"
+        );
+        for name in ["toString", "valueOf"] {
+            let key = runtime.intern_property_key(name).unwrap();
+            assert!(matches!(
+                runtime.get_own_property(&prototype, &key).unwrap(),
+                Some(CompleteOrdinaryPropertyDescriptor::Data {
+                    value: Value::Object(_),
+                    writable: true,
+                    enumerable: false,
+                    configurable: true,
+                })
+            ));
+        }
+
+        let payload = JsString::from_utf16([0x41, 0xd800, 0x42]);
+        let wrapper = runtime
+            .new_string_object(&prototype, payload.clone(), false)
+            .unwrap();
+        for method in [&to_string, &value_of] {
+            assert_eq!(
+                context
+                    .call(method, Value::String(payload.clone()), &[Value::Int(99)])
+                    .unwrap(),
+                Value::String(payload.clone())
+            );
+            assert_eq!(
+                context
+                    .call(method, Value::Object(wrapper.clone()), &[])
+                    .unwrap(),
+                Value::String(payload.clone())
+            );
+            assert_eq!(
+                context
+                    .call(method, Value::Object(prototype.clone()), &[])
+                    .unwrap(),
+                Value::String(JsString::from(""))
+            );
+        }
+
+        let spoof = runtime.new_object(Some(&prototype)).unwrap();
+        assert_eq!(
+            context.call(&to_string, Value::Object(spoof), &[]),
+            Err(RuntimeError::Exception)
+        );
+        let Some(Value::Object(error)) = context.take_exception().unwrap() else {
+            panic!("String brand failure did not publish an Error object");
+        };
+        let message = runtime.intern_property_key("message").unwrap();
+        assert_eq!(
+            context.get_property(&error, &message).unwrap(),
+            Value::String(JsString::from("not a string"))
+        );
+
+        assert!(
+            runtime
+                .set_prototype_of(&wrapper, Some(&object_prototype))
+                .unwrap()
+        );
+        assert_eq!(
+            context
+                .call(&value_of, Value::Object(wrapper.clone()), &[])
+                .unwrap(),
+            Value::String(payload.clone())
+        );
+
+        let conversion_wrapper = runtime
+            .new_string_object(&prototype, payload.clone(), false)
+            .unwrap();
+        let override_to_string =
+            eval_callable(&runtime, &mut context, "(function(){ return 'override'; })");
+        let to_string_key = runtime.intern_property_key("toString").unwrap();
+        assert!(
+            runtime
+                .define_own_property(
+                    &conversion_wrapper,
+                    &to_string_key,
+                    &OrdinaryPropertyDescriptor {
+                        value: DescriptorField::Present(Value::Object(
+                            override_to_string.as_object().clone(),
+                        )),
+                        writable: DescriptorField::Present(true),
+                        enumerable: DescriptorField::Present(false),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            runtime
+                .to_primitive(
+                    context.realm,
+                    Value::Object(conversion_wrapper.clone()),
+                    ToPrimitiveHint::String,
+                )
+                .unwrap(),
+            Completion::Return(Value::String(JsString::from("override")))
+        );
+        assert_eq!(
+            context
+                .call(&to_string, Value::Object(conversion_wrapper), &[])
+                .unwrap(),
+            Value::String(payload.clone()),
+            "saved brand method must ignore ordinary conversion overrides"
+        );
+
+        assert_eq!(
+            context.eval("'source'.toString()").unwrap(),
+            Value::String(JsString::from("source"))
+        );
+        assert_eq!(
+            context.eval("'source'.valueOf()").unwrap(),
+            Value::String(JsString::from("source"))
+        );
+
+        let object_to_string =
+            property_callable(&runtime, &mut context, &object_prototype, "toString");
+        let object_to_locale_string =
+            property_callable(&runtime, &mut context, &object_prototype, "toLocaleString");
+        let object_value_of =
+            property_callable(&runtime, &mut context, &object_prototype, "valueOf");
+        assert_eq!(
+            context
+                .call(&object_to_string, Value::String(payload.clone()), &[])
+                .unwrap(),
+            Value::String(JsString::from("[object String]"))
+        );
+        assert_eq!(
+            context
+                .call(
+                    &object_to_locale_string,
+                    Value::String(payload.clone()),
+                    &[],
+                )
+                .unwrap(),
+            Value::String(payload.clone())
+        );
+        let Value::Object(first_box) = context
+            .call(&object_value_of, Value::String(payload.clone()), &[])
+            .unwrap()
+        else {
+            panic!("Object.prototype.valueOf did not box String");
+        };
+        let Value::Object(second_box) = context
+            .call(&object_value_of, Value::String(payload), &[])
+            .unwrap()
+        else {
+            panic!("Object.prototype.valueOf did not box String");
+        };
+        assert_ne!(first_box, second_box);
+        assert_eq!(
+            runtime.get_prototype_of(&first_box).unwrap(),
+            Some(prototype.clone())
+        );
+
+        let tag = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::ToStringTag));
+        assert!(
+            runtime
+                .define_own_property(
+                    &prototype,
+                    &tag,
+                    &OrdinaryPropertyDescriptor {
+                        value: DescriptorField::Present(Value::String(JsString::from("Custom"))),
+                        writable: DescriptorField::Present(true),
+                        enumerable: DescriptorField::Present(false),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context
+                .call(&object_to_string, Value::String(JsString::from("x")), &[])
+                .unwrap(),
+            Value::String(JsString::from("[object Custom]"))
+        );
+        assert!(
+            runtime
+                .define_own_property(
+                    &prototype,
+                    &tag,
+                    &OrdinaryPropertyDescriptor {
+                        value: DescriptorField::Present(Value::Int(1)),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context
+                .call(&object_to_string, Value::String(JsString::from("x")), &[])
+                .unwrap(),
+            Value::String(JsString::from("[object String]"))
+        );
+        assert!(runtime.delete_property(&prototype, &tag).unwrap());
     }
 
     #[test]
