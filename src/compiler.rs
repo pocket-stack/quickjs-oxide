@@ -1504,7 +1504,7 @@ impl<'source> Parser<'source> {
             let TokenKind::Identifier(identifier) = token.kind else {
                 return Err(self.syntax_here("expecting target"));
             };
-            if identifier.value != "target" {
+            if identifier.value != "target" || identifier.has_escape {
                 return Err(self.syntax_here("expecting target"));
             }
             if matches!(self.current_ir().kind, FunctionKind::Script) {
@@ -5474,6 +5474,15 @@ mod tests {
         let error = compile_unlinked_script("new.target").unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Syntax);
         assert_eq!(error.message(), "new.target only allowed within functions");
+
+        for source in [
+            r"(function(){ return new.\u0074arget; })()",
+            r"(function(){ return new.t\u0061rget; })()",
+        ] {
+            let error = compile_unlinked_script(source).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Syntax);
+            assert_eq!(error.message(), "expecting target");
+        }
     }
 
     #[test]

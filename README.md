@@ -60,9 +60,17 @@ linearizes by UTF-16 content. Public valid-UTF-8 and exact-UTF-16 dynamic
 construction now enforce the same limit through fallible APIs; hostile
 iterator hints cannot trigger an enormous eager reserve. A shared latched
 UTF-16 builder covers backtraces and Annex-B escaping, while lexer String,
-template and ASCII-identifier buffers, dynamic Function source assembly, and
-URI expansion use checked length paths with their distinct QuickJS error
-ordering. The byte boundary now reproduces `JS_NewStringLen`: embedded NUL,
+template and identifier buffers, dynamic Function source assembly, and URI
+expansion use checked length paths with their distinct QuickJS error ordering.
+Identifier scanning consumes the checksum-pinned QuickJS Unicode 17 compressed
+`ID_Start`/`ID_Continue` tables plus the ECMAScript ASCII and join-control
+rules. Direct and valid escaped BMP/astral spellings share the same binding,
+retain their source spans, avoid normalization, and count the 30-bit buffer cap
+in UTF-16 code units. Exhaustive scalar classification and compiler/VM
+differentials are pinned to the official release. Parser-first diagnostic
+priority for malformed identifier escapes remains pending while compilation
+still tokenizes the complete input eagerly. The byte boundary now reproduces
+`JS_NewStringLen`: embedded NUL,
 WTF-8 surrogates, non-BMP pairs, legacy five/six-byte lead handling, and the
 release's unusual invalid-byte replacement/skip rule are preserved. Fallible
 owned-byte exporters implement `JS_ToCStringLen2` payload semantics in both
@@ -250,6 +258,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_native_error_atom_format -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_unicode_identifiers -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_parse_kernel -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_number_parsers -- --nocapture
@@ -295,13 +305,14 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_member_writes -- --nocapture
 ```
 
-The 32 commands above are direct entry points for a curated evidence set. The
-full gate below currently discovers all 40 `tests/oracle_*.rs` integration
+The 33 commands above are direct entry points for a curated evidence set. The
+full gate below currently discovers all 41 `tests/oracle_*.rs` integration
 targets through Cargo's `--all-targets` run, including suites not repeated in
 this list.
 
 Or run the complete current gate—including checksum-verified oracle setup,
-formatting, tests, Clippy, and the Rust-only dependency audit—with one command:
+regenerated-Unicode-table drift detection, formatting, tests, Clippy, and the
+Rust-only dependency audit—with one command:
 
 ```sh
 ./scripts/test-parity-slice.sh

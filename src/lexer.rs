@@ -14,10 +14,9 @@
 //! prevents valid division, regular-expression, and template source from being
 //! silently assigned the wrong meaning before a parser exists.
 //!
-//! Staged limitation: Unicode ID_Start and ID_Continue tables are not present
-//! yet. Non-ASCII identifier input therefore returns
-//! LexErrorKind::UnsupportedUnicodeIdentifier instead of being split,
-//! replaced, or accepted with incomplete rules.
+//! Identifier classification uses the checksum-pinned QuickJS Unicode 17
+//! `ID_Start`/`ID_Continue` tables rather than the host or Rust toolchain's
+//! Unicode version.
 
 use std::fmt;
 use std::iter::FusedIterator;
@@ -502,7 +501,6 @@ pub enum LexErrorKind {
     UnterminatedTemplate,
     InvalidEscape,
     InvalidNumber,
-    UnsupportedUnicodeIdentifier,
     InvalidPrivateIdentifier,
     UnterminatedRegExp,
     LineTerminatorInRegExp,
@@ -641,11 +639,8 @@ impl<'a> Lexer<'a> {
             '.' if self.peek_nth_char(1).is_some_and(|c| c.is_ascii_digit()) => {
                 self.scan_number(true)?
             }
-            c if is_ascii_identifier_start(c) || c == '\\' => self.scan_identifier(false)?,
+            c if is_identifier_start(c) || c == '\\' => self.scan_identifier(false)?,
             '#' => self.scan_identifier(true)?,
-            c if !c.is_ascii() => {
-                return Err(self.unsupported_unicode_identifier(c));
-            }
             _ => TokenKind::Punctuator(self.scan_punctuator()?),
         };
 
@@ -737,16 +732,6 @@ impl<'a> Lexer<'a> {
 
     fn string_too_long(&self, start: Position) -> LexError {
         self.error_from(start, LexErrorKind::StringTooLong, "string too long")
-    }
-
-    fn unsupported_unicode_identifier(&self, ch: char) -> LexError {
-        self.error_here(
-            LexErrorKind::UnsupportedUnicodeIdentifier,
-            format!(
-                "non-ASCII identifier character U+{:04X} is not supported yet",
-                ch as u32
-            ),
-        )
     }
 
     fn skip_trivia(&mut self) -> Result<bool, LexError> {
@@ -841,6 +826,10 @@ impl<'a> Lexer<'a> {
         }
 
         let mut value = String::new();
+        // QuickJS interns private names with their leading `#`, so that code
+        // unit participates in the same 30-bit atom/StringBuffer limit even
+        // though the public identifier value excludes it.
+        let mut value_utf16_len = usize::from(private);
         let mut has_escape = false;
         let mut first = true;
 
@@ -857,36 +846,64 @@ impl<'a> Lexer<'a> {
             };
 
             if ch == '\\' {
-                let escape_start = self.current_position();
-                let decoded = self.scan_identifier_escape()?;
-                let valid = if first {
-                    is_ascii_identifier_start(decoded)
-                } else {
-                    is_ascii_identifier_continue(decoded)
-                };
-                if !decoded.is_ascii() {
-                    return Err(self.error_from(
-                        escape_start,
-                        LexErrorKind::UnsupportedUnicodeIdentifier,
-                        format!(
-                            "identifier escape resolves to unsupported U+{:04X}",
-                            decoded as u32
-                        ),
-                    ));
+                let checkpoint = (self.offset, self.line, self.column);
+                let attempted_unicode_escape = self.starts_with("\\u");
+                if !first && attempted_unicode_escape {
+                    // QuickJS records an attempted tail `\\u` before it knows
+                    // whether the escape decodes to IdentifierContinue. The
+                    // cursor/value still roll back on failure, but this flag
+                    // keeps an existing reserved spelling on the escaped-word
+                    // parser path.
+                    has_escape = true;
                 }
+                let decoded = match self.scan_identifier_escape() {
+                    Ok(decoded) => decoded,
+                    Err(error) if first && !private => return Err(error),
+                    Err(_) if first => {
+                        (self.offset, self.line, self.column) = checkpoint;
+                        return Err(self.error_from(
+                            start,
+                            LexErrorKind::InvalidPrivateIdentifier,
+                            "invalid first character of private name",
+                        ));
+                    }
+                    Err(_) => {
+                        (self.offset, self.line, self.column) = checkpoint;
+                        break;
+                    }
+                };
+                let valid = if first {
+                    is_identifier_start_code_point(decoded)
+                } else {
+                    is_identifier_continue_code_point(decoded)
+                };
                 if !valid {
+                    (self.offset, self.line, self.column) = checkpoint;
+                    if !first {
+                        break;
+                    }
                     return Err(self.error_from(
-                        escape_start,
-                        if private && first {
+                        start,
+                        if private {
                             LexErrorKind::InvalidPrivateIdentifier
                         } else {
                             LexErrorKind::UnexpectedCharacter
                         },
-                        "Unicode escape is not valid at this identifier position",
+                        if private {
+                            "invalid first character of private name"
+                        } else {
+                            "Unicode escape is not valid at this identifier position"
+                        },
                     ));
                 }
-                RuntimeJsString::checked_length_with_limit(value.len(), 1, self.string_limit)
-                    .map_err(|_| self.string_too_long(start))?;
+                let decoded =
+                    char::from_u32(decoded).expect("ID_Start/ID_Continue excluded a surrogate");
+                value_utf16_len = RuntimeJsString::checked_length_with_limit(
+                    value_utf16_len,
+                    decoded.len_utf16(),
+                    self.string_limit,
+                )
+                .map_err(|_| self.string_too_long(start))?;
                 value.push(decoded);
                 has_escape = true;
                 first = false;
@@ -894,14 +911,18 @@ impl<'a> Lexer<'a> {
             }
 
             let valid = if first {
-                is_ascii_identifier_start(ch)
+                is_identifier_start(ch)
             } else {
-                is_ascii_identifier_continue(ch)
+                is_identifier_continue(ch)
             };
             if valid {
                 self.bump_char();
-                RuntimeJsString::checked_length_with_limit(value.len(), 1, self.string_limit)
-                    .map_err(|_| self.string_too_long(start))?;
+                value_utf16_len = RuntimeJsString::checked_length_with_limit(
+                    value_utf16_len,
+                    ch.len_utf16(),
+                    self.string_limit,
+                )
+                .map_err(|_| self.string_too_long(start))?;
                 value.push(ch);
                 first = false;
                 continue;
@@ -913,9 +934,6 @@ impl<'a> Lexer<'a> {
             // LineTerminator flag used by postfix updates.
             if !first && (is_line_terminator(ch) || is_js_whitespace(ch)) {
                 break;
-            }
-            if !ch.is_ascii() {
-                return Err(self.unsupported_unicode_identifier(ch));
             }
             if first {
                 return Err(self.error_from(
@@ -959,7 +977,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn scan_identifier_escape(&mut self) -> Result<char, LexError> {
+    fn scan_identifier_escape(&mut self) -> Result<u32, LexError> {
         let start = self.current_position();
         self.bump_char();
         if self.peek_char() != Some('u') {
@@ -970,14 +988,7 @@ impl<'a> Lexer<'a> {
             ));
         }
         self.bump_char();
-        let value = self.scan_unicode_escape_value(start)?;
-        char::from_u32(value).ok_or_else(|| {
-            self.error_from(
-                start,
-                LexErrorKind::InvalidEscape,
-                "identifier escape is not a Unicode scalar value",
-            )
-        })
+        self.scan_unicode_escape_value(start)
     }
 
     fn keyword_is_active(&self, keyword: Keyword) -> bool {
@@ -1195,7 +1206,7 @@ impl<'a> Lexer<'a> {
         if is_line_terminator(ch) || is_js_whitespace(ch) {
             return Ok(());
         }
-        if is_ascii_identifier_continue(ch) || ch == '\\' || !ch.is_ascii() {
+        if is_identifier_continue(ch) {
             self.bump_char();
             return Err(self.error_from(
                 start,
@@ -1372,16 +1383,12 @@ impl<'a> Lexer<'a> {
                 let Some(digit) = ch.to_digit(16) else {
                     break;
                 };
-                if digits == 6 {
-                    self.bump_char();
-                    return Err(self.error_from(
-                        start,
-                        LexErrorKind::InvalidEscape,
-                        "Unicode code point escape has more than six hex digits",
-                    ));
-                }
                 self.bump_char();
-                value = (value << 4) | digit;
+                value = value
+                    .checked_mul(16)
+                    .and_then(|value| value.checked_add(digit))
+                    .filter(|value| *value <= 0x10ffff)
+                    .unwrap_or(0x110000);
                 digits += 1;
             }
             if digits == 0 || self.peek_char() != Some('}') {
@@ -1602,10 +1609,8 @@ impl<'a> Lexer<'a> {
 
         let flags_start = self.offset;
         while let Some(ch) = self.peek_char() {
-            if is_ascii_identifier_continue(ch) {
+            if is_identifier_continue(ch) {
                 self.bump_char();
-            } else if !ch.is_ascii() {
-                return Err(self.unsupported_unicode_identifier(ch));
             } else {
                 break;
             }
@@ -1777,6 +1782,30 @@ fn is_ascii_identifier_continue(ch: char) -> bool {
     is_ascii_identifier_start(ch) || ch.is_ascii_digit()
 }
 
+fn is_identifier_start(ch: char) -> bool {
+    is_identifier_start_code_point(ch as u32)
+}
+
+fn is_identifier_continue(ch: char) -> bool {
+    is_identifier_continue_code_point(ch as u32)
+}
+
+fn is_identifier_start_code_point(code_point: u32) -> bool {
+    if code_point < 0x80 {
+        char::from_u32(code_point).is_some_and(is_ascii_identifier_start)
+    } else {
+        crate::unicode::is_id_start(code_point)
+    }
+}
+
+fn is_identifier_continue_code_point(code_point: u32) -> bool {
+    if code_point < 0x80 {
+        char::from_u32(code_point).is_some_and(is_ascii_identifier_continue)
+    } else {
+        matches!(code_point, 0x200c | 0x200d) || crate::unicode::is_id_continue(code_point)
+    }
+}
+
 fn radix_value(radix: NumericRadix) -> u32 {
     match radix {
         NumericRadix::Binary => 2,
@@ -1939,18 +1968,79 @@ mod tests {
             }
             other => panic!("expected identifier, got {other:?}"),
         }
+
+        for source in [r"if\u{}", r"if\u{2d}"] {
+            let token = Lexer::new(source).next_token().unwrap();
+            let TokenKind::Identifier(identifier) = token.kind else {
+                panic!("expected attempted Unicode escape to retain identifier form");
+            };
+            assert_eq!(identifier.raw, "if");
+            assert!(identifier.has_escape);
+            assert!(identifier.escaped_reserved_word);
+        }
+        assert!(matches!(
+            Lexer::new(r"if\x61").next_token().unwrap().kind,
+            TokenKind::Keyword(Keyword::If)
+        ));
     }
 
     #[test]
-    fn rejects_non_ascii_identifier_without_panicking() {
-        let error = Lexer::new("π = 1").next_token().unwrap_err();
-        assert_eq!(error.kind, LexErrorKind::UnsupportedUnicodeIdentifier);
-        assert_eq!(error.span.start, Position::new(0, 1, 1));
-        assert!(error.to_string().contains("U+03C0"));
+    fn unicode_identifiers_use_pinned_start_continue_and_escape_rules() {
+        let source = "π变量𐐀a\u{0300}\u{200c}\u{200d}";
+        let token = Lexer::new(source).next_token().unwrap();
+        let TokenKind::Identifier(identifier) = token.kind else {
+            panic!("expected a Unicode identifier");
+        };
+        assert_eq!(identifier.raw, source);
+        assert_eq!(identifier.value, source);
+        assert!(!identifier.has_escape);
+        assert_eq!(
+            token.span,
+            Span::new(Position::new(0, 1, 1), Position::new(21, 1, 9))
+        );
 
-        let error = Lexer::new("asciiπ").next_token().unwrap_err();
-        assert_eq!(error.kind, LexErrorKind::UnsupportedUnicodeIdentifier);
-        assert_eq!(error.span.start.byte_offset, 5);
+        let escaped = Lexer::new(r"\u03c0\u{10400}a\u0300").next_token().unwrap();
+        let TokenKind::Identifier(identifier) = escaped.kind else {
+            panic!("expected an escaped Unicode identifier");
+        };
+        assert_eq!(identifier.value, "π𐐀a\u{0300}");
+        assert!(identifier.has_escape);
+
+        let leading_zero_escape = Lexer::new(r"\u{0000000000010400}").next_token().unwrap();
+        let TokenKind::Identifier(identifier) = leading_zero_escape.kind else {
+            panic!("expected a leading-zero Unicode escape identifier");
+        };
+        assert_eq!(identifier.value, "𐐀");
+
+        let mut escaped_invalid_tail = Lexer::new(r"a\u{2d}");
+        let TokenKind::Identifier(identifier) = escaped_invalid_tail.next_token().unwrap().kind
+        else {
+            panic!("expected the valid identifier prefix");
+        };
+        assert_eq!(identifier.value, "a");
+        assert!(identifier.has_escape);
+        assert_eq!(
+            escaped_invalid_tail.next_token().unwrap_err().kind,
+            LexErrorKind::UnexpectedCharacter
+        );
+
+        assert_eq!(
+            Lexer::new("😀").next_token().unwrap_err().kind,
+            LexErrorKind::UnexpectedCharacter
+        );
+        assert_eq!(
+            Lexer::new(r"\u0300").next_token().unwrap_err().kind,
+            LexErrorKind::UnexpectedCharacter
+        );
+        let mut invalid_tail = Lexer::new("ascii😀");
+        assert!(matches!(
+            invalid_tail.next_token().unwrap().kind,
+            TokenKind::Identifier(_)
+        ));
+        assert_eq!(
+            invalid_tail.next_token().unwrap_err().kind,
+            LexErrorKind::UnexpectedCharacter
+        );
     }
 
     #[test]
@@ -1968,6 +2058,16 @@ mod tests {
             Lexer::new("#1").next_token().unwrap_err().kind,
             LexErrorKind::InvalidPrivateIdentifier
         );
+        for source in [r"#\u{}", r"#\u{2d}", r"#\u{d800}"] {
+            let error = Lexer::new(source).next_token().unwrap_err();
+            assert_eq!(error.kind, LexErrorKind::InvalidPrivateIdentifier);
+            assert_eq!(error.span.start, Position::new(0, 1, 1));
+        }
+        let token = Lexer::new("#π\u{0300}").next_token().unwrap();
+        let TokenKind::PrivateIdentifier(identifier) = token.kind else {
+            panic!("expected a Unicode private identifier");
+        };
+        assert_eq!(identifier.value, "π\u{0300}");
     }
 
     #[test]
@@ -2012,6 +2112,8 @@ mod tests {
             "08.1_2",
             "08e1_2",
             "10instanceof",
+            "1π",
+            "1\u{0300}",
         ] {
             let error = Lexer::new(source).next_token().unwrap_err();
             assert_eq!(
@@ -2035,6 +2137,17 @@ mod tests {
                 .kind,
             LexErrorKind::InvalidNumber
         );
+
+        let mut escaped_identifier = Lexer::new(r"1\u0061");
+        assert!(matches!(
+            escaped_identifier.next_token().unwrap().kind,
+            TokenKind::Number(_)
+        ));
+        let TokenKind::Identifier(identifier) = escaped_identifier.next_token().unwrap().kind
+        else {
+            panic!("expected escaped identifier after the number");
+        };
+        assert_eq!(identifier.value, "a");
     }
 
     #[test]
@@ -2133,6 +2246,15 @@ mod tests {
             other => panic!("expected regular expression, got {other:?}"),
         }
 
+        let mut unicode_flags = Lexer::new("/x/π\u{0300}\u{200c}");
+        let token = unicode_flags
+            .next_token_with_goal(LexicalGoal::RegExp)
+            .unwrap();
+        let TokenKind::RegExp(literal) = token.kind else {
+            panic!("expected regular expression with Unicode flags");
+        };
+        assert_eq!(literal.flags, "π\u{0300}\u{200c}");
+
         assert_eq!(
             Lexer::new("value")
                 .next_token_with_goal(LexicalGoal::RegExp)
@@ -2225,7 +2347,14 @@ mod tests {
         };
         assert_eq!(value.value.utf16, [0x61, 0x62, 0x63]);
 
-        for source in ["'abc'", "'😀'", "'\\u{1F600}'", "identifier"] {
+        for source in [
+            "'abc'",
+            "'😀'",
+            "'\\u{1F600}'",
+            "identifier",
+            "𐐀",
+            r"\u{10400}",
+        ] {
             let limit = if source == "'abc'" { 2 } else { 1 };
             let error = Lexer::new(source)
                 .with_string_limit(limit)
@@ -2236,6 +2365,22 @@ mod tests {
         }
 
         assert!(Lexer::new("'😀'").with_string_limit(2).next_token().is_ok());
+        assert_eq!(
+            Lexer::new("#a")
+                .with_string_limit(1)
+                .next_token()
+                .unwrap_err()
+                .kind,
+            LexErrorKind::StringTooLong
+        );
+        assert!(Lexer::new("#a").with_string_limit(2).next_token().is_ok());
+        assert!(Lexer::new("𐐀").with_string_limit(2).next_token().is_ok());
+        assert!(
+            Lexer::new(r"\u{10400}")
+                .with_string_limit(2)
+                .next_token()
+                .is_ok()
+        );
         assert!(
             Lexer::new("'\\u{1F600}'")
                 .with_string_limit(2)

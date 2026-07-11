@@ -11,8 +11,14 @@ claim full parity.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
-  matching. Unicode identifiers still fail explicitly rather than being
-  accepted incorrectly.
+  matching. Identifier classification ports QuickJS's checksum-pinned Unicode
+  17 compressed `ID_Start`/`ID_Continue` tables, including direct and valid
+  escaped BMP/astral spellings, ECMAScript `$`/`_` and ZWNJ/ZWJ additions,
+  non-normalization, private names, and UTF-16 buffer accounting. Every scalar
+  is checked against the official release and execution tests cross the real
+  compiler, resolver, atom and VM path. Malformed-escape token commitment and
+  parser-first diagnostic priority remain pending because the current compiler
+  still tokenizes the complete source before parsing.
 - Runtime-local atoms preserve exact UTF-16 spellings, cover immediate integer
   atoms, string/global-symbol interning, unique/private/well-known symbols, and
   explicit retain/release. Safe handles carry a runtime domain and slot
@@ -232,8 +238,8 @@ claim full parity.
   key. Public valid-UTF-8 and exact-UTF-16 constructors are fallible, reject
   `(1 << 30)` code units before unbounded reserve, and ignore hostile upper
   iterator hints. The shared latched UTF-16 builder is used by backtrace and
-  Annex-B escape output; lexer String/template/ASCII-identifier buffers,
-  dynamic Function source assembly, and URI output all apply the same checked
+  Annex-B escape output; lexer String/template/identifier buffers, dynamic
+  Function source assembly, and URI output all apply the same checked
   arithmetic. Lexer overflow stops immediately as an `InternalError` with
   message `string too long`, whereas URI validation continues and a later
   `URIError` overrides an earlier output overflow, matching the pinned native
@@ -673,8 +679,9 @@ methods and uncatchable termination state are also pending. Arrays, iterators,
 RegExp, Unicode-backed String methods, remaining object-literal forms and the
 rest of the builtin table build on those layers.
 
-The remaining parity surface also includes the full grammar/opcode set,
-Unicode 17 tables, RegExp bytecode engine, modules, jobs/Promises/async,
+The remaining parity surface also includes the full grammar/opcode set, the
+Unicode 17 case/normalization/script/property tables beyond the implemented
+identifier properties, RegExp bytecode engine, modules, jobs/Promises/async,
 generators, TypedArrays/Atomics, WeakRef/finalization, bytecode version 5 and
 BJSON interoperability, `std`/`os`, workers, REPL/qjsc, and the complete Rust
 and C embedding APIs.
@@ -701,6 +708,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_native_error_atom_format -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_unicode_identifiers -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_parse_kernel -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_number_parsers -- --nocapture
@@ -722,12 +731,15 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-parity-slice.sh
 ```
 
-The eighteen direct commands above run the dedicated Boolean, Symbol,
+The nineteen direct commands above run the dedicated Boolean, Symbol,
 String-exotic substrate, String UTF-16 prefix, String-conversion core,
-String-rope/byte/native-Error kernels, global BaseObjects, complete Number-
-intrinsic and BigInt-intrinsic differentials. The atom-Error target contains
-thirteen pinned-oracle inputs in addition to its Rust-side expectation test. The
-full gate currently discovers all 40 `tests/oracle_*.rs` integration targets,
+String-rope/byte/native-Error kernels, Unicode identifier core, global
+BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials. The
+atom-Error target contains thirteen pinned-oracle inputs in addition to its
+Rust-side expectation test. The Unicode target checks every scalar plus real
+compiler/runtime cases. The full gate currently discovers all 41
+`tests/oracle_*.rs` integration targets,
 checksum-verifies and builds the official test-only oracle, then runs
-formatting, unit/integration/oracle tests, Clippy, and the Rust-only product
-gate. The oracle is never part of the product dependency graph or runtime.
+the generated-Unicode-table drift check, formatting, unit/integration/oracle
+tests, Clippy, and the Rust-only product gate. The oracle is never part of the
+product dependency graph or runtime.
