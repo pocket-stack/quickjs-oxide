@@ -39,6 +39,7 @@ claim full parity.
   recursive block statements, `if`/`else` (including nearest-`if` binding),
   `while`/`do-while`, classic `for (;;)` and labeled statements with named and
   unnamed `break`/`continue`,
+  relational `in`/`instanceof`,
   simple/arithmetic/exponentiation/shift/bitwise/logical identifier assignment,
   prefix/postfix identifier and member updates, direct calls,
   transitive parameter/local and private function-name capture through
@@ -70,8 +71,8 @@ claim full parity.
   consuming the second label, and the pinned release's outer-wrapper behavior
   for multiple labels is retained. Labels and jumps emit no synthetic source
   marker. `for-in`/`for-of`/`for-await`, switch, try/catch/finally, lexical
-  declarations, the `in` operator itself, global `var` and function
-  declarations remain separate grammar/runtime slices. The classic head
+  declarations, global `var` and function declarations remain separate
+  grammar/runtime slices. The classic head
   already ports QuickJS's
   sloppy `is_let(..., DECL_MASK_OTHER)` ambiguity to that explicit lexical
   boundary; declaration masks for loop/branch single-statement bodies remain
@@ -256,6 +257,23 @@ claim full parity.
   order and uses `StringToBigInt` rather than Number rounding for BigInt/String pairs.
   Addition and abstract equality use the distinct default hint, preserve
   arbitrary thrown values, and keep QuickJS's observable conversion order.
+  `in` and `instanceof` occupy the same relational level through dedicated
+  `(2 -> 1)` bytecode. `in` validates its RHS Object before converting the LHS
+  with the String `ToPropertyKey` hint, then tests ordinary own and prototype
+  presence without materializing autoinit properties or invoking accessors.
+  Its runtime entry returns a Completion so the later Proxy/exotic `has` path
+  can preserve trap throws without changing the opcode. `instanceof` performs
+  the full `JS_IsInstanceOf` sequence: RHS Object validation, observable
+  `@@hasInstance` lookup, callable method invocation and ToBoolean, followed by
+  the callable OrdinaryHasInstance fallback only for a nullish method. The
+  existing standard native method supplies its defining-realm frame, while
+  bound functions delegate through the complete path without recursing on the
+  Rust host stack. Pinned differentials lock precedence, classic-for NoIn,
+  evaluation and key-conversion order, custom/inherited/accessor methods,
+  arbitrary throws, exact errors and source sites; host tests additionally
+  lock deep bound chains and cross-realm error ownership. Proxy/exotic
+  `[[HasProperty]]` and
+  `[[GetPrototypeOf]]` remain wider object-model gaps.
 - The runtime owns a generational Object/Shape arena. Public Object, Symbol and
   property-key roots implement Dup/Free through explicit reference counts;
   heap edges remain raw handles, zero-count teardown is iterative, and

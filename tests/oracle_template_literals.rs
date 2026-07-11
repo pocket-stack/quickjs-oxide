@@ -495,6 +495,26 @@ fn template_stack_limit_uses_reachable_bytecode_like_pinned_quickjs() {
             format!("outer:for(;true;{huge_template}){{while(true){{continue outer;}}}}"),
             false,
         ),
+        (
+            "reachable-in-key-contributes-to-bytecode-stack",
+            format!("{huge_template} in Function"),
+            false,
+        ),
+        (
+            "logical-short-circuit-in-is-not-folded-for-stack-limit",
+            format!("false&&({huge_template} in Function)"),
+            false,
+        ),
+        (
+            "reachable-instanceof-candidate-contributes-to-bytecode-stack",
+            format!("{huge_template} instanceof Function"),
+            false,
+        ),
+        (
+            "logical-short-circuit-instanceof-is-not-folded-for-stack-limit",
+            format!("false&&({huge_template} instanceof Function)"),
+            false,
+        ),
     ] {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();

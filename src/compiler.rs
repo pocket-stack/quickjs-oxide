@@ -1479,10 +1479,9 @@ impl<'source> Parser<'source> {
                 TokenKind::Punctuator(Punctuator::LessEqual) => Instruction::Lte,
                 TokenKind::Punctuator(Punctuator::Greater) => Instruction::Gt,
                 TokenKind::Punctuator(Punctuator::GreaterEqual) => Instruction::Gte,
+                TokenKind::Keyword(Keyword::Instanceof) => Instruction::InstanceOf,
                 TokenKind::Keyword(Keyword::In) if self.in_mode == InMode::Disallow => break,
-                TokenKind::Keyword(Keyword::In) => {
-                    return Err(self.unsupported_here("the 'in' operator is not implemented yet"));
-                }
+                TokenKind::Keyword(Keyword::In) => Instruction::In,
                 _ => break,
             };
             self.advance()?;
@@ -4373,11 +4372,13 @@ mod tests {
             "for(Function(Function.item in Function);;);",
             "for(;false;); Function.item in Function",
         ] {
-            let error = compile_unlinked_script(source).unwrap_err();
-            assert_eq!(
-                error.message(),
-                "the 'in' operator is not implemented yet",
-                "AllowIn boundary drifted for {source:?}"
+            let bytecode = compile_unlinked_script(source).unwrap();
+            assert!(
+                bytecode
+                    .code()
+                    .iter()
+                    .any(|instruction| matches!(instruction, Instruction::In)),
+                "AllowIn boundary lost its in opcode for {source:?}"
             );
         }
         for source in [
@@ -4456,6 +4457,81 @@ mod tests {
                 .code
                 .iter()
                 .all(|instruction| !matches!(instruction, Instruction::Goto(u32::MAX)))
+        );
+    }
+
+    #[test]
+    fn relational_membership_uses_runtime_object_protocols() {
+        assert_eq!(
+            evaluate_in_context("'prototype' in Function"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            evaluate_in_context("'missingMembershipKey' in Function"),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            evaluate_in_context("'toString' in Function"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            evaluate_in_context("Function instanceof Function"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            evaluate_in_context("(function(){}) instanceof Function"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            evaluate_in_context("1 instanceof Function"),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            evaluate_in_context("(function(){}).bind(null) instanceof Function"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){ var target=function DeepTarget(){}; var bound=target; for(var i=0;i<512;i++) bound=bound.bind(null); return 1 instanceof bound; })()"
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){ var result=false; for((result='prototype' in Function);false;); return result; })()"
+            ),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){ var result=false; for(result=Function instanceof Function;false;); return result; })()"
+            ),
+            Value::Bool(true)
+        );
+
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        context
+            .eval(
+                "Function.membershipTrace=''; Function[Symbol.toPrimitive]=function(hint){ Function.membershipTrace+=hint; return 'prototype'; };",
+            )
+            .unwrap();
+        assert!(matches!(
+            context.eval("Function in (Function.membershipTrace+='R',1)"),
+            Err(RuntimeError::Exception)
+        ));
+        context.take_exception().unwrap().unwrap();
+        assert_eq!(
+            context.eval("Function.membershipTrace").unwrap(),
+            Value::String(JsString::from_static("R"))
+        );
+        assert_eq!(
+            context.eval("Function in Function").unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            context.eval("Function.membershipTrace").unwrap(),
+            Value::String(JsString::from_static("Rstring"))
         );
     }
 

@@ -123,6 +123,8 @@ pub enum Instruction {
     Lte,
     Gt,
     Gte,
+    InstanceOf,
+    In,
     IfFalse(u32),
     IfTrue(u32),
     Goto(u32),
@@ -213,7 +215,9 @@ impl Instruction {
             | Self::Lt
             | Self::Lte
             | Self::Gt
-            | Self::Gte => (2, 1),
+            | Self::Gte
+            | Self::In
+            | Self::InstanceOf => (2, 1),
         }
     }
 }
@@ -448,6 +452,34 @@ mod tests {
             max_stack: 1,
         };
         assert_eq!(function.verify().unwrap().max_stack, 1);
+    }
+
+    #[test]
+    fn verifier_models_membership_operators_as_binary_booleans() {
+        for operator in [Instruction::InstanceOf, Instruction::In] {
+            let valid = BytecodeFunction {
+                name: None,
+                code: vec![
+                    Instruction::PushI32(1),
+                    Instruction::PushI32(2),
+                    operator.clone(),
+                    Instruction::Return,
+                ],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 2,
+            };
+            assert_eq!(valid.verify().unwrap().max_stack, 2);
+
+            let underflow = BytecodeFunction {
+                name: None,
+                code: vec![Instruction::PushI32(1), operator, Instruction::Return],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 1,
+            };
+            assert!(underflow.verify().is_err());
+        }
     }
 
     #[test]

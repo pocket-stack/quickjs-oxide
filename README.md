@@ -169,6 +169,16 @@ precedence levels and ordered `ToNumeric`. Number shifts preserve the signed
 `ToInt32`/unsigned `ToUint32` split and masked counts; BigInt shifts preserve
 negative-count reversal, arithmetic right-shift saturation, allocation
 failures, and the pinned release's one-sign-limb allocation extension.
+Relational membership now has first-class `InstanceOf`/`In` bytecode rather
+than a parser shortcut. `in` checks the RHS Object before observable
+`ToPropertyKey`, then follows ordinary own/prototype `[[HasProperty]]` without
+executing accessors. `instanceof` performs GetMethod/Call for
+`@@hasInstance`, preserves custom getters, methods and arbitrary throws, and
+falls back through QuickJS's ordinary and bound-function paths with the native
+method's defining realm and frame. Classic-for `ExpressionNoIn` still stops an
+unparenthesized `in` while parentheses, call arguments and conditional
+consequents restore the ordinary grammar. Proxy/exotic `has` dispatch remains a
+later object-model slice behind the completion-aware host boundary.
 Right-associative `**` follows QuickJS's unary-level parser, including unary-RHS
 acceptance and the unparenthesized-unary-LHS early error. Its Number path uses
 Rust `f64::powf` plus QuickJS's `±1`/non-finite-exponent correction, with a
@@ -231,8 +241,9 @@ Runtime-wide full/strip-source/strip-debug modes follow QuickJS's immutable
 bytecode publication boundary, and the `qjs` CLI exposes `--strip-source` and
 `-s` with upstream last-option-wins behavior.
 The implemented VM operators use completion-aware QuickJS-style Number/default
-`ToPrimitive` and ordered `ToNumeric` paths, including exact BigInt/String
-relational comparison and preservation of user-thrown coercion values.
+`ToPrimitive`, ordered `ToNumeric`, property-key and instance-check paths,
+including exact BigInt/String relational comparison and preservation of
+user-thrown coercion values.
 Explicit reference counting and cycle removal own those metadata, frame and
 intrinsic roots. Passing these tests proves only those slices;
 it does not imply QuickJS feature parity. Recoverable OOM behavior, the complete

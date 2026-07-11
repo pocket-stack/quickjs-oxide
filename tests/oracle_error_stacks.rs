@@ -335,6 +335,19 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "labeled for continue reaches the relocated update fault site",
             "Function.i=0; outer: for(;Function.i++<1;\nnull.x){ continue outer; }",
         ),
+        ("invalid in uses the operator site", "'key'\nin 1"),
+        (
+            "invalid instanceof uses the operator site",
+            "1\ninstanceof 2",
+        ),
+        (
+            "in key conversion preserves the throwing function frame",
+            "Function[Symbol.toPrimitive]=function key(){throw new Error('key')};\nFunction in Function",
+        ),
+        (
+            "instanceof bad prototype preserves the native hasInstance frame",
+            "Function.bad=function Bad(){}; Function.bad.prototype=1;\nFunction instanceof Function.bad",
+        ),
     ];
 
     for (description, source) in cases {

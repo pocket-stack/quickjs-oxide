@@ -1168,6 +1168,29 @@ impl VmHost for RuntimeVmHost {
         self.get_property_with_key(base, &key, false)
     }
 
+    fn has_property(&mut self, key: Value, object: ObjectRef) -> Result<Completion, Error> {
+        // QuickJS `js_operator_in` validates the RHS object before
+        // JS_ValueToAtom can execute arbitrary key-conversion code.
+        if !object.belongs_to(&self.runtime) {
+            return Err(Error::internal(
+                "in right operand belongs to another runtime",
+            ));
+        }
+        let key = match self.property_key_from_value(key)? {
+            VmPropertyKeyConversion::Key(key) => key,
+            VmPropertyKeyConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        self.runtime
+            .has_property_in_realm(self.current_realm, &object, &key)
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn is_instance_of(&mut self, candidate: Value, target: ObjectRef) -> Result<Completion, Error> {
+        self.runtime
+            .is_instance_of(self.current_realm, candidate, target)
+            .map_err(runtime_error_to_vm_error)
+    }
+
     fn convert_property_key(&mut self, key: Value) -> Result<Completion, Error> {
         let key = match key {
             key @ (Value::Int(_) | Value::String(_)) => return Ok(Completion::Return(key)),
@@ -6430,6 +6453,19 @@ impl Runtime {
         Ok(false)
     }
 
+    /// Completion-aware `[[HasProperty]]` boundary used by source `in`.
+    /// Ordinary objects are synchronous today; a future Proxy/exotic path can
+    /// return its trap throw here without changing the VM opcode contract.
+    fn has_property_in_realm(
+        &self,
+        _realm: ContextId,
+        object: &ObjectRef,
+        key: &PropertyKey,
+    ) -> Result<Completion, RuntimeError> {
+        self.has_property(object, key)
+            .map(|present| Completion::Return(Value::Bool(present)))
+    }
+
     fn native_to_js_string(
         &self,
         realm: ContextId,
@@ -7311,6 +7347,46 @@ impl Runtime {
             RuntimeError::Invariant("function definition position does not fit Int32")
         })?;
         Ok(Completion::Return(Value::Int(selected)))
+    }
+
+    /// QuickJS `JS_IsInstanceOf`: observe `@@hasInstance` before the legacy
+    /// callable fallback, call a custom method with the RHS as receiver, and
+    /// preserve arbitrary thrown values as completions.
+    fn is_instance_of(
+        &self,
+        realm: ContextId,
+        candidate: Value,
+        target: ObjectRef,
+    ) -> Result<Completion, RuntimeError> {
+        let has_instance = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::HasInstance));
+        let method = match self.get_property_in_realm(realm, &target, &has_instance)? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        if !matches!(method, Value::Undefined | Value::Null) {
+            let method = self.callable_from_value(method)?;
+            return Ok(
+                match self.call_internal(
+                    realm,
+                    &method,
+                    Value::Object(target),
+                    std::slice::from_ref(&candidate),
+                )? {
+                    Completion::Return(value) => {
+                        Completion::Return(Value::Bool(value.to_boolean()))
+                    }
+                    Completion::Throw(value) => Completion::Throw(value),
+                },
+            );
+        }
+
+        let Some(target) = self.as_callable(&target)? else {
+            return Err(RuntimeError::Engine(Error::new(
+                ErrorKind::Type,
+                "invalid 'instanceof' right operand",
+            )));
+        };
+        self.ordinary_is_instance_of(realm, &target, candidate)
     }
 
     fn call_function_prototype_has_instance(

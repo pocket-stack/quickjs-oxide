@@ -110,6 +110,12 @@ pub(crate) trait VmHost {
     /// `base[key]` after the VM has preserved QuickJS's operand order. The
     /// runtime host owns `ToObject`/`ToPropertyKey` and accessor execution.
     fn get_property(&mut self, base: Value, key: Value) -> Result<Completion, Error>;
+    /// QuickJS `OP_in`: the VM has already validated the RHS Object, so the
+    /// host can perform observable left-operand ToPropertyKey conversion.
+    fn has_property(&mut self, key: Value, object: ObjectRef) -> Result<Completion, Error>;
+    /// QuickJS `OP_instanceof`: full GetMethod/Call/fallback semantics live at
+    /// the runtime boundary so arbitrary throws and defining realms survive.
+    fn is_instance_of(&mut self, candidate: Value, target: ObjectRef) -> Result<Completion, Error>;
     /// Convert an arbitrary value to the canonical Int/String/Symbol value
     /// which represents its property key. This can execute user code and throw.
     fn convert_property_key(&mut self, key: Value) -> Result<Completion, Error>;
@@ -270,6 +276,22 @@ impl VmHost for DetachedHost<'_> {
     fn get_property(&mut self, _base: Value, _key: Value) -> Result<Completion, Error> {
         Err(Error::internal(
             "detached VM cannot access runtime-owned properties",
+        ))
+    }
+
+    fn has_property(&mut self, _key: Value, _object: ObjectRef) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "detached VM cannot test runtime-owned properties",
+        ))
+    }
+
+    fn is_instance_of(
+        &mut self,
+        _candidate: Value,
+        _target: ObjectRef,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "detached VM cannot perform runtime-owned instance checks",
         ))
     }
 
@@ -947,6 +969,29 @@ impl CallFrame {
                         return Ok(Completion::Throw(value));
                     }
                 }
+                Instruction::In => {
+                    let (key, object) = self.pop_pair()?;
+                    let Value::Object(object) = object else {
+                        return Err(Error::new(ErrorKind::Type, "invalid 'in' operand"));
+                    };
+                    match host.has_property(key, object)? {
+                        Completion::Return(value) => self.stack.push(value),
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                }
+                Instruction::InstanceOf => {
+                    let (candidate, target) = self.pop_pair()?;
+                    let Value::Object(target) = target else {
+                        return Err(Error::new(
+                            ErrorKind::Type,
+                            "invalid 'instanceof' right operand",
+                        ));
+                    };
+                    match host.is_instance_of(candidate, target)? {
+                        Completion::Return(value) => self.stack.push(value),
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                }
                 Instruction::IfFalse(target) => {
                     if !self.pop()?.to_boolean() {
                         pc = checked_target(*target, code.len())?;
@@ -1475,6 +1520,33 @@ mod tests {
             max_stack: 1,
         };
         assert_eq!(Vm::new().execute(&written).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn detached_membership_rejects_primitive_right_operands_before_host_dispatch() {
+        for (operator, message) in [
+            (Instruction::In, "invalid 'in' operand"),
+            (
+                Instruction::InstanceOf,
+                "invalid 'instanceof' right operand",
+            ),
+        ] {
+            let function = BytecodeFunction {
+                name: None,
+                code: vec![
+                    Instruction::PushI32(1),
+                    Instruction::PushI32(2),
+                    operator,
+                    Instruction::Return,
+                ],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 2,
+            };
+            let error = Vm::new().execute(&function).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Type);
+            assert_eq!(error.message(), message);
+        }
     }
 
     #[test]
