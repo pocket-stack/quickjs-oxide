@@ -516,6 +516,19 @@ pub struct ClosureVariable {
     pub kind: ClosureVariableKind,
 }
 
+/// Runtime-owned authoritative argument/local definition metadata.
+///
+/// This is the published counterpart of QuickJS's `JSVarDef`: present names
+/// are atoms whose references are owned by the containing bytecode node's
+/// `auxiliary_atoms` array.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct VariableDefinition {
+    pub name: Option<Atom>,
+    pub is_lexical: bool,
+    pub is_const: bool,
+    pub kind: ClosureVariableKind,
+}
+
 /// Runtime-owned immutable bytecode, constant pool, and function realm.
 ///
 /// `code` is an `Rc` leaf with no runtime edges.  The VM may cheaply clone it
@@ -530,6 +543,8 @@ pub struct FunctionBytecodeData {
     /// Intrinsic source-level name. Contextual `SetName` inference remains a
     /// separate opcode and is only emitted for anonymous definitions.
     pub func_name: Option<JsString>,
+    pub argument_definitions: Rc<[VariableDefinition]>,
+    pub local_definitions: Rc<[VariableDefinition]>,
     pub closure_variables: Rc<[ClosureVariable]>,
     pub debug: Option<FunctionDebugInfo>,
     /// Atom references owned by bytecode metadata/opcode operands.
@@ -1655,6 +1670,49 @@ impl Heap {
                 "function-name local is outside bytecode local slots",
             ));
         }
+        if bytecode.argument_definitions.len() != usize::from(bytecode.metadata.argument_count) {
+            return Err(HeapError::Invariant(
+                "argument definition count does not match bytecode metadata",
+            ));
+        }
+        if bytecode.local_definitions.len() != usize::from(bytecode.metadata.local_count) {
+            return Err(HeapError::Invariant(
+                "local definition count does not match bytecode metadata",
+            ));
+        }
+        for definition in bytecode.argument_definitions.iter() {
+            if definition.kind != ClosureVariableKind::Normal
+                || definition.is_lexical
+                || definition.is_const
+            {
+                return Err(HeapError::Invariant(
+                    "argument definition is not an ordinary mutable binding",
+                ));
+            }
+        }
+        for (index, definition) in bytecode.local_definitions.iter().enumerate() {
+            let is_function_name =
+                bytecode.metadata.function_name_local == u16::try_from(index).ok();
+            if is_function_name {
+                if definition.kind != ClosureVariableKind::FunctionName
+                    || definition.is_lexical
+                    || definition.is_const != bytecode.metadata.strict
+                    || definition.name.is_none()
+                {
+                    return Err(HeapError::Invariant(
+                        "function-name definition disagrees with bytecode metadata",
+                    ));
+                }
+            } else if definition.kind == ClosureVariableKind::FunctionName {
+                return Err(HeapError::Invariant(
+                    "ordinary local definition uses the function-name binding kind",
+                ));
+            } else if definition.is_const && !definition.is_lexical {
+                return Err(HeapError::Invariant(
+                    "a const local definition must also be lexical",
+                ));
+            }
+        }
         if bytecode.closure_variables.len() != usize::from(bytecode.metadata.closure_count) {
             return Err(HeapError::Invariant(
                 "function closure descriptor count does not match its bytecode metadata",
@@ -1718,11 +1776,32 @@ impl Heap {
                 }
             }
         }
+        for definition in bytecode
+            .argument_definitions
+            .iter()
+            .chain(bytecode.local_definitions.iter())
+        {
+            let Some(atom) = definition.name else {
+                continue;
+            };
+            let Some(count) = owned_name_atoms.get_mut(&atom) else {
+                return Err(HeapError::Invariant(
+                    "variable-definition name atom is not owned by bytecode metadata",
+                ));
+            };
+            if *count == 0 {
+                return Err(HeapError::Invariant(
+                    "variable-definition name atom ownership multiplicity is too small",
+                ));
+            }
+            *count -= 1;
+        }
         for descriptor in bytecode.closure_variables.iter().copied() {
-            let expects_name = matches!(
+            let requires_name = matches!(
                 descriptor.source,
                 ClosureSource::Global | ClosureSource::ParentGlobal(_)
             ) || descriptor.kind == ClosureVariableKind::FunctionName;
+            let allows_name = requires_name || descriptor.is_lexical;
             if matches!(
                 descriptor.source,
                 ClosureSource::Global | ClosureSource::ParentGlobal(_)
@@ -1733,7 +1812,7 @@ impl Heap {
                 ));
             }
             match descriptor.name {
-                ClosureVariableName::Atom(atom) if expects_name => {
+                ClosureVariableName::Atom(atom) if allows_name => {
                     let Some(count) = owned_name_atoms.get_mut(&atom) else {
                         return Err(HeapError::Invariant(
                             "closure name atom is not owned by bytecode metadata",
@@ -1746,7 +1825,7 @@ impl Heap {
                     }
                     *count -= 1;
                 }
-                ClosureVariableName::None if !expects_name => {}
+                ClosureVariableName::None if !requires_name => {}
                 ClosureVariableName::Constant(_) => {
                     return Err(HeapError::Invariant(
                         "published closure descriptor retained an unlinked name constant",
@@ -3556,6 +3635,8 @@ mod tests {
             realm,
             metadata: FunctionMetadata::default(),
             func_name: None,
+            argument_definitions: Rc::from([]),
+            local_definitions: Rc::from([]),
             closure_variables: Rc::from([]),
             debug: None,
             auxiliary_atoms: auxiliary_atoms.into_boxed_slice(),
@@ -3648,6 +3729,21 @@ mod tests {
             heap.allocate_function_bytecode(malformed),
             Err(HeapError::Invariant(_))
         ));
+
+        let mut lexical_argument = bytecode(&code, context, Vec::new(), Vec::new());
+        lexical_argument.metadata.argument_count = 1;
+        lexical_argument.argument_definitions = Rc::from([VariableDefinition {
+            name: None,
+            is_lexical: true,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+        }]);
+        assert_eq!(
+            heap.allocate_function_bytecode(lexical_argument),
+            Err(HeapError::Invariant(
+                "argument definition is not an ordinary mutable binding"
+            ))
+        );
         assert_eq!(heap.counts().function_bytecode_nodes, 0);
 
         heap.release_context(context).unwrap();

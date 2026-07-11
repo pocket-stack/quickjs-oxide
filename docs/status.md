@@ -1,6 +1,6 @@
 # Implementation status
 
-Last audited: 2026-07-11. The completion definition remains
+Last audited: 2026-07-12. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
@@ -43,10 +43,37 @@ claim full parity.
   deduplicates closure relays by storage identity rather than source name.
   `var` bindings retain root storage plus their first declaration scope, sloppy
   duplicate parameters remain distinct slots with the last slot winning, and
-  the private named-function binding remains a lazy root local. These scopes
-  are compiler metadata only in this slice: they emit no environment-lifecycle
-  bytecode and do not claim source lexical-declaration or TDZ semantics. After
-  resolution the compiler lowers to stack bytecode. In addition to the
+  the private named-function binding remains a lazy root local. These
+  parse-time scopes remain metadata-only for source lexical behavior: the
+  parser does not populate them with `let`/`const` bindings or emit source
+  scope-lifecycle bytecode.
+
+  Separately, the immutable function format and VM now provide the lexical-
+  frame substrate needed by that later compiler slice. Published bytecode owns
+  QuickJS `JSVarDef`-shaped argument/local definitions with optional atom names,
+  lexical/const flags and binding kind; closure descriptors carry the same
+  semantics across every relay. Frame locals and heap-owned VarRefs preserve an
+  explicit uninitialized TDZ sentinel. `SetLocalUninitialized`,
+  `GetLocalCheck`, `PutLocalCheck`/`SetLocalCheck`,
+  `GetVarRefCheck`/`PutVarRefCheck`, and `CloseLocal` cover lexical entry,
+  access, mutation and captured-cell detachment, with metadata/opcode
+  compatibility checked again at publication. `InitializeLocal` is a typed Rust-bytecode
+  distinction for QuickJS's ordinary lexical-initializer `put_loc` after
+  `OP_scope_put_var_init` resolution. It is not a spelling of QuickJS
+  `put_loc_check_init`, whose initialize-once check is specific to derived
+  `this`. Accordingly, repeated `InitializeLocal` execution retains upstream's
+  plain overwrite behavior, including the next captured `for-in`/`for-of`
+  iteration after `CloseLocal`. Detached bytecode and runtime-backed frames
+  enforce TDZ; as a typed trust-boundary hardening, runtime-backed frames seed
+  every published lexical vardef with the sentinel before executing bytecode,
+  while `SetLocalUninitialized` still represents source scope entry and
+  re-entry. Published variable definitions additionally enforce constness,
+  while runtime VarRefs enforce close-before-reentry and preserve a detached
+  lexical lifetime. The current source compiler publishes no binding with
+  `is_lexical = true`, so this substrate does not yet make source `let` or
+  `const` valid.
+
+  After resolution the compiler lowers to stack bytecode. In addition to the
   primitive expression grammar,
   the current source path supports anonymous and named ordinary function
   expressions, simple parameters, `return`/fallthrough, function-local `var`,
@@ -702,17 +729,21 @@ claim full parity.
 ## Not implemented yet
 
 The function slice is intentionally narrow. Function declarations/hoisting,
-source block-scoped bindings and environment lifetimes, source `let`/`const`
-declarations and their declaration-
-instantiation rules, destructuring, other general assignment targets, module
-resolution, computed property-definition
+source block-scoped binding population and environment lifetimes, source
+`let`/`const` declarations and their declaration-instantiation rules,
+destructuring, other general assignment targets, module resolution, computed
+property-definition
 naming, mapped `arguments`, arrow/async/generator functions and callable Proxy
 classes are not yet implemented. Top-level declarations are rejected instead
-of being faked as frame locals. The internal global lexical VarRef path already
-enforces
-TDZ, mutable and const behavior, but it is currently exercised through
-test-only creation/initialization helpers rather than source `let`/`const`
-syntax. Ordinary reads and calls of the valid implicit `arguments` binding are
+of being faked as frame locals. The lexical-frame bytecode/runtime substrate
+described above is likewise exercised through direct bytecode and runtime
+tests, not source declarations. Global lexical declaration instantiation,
+block/source lexical entry and exit, parser binding population, conflict
+checks, and loop per-iteration lifetimes remain later compiler slices. The
+internal global lexical VarRef path already enforces TDZ, mutable and const
+behavior, but it too is currently exercised through test-only creation and
+initialization helpers rather than source `let`/`const` syntax. Ordinary reads
+and calls of the valid implicit `arguments` binding are
 likewise rejected where materializing it as an ordinary local would be
 observably wrong. Direct `delete arguments` is the narrow exception: it resolves
 to `false` without materializing or reading the arguments object, including

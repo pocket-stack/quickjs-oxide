@@ -32,12 +32,36 @@ pub enum Instruction {
     GetLocal(u16),
     PutLocal(u16),
     SetLocal(u16),
+    /// QuickJS `OP_set_loc_uninitialized`: enter one lexical scope with its
+    /// local slot in the temporal dead zone.
+    SetLocalUninitialized(u16),
+    /// QuickJS `OP_get_loc_check`: read a lexical local after its TDZ check.
+    GetLocalCheck(u16),
+    /// Typed-format distinction for QuickJS's lexical-initializer `put_loc`.
+    /// The published vardef must be lexical, but execution deliberately keeps
+    /// ordinary `put_loc` overwrite semantics rather than conflating this with
+    /// derived-`this`'s upstream `put_loc_check_init` opcode.
+    InitializeLocal(u16),
+    /// QuickJS `OP_put_loc_check`: consume and assign a mutable lexical local.
+    PutLocalCheck(u16),
+    /// QuickJS `OP_set_loc_check`: assign a mutable lexical local while
+    /// preserving the assigned value on the operand stack.
+    SetLocalCheck(u16),
     GetArg(u16),
     PutArg(u16),
     SetArg(u16),
     GetVarRef(u16),
     PutVarRef(u16),
     SetVarRef(u16),
+    /// QuickJS `OP_get_var_ref_check`: read a captured lexical binding after
+    /// its TDZ check.
+    GetVarRefCheck(u16),
+    /// QuickJS `OP_put_var_ref_check`: consume and assign a captured mutable
+    /// lexical binding. Value-preserving writes use `Dup; PutVarRefCheck`.
+    PutVarRefCheck(u16),
+    /// QuickJS `OP_close_loc`: detach a captured local when its lexical scope
+    /// exits so a later scope entry receives a fresh cell.
+    CloseLocal(u16),
     /// QuickJS `OP_get_var`: read a global-environment VarRef closure slot.
     GetVar(u16),
     /// QuickJS `OP_get_var_undef`: as `GetVar`, but suppress a genuinely
@@ -140,7 +164,9 @@ impl Instruction {
     #[must_use]
     pub const fn stack_effect(&self) -> (usize, usize) {
         match self {
-            Self::Nop | Self::Goto(_) => (0, 0),
+            Self::Nop | Self::Goto(_) | Self::SetLocalUninitialized(_) | Self::CloseLocal(_) => {
+                (0, 0)
+            }
             Self::PushI32(_)
             | Self::PushConst(_)
             | Self::FClosure(_)
@@ -151,8 +177,10 @@ impl Instruction {
             | Self::PushThis
             | Self::PushNewTarget
             | Self::GetLocal(_)
+            | Self::GetLocalCheck(_)
             | Self::GetArg(_)
             | Self::GetVarRef(_)
+            | Self::GetVarRefCheck(_)
             | Self::GetVar(_)
             | Self::GetVarUndef(_)
             | Self::DeleteVar(_) => (0, 1),
@@ -175,8 +203,11 @@ impl Instruction {
             Self::Construct(argument_count) => (*argument_count as usize + 2, 1),
             Self::Drop
             | Self::PutLocal(_)
+            | Self::InitializeLocal(_)
+            | Self::PutLocalCheck(_)
             | Self::PutArg(_)
             | Self::PutVarRef(_)
+            | Self::PutVarRefCheck(_)
             | Self::PutVar(_)
             | Self::PutVarInit(_)
             | Self::ThrowReadOnly(_)
@@ -185,7 +216,9 @@ impl Instruction {
             | Self::Return
             | Self::Throw => (1, 0),
             Self::Nip => (2, 1),
-            Self::SetLocal(_) | Self::SetArg(_) | Self::SetVarRef(_) => (1, 1),
+            Self::SetLocal(_) | Self::SetLocalCheck(_) | Self::SetArg(_) | Self::SetVarRef(_) => {
+                (1, 1)
+            }
             Self::Dup => (1, 2),
             Self::Neg
             | Self::Plus
@@ -266,7 +299,13 @@ impl BytecodeFunction {
             }
             if let Instruction::GetLocal(index)
             | Instruction::PutLocal(index)
-            | Instruction::SetLocal(index) = instruction
+            | Instruction::SetLocal(index)
+            | Instruction::SetLocalUninitialized(index)
+            | Instruction::GetLocalCheck(index)
+            | Instruction::InitializeLocal(index)
+            | Instruction::PutLocalCheck(index)
+            | Instruction::SetLocalCheck(index)
+            | Instruction::CloseLocal(index) = instruction
                 && *index >= self.local_count
             {
                 return Err(Error::internal("local bytecode operand is out of bounds"));
@@ -761,5 +800,98 @@ mod tests {
             excessive_frame.verify().unwrap_err().message(),
             "declared local count exceeds QuickJS JS_MAX_LOCAL_VARS"
         );
+    }
+
+    #[test]
+    fn verifier_models_quickjs_lexical_frame_operations() {
+        let initialized_then_updated = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::SetLocalUninitialized(0),
+                Instruction::PushI32(1),
+                Instruction::InitializeLocal(0),
+                Instruction::GetLocalCheck(0),
+                Instruction::PushI32(1),
+                Instruction::Add,
+                Instruction::SetLocalCheck(0),
+                Instruction::CloseLocal(0),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 1,
+            max_stack: 2,
+        };
+        assert_eq!(initialized_then_updated.verify().unwrap().max_stack, 2);
+
+        let consuming_write = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::SetLocalUninitialized(0),
+                Instruction::PushI32(1),
+                Instruction::InitializeLocal(0),
+                Instruction::PushI32(2),
+                Instruction::PutLocalCheck(0),
+                Instruction::GetLocalCheck(0),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 1,
+            max_stack: 1,
+        };
+        assert_eq!(consuming_write.verify().unwrap().max_stack, 1);
+
+        let checked_var_ref = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::GetVarRefCheck(0),
+                Instruction::PutVarRefCheck(0),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        assert_eq!(checked_var_ref.verify().unwrap().max_stack, 1);
+
+        for instruction in [
+            Instruction::InitializeLocal(0),
+            Instruction::PutLocalCheck(0),
+            Instruction::SetLocalCheck(0),
+            Instruction::PutVarRefCheck(0),
+        ] {
+            let underflow = BytecodeFunction {
+                name: None,
+                code: vec![instruction, Instruction::Undefined, Instruction::Return],
+                constants: vec![],
+                local_count: 1,
+                max_stack: 1,
+            };
+            assert!(underflow.verify().is_err());
+        }
+    }
+
+    #[test]
+    fn verifier_rejects_every_lexical_local_operand_outside_the_frame() {
+        for instruction in [
+            Instruction::SetLocalUninitialized(0),
+            Instruction::GetLocalCheck(0),
+            Instruction::InitializeLocal(0),
+            Instruction::PutLocalCheck(0),
+            Instruction::SetLocalCheck(0),
+            Instruction::CloseLocal(0),
+        ] {
+            let function = BytecodeFunction {
+                name: None,
+                code: vec![Instruction::Undefined, Instruction::Return, instruction],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 1,
+            };
+            assert_eq!(
+                function.verify().unwrap_err().message(),
+                "local bytecode operand is out of bounds"
+            );
+        }
     }
 }

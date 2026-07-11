@@ -14,8 +14,19 @@ use-site scope, and child functions freeze their parent definition scope.
 Non-empty blocks, `if`, classic `for`, and `switch` establish the same
 parse-time scope boundaries as the pinned release; source-order DFS postorder
 resolution and storage-identity closure relays preserve shadowing and capture
-metadata without yet emitting lexical-environment bytecode. Block statements,
-`if`/`else`, `while`/`do-while`, classic
+metadata without yet populating those scopes from source lexical declarations.
+The adjacent lexical-frame substrate now publishes QuickJS `JSVarDef`-shaped
+variable-definition metadata for every argument, local and closure relay, including
+optional names, lexical/const flags and binding kind. Typed bytecode and detached
+frames cover the explicit local TDZ sentinel and checked local operations;
+published runtime frames extend those semantics to captured VarRefs and
+`CloseLocal` detachment for a lexical lifetime. `InitializeLocal` is the Rust bytecode format's explicit
+mapping of the ordinary QuickJS lexical-initializer `put_loc` produced after
+scope resolution; it is deliberately not QuickJS's derived-`this`
+`put_loc_check_init`. These facilities are currently exercised below source
+syntax: the compiler does not yet publish a source binding as lexical or emit
+its scope-lifecycle instructions. Block statements, `if`/`else`,
+`while`/`do-while`, classic
 `for (;;)` loops, `switch` control flow and labeled statements with named and unnamed
 `break`/`continue` now share the QuickJS statement-parser spine;
 scripts carry its hidden eval-completion local so empty blocks preserve a prior
@@ -31,9 +42,11 @@ expressions with strict equality across a middle `default`, preserves body
 fallthrough/completion, and uses QuickJS-shaped per-control drop counts when an
 outer `break` or `continue` crosses one or more switches. Terminal
 `return`/`throw` abandon the remaining frame stack as upstream does. Source
-`let`/`const`, lexical binding population and conflict checks, runtime scope
-lifecycle, and TDZ are still an explicit later boundary, so this is the switch
-control-flow core rather than a claim of complete SwitchStatement parity.
+`let`/`const` syntax, lexical binding population and conflict checks are still
+unsupported. Global lexical declarations, block lexical environments and all
+source-driven lexical scope entry/exit remain later slices, so the frame
+substrate is not a claim of source lexical support and this remains the switch
+control-flow core rather than complete SwitchStatement parity.
 `for-in`/`for-of`/`for-await` and
 try/catch/finally cleanup remain separate grammar slices.
 Untagged template literals now follow QuickJS `js_parse_template`: the cooked

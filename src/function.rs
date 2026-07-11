@@ -19,7 +19,9 @@ use std::hash::{Hash, Hasher};
 
 use crate::bytecode::Instruction;
 use crate::debug::Pc2LineTable;
-use crate::heap::{ClosureVariable, FunctionBytecodeId, FunctionMetadata, HeapError};
+use crate::heap::{
+    ClosureVariable, ClosureVariableKind, FunctionBytecodeId, FunctionMetadata, HeapError,
+};
 use crate::runtime::Runtime;
 use crate::value::Value;
 
@@ -251,8 +253,57 @@ pub(crate) struct UnlinkedFunction {
     constants: Vec<UnlinkedConstant>,
     metadata: FunctionMetadata,
     func_name: Option<crate::value::JsString>,
+    argument_definitions: Vec<UnlinkedVariableDefinition>,
+    local_definitions: Vec<UnlinkedVariableDefinition>,
     closure_variables: Vec<ClosureVariable>,
     debug: Option<UnlinkedFunctionDebug>,
+}
+
+/// Runtime-independent form of QuickJS's `JSVarDef`/argument metadata.
+///
+/// Names remain optional because synthetic locals do not have an observable
+/// identifier. Publication interns every present name and transfers the
+/// resulting atom ownership to immutable function bytecode.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct UnlinkedVariableDefinition {
+    pub(crate) name: Option<crate::value::JsString>,
+    pub(crate) is_lexical: bool,
+    pub(crate) is_const: bool,
+    pub(crate) kind: ClosureVariableKind,
+}
+
+impl UnlinkedVariableDefinition {
+    /// Construct an ordinary mutable argument/local definition.
+    #[must_use]
+    pub(crate) const fn ordinary(name: Option<crate::value::JsString>) -> Self {
+        Self {
+            name,
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+        }
+    }
+
+    /// Construct a block-scoped mutable or immutable definition.
+    #[must_use]
+    #[allow(dead_code)] // Consumed once the parser starts emitting lexical declarations.
+    pub(crate) const fn lexical(name: Option<crate::value::JsString>, is_const: bool) -> Self {
+        Self {
+            name,
+            is_lexical: true,
+            is_const,
+            kind: ClosureVariableKind::Normal,
+        }
+    }
+
+    fn function_name(name: Option<crate::value::JsString>, is_const: bool) -> Self {
+        Self {
+            name,
+            is_lexical: false,
+            is_const,
+            kind: ClosureVariableKind::FunctionName,
+        }
+    }
 }
 
 /// Runtime-independent debug payload produced by the compiler.
@@ -273,11 +324,33 @@ pub(crate) struct UnlinkedFunctionParts {
     pub(crate) constants: Vec<UnlinkedConstant>,
     pub(crate) metadata: FunctionMetadata,
     pub(crate) func_name: Option<crate::value::JsString>,
+    pub(crate) argument_definitions: Vec<UnlinkedVariableDefinition>,
+    pub(crate) local_definitions: Vec<UnlinkedVariableDefinition>,
     pub(crate) closure_variables: Vec<ClosureVariable>,
     pub(crate) debug: Option<UnlinkedFunctionDebug>,
 }
 
 impl UnlinkedFunction {
+    fn ordinary_definitions(
+        metadata: FunctionMetadata,
+    ) -> (
+        Vec<UnlinkedVariableDefinition>,
+        Vec<UnlinkedVariableDefinition>,
+    ) {
+        let arguments = (0..metadata.argument_count)
+            .map(|_| UnlinkedVariableDefinition::ordinary(None))
+            .collect();
+        let mut locals = (0..metadata.local_count)
+            .map(|_| UnlinkedVariableDefinition::ordinary(None))
+            .collect::<Vec<_>>();
+        if let Some(index) = metadata.function_name_local {
+            if let Some(definition) = locals.get_mut(usize::from(index)) {
+                *definition = UnlinkedVariableDefinition::function_name(None, metadata.strict);
+            }
+        }
+        (arguments, locals)
+    }
+
     /// Assemble a complete compiler draft.
     #[must_use]
     pub(crate) fn new(
@@ -285,11 +358,14 @@ impl UnlinkedFunction {
         constants: Vec<UnlinkedConstant>,
         metadata: FunctionMetadata,
     ) -> Self {
+        let (argument_definitions, local_definitions) = Self::ordinary_definitions(metadata);
         Self {
             code,
             constants,
             metadata,
             func_name: None,
+            argument_definitions,
+            local_definitions,
             closure_variables: Vec::new(),
             debug: None,
         }
@@ -309,11 +385,14 @@ impl UnlinkedFunction {
         metadata: FunctionMetadata,
         closure_variables: Vec<ClosureVariable>,
     ) -> Self {
+        let (argument_definitions, local_definitions) = Self::ordinary_definitions(metadata);
         Self {
             code,
             constants,
             metadata,
             func_name: None,
+            argument_definitions,
+            local_definitions,
             closure_variables,
             debug: None,
         }
@@ -322,7 +401,34 @@ impl UnlinkedFunction {
     /// Attach the source-level intrinsic name of a function expression.
     #[must_use]
     pub(crate) fn with_name(mut self, name: Option<crate::value::JsString>) -> Self {
-        self.func_name = name;
+        self.func_name = name.clone();
+        if let Some(index) = self.metadata.function_name_local {
+            if let Some(definition) = self.local_definitions.get_mut(usize::from(index)) {
+                *definition = UnlinkedVariableDefinition::function_name(name, self.metadata.strict);
+            }
+        }
+        self
+    }
+
+    /// Replace the compatibility definitions with compiler-produced binding
+    /// metadata. Publication remains the validation boundary for counts and
+    /// flag combinations.
+    #[must_use]
+    pub(crate) fn with_variable_definitions(
+        mut self,
+        argument_definitions: Vec<UnlinkedVariableDefinition>,
+        mut local_definitions: Vec<UnlinkedVariableDefinition>,
+    ) -> Self {
+        if let Some(index) = self.metadata.function_name_local {
+            if let Some(definition) = local_definitions.get_mut(usize::from(index)) {
+                *definition = UnlinkedVariableDefinition::function_name(
+                    self.func_name.clone(),
+                    self.metadata.strict,
+                );
+            }
+        }
+        self.argument_definitions = argument_definitions;
+        self.local_definitions = local_definitions;
         self
     }
 
@@ -359,6 +465,16 @@ impl UnlinkedFunction {
     }
 
     #[must_use]
+    pub(crate) fn argument_definitions(&self) -> &[UnlinkedVariableDefinition] {
+        &self.argument_definitions
+    }
+
+    #[must_use]
+    pub(crate) fn local_definitions(&self) -> &[UnlinkedVariableDefinition] {
+        &self.local_definitions
+    }
+
+    #[must_use]
     pub(crate) const fn debug(&self) -> Option<&UnlinkedFunctionDebug> {
         self.debug.as_ref()
     }
@@ -371,6 +487,8 @@ impl UnlinkedFunction {
             constants: self.constants,
             metadata: self.metadata,
             func_name: self.func_name,
+            argument_definitions: self.argument_definitions,
+            local_definitions: self.local_definitions,
             closure_variables: self.closure_variables,
             debug: self.debug,
         }
@@ -379,10 +497,12 @@ impl UnlinkedFunction {
 
 #[cfg(test)]
 mod tests {
-    use super::{UnlinkedConstant, UnlinkedConstantError, UnlinkedFunction};
+    use super::{
+        UnlinkedConstant, UnlinkedConstantError, UnlinkedFunction, UnlinkedVariableDefinition,
+    };
     use crate::bigint::JsBigInt;
     use crate::bytecode::Instruction;
-    use crate::heap::{ClosureSource, ClosureVariable, FunctionMetadata};
+    use crate::heap::{ClosureSource, ClosureVariable, ClosureVariableKind, FunctionMetadata};
     use crate::value::{JsString, Value};
 
     #[test]
@@ -474,5 +594,46 @@ mod tests {
 
         assert_eq!(function.closure_variables(), &[descriptor]);
         assert_eq!(function.into_parts().closure_variables, vec![descriptor]);
+    }
+
+    #[test]
+    fn constructors_supply_ordinary_definitions_and_normalize_the_function_name_slot() {
+        let name = JsString::from_static("selfName");
+        let function = UnlinkedFunction::new(
+            vec![Instruction::Undefined, Instruction::Return],
+            Vec::new(),
+            FunctionMetadata {
+                argument_count: 1,
+                local_count: 2,
+                function_name_local: Some(1),
+                strict: true,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_name(Some(name.clone()))
+        .with_variable_definitions(
+            vec![UnlinkedVariableDefinition::ordinary(Some(
+                JsString::from_static("argument"),
+            ))],
+            vec![
+                UnlinkedVariableDefinition::lexical(Some(JsString::from_static("lexical")), false),
+                UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("wrong"))),
+            ],
+        );
+
+        assert_eq!(function.argument_definitions().len(), 1);
+        assert_eq!(function.local_definitions().len(), 2);
+        assert!(function.local_definitions()[0].is_lexical);
+        assert_eq!(
+            function.local_definitions()[0].kind,
+            ClosureVariableKind::Normal
+        );
+        assert_eq!(function.local_definitions()[1].name.as_ref(), Some(&name));
+        assert!(!function.local_definitions()[1].is_lexical);
+        assert!(function.local_definitions()[1].is_const);
+        assert_eq!(
+            function.local_definitions()[1].kind,
+            ClosureVariableKind::FunctionName
+        );
     }
 }

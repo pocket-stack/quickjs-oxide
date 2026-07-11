@@ -20,6 +20,7 @@ use crate::debug::{DebugInfoMode, LineColumn, QuickJsSourceLocator};
 use crate::error::{Error, ErrorKind, NativeErrorKind, NativeErrorMessage};
 use crate::function::{
     FunctionBytecodeRef, UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug,
+    UnlinkedVariableDefinition,
 };
 use crate::heap::{
     AutoInitProperty, BigIntAsNKind, BytecodeConstant, ClosureSource, ClosureVariable,
@@ -30,7 +31,7 @@ use crate::heap::{
     NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
     ObjectData, ObjectId, ObjectKind, ObjectPayload, PrimitiveKind, PrimitiveObjectData,
     PropertySlot, RawValue, ShapeId, StringCharAtKind, StringWellFormedKind, SymbolRegistryKind,
-    VarRefData, VarRefId,
+    VarRefData, VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -281,6 +282,8 @@ struct PublishedFunctionSnapshot {
     root: FunctionBytecodeRef,
     code: Rc<[crate::bytecode::Instruction]>,
     constants: Rc<[BytecodeConstant]>,
+    argument_definitions: Rc<[VariableDefinition]>,
+    local_definitions: Rc<[VariableDefinition]>,
     closure_variables: Rc<[ClosureVariable]>,
     metadata: FunctionMetadata,
     realm: ContextId,
@@ -347,12 +350,16 @@ impl Drop for VarRefRoot {
 
 enum FrameBinding {
     Direct(Value),
+    Uninitialized,
     Captured(VarRefRoot),
 }
 
 fn read_frame_binding(runtime: &Runtime, binding: &FrameBinding) -> Result<Value, Error> {
     match binding {
         FrameBinding::Direct(value) => Ok(value.clone()),
+        FrameBinding::Uninitialized => Err(Error::internal(
+            "unchecked local read reached an uninitialized lexical binding",
+        )),
         FrameBinding::Captured(root) => runtime
             .read_var_ref(root)
             .map_err(|error| Error::internal(error.to_string())),
@@ -369,6 +376,9 @@ fn write_frame_binding(
             *slot = value;
             Ok(())
         }
+        FrameBinding::Uninitialized => Err(Error::internal(
+            "unchecked local write reached an uninitialized lexical binding",
+        )),
         FrameBinding::Captured(root) => runtime
             .write_var_ref(root, value)
             .map_err(|error| Error::internal(error.to_string())),
@@ -393,6 +403,17 @@ fn capture_frame_binding(
             *binding = FrameBinding::Captured(root.clone());
             Ok(root)
         }
+        FrameBinding::Uninitialized => {
+            let root = runtime
+                .new_uninitialized_captured_var_ref(
+                    descriptor.is_lexical,
+                    descriptor.is_const,
+                    descriptor.kind,
+                )
+                .map_err(|error| Error::internal(error.to_string()))?;
+            *binding = FrameBinding::Captured(root.clone());
+            Ok(root)
+        }
         FrameBinding::Captured(root) => {
             runtime
                 .validate_var_ref_metadata(root, descriptor)
@@ -400,6 +421,26 @@ fn capture_frame_binding(
             Ok(root.clone())
         }
     }
+}
+
+fn close_frame_binding(runtime: &Runtime, binding: &mut FrameBinding) -> Result<(), Error> {
+    let FrameBinding::Captured(root) = binding else {
+        return Ok(());
+    };
+    let raw = runtime
+        .raw_var_ref_value(root)
+        .map_err(|error| Error::internal(error.to_string()))?;
+    let detached = if matches!(raw, RawValue::Uninitialized) {
+        FrameBinding::Uninitialized
+    } else {
+        FrameBinding::Direct(
+            runtime
+                .root_raw_value(&raw)
+                .map_err(runtime_error_to_vm_error)?,
+        )
+    };
+    *binding = detached;
+    Ok(())
 }
 
 fn runtime_error_to_vm_error(error: RuntimeError) -> Error {
@@ -414,6 +455,8 @@ struct RuntimeVmHost {
     active_frame_token: ActiveFrameToken,
     current_realm: ContextId,
     constants: Rc<[BytecodeConstant]>,
+    argument_definitions: Rc<[VariableDefinition]>,
+    local_definitions: Rc<[VariableDefinition]>,
     closure_variables: Rc<[ClosureVariable]>,
     closure_slots: Vec<VarRefRoot>,
     arguments: Vec<FrameBinding>,
@@ -426,6 +469,88 @@ enum VmPropertyKeyConversion {
 }
 
 impl RuntimeVmHost {
+    fn local_definition(&self, index: u16) -> Result<VariableDefinition, Error> {
+        self.local_definitions
+            .get(usize::from(index))
+            .copied()
+            .ok_or_else(|| Error::internal("local definition index is out of bounds"))
+    }
+
+    fn argument_definition(&self, index: u16) -> Result<VariableDefinition, Error> {
+        self.argument_definitions
+            .get(usize::from(index))
+            .copied()
+            .ok_or_else(|| Error::internal("argument definition index is out of bounds"))
+    }
+
+    fn validate_capture_definition(
+        &self,
+        definition: VariableDefinition,
+        descriptor: ClosureVariable,
+    ) -> Result<(), Error> {
+        let descriptor_name = match descriptor.name {
+            ClosureVariableName::None => None,
+            ClosureVariableName::Atom(name) => Some(name),
+            ClosureVariableName::Constant(_) => {
+                return Err(Error::internal(
+                    "published closure descriptor retained an unlinked name constant",
+                ));
+            }
+        };
+        let flags_match = (definition.is_lexical, definition.is_const, definition.kind)
+            == (descriptor.is_lexical, descriptor.is_const, descriptor.kind);
+        let name_matches = (!definition.is_lexical
+            && definition.kind != ClosureVariableKind::FunctionName)
+            || definition.name == descriptor_name;
+        if !flags_match || !name_matches {
+            return Err(Error::internal(
+                "closure descriptor disagrees with its parent variable definition",
+            ));
+        }
+        Ok(())
+    }
+
+    fn lexical_uninitialized_error(&self, name: Option<Atom>) -> Result<Error, Error> {
+        let Some(name) = name else {
+            return Ok(Error::new(
+                ErrorKind::Reference,
+                "lexical variable is not initialized",
+            ));
+        };
+        let key = PropertyKey::from_borrowed_atom(self.runtime.clone(), name)
+            .map_err(|error| Error::internal(error.to_string()))?;
+        self.runtime
+            .native_atom_error(ErrorKind::Reference, "", &key, " is not initialized")
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn lexical_read_only_error(&self, name: Option<Atom>) -> Result<Error, Error> {
+        let Some(name) = name else {
+            return Ok(Error::new(ErrorKind::Type, "lexical variable is read-only"));
+        };
+        let key = PropertyKey::from_borrowed_atom(self.runtime.clone(), name)
+            .map_err(|error| Error::internal(error.to_string()))?;
+        self.runtime
+            .native_atom_error(ErrorKind::Type, "'", &key, "' is read-only")
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn closure_name(&self, index: u16) -> Result<Option<Atom>, Error> {
+        let descriptor = self
+            .closure_variables
+            .get(usize::from(index))
+            .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?;
+        Ok(match descriptor.name {
+            ClosureVariableName::Atom(name) => Some(name),
+            ClosureVariableName::None => None,
+            ClosureVariableName::Constant(_) => {
+                return Err(Error::internal(
+                    "published closure descriptor retained an unlinked name constant",
+                ));
+            }
+        })
+    }
+
     fn constant_property_key(&self, index: u32) -> Result<PropertyKey, Error> {
         let name = match usize::try_from(index)
             .ok()
@@ -864,6 +989,8 @@ impl VmHost for RuntimeVmHost {
         for descriptor in closure_variables.iter().copied() {
             let root = match descriptor.source {
                 ClosureSource::ParentLocal(index) => {
+                    let definition = self.local_definition(index)?;
+                    self.validate_capture_definition(definition, descriptor)?;
                     let binding = self
                         .locals
                         .get_mut(usize::from(index))
@@ -871,6 +998,8 @@ impl VmHost for RuntimeVmHost {
                     capture_frame_binding(&self.runtime, binding, descriptor)?
                 }
                 ClosureSource::ParentArgument(index) => {
+                    let definition = self.argument_definition(index)?;
+                    self.validate_capture_definition(definition, descriptor)?;
                     let binding = self.arguments.get_mut(usize::from(index)).ok_or_else(|| {
                         Error::internal("captured argument index is out of bounds")
                     })?;
@@ -1302,6 +1431,11 @@ impl VmHost for RuntimeVmHost {
     }
 
     fn get_local(&mut self, index: u16) -> Result<Value, Error> {
+        if self.local_definition(index)?.is_lexical {
+            return Err(Error::internal(
+                "unchecked local read referenced a lexical definition",
+            ));
+        }
         let binding = self
             .locals
             .get(usize::from(index))
@@ -1310,11 +1444,148 @@ impl VmHost for RuntimeVmHost {
     }
 
     fn put_local(&mut self, index: u16, value: Value) -> Result<(), Error> {
+        if self.local_definition(index)?.is_lexical {
+            return Err(Error::internal(
+                "unchecked local write referenced a lexical definition",
+            ));
+        }
         let binding = self
             .locals
             .get_mut(usize::from(index))
             .ok_or_else(|| Error::internal("local index is out of bounds"))?;
         write_frame_binding(&self.runtime, binding, value)
+    }
+
+    fn set_local_uninitialized(&mut self, index: u16) -> Result<(), Error> {
+        let definition = self.local_definition(index)?;
+        if !definition.is_lexical {
+            return Err(Error::internal(
+                "lexical scope entry referenced an ordinary local definition",
+            ));
+        }
+        let binding = self
+            .locals
+            .get_mut(usize::from(index))
+            .ok_or_else(|| Error::internal("local index is out of bounds"))?;
+        if matches!(binding, FrameBinding::Captured(_)) {
+            return Err(Error::internal(
+                "captured local entered a new lexical lifetime before CloseLocal",
+            ));
+        }
+        *binding = FrameBinding::Uninitialized;
+        Ok(())
+    }
+
+    fn get_local_checked(&mut self, index: u16) -> Result<Value, Error> {
+        let definition = self.local_definition(index)?;
+        if !definition.is_lexical {
+            return Err(Error::internal(
+                "checked local read referenced an ordinary definition",
+            ));
+        }
+        let binding = self
+            .locals
+            .get(usize::from(index))
+            .ok_or_else(|| Error::internal("local index is out of bounds"))?;
+        match binding {
+            FrameBinding::Direct(value) => Ok(value.clone()),
+            FrameBinding::Uninitialized => Err(self.lexical_uninitialized_error(definition.name)?),
+            FrameBinding::Captured(root) => {
+                let raw = self
+                    .runtime
+                    .raw_var_ref_value(root)
+                    .map_err(runtime_error_to_vm_error)?;
+                if matches!(raw, RawValue::Uninitialized) {
+                    Err(self.lexical_uninitialized_error(definition.name)?)
+                } else {
+                    self.runtime
+                        .root_raw_value(&raw)
+                        .map_err(runtime_error_to_vm_error)
+                }
+            }
+        }
+    }
+
+    fn initialize_local(&mut self, index: u16, value: Value) -> Result<(), Error> {
+        if !self.local_definition(index)?.is_lexical {
+            return Err(Error::internal(
+                "lexical initialization referenced an ordinary local definition",
+            ));
+        }
+        let binding = self
+            .locals
+            .get_mut(usize::from(index))
+            .ok_or_else(|| Error::internal("local index is out of bounds"))?;
+        match binding {
+            FrameBinding::Direct(slot) => {
+                *slot = value;
+                Ok(())
+            }
+            FrameBinding::Uninitialized => {
+                *binding = FrameBinding::Direct(value);
+                Ok(())
+            }
+            FrameBinding::Captured(root) => self
+                .runtime
+                .write_var_ref(root, value)
+                .map_err(runtime_error_to_vm_error),
+        }
+    }
+
+    fn put_local_checked(&mut self, index: u16, value: Value) -> Result<(), Error> {
+        let definition = self.local_definition(index)?;
+        if !definition.is_lexical {
+            return Err(Error::internal(
+                "checked local write referenced an ordinary definition",
+            ));
+        }
+        let binding = self
+            .locals
+            .get_mut(usize::from(index))
+            .ok_or_else(|| Error::internal("local index is out of bounds"))?;
+        match binding {
+            FrameBinding::Direct(slot) => {
+                if definition.is_const {
+                    return Err(self.lexical_read_only_error(definition.name)?);
+                }
+                *slot = value;
+                Ok(())
+            }
+            FrameBinding::Uninitialized => Err(self.lexical_uninitialized_error(definition.name)?),
+            FrameBinding::Captured(root) => {
+                let cell = self
+                    .runtime
+                    .0
+                    .state
+                    .borrow()
+                    .heap
+                    .var_ref(root.id())
+                    .map_err(|error| Error::internal(error.to_string()))?
+                    .clone();
+                if matches!(cell.value, RawValue::Uninitialized) {
+                    return Err(self.lexical_uninitialized_error(definition.name)?);
+                }
+                if cell.is_const {
+                    return Err(self.lexical_read_only_error(definition.name)?);
+                }
+                self.runtime
+                    .write_var_ref(root, value)
+                    .map_err(runtime_error_to_vm_error)
+            }
+        }
+    }
+
+    fn close_local(&mut self, index: u16) -> Result<(), Error> {
+        if !self.local_definition(index)?.is_lexical {
+            return Err(Error::internal(
+                "CloseLocal referenced an ordinary local definition",
+            ));
+        }
+        let binding = self
+            .locals
+            .get_mut(usize::from(index))
+            .ok_or_else(|| Error::internal("local index is out of bounds"))?;
+        close_frame_binding(&self.runtime, binding)
     }
 
     fn get_argument(&mut self, index: u16) -> Result<Value, Error> {
@@ -1334,6 +1605,15 @@ impl VmHost for RuntimeVmHost {
     }
 
     fn get_var_ref(&mut self, index: u16) -> Result<Value, Error> {
+        let descriptor = self
+            .closure_variables
+            .get(usize::from(index))
+            .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?;
+        if descriptor.is_lexical {
+            return Err(Error::internal(
+                "unchecked closure read referenced a lexical binding",
+            ));
+        }
         let root = self
             .closure_slots
             .get(usize::from(index))
@@ -1344,6 +1624,15 @@ impl VmHost for RuntimeVmHost {
     }
 
     fn put_var_ref(&mut self, index: u16, value: Value) -> Result<(), Error> {
+        let descriptor = self
+            .closure_variables
+            .get(usize::from(index))
+            .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?;
+        if descriptor.is_lexical {
+            return Err(Error::internal(
+                "unchecked closure write referenced a lexical binding",
+            ));
+        }
         let root = self
             .closure_slots
             .get(usize::from(index))
@@ -1351,6 +1640,67 @@ impl VmHost for RuntimeVmHost {
         self.runtime
             .write_var_ref(root, value)
             .map_err(|error| Error::internal(error.to_string()))
+    }
+
+    fn get_var_ref_checked(&mut self, index: u16) -> Result<Value, Error> {
+        let descriptor = self
+            .closure_variables
+            .get(usize::from(index))
+            .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?;
+        if !descriptor.is_lexical {
+            return Err(Error::internal(
+                "checked closure read referenced an ordinary binding",
+            ));
+        }
+        let root = self
+            .closure_slots
+            .get(usize::from(index))
+            .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?;
+        let raw = self
+            .runtime
+            .raw_var_ref_value(root)
+            .map_err(runtime_error_to_vm_error)?;
+        if matches!(raw, RawValue::Uninitialized) {
+            return Err(self.lexical_uninitialized_error(self.closure_name(index)?)?);
+        }
+        self.runtime
+            .root_raw_value(&raw)
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn put_var_ref_checked(&mut self, index: u16, value: Value) -> Result<(), Error> {
+        let descriptor = self
+            .closure_variables
+            .get(usize::from(index))
+            .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?;
+        if !descriptor.is_lexical {
+            return Err(Error::internal(
+                "checked closure write referenced an ordinary binding",
+            ));
+        }
+        let root = self
+            .closure_slots
+            .get(usize::from(index))
+            .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?;
+        let cell = self
+            .runtime
+            .0
+            .state
+            .borrow()
+            .heap
+            .var_ref(root.id())
+            .map_err(|error| Error::internal(error.to_string()))?
+            .clone();
+        let name = self.closure_name(index)?;
+        if matches!(cell.value, RawValue::Uninitialized) {
+            return Err(self.lexical_uninitialized_error(name)?);
+        }
+        if cell.is_const {
+            return Err(self.lexical_read_only_error(name)?);
+        }
+        self.runtime
+            .write_var_ref(root, value)
+            .map_err(runtime_error_to_vm_error)
     }
 }
 
@@ -1364,6 +1714,8 @@ struct FlatFunction {
     constants: Vec<FlatConstant>,
     metadata: FunctionMetadata,
     func_name: Option<JsString>,
+    argument_definitions: Vec<UnlinkedVariableDefinition>,
+    local_definitions: Vec<UnlinkedVariableDefinition>,
     closure_variables: Vec<ClosureVariable>,
     debug: Option<UnlinkedFunctionDebug>,
 }
@@ -1374,6 +1726,8 @@ struct FlattenFrame {
     constants: Vec<FlatConstant>,
     metadata: FunctionMetadata,
     func_name: Option<JsString>,
+    argument_definitions: Vec<UnlinkedVariableDefinition>,
+    local_definitions: Vec<UnlinkedVariableDefinition>,
     closure_variables: Vec<ClosureVariable>,
     debug: Option<UnlinkedFunctionDebug>,
 }
@@ -1387,6 +1741,8 @@ impl FlattenFrame {
             remaining: parts.constants.into_iter(),
             metadata: parts.metadata,
             func_name: parts.func_name,
+            argument_definitions: parts.argument_definitions,
+            local_definitions: parts.local_definitions,
             closure_variables: parts.closure_variables,
             debug: parts.debug,
         }
@@ -3960,6 +4316,27 @@ impl Runtime {
         Ok(VarRefRoot::from_owned_handle(self.clone(), id))
     }
 
+    fn new_uninitialized_captured_var_ref(
+        &self,
+        is_lexical: bool,
+        is_const: bool,
+        kind: ClosureVariableKind,
+    ) -> Result<VarRefRoot, RuntimeError> {
+        let _operation = self.operation();
+        let id = self
+            .0
+            .state
+            .borrow_mut()
+            .heap
+            .allocate_var_ref(VarRefData::captured(
+                RawValue::Uninitialized,
+                is_lexical,
+                is_const,
+                kind,
+            ))?;
+        Ok(VarRefRoot::from_owned_handle(self.clone(), id))
+    }
+
     fn set_var_ref_metadata(
         &self,
         root: &VarRefRoot,
@@ -3997,6 +4374,14 @@ impl Runtime {
         }
         let raw = self.0.state.borrow().heap.var_ref(root.id())?.value.clone();
         self.root_raw_value(&raw)
+    }
+
+    fn raw_var_ref_value(&self, root: &VarRefRoot) -> Result<RawValue, RuntimeError> {
+        let _operation = self.operation();
+        if !root.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("closure variable"));
+        }
+        Ok(self.0.state.borrow().heap.var_ref(root.id())?.value.clone())
     }
 
     fn validate_var_ref_metadata(
@@ -4938,6 +5323,10 @@ impl Runtime {
             }
 
             let mut closure_variables = function.closure_variables;
+            let argument_definitions = function.argument_definitions;
+            let local_definitions = function.local_definitions;
+            let mut linked_argument_definitions = Vec::with_capacity(argument_definitions.len());
+            let mut linked_local_definitions = Vec::with_capacity(local_definitions.len());
             let mut unlinked_debug = function.debug;
             let mut linked_debug = None;
             let mut auxiliary_atoms = Vec::new();
@@ -4972,6 +5361,34 @@ impl Runtime {
                         auxiliary_atoms.push(atom);
                         descriptor.name = ClosureVariableName::Atom(atom);
                     }
+                    for definition in argument_definitions {
+                        let name = definition
+                            .name
+                            .as_ref()
+                            .map(|name| state.atoms.intern_property_key_js_string(name))
+                            .transpose()?;
+                        auxiliary_atoms.extend(name);
+                        linked_argument_definitions.push(VariableDefinition {
+                            name,
+                            is_lexical: definition.is_lexical,
+                            is_const: definition.is_const,
+                            kind: definition.kind,
+                        });
+                    }
+                    for definition in local_definitions {
+                        let name = definition
+                            .name
+                            .as_ref()
+                            .map(|name| state.atoms.intern_property_key_js_string(name))
+                            .transpose()?;
+                        auxiliary_atoms.extend(name);
+                        linked_local_definitions.push(VariableDefinition {
+                            name,
+                            is_lexical: definition.is_lexical,
+                            is_const: definition.is_const,
+                            kind: definition.kind,
+                        });
+                    }
                     Ok(())
                 })();
                 if let Err(error) = linking {
@@ -4986,6 +5403,8 @@ impl Runtime {
                     realm,
                     metadata: function.metadata,
                     func_name: function.func_name,
+                    argument_definitions: linked_argument_definitions.into(),
+                    local_definitions: linked_local_definitions.into(),
                     closure_variables: closure_variables.into(),
                     debug: linked_debug,
                     auxiliary_atoms: auxiliary_atoms.into_boxed_slice(),
@@ -5084,6 +5503,8 @@ impl Runtime {
             root,
             code: bytecode.code.clone(),
             constants: bytecode.constants.clone(),
+            argument_definitions: bytecode.argument_definitions.clone(),
+            local_definitions: bytecode.local_definitions.clone(),
             closure_variables: bytecode.closure_variables.clone(),
             metadata: bytecode.metadata,
             realm: bytecode.realm,
@@ -5728,6 +6149,8 @@ impl Runtime {
             root,
             code,
             constants,
+            argument_definitions,
+            local_definitions,
             closure_variables,
             metadata,
             realm,
@@ -5743,8 +6166,15 @@ impl Runtime {
         let mut frame_arguments = Vec::with_capacity(argument_slots);
         frame_arguments.extend(arguments.iter().cloned().map(FrameBinding::Direct));
         frame_arguments.resize_with(argument_slots, || FrameBinding::Direct(Value::Undefined));
-        let mut frame_locals = (0..metadata.local_count)
-            .map(|_| FrameBinding::Direct(Value::Undefined))
+        let mut frame_locals = local_definitions
+            .iter()
+            .map(|definition| {
+                if definition.is_lexical {
+                    FrameBinding::Uninitialized
+                } else {
+                    FrameBinding::Direct(Value::Undefined)
+                }
+            })
             .collect::<Vec<_>>();
         if let Some(index) = metadata.function_name_local {
             let binding =
@@ -5760,6 +6190,8 @@ impl Runtime {
             active_frame_token: active_frame.token(),
             current_realm: realm,
             constants,
+            argument_definitions,
+            local_definitions,
             closure_variables,
             closure_slots,
             arguments: frame_arguments,
@@ -9969,6 +10401,50 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                 "function-name local requires a non-empty intrinsic function name",
             )));
         }
+        if function.argument_definitions().len() != usize::from(function.metadata().argument_count)
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "argument definition count does not match bytecode metadata",
+            )));
+        }
+        if function.local_definitions().len() != usize::from(function.metadata().local_count) {
+            return Err(RuntimeError::Engine(Error::internal(
+                "local definition count does not match bytecode metadata",
+            )));
+        }
+        for definition in function.argument_definitions() {
+            if definition.kind != ClosureVariableKind::Normal
+                || definition.is_lexical
+                || definition.is_const
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "argument definition is not an ordinary mutable binding",
+                )));
+            }
+        }
+        for (index, definition) in function.local_definitions().iter().enumerate() {
+            let is_function_name =
+                function.metadata().function_name_local == u16::try_from(index).ok();
+            if is_function_name {
+                if definition.kind != ClosureVariableKind::FunctionName
+                    || definition.is_lexical
+                    || definition.is_const != function.metadata().strict
+                    || definition.name.as_ref() != function.func_name()
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "function-name definition disagrees with bytecode metadata",
+                    )));
+                }
+            } else if definition.kind == ClosureVariableKind::FunctionName {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "ordinary local definition uses the function-name binding kind",
+                )));
+            } else if definition.is_const && !definition.is_lexical {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "a const local definition must also be lexical",
+                )));
+            }
+        }
         if function.closure_variables().len() != usize::from(function.metadata().closure_count) {
             return Err(RuntimeError::Engine(Error::internal(
                 "function closure descriptor count does not match bytecode metadata",
@@ -9991,23 +10467,25 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                     ClosureSource::Global | ClosureSource::ParentGlobal(_)
                 );
             let name = unlinked_closure_name(function, descriptor)?;
-            if requires_name != name.is_some() {
+            let allows_name = requires_name || descriptor.is_lexical;
+            if (requires_name && name.is_none()) || (!allows_name && name.is_some()) {
                 return Err(RuntimeError::Engine(Error::internal(
                     "closure descriptor name does not match its binding kind",
                 )));
             }
-            match descriptor.source {
-                ClosureSource::Global if !is_root => {
+            match (is_root, descriptor.source) {
+                (true, ClosureSource::Global) => {}
+                (true, _) => {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "root bytecode closure descriptor did not use Global",
+                    )));
+                }
+                (false, ClosureSource::Global) => {
                     return Err(RuntimeError::Engine(Error::internal(
                         "only root bytecode may resolve a global closure binding",
                     )));
                 }
-                ClosureSource::ParentGlobal(_) if is_root => {
-                    return Err(RuntimeError::Engine(Error::internal(
-                        "root bytecode cannot relay a parent global closure binding",
-                    )));
-                }
-                _ => {}
+                (false, _) => {}
             }
             if matches!(
                 descriptor.source,
@@ -10024,6 +10502,21 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
             function.constants().len(),
             function.metadata().max_stack,
         )?;
+
+        let mut captured_locals = vec![false; usize::from(function.metadata().local_count)];
+        for child in function
+            .constants()
+            .iter()
+            .filter_map(UnlinkedConstant::as_child)
+        {
+            for descriptor in child.closure_variables() {
+                if let ClosureSource::ParentLocal(index) = descriptor.source {
+                    if let Some(captured) = captured_locals.get_mut(usize::from(index)) {
+                        *captured = true;
+                    }
+                }
+            }
+        }
 
         for instruction in function.code() {
             match instruction {
@@ -10077,6 +10570,53 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                         "bytecode directly writes its private function-name local",
                     )));
                 }
+                crate::bytecode::Instruction::GetLocal(index)
+                | crate::bytecode::Instruction::PutLocal(index)
+                | crate::bytecode::Instruction::SetLocal(index)
+                    if function
+                        .local_definitions()
+                        .get(usize::from(*index))
+                        .is_some_and(|definition| definition.is_lexical) =>
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "unchecked local opcode referenced a lexical definition",
+                    )));
+                }
+                crate::bytecode::Instruction::SetLocalUninitialized(index)
+                | crate::bytecode::Instruction::GetLocalCheck(index)
+                | crate::bytecode::Instruction::InitializeLocal(index)
+                | crate::bytecode::Instruction::PutLocalCheck(index)
+                | crate::bytecode::Instruction::SetLocalCheck(index)
+                | crate::bytecode::Instruction::CloseLocal(index)
+                    if function
+                        .local_definitions()
+                        .get(usize::from(*index))
+                        .is_some_and(|definition| !definition.is_lexical) =>
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "checked lexical-local opcode referenced an ordinary definition",
+                    )));
+                }
+                crate::bytecode::Instruction::PutLocalCheck(index)
+                | crate::bytecode::Instruction::SetLocalCheck(index)
+                    if function
+                        .local_definitions()
+                        .get(usize::from(*index))
+                        .is_some_and(|definition| definition.is_const) =>
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "mutable lexical-local write bypassed a const definition",
+                    )));
+                }
+                crate::bytecode::Instruction::CloseLocal(index)
+                    if captured_locals
+                        .get(usize::from(*index))
+                        .is_some_and(|captured| !captured) =>
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "CloseLocal referenced a local which no child captures",
+                    )));
+                }
                 crate::bytecode::Instruction::PutVarRef(index)
                 | crate::bytecode::Instruction::SetVarRef(index)
                     if function
@@ -10093,6 +10633,8 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                 crate::bytecode::Instruction::GetVarRef(index)
                 | crate::bytecode::Instruction::PutVarRef(index)
                 | crate::bytecode::Instruction::SetVarRef(index)
+                | crate::bytecode::Instruction::GetVarRefCheck(index)
+                | crate::bytecode::Instruction::PutVarRefCheck(index)
                     if function
                         .closure_variables()
                         .get(usize::from(*index))
@@ -10105,6 +10647,39 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                 {
                     return Err(RuntimeError::Engine(Error::internal(
                         "lexical closure opcode referenced a global closure descriptor",
+                    )));
+                }
+                crate::bytecode::Instruction::GetVarRef(index)
+                | crate::bytecode::Instruction::PutVarRef(index)
+                | crate::bytecode::Instruction::SetVarRef(index)
+                    if function
+                        .closure_variables()
+                        .get(usize::from(*index))
+                        .is_some_and(|descriptor| descriptor.is_lexical) =>
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "unchecked closure opcode referenced a lexical binding",
+                    )));
+                }
+                crate::bytecode::Instruction::GetVarRefCheck(index)
+                | crate::bytecode::Instruction::PutVarRefCheck(index)
+                    if function
+                        .closure_variables()
+                        .get(usize::from(*index))
+                        .is_some_and(|descriptor| !descriptor.is_lexical) =>
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "checked closure opcode referenced an ordinary binding",
+                    )));
+                }
+                crate::bytecode::Instruction::PutVarRefCheck(index)
+                    if function
+                        .closure_variables()
+                        .get(usize::from(*index))
+                        .is_some_and(|descriptor| descriptor.is_const) =>
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "mutable checked closure write bypassed a const binding",
                     )));
                 }
                 crate::bytecode::Instruction::GetVar(index)
@@ -10129,6 +10704,12 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                 crate::bytecode::Instruction::GetLocal(index)
                 | crate::bytecode::Instruction::PutLocal(index)
                 | crate::bytecode::Instruction::SetLocal(index)
+                | crate::bytecode::Instruction::SetLocalUninitialized(index)
+                | crate::bytecode::Instruction::GetLocalCheck(index)
+                | crate::bytecode::Instruction::InitializeLocal(index)
+                | crate::bytecode::Instruction::PutLocalCheck(index)
+                | crate::bytecode::Instruction::SetLocalCheck(index)
+                | crate::bytecode::Instruction::CloseLocal(index)
                     if *index >= function.metadata().local_count =>
                 {
                     return Err(RuntimeError::Engine(Error::internal(
@@ -10147,6 +10728,8 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                 crate::bytecode::Instruction::GetVarRef(index)
                 | crate::bytecode::Instruction::PutVarRef(index)
                 | crate::bytecode::Instruction::SetVarRef(index)
+                | crate::bytecode::Instruction::GetVarRefCheck(index)
+                | crate::bytecode::Instruction::PutVarRefCheck(index)
                 | crate::bytecode::Instruction::GetVar(index)
                 | crate::bytecode::Instruction::GetVarUndef(index)
                 | crate::bytecode::Instruction::DeleteVar(index)
@@ -10175,28 +10758,28 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                                         "child closure descriptor source is out of parent bounds",
                                     ))
                                 })?;
-                            let is_function_name =
-                                function.metadata().function_name_local == Some(index);
-                            if is_function_name {
-                                let expected = (
-                                    false,
-                                    function.metadata().strict,
-                                    ClosureVariableKind::FunctionName,
-                                );
-                                if flags != expected {
-                                    return Err(RuntimeError::Engine(Error::internal(
-                                        "function-name closure descriptor disagrees with parent metadata",
-                                    )));
-                                }
-                                if unlinked_closure_name(child, descriptor)? != function.func_name()
-                                {
-                                    return Err(RuntimeError::Engine(Error::internal(
-                                        "function-name closure descriptor disagrees with the parent name",
-                                    )));
-                                }
-                            } else if descriptor.kind == ClosureVariableKind::FunctionName {
+                            let definition = function
+                                .local_definitions()
+                                .get(usize::from(index))
+                                .ok_or_else(|| {
+                                RuntimeError::Engine(Error::internal(
+                                    "child closure descriptor source is out of parent definitions",
+                                ))
+                            })?;
+                            if flags
+                                != (definition.is_lexical, definition.is_const, definition.kind)
+                            {
                                 return Err(RuntimeError::Engine(Error::internal(
-                                    "function-name closure descriptor points at an ordinary parent local",
+                                    "child closure descriptor flags disagree with its parent local definition",
+                                )));
+                            }
+                            if (definition.is_lexical
+                                || definition.kind == ClosureVariableKind::FunctionName)
+                                && unlinked_closure_name(child, descriptor)?
+                                    != definition.name.as_ref()
+                            {
+                                return Err(RuntimeError::Engine(Error::internal(
+                                    "child closure descriptor name disagrees with its parent local definition",
                                 )));
                             }
                             verify_capture_flags(slot, flags)?;
@@ -10208,9 +10791,27 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                                         "child closure descriptor source is out of parent bounds",
                                     ))
                                 })?;
-                            if descriptor.kind == ClosureVariableKind::FunctionName {
+                            let definition = function
+                                .argument_definitions()
+                                .get(usize::from(index))
+                                .ok_or_else(|| {
+                                    RuntimeError::Engine(Error::internal(
+                                        "child closure descriptor source is out of parent definitions",
+                                    ))
+                                })?;
+                            if flags
+                                != (definition.is_lexical, definition.is_const, definition.kind)
+                            {
                                 return Err(RuntimeError::Engine(Error::internal(
-                                    "function-name closure descriptor points at a parent argument",
+                                    "child closure descriptor flags disagree with its parent argument definition",
+                                )));
+                            }
+                            if definition.is_lexical
+                                && unlinked_closure_name(child, descriptor)?
+                                    != definition.name.as_ref()
+                            {
+                                return Err(RuntimeError::Engine(Error::internal(
+                                    "child closure descriptor name disagrees with its parent argument definition",
                                 )));
                             }
                             verify_capture_flags(slot, flags)?;
@@ -10229,12 +10830,13 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                                     "transitive closure descriptor flags do not match the parent slot",
                                 )));
                             }
-                            if descriptor.kind == ClosureVariableKind::FunctionName
+                            if (descriptor.is_lexical
+                                || descriptor.kind == ClosureVariableKind::FunctionName)
                                 && unlinked_closure_name(child, descriptor)?
                                     != unlinked_closure_name(function, parent)?
                             {
                                 return Err(RuntimeError::Engine(Error::internal(
-                                    "transitive function-name relay changed its binding name",
+                                    "transitive closure relay changed its lexical binding name",
                                 )));
                             }
                         }
@@ -10378,6 +10980,8 @@ fn flatten_unlinked_tree(function: UnlinkedFunction) -> Result<Vec<FlatFunction>
             constants: frame.constants,
             metadata: frame.metadata,
             func_name: frame.func_name,
+            argument_definitions: frame.argument_definitions,
+            local_definitions: frame.local_definitions,
             closure_variables: frame.closure_variables,
             debug: frame.debug,
         });
@@ -10981,7 +11585,9 @@ mod tests {
     use crate::bytecode::{BytecodeFunction, Instruction};
     use crate::debug::{DebugInfoMode, LineColumn, Pc2LineEntry, Pc2LineTable};
     use crate::error::{Error, ErrorKind, NativeErrorKind, NativeErrorMessage};
-    use crate::function::{UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug};
+    use crate::function::{
+        UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug, UnlinkedVariableDefinition,
+    };
     use crate::heap::{
         ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
         DynamicFunctionKind, FunctionDebugPosition, FunctionMetadata, NativeCProto,
@@ -19415,6 +20021,536 @@ mod tests {
     }
 
     #[test]
+    fn published_lexical_locals_use_named_tdz_errors_and_checked_mutation() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let lexical = |code, is_const, max_stack| {
+            UnlinkedFunction::new(
+                code,
+                Vec::new(),
+                FunctionMetadata {
+                    local_count: 1,
+                    max_stack,
+                    ..FunctionMetadata::default()
+                },
+            )
+            .with_variable_definitions(
+                Vec::new(),
+                vec![UnlinkedVariableDefinition::lexical(
+                    Some(JsString::from_static("namedLexical")),
+                    is_const,
+                )],
+            )
+        };
+
+        let tdz = runtime
+            .publish_unlinked_function(
+                context.realm,
+                lexical(
+                    vec![Instruction::GetLocalCheck(0), Instruction::Return],
+                    false,
+                    1,
+                ),
+            )
+            .unwrap();
+        let tdz = runtime.new_bytecode_closure(context.realm, &tdz).unwrap();
+        assert!(matches!(
+            context.call(&tdz, Value::Undefined, &[]),
+            Err(RuntimeError::Exception)
+        ));
+        let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
+            panic!("lexical TDZ did not throw an Error object");
+        };
+        let message = runtime.intern_property_key("message").unwrap();
+        assert_eq!(
+            context.get_property(&error, &message).unwrap(),
+            Value::String(JsString::from_static("namedLexical is not initialized"))
+        );
+
+        let mutable = runtime
+            .publish_unlinked_function(
+                context.realm,
+                lexical(
+                    vec![
+                        Instruction::SetLocalUninitialized(0),
+                        Instruction::PushI32(40),
+                        Instruction::InitializeLocal(0),
+                        Instruction::PushI32(42),
+                        Instruction::SetLocalCheck(0),
+                        Instruction::Return,
+                    ],
+                    false,
+                    1,
+                ),
+            )
+            .unwrap();
+        let mutable = runtime
+            .new_bytecode_closure(context.realm, &mutable)
+            .unwrap();
+        assert_eq!(
+            context.call(&mutable, Value::Undefined, &[]).unwrap(),
+            Value::Int(42)
+        );
+
+        let plain_put = runtime
+            .publish_unlinked_function(
+                context.realm,
+                lexical(
+                    vec![
+                        Instruction::PushI32(1),
+                        Instruction::InitializeLocal(0),
+                        Instruction::PushI32(2),
+                        Instruction::InitializeLocal(0),
+                        Instruction::GetLocalCheck(0),
+                        Instruction::Return,
+                    ],
+                    false,
+                    1,
+                ),
+            )
+            .unwrap();
+        let plain_put = runtime
+            .new_bytecode_closure(context.realm, &plain_put)
+            .unwrap();
+        assert_eq!(
+            context.call(&plain_put, Value::Undefined, &[]).unwrap(),
+            Value::Int(2)
+        );
+    }
+
+    #[test]
+    fn close_local_detaches_a_captured_uninitialized_lexical_lifetime() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let baseline_atoms = runtime.test_atom_count();
+        let child = UnlinkedFunction::new_with_closure_variables(
+            vec![Instruction::GetVarRefCheck(0), Instruction::Return],
+            vec![
+                UnlinkedConstant::primitive(Value::String(JsString::from_static("closedLexical")))
+                    .unwrap(),
+            ],
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentLocal(0),
+                name: ClosureVariableName::Constant(0),
+                is_lexical: true,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        );
+        let parent = UnlinkedFunction::new(
+            vec![
+                Instruction::SetLocalUninitialized(0),
+                Instruction::FClosure(0),
+                Instruction::PushI32(1),
+                Instruction::InitializeLocal(0),
+                Instruction::CloseLocal(0),
+                Instruction::PushI32(2),
+                Instruction::InitializeLocal(0),
+                Instruction::FClosure(0),
+                Instruction::Drop,
+                Instruction::PushI32(3),
+                Instruction::InitializeLocal(0),
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(child)],
+            FunctionMetadata {
+                local_count: 1,
+                max_stack: 2,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_variable_definitions(
+            Vec::new(),
+            vec![UnlinkedVariableDefinition::lexical(
+                Some(JsString::from_static("closedLexical")),
+                false,
+            )],
+        );
+        let parent = runtime
+            .publish_unlinked_function(context.realm, parent)
+            .unwrap();
+        assert!(runtime.test_atom_count() > baseline_atoms);
+        let parent_callable = runtime
+            .new_bytecode_closure(context.realm, &parent)
+            .unwrap();
+        drop(parent);
+        let Value::Object(child_object) = context
+            .call(&parent_callable, Value::Undefined, &[])
+            .unwrap()
+        else {
+            panic!("parent did not return its captured child closure");
+        };
+        drop(parent_callable);
+        let child_callable = runtime.as_callable(&child_object).unwrap().unwrap();
+        drop(child_object);
+        assert_eq!(
+            context
+                .call(&child_callable, Value::Undefined, &[])
+                .unwrap(),
+            Value::Int(1)
+        );
+        drop(child_callable);
+        runtime.run_gc().unwrap();
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
+    }
+
+    #[test]
+    fn close_local_exposes_direct_and_fresh_captured_plain_put_values() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let child = UnlinkedFunction::new_with_closure_variables(
+            vec![Instruction::GetVarRefCheck(0), Instruction::Return],
+            vec![
+                UnlinkedConstant::primitive(Value::String(JsString::from_static(
+                    "observedLexical",
+                )))
+                .unwrap(),
+            ],
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentLocal(0),
+                name: ClosureVariableName::Constant(0),
+                is_lexical: true,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        );
+        let parent = UnlinkedFunction::new(
+            vec![
+                Instruction::SetLocalUninitialized(0),
+                Instruction::FClosure(0),
+                Instruction::PutLocal(1),
+                Instruction::PushI32(1),
+                Instruction::InitializeLocal(0),
+                Instruction::CloseLocal(0),
+                Instruction::PushI32(2),
+                Instruction::InitializeLocal(0),
+                Instruction::GetLocalCheck(0),
+                Instruction::PutLocal(3),
+                Instruction::FClosure(0),
+                Instruction::PutLocal(2),
+                Instruction::PushI32(3),
+                Instruction::InitializeLocal(0),
+                Instruction::GetLocal(3),
+                Instruction::PushI32(100),
+                Instruction::Mul,
+                Instruction::GetLocal(1),
+                Instruction::Call(0),
+                Instruction::PushI32(10),
+                Instruction::Mul,
+                Instruction::Add,
+                Instruction::GetLocal(2),
+                Instruction::Call(0),
+                Instruction::Add,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(child)],
+            FunctionMetadata {
+                local_count: 4,
+                max_stack: 3,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_variable_definitions(
+            Vec::new(),
+            vec![
+                UnlinkedVariableDefinition::lexical(
+                    Some(JsString::from_static("observedLexical")),
+                    false,
+                ),
+                UnlinkedVariableDefinition::ordinary(None),
+                UnlinkedVariableDefinition::ordinary(None),
+                UnlinkedVariableDefinition::ordinary(None),
+            ],
+        );
+        let parent = runtime
+            .publish_unlinked_function(context.realm, parent)
+            .unwrap();
+        let parent = runtime
+            .new_bytecode_closure(context.realm, &parent)
+            .unwrap();
+
+        // Hundreds: the Direct value after CloseLocal. Tens: the old cell.
+        // Ones: the fresh captured cell after a second plain initialization.
+        assert_eq!(
+            context.call(&parent, Value::Undefined, &[]).unwrap(),
+            Value::Int(213)
+        );
+    }
+
+    #[test]
+    fn escaped_uninitialized_lexical_cell_keeps_its_named_tdz() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let child = UnlinkedFunction::new_with_closure_variables(
+            vec![Instruction::GetVarRefCheck(0), Instruction::Return],
+            vec![
+                UnlinkedConstant::primitive(Value::String(JsString::from_static("escapedLexical")))
+                    .unwrap(),
+            ],
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentLocal(0),
+                name: ClosureVariableName::Constant(0),
+                is_lexical: true,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        );
+        let parent = UnlinkedFunction::new(
+            vec![Instruction::FClosure(0), Instruction::Return],
+            vec![UnlinkedConstant::child(child)],
+            FunctionMetadata {
+                local_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_variable_definitions(
+            Vec::new(),
+            vec![UnlinkedVariableDefinition::lexical(
+                Some(JsString::from_static("escapedLexical")),
+                false,
+            )],
+        );
+        let parent = runtime
+            .publish_unlinked_function(context.realm, parent)
+            .unwrap();
+        let parent = runtime
+            .new_bytecode_closure(context.realm, &parent)
+            .unwrap();
+        let Value::Object(child) = context.call(&parent, Value::Undefined, &[]).unwrap() else {
+            panic!("parent did not return its uninitialized lexical closure");
+        };
+        let child = runtime.as_callable(&child).unwrap().unwrap();
+        assert!(matches!(
+            context.call(&child, Value::Undefined, &[]),
+            Err(RuntimeError::Exception)
+        ));
+        let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
+            panic!("escaped lexical TDZ did not throw an Error object");
+        };
+        let message = runtime.intern_property_key("message").unwrap();
+        assert_eq!(
+            context.get_property(&error, &message).unwrap(),
+            Value::String(JsString::from_static("escapedLexical is not initialized"))
+        );
+    }
+
+    #[test]
+    fn named_ordinary_definitions_capture_through_unnamed_descriptors() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let child = UnlinkedFunction::new_with_closure_variables(
+            vec![Instruction::GetVarRef(0), Instruction::Return],
+            Vec::new(),
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentLocal(0),
+                name: ClosureVariableName::None,
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        );
+        let parent = UnlinkedFunction::new(
+            vec![
+                Instruction::PushI32(7),
+                Instruction::PutLocal(0),
+                Instruction::FClosure(0),
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(child)],
+            FunctionMetadata {
+                local_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_variable_definitions(
+            Vec::new(),
+            vec![UnlinkedVariableDefinition::ordinary(Some(
+                JsString::from_static("ordinaryCapture"),
+            ))],
+        );
+        let parent = runtime
+            .publish_unlinked_function(context.realm, parent)
+            .unwrap();
+        let parent = runtime
+            .new_bytecode_closure(context.realm, &parent)
+            .unwrap();
+        let Value::Object(child) = context.call(&parent, Value::Undefined, &[]).unwrap() else {
+            panic!("parent did not return its child closure");
+        };
+        let child = runtime.as_callable(&child).unwrap().unwrap();
+        assert_eq!(
+            context.call(&child, Value::Undefined, &[]).unwrap(),
+            Value::Int(7)
+        );
+    }
+
+    #[test]
+    fn publication_rejects_vardef_and_checked_opcode_mismatches_before_allocation() {
+        let runtime = Runtime::new();
+        let context = runtime.new_context();
+        let baseline_atoms = runtime.test_atom_count();
+        let reject = |function| {
+            assert!(matches!(
+                runtime.publish_unlinked_function(context.realm, function),
+                Err(RuntimeError::Engine(_))
+            ));
+            assert_eq!(runtime.heap_counts().function_bytecode_nodes, 0);
+            assert_eq!(runtime.test_atom_count(), baseline_atoms);
+        };
+
+        reject(
+            UnlinkedFunction::new(
+                vec![Instruction::Undefined, Instruction::Return],
+                Vec::new(),
+                FunctionMetadata {
+                    local_count: 1,
+                    max_stack: 1,
+                    ..FunctionMetadata::default()
+                },
+            )
+            .with_variable_definitions(Vec::new(), Vec::new()),
+        );
+        reject(
+            UnlinkedFunction::new(
+                vec![Instruction::Undefined, Instruction::Return],
+                Vec::new(),
+                FunctionMetadata {
+                    argument_count: 1,
+                    max_stack: 1,
+                    ..FunctionMetadata::default()
+                },
+            )
+            .with_variable_definitions(
+                vec![UnlinkedVariableDefinition::lexical(
+                    Some(JsString::from_static("rejectedLexicalArgument")),
+                    false,
+                )],
+                Vec::new(),
+            ),
+        );
+        reject(
+            UnlinkedFunction::new(
+                vec![Instruction::GetLocal(0), Instruction::Return],
+                Vec::new(),
+                FunctionMetadata {
+                    local_count: 1,
+                    max_stack: 1,
+                    ..FunctionMetadata::default()
+                },
+            )
+            .with_variable_definitions(
+                Vec::new(),
+                vec![UnlinkedVariableDefinition::lexical(
+                    Some(JsString::from_static("rejectedLexicalRead")),
+                    false,
+                )],
+            ),
+        );
+        reject(
+            UnlinkedFunction::new(
+                vec![Instruction::GetLocalCheck(0), Instruction::Return],
+                Vec::new(),
+                FunctionMetadata {
+                    local_count: 1,
+                    max_stack: 1,
+                    ..FunctionMetadata::default()
+                },
+            )
+            .with_variable_definitions(
+                Vec::new(),
+                vec![UnlinkedVariableDefinition::ordinary(Some(
+                    JsString::from_static("rejectedOrdinaryRead"),
+                ))],
+            ),
+        );
+        reject(
+            UnlinkedFunction::new(
+                vec![
+                    Instruction::PushI32(1),
+                    Instruction::PutLocalCheck(0),
+                    Instruction::Undefined,
+                    Instruction::Return,
+                ],
+                Vec::new(),
+                FunctionMetadata {
+                    local_count: 1,
+                    max_stack: 1,
+                    ..FunctionMetadata::default()
+                },
+            )
+            .with_variable_definitions(
+                Vec::new(),
+                vec![UnlinkedVariableDefinition::lexical(
+                    Some(JsString::from_static("rejectedConstWrite")),
+                    true,
+                )],
+            ),
+        );
+
+        let mismatched_child = UnlinkedFunction::new_with_closure_variables(
+            vec![Instruction::GetVarRefCheck(0), Instruction::Return],
+            vec![
+                UnlinkedConstant::primitive(Value::String(JsString::from_static(
+                    "differentLexicalName",
+                )))
+                .unwrap(),
+            ],
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentLocal(0),
+                name: ClosureVariableName::Constant(0),
+                is_lexical: true,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        );
+        reject(
+            UnlinkedFunction::new(
+                vec![Instruction::FClosure(0), Instruction::Return],
+                vec![UnlinkedConstant::child(mismatched_child)],
+                FunctionMetadata {
+                    local_count: 1,
+                    max_stack: 1,
+                    ..FunctionMetadata::default()
+                },
+            )
+            .with_variable_definitions(
+                Vec::new(),
+                vec![UnlinkedVariableDefinition::lexical(
+                    Some(JsString::from_static("expectedLexicalName")),
+                    false,
+                )],
+            ),
+        );
+    }
+
+    #[test]
     fn publication_rejects_out_of_range_frame_operands() {
         let runtime = Runtime::new();
         let context = runtime.new_context();
@@ -19898,6 +21034,7 @@ mod tests {
     fn publication_preflights_closure_descriptors_before_heap_changes() {
         let runtime = Runtime::new();
         let context = runtime.new_context();
+        let baseline_atoms = runtime.test_atom_count();
         let missing_descriptor = UnlinkedFunction::new(
             vec![Instruction::GetVarRef(0), Instruction::Return],
             Vec::new(),
@@ -19912,6 +21049,62 @@ mod tests {
             Err(RuntimeError::Engine(_))
         ));
         assert_eq!(runtime.heap_counts().function_bytecode_nodes, 0);
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
+
+        let root_parent_local = UnlinkedFunction::new_with_closure_variables(
+            vec![Instruction::GetVarRef(0), Instruction::Return],
+            Vec::new(),
+            FunctionMetadata {
+                local_count: 1,
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentLocal(0),
+                name: ClosureVariableName::None,
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        );
+        assert!(matches!(
+            runtime.publish_unlinked_function(context.realm, root_parent_local),
+            Err(RuntimeError::Engine(_))
+        ));
+        assert_eq!(runtime.heap_counts().function_bytecode_nodes, 0);
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
+
+        let out_of_bounds_argument_child = UnlinkedFunction::new_with_closure_variables(
+            vec![Instruction::GetVarRef(0), Instruction::Return],
+            Vec::new(),
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentArgument(0),
+                name: ClosureVariableName::None,
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        );
+        let parent = UnlinkedFunction::new(
+            vec![Instruction::FClosure(0), Instruction::Return],
+            vec![UnlinkedConstant::child(out_of_bounds_argument_child)],
+            FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(matches!(
+            runtime.publish_unlinked_function(context.realm, parent),
+            Err(RuntimeError::Engine(_))
+        ));
+        assert_eq!(runtime.heap_counts().function_bytecode_nodes, 0);
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
 
         let out_of_bounds_child = UnlinkedFunction::new_with_closure_variables(
             vec![Instruction::GetVarRef(0), Instruction::Return],
@@ -19942,6 +21135,7 @@ mod tests {
             Err(RuntimeError::Engine(_))
         ));
         assert_eq!(runtime.heap_counts().function_bytecode_nodes, 0);
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
     }
 
     #[test]
@@ -20043,26 +21237,48 @@ mod tests {
         let runtime = Runtime::new();
         let context = runtime.new_context();
         let baseline_var_refs = runtime.heap_counts().var_ref_nodes;
-        let function = runtime
+        let child = UnlinkedFunction::new_with_closure_variables(
+            vec![
+                Instruction::GetVarRef(0),
+                Instruction::PushI32(1),
+                Instruction::Add,
+                Instruction::SetVarRef(0),
+                Instruction::Return,
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 2,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentClosure(0),
+                name: ClosureVariableName::None,
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        );
+        let root = runtime
             .publish_unlinked_function(
                 context.realm,
                 UnlinkedFunction::new_with_closure_variables(
+                    vec![Instruction::Undefined, Instruction::Return],
                     vec![
-                        Instruction::GetVarRef(0),
-                        Instruction::PushI32(1),
-                        Instruction::Add,
-                        Instruction::SetVarRef(0),
-                        Instruction::Return,
+                        UnlinkedConstant::child(child),
+                        UnlinkedConstant::primitive(Value::String(JsString::from_static(
+                            "sharedCellRoot",
+                        )))
+                        .unwrap(),
                     ],
-                    Vec::new(),
                     FunctionMetadata {
                         closure_count: 1,
-                        max_stack: 2,
+                        max_stack: 1,
                         ..FunctionMetadata::default()
                     },
                     vec![ClosureVariable {
-                        source: ClosureSource::ParentClosure(0),
-                        name: crate::heap::ClosureVariableName::None,
+                        source: ClosureSource::Global,
+                        name: ClosureVariableName::Constant(1),
                         is_lexical: false,
                         is_const: false,
                         kind: ClosureVariableKind::Normal,
@@ -20070,6 +21286,7 @@ mod tests {
                 ),
             )
             .unwrap();
+        let function = runtime.test_child_function_bytecode(&root, 0).unwrap();
         let cell = runtime
             .new_var_ref(Value::Int(1), false, false, ClosureVariableKind::Normal)
             .unwrap();

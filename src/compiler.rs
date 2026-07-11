@@ -15,7 +15,9 @@ use crate::bigint::JsBigInt;
 use crate::bytecode::{BytecodeFunction, Instruction, MAX_LOCAL_SLOTS, verify_parts};
 use crate::debug::{DebugInfoMode, Pc2LineEntry, Pc2LineTable, QuickJsSourceLocator, SourceOffset};
 use crate::error::{Error, ErrorKind, NativeErrorMessage, SourceLocation, SourceSpan};
-use crate::function::{UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug};
+use crate::function::{
+    UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug, UnlinkedVariableDefinition,
+};
 use crate::heap::{
     ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
     FunctionKind as BytecodeFunctionKind, FunctionMetadata,
@@ -3967,6 +3969,28 @@ fn lower_unlinked_tree(
         let function = functions[function_id]
             .take()
             .ok_or_else(|| Error::internal("function IR was lowered more than once"))?;
+        let argument_definitions = function
+            .parameters
+            .iter()
+            .map(|name| {
+                JsString::try_from_utf8(name)
+                    .map(|name| UnlinkedVariableDefinition::ordinary(Some(name)))
+                    .map_err(Error::from)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut local_definitions = (0..function.locals.len())
+            .map(|_| UnlinkedVariableDefinition::ordinary(None))
+            .collect::<Vec<_>>();
+        for binding in &function.bindings {
+            let BindingStorage::Local(index) = binding.storage else {
+                continue;
+            };
+            let definition = local_definitions
+                .get_mut(usize::from(index))
+                .ok_or_else(|| Error::internal("local binding definition is out of bounds"))?;
+            *definition =
+                UnlinkedVariableDefinition::ordinary(Some(JsString::try_from_utf8(&binding.name)?));
+        }
         let lowered_ops = lower_ops(function.ops)?;
         let code = lowered_ops.code;
         let constant_count = function.constants.len();
@@ -4032,7 +4056,9 @@ fn lower_unlinked_tree(
                 function.closure_variables,
             )
         };
-        let unlinked = unlinked.with_name(func_name);
+        let unlinked = unlinked
+            .with_name(func_name)
+            .with_variable_definitions(argument_definitions, local_definitions);
         lowered[function_id] = Some(match debug {
             Some(debug) => unlinked.with_debug(debug),
             None => unlinked,

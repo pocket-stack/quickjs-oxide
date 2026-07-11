@@ -154,23 +154,49 @@ pub(crate) trait VmHost {
     fn closure_count(&self) -> usize;
     fn get_local(&mut self, index: u16) -> Result<Value, Error>;
     fn put_local(&mut self, index: u16, value: Value) -> Result<(), Error>;
+    fn set_local_uninitialized(&mut self, index: u16) -> Result<(), Error>;
+    fn get_local_checked(&mut self, index: u16) -> Result<Value, Error>;
+    fn initialize_local(&mut self, index: u16, value: Value) -> Result<(), Error>;
+    fn put_local_checked(&mut self, index: u16, value: Value) -> Result<(), Error>;
+    fn close_local(&mut self, index: u16) -> Result<(), Error>;
     fn get_argument(&mut self, index: u16) -> Result<Value, Error>;
     fn put_argument(&mut self, index: u16, value: Value) -> Result<(), Error>;
     fn get_var_ref(&mut self, index: u16) -> Result<Value, Error>;
     fn put_var_ref(&mut self, index: u16, value: Value) -> Result<(), Error>;
+    fn get_var_ref_checked(&mut self, index: u16) -> Result<Value, Error>;
+    fn put_var_ref_checked(&mut self, index: u16, value: Value) -> Result<(), Error>;
+}
+
+enum DetachedLocal {
+    Initialized(Value),
+    Uninitialized,
 }
 
 struct DetachedHost<'a> {
     function: &'a BytecodeFunction,
-    locals: Vec<Value>,
+    locals: Vec<DetachedLocal>,
 }
 
 impl<'a> DetachedHost<'a> {
     fn new(function: &'a BytecodeFunction) -> Self {
         Self {
             function,
-            locals: vec![Value::Undefined; usize::from(function.local_count)],
+            locals: (0..function.local_count)
+                .map(|_| DetachedLocal::Initialized(Value::Undefined))
+                .collect(),
         }
+    }
+
+    fn local(&self, index: u16) -> Result<&DetachedLocal, Error> {
+        self.locals
+            .get(usize::from(index))
+            .ok_or_else(|| Error::internal("local-variable index is out of bounds"))
+    }
+
+    fn local_mut(&mut self, index: u16) -> Result<&mut DetachedLocal, Error> {
+        self.locals
+            .get_mut(usize::from(index))
+            .ok_or_else(|| Error::internal("local-variable index is out of bounds"))
     }
 }
 
@@ -363,18 +389,59 @@ impl VmHost for DetachedHost<'_> {
     }
 
     fn get_local(&mut self, index: u16) -> Result<Value, Error> {
-        self.locals
-            .get(usize::from(index))
-            .cloned()
-            .ok_or_else(|| Error::internal("local-variable index is out of bounds"))
+        match self.local(index)? {
+            DetachedLocal::Initialized(value) => Ok(value.clone()),
+            DetachedLocal::Uninitialized => Err(Error::internal(
+                "unchecked local read reached an uninitialized lexical binding",
+            )),
+        }
     }
 
     fn put_local(&mut self, index: u16, value: Value) -> Result<(), Error> {
-        let local = self
-            .locals
-            .get_mut(usize::from(index))
-            .ok_or_else(|| Error::internal("local-variable index is out of bounds"))?;
-        *local = value;
+        let local = self.local_mut(index)?;
+        if matches!(local, DetachedLocal::Uninitialized) {
+            return Err(Error::internal(
+                "unchecked local write reached an uninitialized lexical binding",
+            ));
+        }
+        *local = DetachedLocal::Initialized(value);
+        Ok(())
+    }
+
+    fn set_local_uninitialized(&mut self, index: u16) -> Result<(), Error> {
+        *self.local_mut(index)? = DetachedLocal::Uninitialized;
+        Ok(())
+    }
+
+    fn get_local_checked(&mut self, index: u16) -> Result<Value, Error> {
+        match self.local(index)? {
+            DetachedLocal::Initialized(value) => Ok(value.clone()),
+            DetachedLocal::Uninitialized => Err(Error::new(
+                ErrorKind::Reference,
+                "lexical variable is not initialized",
+            )),
+        }
+    }
+
+    fn initialize_local(&mut self, index: u16, value: Value) -> Result<(), Error> {
+        *self.local_mut(index)? = DetachedLocal::Initialized(value);
+        Ok(())
+    }
+
+    fn put_local_checked(&mut self, index: u16, value: Value) -> Result<(), Error> {
+        let local = self.local_mut(index)?;
+        if matches!(local, DetachedLocal::Uninitialized) {
+            return Err(Error::new(
+                ErrorKind::Reference,
+                "lexical variable is not initialized",
+            ));
+        }
+        *local = DetachedLocal::Initialized(value);
+        Ok(())
+    }
+
+    fn close_local(&mut self, index: u16) -> Result<(), Error> {
+        self.local(index)?;
         Ok(())
     }
 
@@ -393,6 +460,18 @@ impl VmHost for DetachedHost<'_> {
     }
 
     fn put_var_ref(&mut self, _index: u16, _value: Value) -> Result<(), Error> {
+        Err(Error::internal(
+            "detached VM has no closure-variable environment",
+        ))
+    }
+
+    fn get_var_ref_checked(&mut self, _index: u16) -> Result<Value, Error> {
+        Err(Error::internal(
+            "detached VM has no closure-variable environment",
+        ))
+    }
+
+    fn put_var_ref_checked(&mut self, _index: u16, _value: Value) -> Result<(), Error> {
         Err(Error::internal(
             "detached VM has no closure-variable environment",
         ))
@@ -587,6 +666,27 @@ impl CallFrame {
                         .ok_or_else(|| Error::internal("set local on an empty stack"))?;
                     host.put_local(*index, value)?;
                 }
+                Instruction::SetLocalUninitialized(index) => {
+                    host.set_local_uninitialized(*index)?;
+                }
+                Instruction::GetLocalCheck(index) => {
+                    self.stack.push(host.get_local_checked(*index)?);
+                }
+                Instruction::InitializeLocal(index) => {
+                    let value = self.pop()?;
+                    host.initialize_local(*index, value)?;
+                }
+                Instruction::PutLocalCheck(index) => {
+                    let value = self.pop()?;
+                    host.put_local_checked(*index, value)?;
+                }
+                Instruction::SetLocalCheck(index) => {
+                    let value =
+                        self.stack.last().cloned().ok_or_else(|| {
+                            Error::internal("set lexical local on an empty stack")
+                        })?;
+                    host.put_local_checked(*index, value)?;
+                }
                 Instruction::GetArg(index) => {
                     self.stack.push(host.get_argument(*index)?);
                 }
@@ -616,6 +716,16 @@ impl CallFrame {
                         .cloned()
                         .ok_or_else(|| Error::internal("set VarRef on an empty stack"))?;
                     host.put_var_ref(*index, value)?;
+                }
+                Instruction::GetVarRefCheck(index) => {
+                    self.stack.push(host.get_var_ref_checked(*index)?);
+                }
+                Instruction::PutVarRefCheck(index) => {
+                    let value = self.pop()?;
+                    host.put_var_ref_checked(*index, value)?;
+                }
+                Instruction::CloseLocal(index) => {
+                    host.close_local(*index)?;
                 }
                 Instruction::GetVar(index) | Instruction::GetVarUndef(index) => {
                     let throw_if_missing = matches!(instruction, Instruction::GetVar(_));
@@ -1520,6 +1630,105 @@ mod tests {
             max_stack: 1,
         };
         assert_eq!(Vm::new().execute(&written).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn detached_vm_enforces_lexical_local_tdz_and_initialization() {
+        let tdz = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::SetLocalUninitialized(0),
+                Instruction::GetLocalCheck(0),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 1,
+            max_stack: 1,
+        };
+        let error = Vm::new().execute(&tdz).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Reference);
+        assert_eq!(error.message(), "lexical variable is not initialized");
+
+        let initialized = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::SetLocalUninitialized(0),
+                Instruction::PushI32(40),
+                Instruction::InitializeLocal(0),
+                Instruction::GetLocalCheck(0),
+                Instruction::PushI32(2),
+                Instruction::Add,
+                Instruction::SetLocalCheck(0),
+                Instruction::CloseLocal(0),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 1,
+            max_stack: 2,
+        };
+        assert_eq!(Vm::new().execute(&initialized).unwrap(), Value::Int(42));
+
+        let consuming_write = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::SetLocalUninitialized(0),
+                Instruction::Undefined,
+                Instruction::InitializeLocal(0),
+                Instruction::PushI32(42),
+                Instruction::PutLocalCheck(0),
+                Instruction::GetLocalCheck(0),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 1,
+            max_stack: 1,
+        };
+        assert_eq!(Vm::new().execute(&consuming_write).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn detached_vm_rejects_checked_writes_in_the_tdz_and_allows_plain_reinitialization() {
+        for (write, preserves_value) in [
+            (Instruction::PutLocalCheck(0), false),
+            (Instruction::SetLocalCheck(0), true),
+        ] {
+            let mut code = vec![
+                Instruction::SetLocalUninitialized(0),
+                Instruction::PushI32(1),
+                write,
+            ];
+            if !preserves_value {
+                code.push(Instruction::Undefined);
+            }
+            code.push(Instruction::Return);
+            let function = BytecodeFunction {
+                name: None,
+                code,
+                constants: vec![],
+                local_count: 1,
+                max_stack: 1,
+            };
+            let error = Vm::new().execute(&function).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Reference);
+            assert_eq!(error.message(), "lexical variable is not initialized");
+        }
+
+        let twice = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::SetLocalUninitialized(0),
+                Instruction::PushI32(1),
+                Instruction::InitializeLocal(0),
+                Instruction::PushI32(2),
+                Instruction::InitializeLocal(0),
+                Instruction::GetLocalCheck(0),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 1,
+            max_stack: 1,
+        };
+        assert_eq!(Vm::new().execute(&twice).unwrap(), Value::Int(2));
     }
 
     #[test]
