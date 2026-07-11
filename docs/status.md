@@ -32,8 +32,22 @@ claim full parity.
   arbitrary-precision BigInts with QuickJS's short/heap normalization and
   2026-06-04 `asIntN`/`asUintN` behavior.
 - The compiler builds a nested `FunctionIr` tree with unresolved identifier
-  operations, then performs child-first QuickJS-style scope resolution before
-  lowering to stack bytecode. In addition to the primitive expression grammar,
+  operations over typed, function-local `ScopeId` and `BindingId` arenas.
+  Scope zero owns arguments and function-scoped storage, while every script or
+  ordinary function has a distinct authored-body scope. Non-empty blocks,
+  `if`, classic `for`, and `switch` add metadata-only scopes at the pinned
+  QuickJS boundaries; unresolved identifier reads and every lvalue rewrite
+  retain their original use-site scope, and each child function records its
+  parent's definition-site scope. Resolution walks children in source-order
+  DFS postorder, searches each ancestor from that frozen definition scope, and
+  deduplicates closure relays by storage identity rather than source name.
+  `var` bindings retain root storage plus their first declaration scope, sloppy
+  duplicate parameters remain distinct slots with the last slot winning, and
+  the private named-function binding remains a lazy root local. These scopes
+  are compiler metadata only in this slice: they emit no environment-lifecycle
+  bytecode and do not claim source lexical-declaration or TDZ semantics. After
+  resolution the compiler lowers to stack bytecode. In addition to the
+  primitive expression grammar,
   the current source path supports anonymous and named ordinary function
   expressions, simple parameters, `return`/fallthrough, function-local `var`,
   recursive block statements, `if`/`else` (including nearest-`if` binding),
@@ -87,9 +101,10 @@ claim full parity.
   exact diagnostics and source stacks. Stack-limit probes separately lock the
   65,534-slot discriminant, retained-body and retained-plus-Dup case-test
   boundaries, as well as unreachable source after `break`. Source lexical
-  declarations, the single shared CaseBlock scope, cross-case duplicate checks
-  and TDZ remain part of the wider lexical-declaration slice, so this is not
-  yet complete SwitchStatement parity. `for-in`/`for-of`/`for-await`,
+  declarations, CaseBlock binding population, cross-case duplicate checks,
+  runtime scope lifecycle and TDZ remain part of the wider lexical-declaration
+  slice, so this is not yet complete SwitchStatement parity.
+  `for-in`/`for-of`/`for-await`,
   try/catch/finally, global `var` and function declarations remain separate
   grammar/runtime slices. The classic head
   already ports QuickJS's
@@ -687,7 +702,8 @@ claim full parity.
 ## Not implemented yet
 
 The function slice is intentionally narrow. Function declarations/hoisting,
-block scopes, source `let`/`const` declarations and their declaration-
+source block-scoped bindings and environment lifetimes, source `let`/`const`
+declarations and their declaration-
 instantiation rules, destructuring, other general assignment targets, module
 resolution, computed property-definition
 naming, mapped `arguments`, arrow/async/generator functions and callable Proxy

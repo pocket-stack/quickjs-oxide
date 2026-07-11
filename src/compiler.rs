@@ -91,6 +91,21 @@ pub(crate) fn compile_unlinked_script_with_filename(
 }
 
 type FunctionId = usize;
+/// Function-local lexical scope identity. QuickJS carries the corresponding
+/// `scope_level` beside every unresolved scope opcode; keeping it typed avoids
+/// accidentally resolving a child use from the parent's final parse scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct ScopeId(usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct BindingId(usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ParentLink {
+    function: FunctionId,
+    definition_scope: ScopeId,
+}
+
 // QuickJS 2026-06-04 `JS_MAX_LOCAL_VARS` and `JS_STACK_SIZE_MAX` are both
 // 65,534. Call opcodes encode one more argument count value; the resulting
 // operand stack is checked against the smaller stack limit during lowering.
@@ -111,6 +126,48 @@ enum FunctionKind {
 enum StatementCompletion {
     Eval,
     Discard,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScopeKind {
+    FunctionRoot,
+    FunctionBody,
+    ProgramBody,
+    Block,
+    If,
+    For,
+    Switch,
+}
+
+#[derive(Debug)]
+struct IrScope {
+    parent: Option<ScopeId>,
+    kind: ScopeKind,
+    bindings: Vec<BindingId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BindingKind {
+    Normal,
+    FunctionName { is_const: bool },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BindingStorage {
+    Argument(u16),
+    Local(u16),
+}
+
+#[derive(Debug)]
+struct IrBinding {
+    name: String,
+    storage_scope: ScopeId,
+    /// Parse scope of the first declaration. QuickJS keeps this separately as
+    /// the `scope_next` origin even for function-scoped `var` storage.
+    declaration_scope: ScopeId,
+    storage: BindingStorage,
+    kind: BindingKind,
+    declaration_span: Option<Span>,
 }
 
 #[derive(Debug)]
@@ -138,6 +195,7 @@ enum MemberReference {
 struct IdentifierReference {
     name: String,
     span: Span,
+    scope: ScopeId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,6 +248,7 @@ enum IrOp {
     Identifier {
         name: String,
         span: Span,
+        scope: ScopeId,
         access: IdentifierAccess,
     },
 }
@@ -251,7 +310,10 @@ impl IrOp {
 
 #[derive(Debug)]
 struct FunctionIr {
-    parent: Option<FunctionId>,
+    /// Parent function plus the scope which was current at this function's
+    /// definition. This is QuickJS `parent` + `parent_scope_level` as one
+    /// invariant-preserving typed link.
+    parent: Option<ParentLink>,
     kind: FunctionKind,
     source: FunctionSourceInfo,
     /// Intrinsic name of a named function expression, independent of
@@ -261,6 +323,11 @@ struct FunctionIr {
     function_name_local: Option<u16>,
     parameters: Vec<String>,
     locals: Vec<String>,
+    scopes: Vec<IrScope>,
+    bindings: Vec<IrBinding>,
+    current_scope: ScopeId,
+    var_scope: ScopeId,
+    body_scope: ScopeId,
     /// QuickJS `eval_ret_idx`: the script-only hidden completion local.
     /// Keeping the typed slot separate from its unspellable debug name avoids
     /// confusing it with future source bindings or other synthetic locals.
@@ -290,19 +357,42 @@ struct FunctionSourceInfo {
 
 impl FunctionIr {
     fn new(
-        parent: Option<FunctionId>,
+        parent: Option<ParentLink>,
         kind: FunctionKind,
         source: FunctionSourceInfo,
         function_name: Option<String>,
         parameters: Vec<String>,
         strict: bool,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         let (locals, eval_ret_local) = if matches!(kind, FunctionKind::Script) {
             (vec![EVAL_RET_LOCAL_NAME.to_owned()], Some(0))
         } else {
             (Vec::new(), None)
         };
-        Self {
+        // QuickJS reserves scope zero for arguments/function-scoped storage,
+        // then pushes the authored body scope. Named-expression self storage
+        // is a lazy local in the root, not a synthetic lexical parent scope.
+        let function_root = ScopeId(0);
+        let body = ScopeId(1);
+        let scopes = vec![
+            IrScope {
+                parent: None,
+                kind: ScopeKind::FunctionRoot,
+                bindings: Vec::new(),
+            },
+            IrScope {
+                parent: Some(function_root),
+                kind: if matches!(kind, FunctionKind::Script) {
+                    ScopeKind::ProgramBody
+                } else {
+                    ScopeKind::FunctionBody
+                },
+                bindings: Vec::new(),
+            },
+        ];
+        let current_scope = body;
+        let var_scope = function_root;
+        let mut function = Self {
             parent,
             kind,
             source,
@@ -310,6 +400,11 @@ impl FunctionIr {
             function_name_local: None,
             parameters,
             locals,
+            scopes,
+            bindings: Vec::new(),
+            current_scope,
+            var_scope,
+            body_scope: body,
             eval_ret_local,
             ops: Vec::new(),
             last_member_reference: None,
@@ -319,6 +414,64 @@ impl FunctionIr {
             break_controls: Vec::new(),
             stack_depth: 0,
             strict,
+        };
+        for (index, name) in function.parameters.clone().into_iter().enumerate() {
+            let index = u16::try_from(index)
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many arguments"))?;
+            function.add_binding(
+                function.var_scope,
+                function.var_scope,
+                name,
+                BindingStorage::Argument(index),
+                BindingKind::Normal,
+                None,
+            );
+        }
+        Ok(function)
+    }
+
+    fn add_binding(
+        &mut self,
+        storage_scope: ScopeId,
+        declaration_scope: ScopeId,
+        name: String,
+        storage: BindingStorage,
+        kind: BindingKind,
+        declaration_span: Option<Span>,
+    ) -> BindingId {
+        let binding = BindingId(self.bindings.len());
+        self.bindings.push(IrBinding {
+            name,
+            storage_scope,
+            declaration_scope,
+            storage,
+            kind,
+            declaration_span,
+        });
+        self.scopes[storage_scope.0].bindings.push(binding);
+        binding
+    }
+
+    fn binding_in_scope(&self, scope: ScopeId, name: &str) -> Option<&IrBinding> {
+        self.scopes[scope.0]
+            .bindings
+            .iter()
+            .rev()
+            .find_map(|binding| {
+                let binding = &self.bindings[binding.0];
+                (binding.name == name).then_some(binding)
+            })
+    }
+
+    fn binding_from_scope(&self, mut scope: ScopeId, name: &str) -> Option<ResolvedBinding> {
+        loop {
+            if let Some(binding) = self.binding_in_scope(scope, name) {
+                return Some(ResolvedBinding {
+                    storage: binding.storage,
+                    kind: binding.kind,
+                });
+            }
+            scope = self.scopes[scope.0].parent?;
         }
     }
 }
@@ -373,7 +526,7 @@ impl<'source> Parser<'source> {
                 Some("<eval>".to_owned()),
                 Vec::new(),
                 false,
-            )],
+            )?],
         };
         let strict = parser.directive_prologue_has_use_strict(0, false)?;
         parser.relex_current_with_strict(strict)?;
@@ -525,14 +678,20 @@ impl<'source> Parser<'source> {
 
     fn parse_block_statement(&mut self, completion: StatementCompletion) -> Result<(), Error> {
         self.advance()?;
+        if self.is_punctuator(Punctuator::RightBrace) {
+            return self.advance();
+        }
+        let scope = self.push_scope(ScopeKind::Block);
         while !self.is_punctuator(Punctuator::RightBrace) {
             self.parse_statement_or_decl(completion)?;
         }
-        self.advance()
+        self.advance()?;
+        self.pop_scope(scope)
     }
 
     fn parse_if_statement(&mut self, completion: StatementCompletion) -> Result<(), Error> {
         self.advance()?;
+        let scope = self.push_scope(ScopeKind::If);
         if matches!(completion, StatementCompletion::Eval) {
             self.set_eval_ret_undefined()?;
         }
@@ -566,6 +725,7 @@ impl<'source> Parser<'source> {
         self.current_ir_mut().last_member_reference = None;
         self.current_ir_mut().last_identifier_reference = None;
         self.anonymous_function_definition = None;
+        self.pop_scope(scope)?;
         Ok(())
     }
 
@@ -671,6 +831,7 @@ impl<'source> Parser<'source> {
         }
         let classic_head = self.for_head_has_top_level_semicolon();
         self.expect_punctuator(Punctuator::LeftParen)?;
+        let scope = self.push_scope(ScopeKind::For);
 
         // QuickJS parses the classic initializer with PF_IN_ACCEPTED clear.
         // Keep that mode explicit even while the AllowIn operator itself
@@ -780,6 +941,7 @@ impl<'source> Parser<'source> {
             self.patch_jump(jump, break_target)?;
         }
         self.finish_control_statement();
+        self.pop_scope(scope)?;
         Ok(())
     }
 
@@ -802,6 +964,7 @@ impl<'source> Parser<'source> {
             .checked_add(1)
             .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
         self.require_stack_depth(switch_depth, "switch discriminant")?;
+        let scope = self.push_scope(ScopeKind::Switch);
         self.push_break_control(BreakControlKind::Switch, None, switch_depth, 1);
         self.expect_punctuator(Punctuator::LeftBrace)?;
 
@@ -885,6 +1048,7 @@ impl<'source> Parser<'source> {
         self.emit_instruction(Instruction::Drop)?;
         self.require_stack_depth(outer_depth, "switch tail")?;
         self.finish_control_statement();
+        self.pop_scope(scope)?;
         Ok(())
     }
 
@@ -1159,10 +1323,8 @@ impl<'source> Parser<'source> {
     fn register_local(&mut self, name: &str, span: Span) -> Result<(), Error> {
         let function = &mut self.functions[self.current_function];
         if function
-            .parameters
-            .iter()
-            .any(|parameter| parameter == name)
-            || function.locals.iter().any(|local| local == name)
+            .binding_in_scope(function.var_scope, name)
+            .is_some()
         {
             return Ok(());
         }
@@ -1172,7 +1334,17 @@ impl<'source> Parser<'source> {
                     .with_span(source_span(span)),
             );
         }
+        let index = u16::try_from(function.locals.len())
+            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
         function.locals.push(name.to_owned());
+        function.add_binding(
+            function.var_scope,
+            function.current_scope,
+            name.to_owned(),
+            BindingStorage::Local(index),
+            BindingKind::Normal,
+            Some(span),
+        );
         Ok(())
     }
 
@@ -1280,7 +1452,12 @@ impl<'source> Parser<'source> {
                 self.parse_assignment()?;
                 self.emit_instruction_at(operation, source_offset(assignment_span)?)?;
                 self.anonymous_function_definition = None;
-                self.emit_identifier_inherited(target.name, target.span, IdentifierAccess::Set)?;
+                self.emit_identifier_inherited(
+                    target.name,
+                    target.span,
+                    target.scope,
+                    IdentifierAccess::Set,
+                )?;
                 return Ok(());
             }
             let Some(target) = self.promote_tail_member_get_for_compound()? else {
@@ -1310,7 +1487,12 @@ impl<'source> Parser<'source> {
             // QuickJS emits no source position for ordinary `=`. The Set
             // inherits the LHS marker for an unmarked RHS or the last marker
             // produced while evaluating the RHS.
-            self.emit_identifier_inherited(target.name, target.span, IdentifierAccess::Set)?;
+            self.emit_identifier_inherited(
+                target.name,
+                target.span,
+                target.scope,
+                IdentifierAccess::Set,
+            )?;
             self.anonymous_function_definition = None;
             return Ok(());
         }
@@ -1363,7 +1545,12 @@ impl<'source> Parser<'source> {
             )))?;
             self.emit_instruction(Instruction::SetName(name_constant))?;
         }
-        self.emit_identifier_inherited(target.name, target.span, IdentifierAccess::Set)?;
+        self.emit_identifier_inherited(
+            target.name,
+            target.span,
+            target.scope,
+            IdentifierAccess::Set,
+        )?;
         let end = self.emit_instruction(Instruction::Goto(u32::MAX))?;
         let joined_depth = self.current_ir().stack_depth;
         if short_circuit_depth != joined_depth {
@@ -1882,6 +2069,7 @@ impl<'source> Parser<'source> {
             self.emit_identifier_inherited(
                 target.name,
                 target.span,
+                target.scope,
                 if postfix {
                     IdentifierAccess::Put
                 } else {
@@ -1993,6 +2181,7 @@ impl<'source> Parser<'source> {
                 IrOp::Identifier {
                     name,
                     span,
+                    scope,
                     access: IdentifierAccess::Get,
                 },
             ..
@@ -2005,6 +2194,7 @@ impl<'source> Parser<'source> {
         Ok(Some(IdentifierReference {
             name: name.clone(),
             span: *span,
+            scope: *scope,
         }))
     }
 
@@ -2023,6 +2213,7 @@ impl<'source> Parser<'source> {
         let IrOp::Identifier {
             name,
             span,
+            scope,
             access: IdentifierAccess::Get,
         } = operation.op
         else {
@@ -2034,7 +2225,7 @@ impl<'source> Parser<'source> {
             .stack_depth
             .checked_sub(1)
             .ok_or_else(|| Error::internal("identifier lvalue removal underflowed the stack"))?;
-        Ok(Some(IdentifierReference { name, span }))
+        Ok(Some(IdentifierReference { name, span, scope }))
     }
 
     /// Remove the final getter while leaving its already-evaluated base/key
@@ -2481,8 +2672,12 @@ impl<'source> Parser<'source> {
             .map(|(identifier, _)| identifier.value.clone());
         let is_anonymous = function_name.is_none();
         let child = self.functions.len();
+        let parent_scope = self.functions[parent].current_scope;
         self.functions.push(FunctionIr::new(
-            Some(parent),
+            Some(ParentLink {
+                function: parent,
+                definition_scope: parent_scope,
+            }),
             FunctionKind::Ordinary,
             FunctionSourceInfo {
                 span: function_span,
@@ -2492,7 +2687,7 @@ impl<'source> Parser<'source> {
             function_name,
             parameters,
             strict,
-        ));
+        )?);
         self.current_function = child;
         self.parse_function_body()?;
         let closing_brace = self.current().span;
@@ -2568,16 +2763,31 @@ impl<'source> Parser<'source> {
         access: IdentifierAccess,
         pc_site: SourceOffset,
     ) -> Result<usize, Error> {
-        self.emit_at(IrOp::Identifier { name, span, access }, pc_site)
+        let scope = self.current_ir().current_scope;
+        self.emit_at(
+            IrOp::Identifier {
+                name,
+                span,
+                scope,
+                access,
+            },
+            pc_site,
+        )
     }
 
     fn emit_identifier_inherited(
         &mut self,
         name: String,
         span: Span,
+        scope: ScopeId,
         access: IdentifierAccess,
     ) -> Result<usize, Error> {
-        self.emit(IrOp::Identifier { name, span, access })
+        self.emit(IrOp::Identifier {
+            name,
+            span,
+            scope,
+            access,
+        })
     }
 
     /// Materialize an `emit_source_pos` which appeared before an expression's
@@ -2938,6 +3148,30 @@ impl<'source> Parser<'source> {
     fn current_ir_mut(&mut self) -> &mut FunctionIr {
         &mut self.functions[self.current_function]
     }
+
+    fn push_scope(&mut self, kind: ScopeKind) -> ScopeId {
+        let function = self.current_ir_mut();
+        let parent = function.current_scope;
+        let scope = ScopeId(function.scopes.len());
+        function.scopes.push(IrScope {
+            parent: Some(parent),
+            kind,
+            bindings: Vec::new(),
+        });
+        function.current_scope = scope;
+        scope
+    }
+
+    fn pop_scope(&mut self, expected: ScopeId) -> Result<(), Error> {
+        let function = self.current_ir_mut();
+        if function.current_scope != expected {
+            return Err(Error::internal("parser scope stack is unbalanced"));
+        }
+        function.current_scope = function.scopes[expected.0]
+            .parent
+            .ok_or_else(|| Error::internal("cannot pop a function root scope"))?;
+        Ok(())
+    }
 }
 
 fn relocate_ir_fragment(
@@ -3063,36 +3297,269 @@ const fn strict_reserved_identifier(keyword: Keyword) -> bool {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BindingKind {
-    Normal,
-    FunctionName { is_const: bool },
+struct ResolvedBinding {
+    storage: BindingStorage,
+    kind: BindingKind,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Binding {
-    Argument(u16),
-    Local { index: u16, kind: BindingKind },
+fn function_resolution_order(tree: &FunctionTree) -> Result<Vec<FunctionId>, Error> {
+    if tree.functions.is_empty() {
+        return Err(Error::internal("compiler produced no root function"));
+    }
+    let mut children = vec![Vec::new(); tree.functions.len()];
+    for (function_id, function) in tree.functions.iter().enumerate().skip(1) {
+        let parent = function
+            .parent
+            .ok_or_else(|| Error::internal("non-root function has no parent"))?
+            .function;
+        if parent >= function_id {
+            return Err(Error::internal(
+                "function parent must precede its child in the arena",
+            ));
+        }
+        let siblings = children
+            .get_mut(parent)
+            .ok_or_else(|| Error::internal("function parent is out of bounds"))?;
+        siblings.push(function_id);
+    }
+    if tree.functions[0].parent.is_some() {
+        return Err(Error::internal("root function unexpectedly has a parent"));
+    }
+
+    let mut order = Vec::with_capacity(tree.functions.len());
+    let mut stack = vec![(0_usize, false)];
+    while let Some((function_id, visited)) = stack.pop() {
+        if visited {
+            order.push(function_id);
+            continue;
+        }
+        stack.push((function_id, true));
+        for &child in children[function_id].iter().rev() {
+            stack.push((child, false));
+        }
+    }
+    if order.len() != tree.functions.len() {
+        return Err(Error::internal("function arena is not one rooted tree"));
+    }
+    Ok(order)
+}
+
+fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
+    for (function_id, function) in tree.functions.iter().enumerate() {
+        if function.scopes.len() < 2
+            || function.var_scope != ScopeId(0)
+            || function.current_scope != function.body_scope
+            || function.scopes[0].parent.is_some()
+            || function.scopes[0].kind != ScopeKind::FunctionRoot
+            || function.body_scope.0 >= function.scopes.len()
+            || function.body_scope == function.var_scope
+        {
+            return Err(Error::internal("function scope roots are malformed"));
+        }
+        let expected_body = if matches!(function.kind, FunctionKind::Script) {
+            ScopeKind::ProgramBody
+        } else {
+            ScopeKind::FunctionBody
+        };
+        if function.scopes[function.body_scope.0].kind != expected_body {
+            return Err(Error::internal("function body scope kind is malformed"));
+        }
+        if let Some(parent_link) = function.parent {
+            let parent = tree
+                .functions
+                .get(parent_link.function)
+                .ok_or_else(|| Error::internal("function parent is out of bounds"))?;
+            if parent_link.definition_scope.0 >= parent.scopes.len() {
+                return Err(Error::internal("child definition scope is out of bounds"));
+            }
+        }
+
+        for (scope_index, scope) in function.scopes.iter().enumerate() {
+            if scope_index > 0 && scope.parent.is_none_or(|parent| parent.0 >= scope_index) {
+                return Err(Error::internal("lexical scope parent is malformed"));
+            }
+        }
+
+        let mut seen_bindings = vec![false; function.bindings.len()];
+        let mut seen_arguments = vec![false; function.parameters.len()];
+        let mut seen_locals = vec![false; function.locals.len()];
+        for (scope_index, scope) in function.scopes.iter().enumerate() {
+            for &binding_id in &scope.bindings {
+                let binding = function
+                    .bindings
+                    .get(binding_id.0)
+                    .ok_or_else(|| Error::internal("scope binding is out of bounds"))?;
+                if std::mem::replace(&mut seen_bindings[binding_id.0], true) {
+                    return Err(Error::internal(
+                        "binding appears more than once in the scope graph",
+                    ));
+                }
+                if binding.storage_scope != ScopeId(scope_index)
+                    || binding.declaration_scope.0 >= function.scopes.len()
+                {
+                    return Err(Error::internal("binding scope metadata is malformed"));
+                }
+                let mut declaration_ancestor = Some(binding.declaration_scope);
+                while let Some(scope) = declaration_ancestor {
+                    if scope == binding.storage_scope {
+                        break;
+                    }
+                    declaration_ancestor = function.scopes[scope.0].parent;
+                }
+                if declaration_ancestor.is_none() {
+                    return Err(Error::internal(
+                        "binding storage scope does not contain its declaration",
+                    ));
+                }
+                if binding
+                    .declaration_span
+                    .is_some_and(|span| span.start.byte_offset > span.end.byte_offset)
+                {
+                    return Err(Error::internal("binding declaration span is malformed"));
+                }
+                match binding.storage {
+                    BindingStorage::Argument(index) => {
+                        let index = usize::from(index);
+                        let parameter = function
+                            .parameters
+                            .get(index)
+                            .ok_or_else(|| Error::internal("argument binding is out of bounds"))?;
+                        if binding.storage_scope != function.var_scope
+                            || binding.declaration_scope != function.var_scope
+                            || binding.kind != BindingKind::Normal
+                            || binding.name != *parameter
+                        {
+                            return Err(Error::internal("argument binding metadata is malformed"));
+                        }
+                        if std::mem::replace(&mut seen_arguments[index], true) {
+                            return Err(Error::internal(
+                                "argument slot has more than one binding identity",
+                            ));
+                        }
+                    }
+                    BindingStorage::Local(index) => {
+                        let index = usize::from(index);
+                        let local = function
+                            .locals
+                            .get(index)
+                            .ok_or_else(|| Error::internal("local binding is out of bounds"))?;
+                        if binding.name != *local {
+                            return Err(Error::internal("local binding metadata is malformed"));
+                        }
+                        if std::mem::replace(&mut seen_locals[index], true) {
+                            return Err(Error::internal(
+                                "local slot has more than one binding identity",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        if seen_bindings.iter().any(|seen| !seen) {
+            return Err(Error::internal("binding is missing from the scope graph"));
+        }
+        if seen_arguments.iter().any(|seen| !seen) {
+            return Err(Error::internal(
+                "argument slot is missing its binding identity",
+            ));
+        }
+        let eval_ret_index = function.eval_ret_local.map(usize::from);
+        match function.kind {
+            FunctionKind::Script
+                if eval_ret_index == Some(0)
+                    && function
+                        .locals
+                        .first()
+                        .is_some_and(|name| name == EVAL_RET_LOCAL_NAME) => {}
+            FunctionKind::Ordinary if eval_ret_index.is_none() => {}
+            _ => {
+                return Err(Error::internal(
+                    "eval completion slot metadata is malformed",
+                ));
+            }
+        }
+        if function
+            .locals
+            .iter()
+            .enumerate()
+            .any(|(index, name)| name == EVAL_RET_LOCAL_NAME && Some(index) != eval_ret_index)
+            || function
+                .bindings
+                .iter()
+                .any(|binding| binding.name == EVAL_RET_LOCAL_NAME)
+        {
+            return Err(Error::internal(
+                "eval completion slot leaked into source binding lookup",
+            ));
+        }
+        for (index, seen) in seen_locals.into_iter().enumerate() {
+            if Some(index) == eval_ret_index {
+                if seen {
+                    return Err(Error::internal(
+                        "eval completion slot has a source binding identity",
+                    ));
+                }
+            } else if !seen {
+                return Err(Error::internal(
+                    "local slot is missing its binding identity",
+                ));
+            }
+        }
+
+        let function_name_bindings = function
+            .bindings
+            .iter()
+            .filter(|binding| matches!(binding.kind, BindingKind::FunctionName { .. }))
+            .collect::<Vec<_>>();
+        match (
+            function.function_name_local,
+            function_name_bindings.as_slice(),
+        ) {
+            (Some(index), [binding])
+                if matches!(function.kind, FunctionKind::Ordinary)
+                    && binding.storage == BindingStorage::Local(index)
+                    && binding.storage_scope == function.var_scope
+                    && binding.declaration_scope == function.var_scope
+                    && function.function_name.as_deref() == Some(binding.name.as_str())
+                    && binding.kind
+                        == (BindingKind::FunctionName {
+                            is_const: function.strict,
+                        }) => {}
+            (None, []) => {}
+            _ => return Err(Error::internal("function-name binding metadata disagrees")),
+        }
+        if (function_id == 0) != function.parent.is_none()
+            || (function_id == 0) != matches!(function.kind, FunctionKind::Script)
+        {
+            return Err(Error::internal("function topology is malformed"));
+        }
+    }
+    Ok(())
 }
 
 fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
-    // Parents are inserted before children, so reverse arena order is a
-    // child-first traversal. Descendant resolution may add a relay descriptor
-    // to an intermediate function, just like QuickJS `get_closure_var`.
-    for function_id in (0..tree.functions.len()).rev() {
+    validate_scope_graph(tree)?;
+    // QuickJS creates and resolves children depth-first in source order before
+    // resolving their parent. A plain reverse arena walk reverses sibling
+    // capture insertion, so derive the exact stable postorder explicitly.
+    for function_id in function_resolution_order(tree)? {
         let unresolved = tree.functions[function_id]
             .ops
             .iter()
             .enumerate()
             .filter_map(|(index, operation)| match &operation.op {
-                IrOp::Identifier { name, span, access } => {
-                    Some((index, name.clone(), *span, *access))
-                }
+                IrOp::Identifier {
+                    name,
+                    span,
+                    scope,
+                    access,
+                } => Some((index, name.clone(), *span, *scope, *access)),
                 _ => None,
             })
             .collect::<Vec<_>>();
 
-        for (operation_index, name, span, access) in unresolved {
-            let operation = resolve_identifier(tree, function_id, &name, span, access)?;
+        for (operation_index, name, span, scope, access) in unresolved {
+            let operation = resolve_identifier(tree, function_id, scope, &name, span, access)?;
             if matches!(operation, IrOp::Bytecode(Instruction::ThrowReadOnly(_)))
                 && let Some(return_site) = tree.functions[function_id]
                     .ops
@@ -3112,12 +3579,13 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
             tree.functions[function_id].ops[operation_index].op = operation;
         }
     }
-    Ok(())
+    validate_scope_graph(tree)
 }
 
 fn resolve_identifier(
     tree: &mut FunctionTree,
     function_id: FunctionId,
+    use_scope: ScopeId,
     name: &str,
     span: Span,
     access: IdentifierAccess,
@@ -3132,14 +3600,14 @@ fn resolve_identifier(
         // exist merely to reject deletion.
         return Ok(IrOp::Bytecode(Instruction::PushFalse));
     }
-    if let Some(binding) = find_or_create_own_binding(tree, function_id, name, span)? {
+    if let Some(binding) = find_or_create_own_binding(tree, function_id, use_scope, name, span)? {
         return binding_instruction(&mut tree.functions[function_id], binding, access, name)
             .map(IrOp::Bytecode);
     }
 
-    let mut defining_function = tree.functions[function_id].parent;
-    let binding = loop {
-        let Some(candidate) = defining_function else {
+    let mut defining_link = tree.functions[function_id].parent;
+    let (defining_function, binding) = loop {
+        let Some(link) = defining_link else {
             let closure_index = capture_global_path(tree, function_id, name)?;
             return Ok(match access {
                 IdentifierAccess::Get => IrOp::Bytecode(Instruction::GetVar(closure_index)),
@@ -3151,12 +3619,15 @@ fn resolve_identifier(
                 IdentifierAccess::Set => IrOp::GlobalSet(closure_index),
             });
         };
-        if let Some(binding) = find_or_create_own_binding(tree, candidate, name, span)? {
-            break binding;
+        let candidate = link.function;
+        let candidate_scope = link.definition_scope;
+        if let Some(binding) =
+            find_or_create_own_binding(tree, candidate, candidate_scope, name, span)?
+        {
+            break (candidate, binding);
         }
-        defining_function = tree.functions[candidate].parent;
+        defining_link = tree.functions[candidate].parent;
     };
-    let defining_function = defining_function.expect("binding search stopped at a live ancestor");
     let (closure_index, kind) =
         capture_binding_path(tree, defining_function, function_id, binding, name)?;
     closure_binding_instruction(
@@ -3181,7 +3652,9 @@ fn capture_global_path(
     let mut cursor = Some(consuming_function);
     while let Some(function_id) = cursor {
         path.push(function_id);
-        cursor = tree.functions[function_id].parent;
+        cursor = tree.functions[function_id]
+            .parent
+            .map(|parent| parent.function);
     }
     path.reverse();
 
@@ -3222,31 +3695,16 @@ fn ensure_string_constant(function: &mut FunctionIr, name: &str) -> Result<u32, 
 fn find_or_create_own_binding(
     tree: &mut FunctionTree,
     function_id: FunctionId,
+    start_scope: ScopeId,
     name: &str,
     span: Span,
-) -> Result<Option<Binding>, Error> {
+) -> Result<Option<ResolvedBinding>, Error> {
     let function = &tree.functions[function_id];
-    if let Some(index) = function
-        .parameters
-        .iter()
-        .rposition(|parameter| parameter == name)
-    {
-        return u16::try_from(index)
-            .map(Binding::Argument)
-            .map(Some)
-            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many arguments"));
+    if start_scope.0 >= function.scopes.len() {
+        return Err(Error::internal("identifier use scope is out of bounds"));
     }
-    if let Some(index) = function.locals.iter().position(|local| local == name) {
-        let index = u16::try_from(index)
-            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
-        let kind = if function.function_name_local == Some(index) {
-            BindingKind::FunctionName {
-                is_const: function.strict,
-            }
-        } else {
-            BindingKind::Normal
-        };
-        return Ok(Some(Binding::Local { index, kind }));
+    if let Some(binding) = function.binding_from_scope(start_scope, name) {
+        return Ok(Some(binding));
     }
     if name == "arguments" && matches!(function.kind, FunctionKind::Ordinary) {
         return Err(Error::syntax(
@@ -3267,53 +3725,60 @@ fn find_or_create_own_binding(
     }
     let index = u16::try_from(function.locals.len())
         .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+    let kind = BindingKind::FunctionName {
+        is_const: function.strict,
+    };
     function.locals.push(name.to_owned());
     function.function_name_local = Some(index);
-    Ok(Some(Binding::Local {
-        index,
-        kind: BindingKind::FunctionName {
-            is_const: function.strict,
-        },
+    function.add_binding(
+        function.var_scope,
+        function.var_scope,
+        name.to_owned(),
+        BindingStorage::Local(index),
+        kind,
+        None,
+    );
+    Ok(Some(ResolvedBinding {
+        storage: BindingStorage::Local(index),
+        kind,
     }))
 }
 
 fn binding_instruction(
     function: &mut FunctionIr,
-    binding: Binding,
+    binding: ResolvedBinding,
     access: IdentifierAccess,
     name: &str,
 ) -> Result<Instruction, Error> {
-    match (binding, access) {
-        (Binding::Argument(index), IdentifierAccess::Get | IdentifierAccess::GetOrUndefined) => {
-            Ok(Instruction::GetArg(index))
-        }
-        (Binding::Argument(_), IdentifierAccess::Delete)
-        | (Binding::Local { .. }, IdentifierAccess::Delete) => Ok(Instruction::PushFalse),
-        (Binding::Argument(index), IdentifierAccess::Put) => Ok(Instruction::PutArg(index)),
-        (Binding::Argument(index), IdentifierAccess::Set) => Ok(Instruction::SetArg(index)),
+    match (binding.storage, binding.kind, access) {
         (
-            Binding::Local { index, .. },
+            BindingStorage::Argument(index),
+            _,
+            IdentifierAccess::Get | IdentifierAccess::GetOrUndefined,
+        ) => Ok(Instruction::GetArg(index)),
+        (BindingStorage::Argument(_) | BindingStorage::Local(_), _, IdentifierAccess::Delete) => {
+            Ok(Instruction::PushFalse)
+        }
+        (BindingStorage::Argument(index), _, IdentifierAccess::Put) => {
+            Ok(Instruction::PutArg(index))
+        }
+        (BindingStorage::Argument(index), _, IdentifierAccess::Set) => {
+            Ok(Instruction::SetArg(index))
+        }
+        (
+            BindingStorage::Local(index),
+            _,
             IdentifierAccess::Get | IdentifierAccess::GetOrUndefined,
         ) => Ok(Instruction::GetLocal(index)),
+        (BindingStorage::Local(index), BindingKind::Normal, IdentifierAccess::Put) => {
+            Ok(Instruction::PutLocal(index))
+        }
+        (BindingStorage::Local(index), BindingKind::Normal, IdentifierAccess::Set) => {
+            Ok(Instruction::SetLocal(index))
+        }
         (
-            Binding::Local {
-                index,
-                kind: BindingKind::Normal,
-            },
-            IdentifierAccess::Put,
-        ) => Ok(Instruction::PutLocal(index)),
-        (
-            Binding::Local {
-                index,
-                kind: BindingKind::Normal,
-            },
-            IdentifierAccess::Set,
-        ) => Ok(Instruction::SetLocal(index)),
-        (
-            Binding::Local {
-                kind: BindingKind::FunctionName { is_const },
-                ..
-            },
+            BindingStorage::Local(_),
+            BindingKind::FunctionName { is_const },
             IdentifierAccess::Put | IdentifierAccess::Set,
         ) => function_name_write_instruction(function, name, is_const, access),
     }
@@ -3371,7 +3836,7 @@ fn capture_binding_path(
     tree: &mut FunctionTree,
     defining_function: FunctionId,
     consuming_function: FunctionId,
-    binding: Binding,
+    binding: ResolvedBinding,
     name: &str,
 ) -> Result<(u16, BindingKind), Error> {
     let mut path = Vec::new();
@@ -3380,13 +3845,15 @@ fn capture_binding_path(
         path.push(cursor);
         cursor = tree.functions[cursor]
             .parent
-            .ok_or_else(|| Error::internal("closure binding owner is not an ancestor"))?;
+            .ok_or_else(|| Error::internal("closure binding owner is not an ancestor"))?
+            .function;
     }
     path.reverse();
 
-    let (mut source, kind) = match binding {
-        Binding::Argument(index) => (ClosureSource::ParentArgument(index), BindingKind::Normal),
-        Binding::Local { index, kind } => (ClosureSource::ParentLocal(index), kind),
+    let kind = binding.kind;
+    let mut source = match binding.storage {
+        BindingStorage::Argument(index) => ClosureSource::ParentArgument(index),
+        BindingStorage::Local(index) => ClosureSource::ParentLocal(index),
     };
     let mut final_index = None;
     for function_id in path {
@@ -3416,11 +3883,17 @@ fn ensure_closure_variable(
     function: &mut FunctionIr,
     descriptor: ClosureVariable,
 ) -> Result<u16, Error> {
-    if let Some(index) = function
+    if let Some((index, candidate)) = function
         .closure_variables
         .iter()
-        .position(|candidate| *candidate == descriptor)
+        .enumerate()
+        .find(|(_, candidate)| same_closure_storage(candidate, &descriptor))
     {
+        if *candidate != descriptor {
+            return Err(Error::internal(
+                "closure storage source has conflicting binding metadata",
+            ));
+        }
         return u16::try_from(index)
             .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"));
     }
@@ -3434,6 +3907,13 @@ fn ensure_closure_variable(
         .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"))?;
     function.closure_variables.push(descriptor);
     Ok(index)
+}
+
+fn same_closure_storage(left: &ClosureVariable, right: &ClosureVariable) -> bool {
+    match (left.source, right.source) {
+        (ClosureSource::Global, ClosureSource::Global) => left.name == right.name,
+        (left, right) => left == right,
+    }
 }
 
 fn lower_detached_script(tree: FunctionTree) -> Result<BytecodeFunction, Error> {
@@ -3931,9 +4411,10 @@ mod tests {
     use crate::vm::Vm;
 
     use super::{
-        FunctionIr, FunctionKind, FunctionSourceInfo, MAX_BYTECODE_STACK, MAX_CALL_ARGUMENTS,
-        MAX_LOCAL_VARIABLES, SourceOffset, compile_script, compile_unlinked_script,
-        ensure_closure_variable, lex_error,
+        BindingKind, BindingStorage, FunctionIr, FunctionKind, FunctionSourceInfo,
+        MAX_BYTECODE_STACK, MAX_CALL_ARGUMENTS, MAX_LOCAL_VARIABLES, Parser, ScopeKind,
+        SourceOffset, compile_script, compile_unlinked_script, ensure_closure_variable, lex_error,
+        resolve_identifiers,
     };
 
     #[test]
@@ -3948,6 +4429,377 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::JsInternal);
         assert_eq!(error.message(), "string too long");
         assert_eq!(error.span(), None);
+    }
+
+    #[test]
+    fn parser_records_quickjs_scope_boundaries_and_child_definition_sites() {
+        let source = r#"
+            { (function blockChild(){ return 1; }); }
+            {}
+            if ((function ifChild(){ return true; })()) (function ifBody(){});
+            for ((function forChild(){ return 0; })(); false;) (function forBody(){});
+            switch ((function discriminant(){ return 0; })()) {
+                case (function caseChild(){ return 0; })(): (function bodyChild(){});
+            }
+        "#;
+        let tree = Parser::parse(source, JsString::from_static("<scope-test>")).unwrap();
+        let root = &tree.functions[0];
+        assert_eq!(
+            root.scopes
+                .iter()
+                .map(|scope| scope.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                ScopeKind::FunctionRoot,
+                ScopeKind::ProgramBody,
+                ScopeKind::Block,
+                ScopeKind::If,
+                ScopeKind::For,
+                ScopeKind::Switch,
+            ]
+        );
+
+        let parent_scope_kind = |name: &str| {
+            let function = tree.functions[1..]
+                .iter()
+                .find(|function| function.function_name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("missing parsed child {name}"));
+            let scope = function
+                .parent
+                .expect("child definition scope")
+                .definition_scope;
+            root.scopes[scope.0].kind
+        };
+        assert_eq!(parent_scope_kind("blockChild"), ScopeKind::Block);
+        assert_eq!(parent_scope_kind("ifChild"), ScopeKind::If);
+        assert_eq!(parent_scope_kind("ifBody"), ScopeKind::If);
+        assert_eq!(parent_scope_kind("forChild"), ScopeKind::For);
+        assert_eq!(parent_scope_kind("forBody"), ScopeKind::For);
+        assert_eq!(parent_scope_kind("discriminant"), ScopeKind::ProgramBody);
+        assert_eq!(parent_scope_kind("caseChild"), ScopeKind::Switch);
+        assert_eq!(parent_scope_kind("bodyChild"), ScopeKind::Switch);
+    }
+
+    #[test]
+    fn var_bindings_keep_root_storage_and_first_declaration_scope() {
+        let source = "(function(a,a){{var x=1;}{var x;}(function child(){return a;});return a+x;})";
+        let mut tree = Parser::parse(source, JsString::from_static("<scope-test>")).unwrap();
+        let function = &tree.functions[1];
+        assert_eq!(function.scopes[0].kind, ScopeKind::FunctionRoot);
+        assert_eq!(function.scopes[1].kind, ScopeKind::FunctionBody);
+        assert_eq!(function.scopes[2].kind, ScopeKind::Block);
+        assert_eq!(function.scopes[3].kind, ScopeKind::Block);
+
+        let parameters = function
+            .bindings
+            .iter()
+            .filter(|binding| binding.name == "a")
+            .map(|binding| binding.storage)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            parameters,
+            vec![BindingStorage::Argument(0), BindingStorage::Argument(1)]
+        );
+        let x = function
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "x")
+            .expect("function-scoped x binding");
+        assert_eq!(x.storage_scope.0, 0);
+        assert_eq!(x.declaration_scope.0, 2);
+        assert_eq!(x.storage, BindingStorage::Local(0));
+        assert_eq!(x.kind, BindingKind::Normal);
+
+        resolve_identifiers(&mut tree).unwrap();
+        assert!(tree.functions[1].ops.iter().any(|operation| matches!(
+            operation.op,
+            super::IrOp::Bytecode(Instruction::GetArg(1))
+        )));
+        assert!(tree.functions[1].ops.iter().any(|operation| matches!(
+            operation.op,
+            super::IrOp::Bytecode(Instruction::GetLocal(0))
+        )));
+        assert_eq!(
+            tree.functions[2].closure_variables[0].source,
+            ClosureSource::ParentArgument(1)
+        );
+    }
+
+    #[test]
+    fn definition_scope_selects_same_named_sibling_bindings() {
+        let source = "{(function left(){return shadow;});}{(function right(){return shadow;});}";
+        let mut tree = Parser::parse(source, JsString::from_static("<scope-test>")).unwrap();
+        let left_scope = tree.functions[1].parent.unwrap().definition_scope;
+        let right_scope = tree.functions[2].parent.unwrap().definition_scope;
+        assert_ne!(left_scope, right_scope);
+
+        let root = &mut tree.functions[0];
+        let left_local = u16::try_from(root.locals.len()).unwrap();
+        root.locals.push("shadow".to_owned());
+        root.add_binding(
+            left_scope,
+            left_scope,
+            "shadow".to_owned(),
+            BindingStorage::Local(left_local),
+            BindingKind::Normal,
+            None,
+        );
+        let right_local = u16::try_from(root.locals.len()).unwrap();
+        root.locals.push("shadow".to_owned());
+        root.add_binding(
+            right_scope,
+            right_scope,
+            "shadow".to_owned(),
+            BindingStorage::Local(right_local),
+            BindingKind::Normal,
+            None,
+        );
+
+        resolve_identifiers(&mut tree).unwrap();
+        assert_eq!(
+            tree.functions[1].closure_variables[0].source,
+            ClosureSource::ParentLocal(left_local)
+        );
+        assert_eq!(
+            tree.functions[2].closure_variables[0].source,
+            ClosureSource::ParentLocal(right_local)
+        );
+    }
+
+    #[test]
+    fn ancestor_lookup_uses_each_function_definition_scope() {
+        let source = "{(function middle(){return (function leaf(){return shadow;});});}";
+        let mut tree = Parser::parse(source, JsString::from_static("<scope-test>")).unwrap();
+        let middle_definition_scope = tree.functions[1].parent.unwrap().definition_scope;
+        let leaf_definition_scope = tree.functions[2].parent.unwrap().definition_scope;
+        assert_eq!(
+            tree.functions[1].scopes[leaf_definition_scope.0].kind,
+            ScopeKind::FunctionBody
+        );
+
+        let root = &mut tree.functions[0];
+        let local = u16::try_from(root.locals.len()).unwrap();
+        root.locals.push("shadow".to_owned());
+        root.add_binding(
+            middle_definition_scope,
+            middle_definition_scope,
+            "shadow".to_owned(),
+            BindingStorage::Local(local),
+            BindingKind::Normal,
+            None,
+        );
+
+        resolve_identifiers(&mut tree).unwrap();
+        assert_eq!(
+            tree.functions[1].closure_variables[0].source,
+            ClosureSource::ParentLocal(local)
+        );
+        assert_eq!(
+            tree.functions[2].closure_variables[0].source,
+            ClosureSource::ParentClosure(0)
+        );
+    }
+
+    #[test]
+    fn identifier_rewrites_preserve_the_original_use_scope() {
+        let source = "(function(value){{typeof value;delete value;value=1;value+=2;value||=3;++value;value++;}for(;;value+=1){break;}})";
+        let tree = Parser::parse(source, JsString::from_static("<scope-test>")).unwrap();
+        let function = &tree.functions[1];
+        let scope_kinds = function
+            .ops
+            .iter()
+            .filter_map(|operation| match operation.op {
+                super::IrOp::Identifier { scope, .. } => Some(function.scopes[scope.0].kind),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            scope_kinds
+                .iter()
+                .filter(|kind| **kind == ScopeKind::Block)
+                .count(),
+            11
+        );
+        assert_eq!(
+            scope_kinds
+                .iter()
+                .filter(|kind| **kind == ScopeKind::For)
+                .count(),
+            2
+        );
+        assert_eq!(scope_kinds.len(), 13);
+    }
+
+    #[test]
+    fn resolver_uses_source_order_dfs_postorder_for_sibling_relays() {
+        let source = "(function outer(a,b){return (function middle(){(function childA(){return a;});(function childB(){return b;});});})";
+        let mut tree = Parser::parse(source, JsString::from_static("<scope-test>")).unwrap();
+        resolve_identifiers(&mut tree).unwrap();
+
+        let function_id = |name: &str| {
+            tree.functions
+                .iter()
+                .position(|function| function.function_name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("missing parsed function {name}"))
+        };
+        let middle = function_id("middle");
+        let child_a = function_id("childA");
+        let child_b = function_id("childB");
+        assert_eq!(
+            tree.functions[middle]
+                .closure_variables
+                .iter()
+                .map(|binding| binding.source)
+                .collect::<Vec<_>>(),
+            vec![
+                ClosureSource::ParentArgument(0),
+                ClosureSource::ParentArgument(1),
+            ]
+        );
+        assert_eq!(
+            tree.functions[child_a].closure_variables[0].source,
+            ClosureSource::ParentClosure(0)
+        );
+        assert_eq!(
+            tree.functions[child_b].closure_variables[0].source,
+            ClosureSource::ParentClosure(1)
+        );
+    }
+
+    #[test]
+    fn closure_slots_deduplicate_by_storage_identity_and_reject_metadata_conflicts() {
+        let span = Span::new(Position::new(0, 1, 1), Position::new(0, 1, 1));
+        let mut function = FunctionIr::new(
+            None,
+            FunctionKind::Ordinary,
+            FunctionSourceInfo {
+                span,
+                definition: SourceOffset::try_from_usize(0).unwrap(),
+                range: None,
+            },
+            None,
+            Vec::new(),
+            false,
+        )
+        .unwrap();
+        let local = ClosureVariable {
+            source: ClosureSource::ParentLocal(0),
+            name: ClosureVariableName::None,
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+        };
+        assert_eq!(ensure_closure_variable(&mut function, local).unwrap(), 0);
+        assert_eq!(ensure_closure_variable(&mut function, local).unwrap(), 0);
+
+        let other_local = ClosureVariable {
+            source: ClosureSource::ParentLocal(1),
+            ..local
+        };
+        assert_eq!(
+            ensure_closure_variable(&mut function, other_local).unwrap(),
+            1
+        );
+
+        let conflict = ClosureVariable {
+            is_const: true,
+            ..local
+        };
+        assert_eq!(
+            ensure_closure_variable(&mut function, conflict)
+                .unwrap_err()
+                .message(),
+            "closure storage source has conflicting binding metadata"
+        );
+
+        for name in [0, 1] {
+            ensure_closure_variable(
+                &mut function,
+                ClosureVariable {
+                    source: ClosureSource::Global,
+                    name: ClosureVariableName::Constant(name),
+                    is_lexical: false,
+                    is_const: false,
+                    kind: ClosureVariableKind::Normal,
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(function.closure_variables.len(), 4);
+    }
+
+    #[test]
+    fn scope_graph_validation_rejects_invalid_definition_and_binding_identity() {
+        let mut bad_parent = Parser::parse(
+            "(function child(){})",
+            JsString::from_static("<scope-test>"),
+        )
+        .unwrap();
+        bad_parent.functions[1]
+            .parent
+            .as_mut()
+            .unwrap()
+            .definition_scope = super::ScopeId(999);
+        assert_eq!(
+            resolve_identifiers(&mut bad_parent).unwrap_err().message(),
+            "child definition scope is out of bounds"
+        );
+
+        let mut duplicate = Parser::parse(
+            "(function child(value){return value;})",
+            JsString::from_static("<scope-test>"),
+        )
+        .unwrap();
+        let binding = duplicate.functions[1].scopes[0].bindings[0];
+        duplicate.functions[1].scopes[0].bindings.push(binding);
+        assert_eq!(
+            resolve_identifiers(&mut duplicate).unwrap_err().message(),
+            "binding appears more than once in the scope graph"
+        );
+
+        let mut aliased_slot = Parser::parse(
+            "(function child(value,value){return value;})",
+            JsString::from_static("<scope-test>"),
+        )
+        .unwrap();
+        aliased_slot.functions[1].bindings[1].storage = BindingStorage::Argument(0);
+        assert_eq!(
+            resolve_identifiers(&mut aliased_slot)
+                .unwrap_err()
+                .message(),
+            "argument slot has more than one binding identity"
+        );
+
+        let mut missing_slot = Parser::parse(
+            "(function child(value){return value;})",
+            JsString::from_static("<scope-test>"),
+        )
+        .unwrap();
+        missing_slot.functions[1].scopes[0].bindings.clear();
+        missing_slot.functions[1].bindings.clear();
+        assert_eq!(
+            resolve_identifiers(&mut missing_slot)
+                .unwrap_err()
+                .message(),
+            "argument slot is missing its binding identity"
+        );
+
+        let mut malformed_scope =
+            Parser::parse("0", JsString::from_static("<scope-test>")).unwrap();
+        malformed_scope.functions[0].scopes.push(super::IrScope {
+            parent: Some(super::ScopeId(0)),
+            kind: ScopeKind::ProgramBody,
+            bindings: Vec::new(),
+        });
+        malformed_scope.functions[0].body_scope = super::ScopeId(2);
+        malformed_scope.functions[0].current_scope = super::ScopeId(2);
+        malformed_scope.functions[0].scopes[1].parent = Some(super::ScopeId(99));
+        assert_eq!(
+            resolve_identifiers(&mut malformed_scope)
+                .unwrap_err()
+                .message(),
+            "lexical scope parent is malformed"
+        );
     }
 
     fn evaluate(source: &str) -> Value {
@@ -7332,7 +8184,8 @@ mod tests {
             None,
             Vec::new(),
             false,
-        );
+        )
+        .unwrap();
         function.closure_variables = (0..MAX_LOCAL_VARIABLES - 1)
             .map(|index| ClosureVariable {
                 source: ClosureSource::ParentLocal(

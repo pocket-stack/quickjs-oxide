@@ -7,7 +7,15 @@ ES2025 behavior, not merely a JavaScript-like language.
 The repository is still an incomplete rewrite. The current vertical slices
 execute primitive expressions, named ordinary functions and closures, and
 defining-realm global bindings through the real lexer, late scope resolver,
-bytecode and VM. Block statements, `if`/`else`, `while`/`do-while`, classic
+bytecode and VM. The compiler now carries QuickJS-shaped, function-local
+`ScopeId`/`BindingId` arenas: scope zero owns arguments and function-scoped
+storage, a distinct body scope is pushed, unresolved identifiers retain their
+use-site scope, and child functions freeze their parent definition scope.
+Non-empty blocks, `if`, classic `for`, and `switch` establish the same
+parse-time scope boundaries as the pinned release; source-order DFS postorder
+resolution and storage-identity closure relays preserve shadowing and capture
+metadata without yet emitting lexical-environment bytecode. Block statements,
+`if`/`else`, `while`/`do-while`, classic
 `for (;;)` loops, `switch` control flow and labeled statements with named and unnamed
 `break`/`continue` now share the QuickJS statement-parser spine;
 scripts carry its hidden eval-completion local so empty blocks preserve a prior
@@ -23,9 +31,10 @@ expressions with strict equality across a middle `default`, preserves body
 fallthrough/completion, and uses QuickJS-shaped per-control drop counts when an
 outer `break` or `continue` crosses one or more switches. Terminal
 `return`/`throw` abandon the remaining frame stack as upstream does. Source
-`let`/`const`, the shared CaseBlock lexical scope and TDZ are still an explicit
-later boundary, so this is the switch control-flow core rather than a claim of
-complete SwitchStatement parity. `for-in`/`for-of`/`for-await` and
+`let`/`const`, lexical binding population and conflict checks, runtime scope
+lifecycle, and TDZ are still an explicit later boundary, so this is the switch
+control-flow core rather than a claim of complete SwitchStatement parity.
+`for-in`/`for-of`/`for-await` and
 try/catch/finally cleanup remain separate grammar slices.
 Untagged template literals now follow QuickJS `js_parse_template`: the cooked
 head is retained as the primitive receiver, `concat` is looked up exactly once
