@@ -156,6 +156,16 @@ pub(crate) trait VmHost {
 
 struct DetachedHost<'a> {
     function: &'a BytecodeFunction,
+    locals: Vec<Value>,
+}
+
+impl<'a> DetachedHost<'a> {
+    fn new(function: &'a BytecodeFunction) -> Self {
+        Self {
+            function,
+            locals: vec![Value::Undefined; usize::from(function.local_count)],
+        }
+    }
 }
 
 impl VmHost for DetachedHost<'_> {
@@ -330,12 +340,20 @@ impl VmHost for DetachedHost<'_> {
         0
     }
 
-    fn get_local(&mut self, _index: u16) -> Result<Value, Error> {
-        Err(Error::internal("detached VM has no local-variable frame"))
+    fn get_local(&mut self, index: u16) -> Result<Value, Error> {
+        self.locals
+            .get(usize::from(index))
+            .cloned()
+            .ok_or_else(|| Error::internal("local-variable index is out of bounds"))
     }
 
-    fn put_local(&mut self, _index: u16, _value: Value) -> Result<(), Error> {
-        Err(Error::internal("detached VM has no local-variable frame"))
+    fn put_local(&mut self, index: u16, value: Value) -> Result<(), Error> {
+        let local = self
+            .locals
+            .get_mut(usize::from(index))
+            .ok_or_else(|| Error::internal("local-variable index is out of bounds"))?;
+        *local = value;
+        Ok(())
     }
 
     fn get_argument(&mut self, _index: u16) -> Result<Value, Error> {
@@ -372,7 +390,7 @@ impl Vm {
     /// type error for an operation not valid for the operand types.
     pub fn execute(&mut self, function: &BytecodeFunction) -> Result<Value, Error> {
         let verified = function.verify()?;
-        let mut host = DetachedHost { function };
+        let mut host = DetachedHost::new(function);
         match CallFrame::new(usize::from(verified.max_stack)).execute(&function.code, &mut host)? {
             Completion::Return(value) => Ok(value),
             Completion::Throw(_) => Err(Error::internal(
@@ -1426,10 +1444,37 @@ mod tests {
                 Instruction::Return,
             ],
             constants: vec![],
+            local_count: 0,
             max_stack: 2,
         };
 
         assert_eq!(Vm::new().execute(&function).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn detached_vm_uses_the_declared_undefined_local_frame() {
+        let initial = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::GetLocal(0), Instruction::Return],
+            constants: vec![],
+            local_count: 1,
+            max_stack: 1,
+        };
+        assert_eq!(Vm::new().execute(&initial).unwrap(), Value::Undefined);
+
+        let written = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(42),
+                Instruction::PutLocal(0),
+                Instruction::GetLocal(0),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 1,
+            max_stack: 1,
+        };
+        assert_eq!(Vm::new().execute(&written).unwrap(), Value::Int(42));
     }
 
     #[test]
@@ -1445,6 +1490,7 @@ mod tests {
                 Instruction::Return,
             ],
             constants: vec![],
+            local_count: 0,
             max_stack: 3,
         };
 
@@ -1472,6 +1518,7 @@ mod tests {
                 Value::String(JsString::from_static("quick")),
                 Value::String(JsString::from_static("js")),
             ],
+            local_count: 0,
             max_stack: 2,
         };
 
@@ -1493,6 +1540,7 @@ mod tests {
                 Instruction::Return,
             ],
             constants: vec![Value::String(chunk.clone()), Value::String(chunk.clone())],
+            local_count: 0,
             max_stack: 2,
         };
         let Value::String(rope) = Vm::new().execute(&function).unwrap() else {
@@ -1509,6 +1557,7 @@ mod tests {
             name: None,
             code: function.code,
             constants: vec![Value::String(near_limit.clone()), Value::String(near_limit)],
+            local_count: 0,
             max_stack: 2,
         };
         let error = Vm::new().execute(&overflow).unwrap_err();
@@ -1532,6 +1581,7 @@ mod tests {
                 Instruction::Return,
             ],
             constants: vec![],
+            local_count: 0,
             max_stack: 2,
         };
 
@@ -1585,6 +1635,7 @@ mod tests {
                 Instruction::Return,
             ],
             constants: vec![],
+            local_count: 0,
             max_stack: 2,
         };
 

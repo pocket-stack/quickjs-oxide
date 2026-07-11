@@ -12,7 +12,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::atom::{Atom, AtomError, AtomKind, AtomSpelling, AtomTable};
-use crate::bytecode::verify_parts;
+use crate::bytecode::{MAX_LOCAL_SLOTS, verify_parts};
 use crate::compiler::{
     CompileOptions, DEFAULT_EVAL_FILENAME, compile_unlinked_script_with_filename,
 };
@@ -9867,6 +9867,11 @@ fn unlinked_closure_name<'a>(
 fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError> {
     let mut pending = vec![(function, true)];
     while let Some((function, is_root)) = pending.pop() {
+        if function.metadata().local_count > MAX_LOCAL_SLOTS {
+            return Err(RuntimeError::Engine(Error::internal(
+                "bytecode local count exceeds QuickJS JS_MAX_LOCAL_VARS",
+            )));
+        }
         if function.metadata().defined_argument_count > function.metadata().argument_count {
             return Err(RuntimeError::Engine(Error::internal(
                 "defined argument count exceeds function argument slots",
@@ -19353,6 +19358,21 @@ mod tests {
         assert_eq!(runtime.heap_counts().function_bytecode_nodes, 0);
 
         let function = UnlinkedFunction::new(
+            vec![Instruction::Undefined, Instruction::Return],
+            Vec::new(),
+            FunctionMetadata {
+                local_count: u16::MAX,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(matches!(
+            runtime.publish_unlinked_function(context.realm, function),
+            Err(RuntimeError::Engine(_))
+        ));
+        assert_eq!(runtime.heap_counts().function_bytecode_nodes, 0);
+
+        let function = UnlinkedFunction::new(
             vec![Instruction::DeleteVar(0), Instruction::Return],
             Vec::new(),
             FunctionMetadata {
@@ -20948,6 +20968,7 @@ mod tests {
                 Value::Object(object.clone()),
                 Value::BigInt(JsBigInt::one()),
             ],
+            local_count: 0,
             max_stack: 3,
         };
         let before = runtime

@@ -26,7 +26,7 @@ use std::rc::Rc;
 
 use crate::atom::Atom;
 use crate::bigint::JsBigInt;
-use crate::bytecode::Instruction;
+use crate::bytecode::{Instruction, MAX_LOCAL_SLOTS};
 use crate::debug::Pc2LineTable;
 use crate::error::NativeErrorKind;
 use crate::shape::{PropertyStorageKind, Shape};
@@ -1636,6 +1636,11 @@ impl Heap {
         &mut self,
         bytecode: FunctionBytecodeData,
     ) -> Result<FunctionBytecodeId, HeapError> {
+        if bytecode.metadata.local_count > MAX_LOCAL_SLOTS {
+            return Err(HeapError::Invariant(
+                "bytecode local count exceeds QuickJS JS_MAX_LOCAL_VARS",
+            ));
+        }
         if bytecode.metadata.defined_argument_count > bytecode.metadata.argument_count {
             return Err(HeapError::Invariant(
                 "defined argument count exceeds function argument slots",
@@ -3628,6 +3633,15 @@ mod tests {
         heap.release_object(prototype).unwrap();
 
         let code: Rc<[Instruction]> = Rc::from([]);
+        let mut too_many_locals = bytecode(&code, context, Vec::new(), Vec::new());
+        too_many_locals.metadata.local_count = u16::MAX;
+        assert_eq!(
+            heap.allocate_function_bytecode(too_many_locals),
+            Err(HeapError::Invariant(
+                "bytecode local count exceeds QuickJS JS_MAX_LOCAL_VARS"
+            ))
+        );
+
         let mut malformed = bytecode(&code, context, Vec::new(), Vec::new());
         malformed.metadata.closure_count = 1;
         assert!(matches!(

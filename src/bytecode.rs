@@ -4,6 +4,8 @@ use std::collections::VecDeque;
 
 /// QuickJS `JS_STACK_SIZE_MAX` for one bytecode function.
 pub const MAX_STACK_SIZE: u16 = 65_534;
+/// QuickJS `JS_MAX_LOCAL_VARS` for one bytecode function.
+pub const MAX_LOCAL_SLOTS: u16 = 65_534;
 
 /// Stack-machine operations deliberately use the names and stack behavior of
 /// their `QuickJS` counterparts. This typed form is the current compiler IR and
@@ -221,6 +223,9 @@ pub struct BytecodeFunction {
     pub name: Option<String>,
     pub code: Vec<Instruction>,
     pub constants: Vec<Value>,
+    /// Declared local frame width. Local operands are verified against this
+    /// boundary even when their instructions are unreachable.
+    pub local_count: u16,
     pub max_stack: u16,
 }
 
@@ -238,6 +243,11 @@ impl BytecodeFunction {
     /// Returns an internal error when bytecode is malformed. Source compilation
     /// must never produce such an error; decoders must reject it before use.
     pub fn verify(&self) -> Result<VerifiedBytecode, Error> {
+        if self.local_count > MAX_LOCAL_SLOTS {
+            return Err(Error::internal(
+                "declared local count exceeds QuickJS JS_MAX_LOCAL_VARS",
+            ));
+        }
         for instruction in &self.code {
             if let Instruction::SetName(index)
             | Instruction::ThrowReadOnly(index)
@@ -249,6 +259,13 @@ impl BytecodeFunction {
                 return Err(Error::internal(
                     "string-key opcode referenced a non-string constant",
                 ));
+            }
+            if let Instruction::GetLocal(index)
+            | Instruction::PutLocal(index)
+            | Instruction::SetLocal(index) = instruction
+                && *index >= self.local_count
+            {
+                return Err(Error::internal("local bytecode operand is out of bounds"));
             }
         }
         verify_parts(&self.code, self.constants.len(), self.max_stack)
@@ -412,7 +429,7 @@ fn enqueue_fallthrough(
 
 #[cfg(test)]
 mod tests {
-    use super::{BytecodeFunction, Instruction};
+    use super::{BytecodeFunction, Instruction, MAX_LOCAL_SLOTS};
     use crate::{JsString, Value};
 
     #[test]
@@ -428,6 +445,7 @@ mod tests {
                 Instruction::Return,
             ],
             constants: vec![],
+            local_count: 0,
             max_stack: 1,
         };
         assert_eq!(function.verify().unwrap().max_stack, 1);
@@ -439,6 +457,7 @@ mod tests {
             name: None,
             code: vec![Instruction::PushConst(0), Instruction::Return],
             constants: vec![],
+            local_count: 0,
             max_stack: 1,
         };
         assert!(bad_constant.verify().is_err());
@@ -455,6 +474,7 @@ mod tests {
                 Instruction::Return,
             ],
             constants: vec![Value::Undefined],
+            local_count: 0,
             max_stack: 2,
         };
         assert!(bad_join.verify().is_err());
@@ -463,6 +483,7 @@ mod tests {
             name: None,
             code: vec![Instruction::Undefined, Instruction::Return],
             constants: vec![],
+            local_count: 0,
             max_stack: u16::MAX,
         };
         assert!(excessive_declared_stack.verify().is_err());
@@ -476,6 +497,7 @@ mod tests {
                 Instruction::Return,
             ],
             constants: vec![],
+            local_count: 0,
             max_stack: 2,
         };
         assert_eq!(valid_nip.verify().unwrap().max_stack, 2);
@@ -488,6 +510,7 @@ mod tests {
                 Instruction::Return,
             ],
             constants: vec![],
+            local_count: 0,
             max_stack: 1,
         };
         assert!(nip_underflow.verify().is_err());
@@ -500,6 +523,7 @@ mod tests {
                 Instruction::ThrowReadOnly(0),
             ],
             constants: vec![Value::String(JsString::from_static("binding"))],
+            local_count: 0,
             max_stack: 2,
         };
         assert_eq!(postfix_readonly.verify().unwrap().max_stack, 2);
@@ -515,6 +539,7 @@ mod tests {
                 Instruction::PushConst(99),
             ],
             constants: vec![],
+            local_count: 0,
             max_stack: 1,
         };
         assert!(bad_constant.verify().is_err());
@@ -527,6 +552,7 @@ mod tests {
                 Instruction::SetName(99),
             ],
             constants: vec![],
+            local_count: 0,
             max_stack: 1,
         };
         assert!(bad_set_name.verify().is_err());
@@ -539,6 +565,7 @@ mod tests {
                 Instruction::Return,
             ],
             constants: vec![Value::Int(1)],
+            local_count: 0,
             max_stack: 1,
         };
         assert!(non_string_set_name.verify().is_err());
@@ -547,6 +574,7 @@ mod tests {
             name: None,
             code: vec![Instruction::PushI32(1), Instruction::ThrowReadOnly(0)],
             constants: vec![Value::Int(1)],
+            local_count: 0,
             max_stack: 1,
         };
         assert!(non_string_read_only_name.verify().is_err());
@@ -559,6 +587,7 @@ mod tests {
                 Instruction::Return,
             ],
             constants: vec![Value::Int(1)],
+            local_count: 0,
             max_stack: 1,
         };
         assert!(non_string_field.verify().is_err());
@@ -572,6 +601,7 @@ mod tests {
                 Instruction::Return,
             ],
             constants: vec![Value::Int(1)],
+            local_count: 0,
             max_stack: 2,
         };
         assert!(non_string_keep_field.verify().is_err());
@@ -586,6 +616,7 @@ mod tests {
                 Instruction::Return,
             ],
             constants: vec![Value::Int(1)],
+            local_count: 0,
             max_stack: 2,
         };
         assert!(non_string_put_field.verify().is_err());
@@ -598,8 +629,70 @@ mod tests {
                 Instruction::Goto(99),
             ],
             constants: vec![],
+            local_count: 0,
             max_stack: 1,
         };
         assert!(bad_jump.verify().is_err());
+    }
+
+    #[test]
+    fn verifier_enforces_the_declared_quickjs_local_frame() {
+        let valid = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::GetLocal(0), Instruction::Return],
+            constants: vec![],
+            local_count: 1,
+            max_stack: 1,
+        };
+        assert!(valid.verify().is_ok());
+
+        let missing_frame = BytecodeFunction {
+            local_count: 0,
+            ..valid.clone()
+        };
+        assert_eq!(
+            missing_frame.verify().unwrap_err().message(),
+            "local bytecode operand is out of bounds"
+        );
+
+        let unreachable = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::GetLocal(0),
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        assert_eq!(
+            unreachable.verify().unwrap_err().message(),
+            "local bytecode operand is out of bounds"
+        );
+
+        let last_slot = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::GetLocal(MAX_LOCAL_SLOTS - 1),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: MAX_LOCAL_SLOTS,
+            max_stack: 1,
+        };
+        assert!(last_slot.verify().is_ok());
+
+        let excessive_frame = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::Undefined, Instruction::Return],
+            constants: vec![],
+            local_count: u16::MAX,
+            max_stack: 1,
+        };
+        assert_eq!(
+            excessive_frame.verify().unwrap_err().message(),
+            "declared local count exceeds QuickJS JS_MAX_LOCAL_VARS"
+        );
     }
 }

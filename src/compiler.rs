@@ -12,7 +12,7 @@
 //! the lexer, then the committed stream is rescanned under its strict context.
 
 use crate::bigint::JsBigInt;
-use crate::bytecode::{BytecodeFunction, Instruction, verify_parts};
+use crate::bytecode::{BytecodeFunction, Instruction, MAX_LOCAL_SLOTS, verify_parts};
 use crate::debug::{DebugInfoMode, Pc2LineEntry, Pc2LineTable, QuickJsSourceLocator, SourceOffset};
 use crate::error::{Error, ErrorKind, NativeErrorMessage, SourceLocation, SourceSpan};
 use crate::function::{UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug};
@@ -94,14 +94,23 @@ type FunctionId = usize;
 // QuickJS 2026-06-04 `JS_MAX_LOCAL_VARS` and `JS_STACK_SIZE_MAX` are both
 // 65,534. Call opcodes encode one more argument count value; the resulting
 // operand stack is checked against the smaller stack limit during lowering.
-const MAX_LOCAL_VARIABLES: usize = 65_534;
+const MAX_LOCAL_VARIABLES: usize = MAX_LOCAL_SLOTS as usize;
 const MAX_BYTECODE_STACK: usize = 65_534;
 const MAX_CALL_ARGUMENTS: usize = 65_535;
+// QuickJS `js_parse_program` allocates `JS_ATOM__ret_` as the first local of
+// every script. Source text cannot spell this sentinel as an IdentifierName.
+const EVAL_RET_LOCAL_NAME: &str = "<ret>";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FunctionKind {
     Script,
     Ordinary,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatementCompletion {
+    Eval,
+    Discard,
 }
 
 #[derive(Debug)]
@@ -207,6 +216,10 @@ struct FunctionIr {
     function_name_local: Option<u16>,
     parameters: Vec<String>,
     locals: Vec<String>,
+    /// QuickJS `eval_ret_idx`: the script-only hidden completion local.
+    /// Keeping the typed slot separate from its unspellable debug name avoids
+    /// confusing it with future source bindings or other synthetic locals.
+    eval_ret_local: Option<u16>,
     ops: Vec<SpannedIrOp>,
     /// Parser-only Reference marker for the final member getter. QuickJS uses
     /// `last_opcode_pos` for the same rewrite, but an explicit index prevents
@@ -239,6 +252,11 @@ impl FunctionIr {
         parameters: Vec<String>,
         strict: bool,
     ) -> Self {
+        let (locals, eval_ret_local) = if matches!(kind, FunctionKind::Script) {
+            (vec![EVAL_RET_LOCAL_NAME.to_owned()], Some(0))
+        } else {
+            (Vec::new(), None)
+        };
         Self {
             parent,
             kind,
@@ -246,7 +264,8 @@ impl FunctionIr {
             function_name,
             function_name_local: None,
             parameters,
-            locals: Vec::new(),
+            locals,
+            eval_ret_local,
             ops: Vec::new(),
             last_member_reference: None,
             last_identifier_reference: None,
@@ -321,67 +340,11 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_script_body(&mut self) -> Result<(), Error> {
-        let mut has_completion_value = false;
-
         while !self.at_eof() {
-            if self.consume_punctuator(Punctuator::Semicolon)? {
-                continue;
-            }
-            if has_completion_value {
-                self.emit_instruction(Instruction::Drop)?;
-            }
-
-            if matches!(self.current().kind, TokenKind::Keyword(Keyword::Function)) {
-                return Err(self.unsupported_here(
-                    "top-level function declarations and global bindings are not implemented yet",
-                ));
-            }
-            if matches!(self.current().kind, TokenKind::Keyword(Keyword::Var)) {
-                return Err(self.unsupported_here(
-                    "top-level var declarations and global bindings are not implemented yet",
-                ));
-            }
-            if matches!(self.current().kind, TokenKind::Keyword(Keyword::Return)) {
-                return Err(self.syntax_here("return not in a function"));
-            }
-
-            if matches!(self.current().kind, TokenKind::Keyword(Keyword::Throw)) {
-                let throw_span = self.current().span;
-                self.advance()?;
-                if self.current().line_terminator_before {
-                    return Err(Error::syntax(
-                        "line terminator not allowed after throw",
-                        source_span(self.current().span),
-                    ));
-                }
-                self.parse_expression()?;
-                self.emit_instruction_at(Instruction::Throw, source_offset(throw_span)?)?;
-                has_completion_value = false;
-            } else {
-                self.parse_expression()?;
-                has_completion_value = true;
-            }
-
-            if self.consume_punctuator(Punctuator::Semicolon)? {
-                continue;
-            }
-            if self.at_eof() {
-                break;
-            }
-            if self.current().line_terminator_before {
-                if matches!(self.current().kind, TokenKind::Template(_)) {
-                    return Err(self.unsupported_here(
-                        "tagged-template continuations are not implemented yet",
-                    ));
-                }
-                continue;
-            }
-            return Err(self.syntax_here("expecting ';'"));
+            self.parse_statement_or_decl(StatementCompletion::Eval)?;
         }
 
-        if !has_completion_value {
-            self.emit_instruction(Instruction::Undefined)?;
-        }
+        self.emit_instruction(Instruction::GetLocal(self.eval_ret_local()?))?;
         self.emit_instruction(Instruction::Return)?;
         Ok(())
     }
@@ -391,25 +354,7 @@ impl<'source> Parser<'source> {
             if self.at_eof() {
                 return Err(self.syntax_here("unterminated function body"));
             }
-            if self.consume_punctuator(Punctuator::Semicolon)? {
-                continue;
-            }
-
-            match self.current().kind {
-                TokenKind::Keyword(Keyword::Function) => {
-                    return Err(self.unsupported_here(
-                        "function declarations are not implemented yet; use an anonymous function expression",
-                    ));
-                }
-                TokenKind::Keyword(Keyword::Return) => self.parse_return_statement()?,
-                TokenKind::Keyword(Keyword::Throw) => self.parse_throw_statement()?,
-                TokenKind::Keyword(Keyword::Var) => self.parse_var_statement()?,
-                _ => {
-                    self.parse_expression()?;
-                    self.emit_instruction(Instruction::Drop)?;
-                    self.consume_statement_terminator(true)?;
-                }
-            }
+            self.parse_statement_or_decl(StatementCompletion::Discard)?;
         }
 
         // QuickJS ends ordinary function bytecode with `return_undef`. It may
@@ -418,6 +363,128 @@ impl<'source> Parser<'source> {
         self.emit_instruction(Instruction::Undefined)?;
         self.emit_instruction(Instruction::Return)?;
         Ok(())
+    }
+
+    /// QuickJS funnels program elements, function bodies, block bodies and
+    /// single-statement branches through `js_parse_statement_or_decl`. Keep
+    /// the same spine so completion handling, ASI and later declaration masks
+    /// have one parser boundary instead of diverging script/function loops.
+    fn parse_statement_or_decl(&mut self, completion: StatementCompletion) -> Result<(), Error> {
+        if self.consume_punctuator(Punctuator::Semicolon)? {
+            return Ok(());
+        }
+
+        match self.current().kind {
+            TokenKind::Punctuator(Punctuator::LeftBrace) => self.parse_block_statement(completion),
+            TokenKind::Keyword(Keyword::If) => self.parse_if_statement(completion),
+            TokenKind::Keyword(Keyword::Function) => {
+                if matches!(self.current_ir().kind, FunctionKind::Script) {
+                    Err(self.unsupported_here(
+                        "top-level function declarations and global bindings are not implemented yet",
+                    ))
+                } else {
+                    Err(self.unsupported_here(
+                        "function declarations are not implemented yet; use an anonymous function expression",
+                    ))
+                }
+            }
+            TokenKind::Keyword(Keyword::Var) => {
+                if matches!(self.current_ir().kind, FunctionKind::Script) {
+                    Err(self.unsupported_here(
+                        "top-level var declarations and global bindings are not implemented yet",
+                    ))
+                } else {
+                    self.parse_var_statement()
+                }
+            }
+            TokenKind::Keyword(Keyword::Return) => {
+                if matches!(self.current_ir().kind, FunctionKind::Script) {
+                    Err(self.syntax_here("return not in a function"))
+                } else {
+                    self.parse_return_statement()
+                }
+            }
+            TokenKind::Keyword(Keyword::Throw) => self.parse_throw_statement(),
+            _ => self.parse_expression_statement(completion),
+        }
+    }
+
+    fn parse_block_statement(&mut self, completion: StatementCompletion) -> Result<(), Error> {
+        self.advance()?;
+        while !self.is_punctuator(Punctuator::RightBrace) {
+            self.parse_statement_or_decl(completion)?;
+        }
+        self.advance()
+    }
+
+    fn parse_if_statement(&mut self, completion: StatementCompletion) -> Result<(), Error> {
+        self.advance()?;
+        if matches!(completion, StatementCompletion::Eval) {
+            self.set_eval_ret_undefined()?;
+        }
+        self.expect_punctuator(Punctuator::LeftParen)?;
+        self.parse_expression()?;
+        self.expect_punctuator(Punctuator::RightParen)?;
+
+        let false_jump = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
+        let branch_stack = self.current_ir().stack_depth;
+        self.parse_statement_or_decl(completion)?;
+        let joined_stack = self.current_ir().stack_depth;
+
+        if matches!(self.current().kind, TokenKind::Keyword(Keyword::Else)) {
+            let end_jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
+            self.advance()?;
+            self.patch_jump(false_jump, self.current_ir().ops.len())?;
+            self.current_ir_mut().stack_depth = branch_stack;
+            self.parse_statement_or_decl(completion)?;
+            if self.current_ir().stack_depth != joined_stack {
+                return Err(Error::internal("if branches have unequal stack depth"));
+            }
+            self.patch_jump(end_jump, self.current_ir().ops.len())?;
+        } else {
+            if joined_stack != branch_stack {
+                return Err(Error::internal(
+                    "if statement changed the fallthrough stack depth",
+                ));
+            }
+            self.patch_jump(false_jump, self.current_ir().ops.len())?;
+        }
+        self.current_ir_mut().last_member_reference = None;
+        self.current_ir_mut().last_identifier_reference = None;
+        self.anonymous_function_definition = None;
+        Ok(())
+    }
+
+    fn parse_expression_statement(&mut self, completion: StatementCompletion) -> Result<(), Error> {
+        self.parse_expression()?;
+        if self.current().line_terminator_before
+            && matches!(self.current().kind, TokenKind::Template(_))
+        {
+            return Err(
+                self.unsupported_here("tagged-template continuations are not implemented yet")
+            );
+        }
+        match completion {
+            StatementCompletion::Eval => {
+                self.emit_instruction(Instruction::PutLocal(self.eval_ret_local()?))?;
+            }
+            StatementCompletion::Discard => {
+                self.emit_instruction(Instruction::Drop)?;
+            }
+        }
+        self.consume_statement_terminator()
+    }
+
+    fn set_eval_ret_undefined(&mut self) -> Result<(), Error> {
+        self.emit_instruction(Instruction::Undefined)?;
+        self.emit_instruction(Instruction::PutLocal(self.eval_ret_local()?))?;
+        Ok(())
+    }
+
+    fn eval_ret_local(&self) -> Result<u16, Error> {
+        self.current_ir()
+            .eval_ret_local
+            .ok_or_else(|| Error::internal("eval completion local requested outside a script"))
     }
 
     fn parse_return_statement(&mut self) -> Result<(), Error> {
@@ -443,7 +510,7 @@ impl<'source> Parser<'source> {
             }
         }
         self.emit_instruction_at(Instruction::Return, source_offset(return_span)?)?;
-        self.consume_statement_terminator(true)
+        self.consume_statement_terminator()
     }
 
     fn parse_throw_statement(&mut self) -> Result<(), Error> {
@@ -457,7 +524,7 @@ impl<'source> Parser<'source> {
         }
         self.parse_expression()?;
         self.emit_instruction_at(Instruction::Throw, source_offset(throw_span)?)?;
-        self.consume_statement_terminator(true)
+        self.consume_statement_terminator()
     }
 
     fn parse_var_statement(&mut self) -> Result<(), Error> {
@@ -520,7 +587,7 @@ impl<'source> Parser<'source> {
                 break;
             }
         }
-        self.consume_statement_terminator(true)
+        self.consume_statement_terminator()
     }
 
     fn register_local(&mut self, name: &str, span: Span) -> Result<(), Error> {
@@ -543,10 +610,10 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    fn consume_statement_terminator(&mut self, allow_right_brace: bool) -> Result<(), Error> {
+    fn consume_statement_terminator(&mut self) -> Result<(), Error> {
         if self.consume_punctuator(Punctuator::Semicolon)?
             || self.at_eof()
-            || (allow_right_brace && self.is_punctuator(Punctuator::RightBrace))
+            || self.is_punctuator(Punctuator::RightBrace)
             || self.current().line_terminator_before
         {
             Ok(())
@@ -1623,6 +1690,9 @@ impl<'source> Parser<'source> {
             TokenKind::Keyword(Keyword::New) => {
                 self.parse_new_expression()?;
             }
+            TokenKind::Keyword(Keyword::Else) => {
+                return Err(self.syntax_here("unexpected token in expression: 'else'"));
+            }
             TokenKind::Keyword(keyword) => {
                 return Err(Error::syntax(
                     format!("{} syntax is not implemented yet", keyword.as_str()),
@@ -1645,7 +1715,7 @@ impl<'source> Parser<'source> {
                 )));
             }
             TokenKind::Eof => {
-                return Err(self.syntax_here("expected an expression"));
+                return Err(self.syntax_here("unexpected token in expression: ''"));
             }
         }
         Ok(())
@@ -2531,6 +2601,8 @@ fn lower_detached_script(tree: FunctionTree) -> Result<BytecodeFunction, Error> 
         name: Some("<eval>".to_owned()),
         code,
         constants,
+        local_count: u16::try_from(function.locals.len())
+            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?,
         max_stack,
     };
     bytecode.verify()?;
@@ -3204,10 +3276,10 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(targets.len(), 2);
         assert_eq!(targets[0], targets[1]);
-        assert!(matches!(
-            chain.code[usize::try_from(targets[0]).unwrap()],
-            Instruction::Return
-        ));
+        let join = usize::try_from(targets[0]).unwrap();
+        assert!(matches!(chain.code[join], Instruction::PutLocal(0)));
+        assert!(matches!(chain.code[join + 1], Instruction::GetLocal(0)));
+        assert!(matches!(chain.code[join + 2], Instruction::Return));
 
         for source in ["1 || 2 ?? 3", "1 && 2 ?? 3", "1 ?? 2 || 3", "1 ?? 2 && 3"] {
             assert!(compile_script(source).is_err(), "accepted {source:?}");
@@ -3281,6 +3353,71 @@ mod tests {
         assert_eq!(evaluate("0\u{2029}1"), Value::Int(1));
         assert_eq!(evaluate("0\u{00a0}+1"), Value::Int(1));
         assert!(compile_script("1 2").is_err());
+    }
+
+    #[test]
+    fn block_and_if_statements_use_the_quickjs_eval_completion_slot() {
+        assert_eq!(evaluate(""), Value::Undefined);
+        assert_eq!(evaluate("1; {}"), Value::Int(1));
+        assert_eq!(evaluate("1; {;;}"), Value::Int(1));
+        assert_eq!(evaluate("{ 1; { 2; {} } }"), Value::Int(2));
+        assert_eq!(evaluate("1; if (false) 2"), Value::Undefined);
+        assert_eq!(evaluate("1; if (true) {}"), Value::Undefined);
+        assert_eq!(evaluate("if (true) { 1; 2 } else 3"), Value::Int(2));
+        assert_eq!(evaluate("if (false) { 1; 2 } else 3"), Value::Int(3));
+        assert_eq!(evaluate("if (true) if (false) 1; else 2"), Value::Int(2));
+        assert_eq!(evaluate("{ 'use strict'; } 010"), Value::Int(8));
+
+        assert_eq!(
+            evaluate_in_context("(function(x){ if (x) return 1; else return 2; })(0)"),
+            Value::Int(2)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){ if (false) { var hidden = 1; } return typeof hidden; })()"
+            ),
+            Value::String(JsString::from_static("undefined"))
+        );
+        assert_eq!(
+            evaluate_in_context("(function(){ { 'use strict'; } var eval = 7; return eval; })()"),
+            Value::Int(7)
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "Function.trace = ''; if ((Function.trace += 'c', true)) { Function.trace += 't'; } else { Function.trace += 'f'; } Function.trace"
+            ),
+            Value::String(JsString::from_static("ct"))
+        );
+
+        let bytecode = compile_script("if (true) 1; else 2").unwrap();
+        assert!(matches!(bytecode.code.last(), Some(Instruction::Return)));
+        assert!(
+            bytecode
+                .code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::IfFalse(_)))
+        );
+        assert!(
+            bytecode
+                .code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Goto(_)))
+        );
+        assert!(
+            bytecode
+                .code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::PutLocal(0)))
+        );
+        assert!(matches!(
+            bytecode.code.get(bytecode.code.len() - 2),
+            Some(Instruction::GetLocal(0))
+        ));
+
+        let root = compile_unlinked_script("(function(){ 1; })").unwrap();
+        assert_eq!(root.metadata().local_count, 1);
+        let ordinary = root.constants()[0].as_child().unwrap();
+        assert_eq!(ordinary.metadata().local_count, 0);
     }
 
     #[test]

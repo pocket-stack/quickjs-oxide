@@ -7,7 +7,10 @@ ES2025 behavior, not merely a JavaScript-like language.
 The repository is still an incomplete rewrite. The current vertical slices
 execute primitive expressions, named ordinary functions and closures, and
 defining-realm global bindings through the real lexer, late scope resolver,
-bytecode and VM. They also implement runtime-owned
+bytecode and VM. Block statements and `if`/`else` now share the QuickJS
+statement-parser spine; scripts carry its hidden eval-completion local so empty
+blocks preserve a prior value while entering an `if` resets it to `undefined`.
+They also implement runtime-owned
 Atom/Object/Shape/Context/FunctionBytecode/VarRef nodes, ordinary properties
 and accessors, native Error objects, per-function filename/PC/source debug
 metadata, QuickJS-style eager `Error.stack` for the current synchronous
@@ -309,10 +312,12 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_member_reads -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_member_writes -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_statement_control_flow -- --nocapture
 ```
 
-The 33 commands above are direct entry points for a curated evidence set. The
-full gate below currently discovers all 41 `tests/oracle_*.rs` integration
+The 34 commands above are direct entry points for a curated evidence set. The
+full gate below currently discovers all 42 `tests/oracle_*.rs` integration
 targets through Cargo's `--all-targets` run, including suites not repeated in
 this list.
 
