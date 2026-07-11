@@ -10,6 +10,17 @@ defining-realm global bindings through the real lexer, late scope resolver,
 bytecode and VM. Block statements and `if`/`else` now share the QuickJS
 statement-parser spine; scripts carry its hidden eval-completion local so empty
 blocks preserve a prior value while entering an `if` resets it to `undefined`.
+Untagged template literals now follow QuickJS `js_parse_template`: the cooked
+head is retained as the primitive receiver, `concat` is looked up exactly once
+before any substitution, every substitution parses as a full Expression, and
+one receiver-preserving call receives the raw values plus only non-empty later
+cooked segments. Parser-selected template continuation goals preserve nested
+templates, division, raw/cooked escape behavior, diagnostic priority, stack
+limits, and the rule that synthetic concat operations do not overwrite an
+inherited source marker. Expression statements seed that marker before parsing,
+matching getter-fault sites after prior statements and inside composite
+expressions. Tagged templates remain a separate explicit gap until the
+Array-backed frozen template-object cache exists.
 They also implement runtime-owned
 Atom/Object/Shape/Context/FunctionBytecode/VarRef nodes, ordinary properties
 and accessors, native Error objects, per-function filename/PC/source debug
@@ -314,10 +325,12 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_member_writes -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_statement_control_flow -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_template_literals -- --nocapture
 ```
 
-The 34 commands above are direct entry points for a curated evidence set. The
-full gate below currently discovers all 42 `tests/oracle_*.rs` integration
+The 35 commands above are direct entry points for a curated evidence set. The
+full gate below currently discovers all 43 `tests/oracle_*.rs` integration
 targets through Cargo's `--all-targets` run, including suites not repeated in
 this list.
 

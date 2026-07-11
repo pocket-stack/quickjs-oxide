@@ -22,7 +22,7 @@ use crate::heap::{
 };
 use crate::lexer::{
     Identifier, Keyword, LexError, LexErrorKind, Lexer, LexicalGoal, NumberKind, NumericRadix,
-    Punctuator, Span, Token, TokenKind,
+    Punctuator, Span, TemplatePartKind, Token, TokenKind,
 };
 use crate::value::{JsString, JsStringError, Value};
 use num_bigint::BigUint;
@@ -161,6 +161,10 @@ enum PowerMode {
 #[derive(Debug)]
 enum IrOp {
     Bytecode(Instruction),
+    /// QuickJS's template parser does not apply the ordinary call parser's
+    /// u16 argument guard.  Retain the full count until the bytecode stack
+    /// limit has been checked during lowering.
+    TemplateCall(usize),
     PushConstant(u32),
     MakeClosure(u32),
     /// Lowering-only assignment-expression form. QuickJS has no `set_var`;
@@ -185,6 +189,7 @@ impl IrOp {
     fn stack_effect(&self) -> (usize, usize) {
         match self {
             Self::Bytecode(instruction) => instruction.stack_effect(),
+            Self::TemplateCall(argument_count) => (argument_count + 2, 1),
             Self::PushConstant(_) | Self::MakeClosure(_) => (0, 1),
             Self::GlobalSet(_) => (1, 1),
             Self::Identifier {
@@ -456,7 +461,14 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_expression_statement(&mut self, completion: StatementCompletion) -> Result<(), Error> {
+        // QuickJS seeds `emit_source_pos` from the first token before
+        // `js_parse_expr`. A more specific marker emitted by the expression at
+        // the same first opcode wins; otherwise synthetic operations (notably
+        // template concat lookup) inherit this statement-entry position.
+        let expression_start = self.current_ir().ops.len();
+        let expression_site = source_offset(self.current().span)?;
         self.parse_expression()?;
+        self.inherit_source_marker_at(expression_start, expression_site)?;
         if self.current().line_terminator_before
             && matches!(self.current().kind, TokenKind::Template(_))
         {
@@ -502,7 +514,9 @@ impl<'source> Parser<'source> {
             // source marker to the `return` keyword. Preserve that observable
             // debug site even though this typed VM keeps two instructions.
             if let Some(SpannedIrOp {
-                op: IrOp::Bytecode(Instruction::Call(_) | Instruction::CallMethod(_)),
+                op:
+                    IrOp::Bytecode(Instruction::Call(_) | Instruction::CallMethod(_))
+                    | IrOp::TemplateCall(_),
                 pc_site,
             }) = self.current_ir_mut().ops.last_mut()
             {
@@ -1248,6 +1262,11 @@ impl<'source> Parser<'source> {
                 self.anonymous_function_definition = None;
                 continue;
             }
+            if matches!(self.current().kind, TokenKind::Template(_)) {
+                return Err(
+                    self.unsupported_here("tagged template literals are not implemented yet")
+                );
+            }
             break;
         }
         if !self.current().line_terminator_before
@@ -1672,6 +1691,9 @@ impl<'source> Parser<'source> {
                 self.parse_expression()?;
                 self.expect_punctuator(Punctuator::RightParen)?;
             }
+            TokenKind::Template(_) => {
+                self.parse_template_literal()?;
+            }
             TokenKind::Identifier(identifier) => {
                 validate_identifier(
                     &identifier,
@@ -1699,7 +1721,7 @@ impl<'source> Parser<'source> {
                     source_span(token.span),
                 ));
             }
-            TokenKind::Template(_) | TokenKind::RegExp(_) | TokenKind::PrivateIdentifier(_) => {
+            TokenKind::RegExp(_) | TokenKind::PrivateIdentifier(_) => {
                 return Err(self.unsupported_here("this literal form is not implemented yet"));
             }
             TokenKind::Punctuator(punctuator) => {
@@ -1719,6 +1741,79 @@ impl<'source> Parser<'source> {
             }
         }
         Ok(())
+    }
+
+    /// Lower an untagged template exactly like QuickJS `js_parse_template`:
+    /// the first cooked segment becomes the receiver for one observable
+    /// `String.prototype.concat` lookup, substitutions are full comma
+    /// expressions, and only non-empty later cooked segments become call
+    /// arguments. Tagged templates require the separate template-object cache.
+    fn parse_template_literal(&mut self) -> Result<(), Error> {
+        let mut depth = 0_usize;
+
+        loop {
+            let token = self.current().clone();
+            let TokenKind::Template(part) = token.kind else {
+                return Err(Error::internal(
+                    "template parser lost its continuation token",
+                ));
+            };
+            let kind = part.kind;
+            let invalid_span = part.invalid_escape.as_ref().map(|error| error.span);
+            let Some(cooked) = part.cooked else {
+                return Err(Error::syntax(
+                    "malformed escape sequence in string literal",
+                    source_span(invalid_span.unwrap_or(token.span)),
+                ));
+            };
+
+            if !cooked.utf16.is_empty() || depth == 0 {
+                self.emit_value(Value::String(JsString::try_from_utf16(cooked.utf16)?))?;
+                if depth == 0 {
+                    if kind == TemplatePartKind::NoSubstitution {
+                        self.advance()?;
+                        self.anonymous_function_definition = None;
+                        return Ok(());
+                    }
+                    let concat = self.add_constant(IrConstant::Primitive(Value::String(
+                        JsString::from_static("concat"),
+                    )))?;
+                    // `js_parse_template` emits no source marker for either
+                    // synthetic concat operation. Inherit the surrounding
+                    // expression marker, just as ordinary QuickJS bytecode.
+                    self.emit_instruction(Instruction::GetField2(concat))?;
+                }
+                depth += 1;
+            }
+
+            if kind == TemplatePartKind::Tail {
+                let argument_count = depth
+                    .checked_sub(1)
+                    .ok_or_else(|| Error::internal("template receiver disappeared"))?;
+                // `js_parse_template` emits no source marker for the final
+                // call.  Preserve the last substitution marker so failures
+                // during concat/coercion point into that expression. Keep the
+                // full count in IR so a reached later syntax error still wins
+                // over deferred JS_STACK_SIZE_MAX validation.
+                self.emit(IrOp::TemplateCall(argument_count))?;
+                self.advance()?;
+                self.current_ir_mut().last_member_reference = None;
+                self.current_ir_mut().last_identifier_reference = None;
+                self.anonymous_function_definition = None;
+                return Ok(());
+            }
+            if !matches!(kind, TemplatePartKind::Head | TemplatePartKind::Middle) {
+                return Err(Error::internal("invalid template-part transition"));
+            }
+
+            self.advance()?;
+            self.parse_expression()?;
+            depth += 1;
+            if !self.is_punctuator(Punctuator::RightBrace) {
+                return Err(self.syntax_here("expected '}' after template expression"));
+            }
+            self.advance_with_goal(LexicalGoal::TemplateContinuation)?;
+        }
     }
 
     fn parse_function_expression(&mut self) -> Result<(), Error> {
@@ -2585,6 +2680,7 @@ fn lower_detached_script(tree: FunctionTree) -> Result<BytecodeFunction, Error> 
             "detached compiler cannot publish global-environment closure variables",
         ));
     }
+    let max_stack = lower_max_stack(function.max_stack)?;
     let code = lower_ops(function.ops)?.code;
     let constants = function
         .constants
@@ -2596,7 +2692,6 @@ fn lower_detached_script(tree: FunctionTree) -> Result<BytecodeFunction, Error> 
             )),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let max_stack = lower_max_stack(function.max_stack)?;
     let bytecode = BytecodeFunction {
         name: Some("<eval>".to_owned()),
         code,
@@ -2626,12 +2721,13 @@ fn lower_unlinked_tree(
         let function = functions[function_id]
             .take()
             .ok_or_else(|| Error::internal("function IR was lowered more than once"))?;
+        // Preserve the source-IR overflow classification used for catchable
+        // QuickJS InternalError before encoding u16 template-call operands or
+        // running the expanded bytecode verifier.
+        lower_max_stack(function.max_stack)?;
         let lowered_ops = lower_ops(function.ops)?;
         let code = lowered_ops.code;
         let constant_count = function.constants.len();
-        // Preserve the source-IR overflow classification used for catchable
-        // QuickJS InternalError before the expanded bytecode verifier runs.
-        lower_max_stack(function.max_stack)?;
         let constants = function
             .constants
             .into_iter()
@@ -2769,6 +2865,13 @@ fn lower_ops(operations: Vec<SpannedIrOp>) -> Result<LoweredOps, Error> {
             }
             IrOp::Bytecode(instruction) => {
                 code.push(instruction);
+                pc_sites.push(pc_site);
+            }
+            IrOp::TemplateCall(argument_count) => {
+                let argument_count = u16::try_from(argument_count).map_err(|_| {
+                    Error::internal("template call escaped bytecode stack validation")
+                })?;
+                code.push(Instruction::CallMethod(argument_count));
                 pc_sites.push(pc_site);
             }
             IrOp::PushConstant(index) => {
@@ -2991,8 +3094,9 @@ mod tests {
     use crate::vm::Vm;
 
     use super::{
-        FunctionIr, FunctionKind, FunctionSourceInfo, MAX_CALL_ARGUMENTS, MAX_LOCAL_VARIABLES,
-        SourceOffset, compile_script, compile_unlinked_script, ensure_closure_variable, lex_error,
+        FunctionIr, FunctionKind, FunctionSourceInfo, MAX_BYTECODE_STACK, MAX_CALL_ARGUMENTS,
+        MAX_LOCAL_VARIABLES, SourceOffset, compile_script, compile_unlinked_script,
+        ensure_closure_variable, lex_error,
     };
 
     #[test]
@@ -3418,6 +3522,61 @@ mod tests {
         assert_eq!(root.metadata().local_count, 1);
         let ordinary = root.constants()[0].as_child().unwrap();
         assert_eq!(ordinary.metadata().local_count, 0);
+    }
+
+    #[test]
+    fn untagged_templates_follow_quickjs_concat_lowering() {
+        assert_eq!(
+            evaluate("`plain`"),
+            Value::String(JsString::from_static("plain"))
+        );
+        assert_eq!(
+            evaluate_in_context("`a${1 + 2}b${4}c`"),
+            Value::String(JsString::from_static("a3b4c"))
+        );
+        assert_eq!(
+            evaluate_in_context("`a${1, 2}b`"),
+            Value::String(JsString::from_static("a2b"))
+        );
+        assert_eq!(
+            evaluate_in_context("`a${`b${1}c`}d`"),
+            Value::String(JsString::from_static("ab1cd"))
+        );
+        assert_eq!(evaluate_in_context("`x${8 / 2}y`.length"), Value::Int(3));
+
+        let no_substitution = compile_script("`plain`").unwrap();
+        assert!(!no_substitution.code.iter().any(|instruction| matches!(
+            instruction,
+            Instruction::GetField2(_) | Instruction::CallMethod(_)
+        )));
+
+        let interpolated = compile_unlinked_script("`a${1}b${2}c`").unwrap();
+        assert!(
+            interpolated
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::GetField2(_)))
+        );
+        assert!(
+            interpolated
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::CallMethod(4)))
+        );
+
+        let invalid = compile_script("`\\8`").unwrap_err();
+        assert_eq!(
+            invalid.message(),
+            "malformed escape sequence in string literal"
+        );
+        assert_eq!(
+            compile_script("tag`x`").unwrap_err().message(),
+            "tagged template literals are not implemented yet"
+        );
+        assert_eq!(
+            compile_script("tag\n`x`").unwrap_err().message(),
+            "tagged template literals are not implemented yet"
+        );
     }
 
     #[test]
@@ -5878,6 +6037,38 @@ mod tests {
         let error = compile_unlinked_script(&too_many).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Syntax);
         assert_eq!(error.message(), "Too many call arguments");
+    }
+
+    #[test]
+    fn quickjs_template_stack_overflow_is_deferred_until_after_parsing() {
+        // Each substitution is one concat argument; the kept receiver and
+        // method let 65,532 arguments exactly reach JS_STACK_SIZE_MAX.
+        let largest_valid = "${0}".repeat(MAX_BYTECODE_STACK - 2);
+        let largest_valid = compile_unlinked_script(&format!("`{largest_valid}`")).unwrap();
+        assert_eq!(
+            largest_valid.metadata().max_stack,
+            MAX_BYTECODE_STACK as u16
+        );
+
+        // One more argument exceeds the limit without passing through the
+        // ordinary call parser's argument guard.
+        let substitutions = "${0}".repeat(MAX_BYTECODE_STACK - 1);
+        let source = format!("`{substitutions}`");
+        let error = compile_unlinked_script(&source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::JsInternal);
+        assert_eq!(error.message(), "stack overflow");
+
+        // QuickJS computes the bytecode stack only after parsing the whole
+        // function, so a later reached lexical error has priority.
+        let later_lexical_error = format!("{source}; \"unterminated");
+        let error = compile_unlinked_script(&later_lexical_error).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax);
+        assert_eq!(error.message(), "unexpected end of string");
+
+        let later_parser_error = format!("{source} 0");
+        let error = compile_unlinked_script(&later_parser_error).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax);
+        assert_eq!(error.message(), "expecting ';'");
     }
 
     #[test]

@@ -50,6 +50,21 @@ claim full parity.
   empty blocks preserve it, and `if` resets it before its condition. Loops,
   switch, try/catch/finally, lexical declarations, global `var` and function
   declarations remain separate grammar/runtime slices.
+- Untagged template literals follow QuickJS `js_parse_template` rather than a
+  generic string-interpolation rewrite. A no-substitution template pushes only
+  its cooked String. An interpolated template keeps the cooked head as a
+  primitive receiver, performs one observable `concat` lookup before every
+  substitution, parses each substitution as a full Expression, skips empty
+  later cooked segments, and performs one `CallMethod` after all expressions
+  have completed. Raw and cooked UTF-16, malformed-escape commitment,
+  continuation anchoring, nested template/Div goal transitions, getter/call/
+  coercion ordering, last-substitution source-marker inheritance, and the
+  deferred 65,534-slot bytecode stack limit are pinned to the release. The
+  synthetic concat operations emit no new marker, matching upstream; exact
+  expression-statement entry seeding prevents them from inheriting a prior
+  statement's marker and preserves the expression start inside composites.
+  Tagged templates remain explicit and unsupported pending Array objects,
+  frozen cooked/raw template objects and per-site identity caching.
 - Source `MemberExpression` lowering follows QuickJS's typed
   `GetField`/`GetField2` and `GetArrayEl`/`GetArrayEl2` split. Fixed and
   computed reads can be chained across line terminators; a following call
@@ -746,7 +761,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-parity-slice.sh
 ```
 
-The nineteen direct commands above run the dedicated Boolean, Symbol,
+The direct commands above run the dedicated Boolean, Symbol,
 String-exotic substrate, String UTF-16 prefix, String-conversion core,
 String-rope/byte/native-Error kernels, Unicode identifier core, global
 BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials. The
@@ -754,8 +769,9 @@ atom-Error target contains thirteen pinned-oracle inputs in addition to its
 Rust-side expectation test. The Unicode target checks every scalar, real
 compiler/runtime cases, and the parser-driven identifier diagnostic matrix. A
 separate statement-control-flow target locks block/`if` completion, branch
-effects, ASI/directive boundaries and exact diagnostics. The full gate currently
-discovers all 42
+effects, ASI/directive boundaries and exact diagnostics; the template target
+locks raw/cooked UTF-16, continuation goals, concat lowering/order, diagnostics
+and tagged-template boundaries. The full gate currently discovers all 43
 `tests/oracle_*.rs` integration targets,
 checksum-verifies and builds the official test-only oracle, then runs
 the generated-Unicode-table drift check, formatting, unit/integration/oracle

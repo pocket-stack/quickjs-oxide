@@ -1465,7 +1465,25 @@ impl<'a> Lexer<'a> {
         initial: bool,
         line_terminator_before: bool,
     ) -> Result<Token<'a>, LexError> {
-        let start = self.current_position();
+        let start = if initial {
+            self.current_position()
+        } else {
+            let current = self.current_position();
+            if current.byte_offset == 0
+                || self.source.as_bytes().get(current.byte_offset - 1) != Some(&b'}')
+            {
+                return Err(self.error_from(
+                    current,
+                    LexErrorKind::ExpectedTemplateContinuation,
+                    "template continuation must immediately follow '}'",
+                ));
+            }
+            Position::new(
+                current.byte_offset - 1,
+                current.line,
+                current.column.saturating_sub(1),
+            )
+        };
         if initial {
             debug_assert_eq!(self.peek_char(), Some(TEMPLATE_QUOTE));
             self.bump_char();
@@ -1480,7 +1498,7 @@ impl<'a> Lexer<'a> {
                 return Err(self.error_from(
                     start,
                     LexErrorKind::UnterminatedTemplate,
-                    "unterminated template literal",
+                    "unexpected end of string",
                 ));
             };
 
@@ -1529,7 +1547,19 @@ impl<'a> Lexer<'a> {
 
             if ch == '\\' {
                 let escape_start = self.offset;
-                let escape = self.scan_escape_sequence(true);
+                // QuickJS first scans the raw template boundary and only then
+                // cooks the resulting segment.  Keep those two concerns
+                // transactional here: a malformed `\\x` or `\\u` must not
+                // consume the closing backtick or the `$` in a following
+                // `${`, even if the cooked escape scanner inspected it.
+                let mut cooked_cursor = self.clone();
+                let escape = cooked_cursor.scan_escape_sequence(true);
+                if escape.is_ok() {
+                    *self = cooked_cursor;
+                } else {
+                    self.bump_char();
+                    self.bump_char();
+                }
                 append_template_raw_source(
                     &mut raw_value,
                     &self.source[escape_start..self.offset],
@@ -2352,6 +2382,11 @@ mod tests {
         assert_eq!(tail.kind, TemplatePartKind::Tail);
         assert_eq!(tail.raw, "tail");
         assert_eq!(tail.cooked.unwrap().to_string().unwrap(), "tail");
+
+        let error = Lexer::new("tail")
+            .next_token_with_goal(LexicalGoal::TemplateContinuation)
+            .unwrap_err();
+        assert_eq!(error.kind, LexErrorKind::ExpectedTemplateContinuation);
     }
 
     #[test]
@@ -2365,6 +2400,66 @@ mod tests {
         assert!(part.cooked.is_none());
         let invalid = part.invalid_escape.expect("invalid escape metadata");
         assert!(invalid.message.contains("not allowed"));
+    }
+
+    #[test]
+    fn malformed_template_escape_cannot_consume_a_structural_delimiter() {
+        let token = Lexer::new("`\\x`").next_token().unwrap();
+        let TokenKind::Template(part) = token.kind else {
+            panic!("expected template");
+        };
+        assert_eq!(part.kind, TemplatePartKind::NoSubstitution);
+        assert_eq!(part.raw, "\\x");
+        assert!(part.cooked.is_none());
+        assert_eq!(part.invalid_escape.unwrap().span.start.column, 2);
+
+        let mut lexer = Lexer::new("`\\x${value}`");
+        let head = lexer.next_token().unwrap();
+        let TokenKind::Template(head) = head.kind else {
+            panic!("expected template head");
+        };
+        assert_eq!(head.kind, TemplatePartKind::Head);
+        assert_eq!(head.raw, "\\x");
+        assert_eq!(head.raw_value.to_string().unwrap(), "\\x");
+        assert!(head.cooked.is_none());
+
+        assert!(matches!(
+            lexer.next_token().unwrap().kind,
+            TokenKind::Identifier(_)
+        ));
+        assert!(matches!(
+            lexer.next_token().unwrap().kind,
+            TokenKind::Punctuator(Punctuator::RightBrace)
+        ));
+        let tail = lexer
+            .next_token_with_goal(LexicalGoal::TemplateContinuation)
+            .unwrap();
+        let TokenKind::Template(tail) = tail.kind else {
+            panic!("expected template tail");
+        };
+        assert_eq!(tail.kind, TemplatePartKind::Tail);
+        assert_eq!(tail.raw, "");
+
+        let mut lexer = Lexer::new("`ok${value}tail\\x`");
+        assert!(matches!(
+            lexer.next_token().unwrap().kind,
+            TokenKind::Template(TemplatePart {
+                kind: TemplatePartKind::Head,
+                ..
+            })
+        ));
+        lexer.next_token().unwrap();
+        lexer.next_token().unwrap();
+        let tail = lexer
+            .next_token_with_goal(LexicalGoal::TemplateContinuation)
+            .unwrap();
+        let TokenKind::Template(tail) = tail.kind else {
+            panic!("expected malformed template tail");
+        };
+        assert_eq!(tail.kind, TemplatePartKind::Tail);
+        assert_eq!(tail.raw, "tail\\x");
+        assert_eq!(tail.raw_value.to_string().unwrap(), "tail\\x");
+        assert!(tail.cooked.is_none());
     }
 
     #[test]

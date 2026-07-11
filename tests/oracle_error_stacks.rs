@@ -46,6 +46,10 @@ fn implemented_error_backtraces_match_quickjs_oracle() {
             "tail method call site",
             "(function(){ return Function.name(); })()",
         ),
+        (
+            "template concat coercion inherits the last substitution site",
+            "Function.x=function(){}; Function.x.toString=function(){throw new Error(\"x\")};\n`a${Function.x}b`",
+        ),
         ("fixed member assignment fault", "null.x = 1"),
         ("computed member assignment fault", "null['x'] = 1"),
         ("fixed member delete fault", "delete null.x"),
