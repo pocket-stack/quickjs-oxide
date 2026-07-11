@@ -148,6 +148,10 @@ claim full parity.
   raw binary64 results and complete native error frames; runtime tests also lock
   cross-realm error ownership and abrupt input-before-radix conversion. The
   complete Number graph captures those global parser callables by identity.
+  Global `isNaN`/`isFinite` are distinct coercing natives from the static
+  Number predicates: both apply completion-aware `ToNumber`, ignore `this` and
+  extra arguments, preserve arbitrary conversion throws, and materialize
+  framework errors in their defining realm.
   Unary `~` and binary `&`, `^`, `|` match QuickJS's signed modulo-2^32
   `ToInt32` Number path and its infinite-width BigInt two's-complement path.
   Right-associative `**` is parsed
@@ -215,8 +219,10 @@ claim full parity.
   Shape and atom edges participate in reference counting and trial-deletion GC.
 - Every realm installs `Infinity`, `NaN` and `undefined` as non-writable,
   non-enumerable, non-configurable global data properties, matching the pinned
-  QuickJS 2026-06-04 descriptors and direct-delete results. This is the current
-  primitive-constant slice, not a claim that the wider global builtin table is
+  QuickJS 2026-06-04 descriptors and direct-delete results. The implemented
+  global-table subset preserves upstream relative own-key order as
+  `parseInt`, `parseFloat`, `isNaN`, `isFinite`, the three constants, `Number`,
+  then `Boolean`. This is not a claim that the wider global builtin table is
   complete.
 - Unresolved identifiers no longer use a string-key global opcode. Resolution
   installs one root `Global` closure descriptor and `ParentGlobal` relays on
@@ -546,6 +552,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_number_parsers -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_global_numeric_predicates -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_constructor_conversion -- --nocapture
@@ -553,7 +561,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-parity-slice.sh
 ```
 
-The first five commands run the dedicated Boolean, numeric-parser and complete
+The first six commands run the dedicated Boolean, global-numeric and complete
 Number-intrinsic differentials. The full gate command checksum-verifies and
 builds the official test-only oracle, runs formatting,
 unit/integration/oracle tests, Clippy, and the Rust-only product gate. The

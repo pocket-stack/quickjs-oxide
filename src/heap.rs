@@ -691,6 +691,7 @@ pub enum NativeFunctionId {
     PrimitivePrototypeToString(PrimitiveKind),
     PrimitivePrototypeValueOf(PrimitiveKind),
     GlobalNumberParse(NumberParseKind),
+    GlobalNumberPredicate(GlobalNumberPredicateKind),
     NumberPredicate(NumberPredicateKind),
     NumberPrototypeFormat(NumberFormatKind),
     ErrorConstructor(ErrorConstructorKind),
@@ -747,6 +748,14 @@ impl PrimitiveKind {
 pub enum NumberParseKind {
     ParseInt,
     ParseFloat,
+}
+
+/// Coercing global numeric predicates from QuickJS's base-object table.
+/// These stay distinct from the non-coercing static `%Number%` predicates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GlobalNumberPredicateKind {
+    IsNaN,
+    IsFinite,
 }
 
 /// Non-coercing numeric predicates installed as static `%Number%` methods.
@@ -841,6 +850,7 @@ impl NativeFunctionId {
             | Self::PrimitivePrototypeToString(_)
             | Self::PrimitivePrototypeValueOf(_)
             | Self::GlobalNumberParse(_)
+            | Self::GlobalNumberPredicate(_)
             | Self::NumberPredicate(_)
             | Self::NumberPrototypeFormat(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::Generic,
@@ -3058,6 +3068,8 @@ mod tests {
         let targets = [
             NativeFunctionId::GlobalNumberParse(NumberParseKind::ParseInt),
             NativeFunctionId::GlobalNumberParse(NumberParseKind::ParseFloat),
+            NativeFunctionId::GlobalNumberPredicate(GlobalNumberPredicateKind::IsNaN),
+            NativeFunctionId::GlobalNumberPredicate(GlobalNumberPredicateKind::IsFinite),
             NativeFunctionId::NumberPredicate(NumberPredicateKind::IsNaN),
             NativeFunctionId::NumberPredicate(NumberPredicateKind::IsFinite),
             NativeFunctionId::NumberPredicate(NumberPredicateKind::IsInteger),

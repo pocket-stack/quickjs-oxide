@@ -74,11 +74,14 @@ explicit digit modes use ties-away-from-zero. Deterministic bit-pattern and
 intrinsic differentials lock those strings against QuickJS, and BigInt has a
 separately differenced ties-to-even/overflow conversion used by
 `Number(BigInt)`. The global `parseInt` and `parseFloat` functions now use a
-matching UTF-16 parser
-substrate with QuickJS's prefix scans, radix conversion order, signed zero,
-bounded mantissa tables, and even its observable 38-digit decimal truncation;
+matching UTF-16 parser substrate with QuickJS's prefix scans, radix conversion
+order, signed zero, bounded mantissa tables, and even its observable 38-digit
+decimal truncation;
 their native objects are captured by identity as `Number.parseInt` and
-`Number.parseFloat`.
+`Number.parseFloat`. The global `isNaN` and `isFinite` functions are separate
+coercing natives: they apply ordered `ToNumber`, preserve object conversion
+and defining-realm errors, and remain observably distinct from the
+non-coercing `Number.isNaN`/`Number.isFinite` statics.
 Binary `??` uses QuickJS's shared short-circuit join for a chain, preserves the
 selected operand without coercion, and enforces the unparenthesized
 `??`/`&&`/`||` mixing restriction. The same arithmetic, exponentiation, shift,
@@ -146,6 +149,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_parse_kernel -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_global_number_parsers -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_global_numeric_predicates -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

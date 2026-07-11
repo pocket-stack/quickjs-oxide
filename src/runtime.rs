@@ -25,10 +25,10 @@ use crate::heap::{
     AutoInitProperty, BytecodeConstant, ClosureSource, ClosureVariable, ClosureVariableKind,
     ClosureVariableName, ConstructorKind, ContextData, ContextId, DynamicFunctionKind,
     ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo,
-    FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, Heap, HeapCleanup, HeapCounts,
-    HeapError, NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind,
-    NumberPredicateKind, ObjectData, ObjectId, ObjectKind, ObjectPayload, PrimitiveKind,
-    PrimitiveObjectData, PropertySlot, RawValue, ShapeId, VarRefData, VarRefId,
+    FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind,
+    Heap, HeapCleanup, HeapCounts, HeapError, NativeCProto, NativeFunctionId, NumberFormatKind,
+    NumberParseKind, NumberPredicateKind, ObjectData, ObjectId, ObjectKind, ObjectPayload,
+    PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue, ShapeId, VarRefData, VarRefId,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -1619,8 +1619,8 @@ impl Runtime {
         .expect("Error intrinsic initialization must succeed");
         self.initialize_function_constructor(realm, &function_prototype, &global_object)
             .expect("Function constructor initialization must succeed");
-        self.initialize_global_number_parsers(realm, &function_prototype, &global_object)
-            .expect("global numeric parser initialization must succeed");
+        self.initialize_global_number_functions(realm, &function_prototype, &global_object)
+            .expect("global numeric function initialization must succeed");
         // QuickJS publishes the complete global function-list prefix,
         // including these constants, before constructing Number and Boolean.
         // Keeping that boundary preserves observable global own-key order.
@@ -2308,15 +2308,15 @@ impl Runtime {
         self.define_constructor_relationship(&constructor, boolean_prototype)
     }
 
-    fn initialize_global_number_parsers(
+    fn initialize_global_number_functions(
         &self,
         realm: ContextId,
         function_prototype: &ObjectRef,
         global_object: &ObjectRef,
     ) -> Result<(), RuntimeError> {
-        // QuickJS publishes these global functions before `%Number%`, whose
-        // static parseInt/parseFloat properties capture the same callable
-        // identities during Number initialization.
+        // QuickJS publishes these entries at the head of `js_global_funcs`,
+        // before the frozen global constants and `%Number%`. Number's parser
+        // statics later capture the first two callable identities.
         for (kind, name, arity) in [
             (NumberParseKind::ParseInt, "parseInt", 2),
             (NumberParseKind::ParseFloat, "parseFloat", 1),
@@ -2335,6 +2335,19 @@ impl Runtime {
                 Value::Object(callable.as_object().clone()),
                 true,
                 true,
+            )?;
+        }
+        for (kind, name) in [
+            (GlobalNumberPredicateKind::IsNaN, "isNaN"),
+            (GlobalNumberPredicateKind::IsFinite, "isFinite"),
+        ] {
+            self.define_native_builtin_auto_init(
+                global_object,
+                realm,
+                NativeFunctionId::GlobalNumberPredicate(kind),
+                name,
+                1,
+                1,
             )?;
         }
         Ok(())
@@ -6604,6 +6617,32 @@ impl Runtime {
         Ok(Completion::Return(Value::number(result)))
     }
 
+    fn call_global_number_predicate(
+        &self,
+        realm: ContextId,
+        kind: GlobalNumberPredicateKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "global numeric predicate did not receive a generic call",
+            ));
+        };
+        let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "global numeric predicate argv was not padded",
+        ))?;
+        let number = match self.native_to_number(realm, argument)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let result = match kind {
+            GlobalNumberPredicateKind::IsNaN => number.is_nan(),
+            GlobalNumberPredicateKind::IsFinite => number.is_finite(),
+        };
+        Ok(Completion::Return(Value::Bool(result)))
+    }
+
     fn primitive_this_value(
         &self,
         realm: ContextId,
@@ -7364,6 +7403,9 @@ impl Runtime {
             }
             NativeFunctionId::GlobalNumberParse(kind) => {
                 self.call_global_number_parse(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::GlobalNumberPredicate(kind) => {
+                self.call_global_number_predicate(realm, kind, invocation, arguments)
             }
             NativeFunctionId::NumberPredicate(kind) => {
                 self.call_number_predicate(kind, invocation, arguments)
@@ -10126,6 +10168,110 @@ mod tests {
     }
 
     #[test]
+    fn global_numeric_predicates_match_quickjs_graph_and_coercion_split() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let global = context.global_object().unwrap();
+        for name in ["isNaN", "isFinite"] {
+            let key = runtime.intern_property_key(name).unwrap();
+            assert!(runtime.is_auto_init_own_property(&global, &key).unwrap());
+        }
+        let is_nan = global_callable(&runtime, &mut context, "isNaN");
+        let is_finite = global_callable(&runtime, &mut context, "isFinite");
+        let number = global_callable(&runtime, &mut context, "Number");
+        let number_is_nan = property_callable(&runtime, &mut context, number.as_object(), "isNaN");
+        let number_is_finite =
+            property_callable(&runtime, &mut context, number.as_object(), "isFinite");
+        assert_ne!(is_nan.as_object(), number_is_nan.as_object());
+        assert_ne!(is_finite.as_object(), number_is_finite.as_object());
+
+        for (name, callable) in [("isNaN", &is_nan), ("isFinite", &is_finite)] {
+            assert_eq!(
+                own_key_names(&runtime, callable.as_object()),
+                ["length", "name"]
+            );
+            assert_eq!(
+                runtime.get_prototype_of(callable.as_object()).unwrap(),
+                Some(context.function_prototype().unwrap())
+            );
+            assert!(!runtime.is_constructor(callable.as_object()).unwrap());
+            assert_eq!(
+                own_data_value(&runtime, callable.as_object(), "length"),
+                Value::Int(1)
+            );
+            assert_eq!(
+                own_data_value(&runtime, callable.as_object(), "name"),
+                Value::String(JsString::from(name))
+            );
+            let key = runtime.intern_property_key(name).unwrap();
+            assert!(matches!(
+                runtime.get_own_property(&global, &key).unwrap(),
+                Some(CompleteOrdinaryPropertyDescriptor::Data {
+                    writable: true,
+                    enumerable: false,
+                    configurable: true,
+                    ..
+                })
+            ));
+        }
+
+        for (input, nan, finite) in [
+            (Value::Undefined, true, false),
+            (Value::Null, false, true),
+            (Value::Bool(false), false, true),
+            (Value::String(JsString::from("")), false, true),
+            (Value::String(JsString::from("number")), true, false),
+            (Value::Float(f64::NAN), true, false),
+            (Value::Float(f64::INFINITY), false, false),
+            (Value::Float(f64::NEG_INFINITY), false, false),
+            (Value::Float(f64::from_bits(1)), false, true),
+        ] {
+            assert_eq!(
+                context
+                    .call(
+                        &is_nan,
+                        Value::String(JsString::from("ignored")),
+                        std::slice::from_ref(&input)
+                    )
+                    .unwrap(),
+                Value::Bool(nan)
+            );
+            assert_eq!(
+                context
+                    .call(&is_finite, Value::Null, &[input, Value::Int(99)])
+                    .unwrap(),
+                Value::Bool(finite)
+            );
+        }
+        assert_eq!(
+            context.call(&is_nan, Value::Undefined, &[]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            context.call(&is_finite, Value::Undefined, &[]).unwrap(),
+            Value::Bool(false)
+        );
+        for callable in [&is_nan, &is_finite] {
+            assert_eq!(
+                context.call(
+                    callable,
+                    Value::Undefined,
+                    &[Value::BigInt(JsBigInt::one())],
+                ),
+                Err(RuntimeError::Exception)
+            );
+            assert_eq!(
+                take_error_message(&runtime, &mut context),
+                JsString::from("cannot convert bigint to number")
+            );
+        }
+        assert_eq!(
+            context.eval("isNaN('x') + '|' + isFinite('1')").unwrap(),
+            Value::String(JsString::from("true|true"))
+        );
+    }
+
+    #[test]
     fn global_primitive_constants_match_quickjs_frozen_descriptors() {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
@@ -10137,6 +10283,8 @@ mod tests {
                     name.as_str(),
                     "parseInt"
                         | "parseFloat"
+                        | "isNaN"
+                        | "isFinite"
                         | "Infinity"
                         | "NaN"
                         | "undefined"
@@ -10150,6 +10298,8 @@ mod tests {
             [
                 "parseInt",
                 "parseFloat",
+                "isNaN",
+                "isFinite",
                 "Infinity",
                 "NaN",
                 "undefined",
