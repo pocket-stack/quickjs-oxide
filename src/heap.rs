@@ -614,6 +614,9 @@ impl VarRefData {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PrimitiveObjectData {
     Number(f64),
+    /// Exact UTF-16 backing store for a genuine String wrapper. Unlike Symbol,
+    /// the reference-counted string payload owns no atom or heap edge.
+    String(JsString),
     Boolean(bool),
     /// One owned atom reference for a genuine local, global, or well-known
     /// Symbol. `object_atoms` returns it during wrapper finalization.
@@ -626,6 +629,7 @@ impl PrimitiveObjectData {
     pub const fn kind(&self) -> PrimitiveKind {
         match self {
             Self::Number(_) => PrimitiveKind::Number,
+            Self::String(_) => PrimitiveKind::String,
             Self::Boolean(_) => PrimitiveKind::Boolean,
             Self::Symbol(_) => PrimitiveKind::Symbol,
             Self::BigInt(_) => PrimitiveKind::BigInt,
@@ -2916,6 +2920,7 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
         ObjectPayload::Primitive(PrimitiveObjectData::Symbol(atom)) => vec![*atom],
         ObjectPayload::Primitive(
             PrimitiveObjectData::Number(_)
+            | PrimitiveObjectData::String(_)
             | PrimitiveObjectData::Boolean(_)
             | PrimitiveObjectData::BigInt(_),
         ) => Vec::new(),
@@ -3080,6 +3085,10 @@ mod tests {
         let number_payload = PrimitiveObjectData::Number(f64::NAN);
         assert_eq!(number_payload.kind(), PrimitiveKind::Number);
         assert_eq!(
+            PrimitiveObjectData::String(JsString::from_utf16([0x61, 0xd800, 0x62])).kind(),
+            PrimitiveKind::String
+        );
+        assert_eq!(
             PrimitiveObjectData::Boolean(false).kind(),
             PrimitiveKind::Boolean
         );
@@ -3126,6 +3135,23 @@ mod tests {
         assert_eq!(object_edges(number_data), vec![RawId::Shape(shape)]);
         assert_eq!(object_atoms(number_data).count(), 0);
 
+        let string_value = JsString::from_utf16([0x61, 0xd800, 0x62]);
+        let string = heap
+            .allocate_object(ObjectData::primitive(
+                shape,
+                Vec::new(),
+                PrimitiveObjectData::String(string_value.clone()),
+            ))
+            .unwrap();
+        let string_data = heap.object(string).unwrap();
+        assert!(matches!(
+            &string_data.payload,
+            ObjectPayload::Primitive(PrimitiveObjectData::String(value))
+                if value == &string_value
+        ));
+        assert_eq!(object_edges(string_data), vec![RawId::Shape(shape)]);
+        assert_eq!(object_atoms(string_data).count(), 0);
+
         let symbol = heap
             .allocate_object(ObjectData::primitive(
                 shape,
@@ -3160,6 +3186,8 @@ mod tests {
         heap.release_object(bigint).unwrap();
         let symbol_cleanup = heap.release_object(symbol).unwrap();
         assert_eq!(symbol_cleanup.atoms, [symbol_atom]);
+        let string_cleanup = heap.release_object(string).unwrap();
+        assert!(string_cleanup.atoms.is_empty());
         heap.release_object(number).unwrap();
         heap.release_object(boolean).unwrap();
         heap.release_shape(shape).unwrap();

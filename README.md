@@ -26,7 +26,14 @@ cross-realm behavior, and `newTarget.prototype` fallback.
 
 The primitive-class substrate now reserves typed realm-local `class_proto`
 slots for Number, String, Boolean, Symbol, and BigInt, with semantically
-complete Number, Boolean, Symbol, and BigInt slots enabled.
+complete Number, Boolean, Symbol, and BigInt slots enabled. The String slot is
+enabled only as the explicitly narrower `String exotic core/substrate`: it
+roots a branded empty-string prototype object whose sole own `length` is
+non-writable, non-enumerable, and configurable. Sloppy ordinary-function
+boxing creates genuine UTF-16-backed String payload wrappers with a
+non-writable, non-enumerable, non-configurable own `length`. Their virtual
+code-unit index properties flow through the five get-own/define-own/has-own/
+delete/own-key entry points, including numeric/string/symbol own-key ordering.
 `%Number.prototype%` is the pinned boxed-`+0` Number-class object. The global
 `%Number%` publishes the exact ordered 17/7 constructor/prototype surface:
 call/construct and BigInt conversion, parser aliases captured by identity,
@@ -52,8 +59,11 @@ inherited getters and setters; sloppy ordinary functions instead create one
 cached wrapper per invocation. Their boxed instances participate in
 `Object.prototype.toString`, `toLocaleString`, and `valueOf`, including
 observable `@@toStringTag`, cross-realm boxing, and the runtime's
-reference-counting/cycle graph. String wrappers, the global `Object`
-constructor, and Array/Iterator consumers remain explicit gaps.
+reference-counting/cycle graph. The global `%String%` constructor, its full
+53-key prototype method surface, non-index String primitive lookup and
+primitive-String boxing through Object-prototype routes remain explicit gaps,
+as do the global `Object` constructor and the dependent Iterator, Array,
+RegExp, and Unicode layers.
 
 Source-level fixed/computed member reads, receiver-preserving method calls, and
 member constructor heads now lower through QuickJS-shaped property bytecode;
@@ -127,8 +137,8 @@ local, closure, private function-name and implicit-`arguments` paths return
 followed by `DeleteProperty`; strict direct references are early errors. Each
 realm also installs the frozen `Infinity`, `NaN` and `undefined` global data
 properties. Dynamic object-environment resolution through `with`/direct
-`eval`, Proxy/exotic delete dispatch, and the remaining String primitive
-prototype graph remain unfinished slices.
+`eval`, Proxy/exotic delete dispatch, and the remaining global String and
+non-index String primitive-prototype routes remain unfinished slices.
 Runtime-wide full/strip-source/strip-debug modes follow QuickJS's immutable
 bytecode publication boundary, and the `qjs` CLI exposes `--strip-source` and
 `-s` with upstream last-option-wins behavior.
@@ -174,6 +184,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_boolean_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_symbol_intrinsic -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_string_exotic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_parse_kernel -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

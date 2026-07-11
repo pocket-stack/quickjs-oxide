@@ -203,9 +203,18 @@ claim full parity.
   global lexical-binding object (`global_var_obj` in QuickJS). Default object
   allocation uses its realm prototype, and `%Object.prototype%` carries
   QuickJS's immutable-prototype bit.
-- The realm root set reserves five typed primitive `class_proto` slots; Number,
-  Boolean, Symbol and BigInt are enabled, while the absent String slot remains
-  a checked implementation gap. `%Number.prototype%` is a Number-class wrapper
+- The realm root set reserves five typed primitive `class_proto` slots. Number,
+  Boolean, Symbol and BigInt retain their complete intrinsic slices; String is
+  enabled only as the strictly named `String exotic core/substrate`. Its realm
+  slot roots a genuinely branded wrapper around the empty UTF-16 string whose
+  sole own `length` has `W0 E0 C1`. Sloppy ordinary-function boxing creates a
+  fresh String-payload wrapper with `W0 E0 C0` own `length`. In-range UTF-16
+  code-unit indices are virtual `W0 E1 C0` properties integrated with
+  get-own-property, define-own-property, has-own-property, delete-property and
+  own-property-keys; ownKeys merges them with stored numeric, string and symbol
+  keys in QuickJS order. This substrate does not publish global `%String%`, its
+  53-key prototype method table, non-index primitive routes, or Object-prototype
+  boxing routes. `%Number.prototype%` is a Number-class wrapper
   containing `+0` and owns the pinned ordered seven-key method surface. Its
   constructor owns the exact ordered 17-key surface: parser aliases captured
   by identity, non-coercing predicates, frozen constants and the final
@@ -426,13 +435,14 @@ claim full parity.
   The global `Object` constructor and String boxing through these methods
   remain unimplemented.
 - Sloppy ordinary bytecode functions normalize primitive `this` lazily and
-  cache the normalized value in the frame. Number, Boolean, Symbol and BigInt
-  calls therefore allocate at most one wrapper per invocation, repeated `this`
-  reads preserve identity, escaped wrappers retain the callee realm's matching
-  prototype, and strict functions continue to observe the raw primitive. The
-  same cached path is used when a sloppy inherited Number/Boolean/Symbol/BigInt
-  getter or setter receives a primitive receiver; the String wrapper class
-  remains an explicit gap.
+  cache the normalized value in the frame. Number, Boolean, Symbol, BigInt and
+  the String exotic substrate therefore allocate at most one genuine wrapper
+  per invocation; repeated `this` reads preserve identity, escaped wrappers
+  retain the callee realm's matching prototype, and strict functions continue
+  to observe the raw primitive. The same cached path is used when a sloppy
+  inherited Number/Boolean/Symbol/BigInt getter or setter receives a primitive
+  receiver. String non-index getter/setter lookup is still absent even though
+  the boxing payload and exotic own properties now exist.
 - The Error intrinsic graph now includes `Error` plus the seven non-Aggregate
   native Error constructors, their constructor/prototype/global relationships,
   lazy function-list properties, call-versus-construct active-function rule,
@@ -567,21 +577,24 @@ strict/sloppy global identifier assignment is implemented. Source property
 reads and receiver-preserving method calls are implemented for object/function
 bases, exact String index/length reads, and the complete Number, Boolean,
 Symbol and BigInt primitive prototype slices; simple member assignment and
-property delete cover ordinary objects and the current primitive surface.
-Prefix/postfix update expressions
+property delete cover ordinary objects and the current primitive surface. The
+separate String exotic substrate covers branded empty-prototype and sloppy-this
+wrappers plus their UTF-16 virtual own properties, but no global constructor or
+non-index method route. Prefix/postfix update expressions
 (including QuickJS's valid `++x ** 2` form) are implemented for the current
 identifier and ordinary fixed/computed member References. Sloppy
 direct-identifier delete is implemented
 for the current static scope tree and defining-realm global object. Dynamic
 object-environment lookup/deletion introduced by `with` or direct `eval`, the
-String constructor, prototype, wrapper and inherited setter graph,
-Proxy/exotic internal methods, and the full
+global String constructor, its 53-key prototype method surface, primitive
+non-index/inherited setter routes, String Object-prototype routes, Proxy/exotic
+internal methods, and the full
 `function_accessors.js` fixture are still pending. The global `Object`
-constructor, AggregateError iterable-to-Array, String primitive wrapper objects
-for direct Object-prototype method calls, remaining Object prototype methods
-and uncatchable termination state are also pending. Arrays, iterators,
-remaining object-literal forms and the rest of the builtin table build on
-those layers.
+constructor, AggregateError iterable-to-Array, String boxing routes from direct
+Object-prototype method calls, remaining Object prototype methods and
+uncatchable termination state are also pending. Arrays, iterators, RegExp,
+Unicode-backed String methods, remaining object-literal forms and the rest of
+the builtin table build on those layers.
 
 The remaining parity surface also includes the full grammar/opcode set,
 Unicode 17 tables, RegExp bytecode engine, modules, jobs/Promises/async,
@@ -596,6 +609,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_boolean_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_symbol_intrinsic -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_string_exotic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_parse_kernel -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -618,9 +633,9 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-parity-slice.sh
 ```
 
-The first eleven commands run the dedicated Boolean, Symbol, global
-BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials. The
-full gate command checksum-verifies and builds the official test-only oracle,
-runs formatting, unit/integration/oracle tests, Clippy, and the Rust-only
-product gate. The oracle is never part of the product dependency graph or
-runtime.
+The first twelve commands run the dedicated Boolean, Symbol, String-exotic
+substrate, global BaseObjects, complete Number-intrinsic and BigInt-intrinsic
+differentials. The full gate command checksum-verifies and builds the official
+test-only oracle, runs formatting, unit/integration/oracle tests, Clippy, and
+the Rust-only product gate. The oracle is never part of the product dependency
+graph or runtime.

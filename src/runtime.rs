@@ -752,6 +752,12 @@ impl VmHost for RuntimeVmHost {
                     .primitive_prototype_for_realm(self.current_realm, PrimitiveKind::Number)
                     .map_err(runtime_error_to_vm_error)?,
             ),
+            Value::String(_) => (
+                PrimitiveKind::String,
+                self.runtime
+                    .primitive_prototype_for_realm(self.current_realm, PrimitiveKind::String)
+                    .map_err(runtime_error_to_vm_error)?,
+            ),
             Value::BigInt(_) => (
                 PrimitiveKind::BigInt,
                 self.runtime
@@ -764,7 +770,7 @@ impl VmHost for RuntimeVmHost {
                     .primitive_prototype_for_realm(self.current_realm, PrimitiveKind::Symbol)
                     .map_err(runtime_error_to_vm_error)?,
             ),
-            Value::Undefined | Value::Null | Value::String(_) | Value::Object(_) => {
+            Value::Undefined | Value::Null | Value::Object(_) => {
                 return Err(Error::internal(
                     "primitive wrapper class is not implemented yet",
                 ));
@@ -1567,6 +1573,13 @@ impl Runtime {
                 Value::Bool(false),
             )
             .expect("initial Boolean.prototype allocation must succeed");
+        // QuickJS represents String.prototype as a genuine String-class
+        // wrapper around the empty string. Its own `length` is the one
+        // configurable String-prototype exception; ordinary wrappers use a
+        // non-configurable length property.
+        let string_prototype = self
+            .new_string_object(&object_prototype, JsString::from(""), true)
+            .expect("initial String.prototype allocation must succeed");
         // Like BigInt.prototype, QuickJS's Symbol.prototype is an ordinary
         // object and deliberately has no [[SymbolData]] payload.
         let symbol_prototype = self
@@ -1607,6 +1620,7 @@ impl Runtime {
                     )
                     .with_primitive_prototype(PrimitiveKind::Number, number_prototype.object_id())
                     .with_primitive_prototype(PrimitiveKind::Boolean, boolean_prototype.object_id())
+                    .with_primitive_prototype(PrimitiveKind::String, string_prototype.object_id())
                     .with_primitive_prototype(PrimitiveKind::Symbol, symbol_prototype.object_id())
                     .with_primitive_prototype(PrimitiveKind::BigInt, bigint_prototype.object_id())
                     .with_error_prototypes(error_prototype.object_id(), native_error_ids),
@@ -1692,6 +1706,7 @@ impl Runtime {
         drop(uninitialized_vars);
         drop(bigint_prototype);
         drop(symbol_prototype);
+        drop(string_prototype);
         drop(boolean_prototype);
         drop(number_prototype);
         drop(native_error_prototypes);
@@ -1870,11 +1885,39 @@ impl Runtime {
         kind: PrimitiveKind,
         value: Value,
     ) -> Result<ObjectRef, RuntimeError> {
+        self.new_primitive_object_with_string_length(prototype, kind, value, false)
+    }
+
+    fn new_string_object(
+        &self,
+        prototype: &ObjectRef,
+        value: JsString,
+        length_configurable: bool,
+    ) -> Result<ObjectRef, RuntimeError> {
+        self.new_primitive_object_with_string_length(
+            prototype,
+            PrimitiveKind::String,
+            Value::String(value),
+            length_configurable,
+        )
+    }
+
+    fn new_primitive_object_with_string_length(
+        &self,
+        prototype: &ObjectRef,
+        kind: PrimitiveKind,
+        value: Value,
+        string_length_configurable: bool,
+    ) -> Result<ObjectRef, RuntimeError> {
         let _operation = self.operation();
         if !prototype.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("primitive prototype"));
         }
         self.validate_value_domain(&value, "primitive wrapper payload")?;
+        let string_length = match &value {
+            Value::String(value) if kind == PrimitiveKind::String => Some(value.len()),
+            _ => None,
+        };
         // Match by reference so a unique local Symbol root remains alive
         // until the wrapper has retained its own atom edge.
         let (data, payload_atom) = match (kind, &value) {
@@ -1883,6 +1926,9 @@ impl Runtime {
             }
             (PrimitiveKind::Number, Value::Float(value)) => {
                 (PrimitiveObjectData::Number(*value), None)
+            }
+            (PrimitiveKind::String, Value::String(value)) => {
+                (PrimitiveObjectData::String(value.clone()), None)
             }
             (PrimitiveKind::Boolean, Value::Bool(value)) => {
                 (PrimitiveObjectData::Boolean(*value), None)
@@ -1927,7 +1973,30 @@ impl Runtime {
         let cleanup = state.heap.release_shape(shape)?;
         state.apply_cleanup(cleanup)?;
         drop(state);
-        Ok(ObjectRef::from_owned_handle(self.clone(), object))
+        let object = ObjectRef::from_owned_handle(self.clone(), object);
+        if let Some(length) = string_length {
+            let length = i32::try_from(length)
+                .map(Value::Int)
+                .unwrap_or_else(|_| Value::number(length as f64));
+            let key = self.intern_property_key("length")?;
+            let defined = self.define_own_property(
+                &object,
+                &key,
+                &OrdinaryPropertyDescriptor {
+                    value: DescriptorField::Present(length),
+                    writable: DescriptorField::Present(false),
+                    enumerable: DescriptorField::Present(false),
+                    configurable: DescriptorField::Present(string_length_configurable),
+                    ..OrdinaryPropertyDescriptor::new()
+                },
+            )?;
+            if !defined {
+                return Err(RuntimeError::Invariant(
+                    "String wrapper length definition was rejected",
+                ));
+            }
+        }
+        Ok(object)
     }
 
     fn new_global_object(
@@ -3740,7 +3809,60 @@ impl Runtime {
         Ok(())
     }
 
-    /// Snapshot an ordinary own property as a complete descriptor.
+    fn string_exotic_index_value(
+        &self,
+        object: &ObjectRef,
+        key: &PropertyKey,
+    ) -> Result<Option<JsString>, RuntimeError> {
+        let state = self.0.state.borrow();
+        let object = state.heap.object(object.object_id())?;
+        let ObjectPayload::Primitive(PrimitiveObjectData::String(value)) = &object.payload else {
+            return Ok(None);
+        };
+        let Some(index) = state.atoms.array_index(key.atom())? else {
+            return Ok(None);
+        };
+        let Ok(index) = usize::try_from(index) else {
+            return Ok(None);
+        };
+        Ok(value
+            .utf16_units()
+            .nth(index)
+            .map(|unit| JsString::from_utf16([unit])))
+    }
+
+    fn string_exotic_length(&self, object: &ObjectRef) -> Result<Option<usize>, RuntimeError> {
+        let state = self.0.state.borrow();
+        let object = state.heap.object(object.object_id())?;
+        Ok(match &object.payload {
+            ObjectPayload::Primitive(PrimitiveObjectData::String(value)) => Some(value.len()),
+            ObjectPayload::Ordinary
+            | ObjectPayload::Primitive(_)
+            | ObjectPayload::GlobalObject { .. }
+            | ObjectPayload::Error
+            | ObjectPayload::NativeFunction { .. }
+            | ObjectPayload::BoundFunction { .. }
+            | ObjectPayload::BytecodeFunction { .. } => None,
+        })
+    }
+
+    fn string_exotic_own_property(
+        &self,
+        object: &ObjectRef,
+        key: &PropertyKey,
+    ) -> Result<Option<CompleteOrdinaryPropertyDescriptor>, RuntimeError> {
+        Ok(self.string_exotic_index_value(object, key)?.map(|value| {
+            CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::String(value),
+                writable: false,
+                enumerable: true,
+                configurable: false,
+            }
+        }))
+    }
+
+    /// Snapshot an own property as a complete descriptor, including the
+    /// virtual UTF-16 index properties of genuine String wrappers.
     pub fn get_own_property(
         &self,
         object: &ObjectRef,
@@ -3748,6 +3870,9 @@ impl Runtime {
     ) -> Result<Option<CompleteOrdinaryPropertyDescriptor>, RuntimeError> {
         let _operation = self.operation();
         self.validate_object_and_key(object, key)?;
+        if let Some(property) = self.string_exotic_own_property(object, key)? {
+            return Ok(Some(property));
+        }
         let snapshot = {
             let state = self.0.state.borrow();
             let object_data = state.heap.object(object.object_id())?;
@@ -4127,6 +4252,23 @@ impl Runtime {
         let _operation = self.operation();
         self.validate_object_and_key(object, key)?;
         self.validate_descriptor_domains(descriptor)?;
+        if let Some(current) = self.string_exotic_own_property(object, key)? {
+            let descriptor = descriptor_to_validation_record(descriptor);
+            let current = complete_to_validation_record(&current);
+            return match validate_and_apply_property_descriptor(
+                self.is_extensible(object)?,
+                &descriptor,
+                Some(&current),
+                &Value::Undefined,
+                Value::same_value,
+            ) {
+                Ok(_) => Ok(true),
+                Err(PropertyDefinitionError::InvalidDescriptor) => {
+                    Err(PropertyDefinitionError::InvalidDescriptor.into())
+                }
+                Err(_) => Ok(false),
+            };
+        }
         if let Some(flags) = self.auto_init_own_property_flags(object, key)? {
             if descriptor.is_mixed_descriptor() {
                 return Err(PropertyDefinitionError::InvalidDescriptor.into());
@@ -4210,6 +4352,9 @@ impl Runtime {
     ) -> Result<bool, RuntimeError> {
         let _operation = self.operation();
         self.validate_object_and_key(object, key)?;
+        if self.string_exotic_index_value(object, key)?.is_some() {
+            return Ok(true);
+        }
         let state = self.0.state.borrow();
         let object = state.heap.object(object.object_id())?;
         Ok(state.heap.shape(object.shape)?.find(key.atom()).is_some())
@@ -4223,6 +4368,9 @@ impl Runtime {
     ) -> Result<bool, RuntimeError> {
         let _operation = self.operation();
         self.validate_object_and_key(object, key)?;
+        if self.string_exotic_index_value(object, key)?.is_some() {
+            return Ok(false);
+        }
         let global_var_ref = {
             let state = self.0.state.borrow();
             let object_data = state.heap.object(object.object_id())?;
@@ -4319,18 +4467,40 @@ impl Runtime {
         if !object.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("object"));
         }
+        let string_length = self.string_exotic_length(object)?;
         let atoms = {
             let state = self.0.state.borrow();
             let object = state.heap.object(object.object_id())?;
-            state
+            let atoms = state
                 .heap
                 .shape(object.shape)?
-                .ordered_own_keys(&state.atoms)?
+                .ordered_own_keys(&state.atoms)?;
+            if let Some(length) = string_length {
+                for atom in &atoms {
+                    if state.atoms.array_index(*atom)?.is_some_and(|index| {
+                        usize::try_from(index).is_ok_and(|index| index < length)
+                    }) {
+                        return Err(RuntimeError::Invariant(
+                            "String wrapper shape shadowed a virtual index",
+                        ));
+                    }
+                }
+            }
+            atoms
         };
-        atoms
-            .into_iter()
-            .map(|atom| PropertyKey::from_borrowed_atom(self.clone(), atom).map_err(Into::into))
-            .collect()
+        let mut keys = Vec::new();
+        if let Some(length) = string_length {
+            let length = u32::try_from(length).map_err(|_| {
+                RuntimeError::Invariant("String wrapper length exceeded QuickJS index space")
+            })?;
+            for index in 0..length {
+                keys.push(self.intern_property_key(&index.to_string())?);
+            }
+        }
+        for atom in atoms {
+            keys.push(PropertyKey::from_borrowed_atom(self.clone(), atom)?);
+        }
+        Ok(keys)
     }
 
     /// Return the ordinary object's prototype as a new root.
@@ -7708,6 +7878,9 @@ impl Runtime {
                 ObjectPayload::Primitive(PrimitiveObjectData::Number(_)) => {
                     JsString::from("Number")
                 }
+                ObjectPayload::Primitive(PrimitiveObjectData::String(_)) => {
+                    JsString::from("String")
+                }
                 ObjectPayload::Primitive(PrimitiveObjectData::Boolean(_)) => {
                     JsString::from("Boolean")
                 }
@@ -10651,10 +10824,9 @@ mod tests {
                 slots[PrimitiveKind::Symbol.index()],
                 Some(symbol_prototype.object_id())
             );
-            assert_eq!(
-                slots[PrimitiveKind::String.index()],
-                None,
-                "String slot was enabled early"
+            assert!(
+                slots[PrimitiveKind::String.index()].is_some(),
+                "String exotic-core prototype slot was not initialized"
             );
         }
 
@@ -10713,6 +10885,205 @@ mod tests {
             Value::String(JsString::from("true|false"))
         );
         assert_eq!(context.eval("+new Boolean(false)").unwrap(), Value::Int(0));
+    }
+
+    #[test]
+    fn string_wrapper_exotic_indices_length_define_delete_and_order_match_quickjs() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let string_prototype_id = runtime
+            .0
+            .state
+            .borrow()
+            .heap
+            .context(context.realm)
+            .unwrap()
+            .primitive_prototypes[PrimitiveKind::String.index()]
+        .expect("String exotic-core prototype slot was absent");
+        let string_prototype =
+            crate::ObjectRef::from_borrowed_handle(runtime.clone(), string_prototype_id).unwrap();
+
+        assert!(matches!(
+            &runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .object(string_prototype.object_id())
+                .unwrap()
+                .payload,
+            ObjectPayload::Primitive(PrimitiveObjectData::String(value)) if value.is_empty()
+        ));
+        assert_eq!(own_key_names(&runtime, &string_prototype), ["length"]);
+        let length_key = runtime.intern_property_key("length").unwrap();
+        assert_eq!(
+            runtime
+                .get_own_property(&string_prototype, &length_key)
+                .unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Int(0),
+                writable: false,
+                enumerable: false,
+                configurable: true,
+            })
+        );
+
+        let payload = JsString::from_utf16([0x41, 0xd83d, 0xde00, 0xd800]);
+        let wrapper = runtime
+            .new_string_object(&string_prototype, payload.clone(), false)
+            .unwrap();
+        assert!(matches!(
+            &runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .object(wrapper.object_id())
+                .unwrap()
+                .payload,
+            ObjectPayload::Primitive(PrimitiveObjectData::String(value)) if value == &payload
+        ));
+        assert_eq!(
+            runtime.get_prototype_of(&wrapper).unwrap(),
+            Some(string_prototype.clone())
+        );
+        assert_eq!(
+            own_key_names(&runtime, &wrapper),
+            ["0", "1", "2", "3", "length"]
+        );
+        assert_eq!(
+            runtime.get_own_property(&wrapper, &length_key).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Int(4),
+                writable: false,
+                enumerable: false,
+                configurable: false,
+            })
+        );
+
+        for (index, unit) in [0x41, 0xd83d, 0xde00, 0xd800].into_iter().enumerate() {
+            let key = runtime.intern_property_key(&index.to_string()).unwrap();
+            let expected = Value::String(JsString::from_utf16([unit]));
+            assert_eq!(
+                runtime.get_own_property(&wrapper, &key).unwrap(),
+                Some(CompleteOrdinaryPropertyDescriptor::Data {
+                    value: expected.clone(),
+                    writable: false,
+                    enumerable: true,
+                    configurable: false,
+                })
+            );
+            assert!(runtime.has_own_property(&wrapper, &key).unwrap());
+            assert!(
+                runtime
+                    .define_own_property(
+                        &wrapper,
+                        &key,
+                        &OrdinaryPropertyDescriptor {
+                            value: DescriptorField::Present(expected),
+                            writable: DescriptorField::Present(false),
+                            enumerable: DescriptorField::Present(true),
+                            configurable: DescriptorField::Present(false),
+                            ..OrdinaryPropertyDescriptor::new()
+                        },
+                    )
+                    .unwrap()
+            );
+            assert!(!runtime.delete_property(&wrapper, &key).unwrap());
+        }
+
+        let zero = runtime.intern_property_key("0").unwrap();
+        for descriptor in [
+            OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(Value::String(JsString::from("X"))),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+            OrdinaryPropertyDescriptor {
+                writable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+            OrdinaryPropertyDescriptor {
+                enumerable: DescriptorField::Present(false),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+            OrdinaryPropertyDescriptor {
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+            OrdinaryPropertyDescriptor {
+                get: DescriptorField::Present(AccessorValue::Undefined),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        ] {
+            assert!(
+                !runtime
+                    .define_own_property(&wrapper, &zero, &descriptor)
+                    .unwrap()
+            );
+        }
+        assert!(!runtime.delete_property(&wrapper, &length_key).unwrap());
+
+        let eight = runtime.intern_property_key("8").unwrap();
+        let foo = runtime.intern_property_key("foo").unwrap();
+        let leading_zero = runtime.intern_property_key("01").unwrap();
+        let symbol = PropertyKey::from(runtime.new_symbol(Some(JsString::from("tail"))).unwrap());
+        for key in [&foo, &leading_zero, &eight, &symbol] {
+            assert!(
+                runtime
+                    .define_own_property(
+                        &wrapper,
+                        key,
+                        &OrdinaryPropertyDescriptor {
+                            value: DescriptorField::Present(Value::Int(1)),
+                            writable: DescriptorField::Present(true),
+                            enumerable: DescriptorField::Present(true),
+                            configurable: DescriptorField::Present(true),
+                            ..OrdinaryPropertyDescriptor::new()
+                        },
+                    )
+                    .unwrap()
+            );
+        }
+        assert_eq!(
+            own_key_names(&runtime, &wrapper),
+            ["0", "1", "2", "3", "8", "length", "foo", "01", "tail"]
+        );
+
+        runtime.prevent_extensions(&wrapper).unwrap();
+        assert!(
+            runtime
+                .define_own_property(&wrapper, &zero, &OrdinaryPropertyDescriptor::new(),)
+                .unwrap()
+        );
+        let nine = runtime.intern_property_key("9").unwrap();
+        assert!(
+            !runtime
+                .define_own_property(
+                    &wrapper,
+                    &nine,
+                    &OrdinaryPropertyDescriptor {
+                        value: DescriptorField::Present(Value::Int(1)),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+
+        let sloppy = eval_callable(&runtime, &mut context, "(function(){ return this; })");
+        let Value::Object(escaped) = context
+            .call(&sloppy, Value::String(payload.clone()), &[])
+            .unwrap()
+        else {
+            panic!("sloppy String this did not escape as a wrapper");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&escaped).unwrap(),
+            Some(string_prototype)
+        );
+        assert_eq!(
+            own_key_names(&runtime, &escaped),
+            ["0", "1", "2", "3", "length"]
+        );
     }
 
     #[test]
