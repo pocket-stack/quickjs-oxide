@@ -243,11 +243,6 @@ struct BoundaryCase {
 
 const BOUNDARY_CASES: &[BoundaryCase] = &[
     BoundaryCase {
-        description: "global lexical declaration",
-        source: "let globalValue = 1; globalValue;",
-        rust_message: "top-level lexical declarations and global bindings are not implemented yet",
-    },
-    BoundaryCase {
         description: "lexical destructuring binding",
         source: "(function(){ const [value] = [1]; return value; })()",
         rust_message: "lexical destructuring bindings are not implemented yet",

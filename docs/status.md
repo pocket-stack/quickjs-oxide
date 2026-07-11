@@ -47,12 +47,12 @@ claim full parity.
   the private named-function binding remains a lazy root local.
 
   Source lexical population now covers simple-name `let` and `const` lists in
-  four authored environments: an ordinary function body (including a normal
-  `%Function%` constructor body), every non-empty nested brace block, the one
-  CaseBlock scope shared by every clause of a `switch`, and the initializer
-  scope of a classic `for (;;)` loop. Block, switch, and classic-for locals work
-  in scripts even though direct Program/global lexical declarations remain
-  unsupported. `let` without an initializer performs explicit `undefined`
+  the direct Program global lexical environment plus four local authored
+  environments: an ordinary function body (including a normal `%Function%`
+  constructor body), every non-empty nested brace block, the one CaseBlock scope
+  shared by every clause of a `switch`, and the initializer scope of a classic
+  `for (;;)` loop. Block, switch, and classic-for locals also work in scripts.
+  `let` without an initializer performs explicit `undefined`
   initialization, `const` requires an initializer, and anonymous function
   initializers retain contextual NamedEvaluation. Registration occurs before
   each initializer is parsed; duplicate names are rejected within one lexical
@@ -103,30 +103,64 @@ claim full parity.
   this pinned `/* XXX: check continue case */` behavior rather than silently
   substituting the specification's expected fresh cell.
 
+  Direct Program `let`/`const` does not use a script-frame local. The compiler
+  records typed `GlobalDeclaration` descriptors in declaration source order,
+  before its child-first resolver can install `ParentGlobal` capture relays.
+  Script execution mirrors QuickJS `js_closure2`: it first checks every global
+  declaration without mutating the realm, then creates all accepted bindings in
+  the null-prototype global lexical object, and only then runs authored
+  bytecode. `PutVarInit` initializes the resulting TDZ cell; let/const remain
+  absent from `globalThis`, survive later `Context::eval` calls, cannot be
+  deleted by a direct identifier, and retain writable/enumerable/configurable
+  flags of `W1 E1 C1` and `W0 E1 C1` respectively. A configurable global-object
+  property may coexist under the same name, while an existing global lexical or
+  non-configurable own global property rejects the whole declaration batch
+  before any binding is created. Compilation and publication alone do not
+  instantiate declarations; the compatibility check occurs when the script
+  closure is executed. As in `JS_EvalFunction`, declaration checks, binding
+  creation, and any resulting SyntaxError use the initiating Context even when
+  the bytecode was compiled in another realm; the authored body subsequently
+  executes with the realm stored on the bytecode.
+
+  The pinned failed-initializer behavior is preserved deliberately. A created
+  but uninitialized Program lexical still blocks redeclaration and direct delete
+  remains false. The declaring script and its typed `ParentGlobal` captures see
+  the named TDZ, but a later ordinary global descriptor reports the name as not
+  defined and direct `typeof` yields `undefined`; QuickJS `OP_get_var` consults
+  closure-descriptor lexical metadata for this read while writes consult VarRef
+  metadata. Strip-debug therefore retains names on `GlobalDeclaration` and
+  `ParentGlobal` descriptors because they are semantic atoms, not debug-only
+  lexical names.
+
   `return` and an uncaught `throw` do not emit lexical leave operations;
   whole-frame teardown detaches their captured locals, as in QuickJS. A future
   same-function `try`/`catch` slice must also preserve the pinned release's
   observable quirk that a caught `throw` does not close the intervening block
   scope before control resumes; `try`/`catch` is not implemented yet.
 
-  The pinned source anchors for this slice are `quickjs.c` 17571
-  (`close_lexical_var`), 23933
+  The pinned source anchors for this slice are `quickjs.c` 10817-10855
+  (`JS_CheckDefineGlobalVar`), 17151-17285 (global declaration/reference VarRef
+  creation), 17307-17359 (two-pass declaration instantiation), 17571
+  (`close_lexical_var`), 18487-18555 (`GetVar`/`PutVarInit`
+  descriptor-versus-cell checks), 23933
   (`find_var_in_child_scope`), 23989/24035/24047
   (`push_scope`/`pop_scope`/`close_scopes`), 24186 and 26096
   (`define_var`/`js_define_var`), 28225 (`emit_break`), 28378
   (`js_parse_block`), 29004-29147 (classic `for`, including initializer and
   normal-body closes plus the `continue` quirk), 29172 (SwitchStatement), and
   34281/34315
-  (`OP_enter_scope`/`OP_leave_scope` expansion) in QuickJS 2026-06-04.
-  Direct Program/global lexicals, `for-in`/`for-of`/`for-await`, destructuring,
-  single-statement lexical declarations, and catch/class scopes remain explicit
-  boundaries rather than falling back to `var` or global storage.
+  (`OP_enter_scope`/`OP_leave_scope` expansion), and 35837-35902
+  (`add_global_variables`) in QuickJS 2026-06-04. Program `var` and function
+  declarations, `for-in`/`for-of`/`for-await`, destructuring, single-statement
+  lexical declarations, and catch/class scopes remain explicit boundaries
+  rather than falling back to local or ordinary global storage.
 
   The immutable function format and VM provide the lexical-frame substrate for
   this compiler slice. Published bytecode owns
   QuickJS `JSVarDef`-shaped argument/local definitions with optional atom names,
   lexical/const flags and binding kind; closure descriptors carry the same
-  semantics across every relay. Frame locals and heap-owned VarRefs preserve an
+  semantics across every relay and distinguish unresolved `Global` access from
+  declaration-instantiating `GlobalDeclaration`. Frame locals and heap-owned VarRefs preserve an
   explicit uninitialized TDZ sentinel. `SetLocalUninitialized`,
   `GetLocalCheck`, `PutLocalCheck`/`SetLocalCheck`,
   `GetVarRefCheck`/`PutVarRefCheck`, and `CloseLocal` cover lexical entry,
@@ -163,7 +197,8 @@ claim full parity.
   primitive expression grammar,
   the current source path supports anonymous and named ordinary function
   expressions, simple parameters, `return`/fallthrough, function-local `var`,
-  the simple-name body/block/switch/classic-for-head `let`/`const` slice above,
+  direct Program simple-name `let`/`const`, and the
+  body/block/switch/classic-for-head lexical slice above,
   recursive block statements, `if`/`else` (including nearest-`if` binding),
   `while`/`do-while`, classic `for (;;)` loops, `switch` control flow and
   labeled statements with named and unnamed `break`/`continue`,
@@ -509,7 +544,7 @@ claim full parity.
   Global `%String%`, the remaining 43 prototype own keys, Context-level
   observable `ToString`, borrowed C-pointer/refcount ownership, native atom
   diagnostics attached to not-yet-implemented Array/private-field/module/
-  global-declaration surfaces, exact byte-sidecar migration for the remaining
+  global-var/function-declaration surfaces, exact byte-sidecar migration for the remaining
   numeric-parser and lexer diagnostic builders, and general recoverable
   allocator failure handling stay unpublished.
   `%Number.prototype%` is a Number-class wrapper
@@ -549,6 +584,16 @@ claim full parity.
   to the hidden object, resets it to Uninitialized, and allows a later data
   definition to reconnect the same closures. These VarRef, hidden-object,
   Shape and atom edges participate in reference counting and trial-deletion GC.
+  Direct Program simple-name `let`/`const` now drives this substrate through
+  production declaration instantiation rather than test-only helpers. The
+  global lexical object stores the persistent binding while a same-name
+  configurable `globalThis` property keeps a separate value; existing global
+  VarRef cells are split exactly as in QuickJS so older closures reconnect to
+  the lexical cell without changing the property value. Runtime preflight reads
+  raw own shape flags and invokes no getter or autoinitializer. All declaration
+  checks precede all creation, including source-order conflict priority and
+  no-partial-binding behavior, and a non-extensible global object still accepts
+  lexical declarations because they do not create properties on it.
 - Every realm installs `Infinity`, `NaN` and `undefined` as non-writable,
   non-enumerable, non-configurable global data properties, matching the pinned
   QuickJS 2026-06-04 descriptors and direct-delete results. The implemented
@@ -575,24 +620,28 @@ claim full parity.
   remaining intervening intrinsics land.
 - Unresolved identifiers no longer use a string-key global opcode. Resolution
   installs one root `Global` closure descriptor and `ParentGlobal` relays on
-  every nested function path; publication interns each exact name and function
-  instantiation binds the root cell in the bytecode's defining realm.
-  `GetVar` reads initialized cells directly, raises ReferenceError for a lexical
-  TDZ, and performs one observable global-object `[[Get]]` for an uninitialized
-  non-lexical cell. `GetVarUndef` suppresses only a genuinely missing binding,
-  so direct parenthesized `typeof name` returns `undefined` while a lexical TDZ,
-  getter throw, or comma/composed reference still throws.
+  every nested function path; declared Program lexicals instead start at a
+  source-ordered root `GlobalDeclaration`. Publication interns each exact name
+  and root script instantiation binds the root cell in the initiating Context.
+  `GetVar` reads initialized cells directly. For an uninitialized cell,
+  a descriptor marked lexical raises the named TDZ ReferenceError; an ordinary
+  descriptor performs one observable global-object `[[Get]]`. `GetVarUndef`
+  suppresses only that ordinary missing-property case. This descriptor-based
+  distinction is why a later eval sees a failed Program lexical as not defined
+  even though its VarRef metadata still blocks writes, deletion and
+  redeclaration.
   Sloppy direct-identifier `delete` uses the corresponding late scope result
   without first performing `GetValue`: argument, local, closure, private
   function-name, implicit `arguments` and lexical paths return `false`, while
   global/unresolved paths perform `HasProperty` followed by `DeleteProperty`
-  on the defining realm's global object (and return `true` when no property is
+  on the executing bytecode realm's global object (and return `true` when no property is
   present). Parentheses retain the direct Reference, while comma/composed
   values do not. Strict direct IdentifierReferences are rejected as early
   errors at the pinned QuickJS source position.
-  Consequently a function invoked from another Context observes its defining
-  realm's global/lexical environment, and global Reference/Type errors use that
-  defining realm's native-error prototypes.
+  A function created by script execution retains the root cells selected at
+  that script's instantiation. Ordinary VM fallback property operations and
+  Reference/Type errors use the executing bytecode realm; declaration-preflight
+  errors are the caller-Context exception described above.
 - Simple identifier assignment supports the QuickJS `PutVar` and `PutVarInit`
   paths. Mutable lexical cells update directly; lexical TDZ and const writes
   raise the corresponding ReferenceError or read-only TypeError. Non-lexical
@@ -822,41 +871,56 @@ claim full parity.
   and const write priority, contextual sloppy `let`, exact early conflicts and
   locations, named initialization, normal `%Function%` bodies, nested script
   locals, shared switch conflicts, classic-for single-entry/cell lifetimes and
-  pinned continue behavior, explicit global/nonclassic-for/destructuring
+  pinned continue behavior, Program-global declaration descriptors, and
+  explicit nonclassic-for/destructuring
   boundaries, and strip-debug name removal without losing read-only atoms.
   The companion `oracle_function_body_lexicals` target compares ordinary and
   normal-`Function` body/block/switch values, nested script block/switch locals,
   direct and transitive closure cells, repeated-entry and break/continue scope
   exits, cross-case TDZ/conflicts, TDZ/read-only CLI stacks, and the intentionally
-  unsupported direct-global/destructuring boundaries with the pinned release.
+  unsupported destructuring boundary with the pinned release.
   The `oracle_for_lexicals` target separately locks classic-head initialization
   and NoIn parsing, ordinary and normal-`Function` values, script-local and
   cross-eval captures, initializer/body/update cell identity, the pinned
   shared-head-cell continue quirk, labeled jumps through a nested switch,
   conflicts, exact full/StripDebug TDZ and read-only stacks, and explicit
   `for-in`/`for-of`/destructuring boundaries.
+  The `oracle_program_lexicals` target locks direct Program values, declaration
+  source order, repeated eval persistence, globalThis separation and VarRef
+  splitting, preflight atomicity, failed-initializer behavior, exact
+  full/StripDebug stacks and parser errors, plus the still-explicit Program
+  `var`/function/destructuring boundaries.
 - `Runtime` and `Context` are distinct; `qjs -e` and file execution use the
   Rust compiler/VM path and never delegate to an external engine.
 
 ## Not implemented yet
 
 The language slice is intentionally narrow. Function declarations/hoisting,
-global lexical declaration instantiation, `for-in`/`for-of`/`for-await`,
+Program/global `var` and function declaration instantiation,
+`for-in`/`for-of`/`for-await`,
 destructuring, try/catch/finally, other general assignment targets, module
 resolution, computed property-definition naming, mapped `arguments`,
 arrow/async/generator functions and callable Proxy classes are not yet
-implemented. Top-level Program declarations are rejected instead of being
-faked as frame locals. Source `let`/`const` is currently limited to simple
-identifier lists in authored ordinary-function bodies, non-empty nested brace
-blocks, shared switch scopes, and classic `for (;;)` heads. The nested and
-classic-for forms also work in scripts, and ordinary bodies including classic
-heads are available through the normal `%Function%` constructor.
+implemented. Unsupported Program `var`/function declarations are rejected
+instead of being faked as frame locals. Source `let`/`const` is currently
+limited to simple identifier lists in direct Program code, authored
+ordinary-function bodies, non-empty nested brace blocks, shared switch scopes,
+and classic `for (;;)` heads. Nested and classic-for forms also work in scripts,
+and ordinary bodies including classic heads are available through the normal
+`%Function%` constructor.
 Single-statement declarations, nonclassic lexical loop heads, destructuring,
-and catch/class lexical environments remain later compiler slices. The internal
-global lexical VarRef path already enforces TDZ, mutable and const behavior, but
-it is still exercised through test-only creation and initialization helpers
-rather than source Program declarations. Ordinary reads and calls of the valid
-implicit `arguments` binding are
+and catch/class lexical environments remain later compiler slices. Direct
+Program lexicals now use the production global VarRef path with two-phase
+instantiation; Program var/function declarations and the pinned interactions
+among those declaration kinds remain later slices. One internal resource-failure
+hardening gap is tracked here: the Rust path currently allocates the callable
+after creating accepted global lexical bindings, whereas QuickJS reserves the
+callable object first. Ordinary JavaScript cannot trigger the intervening heap
+failure today; matching the allocation order safely requires a provisional
+two-phase bytecode-function reservation plus failure-injection coverage, rather
+than attempting to roll back migrated VarRefs after the fact.
+
+Ordinary reads and calls of the valid implicit `arguments` binding are
 likewise rejected where materializing it as an ordinary local would be
 observably wrong. Direct `delete arguments` is the narrow exception: it resolves
 to `false` without materializing or reading the arguments object, including
@@ -998,6 +1062,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_lexicals -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_for_lexicals -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_program_lexicals -- --nocapture
 
 ./scripts/test-parity-slice.sh
 ```
@@ -1006,7 +1072,7 @@ The direct commands above run the dedicated Boolean, Symbol,
 String-exotic substrate, String UTF-16 prefix, String-conversion core,
 String-rope/byte/native-Error kernels, Unicode identifier core, global
 BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials, and
-the body/block/switch/classic-for lexical-scope slice. The atom-Error target
+the Program/body/block/switch/classic-for lexical-scope slices. The atom-Error target
 contains thirteen pinned-oracle inputs in addition to its Rust-side expectation
 test. The Unicode target checks every scalar, real compiler/runtime cases, and
 the parser-driven identifier diagnostic matrix. A

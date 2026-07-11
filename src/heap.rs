@@ -19,7 +19,7 @@
 //! atoms in [`HeapCleanup::atoms`] so the caller can release them without
 //! making this low-level arena depend on `AtomTable` mutability or callbacks.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::rc::Rc;
@@ -479,6 +479,8 @@ pub enum ClosureSource {
     ParentLocal(u16),
     ParentArgument(u16),
     ParentClosure(u16),
+    /// Define a declared global binding when the eval/script closure is instantiated.
+    GlobalDeclaration,
     /// Resolve a global binding when the eval/script closure is instantiated.
     Global,
     /// Reuse a parent's global binding without re-resolving the name.
@@ -1796,15 +1798,35 @@ impl Heap {
             }
             *count -= 1;
         }
+        let mut global_declaration_names = HashSet::new();
         for descriptor in bytecode.closure_variables.iter().copied() {
+            if descriptor.source == ClosureSource::GlobalDeclaration
+                && (!descriptor.is_lexical || descriptor.kind != ClosureVariableKind::Normal)
+            {
+                return Err(HeapError::Invariant(
+                    "implemented global declaration descriptor is not lexical",
+                ));
+            }
             let requires_name = matches!(
                 descriptor.source,
-                ClosureSource::Global | ClosureSource::ParentGlobal(_)
+                ClosureSource::GlobalDeclaration
+                    | ClosureSource::Global
+                    | ClosureSource::ParentGlobal(_)
             ) || descriptor.kind == ClosureVariableKind::FunctionName;
             let allows_name = requires_name || descriptor.is_lexical;
+            if descriptor.source == ClosureSource::GlobalDeclaration
+                && let ClosureVariableName::Atom(atom) = descriptor.name
+                && !global_declaration_names.insert(atom)
+            {
+                return Err(HeapError::Invariant(
+                    "duplicate global declaration descriptor name",
+                ));
+            }
             if matches!(
                 descriptor.source,
-                ClosureSource::Global | ClosureSource::ParentGlobal(_)
+                ClosureSource::GlobalDeclaration
+                    | ClosureSource::Global
+                    | ClosureSource::ParentGlobal(_)
             ) && descriptor.kind != ClosureVariableKind::Normal
             {
                 return Err(HeapError::Invariant(
