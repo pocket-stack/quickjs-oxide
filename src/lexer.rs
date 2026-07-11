@@ -22,6 +22,8 @@
 use std::fmt;
 use std::iter::FusedIterator;
 
+use crate::value::{JsString as RuntimeJsString, JsStringError};
+
 const TEMPLATE_QUOTE: char = '\u{0060}';
 
 /// A location in the original UTF-8 source.
@@ -364,18 +366,37 @@ impl JsString {
         Self::default()
     }
 
-    pub fn from_utf8(value: &str) -> Self {
-        Self {
-            utf16: value.encode_utf16().collect(),
+    pub fn try_from_utf8(value: &str) -> Result<Self, JsStringError> {
+        let mut result = Self::new();
+        for ch in value.chars() {
+            result.push_char(ch)?;
         }
+        Ok(result)
     }
 
-    pub fn push_char(&mut self, ch: char) {
+    pub fn push_char(&mut self, ch: char) -> Result<(), JsStringError> {
+        self.push_char_with_limit(ch, RuntimeJsString::MAX_LEN)
+    }
+
+    fn push_char_with_limit(&mut self, ch: char, limit: usize) -> Result<(), JsStringError> {
         let mut units = [0_u16; 2];
-        self.utf16.extend_from_slice(ch.encode_utf16(&mut units));
+        let encoded = ch.encode_utf16(&mut units);
+        RuntimeJsString::checked_length_with_limit(self.utf16.len(), encoded.len(), limit)?;
+        self.utf16.extend_from_slice(encoded);
+        Ok(())
     }
 
-    pub fn push_code_point(&mut self, value: u32) {
+    pub fn push_code_point(&mut self, value: u32) -> Result<(), JsStringError> {
+        self.push_code_point_with_limit(value, RuntimeJsString::MAX_LEN)
+    }
+
+    fn push_code_point_with_limit(
+        &mut self,
+        value: u32,
+        limit: usize,
+    ) -> Result<(), JsStringError> {
+        let additional = if value <= 0xffff { 1 } else { 2 };
+        RuntimeJsString::checked_length_with_limit(self.utf16.len(), additional, limit)?;
         if value <= 0xffff {
             self.utf16.push(value as u16);
         } else {
@@ -383,6 +404,7 @@ impl JsString {
             self.utf16.push(0xd800 | ((adjusted >> 10) as u16));
             self.utf16.push(0xdc00 | ((adjusted & 0x3ff) as u16));
         }
+        Ok(())
     }
 
     pub fn to_string(&self) -> Result<String, std::string::FromUtf16Error> {
@@ -486,6 +508,7 @@ pub enum LexErrorKind {
     LineTerminatorInRegExp,
     ExpectedRegExp,
     ExpectedTemplateContinuation,
+    StringTooLong,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -516,6 +539,7 @@ pub struct Lexer<'a> {
     options: LexerOptions,
     eof_emitted: bool,
     failed: bool,
+    string_limit: usize,
 }
 
 impl<'a> Lexer<'a> {
@@ -532,7 +556,14 @@ impl<'a> Lexer<'a> {
             options,
             eof_emitted: false,
             failed: false,
+            string_limit: RuntimeJsString::MAX_LEN,
         }
+    }
+
+    #[cfg(test)]
+    fn with_string_limit(mut self, limit: usize) -> Self {
+        self.string_limit = limit.min(RuntimeJsString::MAX_LEN);
+        self
     }
 
     pub fn source(&self) -> &'a str {
@@ -704,6 +735,10 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    fn string_too_long(&self, start: Position) -> LexError {
+        self.error_from(start, LexErrorKind::StringTooLong, "string too long")
+    }
+
     fn unsupported_unicode_identifier(&self, ch: char) -> LexError {
         self.error_here(
             LexErrorKind::UnsupportedUnicodeIdentifier,
@@ -850,6 +885,8 @@ impl<'a> Lexer<'a> {
                         "Unicode escape is not valid at this identifier position",
                     ));
                 }
+                RuntimeJsString::checked_length_with_limit(value.len(), 1, self.string_limit)
+                    .map_err(|_| self.string_too_long(start))?;
                 value.push(decoded);
                 has_escape = true;
                 first = false;
@@ -863,6 +900,8 @@ impl<'a> Lexer<'a> {
             };
             if valid {
                 self.bump_char();
+                RuntimeJsString::checked_length_with_limit(value.len(), 1, self.string_limit)
+                    .map_err(|_| self.string_too_long(start))?;
                 value.push(ch);
                 first = false;
                 continue;
@@ -1209,13 +1248,17 @@ impl<'a> Lexer<'a> {
                 let escape = self.scan_escape_sequence(false)?;
                 has_legacy_octal_escape |= escape.legacy_octal;
                 if let Some(code_point) = escape.code_point {
-                    value.push_code_point(code_point);
+                    value
+                        .push_code_point_with_limit(code_point, self.string_limit)
+                        .map_err(|_| self.string_too_long(start))?;
                 }
                 continue;
             }
 
             self.bump_char();
-            value.push_char(ch);
+            value
+                .push_char_with_limit(ch, self.string_limit)
+                .map_err(|_| self.string_too_long(start))?;
         }
     }
 
@@ -1397,6 +1440,7 @@ impl<'a> Lexer<'a> {
             self.bump_char();
         }
         let raw_start = self.offset;
+        let mut raw_value = JsString::new();
         let mut cooked = Some(JsString::new());
         let mut invalid_escape = None;
 
@@ -1420,7 +1464,7 @@ impl<'a> Lexer<'a> {
                 return Ok(Token {
                     kind: TokenKind::Template(TemplatePart {
                         raw: &self.source[raw_start..raw_end],
-                        raw_value: template_raw_value(&self.source[raw_start..raw_end]),
+                        raw_value,
                         cooked,
                         invalid_escape,
                         kind,
@@ -1442,7 +1486,7 @@ impl<'a> Lexer<'a> {
                 return Ok(Token {
                     kind: TokenKind::Template(TemplatePart {
                         raw: &self.source[raw_start..raw_end],
-                        raw_value: template_raw_value(&self.source[raw_start..raw_end]),
+                        raw_value,
                         cooked,
                         invalid_escape,
                         kind,
@@ -1453,10 +1497,20 @@ impl<'a> Lexer<'a> {
             }
 
             if ch == '\\' {
-                match self.scan_escape_sequence(true) {
+                let escape_start = self.offset;
+                let escape = self.scan_escape_sequence(true);
+                append_template_raw_source(
+                    &mut raw_value,
+                    &self.source[escape_start..self.offset],
+                    self.string_limit,
+                )
+                .map_err(|_| self.string_too_long(start))?;
+                match escape {
                     Ok(escape) => {
                         if let (Some(value), Some(output)) = (escape.code_point, cooked.as_mut()) {
-                            output.push_code_point(value);
+                            output
+                                .push_code_point_with_limit(value, self.string_limit)
+                                .map_err(|_| self.string_too_long(start))?;
                         }
                     }
                     Err(error) => {
@@ -1473,11 +1527,18 @@ impl<'a> Lexer<'a> {
             }
 
             self.bump_char();
+            raw_value
+                .push_char_with_limit(if ch == '\r' { '\n' } else { ch }, self.string_limit)
+                .map_err(|_| self.string_too_long(start))?;
             if let Some(output) = cooked.as_mut() {
                 if ch == '\r' {
-                    output.push_char('\n');
+                    output
+                        .push_char_with_limit('\n', self.string_limit)
+                        .map_err(|_| self.string_too_long(start))?;
                 } else {
-                    output.push_char(ch);
+                    output
+                        .push_char_with_limit(ch, self.string_limit)
+                        .map_err(|_| self.string_too_long(start))?;
                 }
             }
         }
@@ -1725,20 +1786,23 @@ fn radix_value(radix: NumericRadix) -> u32 {
     }
 }
 
-fn template_raw_value(source: &str) -> JsString {
-    let mut value = JsString::new();
+fn append_template_raw_source(
+    value: &mut JsString,
+    source: &str,
+    limit: usize,
+) -> Result<(), JsStringError> {
     let mut chars = source.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch == '\r' {
             if chars.peek() == Some(&'\n') {
                 chars.next();
             }
-            value.push_char('\n');
+            value.push_char_with_limit('\n', limit)?;
         } else {
-            value.push_char(ch);
+            value.push_char_with_limit(ch, limit)?;
         }
     }
-    value
+    Ok(())
 }
 
 fn keyword_from_str(value: &str) -> Option<Keyword> {
@@ -2148,6 +2212,134 @@ mod tests {
         assert_eq!(part.raw, "a\r\n\\nb");
         assert_eq!(part.raw_value.to_string().unwrap(), "a\n\\nb");
         assert_eq!(part.cooked.unwrap().to_string().unwrap(), "a\n\nb");
+    }
+
+    #[test]
+    fn string_limit_counts_utf16_and_preserves_lexer_error_order() {
+        let token = Lexer::new("'abc'")
+            .with_string_limit(3)
+            .next_token()
+            .unwrap();
+        let TokenKind::String(value) = token.kind else {
+            panic!("expected String token");
+        };
+        assert_eq!(value.value.utf16, [0x61, 0x62, 0x63]);
+
+        for source in ["'abc'", "'😀'", "'\\u{1F600}'", "identifier"] {
+            let limit = if source == "'abc'" { 2 } else { 1 };
+            let error = Lexer::new(source)
+                .with_string_limit(limit)
+                .next_token()
+                .unwrap_err();
+            assert_eq!(error.kind, LexErrorKind::StringTooLong, "{source}");
+            assert_eq!(error.message, "string too long");
+        }
+
+        assert!(Lexer::new("'😀'").with_string_limit(2).next_token().is_ok());
+        assert!(
+            Lexer::new("'\\u{1F600}'")
+                .with_string_limit(2)
+                .next_token()
+                .is_ok()
+        );
+        assert!(
+            Lexer::new("'a\\\nb'")
+                .with_string_limit(2)
+                .next_token()
+                .is_ok()
+        );
+
+        let overflow_first = Lexer::new("'ab\\xZ0'")
+            .with_string_limit(1)
+            .next_token()
+            .unwrap_err();
+        assert_eq!(overflow_first.kind, LexErrorKind::StringTooLong);
+        let syntax_first = Lexer::new("'\\xZ0ab'")
+            .with_string_limit(1)
+            .next_token()
+            .unwrap_err();
+        assert_eq!(syntax_first.kind, LexErrorKind::InvalidEscape);
+    }
+
+    #[test]
+    fn template_raw_and_cooked_values_share_the_checked_limit() {
+        let token = Lexer::new("`\\u{1F600}`")
+            .with_string_limit(9)
+            .next_token()
+            .unwrap();
+        let TokenKind::Template(part) = token.kind else {
+            panic!("expected Template token");
+        };
+        assert_eq!(part.raw_value.utf16.len(), 9);
+        assert_eq!(part.cooked.unwrap().utf16, [0xd83d, 0xde00]);
+
+        let raw_overflow = Lexer::new("`\\u{1F600}`")
+            .with_string_limit(8)
+            .next_token()
+            .unwrap_err();
+        assert_eq!(raw_overflow.kind, LexErrorKind::StringTooLong);
+
+        let invalid_cooked_still_checks_raw = Lexer::new("`\\8`")
+            .with_string_limit(1)
+            .next_token()
+            .unwrap_err();
+        assert_eq!(
+            invalid_cooked_still_checks_raw.kind,
+            LexErrorKind::StringTooLong
+        );
+
+        assert!(
+            Lexer::new("`a\r\nb`")
+                .with_string_limit(3)
+                .next_token()
+                .is_ok()
+        );
+        assert_eq!(
+            Lexer::new("`a\r\nb`")
+                .with_string_limit(2)
+                .next_token()
+                .unwrap_err()
+                .kind,
+            LexErrorKind::StringTooLong
+        );
+    }
+
+    #[test]
+    fn template_raw_overflow_precedes_later_escape_and_eof_errors() {
+        // Raw preserves the two source units `\\n`, while cooked contains one
+        // newline. QuickJS therefore trips the raw StringBuffer before it can
+        // diagnose the missing closing backtick.
+        let raw_before_eof = Lexer::new("`\\n")
+            .with_string_limit(1)
+            .next_token()
+            .unwrap_err();
+        assert_eq!(raw_before_eof.kind, LexErrorKind::StringTooLong);
+        assert_eq!(raw_before_eof.message, "string too long");
+
+        let exact_raw_then_eof = Lexer::new("`\\n")
+            .with_string_limit(2)
+            .next_token()
+            .unwrap_err();
+        assert_eq!(exact_raw_then_eof.kind, LexErrorKind::UnterminatedTemplate);
+
+        // Once the first raw escape overflows, a later malformed cooked
+        // escape is never scanned and cannot change the error category.
+        let before_later_malformed = Lexer::new("`\\n\\8`")
+            .with_string_limit(1)
+            .next_token()
+            .unwrap_err();
+        assert_eq!(before_later_malformed.kind, LexErrorKind::StringTooLong);
+
+        // Even after cooked becomes undefined, raw accounting must continue.
+        // The trailing `a` crosses the raw limit before EOF is diagnosed.
+        let invalid_then_raw_before_eof = Lexer::new("`\\8a")
+            .with_string_limit(2)
+            .next_token()
+            .unwrap_err();
+        assert_eq!(
+            invalid_then_raw_before_eof.kind,
+            LexErrorKind::StringTooLong
+        );
     }
 
     #[test]

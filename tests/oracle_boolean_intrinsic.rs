@@ -234,7 +234,9 @@ fn rust_observations() -> Vec<String> {
         true,
     );
 
-    let symbol = runtime.new_symbol(Some(JsString::from("boolean"))).unwrap();
+    let symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("boolean").unwrap()))
+        .unwrap();
     let call_values = [
         context.call(&boolean, Value::Undefined, &[]).unwrap(),
         context
@@ -262,14 +264,14 @@ fn rust_observations() -> Vec<String> {
             .call(
                 &boolean,
                 Value::Undefined,
-                &[Value::String(JsString::from(""))],
+                &[Value::String(JsString::try_from_utf8("").unwrap())],
             )
             .unwrap(),
         context
             .call(
                 &boolean,
                 Value::Undefined,
-                &[Value::String(JsString::from("0"))],
+                &[Value::String(JsString::try_from_utf8("0").unwrap())],
             )
             .unwrap(),
         context
@@ -458,7 +460,7 @@ fn rust_observations() -> Vec<String> {
             &runtime,
             &mut context,
             &boolean_to_string,
-            Value::String(JsString::from("false")),
+            Value::String(JsString::try_from_utf8("false").unwrap()),
         ),
         observe_call(&runtime, &mut context, &boolean_value_of, Value::Undefined,),
     ));

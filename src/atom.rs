@@ -24,7 +24,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::value::JsString;
+use crate::value::{JsString, JsStringError};
 
 /// The tag used by `QuickJS` for immediate, non-negative integer atoms.
 pub const ATOM_TAG_INT: u32 = 1 << 31;
@@ -214,6 +214,8 @@ pub enum AtomError {
     RefCountOverflow(Atom),
     /// The monotonic table ID space has been exhausted.
     TableFull,
+    /// A dynamic atom spelling could not be represented as a valid String.
+    String(JsStringError),
 }
 
 impl fmt::Display for AtomError {
@@ -225,11 +227,18 @@ impl fmt::Display for AtomError {
                 write!(f, "reference count overflow while retaining {atom:?}")
             }
             Self::TableFull => f.write_str("atom table ID space is exhausted"),
+            Self::String(error) => error.fmt(f),
         }
     }
 }
 
 impl Error for AtomError {}
+
+impl From<JsStringError> for AtomError {
+    fn from(error: JsStringError) -> Self {
+        Self::String(error)
+    }
+}
 
 #[derive(Debug)]
 struct Entry {
@@ -300,8 +309,10 @@ impl AtomTable {
     ///
     /// # Errors
     ///
-    /// Returns [`AtomError::TableFull`] if the caller supplies more atoms than
-    /// fit in the 30-bit table ID space.
+    /// Returns [`AtomError::String`] wrapping [`JsStringError::TooLong`] if any
+    /// spelling exceeds [`JsString::MAX_LEN`] UTF-16 code units, or
+    /// [`AtomError::TableFull`] if the caller supplies more atoms than fit in
+    /// the 30-bit table ID space.
     pub fn with_static_atoms<I, S>(atoms: I) -> Result<Self, AtomError>
     where
         I: IntoIterator<Item = S>,
@@ -334,10 +345,12 @@ impl AtomTable {
     ///
     /// # Errors
     ///
-    /// Returns [`AtomError::RefCountOverflow`] if an existing atom cannot be
-    /// retained, or [`AtomError::TableFull`] if a new atom cannot be assigned.
+    /// Returns [`AtomError::String`] wrapping [`JsStringError::TooLong`] if
+    /// `text` exceeds [`JsString::MAX_LEN`] UTF-16 code units,
+    /// [`AtomError::RefCountOverflow`] if an existing atom cannot be retained,
+    /// or [`AtomError::TableFull`] if a new atom cannot be assigned.
     pub fn intern(&mut self, text: &str) -> Result<Atom, AtomError> {
-        self.intern_js_string(&JsString::from(text))
+        self.intern_js_string(&JsString::try_from_utf8(text)?)
     }
 
     /// Intern an exact ECMAScript UTF-16 string, including lone surrogates.
@@ -388,9 +401,11 @@ impl AtomTable {
     ///
     /// # Errors
     ///
-    /// Returns [`AtomError::TableFull`] if a new atom cannot be assigned.
+    /// Returns [`AtomError::String`] wrapping [`JsStringError::TooLong`] if
+    /// `text` exceeds [`JsString::MAX_LEN`] UTF-16 code units, or
+    /// [`AtomError::TableFull`] if a new atom cannot be assigned.
     pub fn intern_static(&mut self, text: &str) -> Result<Atom, AtomError> {
-        self.intern_static_js_string(&JsString::from(text))
+        self.intern_static_js_string(&JsString::try_from_utf8(text)?)
     }
 
     /// Exact UTF-16 variant of [`Self::intern_static`].
@@ -420,10 +435,12 @@ impl AtomTable {
     ///
     /// # Errors
     ///
-    /// Returns [`AtomError::RefCountOverflow`] if an existing symbol cannot be
-    /// retained, or [`AtomError::TableFull`] if a new symbol cannot be assigned.
+    /// Returns [`AtomError::String`] wrapping [`JsStringError::TooLong`] if
+    /// `key` exceeds [`JsString::MAX_LEN`] UTF-16 code units,
+    /// [`AtomError::RefCountOverflow`] if an existing symbol cannot be retained,
+    /// or [`AtomError::TableFull`] if a new symbol cannot be assigned.
     pub fn intern_global_symbol(&mut self, key: &str) -> Result<Atom, AtomError> {
-        self.intern_global_symbol_js_string(&JsString::from(key))
+        self.intern_global_symbol_js_string(&JsString::try_from_utf8(key)?)
     }
 
     /// Exact UTF-16 variant of [`Self::intern_global_symbol`].
@@ -447,9 +464,11 @@ impl AtomTable {
     ///
     /// # Errors
     ///
-    /// Returns [`AtomError::TableFull`] if a new symbol cannot be assigned.
+    /// Returns [`AtomError::String`] wrapping [`JsStringError::TooLong`] if
+    /// `key` exceeds [`JsString::MAX_LEN`] UTF-16 code units, or
+    /// [`AtomError::TableFull`] if a new symbol cannot be assigned.
     pub fn intern_static_global_symbol(&mut self, key: &str) -> Result<Atom, AtomError> {
-        self.intern_static_global_symbol_js_string(&JsString::from(key))
+        self.intern_static_global_symbol_js_string(&JsString::try_from_utf8(key)?)
     }
 
     /// Exact UTF-16 variant of [`Self::intern_static_global_symbol`].
@@ -476,9 +495,11 @@ impl AtomTable {
     ///
     /// # Errors
     ///
-    /// Returns [`AtomError::TableFull`] if the symbol cannot be assigned an ID.
+    /// Returns [`AtomError::String`] wrapping [`JsStringError::TooLong`] if the
+    /// provided description exceeds [`JsString::MAX_LEN`] UTF-16 code units, or
+    /// [`AtomError::TableFull`] if the symbol cannot be assigned an ID.
     pub fn new_symbol(&mut self, description: Option<&str>) -> Result<Atom, AtomError> {
-        self.new_symbol_js_string(description.map(JsString::from))
+        self.new_symbol_js_string(description.map(JsString::try_from_utf8).transpose()?)
     }
 
     /// Create a unique symbol with an exact UTF-16 description.
@@ -499,9 +520,11 @@ impl AtomTable {
     ///
     /// # Errors
     ///
-    /// Returns [`AtomError::TableFull`] if the symbol cannot be assigned an ID.
+    /// Returns [`AtomError::String`] wrapping [`JsStringError::TooLong`] if the
+    /// provided description exceeds [`JsString::MAX_LEN`] UTF-16 code units, or
+    /// [`AtomError::TableFull`] if the symbol cannot be assigned an ID.
     pub fn new_static_symbol(&mut self, description: Option<&str>) -> Result<Atom, AtomError> {
-        self.new_static_symbol_js_string(description.map(JsString::from))
+        self.new_static_symbol_js_string(description.map(JsString::try_from_utf8).transpose()?)
     }
 
     /// Exact UTF-16 variant of [`Self::new_static_symbol`].
@@ -520,9 +543,11 @@ impl AtomTable {
     ///
     /// # Errors
     ///
-    /// Returns [`AtomError::TableFull`] if the private name cannot be assigned.
+    /// Returns [`AtomError::String`] wrapping [`JsStringError::TooLong`] if the
+    /// provided description exceeds [`JsString::MAX_LEN`] UTF-16 code units, or
+    /// [`AtomError::TableFull`] if the private name cannot be assigned.
     pub fn new_private_symbol(&mut self, description: Option<&str>) -> Result<Atom, AtomError> {
-        self.new_private_symbol_js_string(description.map(JsString::from))
+        self.new_private_symbol_js_string(description.map(JsString::try_from_utf8).transpose()?)
     }
 
     /// Create a unique private name with an exact UTF-16 description.
@@ -719,9 +744,9 @@ impl AtomTable {
     /// Returns the same validation errors as [`Self::resolve`].
     pub fn to_js_string(&self, atom: Atom) -> Result<JsString, AtomError> {
         match self.resolve(atom)?.spelling {
-            AtomSpelling::Integer(value) => Ok(JsString::from(value.to_string().as_str())),
+            AtomSpelling::Integer(value) => Ok(JsString::try_from_utf8(&value.to_string())?),
             AtomSpelling::Text(text) => Ok(text.clone()),
-            AtomSpelling::NoDescription => Ok(JsString::from("")),
+            AtomSpelling::NoDescription => Ok(JsString::from_static("")),
         }
     }
 
@@ -843,7 +868,10 @@ impl AtomTable {
 /// property name, but [`AtomTable::array_index`] excludes it per ECMAScript.
 #[must_use]
 pub fn parse_canonical_u32(text: &str) -> Option<u32> {
-    parse_canonical_u32_js_string(&JsString::from(text))
+    if text.len() > 10 {
+        return None;
+    }
+    parse_canonical_u32_js_string(&JsString::try_from_utf8(text).ok()?)
 }
 
 fn parse_canonical_u32_js_string(text: &JsString) -> Option<u32> {
@@ -991,8 +1019,8 @@ mod tests {
         let string = atoms.intern("answer").unwrap();
         let empty_description = atoms.new_symbol(Some("")).unwrap();
         let no_description = atoms.new_symbol(None).unwrap();
-        let answer_text = JsString::from("answer");
-        let empty_text = JsString::from("");
+        let answer_text = JsString::from_static("answer");
+        let empty_text = JsString::from_static("");
 
         assert_eq!(
             atoms.resolve(integer).unwrap().spelling,
@@ -1018,9 +1046,9 @@ mod tests {
     #[test]
     fn atom_spelling_preserves_lone_utf16_surrogates() {
         let mut atoms = AtomTable::new();
-        let high_surrogate = JsString::from_utf16([0xd800]);
-        let other_surrogate = JsString::from_utf16([0xd801]);
-        let replacement = JsString::from("\u{fffd}");
+        let high_surrogate = JsString::try_from_utf16([0xd800]).unwrap();
+        let other_surrogate = JsString::try_from_utf16([0xd801]).unwrap();
+        let replacement = JsString::from_static("\u{fffd}");
 
         let first = atoms.intern_js_string(&high_surrogate).unwrap();
         let duplicate = atoms.intern_js_string(&high_surrogate).unwrap();
@@ -1033,7 +1061,7 @@ mod tests {
         assert_eq!(atoms.to_js_string(first).unwrap(), high_surrogate);
 
         let global = atoms
-            .intern_global_symbol_js_string(&JsString::from_utf16([0xd800, 0x61]))
+            .intern_global_symbol_js_string(&JsString::try_from_utf16([0xd800, 0x61]).unwrap())
             .unwrap();
         assert_eq!(
             atoms
@@ -1048,11 +1076,11 @@ mod tests {
     #[test]
     fn rope_keys_linearize_and_intern_by_utf16_content() {
         let mut atoms = AtomTable::new();
-        let left = JsString::from_utf8(&"a".repeat(8193));
-        let right = JsString::from_utf8(&"b".repeat(513));
+        let left = JsString::try_from_utf8(&"a".repeat(8193)).unwrap();
+        let right = JsString::try_from_utf8(&"b".repeat(513)).unwrap();
         let rope = left.try_concat(&right).unwrap();
         assert!(!rope.is_flat());
-        let flat = JsString::from_utf8(&("a".repeat(8193) + &"b".repeat(513)));
+        let flat = JsString::try_from_utf8(&("a".repeat(8193) + &"b".repeat(513))).unwrap();
 
         let first = atoms.intern_js_string(&rope).unwrap();
         let duplicate = atoms.intern_property_key_js_string(&flat).unwrap();

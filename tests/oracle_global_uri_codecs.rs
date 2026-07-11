@@ -353,7 +353,9 @@ fn global_uri_codec_errors_use_the_defining_realm() {
     assert_ne!(first_type_error, second_type_error);
     assert_ne!(first_uri_error, second_uri_error);
 
-    let foreign_symbol = runtime.new_symbol(Some(JsString::from("foreign"))).unwrap();
+    let foreign_symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("foreign").unwrap()))
+        .unwrap();
     assert_eq!(
         second.call(
             &first_encode,
@@ -372,7 +374,7 @@ fn global_uri_codec_errors_use_the_defining_realm() {
         second.call(
             &first_decode,
             Value::Undefined,
-            &[Value::String(JsString::from("%"))],
+            &[Value::String(JsString::try_from_utf8("%").unwrap())],
         ),
         Err(RuntimeError::Exception)
     );
@@ -559,12 +561,14 @@ fn rust_observations() -> Vec<String> {
             Value::Float(f64::INFINITY),
             Value::Float(f64::NEG_INFINITY),
             Value::BigInt(JsBigInt::from(9_007_199_254_740_993_u64)),
-            Value::String(JsString::from("A B/%")),
+            Value::String(JsString::try_from_utf8("A B/%").unwrap()),
         ];
         results.extend(primitive_values.into_iter().map(|value| {
             observe_call_args(&runtime, &mut context, callable, Value::Undefined, &[value])
         }));
-        let symbol = runtime.new_symbol(Some(JsString::from("uri"))).unwrap();
+        let symbol = runtime
+            .new_symbol(Some(JsString::try_from_utf8("uri").unwrap()))
+            .unwrap();
         results.push(observe_call_args(
             &runtime,
             &mut context,
@@ -579,7 +583,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &global,
         "conversionLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     define_data(&runtime, &global, "extraHit", Value::Bool(false));
     let exotic = context.new_object().unwrap();
@@ -656,7 +660,9 @@ fn rust_observations() -> Vec<String> {
         &PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::ToPrimitive)),
         Value::Object(arbitrary_conversion.as_object().clone()),
     );
-    let this_symbol = runtime.new_symbol(Some(JsString::from("this"))).unwrap();
+    let this_symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("this").unwrap()))
+        .unwrap();
     let mut object_results = Vec::new();
     for (name, callable) in &codecs {
         set_global_string(&runtime, &mut context, &global, "conversionLog", "");
@@ -705,13 +711,13 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &global,
         "priorityLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     define_data(
         &runtime,
         &global,
         "priorityLoneSurrogate",
-        Value::String(JsString::from_utf16([0xd800])),
+        Value::String(JsString::try_from_utf16([0xd800]).unwrap()),
     );
     let lone_surrogate_result = context.new_object().unwrap();
     let lone_surrogate_conversion = eval_callable(
@@ -791,15 +797,17 @@ fn rust_observations() -> Vec<String> {
     }
 
     let unicode_inputs = vec![
-        JsString::from_utf16([0x00e9]),
-        JsString::from_utf16([0x4e2d]),
-        JsString::from_utf16([0xd83d, 0xde00]),
-        JsString::from_utf16([
+        JsString::try_from_utf16([0x00e9]).unwrap(),
+        JsString::try_from_utf16([0x4e2d]).unwrap(),
+        JsString::try_from_utf16([0xd83d, 0xde00]).unwrap(),
+        JsString::try_from_utf16([
             0x0041, 0x0020, 0x00e9, 0x002f, 0x4e2d, 0x003f, 0xd83d, 0xde00, 0x0023,
-        ]),
-        JsString::from_utf16([
+        ])
+        .unwrap(),
+        JsString::try_from_utf16([
             0x0000, 0x007f, 0x0080, 0x07ff, 0x0800, 0xffff, 0xd7ff, 0xe000, 0xdbff, 0xdfff,
-        ]),
+        ])
+        .unwrap(),
     ];
     for name in ENCODER_NAMES {
         observations.push(format!(
@@ -813,11 +821,11 @@ fn rust_observations() -> Vec<String> {
         ));
     }
     let surrogate_inputs = vec![
-        JsString::from_utf16([0xd800]),
-        JsString::from_utf16([0xdfff]),
-        JsString::from_utf16([0x0041, 0xd800, 0x0042]),
-        JsString::from_utf16([0xd800, 0xd800]),
-        JsString::from_utf16([0xdc00, 0xd800]),
+        JsString::try_from_utf16([0xd800]).unwrap(),
+        JsString::try_from_utf16([0xdfff]).unwrap(),
+        JsString::try_from_utf16([0x0041, 0xd800, 0x0042]).unwrap(),
+        JsString::try_from_utf16([0xd800, 0xd800]).unwrap(),
+        JsString::try_from_utf16([0xdc00, 0xd800]).unwrap(),
     ];
     for name in ENCODER_NAMES {
         observations.push(format!(
@@ -880,16 +888,16 @@ fn rust_observations() -> Vec<String> {
     }
 
     let legacy_inputs = vec![
-        JsString::from(""),
-        JsString::from("AZaz09@*_+-./"),
-        JsString::from(" !#$%&\"'(),:;<=>?[\\]^`{|}~"),
-        JsString::from_utf16([0x00e9]),
-        JsString::from_utf16([0x0100]),
-        JsString::from_utf16([0x4e2d]),
-        JsString::from_utf16([0xd83d, 0xde00]),
-        JsString::from_utf16([0xd800]),
-        JsString::from_utf16([0xdfff]),
-        JsString::from_utf16([0x0041, 0x0000, 0x00ff, 0x0100, 0xffff]),
+        JsString::try_from_utf8("").unwrap(),
+        JsString::try_from_utf8("AZaz09@*_+-./").unwrap(),
+        JsString::try_from_utf8(" !#$%&\"'(),:;<=>?[\\]^`{|}~").unwrap(),
+        JsString::try_from_utf16([0x00e9]).unwrap(),
+        JsString::try_from_utf16([0x0100]).unwrap(),
+        JsString::try_from_utf16([0x4e2d]).unwrap(),
+        JsString::try_from_utf16([0xd83d, 0xde00]).unwrap(),
+        JsString::try_from_utf16([0xd800]).unwrap(),
+        JsString::try_from_utf16([0xdfff]).unwrap(),
+        JsString::try_from_utf16([0x0041, 0x0000, 0x00ff, 0x0100, 0xffff]).unwrap(),
     ];
     let escape_callable = codec(&codecs, "escape");
     let unescape_callable = codec(&codecs, "unescape");
@@ -961,13 +969,16 @@ fn codec<'a>(codecs: &'a [(&str, CallableRef)], name: &str) -> &'a CallableRef {
 }
 
 fn strings(values: &[&str]) -> Vec<JsString> {
-    values.iter().map(|value| JsString::from(*value)).collect()
+    values
+        .iter()
+        .map(|value| JsString::try_from_utf8(value).unwrap())
+        .collect()
 }
 
 fn unchanged_ascii(context: &mut Context, callable: &CallableRef) -> String {
     (0_u16..128)
         .filter(|code| {
-            let input = JsString::from_utf16([*code]);
+            let input = JsString::try_from_utf16([*code]).unwrap();
             let Value::String(output) = context
                 .call(callable, Value::Undefined, &[Value::String(input.clone())])
                 .unwrap()
@@ -984,7 +995,7 @@ fn unchanged_ascii(context: &mut Context, callable: &CallableRef) -> String {
 fn preserved_escapes(context: &mut Context, callable: &CallableRef) -> String {
     (0_u16..128)
         .filter(|code| {
-            let input = JsString::from(format!("%{code:02X}").as_str());
+            let input = JsString::try_from_utf8(&format!("%{code:02X}")).unwrap();
             let Value::String(output) = context
                 .call(callable, Value::Undefined, &[Value::String(input.clone())])
                 .unwrap()
@@ -1206,7 +1217,7 @@ fn set_global_string(
             .set_property(
                 global,
                 &runtime.intern_property_key(name).unwrap(),
-                Value::String(JsString::from(value)),
+                Value::String(JsString::try_from_utf8(value).unwrap()),
             )
             .unwrap()
     );
@@ -1299,7 +1310,11 @@ fn rust_uncaught_error_with_symbol(source: &str) -> String {
         &runtime,
         &global,
         "__qjo_uri_symbol",
-        Value::Symbol(runtime.new_symbol(Some(JsString::from("uri"))).unwrap()),
+        Value::Symbol(
+            runtime
+                .new_symbol(Some(JsString::try_from_utf8("uri").unwrap()))
+                .unwrap(),
+        ),
     );
     assert_eq!(
         context.eval_with_options(source, &EvalOptions::new("<cmdline>")),

@@ -655,17 +655,20 @@ impl Harness {
 
 fn rust_numeric_observations() -> Vec<String> {
     let mut harness = Harness::new();
-    harness.bind("numericHint", Value::String(JsString::from("none")));
+    harness.bind(
+        "numericHint",
+        Value::String(JsString::try_from_utf8("none").unwrap()),
+    );
     let method = harness.function("(function(hint){ numericHint = hint; return 6; })");
     let object = harness.object_with_exotic(Value::Object(method.as_object().clone()));
     harness.bind("numericObject", Value::Object(object));
     let left_symbol = harness
         .runtime
-        .new_symbol(Some(JsString::from("left")))
+        .new_symbol(Some(JsString::try_from_utf8("left").unwrap()))
         .unwrap();
     let right_symbol = harness
         .runtime
-        .new_symbol(Some(JsString::from("right")))
+        .new_symbol(Some(JsString::try_from_utf8("right").unwrap()))
         .unwrap();
     harness.bind("leftNumericSymbol", Value::Symbol(left_symbol));
     harness.bind("rightNumericSymbol", Value::Symbol(right_symbol));
@@ -742,7 +745,10 @@ fn rust_numeric_observations() -> Vec<String> {
 
 fn rust_add_observations() -> Vec<String> {
     let mut harness = Harness::new();
-    harness.bind("addHint", Value::String(JsString::from("none")));
+    harness.bind(
+        "addHint",
+        Value::String(JsString::try_from_utf8("none").unwrap()),
+    );
     let string_method = harness.function("(function(hint){ addHint = hint; return \"x\"; })");
     let string_object =
         harness.object_with_exotic(Value::Object(string_method.as_object().clone()));
@@ -770,7 +776,10 @@ fn rust_add_observations() -> Vec<String> {
 fn rust_bitwise_coercion_observations() -> Vec<String> {
     let mut harness = Harness::new();
 
-    harness.bind("bitwiseHints", Value::String(JsString::from("")));
+    harness.bind(
+        "bitwiseHints",
+        Value::String(JsString::try_from_utf8("").unwrap()),
+    );
     harness.bind("bitwiseHintCalls", Value::Int(0));
     let bitwise_number_method = harness.function(
         "(function(hint){ bitwiseHints = bitwiseHints + hint + \",\"; \
@@ -856,7 +865,7 @@ fn rust_bitwise_coercion_observations() -> Vec<String> {
 
     let left_bitwise_symbol = harness
         .runtime
-        .new_symbol(Some(JsString::from("left-bitwise")))
+        .new_symbol(Some(JsString::try_from_utf8("left-bitwise").unwrap()))
         .unwrap();
     harness.bind("leftBitwiseSymbol", Value::Symbol(left_bitwise_symbol));
     harness.bind("symbolRightCalls", Value::Int(0));
@@ -962,7 +971,10 @@ fn rust_bitwise_coercion_observations() -> Vec<String> {
 fn rust_shift_coercion_observations() -> Vec<String> {
     let mut harness = Harness::new();
 
-    harness.bind("shiftHints", Value::String(JsString::from("")));
+    harness.bind(
+        "shiftHints",
+        Value::String(JsString::try_from_utf8("").unwrap()),
+    );
     harness.bind("shiftHintCalls", Value::Int(0));
     let shift_number_method = harness.function(
         "(function(hint){ shiftHints = shiftHints + hint + \",\"; \
@@ -980,7 +992,10 @@ fn rust_shift_coercion_observations() -> Vec<String> {
         .map(|source| harness.observe(source))
         .join(",");
 
-    harness.bind("shiftOrder", Value::String(JsString::from("")));
+    harness.bind(
+        "shiftOrder",
+        Value::String(JsString::try_from_utf8("").unwrap()),
+    );
     let ordered_left_method =
         harness.function("(function(){ shiftOrder = shiftOrder + \"l\"; return 16; })");
     let ordered_right_method =
@@ -1009,7 +1024,7 @@ fn rust_shift_coercion_observations() -> Vec<String> {
             &harness.runtime,
             &mut harness.context,
             "shiftOrder",
-            Value::String(JsString::from("")),
+            Value::String(JsString::try_from_utf8("").unwrap()),
         );
         let value = harness.observe(&format!("shiftEvalLeft() {operator} shiftEvalRight()"));
         let order = string_global(&harness.runtime, &mut harness.context, "shiftOrder");
@@ -1147,7 +1162,7 @@ fn rust_shift_coercion_observations() -> Vec<String> {
 
     let symbol = harness
         .runtime
-        .new_symbol(Some(JsString::from("shift")))
+        .new_symbol(Some(JsString::try_from_utf8("shift").unwrap()))
         .unwrap();
     harness.bind("shiftSymbol", Value::Symbol(symbol));
     harness.bind("shiftSymbolRightCalls", Value::Int(0));
@@ -1203,7 +1218,10 @@ fn rust_shift_coercion_observations() -> Vec<String> {
 fn rust_exponentiation_coercion_observations() -> Vec<String> {
     let mut harness = Harness::new();
 
-    harness.bind("powerHints", Value::String(JsString::from("")));
+    harness.bind(
+        "powerHints",
+        Value::String(JsString::try_from_utf8("").unwrap()),
+    );
     harness.bind("powerHintCalls", Value::Int(0));
     let power_number_method = harness.function(
         "(function(hint){ powerHints = powerHints + hint + \",\"; \
@@ -1216,7 +1234,10 @@ fn rust_exponentiation_coercion_observations() -> Vec<String> {
     let power_hints = string_global(&harness.runtime, &mut harness.context, "powerHints");
     let power_hint_calls = integer_global(&harness.runtime, &mut harness.context, "powerHintCalls");
 
-    harness.bind("powerOrder", Value::String(JsString::from("")));
+    harness.bind(
+        "powerOrder",
+        Value::String(JsString::try_from_utf8("").unwrap()),
+    );
     let ordered_left_method =
         harness.function("(function(){ powerOrder = powerOrder + \"l\"; return 2; })");
     let ordered_right_method =
@@ -1246,7 +1267,7 @@ fn rust_exponentiation_coercion_observations() -> Vec<String> {
         &harness.runtime,
         &mut harness.context,
         "powerOrder",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let power_a_method =
         harness.function("(function(){ powerOrder = powerOrder + \"a\"; return 2; })");
@@ -1401,7 +1422,7 @@ fn rust_exponentiation_coercion_observations() -> Vec<String> {
     );
     let mixed_symbol = harness
         .runtime
-        .new_symbol(Some(JsString::from("mixed-power")))
+        .new_symbol(Some(JsString::try_from_utf8("mixed-power").unwrap()))
         .unwrap();
     harness.bind("powerMixedSymbol", Value::Symbol(mixed_symbol));
     let mixed_symbol_right_method = harness.function(
@@ -1416,7 +1437,7 @@ fn rust_exponentiation_coercion_observations() -> Vec<String> {
 
     let symbol = harness
         .runtime
-        .new_symbol(Some(JsString::from("power")))
+        .new_symbol(Some(JsString::try_from_utf8("power").unwrap()))
         .unwrap();
     harness.bind("powerSymbol", Value::Symbol(symbol));
     harness.bind("powerAfterSymbolCalls", Value::Int(0));
@@ -1527,7 +1548,7 @@ fn rust_equality_observations() -> Vec<String> {
     let mut harness = Harness::new();
     let symbol = harness
         .runtime
-        .new_symbol(Some(JsString::from("s")))
+        .new_symbol(Some(JsString::try_from_utf8("s").unwrap()))
         .unwrap();
     harness.bind("symbolValue", Value::Symbol(symbol));
 

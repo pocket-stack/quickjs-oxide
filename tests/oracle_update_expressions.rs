@@ -166,7 +166,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let to_primitive = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::ToPrimitive));
 
@@ -228,7 +228,9 @@ fn rust_observations() -> Vec<String> {
         string_global(&runtime, &mut context, "log"),
     ));
 
-    let symbol = runtime.new_symbol(Some(JsString::from("update"))).unwrap();
+    let symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("update").unwrap()))
+        .unwrap();
     define_global(&runtime, &mut context, "symbolValue", Value::Symbol(symbol));
     output.push(format!(
         "identifier-symbol={}|symbol",
@@ -397,7 +399,7 @@ fn rust_observations() -> Vec<String> {
         &mut context,
         &global,
         &readonly_identifier,
-        Value::String(JsString::from("4")),
+        Value::String(JsString::try_from_utf8("4").unwrap()),
         false,
         true,
     );
@@ -504,7 +506,12 @@ fn string_global(runtime: &Runtime, context: &mut Context, name: &str) -> String
 }
 
 fn clear_log(runtime: &Runtime, context: &mut Context) {
-    set_global(runtime, context, "log", Value::String(JsString::from("")));
+    set_global(
+        runtime,
+        context,
+        "log",
+        Value::String(JsString::try_from_utf8("").unwrap()),
+    );
 }
 
 fn define_data(

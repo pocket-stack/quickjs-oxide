@@ -426,7 +426,9 @@ fn rust_observations() -> Vec<String> {
             .join("|")
     ));
 
-    let symbol = runtime.new_symbol(Some(JsString::from("x"))).unwrap();
+    let symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("x").unwrap()))
+        .unwrap();
     let call_arguments = vec![
         vec![],
         vec![Value::Undefined],
@@ -440,11 +442,11 @@ fn rust_observations() -> Vec<String> {
         vec![Value::Float(1.5)],
         vec![Value::Float(f64::NAN)],
         vec![Value::Float(f64::INFINITY)],
-        vec![Value::String(JsString::from(""))],
-        vec![Value::String(JsString::from("  -42  "))],
-        vec![Value::String(JsString::from("0xff"))],
-        vec![Value::String(JsString::from("+0x1"))],
-        vec![Value::String(JsString::from("1n"))],
+        vec![Value::String(JsString::try_from_utf8("").unwrap())],
+        vec![Value::String(JsString::try_from_utf8("  -42  ").unwrap())],
+        vec![Value::String(JsString::try_from_utf8("0xff").unwrap())],
+        vec![Value::String(JsString::try_from_utf8("+0x1").unwrap())],
+        vec![Value::String(JsString::try_from_utf8("1n").unwrap())],
         vec![Value::BigInt(JsBigInt::from(123))],
         vec![Value::Symbol(symbol)],
     ];
@@ -499,7 +501,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &global,
         "conversionLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let exotic = conversion_object(
         &runtime,
@@ -663,7 +665,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &global,
         "asLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let good_bits = conversion_object(
         &runtime,
@@ -730,9 +732,16 @@ fn rust_observations() -> Vec<String> {
         vec![Value::Int(8), Value::Int(1)],
         vec![
             Value::Int(8),
-            Value::Symbol(runtime.new_symbol(Some(JsString::from("x"))).unwrap()),
+            Value::Symbol(
+                runtime
+                    .new_symbol(Some(JsString::try_from_utf8("x").unwrap()))
+                    .unwrap(),
+            ),
         ],
-        vec![Value::Int(8), Value::String(JsString::from("bad"))],
+        vec![
+            Value::Int(8),
+            Value::String(JsString::try_from_utf8("bad").unwrap()),
+        ],
     ];
     observations.push(format!(
         "as-errors={}",
@@ -764,7 +773,9 @@ fn rust_observations() -> Vec<String> {
             &mut context,
             &bigint,
             Value::Undefined,
-            &[Value::String(JsString::from(overflow_text.as_str()))],
+            &[Value::String(
+                JsString::try_from_utf8(overflow_text.as_str()).unwrap(),
+            )],
         ),
         plain_value(Value::Bool(matches!(
             context.call(
@@ -822,7 +833,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &global,
         "radixLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let radix_object = conversion_object(
         &runtime,
@@ -982,7 +993,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &bigint_prototype,
         &tag,
-        Value::String(JsString::from("CustomBigInt")),
+        Value::String(JsString::try_from_utf8("CustomBigInt").unwrap()),
         false,
         false,
         true,
@@ -1009,13 +1020,13 @@ fn rust_observations() -> Vec<String> {
         .unwrap();
     let accessor_values = [
         strict_get_result,
-        Value::String(JsString::from("bigint")),
+        Value::String(JsString::try_from_utf8("bigint").unwrap()),
         Value::Bool(matches!(
             strict_get_this,
             Value::BigInt(value) if value == JsBigInt::one()
         )),
         sloppy_get_result,
-        Value::String(JsString::from("object")),
+        Value::String(JsString::try_from_utf8("object").unwrap()),
         Value::Bool(object_has_prototype(
             &runtime,
             &sloppy_get_this,
@@ -1023,13 +1034,13 @@ fn rust_observations() -> Vec<String> {
         )),
         sloppy_get_unboxed,
         strict_set_result,
-        Value::String(JsString::from("bigint")),
+        Value::String(JsString::try_from_utf8("bigint").unwrap()),
         Value::Bool(matches!(
             strict_set_this,
             Value::BigInt(value) if value == JsBigInt::one()
         )),
         sloppy_set_result,
-        Value::String(JsString::from("object")),
+        Value::String(JsString::try_from_utf8("object").unwrap()),
         Value::Bool(object_has_prototype(
             &runtime,
             &sloppy_set_this,
@@ -1174,7 +1185,7 @@ fn bigint_cross_realm_routes_boxing_lookups_and_native_errors_to_the_defining_re
         &runtime,
         &first_prototype,
         "__realmMarker",
-        Value::String(JsString::from("first")),
+        Value::String(JsString::try_from_utf8("first").unwrap()),
         true,
         false,
         true,
@@ -1183,7 +1194,7 @@ fn bigint_cross_realm_routes_boxing_lookups_and_native_errors_to_the_defining_re
         &runtime,
         &second_prototype,
         "__realmMarker",
-        Value::String(JsString::from("second")),
+        Value::String(JsString::try_from_utf8("second").unwrap()),
         true,
         false,
         true,
@@ -1195,7 +1206,7 @@ fn bigint_cross_realm_routes_boxing_lookups_and_native_errors_to_the_defining_re
     );
     assert_eq!(
         second.call(&first_reader, Value::Undefined, &[]).unwrap(),
-        Value::String(JsString::from("first")),
+        Value::String(JsString::try_from_utf8("first").unwrap()),
         "primitive member lookup must use the bytecode function's realm"
     );
 
@@ -1204,7 +1215,7 @@ fn bigint_cross_realm_routes_boxing_lookups_and_native_errors_to_the_defining_re
         &runtime,
         &first_prototype,
         &tag,
-        Value::String(JsString::from("FirstBigInt")),
+        Value::String(JsString::try_from_utf8("FirstBigInt").unwrap()),
         false,
         false,
         true,
@@ -1213,7 +1224,7 @@ fn bigint_cross_realm_routes_boxing_lookups_and_native_errors_to_the_defining_re
         &runtime,
         &second_prototype,
         &tag,
-        Value::String(JsString::from("SecondBigInt")),
+        Value::String(JsString::try_from_utf8("SecondBigInt").unwrap()),
         false,
         false,
         true,
@@ -1222,7 +1233,7 @@ fn bigint_cross_realm_routes_boxing_lookups_and_native_errors_to_the_defining_re
         second
             .call(&first_object_to_string, Value::BigInt(JsBigInt::one()), &[],)
             .unwrap(),
-        Value::String(JsString::from("[object FirstBigInt]")),
+        Value::String(JsString::try_from_utf8("[object FirstBigInt]").unwrap()),
         "Object.prototype.toString must box a primitive in its defining realm"
     );
 
@@ -1230,7 +1241,9 @@ fn bigint_cross_realm_routes_boxing_lookups_and_native_errors_to_the_defining_re
     let second_type_error = intrinsic_prototype(&runtime, &mut second, "TypeError");
     let first_range_error = intrinsic_prototype(&runtime, &mut first, "RangeError");
     assert_ne!(first_type_error, second_type_error);
-    let symbol = runtime.new_symbol(Some(JsString::from("bigint"))).unwrap();
+    let symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("bigint").unwrap()))
+        .unwrap();
     assert_eq!(
         second.call(&first_bigint, Value::Undefined, &[Value::Symbol(symbol)],),
         Err(RuntimeError::Exception)

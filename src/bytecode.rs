@@ -413,7 +413,7 @@ fn enqueue_fallthrough(
 #[cfg(test)]
 mod tests {
     use super::{BytecodeFunction, Instruction};
-    use crate::Value;
+    use crate::{JsString, Value};
 
     #[test]
     fn verifier_computes_reachable_stack_depth() {
@@ -499,7 +499,7 @@ mod tests {
                 Instruction::PostInc,
                 Instruction::ThrowReadOnly(0),
             ],
-            constants: vec![Value::String("binding".into())],
+            constants: vec![Value::String(JsString::from_static("binding"))],
             max_stack: 2,
         };
         assert_eq!(postfix_readonly.verify().unwrap().max_stack, 2);

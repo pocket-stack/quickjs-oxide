@@ -440,13 +440,13 @@ fn rust_intrinsic_and_source_observations() -> Vec<String> {
         &runtime,
         anonymous.as_object(),
         "name",
-        Value::String(JsString::from("changed anonymous")),
+        Value::String(JsString::try_from_utf8("changed anonymous").unwrap()),
     );
     define_value_only(
         &runtime,
         named.as_object(),
         "name",
-        Value::String(JsString::from("changed named")),
+        Value::String(JsString::try_from_utf8("changed named").unwrap()),
     );
     let renamed_anonymous =
         harness.function_to_string(Value::Object(anonymous.as_object().clone()));
@@ -485,7 +485,7 @@ fn rust_intrinsic_and_source_observations() -> Vec<String> {
     let number_name = harness.function_to_string(Value::Object(call.as_object().clone()));
 
     let native_name_symbol = runtime
-        .new_symbol(Some(JsString::from("native-name")))
+        .new_symbol(Some(JsString::try_from_utf8("native-name").unwrap()))
         .unwrap();
     define_value_only(
         &runtime,
@@ -560,7 +560,11 @@ fn rust_bind_metadata_observations() -> Vec<String> {
         ("infinity", Value::Float(f64::INFINITY), 1),
         ("negative-infinity", Value::Float(f64::NEG_INFINITY), 1),
         ("nan", Value::Float(f64::NAN), 1),
-        ("string", Value::String(JsString::from("5")), 1),
+        (
+            "string",
+            Value::String(JsString::try_from_utf8("5").unwrap()),
+            1,
+        ),
         (
             "bigint",
             Value::BigInt(quickjs_oxide::JsBigInt::from(5_i32)),
@@ -568,7 +572,11 @@ fn rust_bind_metadata_observations() -> Vec<String> {
         ),
         (
             "symbol",
-            Value::Symbol(runtime.new_symbol(Some(JsString::from("length"))).unwrap()),
+            Value::Symbol(
+                runtime
+                    .new_symbol(Some(JsString::try_from_utf8("length").unwrap()))
+                    .unwrap(),
+            ),
             1,
         ),
     ];
@@ -602,11 +610,18 @@ fn rust_bind_metadata_observations() -> Vec<String> {
     ));
 
     let name_cases = [
-        ("string", Value::String(JsString::from("renamed"))),
+        (
+            "string",
+            Value::String(JsString::try_from_utf8("renamed").unwrap()),
+        ),
         ("number", Value::Int(17)),
         (
             "symbol",
-            Value::Symbol(runtime.new_symbol(Some(JsString::from("name"))).unwrap()),
+            Value::Symbol(
+                runtime
+                    .new_symbol(Some(JsString::try_from_utf8("name").unwrap()))
+                    .unwrap(),
+            ),
         ),
         ("undefined", Value::Undefined),
     ];

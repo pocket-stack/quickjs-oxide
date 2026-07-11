@@ -265,7 +265,9 @@ fn rust_observations(mode: DebugInfoMode) -> Vec<String> {
                 &primary,
                 &name_key,
                 &OrdinaryPropertyDescriptor {
-                    value: DescriptorField::Present(Value::String(JsString::from("renamed"))),
+                    value: DescriptorField::Present(Value::String(
+                        JsString::try_from_utf8("renamed").unwrap()
+                    )),
                     ..OrdinaryPropertyDescriptor::new()
                 },
             )

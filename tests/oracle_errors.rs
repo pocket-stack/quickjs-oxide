@@ -99,7 +99,10 @@ fn rust_observations() -> Vec<String> {
         panic!("Error(42) did not return an object");
     };
     let Value::Object(typed) = context
-        .construct(&type_error, &[Value::String(JsString::from("x"))])
+        .construct(
+            &type_error,
+            &[Value::String(JsString::try_from_utf8("x").unwrap())],
+        )
         .unwrap()
     else {
         panic!("new TypeError did not return an object");
@@ -151,13 +154,13 @@ fn rust_observations() -> Vec<String> {
         &mut context,
         &custom,
         &name,
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     define_data(
         &mut context,
         &custom,
         &message,
-        Value::String(JsString::from("m")),
+        Value::String(JsString::try_from_utf8("m").unwrap()),
     );
     let spoof = context.new_object().unwrap();
     assert!(
@@ -225,7 +228,7 @@ fn rust_observations() -> Vec<String> {
         &mut context,
         &tagged_message_input,
         &to_string_tag,
-        Value::String(JsString::from("X")),
+        Value::String(JsString::try_from_utf8("X").unwrap()),
     );
     let Value::Object(tagged_message_error) = context
         .call(

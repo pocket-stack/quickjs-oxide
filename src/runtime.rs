@@ -41,7 +41,7 @@ use crate::property::{
     validate_and_apply_property_descriptor,
 };
 use crate::shape::{PropertyFlags, Shape, ShapeEntry, ShapeError};
-use crate::value::{JsString, JsStringError, Value};
+use crate::value::{JsString, JsStringBuilder, JsStringError, Value};
 use crate::vm::{BytecodePc, CallInput, Completion, ToPrimitiveHint, Vm, VmHost};
 
 static NEXT_RUNTIME_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
@@ -171,6 +171,56 @@ enum NativeConversion<T> {
 enum Compilation {
     Published(FunctionBytecodeRef),
     Throw(Value),
+}
+
+struct DynamicSourceBuilder {
+    source: String,
+    utf16_len: usize,
+    limit: usize,
+    failed: bool,
+}
+
+impl DynamicSourceBuilder {
+    fn new() -> Self {
+        Self::with_limit(JsString::MAX_LEN)
+    }
+
+    fn with_limit(limit: usize) -> Self {
+        let limit = limit.min(JsString::MAX_LEN);
+        Self {
+            source: String::with_capacity(64.min(limit)),
+            utf16_len: 0,
+            limit,
+            failed: false,
+        }
+    }
+
+    fn push_str(&mut self, value: &str) -> Result<(), JsStringError> {
+        if self.failed {
+            return Err(JsStringError::TooLong);
+        }
+        let additional = value.encode_utf16().count();
+        let next_len =
+            match JsString::checked_length_with_limit(self.utf16_len, additional, self.limit) {
+                Ok(next_len) => next_len,
+                Err(error) => {
+                    self.source = String::new();
+                    self.utf16_len = 0;
+                    self.failed = true;
+                    return Err(error);
+                }
+            };
+        self.source.push_str(value);
+        self.utf16_len = next_len;
+        Ok(())
+    }
+
+    fn finish(self) -> Result<String, JsStringError> {
+        if self.failed {
+            return Err(JsStringError::TooLong);
+        }
+        Ok(self.source)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -1533,7 +1583,7 @@ impl Runtime {
         self.define_function_data_property(
             &function_prototype,
             "name",
-            Value::String(JsString::from("")),
+            Value::String(JsString::from_static("")),
             false,
             true,
         )
@@ -1565,7 +1615,7 @@ impl Runtime {
         // configurable String-prototype exception; ordinary wrappers use a
         // non-configurable length property.
         let string_prototype = self
-            .new_string_object(&object_prototype, JsString::from(""), true)
+            .new_string_object(&object_prototype, JsString::from_static(""), true)
             .expect("initial String.prototype allocation must succeed");
         // Like BigInt.prototype, QuickJS's Symbol.prototype is an ordinary
         // object and deliberately has no [[SymbolData]] payload.
@@ -1718,7 +1768,7 @@ impl Runtime {
             object,
             &key,
             &OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(Value::String(JsString::from(value))),
+                value: DescriptorField::Present(Value::String(JsString::try_from_utf8(value)?)),
                 writable: DescriptorField::Present(true),
                 enumerable: DescriptorField::Present(false),
                 configurable: DescriptorField::Present(true),
@@ -1759,7 +1809,7 @@ impl Runtime {
     /// Intern a UTF-8 property spelling without losing the exact UTF-16 path
     /// used by language-level keys.
     pub fn intern_property_key(&self, text: &str) -> Result<PropertyKey, AtomError> {
-        self.intern_property_key_js_string(&JsString::from(text))
+        self.intern_property_key_js_string(&JsString::try_from_utf8(text)?)
     }
 
     /// Create a unique ECMAScript Symbol primitive.
@@ -2186,7 +2236,7 @@ impl Runtime {
         self.define_function_data_property(
             callable.as_object(),
             "name",
-            Value::String(JsString::from(name)),
+            Value::String(JsString::try_from_utf8(name)?),
             false,
             true,
         )?;
@@ -2599,7 +2649,7 @@ impl Runtime {
             symbol_prototype,
             &to_string_tag,
             &OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(Value::String(JsString::from("Symbol"))),
+                value: DescriptorField::Present(Value::String(JsString::from_static("Symbol"))),
                 writable: DescriptorField::Present(false),
                 enumerable: DescriptorField::Present(false),
                 configurable: DescriptorField::Present(true),
@@ -2714,7 +2764,7 @@ impl Runtime {
             bigint_prototype,
             &tag,
             &OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(Value::String(JsString::from("BigInt"))),
+                value: DescriptorField::Present(Value::String(JsString::from_static("BigInt"))),
                 writable: DescriptorField::Present(false),
                 enumerable: DescriptorField::Present(false),
                 configurable: DescriptorField::Present(true),
@@ -2844,7 +2894,7 @@ impl Runtime {
             global_object,
             &key,
             &OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(Value::String(JsString::from("global"))),
+                value: DescriptorField::Present(Value::String(JsString::from_static("global"))),
                 writable: DescriptorField::Present(false),
                 enumerable: DescriptorField::Present(false),
                 configurable: DescriptorField::Present(true),
@@ -3159,7 +3209,7 @@ impl Runtime {
             &object,
             &key,
             &OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(Value::String(JsString::from(message))),
+                value: DescriptorField::Present(Value::String(JsString::try_from_utf8(message)?)),
                 writable: DescriptorField::Present(true),
                 enumerable: DescriptorField::Present(false),
                 configurable: DescriptorField::Present(true),
@@ -3506,7 +3556,7 @@ impl Runtime {
         self.define_function_data_property(
             callable.as_object(),
             "name",
-            Value::String(func_name.unwrap_or_else(|| JsString::from(""))),
+            Value::String(func_name.unwrap_or_else(|| JsString::from_static(""))),
             false,
             true,
         )?;
@@ -4122,7 +4172,9 @@ impl Runtime {
                     )?;
                     Value::Object(callable.as_object().clone())
                 }
-                AutoInitProperty::String { value, .. } => Value::String(JsString::from(value)),
+                AutoInitProperty::String { value, .. } => {
+                    Value::String(JsString::from_static(value))
+                }
                 #[cfg(test)]
                 AutoInitProperty::FailureProbe { .. } => {
                     return Err(RuntimeError::Invariant("autoinit failure probe"));
@@ -4879,7 +4931,7 @@ impl Runtime {
                                 )
                             })?;
                         Some(ExplicitBacktraceLocation {
-                            filename: JsString::from_utf8(filename),
+                            filename: JsString::try_from_utf8(filename)?,
                             position,
                         })
                     } else {
@@ -6035,11 +6087,23 @@ impl Runtime {
         }
 
         let name_key = self.intern_property_key("name")?;
-        let stack = self.build_backtrace_string(
+        let stack = match self.build_backtrace_string(
             name_key.atom(),
             skip_first_frame,
             explicit_location.as_ref(),
-        )?;
+        ) {
+            Ok(stack) => stack,
+            Err(RuntimeError::Engine(error))
+                if error.kind() == ErrorKind::JsInternal
+                    && error.message() == "string too long" =>
+            {
+                // QuickJS's void build_backtrace helper must not replace the
+                // Error already being materialized when its stack text cannot
+                // become an ECMAScript String.
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
 
         // Parse errors add SpiderMonkey-compatible metadata before `stack`,
         // exactly as QuickJS does. Rejection (for example after
@@ -6099,7 +6163,7 @@ impl Runtime {
         explicit_location: Option<&ExplicitBacktraceLocation>,
     ) -> Result<JsString, RuntimeError> {
         let state = self.0.state.borrow();
-        let mut output = Vec::<u16>::new();
+        let mut output = JsStringBuilder::new(0);
 
         if let Some(location) = explicit_location {
             let (line, column) = location
@@ -6108,13 +6172,13 @@ impl Runtime {
                 .ok_or(RuntimeError::Invariant(
                     "backtrace location cannot be represented one-based",
                 ))?;
-            append_backtrace_ascii(&mut output, "    at ");
-            append_backtrace_string(&mut output, &location.filename);
-            append_backtrace_ascii(&mut output, ":");
-            append_backtrace_ascii(&mut output, &line.to_string());
-            append_backtrace_ascii(&mut output, ":");
-            append_backtrace_ascii(&mut output, &column.to_string());
-            append_backtrace_ascii(&mut output, "\n");
+            append_backtrace_ascii(&mut output, "    at ")?;
+            append_backtrace_string(&mut output, &location.filename)?;
+            append_backtrace_ascii(&mut output, ":")?;
+            append_backtrace_ascii(&mut output, &line.to_string())?;
+            append_backtrace_ascii(&mut output, ":")?;
+            append_backtrace_ascii(&mut output, &column.to_string())?;
+            append_backtrace_ascii(&mut output, "\n")?;
         }
 
         for frame in state.active_frames.iter().rev() {
@@ -6128,21 +6192,22 @@ impl Runtime {
 
             let name = raw_string_property_one_level(&state, frame.function, name_atom)?
                 .map(truncate_backtrace_c_string)
+                .transpose()?
                 .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| JsString::from("<anonymous>"));
-            append_backtrace_ascii(&mut output, "    at ");
-            append_backtrace_string(&mut output, &name);
+                .unwrap_or_else(|| JsString::from_static("<anonymous>"));
+            append_backtrace_ascii(&mut output, "    at ")?;
+            append_backtrace_string(&mut output, &name)?;
 
             match frame.kind {
                 ActiveFrameKind::Native { .. } => {
-                    append_backtrace_ascii(&mut output, " (native)");
+                    append_backtrace_ascii(&mut output, " (native)")?;
                 }
                 ActiveFrameKind::Bytecode { bytecode, pc } => {
                     let bytecode = state.heap.function_bytecode(bytecode)?;
                     if let Some(debug) = &bytecode.debug {
                         let filename = state.atoms.to_js_string(debug.filename)?;
-                        append_backtrace_ascii(&mut output, " (");
-                        append_backtrace_string(&mut output, &filename);
+                        append_backtrace_ascii(&mut output, " (")?;
+                        append_backtrace_string(&mut output, &filename)?;
                         if let Some(table) = &debug.pc2line {
                             let pc = pc
                                 .map(BytecodePc::index)
@@ -6157,19 +6222,19 @@ impl Runtime {
                                 table.lookup(pc).one_based().ok_or(RuntimeError::Invariant(
                                     "bytecode debug position cannot be represented one-based",
                                 ))?;
-                            append_backtrace_ascii(&mut output, ":");
-                            append_backtrace_ascii(&mut output, &line.to_string());
-                            append_backtrace_ascii(&mut output, ":");
-                            append_backtrace_ascii(&mut output, &column.to_string());
+                            append_backtrace_ascii(&mut output, ":")?;
+                            append_backtrace_ascii(&mut output, &line.to_string())?;
+                            append_backtrace_ascii(&mut output, ":")?;
+                            append_backtrace_ascii(&mut output, &column.to_string())?;
                         }
-                        append_backtrace_ascii(&mut output, ")");
+                        append_backtrace_ascii(&mut output, ")")?;
                     }
                 }
             }
-            append_backtrace_ascii(&mut output, "\n");
+            append_backtrace_ascii(&mut output, "\n")?;
         }
 
-        Ok(JsString::from_utf16(output))
+        Ok(output.finish()?)
     }
 
     fn get_property_in_realm(
@@ -6621,7 +6686,7 @@ impl Runtime {
                 realm,
                 &exotic,
                 Value::Object(object),
-                &[Value::String(JsString::from(match hint {
+                &[Value::String(JsString::from_static(match hint {
                     ToPrimitiveHint::String => "string",
                     ToPrimitiveHint::Number => "number",
                     ToPrimitiveHint::Default => "default",
@@ -6772,35 +6837,36 @@ impl Runtime {
         // precede the final body string, argc == 0 reads no padded argument,
         // and the complete wrapper is parsed as one indirect-eval unit so a
         // body strict directive can retroactively validate the parameters.
-        let mut source = String::from("(");
+        let mut source = DynamicSourceBuilder::new();
+        source.push_str("(")?;
         match kind {
             DynamicFunctionKind::Normal | DynamicFunctionKind::Generator => {}
             DynamicFunctionKind::Async | DynamicFunctionKind::AsyncGenerator => {
-                source.push_str("async ");
+                source.push_str("async ")?;
             }
         }
-        source.push_str("function");
+        source.push_str("function")?;
         if matches!(
             kind,
             DynamicFunctionKind::Generator | DynamicFunctionKind::AsyncGenerator
         ) {
-            source.push('*');
+            source.push_str("*")?;
         }
-        source.push_str(" anonymous(");
+        source.push_str(" anonymous(")?;
 
         let parameter_count = arguments.actual_arg_count.saturating_sub(1);
         for index in 0..parameter_count {
             if index != 0 {
-                source.push(',');
+                source.push_str(",")?;
             }
             let parameter =
                 match self.native_to_dynamic_source_fragment(realm, &arguments.readable[index])? {
                     NativeConversion::Value(parameter) => parameter,
                     NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
                 };
-            source.push_str(&parameter);
+            source.push_str(&parameter)?;
         }
-        source.push_str("\n) {\n");
+        source.push_str("\n) {\n")?;
         if arguments.actual_arg_count != 0 {
             let body_index = arguments.actual_arg_count - 1;
             let body = match self
@@ -6809,9 +6875,10 @@ impl Runtime {
                 NativeConversion::Value(body) => body,
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
             };
-            source.push_str(&body);
+            source.push_str(&body)?;
         }
-        source.push_str("\n})");
+        source.push_str("\n})")?;
+        let source = source.finish()?;
 
         let script = match self.compile_in_realm(realm, &source, DEFAULT_EVAL_FILENAME)? {
             Compilation::Published(script) => script,
@@ -7001,10 +7068,10 @@ impl Runtime {
         let name_key = self.intern_property_key("name")?;
         let name = match self.get_property_in_realm(realm, &target_object, &name_key)? {
             Completion::Return(Value::String(name)) => name,
-            Completion::Return(_) => JsString::from(""),
+            Completion::Return(_) => JsString::from_static(""),
             Completion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let name = JsString::from("bound ").try_concat(&name)?;
+        let name = JsString::from_static("bound ").try_concat(&name)?;
         self.define_function_data_property(
             bound.as_object(),
             "name",
@@ -7068,14 +7135,14 @@ impl Runtime {
             let source = std::str::from_utf8(&source).map_err(|_| {
                 RuntimeError::Invariant("published function source was not valid UTF-8")
             })?;
-            return Ok(Completion::Return(Value::String(JsString::from_utf8(
+            return Ok(Completion::Return(Value::String(JsString::try_from_utf8(
                 source,
-            ))));
+            )?)));
         }
 
         let name_key = self.intern_property_key("name")?;
         let name = match self.get_property_in_realm(realm, &function, &name_key)? {
-            Completion::Return(Value::Undefined) => JsString::from(""),
+            Completion::Return(Value::Undefined) => JsString::from_static(""),
             Completion::Return(value) => match self.native_to_js_string(realm, &value)? {
                 NativeConversion::Value(name) => name,
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -7088,9 +7155,9 @@ impl Runtime {
             FunctionKind::Async => "async function ",
             FunctionKind::AsyncGenerator => "async function *",
         };
-        let source = JsString::from(prefix)
+        let source = JsString::from_static(prefix)
             .try_concat(&name)?
-            .try_concat(&JsString::from("() {\n    [native code]\n}"))?;
+            .try_concat(&JsString::from_static("() {\n    [native code]\n}"))?;
         Ok(Completion::Return(Value::String(source)))
     }
 
@@ -7464,6 +7531,7 @@ impl Runtime {
             let name = self.intern_property_key("name")?;
             raw_string_property_one_level(&self.0.state.borrow(), object.object_id(), name.atom())?
                 .map(truncate_backtrace_c_string)
+                .transpose()?
         } else {
             None
         };
@@ -7559,11 +7627,12 @@ impl Runtime {
             GlobalUriCodecKind::DecodeUriComponent => crate::uri::decode(&input, true),
             GlobalUriCodecKind::EncodeUri => crate::uri::encode(&input, false),
             GlobalUriCodecKind::EncodeUriComponent => crate::uri::encode(&input, true),
-            GlobalUriCodecKind::Escape => Ok(crate::uri::escape(&input)),
-            GlobalUriCodecKind::Unescape => Ok(crate::uri::unescape(&input)),
+            GlobalUriCodecKind::Escape => crate::uri::escape(&input),
+            GlobalUriCodecKind::Unescape => crate::uri::unescape(&input),
         };
         match result {
             Ok(value) => Ok(Completion::Return(Value::String(value))),
+            Err(crate::uri::UriCodecError::String(error)) => Err(error.into()),
             Err(error) => Ok(Completion::Throw(self.new_native_error(
                 realm,
                 NativeErrorKind::Uri,
@@ -7683,7 +7752,7 @@ impl Runtime {
         if index < 0 || index >= length {
             return Ok(Completion::Return(match selector {
                 StringCharAtKind::At => Value::Undefined,
-                StringCharAtKind::CharAt => Value::String(JsString::from("")),
+                StringCharAtKind::CharAt => Value::String(JsString::from_static("")),
             }));
         }
         let index =
@@ -7865,24 +7934,24 @@ impl Runtime {
                             "Number radix formatting reported a digit-count error",
                         ),
                     })?;
-                Ok(Completion::Return(Value::String(JsString::from(
-                    formatted.as_str(),
-                ))))
+                Ok(Completion::Return(Value::String(JsString::try_from_utf8(
+                    &formatted,
+                )?)))
             }
             (PrimitiveKind::String, Value::String(value)) => {
                 Ok(Completion::Return(Value::String(value)))
             }
             (PrimitiveKind::Boolean, Value::Bool(value)) => Ok(Completion::Return(Value::String(
-                JsString::from(if value { "true" } else { "false" }),
+                JsString::from_static(if value { "true" } else { "false" }),
             ))),
             (PrimitiveKind::Symbol, Value::Symbol(value)) => {
                 let description = self
                     .symbol_description(&value)?
-                    .unwrap_or_else(|| JsString::from(""));
+                    .unwrap_or_else(|| JsString::from_static(""));
                 Ok(Completion::Return(Value::String(
-                    JsString::from("Symbol(")
+                    JsString::from_static("Symbol(")
                         .try_concat(&description)?
-                        .try_concat(&JsString::from(")"))?,
+                        .try_concat(&JsString::from_static(")"))?,
                 )))
             }
             (PrimitiveKind::BigInt, Value::BigInt(value)) => {
@@ -7917,9 +7986,9 @@ impl Runtime {
                 let text = value
                     .to_string_radix(radix)
                     .map_err(|_| RuntimeError::Invariant("validated BigInt radix was rejected"))?;
-                Ok(Completion::Return(Value::String(JsString::from(
-                    text.as_str(),
-                ))))
+                Ok(Completion::Return(Value::String(JsString::try_from_utf8(
+                    &text,
+                )?)))
             }
             _ => Err(RuntimeError::Invariant(
                 "unimplemented primitive toString reached native dispatch",
@@ -7933,9 +8002,9 @@ impl Runtime {
         result: Result<String, crate::number::NumberFormatError>,
     ) -> Result<Completion, RuntimeError> {
         match result {
-            Ok(value) => Ok(Completion::Return(Value::String(JsString::from(
-                value.as_str(),
-            )))),
+            Ok(value) => Ok(Completion::Return(Value::String(JsString::try_from_utf8(
+                &value,
+            )?))),
             Err(crate::number::NumberFormatError::InvalidDigits) => Ok(Completion::Throw(
                 self.new_native_error(realm, NativeErrorKind::Range, "invalid number of digits")?,
             )),
@@ -8173,25 +8242,25 @@ impl Runtime {
             match &object_data.payload {
                 ObjectPayload::NativeFunction { .. }
                 | ObjectPayload::BoundFunction { .. }
-                | ObjectPayload::BytecodeFunction { .. } => JsString::from("Function"),
-                ObjectPayload::Error => JsString::from("Error"),
+                | ObjectPayload::BytecodeFunction { .. } => JsString::from_static("Function"),
+                ObjectPayload::Error => JsString::from_static("Error"),
                 ObjectPayload::Primitive(PrimitiveObjectData::Number(_)) => {
-                    JsString::from("Number")
+                    JsString::from_static("Number")
                 }
                 ObjectPayload::Primitive(PrimitiveObjectData::String(_)) => {
-                    JsString::from("String")
+                    JsString::from_static("String")
                 }
                 ObjectPayload::Primitive(PrimitiveObjectData::Boolean(_)) => {
-                    JsString::from("Boolean")
+                    JsString::from_static("Boolean")
                 }
                 // QuickJS's built-in class fallback has no Symbol- or
                 // BigInt-wrapper case. Their standard tags come exclusively
                 // from inherited configurable @@toStringTag properties.
                 ObjectPayload::Primitive(
                     PrimitiveObjectData::Symbol(_) | PrimitiveObjectData::BigInt(_),
-                ) => JsString::from("Object"),
+                ) => JsString::from_static("Object"),
                 ObjectPayload::Ordinary | ObjectPayload::GlobalObject { .. } => {
-                    JsString::from("Object")
+                    JsString::from_static("Object")
                 }
             }
         };
@@ -8214,8 +8283,8 @@ impl Runtime {
             ));
         };
         let tag = match this_value {
-            Value::Undefined => JsString::from("Undefined"),
-            Value::Null => JsString::from("Null"),
+            Value::Undefined => JsString::from_static("Undefined"),
+            Value::Null => JsString::from_static("Null"),
             Value::Bool(value) => {
                 let prototype =
                     self.primitive_prototype_for_realm(realm, PrimitiveKind::Boolean)?;
@@ -8266,9 +8335,9 @@ impl Runtime {
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
             },
         };
-        let result = JsString::from("[object ")
+        let result = JsString::from_static("[object ")
             .try_concat(&tag)?
-            .try_concat(&JsString::from("]"))?;
+            .try_concat(&JsString::from_static("]"))?;
         Ok(Completion::Return(Value::String(result)))
     }
 
@@ -8480,7 +8549,7 @@ impl Runtime {
         };
         let name_key = self.intern_property_key("name")?;
         let name = match self.get_property_in_realm(realm, &object, &name_key)? {
-            Completion::Return(Value::Undefined) => JsString::from("Error"),
+            Completion::Return(Value::Undefined) => JsString::from_static("Error"),
             Completion::Return(value) => match self.native_to_js_string(realm, &value)? {
                 NativeConversion::Value(value) => value,
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -8489,7 +8558,7 @@ impl Runtime {
         };
         let message_key = self.intern_property_key("message")?;
         let message = match self.get_property_in_realm(realm, &object, &message_key)? {
-            Completion::Return(Value::Undefined) => JsString::from(""),
+            Completion::Return(Value::Undefined) => JsString::from_static(""),
             Completion::Return(value) => match self.native_to_js_string(realm, &value)? {
                 NativeConversion::Value(value) => value,
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -8501,7 +8570,7 @@ impl Runtime {
         } else if message.is_empty() {
             name
         } else {
-            name.try_concat(&JsString::from(": "))?
+            name.try_concat(&JsString::from_static(": "))?
                 .try_concat(&message)?
         };
         Ok(Completion::Return(Value::String(result)))
@@ -8547,9 +8616,9 @@ impl Runtime {
                     &[Value::Object(active_function)],
                 )
             }
-            Some(Value::Bool(false)) => Ok(Completion::Throw(Value::String(JsString::from(
-                "active frame probe throw",
-            )))),
+            Some(Value::Bool(false)) => Ok(Completion::Throw(Value::String(
+                JsString::from_static("active frame probe throw"),
+            ))),
             Some(Value::Bool(true)) => {
                 Err(RuntimeError::Invariant("active frame probe engine error"))
             }
@@ -8773,7 +8842,7 @@ impl Runtime {
             | NativeFunctionId::ConstructorProbe
             | NativeFunctionId::ConstructorOrFunctionProbe => {
                 if matches!(arguments.readable.first(), Some(Value::Bool(false))) {
-                    return Ok(Completion::Throw(Value::String(JsString::from(
+                    return Ok(Completion::Throw(Value::String(JsString::from_static(
                         "native probe throw",
                     ))));
                 }
@@ -8805,9 +8874,9 @@ impl Runtime {
                     padded_undefined,
                     invocation_target_is_function
                 );
-                Ok(Completion::Return(Value::String(JsString::from(
-                    result.as_str(),
-                ))))
+                Ok(Completion::Return(Value::String(JsString::try_from_utf8(
+                    &result,
+                )?)))
             }
         }
     }
@@ -9347,17 +9416,23 @@ fn bound_function_length(
     })
 }
 
-fn append_backtrace_ascii(output: &mut Vec<u16>, value: &str) {
-    output.extend(value.encode_utf16());
+fn append_backtrace_ascii(output: &mut JsStringBuilder, value: &str) -> Result<(), JsStringError> {
+    output.push_utf8(value)
 }
 
-fn append_backtrace_string(output: &mut Vec<u16>, value: &JsString) {
-    output.extend(value.utf16_units());
+fn append_backtrace_string(
+    output: &mut JsStringBuilder,
+    value: &JsString,
+) -> Result<(), JsStringError> {
+    output.push_js_string(value)
 }
 
-fn truncate_backtrace_c_string(value: JsString) -> JsString {
+fn truncate_backtrace_c_string(value: JsString) -> Result<JsString, RuntimeError> {
+    if !value.utf16_units().any(|unit| unit == 0) {
+        return Ok(value);
+    }
     let prefix = value.utf16_units().take_while(|unit| *unit != 0);
-    JsString::from_utf16(prefix)
+    Ok(JsString::try_from_utf16(prefix)?)
 }
 
 fn raw_string_property_on_object(
@@ -10753,13 +10828,35 @@ mod tests {
         AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField,
         OrdinaryPropertyDescriptor, PropertyKey, WellKnownSymbol,
     };
-    use crate::value::{JsString, Value};
+    use crate::value::{JsString, JsStringError, Value};
     use crate::vm::Completion;
 
     use super::{
-        ActiveFrameKind, CallableExecution, DeferredRefOp, EvalOptions, PropertyGetAction,
-        PropertySetAction, Runtime, RuntimeError, ToPrimitiveHint, VarRefRoot,
+        ActiveFrameKind, CallableExecution, DeferredRefOp, DynamicSourceBuilder, EvalOptions,
+        PropertyGetAction, PropertySetAction, Runtime, RuntimeError, ToPrimitiveHint, VarRefRoot,
     };
+
+    #[test]
+    fn dynamic_source_builder_latches_utf16_length_failure() {
+        let mut exact = DynamicSourceBuilder::with_limit(3);
+        assert_eq!(exact.push_str("a😀"), Ok(()));
+        assert_eq!(exact.utf16_len, 3);
+        assert_eq!(exact.finish(), Ok("a😀".to_owned()));
+
+        let mut failed = DynamicSourceBuilder::with_limit(5);
+        assert_eq!(failed.push_str("a😀"), Ok(()));
+        assert_eq!(failed.utf16_len, 3);
+
+        assert_eq!(failed.push_str("abc"), Err(JsStringError::TooLong));
+        assert!(failed.source.is_empty());
+        assert_eq!(failed.utf16_len, 0);
+
+        assert_eq!(failed.push_str("b"), Err(JsStringError::TooLong));
+        assert_eq!(failed.push_str(""), Err(JsStringError::TooLong));
+        assert!(failed.source.is_empty());
+        assert_eq!(failed.utf16_len, 0);
+        assert_eq!(failed.finish(), Err(JsStringError::TooLong));
+    }
 
     fn data_descriptor(
         value: Value,
@@ -11196,7 +11293,7 @@ mod tests {
             context
                 .call(&to_string, Value::Object(wrapper.clone()), &[])
                 .unwrap(),
-            Value::String(JsString::from("false"))
+            Value::String(JsString::from_static("false"))
         );
         assert_eq!(
             context.call(&value_of, Value::Bool(true), &[]).unwrap(),
@@ -11209,13 +11306,13 @@ mod tests {
         ));
         assert_eq!(
             take_error_message(&runtime, &mut context),
-            JsString::from("not a boolean")
+            JsString::from_static("not a boolean")
         );
         assert_eq!(
             context
                 .eval("true.toString() + '|' + false.valueOf()")
                 .unwrap(),
-            Value::String(JsString::from("true|false"))
+            Value::String(JsString::from_static("true|false"))
         );
         assert_eq!(context.eval("+new Boolean(false)").unwrap(), Value::Int(0));
     }
@@ -11276,7 +11373,7 @@ mod tests {
             })
         );
 
-        let payload = JsString::from_utf16([0x41, 0xd83d, 0xde00, 0xd800]);
+        let payload = JsString::try_from_utf16([0x41, 0xd83d, 0xde00, 0xd800]).unwrap();
         let wrapper = runtime
             .new_string_object(&string_prototype, payload.clone(), false)
             .unwrap();
@@ -11311,7 +11408,7 @@ mod tests {
 
         for (index, unit) in [0x41, 0xd83d, 0xde00, 0xd800].into_iter().enumerate() {
             let key = runtime.intern_property_key(&index.to_string()).unwrap();
-            let expected = Value::String(JsString::from_utf16([unit]));
+            let expected = Value::String(JsString::try_from_utf16([unit]).unwrap());
             assert_eq!(
                 runtime.get_own_property(&wrapper, &key).unwrap(),
                 Some(CompleteOrdinaryPropertyDescriptor::Data {
@@ -11343,7 +11440,7 @@ mod tests {
         let zero = runtime.intern_property_key("0").unwrap();
         for descriptor in [
             OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(Value::String(JsString::from("X"))),
+                value: DescriptorField::Present(Value::String(JsString::from_static("X"))),
                 ..OrdinaryPropertyDescriptor::new()
             },
             OrdinaryPropertyDescriptor {
@@ -11374,7 +11471,11 @@ mod tests {
         let eight = runtime.intern_property_key("8").unwrap();
         let foo = runtime.intern_property_key("foo").unwrap();
         let leading_zero = runtime.intern_property_key("01").unwrap();
-        let symbol = PropertyKey::from(runtime.new_symbol(Some(JsString::from("tail"))).unwrap());
+        let symbol = PropertyKey::from(
+            runtime
+                .new_symbol(Some(JsString::from_static("tail")))
+                .unwrap(),
+        );
         for key in [&foo, &leading_zero, &eight, &symbol] {
             assert!(
                 runtime
@@ -11501,7 +11602,7 @@ mod tests {
                     writable: false,
                     enumerable: false,
                     configurable: true,
-                }) if value == JsString::from(name)
+                }) if value == JsString::try_from_utf8(name).unwrap()
             ));
             let state = runtime.0.state.borrow();
             let ObjectPayload::NativeFunction { data } = &state
@@ -11516,19 +11617,19 @@ mod tests {
             assert_eq!(data.min_readable_args, min_readable_args);
         }
 
-        let payload = JsString::from_utf16([0x41, 0xd83d, 0xde00, 0xd800, 0x5a]);
+        let payload = JsString::try_from_utf16([0x41, 0xd83d, 0xde00, 0xd800, 0x5a]).unwrap();
         let at = property_callable(&runtime, &mut context, &prototype, "at");
         assert_eq!(
             context
                 .call(&at, Value::String(payload.clone()), &[Value::Int(-1)])
                 .unwrap(),
-            Value::String(JsString::from("Z"))
+            Value::String(JsString::from_static("Z"))
         );
         assert_eq!(
             context
                 .call(&at, Value::String(payload.clone()), &[Value::Int(1)])
                 .unwrap(),
-            Value::String(JsString::from_utf16([0xd83d]))
+            Value::String(JsString::try_from_utf16([0xd83d]).unwrap())
         );
         assert_eq!(
             context
@@ -11542,7 +11643,7 @@ mod tests {
             context
                 .call(&char_at, Value::String(payload.clone()), &[Value::Int(-1)],)
                 .unwrap(),
-            Value::String(JsString::from(""))
+            Value::String(JsString::from_static(""))
         );
         let char_code_at = property_callable(&runtime, &mut context, &prototype, "charCodeAt");
         assert_eq!(
@@ -11593,7 +11694,7 @@ mod tests {
             context
                 .call(
                     &concat,
-                    Value::String(JsString::from("R")),
+                    Value::String(JsString::from_static("R")),
                     &[
                         Value::Undefined,
                         Value::Null,
@@ -11602,9 +11703,9 @@ mod tests {
                     ],
                 )
                 .unwrap(),
-            Value::String(JsString::from("Rundefinednulltrue1"))
+            Value::String(JsString::from_static("Rundefinednulltrue1"))
         );
-        let mut near_limit = JsString::from_utf8(&"x".repeat(8193));
+        let mut near_limit = JsString::try_from_utf8(&"x".repeat(8193)).unwrap();
         for _ in 0..16 {
             near_limit = near_limit.try_concat(&near_limit).unwrap();
         }
@@ -11631,7 +11732,7 @@ mod tests {
             context
                 .call(&to_well_formed, Value::String(payload), &[])
                 .unwrap(),
-            Value::String(JsString::from_utf16([0x41, 0xd83d, 0xde00, 0xfffd, 0x5a,]))
+            Value::String(JsString::try_from_utf16([0x41, 0xd83d, 0xde00, 0xfffd, 0x5a]).unwrap(),)
         );
 
         assert_eq!(
@@ -11640,11 +11741,11 @@ mod tests {
         );
         assert_eq!(
             take_error_message(&runtime, &mut context),
-            JsString::from("null or undefined are forbidden")
+            JsString::from_static("null or undefined are forbidden")
         );
         assert_eq!(
             context.eval("'abc'.at(-1)").unwrap(),
-            Value::String(JsString::from("c"))
+            Value::String(JsString::from_static("c"))
         );
         assert_eq!(context.eval("'abc'.charCodeAt(1)").unwrap(), Value::Int(98));
     }
@@ -11665,7 +11766,7 @@ mod tests {
             panic!("InternalError.prototype was not an object");
         };
 
-        let mut near_limit = JsString::from_utf8(&"x".repeat(8193));
+        let mut near_limit = JsString::try_from_utf8(&"x".repeat(8193)).unwrap();
         for _ in 0..16 {
             near_limit = near_limit.try_concat(&near_limit).unwrap();
         }
@@ -11697,13 +11798,13 @@ mod tests {
         let message = runtime.intern_property_key("message").unwrap();
         assert_eq!(
             first.get_property(&vm_error, &message).unwrap(),
-            Value::String(JsString::from("string too long"))
+            Value::String(JsString::from_static("string too long"))
         );
 
         assert_eq!(
             second.call(
                 &concat,
-                Value::String(JsString::from("")),
+                Value::String(JsString::from_static("")),
                 &[Value::String(near_limit.clone()), Value::String(near_limit),],
             ),
             Err(RuntimeError::Exception)
@@ -11717,7 +11818,7 @@ mod tests {
         );
         assert_eq!(
             second.get_property(&native_error, &message).unwrap(),
-            Value::String(JsString::from("string too long"))
+            Value::String(JsString::from_static("string too long"))
         );
     }
 
@@ -11759,7 +11860,7 @@ mod tests {
             ));
         }
 
-        let payload = JsString::from_utf16([0x41, 0xd800, 0x42]);
+        let payload = JsString::try_from_utf16([0x41, 0xd800, 0x42]).unwrap();
         let wrapper = runtime
             .new_string_object(&prototype, payload.clone(), false)
             .unwrap();
@@ -11780,7 +11881,7 @@ mod tests {
                 context
                     .call(method, Value::Object(prototype.clone()), &[])
                     .unwrap(),
-                Value::String(JsString::from(""))
+                Value::String(JsString::from_static(""))
             );
         }
 
@@ -11795,7 +11896,7 @@ mod tests {
         let message = runtime.intern_property_key("message").unwrap();
         assert_eq!(
             context.get_property(&error, &message).unwrap(),
-            Value::String(JsString::from("not a string"))
+            Value::String(JsString::from_static("not a string"))
         );
 
         assert!(
@@ -11841,7 +11942,7 @@ mod tests {
                     ToPrimitiveHint::String,
                 )
                 .unwrap(),
-            Completion::Return(Value::String(JsString::from("override")))
+            Completion::Return(Value::String(JsString::from_static("override")))
         );
         assert_eq!(
             context
@@ -11853,11 +11954,11 @@ mod tests {
 
         assert_eq!(
             context.eval("'source'.toString()").unwrap(),
-            Value::String(JsString::from("source"))
+            Value::String(JsString::from_static("source"))
         );
         assert_eq!(
             context.eval("'source'.valueOf()").unwrap(),
-            Value::String(JsString::from("source"))
+            Value::String(JsString::from_static("source"))
         );
 
         let object_to_string =
@@ -11870,7 +11971,7 @@ mod tests {
             context
                 .call(&object_to_string, Value::String(payload.clone()), &[])
                 .unwrap(),
-            Value::String(JsString::from("[object String]"))
+            Value::String(JsString::from_static("[object String]"))
         );
         assert_eq!(
             context
@@ -11907,7 +12008,9 @@ mod tests {
                     &prototype,
                     &tag,
                     &OrdinaryPropertyDescriptor {
-                        value: DescriptorField::Present(Value::String(JsString::from("Custom"))),
+                        value: DescriptorField::Present(Value::String(JsString::from_static(
+                            "Custom"
+                        ))),
                         writable: DescriptorField::Present(true),
                         enumerable: DescriptorField::Present(false),
                         configurable: DescriptorField::Present(true),
@@ -11918,9 +12021,13 @@ mod tests {
         );
         assert_eq!(
             context
-                .call(&object_to_string, Value::String(JsString::from("x")), &[])
+                .call(
+                    &object_to_string,
+                    Value::String(JsString::from_static("x")),
+                    &[]
+                )
                 .unwrap(),
-            Value::String(JsString::from("[object Custom]"))
+            Value::String(JsString::from_static("[object Custom]"))
         );
         assert!(
             runtime
@@ -11936,9 +12043,13 @@ mod tests {
         );
         assert_eq!(
             context
-                .call(&object_to_string, Value::String(JsString::from("x")), &[])
+                .call(
+                    &object_to_string,
+                    Value::String(JsString::from_static("x")),
+                    &[]
+                )
                 .unwrap(),
-            Value::String(JsString::from("[object String]"))
+            Value::String(JsString::from_static("[object String]"))
         );
         assert!(runtime.delete_property(&prototype, &tag).unwrap());
     }
@@ -12046,7 +12157,7 @@ mod tests {
             .call(
                 &constructor,
                 Value::Undefined,
-                &[Value::String(JsString::from(""))],
+                &[Value::String(JsString::from_static(""))],
             )
             .unwrap()
         else {
@@ -12056,7 +12167,7 @@ mod tests {
         assert_eq!(runtime.symbol_description(&no_description).unwrap(), None);
         assert_eq!(
             runtime.symbol_description(&empty_description).unwrap(),
-            Some(JsString::from(""))
+            Some(JsString::from_static(""))
         );
         let ignored_argument = context.new_object().unwrap();
         assert!(matches!(
@@ -12065,12 +12176,12 @@ mod tests {
         ));
         assert_eq!(
             take_error_message(&runtime, &mut context),
-            JsString::from("Symbol is not a constructor")
+            JsString::from_static("Symbol is not a constructor")
         );
 
         let symbol_for = property_callable(&runtime, &mut context, constructor.as_object(), "for");
         let key_for = property_callable(&runtime, &mut context, constructor.as_object(), "keyFor");
-        let registry_key = Value::String(JsString::from("registry"));
+        let registry_key = Value::String(JsString::from_static("registry"));
         let first_registered = context
             .call(
                 &symbol_for,
@@ -12142,7 +12253,7 @@ mod tests {
             context
                 .call(&to_string, Value::Symbol(empty_description.clone()), &[],)
                 .unwrap(),
-            Value::String(JsString::from("Symbol()"))
+            Value::String(JsString::from_static("Symbol()"))
         );
         assert_eq!(
             context
@@ -12181,11 +12292,11 @@ mod tests {
         );
         assert_eq!(
             context.eval("Symbol('source').toString()").unwrap(),
-            Value::String(JsString::from("Symbol(source)"))
+            Value::String(JsString::from_static("Symbol(source)"))
         );
         assert_eq!(
             context.eval("Symbol('source').description").unwrap(),
-            Value::String(JsString::from("source"))
+            Value::String(JsString::from_static("source"))
         );
         assert_eq!(
             context.eval("Symbol().description").unwrap(),
@@ -12202,7 +12313,7 @@ mod tests {
             let object_value_of =
                 property_callable(&runtime, &mut context, &object_prototype, "valueOf");
             let symbol = runtime
-                .new_symbol(Some(JsString::from("wrapper-only")))
+                .new_symbol(Some(JsString::from_static("wrapper-only")))
                 .unwrap();
             let atom = symbol.atom();
             let Value::Object(wrapper) = context
@@ -12289,7 +12400,7 @@ mod tests {
                 writable: false,
                 enumerable: false,
                 configurable: true,
-            }) if value == JsString::from("BigInt")
+            }) if value == JsString::from_static("BigInt")
         ));
         assert_eq!(
             own_key_names(&runtime, constructor.as_object()),
@@ -12307,7 +12418,7 @@ mod tests {
                 .call(
                     &constructor,
                     Value::Undefined,
-                    &[Value::String(JsString::from("0x10000000000000000"))],
+                    &[Value::String(JsString::from_static("0x10000000000000000"))],
                 )
                 .unwrap(),
             Value::BigInt(JsBigInt::parse_js_string("0x10000000000000000").unwrap())
@@ -12318,7 +12429,7 @@ mod tests {
         ));
         assert_eq!(
             take_error_message(&runtime, &mut context),
-            JsString::from("BigInt is not a constructor")
+            JsString::from_static("BigInt is not a constructor")
         );
 
         let as_uint_n =
@@ -12355,7 +12466,7 @@ mod tests {
                     &[Value::Int(16)],
                 )
                 .unwrap(),
-            Value::String(JsString::from("ff"))
+            Value::String(JsString::from_static("ff"))
         );
         assert!(matches!(
             context.call(&value_of, Value::Object(prototype.clone()), &[]),
@@ -12363,7 +12474,7 @@ mod tests {
         ));
         assert_eq!(
             take_error_message(&runtime, &mut context),
-            JsString::from("not a BigInt")
+            JsString::from_static("not a BigInt")
         );
 
         let object_prototype = context.object_prototype().unwrap();
@@ -12422,7 +12533,7 @@ mod tests {
             );
             assert_eq!(
                 own_data_value(&runtime, callable.as_object(), "name"),
-                Value::String(JsString::from(name))
+                Value::String(JsString::try_from_utf8(name).unwrap())
             );
             for property in ["length", "name"] {
                 let property = runtime.intern_property_key(property).unwrap();
@@ -12455,7 +12566,7 @@ mod tests {
                 .call(
                     &parse_int,
                     Value::Bool(true),
-                    &[Value::String(JsString::from("0x10"))],
+                    &[Value::String(JsString::from_static("0x10"))],
                 )
                 .unwrap(),
             Value::Int(16)
@@ -12466,7 +12577,7 @@ mod tests {
                     &parse_int,
                     Value::Undefined,
                     &[
-                        Value::String(JsString::from("10")),
+                        Value::String(JsString::from_static("10")),
                         Value::Float(4_294_967_298.0),
                     ],
                 )
@@ -12478,7 +12589,7 @@ mod tests {
                 .call(
                     &parse_float,
                     Value::Undefined,
-                    &[Value::String(JsString::from(
+                    &[Value::String(JsString::from_static(
                         "1.0000000000000001110223024625156540423631668090820313",
                     ))],
                 )
@@ -12489,7 +12600,7 @@ mod tests {
             .call(
                 &parse_int,
                 Value::Undefined,
-                &[Value::String(JsString::from("-0"))],
+                &[Value::String(JsString::from_static("-0"))],
             )
             .unwrap()
         else {
@@ -12503,7 +12614,7 @@ mod tests {
                 .define_own_property(
                     &global,
                     &log_key,
-                    &data_descriptor(Value::String(JsString::from("")), true, true, true),
+                    &data_descriptor(Value::String(JsString::from_static("")), true, true, true),
                 )
                 .unwrap()
         );
@@ -12561,7 +12672,7 @@ mod tests {
         );
         assert_eq!(
             context.get_property(&global, &log_key).unwrap(),
-            Value::String(JsString::from("input:string|radix:number|"))
+            Value::String(JsString::from_static("input:string|radix:number|"))
         );
 
         assert!(
@@ -12569,7 +12680,7 @@ mod tests {
                 .define_own_property(
                     &global,
                     &log_key,
-                    &data_descriptor(Value::String(JsString::from("")), true, true, true),
+                    &data_descriptor(Value::String(JsString::from_static("")), true, true, true),
                 )
                 .unwrap()
         );
@@ -12623,20 +12734,22 @@ mod tests {
         ));
         assert_eq!(
             context.take_exception().unwrap(),
-            Some(Value::String(JsString::from("input boom")))
+            Some(Value::String(JsString::from_static("input boom")))
         );
         assert_eq!(
             context.get_property(&global, &log_key).unwrap(),
-            Value::String(JsString::from("input-throw:string|"))
+            Value::String(JsString::from_static("input-throw:string|"))
         );
 
-        let symbol = runtime.new_symbol(Some(JsString::from("parse"))).unwrap();
+        let symbol = runtime
+            .new_symbol(Some(JsString::from_static("parse")))
+            .unwrap();
         assert!(
             runtime
                 .define_own_property(
                     &global,
                     &log_key,
-                    &data_descriptor(Value::String(JsString::from("")), true, true, true),
+                    &data_descriptor(Value::String(JsString::from_static("")), true, true, true),
                 )
                 .unwrap()
         );
@@ -12670,11 +12783,11 @@ mod tests {
         ));
         assert_eq!(
             take_error_message(&runtime, &mut context),
-            JsString::from("cannot convert symbol to string")
+            JsString::from_static("cannot convert symbol to string")
         );
         assert_eq!(
             context.get_property(&global, &log_key).unwrap(),
-            Value::String(JsString::from(""))
+            Value::String(JsString::from_static(""))
         );
         assert!(matches!(
             context.call(&parse_float, Value::Undefined, &[Value::Symbol(symbol)],),
@@ -12682,7 +12795,7 @@ mod tests {
         ));
         assert_eq!(
             take_error_message(&runtime, &mut context),
-            JsString::from("cannot convert symbol to string")
+            JsString::from_static("cannot convert symbol to string")
         );
 
         let type_error = global_callable(&runtime, &mut context, "TypeError");
@@ -12699,7 +12812,7 @@ mod tests {
                 &parse_int,
                 Value::Undefined,
                 &[
-                    Value::String(JsString::from("10")),
+                    Value::String(JsString::from_static("10")),
                     Value::BigInt(JsBigInt::one()),
                 ],
             ),
@@ -12748,7 +12861,7 @@ mod tests {
             );
             assert_eq!(
                 own_data_value(&runtime, callable.as_object(), "name"),
-                Value::String(JsString::from(name))
+                Value::String(JsString::try_from_utf8(name).unwrap())
             );
             let key = runtime.intern_property_key(name).unwrap();
             assert!(matches!(
@@ -12766,8 +12879,8 @@ mod tests {
             (Value::Undefined, true, false),
             (Value::Null, false, true),
             (Value::Bool(false), false, true),
-            (Value::String(JsString::from("")), false, true),
-            (Value::String(JsString::from("number")), true, false),
+            (Value::String(JsString::from_static("")), false, true),
+            (Value::String(JsString::from_static("number")), true, false),
             (Value::Float(f64::NAN), true, false),
             (Value::Float(f64::INFINITY), false, false),
             (Value::Float(f64::NEG_INFINITY), false, false),
@@ -12777,7 +12890,7 @@ mod tests {
                 context
                     .call(
                         &is_nan,
-                        Value::String(JsString::from("ignored")),
+                        Value::String(JsString::from_static("ignored")),
                         std::slice::from_ref(&input)
                     )
                     .unwrap(),
@@ -12809,12 +12922,12 @@ mod tests {
             );
             assert_eq!(
                 take_error_message(&runtime, &mut context),
-                JsString::from("cannot convert bigint to number")
+                JsString::from_static("cannot convert bigint to number")
             );
         }
         assert_eq!(
             context.eval("isNaN('x') + '|' + isFinite('1')").unwrap(),
-            Value::String(JsString::from("true|true"))
+            Value::String(JsString::from_static("true|true"))
         );
     }
 
@@ -12850,7 +12963,7 @@ mod tests {
             );
             assert_eq!(
                 own_data_value(&runtime, callable.as_object(), "name"),
-                Value::String(JsString::from(name))
+                Value::String(JsString::try_from_utf8(name).unwrap())
             );
             assert!(matches!(
                 runtime.get_own_property(&global, &key).unwrap(),
@@ -12876,10 +12989,13 @@ mod tests {
                     .call(
                         &callable,
                         Value::Null,
-                        &[Value::String(JsString::from(input)), Value::Int(99)],
+                        &[
+                            Value::String(JsString::try_from_utf8(input).unwrap()),
+                            Value::Int(99),
+                        ],
                     )
                     .unwrap(),
-                Value::String(JsString::from(expected))
+                Value::String(JsString::try_from_utf8(expected).unwrap())
             );
         }
         let escape = global_callable(&runtime, &mut context, "escape");
@@ -12888,12 +13004,12 @@ mod tests {
                 .call(
                     &escape,
                     Value::Undefined,
-                    &[Value::String(JsString::from_utf16([
-                        0x00e9, 0xd83d, 0xde00,
-                    ]))],
+                    &[Value::String(
+                        JsString::try_from_utf16([0x00e9, 0xd83d, 0xde00]).unwrap(),
+                    )],
                 )
                 .unwrap(),
-            Value::String(JsString::from("%E9%uD83D%uDE00"))
+            Value::String(JsString::from_static("%E9%uD83D%uDE00"))
         );
 
         for (name, input, message) in [
@@ -12905,13 +13021,13 @@ mod tests {
                 context.call(
                     &callable,
                     Value::Undefined,
-                    &[Value::String(JsString::from(input))],
+                    &[Value::String(JsString::try_from_utf8(input).unwrap())],
                 ),
                 Err(RuntimeError::Exception)
             );
             assert_eq!(
                 take_error_message(&runtime, &mut context),
-                JsString::from(message)
+                JsString::try_from_utf8(message).unwrap()
             );
         }
         let encode = global_callable(&runtime, &mut context, "encodeURI");
@@ -12919,13 +13035,13 @@ mod tests {
             context.call(
                 &encode,
                 Value::Undefined,
-                &[Value::String(JsString::from_utf16([0xdc00]))],
+                &[Value::String(JsString::try_from_utf16([0xdc00]).unwrap(),)],
             ),
             Err(RuntimeError::Exception)
         );
         assert_eq!(
             take_error_message(&runtime, &mut context),
-            JsString::from("invalid character")
+            JsString::from_static("invalid character")
         );
     }
 
@@ -13017,7 +13133,7 @@ mod tests {
                 writable: false,
                 enumerable: false,
                 configurable: true,
-            }) if value == JsString::from("global")
+            }) if value == JsString::from_static("global")
         ));
         assert_eq!(
             runtime.own_property_keys(&global).unwrap().last(),
@@ -13031,14 +13147,14 @@ mod tests {
             context
                 .call(&object_to_string, Value::Object(global.clone()), &[],)
                 .unwrap(),
-            Value::String(JsString::from("[object global]"))
+            Value::String(JsString::from_static("[object global]"))
         );
         assert!(runtime.delete_property(&global, &tag).unwrap());
         assert_eq!(
             context
                 .call(&object_to_string, Value::Object(global), &[])
                 .unwrap(),
-            Value::String(JsString::from("[object Object]"))
+            Value::String(JsString::from_static("[object Object]"))
         );
     }
 
@@ -13079,7 +13195,7 @@ mod tests {
         assert!(runtime.delete_property(&global, &key).unwrap());
         assert_eq!(
             context.eval("typeof globalThis").unwrap(),
-            Value::String(JsString::from("undefined"))
+            Value::String(JsString::from_static("undefined"))
         );
         assert!(
             context
@@ -13448,7 +13564,7 @@ mod tests {
         );
         assert_eq!(
             take_error_message(&runtime, &mut context),
-            JsString::from("not an object")
+            JsString::from_static("not an object")
         );
         assert_eq!(
             context.eval("'use strict'; false.readOnlyPrimitive = 7"),
@@ -13456,7 +13572,7 @@ mod tests {
         );
         assert_eq!(
             take_error_message(&runtime, &mut context),
-            JsString::from("'readOnlyPrimitive' is read-only")
+            JsString::from_static("'readOnlyPrimitive' is read-only")
         );
         assert_eq!(
             context.eval("delete false.writablePrimitive").unwrap(),
@@ -13487,13 +13603,13 @@ mod tests {
             context
                 .call(&object_to_string, Value::Bool(false), &[])
                 .unwrap(),
-            Value::String(JsString::from("[object Boolean]"))
+            Value::String(JsString::from_static("[object Boolean]"))
         );
         assert_eq!(
             context
                 .call(&object_to_locale_string, Value::Bool(false), &[])
                 .unwrap(),
-            Value::String(JsString::from("false"))
+            Value::String(JsString::from_static("false"))
         );
         let Value::Object(first_wrapper) = context
             .call(&object_value_of, Value::Bool(false), &[])
@@ -13557,13 +13673,13 @@ mod tests {
             context
                 .call(&object_to_string, Value::Bool(false), &[])
                 .unwrap(),
-            Value::String(JsString::from("[object CustomBoolean]"))
+            Value::String(JsString::from_static("[object CustomBoolean]"))
         );
         assert_eq!(
             context
                 .get_property(&context.global_object().unwrap(), &tag_receiver)
                 .unwrap(),
-            Value::String(JsString::from("object"))
+            Value::String(JsString::from_static("object"))
         );
 
         let locale_receiver = runtime.intern_property_key("localeReceiver").unwrap();
@@ -13625,13 +13741,13 @@ mod tests {
             context
                 .call(&object_to_locale_string, Value::Bool(false), &[])
                 .unwrap(),
-            Value::String(JsString::from("boolean"))
+            Value::String(JsString::from_static("boolean"))
         );
         assert_eq!(
             context
                 .get_property(&context.global_object().unwrap(), &locale_receiver)
                 .unwrap(),
-            Value::String(JsString::from("boolean"))
+            Value::String(JsString::from_static("boolean"))
         );
     }
 
@@ -13905,13 +14021,13 @@ mod tests {
                     &[Value::Object(callable.as_object().clone())],
                 )
                 .unwrap(),
-            Value::String(JsString::from("function"))
+            Value::String(JsString::from_static("function"))
         );
         assert_eq!(
             context
                 .call(&callable, Value::Undefined, &[Value::Object(ordinary)],)
                 .unwrap(),
-            Value::String(JsString::from("object"))
+            Value::String(JsString::from_static("object"))
         );
     }
 
@@ -14504,11 +14620,11 @@ mod tests {
         let message = runtime.intern_property_key("message").unwrap();
         assert_eq!(
             context.get_property(&error, &name).unwrap(),
-            Value::String(JsString::from("TypeError"))
+            Value::String(JsString::from_static("TypeError"))
         );
         assert_eq!(
             context.get_property(&error, &message).unwrap(),
-            Value::String(JsString::from(" is not a constructor"))
+            Value::String(JsString::from_static(" is not a constructor"))
         );
     }
 
@@ -14643,7 +14759,7 @@ mod tests {
                 writable: false,
                 enumerable: false,
                 configurable: true,
-            }) if value == JsString::from("Function")
+            }) if value == JsString::from_static("Function")
         ));
         assert!(matches!(
             runtime
@@ -14713,7 +14829,7 @@ mod tests {
                     &[],
                 )
                 .unwrap(),
-            Value::String(JsString::from(
+            Value::String(JsString::from_static(
                 "function Function() {\n    [native code]\n}"
             ))
         );
@@ -14729,12 +14845,12 @@ mod tests {
             context
                 .call(&to_string, Value::Object(empty.clone()), &[])
                 .unwrap(),
-            Value::String(JsString::from("function anonymous(\n) {\n\n}"))
+            Value::String(JsString::from_static("function anonymous(\n) {\n\n}"))
         );
         for (property_name, expected) in [
-            ("name", Value::String(JsString::from("anonymous"))),
+            ("name", Value::String(JsString::from_static("anonymous"))),
             ("length", Value::Int(0)),
-            ("fileName", Value::String(JsString::from("<input>"))),
+            ("fileName", Value::String(JsString::from_static("<input>"))),
             ("lineNumber", Value::Int(1)),
             ("columnNumber", Value::Int(2)),
         ] {
@@ -14747,9 +14863,9 @@ mod tests {
                 &constructor,
                 Value::Undefined,
                 &[
-                    Value::String(JsString::from("a")),
-                    Value::String(JsString::from("b")),
-                    Value::String(JsString::from("return a + b")),
+                    Value::String(JsString::from_static("a")),
+                    Value::String(JsString::from_static("b")),
+                    Value::String(JsString::from_static("return a + b")),
                 ],
             )
             .unwrap()
@@ -14769,7 +14885,7 @@ mod tests {
         );
         assert_eq!(
             context.call(&to_string, Value::Object(add), &[]).unwrap(),
-            Value::String(JsString::from(
+            Value::String(JsString::from_static(
                 "function anonymous(a,b\n) {\nreturn a + b\n}"
             ))
         );
@@ -14779,9 +14895,9 @@ mod tests {
                 &constructor,
                 Value::Undefined,
                 &[
-                    Value::String(JsString::from("a")),
-                    Value::String(JsString::from("a")),
-                    Value::String(JsString::from("return a")),
+                    Value::String(JsString::from_static("a")),
+                    Value::String(JsString::from_static("a")),
+                    Value::String(JsString::from_static("return a")),
                 ],
             )
             .unwrap()
@@ -14805,9 +14921,9 @@ mod tests {
                 &constructor,
                 Value::Undefined,
                 &[
-                    Value::String(JsString::from("a")),
-                    Value::String(JsString::from("a")),
-                    Value::String(JsString::from("\"use strict\"; return a")),
+                    Value::String(JsString::from_static("a")),
+                    Value::String(JsString::from_static("a")),
+                    Value::String(JsString::from_static("\"use strict\"; return a")),
                 ],
             ),
             Err(RuntimeError::Exception)
@@ -14817,14 +14933,14 @@ mod tests {
         };
         assert_eq!(
             context.get_property(&error, &name).unwrap(),
-            Value::String(JsString::from("SyntaxError"))
+            Value::String(JsString::from_static("SyntaxError"))
         );
 
         assert_eq!(
             context.call(
                 &constructor,
                 Value::Undefined,
-                &[Value::String(JsString::from_utf16([0xd800]))],
+                &[Value::String(JsString::try_from_utf16([0xd800]).unwrap(),)],
             ),
             Err(RuntimeError::Exception)
         );
@@ -14833,7 +14949,7 @@ mod tests {
         };
         assert_eq!(
             context.get_property(&error, &name).unwrap(),
-            Value::String(JsString::from("InternalError"))
+            Value::String(JsString::from_static("InternalError"))
         );
     }
 
@@ -14876,7 +14992,9 @@ mod tests {
             .call(
                 &constructor,
                 Value::Object(second.global_object().unwrap()),
-                &[Value::String(JsString::from("return dynamicRealmMarker"))],
+                &[Value::String(JsString::from_static(
+                    "return dynamicRealmMarker",
+                ))],
             )
             .unwrap()
         else {
@@ -14920,7 +15038,9 @@ mod tests {
             .construct_with_new_target(
                 &constructor,
                 &new_target,
-                &[Value::String(JsString::from("return dynamicRealmMarker"))],
+                &[Value::String(JsString::from_static(
+                    "return dynamicRealmMarker",
+                ))],
             )
             .unwrap()
         else {
@@ -14963,7 +15083,7 @@ mod tests {
             .construct_with_new_target(
                 &constructor,
                 &new_target,
-                &[Value::String(JsString::from("return 3"))],
+                &[Value::String(JsString::from_static("return 3"))],
             )
             .unwrap()
         else {
@@ -14998,14 +15118,14 @@ mod tests {
             .call(
                 &constructor,
                 Value::Undefined,
-                &[Value::String(JsString::from("return 1"))],
+                &[Value::String(JsString::from_static("return 1"))],
             )
             .unwrap()
         else {
             panic!("strip-source Function did not return an object");
         };
         for (key, expected) in keys.iter().zip([
-            Value::String(JsString::from("<input>")),
+            Value::String(JsString::from_static("<input>")),
             Value::Int(1),
             Value::Int(2),
         ]) {
@@ -15018,7 +15138,7 @@ mod tests {
             context
                 .call(&to_string, Value::Object(source_stripped.clone()), &[])
                 .unwrap(),
-            Value::String(JsString::from(
+            Value::String(JsString::from_static(
                 "function anonymous() {\n    [native code]\n}"
             ))
         );
@@ -15029,7 +15149,9 @@ mod tests {
                     &source_stripped,
                     &name,
                     &OrdinaryPropertyDescriptor {
-                        value: DescriptorField::Present(Value::String(JsString::from("renamed"))),
+                        value: DescriptorField::Present(Value::String(JsString::from_static(
+                            "renamed"
+                        ))),
                         ..OrdinaryPropertyDescriptor::new()
                     },
                 )
@@ -15039,7 +15161,9 @@ mod tests {
             context
                 .call(&to_string, Value::Object(source_stripped), &[])
                 .unwrap(),
-            Value::String(JsString::from("function renamed() {\n    [native code]\n}"))
+            Value::String(JsString::from_static(
+                "function renamed() {\n    [native code]\n}"
+            ))
         );
 
         runtime.set_debug_info_mode(DebugInfoMode::StripDebug);
@@ -15047,7 +15171,7 @@ mod tests {
             .call(
                 &constructor,
                 Value::Undefined,
-                &[Value::String(JsString::from("return 2"))],
+                &[Value::String(JsString::from_static("return 2"))],
             )
             .unwrap()
         else {
@@ -15063,7 +15187,7 @@ mod tests {
             context
                 .call(&to_string, Value::Object(debug_stripped), &[])
                 .unwrap(),
-            Value::String(JsString::from(
+            Value::String(JsString::from_static(
                 "function anonymous() {\n    [native code]\n}"
             ))
         );
@@ -15073,8 +15197,8 @@ mod tests {
                 &constructor,
                 Value::Undefined,
                 &[
-                    Value::String(JsString::from("a-")),
-                    Value::String(JsString::from("return 1")),
+                    Value::String(JsString::from_static("a-")),
+                    Value::String(JsString::from_static("return 1")),
                 ],
             ),
             Err(RuntimeError::Exception)
@@ -15083,7 +15207,7 @@ mod tests {
             panic!("malformed Function did not throw an Error");
         };
         for (name, expected) in [
-            ("fileName", Value::String(JsString::from("<input>"))),
+            ("fileName", Value::String(JsString::from_static("<input>"))),
             ("lineNumber", Value::Int(1)),
             ("columnNumber", Value::Int(22)),
         ] {
@@ -15096,7 +15220,7 @@ mod tests {
         };
         assert_eq!(
             stack,
-            JsString::from("    at <input>:1:22\n    at Function (native)\n")
+            JsString::from_static("    at <input>:1:22\n    at Function (native)\n")
         );
     }
 
@@ -15110,7 +15234,7 @@ mod tests {
             .define_function_data_property(
                 &global,
                 "functionOrder",
-                Value::String(JsString::from("")),
+                Value::String(JsString::from_static("")),
                 true,
                 true,
             )
@@ -15238,14 +15362,14 @@ mod tests {
         let order = runtime.intern_property_key("functionOrder").unwrap();
         assert_eq!(
             context.get_property(&global, &order).unwrap(),
-            Value::String(JsString::from("pbx"))
+            Value::String(JsString::from_static("pbx"))
         );
 
         runtime
             .define_function_data_property(
                 &global,
                 "functionOrder",
-                Value::String(JsString::from("")),
+                Value::String(JsString::from_static("")),
                 true,
                 true,
             )
@@ -15273,14 +15397,14 @@ mod tests {
         drop(context.take_exception().unwrap());
         assert_eq!(
             context.get_property(&global, &order).unwrap(),
-            Value::String(JsString::from("pb"))
+            Value::String(JsString::from_static("pb"))
         );
 
         runtime
             .define_function_data_property(
                 &global,
                 "functionOrder",
-                Value::String(JsString::from("")),
+                Value::String(JsString::from_static("")),
                 true,
                 true,
             )
@@ -15304,11 +15428,11 @@ mod tests {
         );
         assert_eq!(
             context.take_exception().unwrap(),
-            Some(Value::String(JsString::from("stop")))
+            Some(Value::String(JsString::from_static("stop")))
         );
         assert_eq!(
             context.get_property(&global, &order).unwrap(),
-            Value::String(JsString::from("t"))
+            Value::String(JsString::from_static("t"))
         );
     }
 
@@ -15366,7 +15490,7 @@ mod tests {
             .call(
                 &constructor,
                 Value::Undefined,
-                &[Value::String(JsString::from("return 9"))],
+                &[Value::String(JsString::from_static("return 9"))],
             )
             .unwrap()
         else {
@@ -15431,8 +15555,8 @@ mod tests {
                     &constructor,
                     Value::Undefined,
                     &[
-                        Value::String(JsString::from("a-")),
-                        Value::String(JsString::from("return 1")),
+                        Value::String(JsString::from_static("a-")),
+                        Value::String(JsString::from_static("return 1")),
                     ],
                 ),
                 Err(RuntimeError::Exception)
@@ -15494,13 +15618,13 @@ mod tests {
                 context.construct_with_new_target(
                     &constructor,
                     &new_target,
-                    &[Value::String(JsString::from("return 1"))],
+                    &[Value::String(JsString::from_static("return 1"))],
                 ),
                 Err(RuntimeError::Exception)
             );
             assert_eq!(
                 context.take_exception().unwrap(),
-                Some(Value::String(JsString::from("prototype")))
+                Some(Value::String(JsString::from_static("prototype")))
             );
             runtime.run_gc().unwrap();
             assert_eq!(live_counts(), getter_baseline);
@@ -15584,7 +15708,7 @@ mod tests {
                     writable: false,
                     enumerable: false,
                     configurable: true,
-                }) if value == JsString::from(getter_name)
+                }) if value == JsString::try_from_utf8(getter_name).unwrap()
             ));
             let state = runtime.0.state.borrow();
             let ObjectPayload::NativeFunction { data } = &state
@@ -15609,7 +15733,7 @@ mod tests {
             panic!("debug receiver source did not return a function");
         };
         for (index, expected) in [
-            Value::String(JsString::from("receiver.js")),
+            Value::String(JsString::from_static("receiver.js")),
             Value::Int(2),
             Value::Int(4),
         ]
@@ -15671,7 +15795,7 @@ mod tests {
             first
                 .construct_with_new_target(&getters[0].1, &target, &[])
                 .unwrap(),
-            Value::String(JsString::from("receiver.js"))
+            Value::String(JsString::from_static("receiver.js"))
         );
         runtime
             .set_constructor_bit(getters[0].1.as_object(), false)
@@ -15703,7 +15827,7 @@ mod tests {
             context
                 .call(&to_string, Value::Object(full.clone()), &[])
                 .unwrap(),
-            Value::String(JsString::from("function stripped() {}"))
+            Value::String(JsString::from_static("function stripped() {}"))
         );
 
         runtime.set_debug_info_mode(DebugInfoMode::StripSource);
@@ -15714,7 +15838,7 @@ mod tests {
             panic!("source-stripped compile did not return a function");
         };
         for (key, expected) in keys.iter().zip([
-            Value::String(JsString::from("source-stripped.js")),
+            Value::String(JsString::from_static("source-stripped.js")),
             Value::Int(2),
             Value::Int(4),
         ]) {
@@ -15727,7 +15851,7 @@ mod tests {
             context
                 .call(&to_string, Value::Object(source_stripped), &[])
                 .unwrap(),
-            Value::String(JsString::from(
+            Value::String(JsString::from_static(
                 "function stripped() {\n    [native code]\n}"
             ))
         );
@@ -15749,7 +15873,7 @@ mod tests {
             context
                 .call(&to_string, Value::Object(debug_stripped), &[])
                 .unwrap(),
-            Value::String(JsString::from(
+            Value::String(JsString::from_static(
                 "function stripped() {\n    [native code]\n}"
             ))
         );
@@ -15757,7 +15881,7 @@ mod tests {
         // Changing the runtime policy never mutates already-published bytecode.
         assert_eq!(
             context.call(&to_string, Value::Object(full), &[]).unwrap(),
-            Value::String(JsString::from("function stripped() {}"))
+            Value::String(JsString::from_static("function stripped() {}"))
         );
     }
 
@@ -15772,7 +15896,7 @@ mod tests {
             .publish_unlinked_function(
                 context.realm,
                 debug_draft(UnlinkedFunctionDebug {
-                    filename: JsString::from("no-pc-table.js"),
+                    filename: JsString::from_static("no-pc-table.js"),
                     pc2line: None,
                     source: None,
                 }),
@@ -15782,7 +15906,7 @@ mod tests {
             .new_bytecode_closure(context.realm, &with_debug)
             .unwrap();
         for (key, expected) in keys.iter().zip([
-            Value::String(JsString::from("no-pc-table.js")),
+            Value::String(JsString::from_static("no-pc-table.js")),
             Value::Int(0),
             Value::Int(0),
         ]) {
@@ -15848,7 +15972,7 @@ mod tests {
             context
                 .call(&to_string, Value::Object(target_object.clone()), &[],)
                 .unwrap(),
-            Value::String(JsString::from(authored))
+            Value::String(JsString::try_from_utf8(authored).unwrap())
         );
         let name_key = runtime.intern_property_key("name").unwrap();
         assert!(
@@ -15857,7 +15981,9 @@ mod tests {
                     &target_object,
                     &name_key,
                     &OrdinaryPropertyDescriptor {
-                        value: DescriptorField::Present(Value::String(JsString::from("changed"))),
+                        value: DescriptorField::Present(Value::String(JsString::from_static(
+                            "changed"
+                        ))),
                         ..OrdinaryPropertyDescriptor::new()
                     },
                 )
@@ -15867,7 +15993,7 @@ mod tests {
             context
                 .call(&to_string, Value::Object(target_object.clone()), &[],)
                 .unwrap(),
-            Value::String(JsString::from(authored)),
+            Value::String(JsString::try_from_utf8(authored).unwrap()),
             "stored bytecode source must not read the mutable name property"
         );
 
@@ -15883,7 +16009,7 @@ mod tests {
         );
         assert_eq!(
             own_data_value(&runtime, &zero_argument_bound, "name"),
-            Value::String(JsString::from("bound changed"))
+            Value::String(JsString::from_static("bound changed"))
         );
 
         let bound = context
@@ -15912,13 +16038,13 @@ mod tests {
         );
         assert_eq!(
             own_data_value(&runtime, &bound_object, "name"),
-            Value::String(JsString::from("bound changed"))
+            Value::String(JsString::from_static("bound changed"))
         );
         assert_eq!(
             context
                 .call(&to_string, Value::Object(bound_object.clone()), &[])
                 .unwrap(),
-            Value::String(JsString::from(
+            Value::String(JsString::from_static(
                 "function bound changed() {\n    [native code]\n}"
             ))
         );
@@ -16018,13 +16144,13 @@ mod tests {
 
         assert_eq!(
             context.eval("(function named(){}) + \"\"").unwrap(),
-            Value::String(JsString::from("function named(){}"))
+            Value::String(JsString::from_static("function named(){}"))
         );
         assert_eq!(
             context
                 .call(&to_string, Value::Object(function_prototype.clone()), &[],)
                 .unwrap(),
-            Value::String(JsString::from("function () {\n    [native code]\n}"))
+            Value::String(JsString::from_static("function () {\n    [native code]\n}"))
         );
 
         for (function_kind, expected) in [
@@ -16053,7 +16179,7 @@ mod tests {
                             ..FunctionMetadata::default()
                         },
                     )
-                    .with_name(Some(JsString::from("fallback"))),
+                    .with_name(Some(JsString::from_static("fallback"))),
                 )
                 .unwrap();
             let callable = runtime
@@ -16063,7 +16189,7 @@ mod tests {
                 context
                     .call(&to_string, Value::Object(callable.as_object().clone()), &[],)
                     .unwrap(),
-                Value::String(JsString::from(expected))
+                Value::String(JsString::try_from_utf8(expected).unwrap())
             );
         }
 
@@ -16083,7 +16209,9 @@ mod tests {
             context
                 .call(&to_string, Value::Object(to_string_object.clone()), &[],)
                 .unwrap(),
-            Value::String(JsString::from("function 3() {\n    [native code]\n}"))
+            Value::String(JsString::from_static(
+                "function 3() {\n    [native code]\n}"
+            ))
         );
 
         let Value::Object(name_getter_object) =
@@ -16108,7 +16236,7 @@ mod tests {
             context
                 .call(&to_string, Value::Object(target_object), &[])
                 .unwrap(),
-            Value::String(JsString::from(authored)),
+            Value::String(JsString::try_from_utf8(authored).unwrap()),
             "stored bytecode source must bypass a throwing name getter"
         );
         assert!(
@@ -16122,11 +16250,11 @@ mod tests {
         );
         assert_eq!(
             context.take_exception().unwrap(),
-            Some(Value::String(JsString::from("NAME")))
+            Some(Value::String(JsString::from_static("NAME")))
         );
 
         let symbol_name = runtime
-            .new_symbol(Some(JsString::from("native-name")))
+            .new_symbol(Some(JsString::from_static("native-name")))
             .unwrap();
         assert!(
             context
@@ -16150,7 +16278,7 @@ mod tests {
         let message_key = runtime.intern_property_key("message").unwrap();
         assert_eq!(
             context.get_property(&error, &message_key).unwrap(),
-            Value::String(JsString::from("cannot convert symbol to string"))
+            Value::String(JsString::from_static("cannot convert symbol to string"))
         );
     }
 
@@ -16174,7 +16302,7 @@ mod tests {
         };
         let baseline_atoms = runtime.test_atom_count();
         let symbol = runtime
-            .new_symbol(Some(JsString::from("bound-payload")))
+            .new_symbol(Some(JsString::from_static("bound-payload")))
             .unwrap();
         let Value::Object(bound_object) = context
             .call(
@@ -16483,7 +16611,7 @@ mod tests {
                 writable: true,
                 enumerable: false,
                 configurable: true,
-            }) if value == JsString::from("Error")
+            }) if value == JsString::from_static("Error")
         ));
         assert_eq!(
             runtime
@@ -16602,7 +16730,7 @@ mod tests {
             context
                 .call(&to_string, Value::Object(empty.clone()), &[],)
                 .unwrap(),
-            Value::String(JsString::from("Error"))
+            Value::String(JsString::from_static("Error"))
         );
 
         let Value::Object(with_message) = context
@@ -16618,17 +16746,17 @@ mod tests {
                 writable: true,
                 enumerable: false,
                 configurable: true,
-            }) if value == JsString::from("42")
+            }) if value == JsString::from_static("42")
         ));
         assert_eq!(
             context
                 .call(&to_string, Value::Object(with_message.clone()), &[],)
                 .unwrap(),
-            Value::String(JsString::from("Error: 42"))
+            Value::String(JsString::from_static("Error: 42"))
         );
 
         let Value::Object(typed) = context
-            .construct(&type_error, &[Value::String(JsString::from("boom"))])
+            .construct(&type_error, &[Value::String(JsString::from_static("boom"))])
             .unwrap()
         else {
             panic!("new TypeError did not return an object");
@@ -16641,7 +16769,7 @@ mod tests {
             context
                 .call(&to_string, Value::Object(typed.clone()), &[])
                 .unwrap(),
-            Value::String(JsString::from("TypeError: boom"))
+            Value::String(JsString::from_static("TypeError: boom"))
         );
         assert_eq!(
             context
@@ -16753,11 +16881,11 @@ mod tests {
             Some(CompleteOrdinaryPropertyDescriptor::Data {
                 value: Value::String(value),
                 ..
-            }) if value == JsString::from("not an object")
+            }) if value == JsString::from_static("not an object")
         ));
         assert_eq!(
             own_stack_string(&runtime, &exception),
-            JsString::from("    at toString (native)\n")
+            JsString::from_static("    at toString (native)\n")
         );
     }
 
@@ -16772,7 +16900,7 @@ mod tests {
         };
         assert_eq!(
             own_stack_string(&runtime, &error),
-            JsString::from(
+            JsString::from_static(
                 "    at inner (<cmdline>:1:62)\n    at outer (<cmdline>:1:20)\n    at <eval> (<cmdline>:1:80)\n"
             )
         );
@@ -16796,7 +16924,10 @@ mod tests {
             panic!("direct Error() did not return an object");
         };
         assert_eq!(own_key_names(&runtime, &direct), ["stack"]);
-        assert_eq!(own_stack_string(&runtime, &direct), JsString::from(""));
+        assert_eq!(
+            own_stack_string(&runtime, &direct),
+            JsString::from_static("")
+        );
     }
 
     #[test]
@@ -16816,7 +16947,7 @@ mod tests {
             .define_function_data_property(
                 probe.as_object(),
                 "name",
-                Value::String(JsString::from("probe")),
+                Value::String(JsString::from_static("probe")),
                 false,
                 true,
             )
@@ -16842,9 +16973,10 @@ mod tests {
         let root_call = source.rfind("()").unwrap() + 1;
         assert_eq!(
             own_stack_string(&runtime, &error),
-            JsString::from_utf8(&format!(
+            JsString::try_from_utf8(&format!(
                 "    at callback (native.js:1:{callback_construct})\n    at probe (native)\n    at viaNative (native.js:1:{outer_return})\n    at <eval> (native.js:1:{root_call})\n"
             ))
+            .unwrap()
         );
     }
 
@@ -16875,7 +17007,7 @@ mod tests {
             .define_function_data_property(
                 rethrow.as_object(),
                 "name",
-                Value::String(JsString::from("rethrowProbe")),
+                Value::String(JsString::from_static("rethrowProbe")),
                 false,
                 true,
             )
@@ -16919,7 +17051,8 @@ mod tests {
         let call_column = source.find('(').unwrap() + 1;
         assert_eq!(
             own_stack_string(&runtime, &error),
-            JsString::from_utf8(&format!("    at <eval> (rethrow.js:1:{call_column})\n"))
+            JsString::try_from_utf8(&format!("    at <eval> (rethrow.js:1:{call_column})\n"))
+                .unwrap()
         );
     }
 
@@ -16937,7 +17070,7 @@ mod tests {
         };
         assert_eq!(
             own_stack_string(&runtime, &error),
-            JsString::from(
+            JsString::from_static(
                 "    at inner (<cmdline>:1:56)\n    at outer (<cmdline>:1:20)\n    at <eval> (<cmdline>:1:69)\n"
             )
         );
@@ -16961,7 +17094,7 @@ mod tests {
         );
         assert_eq!(
             own_data_value(&runtime, &error, "fileName"),
-            Value::String(JsString::from("parse.js"))
+            Value::String(JsString::from_static("parse.js"))
         );
         assert_eq!(
             own_data_value(&runtime, &error, "lineNumber"),
@@ -16973,7 +17106,7 @@ mod tests {
         );
         assert_eq!(
             own_stack_string(&runtime, &error),
-            JsString::from("    at parse.js:1:4\n")
+            JsString::from_static("    at parse.js:1:4\n")
         );
     }
 
@@ -17013,7 +17146,7 @@ mod tests {
         };
         assert_eq!(
             own_stack_string(&runtime, &runtime_error),
-            JsString::from("    at <eval> (barrier.js:1:4)\n")
+            JsString::from_static("    at <eval> (barrier.js:1:4)\n")
         );
         assert!(
             !runtime
@@ -17036,7 +17169,7 @@ mod tests {
         };
         assert_eq!(
             own_stack_string(&runtime, &parse_error),
-            JsString::from("    at barrier.js:1:4\n")
+            JsString::from_static("    at barrier.js:1:4\n")
         );
         assert!(
             !runtime
@@ -17110,7 +17243,7 @@ mod tests {
         assert_eq!(second_throw, error);
         assert_eq!(
             own_stack_string(&runtime, &second_throw),
-            JsString::from("    at <eval> (throw.js:1:1)\n")
+            JsString::from_static("    at <eval> (throw.js:1:1)\n")
         );
 
         let Value::Object(error_prototype) =
@@ -17185,16 +17318,17 @@ mod tests {
         let plus_column = source.find('+').unwrap() + 1;
         assert_eq!(
             own_stack_string(&runtime, &error),
-            JsString::from_utf8(&format!("    at <anonymous> (name.js:1:{plus_column})\n"))
+            JsString::try_from_utf8(&format!("    at <anonymous> (name.js:1:{plus_column})\n"))
+                .unwrap()
         );
 
         for (name, expected) in [
             (
-                JsString::from_utf16([u16::from(b'a'), 0, u16::from(b'b')]),
+                JsString::try_from_utf16([u16::from(b'a'), 0, u16::from(b'b')]).unwrap(),
                 "a",
             ),
             (
-                JsString::from_utf16([0, u16::from(b'a'), u16::from(b'b')]),
+                JsString::try_from_utf16([0, u16::from(b'a'), u16::from(b'b')]).unwrap(),
                 "<anonymous>",
             ),
         ] {
@@ -17216,7 +17350,8 @@ mod tests {
             };
             assert_eq!(
                 own_stack_string(&runtime, &error),
-                JsString::from_utf8(&format!("    at {expected} (name.js:1:{plus_column})\n"))
+                JsString::try_from_utf8(&format!("    at {expected} (name.js:1:{plus_column})\n"))
+                    .unwrap()
             );
         }
     }
@@ -17255,9 +17390,10 @@ mod tests {
         let root_call_column = source_b.rfind("()").unwrap() + 1;
         assert_eq!(
             own_stack_string(&runtime, &error),
-            JsString::from_utf8(&format!(
+            JsString::try_from_utf8(&format!(
                 "    at inA (a.js:1:{plus_column})\n    at inB (b.js:1:{return_column})\n    at <eval> (b.js:1:{root_call_column})\n"
             ))
+            .unwrap()
         );
 
         let type_error_a = global_callable(&runtime, &mut realm_a, "TypeError");
@@ -17502,7 +17638,7 @@ mod tests {
             Some(CompleteOrdinaryPropertyDescriptor::Data {
                 value: Value::String(value),
                 ..
-            }) if value == JsString::from("[object Object]")
+            }) if value == JsString::from_static("[object Object]")
         ));
 
         let Value::Object(custom_to_string_object) =
@@ -17531,7 +17667,7 @@ mod tests {
             Some(CompleteOrdinaryPropertyDescriptor::Data {
                 value: Value::String(value),
                 ..
-            }) if value == JsString::from("custom")
+            }) if value == JsString::from_static("custom")
         ));
 
         let Value::Object(exotic_method_object) =
@@ -17562,7 +17698,7 @@ mod tests {
             Some(CompleteOrdinaryPropertyDescriptor::Data {
                 value: Value::String(value),
                 ..
-            }) if value == JsString::from("string")
+            }) if value == JsString::from_static("string")
         ));
 
         let Value::Object(name_conversion_object) =
@@ -17614,7 +17750,7 @@ mod tests {
             context
                 .call(&error_to_string, Value::Object(receiver), &[],)
                 .unwrap(),
-            Value::String(JsString::from("N: M"))
+            Value::String(JsString::from_static("N: M"))
         );
     }
 
@@ -17651,7 +17787,7 @@ mod tests {
             Some(CompleteOrdinaryPropertyDescriptor::Data {
                 value: Value::String(value),
                 ..
-            }) if value == JsString::from("not a function")
+            }) if value == JsString::from_static("not a function")
         ));
 
         let Value::Object(object_result_method) = context
@@ -17682,7 +17818,7 @@ mod tests {
             Some(CompleteOrdinaryPropertyDescriptor::Data {
                 value: Value::String(value),
                 ..
-            }) if value == JsString::from("toPrimitive")
+            }) if value == JsString::from_static("toPrimitive")
         ));
 
         let Value::Object(value_of_method) = context.eval("(0, function(){ return 7; })").unwrap()
@@ -17719,7 +17855,7 @@ mod tests {
             Some(CompleteOrdinaryPropertyDescriptor::Data {
                 value: Value::String(value),
                 ..
-            }) if value == JsString::from("7")
+            }) if value == JsString::from_static("7")
         ));
     }
 
@@ -17776,7 +17912,7 @@ mod tests {
         ] {
             assert_eq!(
                 context.call(&to_string, value, &[]).unwrap(),
-                Value::String(JsString::from(expected))
+                Value::String(JsString::try_from_utf8(expected).unwrap())
             );
         }
         assert_eq!(
@@ -17789,7 +17925,7 @@ mod tests {
             context
                 .call(&to_locale_string, Value::Object(object), &[])
                 .unwrap(),
-            Value::String(JsString::from("[object Object]"))
+            Value::String(JsString::from_static("[object Object]"))
         );
     }
 
@@ -17884,7 +18020,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             no_args,
-            Completion::Return(Value::String(JsString::from("0|2|2|false")))
+            Completion::Return(Value::String(JsString::from_static("0|2|2|false")))
         );
         let extra_args = runtime
             .call_internal(
@@ -17896,7 +18032,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             extra_args,
-            Completion::Return(Value::String(JsString::from("3|3|0|false")))
+            Completion::Return(Value::String(JsString::from_static("3|3|0|false")))
         );
         assert!(runtime.0.state.borrow().active_frames.is_empty());
 
@@ -17909,7 +18045,7 @@ mod tests {
                     &[Value::Bool(false)],
                 )
                 .unwrap(),
-            Completion::Throw(Value::String(JsString::from("native probe throw")))
+            Completion::Throw(Value::String(JsString::from_static("native probe throw")))
         );
         assert!(runtime.0.state.borrow().active_frames.is_empty());
 
@@ -17946,7 +18082,7 @@ mod tests {
         assert!(runtime.is_constructor(probe.as_object()).unwrap());
         assert_eq!(
             context.construct(&probe, &[]).unwrap(),
-            Value::String(JsString::from("0|0|0|true"))
+            Value::String(JsString::from_static("0|0|0|true"))
         );
         runtime
             .set_constructor_bit(probe.as_object(), false)
@@ -18016,7 +18152,7 @@ mod tests {
             Some(CompleteOrdinaryPropertyDescriptor::Data {
                 value: Value::String(value),
                 ..
-            }) if value == JsString::from("must be called with new")
+            }) if value == JsString::from_static("must be called with new")
         ));
         assert!(runtime.0.state.borrow().active_frames.is_empty());
 
@@ -18029,7 +18165,7 @@ mod tests {
                     &[],
                 )
                 .unwrap(),
-            Completion::Return(Value::String(JsString::from("0|0|0|true")))
+            Completion::Return(Value::String(JsString::from_static("0|0|0|true")))
         );
         assert_eq!(
             runtime
@@ -18040,7 +18176,7 @@ mod tests {
                     &[],
                 )
                 .unwrap(),
-            Completion::Return(Value::String(JsString::from("0|0|0|false")))
+            Completion::Return(Value::String(JsString::from_static("0|0|0|false")))
         );
         assert_eq!(
             runtime
@@ -18051,7 +18187,7 @@ mod tests {
                     &[],
                 )
                 .unwrap(),
-            Completion::Return(Value::String(JsString::from("0|0|0|true")))
+            Completion::Return(Value::String(JsString::from_static("0|0|0|true")))
         );
         assert!(runtime.0.state.borrow().active_frames.is_empty());
     }
@@ -18263,7 +18399,9 @@ mod tests {
         );
         assert_eq!(
             context.take_exception().unwrap(),
-            Some(Value::String(JsString::from("active frame probe throw")))
+            Some(Value::String(JsString::from_static(
+                "active frame probe throw"
+            )))
         );
         assert!(runtime.0.state.borrow().active_frames.is_empty());
 
@@ -18983,7 +19121,10 @@ mod tests {
         fn child(code: Vec<Instruction>, mut descriptor: ClosureVariable) -> UnlinkedFunction {
             let constants = if descriptor.kind == ClosureVariableKind::FunctionName {
                 descriptor.name = ClosureVariableName::Constant(0);
-                vec![UnlinkedConstant::primitive(Value::String(JsString::from("self"))).unwrap()]
+                vec![
+                    UnlinkedConstant::primitive(Value::String(JsString::from_static("self")))
+                        .unwrap(),
+                ]
             } else {
                 Vec::new()
             };
@@ -19009,7 +19150,7 @@ mod tests {
                 vec![UnlinkedConstant::child(child)],
                 metadata,
             );
-            function.with_name(name.map(JsString::from))
+            function.with_name(name.map(|name| JsString::try_from_utf8(name).unwrap()))
         }
 
         fn named_parent(child: UnlinkedFunction, strict: bool) -> UnlinkedFunction {
@@ -19048,7 +19189,7 @@ mod tests {
                         ..FunctionMetadata::default()
                     },
                 )
-                .with_name(name.map(JsString::from)),
+                .with_name(name.map(|name| JsString::try_from_utf8(name).unwrap())),
             );
         }
 
@@ -19101,7 +19242,10 @@ mod tests {
         reject(named_parent(
             UnlinkedFunction::new_with_closure_variables(
                 vec![Instruction::GetVarRef(0), Instruction::Return],
-                vec![UnlinkedConstant::primitive(Value::String(JsString::from("other"))).unwrap()],
+                vec![
+                    UnlinkedConstant::primitive(Value::String(JsString::from_static("other")))
+                        .unwrap(),
+                ],
                 FunctionMetadata {
                     closure_count: 1,
                     max_stack: 1,
@@ -19150,7 +19294,7 @@ mod tests {
             vec![Instruction::FClosure(0), Instruction::Return],
             vec![
                 UnlinkedConstant::child(inner),
-                UnlinkedConstant::primitive(Value::String(JsString::from("self"))).unwrap(),
+                UnlinkedConstant::primitive(Value::String(JsString::from_static("self"))).unwrap(),
             ],
             FunctionMetadata {
                 closure_count: 1,
@@ -19191,7 +19335,7 @@ mod tests {
                         ..FunctionMetadata::default()
                     },
                 )
-                .with_name(Some(JsString::from("self"))),
+                .with_name(Some(JsString::from_static("self"))),
             );
         }
 
@@ -19295,7 +19439,10 @@ mod tests {
         ] {
             reject(UnlinkedFunction::new_with_closure_variables(
                 code,
-                vec![UnlinkedConstant::primitive(Value::String(JsString::from("global"))).unwrap()],
+                vec![
+                    UnlinkedConstant::primitive(Value::String(JsString::from_static("global")))
+                        .unwrap(),
+                ],
                 FunctionMetadata {
                     closure_count: 1,
                     max_stack: 1,
@@ -19327,8 +19474,10 @@ mod tests {
                 Instruction::Return,
             ],
             vec![
-                UnlinkedConstant::primitive(Value::String(JsString::from("initializedLexical")))
-                    .unwrap(),
+                UnlinkedConstant::primitive(Value::String(JsString::from_static(
+                    "initializedLexical",
+                )))
+                .unwrap(),
             ],
             FunctionMetadata {
                 closure_count: 1,
@@ -19364,7 +19513,7 @@ mod tests {
         let message = runtime.intern_property_key("message").unwrap();
         assert_eq!(
             context.get_property(&exception, &message).unwrap(),
-            Value::String(JsString::from("'initializedLexical' is read-only"))
+            Value::String(JsString::from_static("'initializedLexical' is read-only"))
         );
     }
 
@@ -19914,7 +20063,9 @@ mod tests {
         drop(exception);
         assert!(runtime.run_gc().unwrap().cleanup.finalized_objects >= 1);
 
-        let symbol = runtime.new_symbol(Some(JsString::from("boom"))).unwrap();
+        let symbol = runtime
+            .new_symbol(Some(JsString::from_static("boom")))
+            .unwrap();
         let expected = symbol.clone();
         runtime
             .set_pending_exception(Value::Symbol(symbol))
@@ -19999,7 +20150,7 @@ mod tests {
         };
         assert_eq!(
             value,
-            Value::String(JsString::from("cannot convert bigint to number"))
+            Value::String(JsString::from_static("cannot convert bigint to number"))
         );
         assert!(writable);
         assert!(!enumerable);
@@ -20008,7 +20159,7 @@ mod tests {
         let name = runtime.intern_property_key("name").unwrap();
         assert_eq!(
             caller_context.get_property(&error, &name).unwrap(),
-            Value::String(JsString::from("TypeError"))
+            Value::String(JsString::from_static("TypeError"))
         );
         let prototype = runtime.get_prototype_of(&error).unwrap().unwrap();
         assert!(!runtime.is_error_object(&prototype).unwrap());
@@ -20062,7 +20213,7 @@ mod tests {
         let name = runtime.intern_property_key("name").unwrap();
         assert_eq!(
             context.get_property(&syntax, &name).unwrap(),
-            Value::String(JsString::from("SyntaxError"))
+            Value::String(JsString::from_static("SyntaxError"))
         );
     }
 
@@ -20194,8 +20345,12 @@ mod tests {
     fn own_keys_preserve_quickjs_category_order_and_utf16_identity() {
         let runtime = Runtime::new();
         let object = runtime.new_object(None).unwrap();
-        let symbol_a = runtime.new_symbol(Some(JsString::from("a"))).unwrap();
-        let symbol_b = runtime.new_symbol(Some(JsString::from("b"))).unwrap();
+        let symbol_a = runtime
+            .new_symbol(Some(JsString::from_static("a")))
+            .unwrap();
+        let symbol_b = runtime
+            .new_symbol(Some(JsString::from_static("b")))
+            .unwrap();
         let symbol_key_a = PropertyKey::from(&symbol_a);
         let symbol_key_b = PropertyKey::from(&symbol_b);
 
@@ -20237,17 +20392,17 @@ mod tests {
         assert_eq!(runtime.own_property_keys(&object).unwrap(), expected);
 
         let surrogate = runtime
-            .intern_property_key_js_string(&JsString::from_utf16([0xd800]))
+            .intern_property_key_js_string(&JsString::try_from_utf16([0xd800]).unwrap())
             .unwrap();
         let replacement = runtime
-            .intern_property_key_js_string(&JsString::from_utf16([0xfffd]))
+            .intern_property_key_js_string(&JsString::try_from_utf16([0xfffd]).unwrap())
             .unwrap();
         assert_ne!(surrogate, replacement);
         assert!(set_property(&runtime, &object, &surrogate, Value::Int(11)).unwrap());
         assert!(set_property(&runtime, &object, &replacement, Value::Int(12)).unwrap());
         assert_eq!(
             runtime.property_key_to_js_string(&surrogate).unwrap(),
-            JsString::from_utf16([0xd800])
+            JsString::try_from_utf16([0xd800]).unwrap()
         );
     }
 
@@ -20483,7 +20638,7 @@ mod tests {
     #[test]
     fn symbols_are_runtime_owned_and_distinct_from_registry_entries() {
         let runtime = Runtime::new();
-        let name = JsString::from("Symbol.iterator");
+        let name = JsString::from_static("Symbol.iterator");
         let unique = runtime.well_known_symbol(WellKnownSymbol::Iterator);
         let repeated = runtime.well_known_symbol(WellKnownSymbol::Iterator);
         let registry = runtime.symbol_for(&name).unwrap();
@@ -20590,7 +20745,7 @@ mod tests {
 
         let malformed = [
             UnlinkedFunctionDebug {
-                filename: JsString::from("range.js"),
+                filename: JsString::from_static("range.js"),
                 pc2line: Some(Pc2LineTable::new(
                     LineColumn::new(0, 0),
                     vec![Pc2LineEntry {
@@ -20601,7 +20756,7 @@ mod tests {
                 source: None,
             },
             UnlinkedFunctionDebug {
-                filename: JsString::from("order.js"),
+                filename: JsString::from_static("order.js"),
                 pc2line: Some(Pc2LineTable::new(
                     LineColumn::new(0, 0),
                     vec![
@@ -20618,12 +20773,12 @@ mod tests {
                 source: None,
             },
             UnlinkedFunctionDebug {
-                filename: JsString::from("utf8.js"),
+                filename: JsString::from_static("utf8.js"),
                 pc2line: Some(Pc2LineTable::new(LineColumn::new(0, 0), Vec::new())),
                 source: Some(vec![0xff].into_boxed_slice()),
             },
             UnlinkedFunctionDebug {
-                filename: JsString::from("position.js"),
+                filename: JsString::from_static("position.js"),
                 pc2line: Some(Pc2LineTable::new(LineColumn::new(u32::MAX, 0), Vec::new())),
                 source: None,
             },
@@ -20648,7 +20803,7 @@ mod tests {
         let runtime = Runtime::new();
         let context = runtime.new_context();
         let duplicate = debug_draft(UnlinkedFunctionDebug {
-            filename: JsString::from("duplicate.js"),
+            filename: JsString::from_static("duplicate.js"),
             pc2line: Some(Pc2LineTable::new(
                 LineColumn::new(0, 0),
                 vec![
@@ -20671,7 +20826,7 @@ mod tests {
             runtime
                 .test_function_debug_location(&duplicate, Some(0))
                 .unwrap(),
-            Some((JsString::from("duplicate.js"), LineColumn::new(2, 2)))
+            Some((JsString::from_static("duplicate.js"), LineColumn::new(2, 2)))
         );
 
         let unreachable = UnlinkedFunction::new(
@@ -20688,7 +20843,7 @@ mod tests {
             },
         )
         .with_debug(UnlinkedFunctionDebug {
-            filename: JsString::from("unreachable.js"),
+            filename: JsString::from_static("unreachable.js"),
             pc2line: Some(Pc2LineTable::new(
                 LineColumn::new(0, 0),
                 vec![Pc2LineEntry {
@@ -20705,7 +20860,10 @@ mod tests {
             runtime
                 .test_function_debug_location(&unreachable, Some(1))
                 .unwrap(),
-            Some((JsString::from("unreachable.js"), LineColumn::new(9, 4)))
+            Some((
+                JsString::from_static("unreachable.js"),
+                LineColumn::new(9, 4)
+            ))
         );
     }
 
@@ -20720,7 +20878,7 @@ mod tests {
         let baseline_bytecode = runtime.heap_counts().function_bytecode_nodes;
 
         let function = debug_draft(UnlinkedFunctionDebug {
-            filename: JsString::from("rollback-debug-filename.js"),
+            filename: JsString::from_static("rollback-debug-filename.js"),
             pc2line: Some(Pc2LineTable::new(LineColumn::new(0, 0), Vec::new())),
             source: None,
         });

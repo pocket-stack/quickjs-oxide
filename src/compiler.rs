@@ -18,8 +18,8 @@ use crate::heap::{
     FunctionKind as BytecodeFunctionKind, FunctionMetadata,
 };
 use crate::lexer::{
-    Identifier, Keyword, LexError, Lexer, NumberKind, NumericRadix, Punctuator, Span, Token,
-    TokenKind,
+    Identifier, Keyword, LexError, LexErrorKind, Lexer, NumberKind, NumericRadix, Punctuator, Span,
+    Token, TokenKind,
 };
 use crate::value::{JsString, Value};
 use num_bigint::BigUint;
@@ -56,7 +56,7 @@ impl Default for CompileOptions {
 /// Returns a syntax error for invalid source and for grammar which has not yet
 /// reached the feature-parity implementation path.
 pub fn compile_script(source: &str) -> Result<BytecodeFunction, Error> {
-    let mut tree = Parser::parse(source, JsString::from(DEFAULT_EVAL_FILENAME))?;
+    let mut tree = Parser::parse(source, JsString::from_static(DEFAULT_EVAL_FILENAME))?;
     if tree.functions.len() != 1 {
         return Err(Error::syntax(
             "nested function bytecode requires runtime publication; use Context::compile or Context::eval",
@@ -82,7 +82,7 @@ pub(crate) fn compile_unlinked_script_with_filename(
     filename: &str,
     debug_info: DebugInfoMode,
 ) -> Result<UnlinkedFunction, Error> {
-    let mut tree = Parser::parse(source, JsString::from_utf8(filename))?;
+    let mut tree = Parser::parse(source, JsString::try_from_utf8(filename)?)?;
     resolve_identifiers(&mut tree)?;
     lower_unlinked_tree(tree, debug_info)
 }
@@ -487,7 +487,7 @@ impl<'source> Parser<'source> {
                     // applies to this initializer. Keep that contextual name
                     // separate from the child bytecode's intrinsic func_name.
                     let name_constant = self.add_constant(IrConstant::Primitive(Value::String(
-                        JsString::from_utf8(&name),
+                        JsString::try_from_utf8(&name)?,
                     )))?;
                     self.emit_instruction(Instruction::SetName(name_constant))?;
                 }
@@ -634,7 +634,7 @@ impl<'source> Parser<'source> {
             let anonymous_rhs = self.anonymous_function_definition.take().is_some();
             if direct_identifier_name.as_deref() == Some(target.name.as_str()) && anonymous_rhs {
                 let name_constant = self.add_constant(IrConstant::Primitive(Value::String(
-                    JsString::from_utf8(&target.name),
+                    JsString::try_from_utf8(&target.name)?,
                 )))?;
                 self.emit_instruction(Instruction::SetName(name_constant))?;
             }
@@ -690,7 +690,7 @@ impl<'source> Parser<'source> {
         let anonymous_rhs = self.anonymous_function_definition.take().is_some();
         if infer_name && anonymous_rhs {
             let name_constant = self.add_constant(IrConstant::Primitive(Value::String(
-                JsString::from_utf8(&target.name),
+                JsString::try_from_utf8(&target.name)?,
             )))?;
             self.emit_instruction(Instruction::SetName(name_constant))?;
         }
@@ -1240,7 +1240,7 @@ impl<'source> Parser<'source> {
             };
             self.advance();
             let key = self.add_constant(IrConstant::Primitive(Value::String(
-                JsString::from_utf8(&name),
+                JsString::try_from_utf8(&name)?,
             )))?;
             let operation =
                 self.emit_instruction_at(Instruction::GetField(key), source_offset(member_span)?)?;
@@ -1581,7 +1581,7 @@ impl<'source> Parser<'source> {
                     ));
                 }
                 self.advance();
-                self.emit_value(Value::String(JsString::from_utf16(string.value.utf16)))?;
+                self.emit_value(Value::String(JsString::try_from_utf16(string.value.utf16)?))?;
             }
             TokenKind::Punctuator(Punctuator::LeftParen) => {
                 self.advance();
@@ -2103,7 +2103,7 @@ fn capture_global_path(
 }
 
 fn ensure_string_constant(function: &mut FunctionIr, name: &str) -> Result<u32, Error> {
-    let name = JsString::from(name);
+    let name = JsString::try_from_utf8(name)?;
     if let Some(index) = function.constants.iter().position(
         |constant| matches!(constant, IrConstant::Primitive(Value::String(value)) if value == &name),
     ) {
@@ -2430,7 +2430,11 @@ fn lower_unlinked_tree(
                 ConstructorKind::None
             },
         };
-        let func_name = function.function_name.as_deref().map(JsString::from_utf8);
+        let func_name = function
+            .function_name
+            .as_deref()
+            .map(JsString::try_from_utf8)
+            .transpose()?;
         let debug = match debug_info {
             DebugInfoMode::Full | DebugInfoMode::StripSource => Some(build_unlinked_debug(
                 &source,
@@ -2737,7 +2741,11 @@ fn parse_digits(digits: &str, radix: u32) -> Result<f64, String> {
 }
 
 fn lex_error(error: LexError) -> Error {
-    Error::syntax(error.message, source_span(error.span))
+    if error.kind == LexErrorKind::StringTooLong {
+        Error::new(ErrorKind::JsInternal, error.message)
+    } else {
+        Error::syntax(error.message, source_span(error.span))
+    }
 }
 
 fn source_offset(span: Span) -> Result<SourceOffset, Error> {
@@ -2761,7 +2769,7 @@ mod tests {
     use crate::heap::{
         ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
     };
-    use crate::lexer::{Position, Span};
+    use crate::lexer::{LexError, LexErrorKind, Position, Span};
     use crate::object::{
         AccessorValue, CompleteOrdinaryPropertyDescriptor, DescriptorField,
         OrdinaryPropertyDescriptor, PropertyKey, WellKnownSymbol,
@@ -2772,8 +2780,22 @@ mod tests {
 
     use super::{
         FunctionIr, FunctionKind, FunctionSourceInfo, MAX_CALL_ARGUMENTS, MAX_LOCAL_VARIABLES,
-        SourceOffset, compile_script, compile_unlinked_script, ensure_closure_variable,
+        SourceOffset, compile_script, compile_unlinked_script, ensure_closure_variable, lex_error,
     };
+
+    #[test]
+    fn string_too_long_lex_error_maps_to_js_internal() {
+        let position = Position::new(7, 2, 3);
+        let error = lex_error(LexError {
+            kind: LexErrorKind::StringTooLong,
+            span: Span::new(position, position),
+            message: "string too long".to_owned(),
+        });
+
+        assert_eq!(error.kind(), ErrorKind::JsInternal);
+        assert_eq!(error.message(), "string too long");
+        assert_eq!(error.span(), None);
+    }
 
     fn evaluate(source: &str) -> Value {
         let bytecode = compile_script(source).unwrap();
@@ -2896,7 +2918,7 @@ mod tests {
             context
                 .eval("(function(){ var x = '01'; var old = x++; return old + '|' + x; })()")
                 .unwrap(),
-            Value::String(JsString::from("1|2"))
+            Value::String(JsString::from_static("1|2"))
         );
         assert_eq!(
             context
@@ -2914,7 +2936,7 @@ mod tests {
             context
                 .eval("(function(){ Function.update = '4'; var old = Function.update++; return old + '|' + ++Function.update; })()")
                 .unwrap(),
-            Value::String(JsString::from("4|6"))
+            Value::String(JsString::from_static("4|6"))
         );
         assert_eq!(
             context
@@ -2999,7 +3021,7 @@ mod tests {
     fn compiles_primitive_coercion_and_equality() {
         assert_eq!(
             evaluate("'answer: ' + 42"),
-            Value::String(JsString::from("answer: 42"))
+            Value::String(JsString::from_static("answer: 42"))
         );
         assert_eq!(evaluate("'42' == 42"), Value::Bool(true));
         assert_eq!(evaluate("'42' === 42"), Value::Bool(false));
@@ -3010,7 +3032,7 @@ mod tests {
         assert_eq!(evaluate("false && 42"), Value::Bool(false));
         assert_eq!(
             evaluate("'left' || 'right'"),
-            Value::String(JsString::from("left"))
+            Value::String(JsString::from_static("left"))
         );
         assert_eq!(evaluate("false ? 1 : 2"), Value::Int(2));
         assert!(compile_script("true ? 1, 2 : 3").is_err());
@@ -3025,7 +3047,7 @@ mod tests {
         assert_eq!(evaluate("-0 ?? 1"), Value::Float(-0.0));
         assert_eq!(
             evaluate("'' ?? 'fallback'"),
-            Value::String(JsString::from(""))
+            Value::String(JsString::from_static(""))
         );
         assert_eq!(evaluate("null ?? void 0 ?? 9"), Value::Int(9));
         assert_eq!(evaluate("null ?? 1 + 2 * 3"), Value::Int(7));
@@ -3087,7 +3109,7 @@ mod tests {
             context
                 .eval("inferred = null ?? function(){}; inferred.name")
                 .unwrap(),
-            Value::String(JsString::from(""))
+            Value::String(JsString::from_static(""))
         );
         assert_eq!(
             context.eval("1 ?? missingNullishRhs").unwrap(),
@@ -3159,15 +3181,15 @@ mod tests {
         assert_eq!(defining_context.eval("answer").unwrap(), Value::Int(2));
         assert_eq!(
             defining_context.eval("typeof answer").unwrap(),
-            Value::String(JsString::from("number"))
+            Value::String(JsString::from_static("number"))
         );
         assert_eq!(
             defining_context.eval("typeof missingGlobal").unwrap(),
-            Value::String(JsString::from("undefined"))
+            Value::String(JsString::from_static("undefined"))
         );
         assert_eq!(
             defining_context.eval("typeof ((missingGlobal))").unwrap(),
-            Value::String(JsString::from("undefined"))
+            Value::String(JsString::from_static("undefined"))
         );
         assert!(matches!(
             defining_context.eval("typeof (0, missingGlobal)"),
@@ -3212,7 +3234,7 @@ mod tests {
         let message = runtime.intern_property_key("message").unwrap();
         assert!(matches!(
             caller_context.get_property(&exception, &message).unwrap(),
-            Value::String(value) if value == JsString::from("'missingGlobal' is not defined")
+            Value::String(value) if value == JsString::from_static("'missingGlobal' is not defined")
         ));
     }
 
@@ -3250,7 +3272,7 @@ mod tests {
         let message = runtime.intern_property_key("message").unwrap();
         assert_eq!(
             context.get_property(&exception, &message).unwrap(),
-            Value::String(JsString::from("'readonly' is read-only"))
+            Value::String(JsString::from_static("'readonly' is read-only"))
         );
         assert_eq!(context.eval("readonly += 2").unwrap(), Value::Int(3));
         assert_eq!(context.eval("readonly").unwrap(), Value::Int(1));
@@ -3293,7 +3315,7 @@ mod tests {
         };
         assert_eq!(
             context.get_property(&exception, &message).unwrap(),
-            Value::String(JsString::from("'inheritedReadOnly' is read-only"))
+            Value::String(JsString::from_static("'inheritedReadOnly' is read-only"))
         );
 
         let no_setter = runtime.intern_property_key("noSetter").unwrap();
@@ -3322,7 +3344,7 @@ mod tests {
         };
         assert_eq!(
             context.get_property(&exception, &message).unwrap(),
-            Value::String(JsString::from("no setter for property"))
+            Value::String(JsString::from_static("no setter for property"))
         );
         assert_eq!(context.eval("noSetter ||= 8").unwrap(), Value::Int(8));
         assert!(matches!(
@@ -3403,7 +3425,7 @@ mod tests {
         );
         assert_eq!(
             context.eval("typeof getterTarget").unwrap(),
-            Value::String(JsString::from("object"))
+            Value::String(JsString::from_static("object"))
         );
 
         let Value::Object(throwing_getter) = context.eval("(function() { throw 17; })").unwrap()
@@ -3493,7 +3515,7 @@ mod tests {
         let message = runtime.intern_property_key("message").unwrap();
         assert_eq!(
             context.get_property(&exception, &message).unwrap(),
-            Value::String(JsString::from("shadowed is not initialized"))
+            Value::String(JsString::from_static("shadowed is not initialized"))
         );
 
         context
@@ -3516,7 +3538,7 @@ mod tests {
         };
         assert_eq!(
             context.get_property(&exception, &message).unwrap(),
-            Value::String(JsString::from("'shadowed' is read-only"))
+            Value::String(JsString::from_static("'shadowed' is read-only"))
         );
         assert_eq!(
             context.get_property(&global, &shadowed).unwrap(),
@@ -3532,7 +3554,7 @@ mod tests {
         };
         assert_eq!(
             context.get_property(&exception, &message).unwrap(),
-            Value::String(JsString::from("'shadowed' is read-only"))
+            Value::String(JsString::from_static("'shadowed' is read-only"))
         );
         assert!(matches!(
             context.eval("shadowed &= 3"),
@@ -3543,7 +3565,7 @@ mod tests {
         };
         assert_eq!(
             context.get_property(&exception, &message).unwrap(),
-            Value::String(JsString::from("'shadowed' is read-only"))
+            Value::String(JsString::from_static("'shadowed' is read-only"))
         );
         assert!(matches!(
             context.eval("shadowed <<= 1"),
@@ -3554,7 +3576,7 @@ mod tests {
         };
         assert_eq!(
             context.get_property(&exception, &message).unwrap(),
-            Value::String(JsString::from("'shadowed' is read-only"))
+            Value::String(JsString::from_static("'shadowed' is read-only"))
         );
         assert!(matches!(
             context.eval("shadowed **= 3"),
@@ -3565,7 +3587,7 @@ mod tests {
         };
         assert_eq!(
             context.get_property(&exception, &message).unwrap(),
-            Value::String(JsString::from("'shadowed' is read-only"))
+            Value::String(JsString::from_static("'shadowed' is read-only"))
         );
         assert!(matches!(
             context.eval("shadowed &&= 3"),
@@ -3585,7 +3607,7 @@ mod tests {
         };
         assert_eq!(
             context.get_property(&exception, &message).unwrap(),
-            Value::String(JsString::from("mutableLexical is not initialized"))
+            Value::String(JsString::from_static("mutableLexical is not initialized"))
         );
         assert!(matches!(
             context.eval("mutableLexical += 1"),
@@ -3661,7 +3683,7 @@ mod tests {
             };
             assert!(matches!(
                 function.constants()[name_index as usize].as_primitive(),
-                Some(Value::String(name)) if name == &JsString::from("relayName")
+                Some(Value::String(name)) if name == &JsString::from_static("relayName")
             ));
             if depth == 3 {
                 assert!(matches!(
@@ -3867,7 +3889,11 @@ mod tests {
         let hint = runtime.intern_property_key("keyHint").unwrap();
         assert!(
             context
-                .define_own_property(&global, &hint, &data(Value::String(JsString::from("none"))),)
+                .define_own_property(
+                    &global,
+                    &hint,
+                    &data(Value::String(JsString::from_static("none"))),
+                )
                 .unwrap()
         );
         let Value::Object(to_key) = context
@@ -3893,11 +3919,11 @@ mod tests {
         assert_eq!(context.eval("base[keyObject]").unwrap(), Value::Int(7));
         assert_eq!(
             context.eval("keyHint").unwrap(),
-            Value::String(JsString::from("string"))
+            Value::String(JsString::from_static("string"))
         );
         assert_eq!(
             context.eval("keyHint = 'none'").unwrap(),
-            Value::String(JsString::from("none"))
+            Value::String(JsString::from_static("none"))
         );
         assert!(matches!(
             context.eval("null[keyObject]"),
@@ -3906,13 +3932,13 @@ mod tests {
         context.take_exception().unwrap().unwrap();
         assert_eq!(
             context.eval("keyHint").unwrap(),
-            Value::String(JsString::from("none"))
+            Value::String(JsString::from_static("none"))
         );
 
         assert_eq!(context.eval("'abc'.length").unwrap(), Value::Int(3));
         assert_eq!(
             context.eval("'abc'[1]").unwrap(),
-            Value::String(JsString::from("b"))
+            Value::String(JsString::from_static("b"))
         );
         assert!(matches!(
             context.eval("Function().toString()"),
@@ -4092,7 +4118,7 @@ mod tests {
         );
         assert_eq!(
             context.eval("typeof __qjo_delete_global").unwrap(),
-            Value::String(JsString::from("undefined"))
+            Value::String(JsString::from_static("undefined"))
         );
 
         let Value::Object(reader) = context
@@ -4775,7 +4801,7 @@ mod tests {
             context
                 .eval("delete Function.anon; (Function.anon ??= function(){}).name")
                 .unwrap(),
-            Value::String(JsString::from(""))
+            Value::String(JsString::from_static(""))
         );
 
         assert!(context.compile("(Function.fixed) &&= 1").is_ok());
@@ -5002,25 +5028,25 @@ mod tests {
             context
                 .eval("(function(){ var named; named ??= function(){}; return named.name; })()")
                 .unwrap(),
-            Value::String(JsString::from("named"))
+            Value::String(JsString::from_static("named"))
         );
         assert_eq!(
             context
                 .eval("(function(){ var named; (named) ??= function(){}; return named.name; })()")
                 .unwrap(),
-            Value::String(JsString::from(""))
+            Value::String(JsString::from_static(""))
         );
         assert_eq!(
             context
                 .eval("(function(){ var named; (named = function(){}); return named.name; })()")
                 .unwrap(),
-            Value::String(JsString::from("named"))
+            Value::String(JsString::from_static("named"))
         );
         assert_eq!(
             context
                 .eval("(function(){ var named; (named) = function(){}; return named.name; })()")
                 .unwrap(),
-            Value::String(JsString::from(""))
+            Value::String(JsString::from_static(""))
         );
 
         assert_eq!(
@@ -5057,7 +5083,7 @@ mod tests {
                      return typeof result + '|' + typeof named; })()"
                 )
                 .unwrap(),
-            Value::String(JsString::from("string|function"))
+            Value::String(JsString::from_static("string|function"))
         );
         assert_eq!(
             context
@@ -5092,12 +5118,12 @@ mod tests {
         );
         assert_eq!(
             evaluate_in_context("(function named() {}), typeof named"),
-            Value::String(JsString::from("undefined"))
+            Value::String(JsString::from_static("undefined"))
         );
 
         let (name, writable, enumerable, configurable) =
             evaluate_function_name("(function named() {})");
-        assert_eq!(name, JsString::from("named"));
+        assert_eq!(name, JsString::from_static("named"));
         assert!(!writable);
         assert!(!enumerable);
         assert!(configurable);
@@ -5105,7 +5131,7 @@ mod tests {
         let (name, ..) = evaluate_function_name(
             "(function() { var inferred = function intrinsic() {}; return inferred; })()",
         );
-        assert_eq!(name, JsString::from("intrinsic"));
+        assert_eq!(name, JsString::from_static("intrinsic"));
 
         let script = compile_unlinked_script("(function unusedName() { return 1; })").unwrap();
         let function = script.constants()[0].as_child().unwrap();
@@ -5152,7 +5178,7 @@ mod tests {
         };
         assert_eq!(
             relay.constants()[usize::try_from(relay_name).unwrap()].as_primitive(),
-            Some(&Value::String(JsString::from("named")))
+            Some(&Value::String(JsString::from_static("named")))
         );
         assert!(!relay.closure_variables()[0].is_const);
         assert_eq!(
@@ -5168,7 +5194,7 @@ mod tests {
         };
         assert_eq!(
             inner.constants()[usize::try_from(inner_name).unwrap()].as_primitive(),
-            Some(&Value::String(JsString::from("named")))
+            Some(&Value::String(JsString::from_static("named")))
         );
     }
 
@@ -5207,11 +5233,11 @@ mod tests {
         let message = runtime.intern_property_key("message").unwrap();
         assert_eq!(
             context.get_property(&error, &name).unwrap(),
-            Value::String(JsString::from("TypeError"))
+            Value::String(JsString::from_static("TypeError"))
         );
         assert_eq!(
             context.get_property(&error, &message).unwrap(),
-            Value::String(JsString::from("'named' is read-only"))
+            Value::String(JsString::from_static("'named' is read-only"))
         );
 
         assert_eq!(
@@ -5224,11 +5250,11 @@ mod tests {
         };
         assert_eq!(
             context.get_property(&error, &name).unwrap(),
-            Value::String(JsString::from("TypeError"))
+            Value::String(JsString::from_static("TypeError"))
         );
         assert_eq!(
             context.get_property(&error, &message).unwrap(),
-            Value::String(JsString::from("'named' is read-only"))
+            Value::String(JsString::from_static("'named' is read-only"))
         );
 
         let strict = compile_unlinked_script(
@@ -5358,7 +5384,7 @@ mod tests {
         ] {
             assert_eq!(
                 evaluate_function_name(source),
-                (JsString::from("f"), false, false, true),
+                (JsString::from_static("f"), false, false, true),
                 "direct anonymous initializer should inherit the binding name: {source}"
             );
         }
@@ -5371,7 +5397,7 @@ mod tests {
         ] {
             assert_eq!(
                 evaluate_function_name(source),
-                (JsString::from(""), false, false, true),
+                (JsString::from_static(""), false, false, true),
                 "non-AnonymousFunctionDefinition expression must keep an empty name: {source}"
             );
         }
@@ -5383,7 +5409,7 @@ mod tests {
             evaluate_in_context(
                 "(function(){ var F = function(){ return this; }; return typeof new F(); })()"
             ),
-            Value::String(JsString::from("object"))
+            Value::String(JsString::from_static("object"))
         );
         assert_eq!(
             evaluate_in_context(
@@ -5401,7 +5427,7 @@ mod tests {
             evaluate_in_context(
                 "(function(){ var F = function(){ return 1; }; return typeof new F; })()"
             ),
-            Value::String(JsString::from("object"))
+            Value::String(JsString::from_static("object"))
         );
         assert_eq!(
             evaluate_in_context("(function(){ return new.target; })()"),
@@ -5433,11 +5459,11 @@ mod tests {
         let message = runtime.intern_property_key("message").unwrap();
         assert_eq!(
             context.get_property(&error, &name).unwrap(),
-            Value::String(JsString::from("InternalError"))
+            Value::String(JsString::from_static("InternalError"))
         );
         assert_eq!(
             context.get_property(&error, &message).unwrap(),
-            Value::String(JsString::from("too many arguments"))
+            Value::String(JsString::from_static("too many arguments"))
         );
     }
 
@@ -5461,11 +5487,11 @@ mod tests {
         let message = runtime.intern_property_key("message").unwrap();
         assert_eq!(
             context.get_property(&error, &name).unwrap(),
-            Value::String(JsString::from("InternalError"))
+            Value::String(JsString::from_static("InternalError"))
         );
         assert_eq!(
             context.get_property(&error, &message).unwrap(),
-            Value::String(JsString::from("stack overflow"))
+            Value::String(JsString::from_static("stack overflow"))
         );
 
         let mut too_many = source;
@@ -5635,19 +5661,28 @@ mod tests {
             runtime
                 .test_function_debug_location(&inner, Some(inner_add))
                 .unwrap(),
-            Some((JsString::from("<cmdline>"), crate::LineColumn::new(0, 55)))
+            Some((
+                JsString::from_static("<cmdline>"),
+                crate::LineColumn::new(0, 55)
+            ))
         );
         assert_eq!(
             runtime
                 .test_function_debug_location(&outer, Some(outer_call))
                 .unwrap(),
-            Some((JsString::from("<cmdline>"), crate::LineColumn::new(0, 19)))
+            Some((
+                JsString::from_static("<cmdline>"),
+                crate::LineColumn::new(0, 19)
+            ))
         );
         assert_eq!(
             runtime
                 .test_function_debug_location(&root, Some(root_call))
                 .unwrap(),
-            Some((JsString::from("<cmdline>"), crate::LineColumn::new(0, 68)))
+            Some((
+                JsString::from_static("<cmdline>"),
+                crate::LineColumn::new(0, 68)
+            ))
         );
         assert_eq!(runtime.test_function_debug_source(&root).unwrap(), None);
         assert_eq!(
@@ -5675,7 +5710,10 @@ mod tests {
             .unwrap();
         assert!(matches!(code.get(dup + 1), Some(Instruction::PutVar(_))));
         let lhs = u32::try_from(assignment_source.find("missing").unwrap()).unwrap();
-        let expected = Some((JsString::from("globals.js"), crate::LineColumn::new(0, lhs)));
+        let expected = Some((
+            JsString::from_static("globals.js"),
+            crate::LineColumn::new(0, lhs),
+        ));
         assert_eq!(
             runtime
                 .test_function_debug_location(&root, Some(dup))
@@ -5707,7 +5745,7 @@ mod tests {
                 .test_function_debug_location(&identifier_rhs, Some(identifier_put))
                 .unwrap(),
             Some((
-                JsString::from("globals.js"),
+                JsString::from_static("globals.js"),
                 crate::LineColumn::new(0, rhs_identifier)
             ))
         );
@@ -5727,7 +5765,7 @@ mod tests {
                 .test_function_debug_location(&operator_rhs, Some(operator_put))
                 .unwrap(),
             Some((
-                JsString::from("globals.js"),
+                JsString::from_static("globals.js"),
                 crate::LineColumn::new(0, plus)
             ))
         );
@@ -5750,7 +5788,7 @@ mod tests {
                 .test_function_debug_location(&declaration, Some(put_local))
                 .unwrap(),
             Some((
-                JsString::from("globals.js"),
+                JsString::from_static("globals.js"),
                 crate::LineColumn::new(0, equal)
             ))
         );
@@ -5774,7 +5812,10 @@ mod tests {
             runtime
                 .test_function_debug_location(&call_root, Some(call_pc))
                 .unwrap(),
-            Some((JsString::from("calls.js"), crate::LineColumn::new(0, 5)))
+            Some((
+                JsString::from_static("calls.js"),
+                crate::LineColumn::new(0, 5)
+            ))
         );
 
         let construct_source = "(function f(){ return new Error('x'); })";
@@ -5795,7 +5836,7 @@ mod tests {
                 .test_function_debug_location(&constructor, Some(construct_pc))
                 .unwrap(),
             Some((
-                JsString::from("construct.js"),
+                JsString::from_static("construct.js"),
                 crate::LineColumn::new(0, u32::try_from(left_paren).unwrap())
             ))
         );
@@ -5818,7 +5859,7 @@ mod tests {
                 .test_function_debug_location(&no_parens_constructor, Some(no_parens_pc))
                 .unwrap(),
             Some((
-                JsString::from("construct.js"),
+                JsString::from_static("construct.js"),
                 crate::LineColumn::new(0, u32::try_from(semicolon).unwrap())
             ))
         );
@@ -5848,7 +5889,10 @@ mod tests {
                     runtime
                         .test_function_debug_location(&root, Some(pc))
                         .unwrap(),
-                    Some((JsString::from("primary.js"), crate::LineColumn::new(0, 0))),
+                    Some((
+                        JsString::from_static("primary.js"),
+                        crate::LineColumn::new(0, 0)
+                    )),
                     "source: {source}, pc: {pc}"
                 );
             }
@@ -5864,13 +5908,13 @@ mod tests {
 
         assert_eq!(
             runtime.test_function_name(&root).unwrap(),
-            Some(JsString::from("<eval>"))
+            Some(JsString::from_static("<eval>"))
         );
         assert_eq!(runtime.test_function_name(&child).unwrap(), None);
         assert_eq!(
             runtime.test_function_debug_location(&root, None).unwrap(),
             Some((
-                JsString::from(super::DEFAULT_EVAL_FILENAME),
+                JsString::from_static(super::DEFAULT_EVAL_FILENAME),
                 crate::LineColumn::new(0, 0)
             ))
         );
@@ -5919,7 +5963,7 @@ mod tests {
         assert_eq!(
             runtime.test_function_debug_location(&child, None).unwrap(),
             Some((
-                JsString::from("strip-source-unique.js"),
+                JsString::from_static("strip-source-unique.js"),
                 crate::LineColumn::new(0, 1),
             ))
         );

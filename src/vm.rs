@@ -3,7 +3,7 @@ use crate::bytecode::{BytecodeFunction, Instruction};
 use crate::error::{Error, ErrorKind, NativeErrorKind};
 use crate::heap::{ContextId, FunctionMetadata};
 use crate::object::ObjectRef;
-use crate::value::Value;
+use crate::value::{JsString, Value};
 use num_bigint::BigInt;
 use num_traits::FromPrimitive;
 
@@ -766,7 +766,8 @@ impl CallFrame {
                 }
                 Instruction::TypeOf => {
                     let value = self.pop()?;
-                    self.stack.push(Value::String(host.type_of(&value)?.into()));
+                    self.stack
+                        .push(Value::String(JsString::from_static(host.type_of(&value)?)));
                 }
                 Instruction::IsUndefinedOrNull => {
                     let value = self.pop()?;
@@ -1459,21 +1460,21 @@ mod tests {
                 Instruction::Return,
             ],
             constants: vec![
-                Value::String(JsString::from("quick")),
-                Value::String(JsString::from("js")),
+                Value::String(JsString::from_static("quick")),
+                Value::String(JsString::from_static("js")),
             ],
             max_stack: 2,
         };
 
         assert_eq!(
             Vm::new().execute(&function).unwrap(),
-            Value::String(JsString::from("quickjs"))
+            Value::String(JsString::from_static("quickjs"))
         );
     }
 
     #[test]
     fn string_addition_builds_ropes_and_reports_the_quickjs_length_error() {
-        let chunk = JsString::from_utf8(&"x".repeat(8193));
+        let chunk = JsString::try_from_utf8(&"x".repeat(8193)).unwrap();
         let function = BytecodeFunction {
             name: None,
             code: vec![

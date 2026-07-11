@@ -520,7 +520,7 @@ fn rust_observations() -> Option<Vec<String>> {
         &runtime,
         &global,
         "conversionLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let numeric_object = context.new_object().unwrap();
     let numeric_conversion = eval_callable(
@@ -538,7 +538,9 @@ fn rust_observations() -> Option<Vec<String>> {
         true,
     );
     let big_rounded = JsBigInt::parse_js_string("9007199254740993").unwrap();
-    let number_symbol = runtime.new_symbol(Some(JsString::from("number"))).unwrap();
+    let number_symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("number").unwrap()))
+        .unwrap();
     let negative_zero = call_one(&mut context, &number, Value::Float(-0.0));
     let call_values = [
         context.call(&number, Value::Undefined, &[]).unwrap(),
@@ -549,13 +551,21 @@ fn rust_observations() -> Option<Vec<String>> {
         call_one(&mut context, &number, Value::Int(0)),
         reciprocal(negative_zero),
         call_one(&mut context, &number, Value::Float(f64::NAN)),
-        call_one(&mut context, &number, Value::String(JsString::from(""))),
         call_one(
             &mut context,
             &number,
-            Value::String(JsString::from(" 12.5 ")),
+            Value::String(JsString::try_from_utf8("").unwrap()),
         ),
-        call_one(&mut context, &number, Value::String(JsString::from("0x10"))),
+        call_one(
+            &mut context,
+            &number,
+            Value::String(JsString::try_from_utf8(" 12.5 ").unwrap()),
+        ),
+        call_one(
+            &mut context,
+            &number,
+            Value::String(JsString::try_from_utf8("0x10").unwrap()),
+        ),
         call_one(&mut context, &number, Value::BigInt(JsBigInt::zero())),
         call_one(&mut context, &number, Value::BigInt(big_rounded.clone())),
         call_one(&mut context, &number, Value::Object(numeric_object.clone())),
@@ -575,7 +585,11 @@ fn rust_observations() -> Option<Vec<String>> {
 
     assert!(
         context
-            .set_property(&global, &conversion_log, Value::String(JsString::from("")),)
+            .set_property(
+                &global,
+                &conversion_log,
+                Value::String(JsString::try_from_utf8("").unwrap()),
+            )
             .unwrap()
     );
     let boxed_zero = expect_object(context.construct(&number, &[]).unwrap(), "new Number()");
@@ -811,7 +825,7 @@ fn rust_observations() -> Option<Vec<String>> {
         true,
     );
     let predicate_symbol = runtime
-        .new_symbol(Some(JsString::from("predicate")))
+        .new_symbol(Some(JsString::try_from_utf8("predicate").unwrap()))
         .unwrap();
     let max_value = global_property(&runtime, &mut context, &number_object, "MAX_VALUE");
     let max_safe = global_property(&runtime, &mut context, &number_object, "MAX_SAFE_INTEGER");
@@ -837,13 +851,21 @@ fn rust_observations() -> Option<Vec<String>> {
     let predicate_values = [
         context.call(&is_nan, Value::Undefined, &[]).unwrap(),
         call_one(&mut context, &is_nan, Value::Undefined),
-        call_one(&mut context, &is_nan, Value::String(JsString::from("NaN"))),
+        call_one(
+            &mut context,
+            &is_nan,
+            Value::String(JsString::try_from_utf8("NaN").unwrap()),
+        ),
         call_one(&mut context, &is_nan, Value::Float(f64::NAN)),
         call_one(&mut context, &is_nan, Value::Float(f64::INFINITY)),
         call_one(&mut context, &is_nan, Value::Int(0)),
         context.call(&is_finite, Value::Undefined, &[]).unwrap(),
         call_one(&mut context, &is_finite, Value::Null),
-        call_one(&mut context, &is_finite, Value::String(JsString::from("1"))),
+        call_one(
+            &mut context,
+            &is_finite,
+            Value::String(JsString::try_from_utf8("1").unwrap()),
+        ),
         call_one(&mut context, &is_finite, Value::Int(0)),
         call_one(&mut context, &is_finite, max_value),
         call_one(&mut context, &is_finite, Value::Float(f64::INFINITY)),
@@ -851,7 +873,7 @@ fn rust_observations() -> Option<Vec<String>> {
         call_one(
             &mut context,
             &is_integer,
-            Value::String(JsString::from("1")),
+            Value::String(JsString::try_from_utf8("1").unwrap()),
         ),
         call_one(&mut context, &is_integer, Value::Float(f64::NAN)),
         call_one(&mut context, &is_integer, Value::Float(f64::INFINITY)),
@@ -869,7 +891,7 @@ fn rust_observations() -> Option<Vec<String>> {
         call_one(
             &mut context,
             &is_safe_integer,
-            Value::String(JsString::from("1")),
+            Value::String(JsString::try_from_utf8("1").unwrap()),
         ),
         call_one(&mut context, &is_safe_integer, Value::Float(f64::NAN)),
         call_one(&mut context, &is_safe_integer, Value::Float(f64::INFINITY)),
@@ -1106,7 +1128,9 @@ fn rust_observations() -> Option<Vec<String>> {
     ];
     observations.push(format!("valid-max={}", join_values(&valid_max)));
 
-    let ignored_locale_symbol = runtime.new_symbol(Some(JsString::from("ignored"))).unwrap();
+    let ignored_locale_symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("ignored").unwrap()))
+        .unwrap();
     let method_edges = [
         call_with(
             &mut context,
@@ -1179,7 +1203,9 @@ fn rust_observations() -> Option<Vec<String>> {
     ];
     observations.push(format!("method-edges={}", join_values(&method_edges)));
 
-    let radix_symbol = runtime.new_symbol(Some(JsString::from("radix"))).unwrap();
+    let radix_symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("radix").unwrap()))
+        .unwrap();
     let range_values = [
         observe_call_args(
             &runtime,
@@ -1289,7 +1315,7 @@ fn rust_observations() -> Option<Vec<String>> {
     ];
     observations.push(format!("ranges={}", range_values.join("|")));
 
-    let brand_receiver = Value::String(JsString::from("1"));
+    let brand_receiver = Value::String(JsString::try_from_utf8("1").unwrap());
     let number_spoof = context
         .new_object_with_prototype(Some(&number_prototype))
         .unwrap();
@@ -1344,7 +1370,7 @@ fn rust_observations() -> Option<Vec<String>> {
         &runtime,
         &global,
         "formatLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let format_argument = context.new_object().unwrap();
     let format_conversion = eval_callable(
@@ -1390,20 +1416,28 @@ fn rust_observations() -> Option<Vec<String>> {
     let converted_format_log = context.get_property(&global, &format_log).unwrap();
     assert!(
         context
-            .set_property(&global, &format_log, Value::String(JsString::from("")),)
+            .set_property(
+                &global,
+                &format_log,
+                Value::String(JsString::try_from_utf8("").unwrap()),
+            )
             .unwrap()
     );
     let bad_this_before_argument = observe_call_args(
         &runtime,
         &mut context,
         &to_fixed,
-        Value::String(JsString::from("1")),
+        Value::String(JsString::try_from_utf8("1").unwrap()),
         &[Value::Object(format_argument.clone())],
     );
     let bad_this_log = context.get_property(&global, &format_log).unwrap();
     assert!(
         context
-            .set_property(&global, &format_log, Value::String(JsString::from("")),)
+            .set_property(
+                &global,
+                &format_log,
+                Value::String(JsString::try_from_utf8("").unwrap()),
+            )
             .unwrap()
     );
     let ignored_locale_argument = call_with(
@@ -1801,7 +1835,7 @@ fn rust_observations() -> Option<Vec<String>> {
         &runtime,
         &boxed_seven,
         &to_string_tag,
-        Value::String(JsString::from("OwnNumber")),
+        Value::String(JsString::try_from_utf8("OwnNumber").unwrap()),
         false,
         false,
         true,
@@ -1935,7 +1969,10 @@ fn rust_observations() -> Option<Vec<String>> {
                 .call(
                     &number_parse_int,
                     Value::Undefined,
-                    &[Value::String(JsString::from("10")), Value::Int(2)],
+                    &[
+                        Value::String(JsString::try_from_utf8("10").unwrap()),
+                        Value::Int(2),
+                    ],
                 )
                 .unwrap(),
         ),
@@ -1944,7 +1981,10 @@ fn rust_observations() -> Option<Vec<String>> {
                 .call(
                     &current_parse_int,
                     Value::Undefined,
-                    &[Value::String(JsString::from("10")), Value::Int(2)],
+                    &[
+                        Value::String(JsString::try_from_utf8("10").unwrap()),
+                        Value::Int(2),
+                    ],
                 )
                 .unwrap(),
         ),
@@ -1955,7 +1995,7 @@ fn rust_observations() -> Option<Vec<String>> {
                 .call(
                     &number_parse_float,
                     Value::Undefined,
-                    &[Value::String(JsString::from("1.5tail"))],
+                    &[Value::String(JsString::try_from_utf8("1.5tail").unwrap())],
                 )
                 .unwrap(),
         ),
@@ -1964,7 +2004,7 @@ fn rust_observations() -> Option<Vec<String>> {
                 .call(
                     &current_parse_float,
                     Value::Undefined,
-                    &[Value::String(JsString::from("1.5tail"))],
+                    &[Value::String(JsString::try_from_utf8("1.5tail").unwrap())],
                 )
                 .unwrap(),
         ),

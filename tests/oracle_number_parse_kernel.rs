@@ -47,18 +47,18 @@ fn number_parse_kernel_matches_pinned_quickjs() {
         "-1e-9999",
     ]
     .into_iter()
-    .map(JsString::from_utf8)
+    .map(|value| JsString::try_from_utf8(value).unwrap())
     .collect::<Vec<_>>();
     inputs.extend([
-        JsString::from_utf16([0x00a0, u16::from(b'1')]),
-        JsString::from_utf16([0xfeff, u16::from(b'-'), u16::from(b'0')]),
-        JsString::from_utf16([0x0085, u16::from(b'1')]),
-        JsString::from_utf16([u16::from(b'1'), u16::from(b'2'), 0, u16::from(b'3')]),
-        JsString::from_utf16([0xd800, u16::from(b'1')]),
-        JsString::from_utf16([u16::from(b'1'), 0xd800]),
-        JsString::from_utf8(&format!("1{}", "0".repeat(400))),
-        JsString::from_utf8(&format!("0.{}1e10001", "0".repeat(10_000))),
-        JsString::from_utf8(&format!("1{}e-10000", "0".repeat(10_000))),
+        JsString::try_from_utf16([0x00a0, u16::from(b'1')]).unwrap(),
+        JsString::try_from_utf16([0xfeff, u16::from(b'-'), u16::from(b'0')]).unwrap(),
+        JsString::try_from_utf16([0x0085, u16::from(b'1')]).unwrap(),
+        JsString::try_from_utf16([u16::from(b'1'), u16::from(b'2'), 0, u16::from(b'3')]).unwrap(),
+        JsString::try_from_utf16([0xd800, u16::from(b'1')]).unwrap(),
+        JsString::try_from_utf16([u16::from(b'1'), 0xd800]).unwrap(),
+        JsString::try_from_utf8(&format!("1{}", "0".repeat(400))).unwrap(),
+        JsString::try_from_utf8(&format!("0.{}1e10001", "0".repeat(10_000))).unwrap(),
+        JsString::try_from_utf8(&format!("1{}e-10000", "0".repeat(10_000))).unwrap(),
     ]);
 
     let alphabet = b"0123456789abcdefXYZ+-.eE x";
@@ -76,7 +76,7 @@ fn number_parse_kernel_matches_pinned_quickjs() {
             };
             units.push(unit);
         }
-        inputs.push(JsString::from_utf16(units));
+        inputs.push(JsString::try_from_utf16(units).unwrap());
     }
 
     let mut radices = vec![0_i32];

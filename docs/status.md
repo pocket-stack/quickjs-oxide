@@ -229,9 +229,20 @@ claim full parity.
   content-based equality/hash and cached linearization. VM `+`, native
   `concat`, and the implemented internal concatenation sites all use its
   checked 30-bit-length path; atom/property-key publication stores a linearized
-  key.
-  Global `%String%`, the remaining 43 prototype own keys, checked dynamic flat
-  constructors and recoverable allocator failure handling stay unpublished.
+  key. Public valid-UTF-8 and exact-UTF-16 constructors are fallible, reject
+  `(1 << 30)` code units before unbounded reserve, and ignore hostile upper
+  iterator hints. The shared latched UTF-16 builder is used by backtrace and
+  Annex-B escape output; lexer String/template/ASCII-identifier buffers,
+  dynamic Function source assembly, and URI output all apply the same checked
+  arithmetic. Lexer overflow stops immediately as an `InternalError` with
+  message `string too long`, whereas URI validation continues and a later
+  `URIError` overrides an earlier output overflow, matching the pinned native
+  loops.
+  Global `%String%`, the remaining 43 prototype own keys,
+  `JS_NewStringLen`-compatible arbitrary-byte/WTF-8 input,
+  `JS_ToCStringLen2`-compatible WTF-8/CESU-8 output, the fixed 256-byte native
+  error formatter, and recoverable allocator failure handling stay
+  unpublished.
   `%Number.prototype%` is a Number-class wrapper
   containing `+0` and owns the pinned ordered seven-key method surface. Its
   constructor owns the exact ordered 17-key surface: parser aliases captured
@@ -580,7 +591,10 @@ parameters, generator/async kinds, and Proxy new-target realms remain pending.
 Compiler input is still UTF-8,
 so dynamic source containing an unpaired UTF-16 surrogate throws an explicit
 implementation-gap `InternalError` instead of being silently rewritten. The
-current parser does not yet produce generator or async bytecode, although the
+parser also tokenizes the complete source eagerly; QuickJS requests tokens
+lazily, so a front-of-file grammar error can currently lose to a later
+overlong token. This remains an explicit error-order parity gap. The current
+parser does not yet produce generator or async bytecode, although the
 function-kind metadata and `toString` fallback distinguish all four QuickJS
 kinds. Bound dispatch is iterative and therefore does not consume the Rust host
 stack, but exact QuickJS runtime-stack accounting and its deep-bound-chain
@@ -603,9 +617,11 @@ first seven generic code-unit methods, `toString`/`valueOf`, non-index prototype
 lookup and the implemented Object-prototype routes. Their shared value kernel
 does publish the pinned flat/rope concat thresholds, bounded Fibonacci
 rebalance, cross-leaf code-unit semantics, content identity, atom
-linearization, and checked VM/native concat errors, but does not publish the
-global constructor, remaining 43 own keys, globally checked dynamic
-construction or recoverable allocator failures.
+linearization, checked VM/native concat errors, valid-UTF-8/exact-UTF-16
+dynamic constructors, checked lexer/URI/Function-source builders, and their
+distinct overflow ordering. It does not publish the global constructor,
+remaining 43 own keys, arbitrary-byte/WTF-8 construction, C/WTF-8/CESU-8
+export, the fixed native-error formatter, or recoverable allocator failures.
 Prefix/postfix update expressions
 (including QuickJS's valid `++x ** 2` form) are implemented for the current
 identifier and ordinary fixed/computed member References. Sloppy

@@ -557,7 +557,7 @@ fn conversion_order_observations(
         context,
         &global,
         &order_key,
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     define_writable_value(
         context,
@@ -664,7 +664,7 @@ fn conversion_order_observations(
         context,
         &global,
         &order_key,
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     define_value(
         context,
@@ -697,7 +697,7 @@ fn conversion_order_observations(
         context,
         &global,
         &order_key,
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     define_value(
         context,
@@ -935,7 +935,7 @@ fn value_text(value: Value) -> String {
 }
 
 fn string(value: &str) -> Value {
-    Value::String(JsString::from(value))
+    Value::String(JsString::try_from_utf8(value).unwrap())
 }
 
 const fn bit(value: bool) -> u8 {

@@ -188,7 +188,9 @@ fn global_numeric_predicate_errors_use_the_defining_realm() {
         "non-constructor rejection must use the caller realm"
     );
 
-    let symbol = runtime.new_symbol(Some(JsString::from("foreign"))).unwrap();
+    let symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("foreign").unwrap()))
+        .unwrap();
     assert_eq!(
         second.call(&first_nan, Value::Undefined, &[Value::Symbol(symbol)]),
         Err(RuntimeError::Exception)
@@ -371,20 +373,20 @@ fn rust_observations() -> Vec<String> {
         Value::Float(f64::NEG_INFINITY),
         Value::Float(f64::from_bits(1)),
         Value::Float(f64::MAX),
-        Value::String(JsString::from("")),
-        Value::String(JsString::from(" ")),
-        Value::String(JsString::from("0")),
-        Value::String(JsString::from("1.5")),
-        Value::String(JsString::from("Infinity")),
-        Value::String(JsString::from("x")),
-        Value::String(JsString::from("0x10")),
-        Value::String(JsString::from("0b10")),
-        Value::String(JsString::from("0o10")),
-        Value::String(JsString::from("-0x10")),
-        Value::String(JsString::from("-0b10")),
-        Value::String(JsString::from("+Infinity")),
-        Value::String(JsString::from("-Infinity")),
-        Value::String(JsString::from("12x")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
+        Value::String(JsString::try_from_utf8(" ").unwrap()),
+        Value::String(JsString::try_from_utf8("0").unwrap()),
+        Value::String(JsString::try_from_utf8("1.5").unwrap()),
+        Value::String(JsString::try_from_utf8("Infinity").unwrap()),
+        Value::String(JsString::try_from_utf8("x").unwrap()),
+        Value::String(JsString::try_from_utf8("0x10").unwrap()),
+        Value::String(JsString::try_from_utf8("0b10").unwrap()),
+        Value::String(JsString::try_from_utf8("0o10").unwrap()),
+        Value::String(JsString::try_from_utf8("-0x10").unwrap()),
+        Value::String(JsString::try_from_utf8("-0b10").unwrap()),
+        Value::String(JsString::try_from_utf8("+Infinity").unwrap()),
+        Value::String(JsString::try_from_utf8("-Infinity").unwrap()),
+        Value::String(JsString::try_from_utf8("12x").unwrap()),
     ];
     observations.push(format!(
         "raw-isNaN={}",
@@ -417,13 +419,15 @@ fn rust_observations() -> Vec<String> {
         Value::Object(extra_conversion.as_object().clone()),
     );
     let ignored_this = context.new_object().unwrap();
-    let symbol_this = runtime.new_symbol(Some(JsString::from("this"))).unwrap();
+    let symbol_this = runtime
+        .new_symbol(Some(JsString::try_from_utf8("this").unwrap()))
+        .unwrap();
     let nan_call = context
         .call(
             &is_nan,
             Value::Object(ignored_this),
             &[
-                Value::String(JsString::from("x")),
+                Value::String(JsString::try_from_utf8("x").unwrap()),
                 Value::Object(extra.clone()),
             ],
         )
@@ -446,7 +450,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &global,
         "coercionLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let nan_exotic = context.new_object().unwrap();
     let nan_conversion = eval_callable(
@@ -575,9 +579,15 @@ fn rust_observations() -> Vec<String> {
         call_bool(&mut context, &number_is_finite, Value::Object(boxed_zero)),
     ));
 
-    let nan_symbol = runtime.new_symbol(Some(JsString::from("nan"))).unwrap();
-    let finite_symbol = runtime.new_symbol(Some(JsString::from("finite"))).unwrap();
-    let static_symbol = runtime.new_symbol(Some(JsString::from("static"))).unwrap();
+    let nan_symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("nan").unwrap()))
+        .unwrap();
+    let finite_symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("finite").unwrap()))
+        .unwrap();
+    let static_symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("static").unwrap()))
+        .unwrap();
     observations.push(format!(
         "type-errors={}|{}|{}|{}|{}|{}",
         observe_call(

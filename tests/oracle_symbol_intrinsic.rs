@@ -470,17 +470,21 @@ fn rust_observations() -> Vec<String> {
     let call_arguments = vec![
         vec![],
         vec![Value::Undefined],
-        vec![Value::String(JsString::from(""))],
+        vec![Value::String(JsString::try_from_utf8("").unwrap())],
         vec![Value::Null],
         vec![Value::Bool(false)],
         vec![Value::Int(0)],
         vec![Value::Float(-0.0)],
         vec![Value::Float(1.5)],
         vec![Value::BigInt(JsBigInt::from(1))],
-        vec![Value::String(JsString::from_utf16([0x61, 0x00, 0x62]))],
-        vec![Value::String(JsString::from_utf16([0xd800]))],
-        vec![Value::String(JsString::from_utf16([0xdc00]))],
-        vec![Value::String(JsString::from_utf16([0xd83d, 0xde00]))],
+        vec![Value::String(
+            JsString::try_from_utf16([0x61, 0x00, 0x62]).unwrap(),
+        )],
+        vec![Value::String(JsString::try_from_utf16([0xd800]).unwrap())],
+        vec![Value::String(JsString::try_from_utf16([0xdc00]).unwrap())],
+        vec![Value::String(
+            JsString::try_from_utf16([0xd83d, 0xde00]).unwrap(),
+        )],
     ];
     let mut calls = call_arguments
         .iter()
@@ -495,17 +499,21 @@ fn rust_observations() -> Vec<String> {
     let first_same = call_symbol(
         &mut context,
         &symbol,
-        &[Value::String(JsString::from("same"))],
+        &[Value::String(JsString::try_from_utf8("same").unwrap())],
     );
     let second_same = call_symbol(
         &mut context,
         &symbol,
-        &[Value::String(JsString::from("same"))],
+        &[Value::String(JsString::try_from_utf8("same").unwrap())],
     );
     calls.push((first_same != second_same).to_string());
     calls.push(
         (call_symbol(&mut context, &symbol, &[])
-            != call_symbol(&mut context, &symbol, &[Value::String(JsString::from(""))]))
+            != call_symbol(
+                &mut context,
+                &symbol,
+                &[Value::String(JsString::try_from_utf8("").unwrap())],
+            ))
         .to_string(),
     );
     observations.push(format!("calls={}", calls.join("|")));
@@ -546,7 +554,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &global,
         "conversionLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let exotic = conversion_object(
         &runtime,
@@ -606,7 +614,9 @@ fn rust_observations() -> Vec<String> {
         &mut context,
         "(function() { conversionLog += 'throw,'; throw new RangeError('sentinel'); })",
     );
-    let source_symbol = runtime.new_symbol(Some(JsString::from("source"))).unwrap();
+    let source_symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("source").unwrap()))
+        .unwrap();
     let converted = [
         Value::Object(exotic),
         Value::Object(fallback),
@@ -641,10 +651,10 @@ fn rust_observations() -> Vec<String> {
         Value::Bool(false),
         Value::Float(-0.0),
         Value::BigInt(JsBigInt::from(1)),
-        Value::String(JsString::from("")),
-        Value::String(JsString::from_utf16([0x61, 0x00, 0x62])),
-        Value::String(JsString::from_utf16([0xd800])),
-        Value::String(JsString::from_utf16([0xd83d, 0xde00])),
+        Value::String(JsString::try_from_utf8("").unwrap()),
+        Value::String(JsString::try_from_utf16([0x61, 0x00, 0x62]).unwrap()),
+        Value::String(JsString::try_from_utf16([0xd800]).unwrap()),
+        Value::String(JsString::try_from_utf16([0xd83d, 0xde00]).unwrap()),
     ];
     let missing = call_symbol(&mut context, &symbol_for, &[]);
     let explicit_undefined = call_symbol(&mut context, &symbol_for, &[Value::Undefined]);
@@ -673,7 +683,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &global,
         "registryLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let registry_exotic = conversion_object(
         &runtime,
@@ -721,7 +731,7 @@ fn rust_observations() -> Vec<String> {
     let k_registered = call_symbol(
         &mut context,
         &symbol_for,
-        &[Value::String(JsString::from("K"))],
+        &[Value::String(JsString::try_from_utf8("K").unwrap())],
     );
     let fallback_registered = call_symbol(
         &mut context,
@@ -731,12 +741,12 @@ fn rust_observations() -> Vec<String> {
     let l_registered = call_symbol(
         &mut context,
         &symbol_for,
-        &[Value::String(JsString::from("L"))],
+        &[Value::String(JsString::try_from_utf8("L").unwrap())],
     );
     let wrapped_registered = call_symbol(
         &mut context,
         &symbol_for,
-        &[Value::String(JsString::from("wrapped"))],
+        &[Value::String(JsString::try_from_utf8("wrapped").unwrap())],
     );
     let wrapped = expect_object(
         context
@@ -753,7 +763,9 @@ fn rust_observations() -> Vec<String> {
             &symbol_for,
             Value::Undefined,
             &[Value::Symbol(
-                runtime.new_symbol(Some(JsString::from("x"))).unwrap(),
+                runtime
+                    .new_symbol(Some(JsString::try_from_utf8("x").unwrap()))
+                    .unwrap(),
             )],
         ),
         observe_call(
@@ -762,7 +774,9 @@ fn rust_observations() -> Vec<String> {
             &key_for,
             Value::Undefined,
             &[Value::Symbol(
-                runtime.new_symbol(Some(JsString::from("fresh"))).unwrap(),
+                runtime
+                    .new_symbol(Some(JsString::try_from_utf8("fresh").unwrap()))
+                    .unwrap(),
             )],
         ),
         observe_call(
@@ -786,7 +800,7 @@ fn rust_observations() -> Vec<String> {
             &mut context,
             &key_for,
             Value::Undefined,
-            &[Value::String(JsString::from("x"))],
+            &[Value::String(JsString::try_from_utf8("x").unwrap())],
         ),
         observe_call(&runtime, &mut context, &key_for, Value::Undefined, &[]),
         render_value(
@@ -824,7 +838,9 @@ fn rust_observations() -> Vec<String> {
         .collect::<Vec<_>>();
     observations.push(format!("well-known={}", well_known_observations.join("|")));
 
-    let primitive = runtime.new_symbol(Some(JsString::from("x"))).unwrap();
+    let primitive = runtime
+        .new_symbol(Some(JsString::try_from_utf8("x").unwrap()))
+        .unwrap();
     let no_description = runtime.new_symbol(None).unwrap();
     let wrapper = expect_object(
         context
@@ -875,7 +891,7 @@ fn rust_observations() -> Vec<String> {
             context.call(
                 &to_primitive,
                 Value::Symbol(primitive.clone()),
-                &[Value::String(JsString::from("default"))],
+                &[Value::String(JsString::try_from_utf8("default").unwrap())],
             ),
             Ok(Value::Symbol(value)) if value == primitive
         )
@@ -884,7 +900,7 @@ fn rust_observations() -> Vec<String> {
             context.call(
                 &to_primitive,
                 Value::Symbol(primitive.clone()),
-                &[Value::String(JsString::from("string"))],
+                &[Value::String(JsString::try_from_utf8("string").unwrap())],
             ),
             Ok(Value::Symbol(value)) if value == primitive
         )
@@ -893,7 +909,7 @@ fn rust_observations() -> Vec<String> {
             context.call(
                 &to_primitive,
                 Value::Symbol(primitive.clone()),
-                &[Value::String(JsString::from("number"))],
+                &[Value::String(JsString::try_from_utf8("number").unwrap())],
             ),
             Ok(Value::Symbol(value)) if value == primitive
         )
@@ -1031,7 +1047,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &symbol_prototype,
         &tag,
-        Value::String(JsString::from("CustomSymbol")),
+        Value::String(JsString::try_from_utf8("CustomSymbol").unwrap()),
         false,
         false,
         true,
@@ -1228,7 +1244,7 @@ fn symbol_cross_realm_routes_registry_boxing_lookup_and_errors() {
         );
     }
 
-    let registry_key = Value::String(JsString::from("cross-realm"));
+    let registry_key = Value::String(JsString::try_from_utf8("cross-realm").unwrap());
     let first_registered = first
         .call(
             &first_for,
@@ -1249,14 +1265,14 @@ fn symbol_cross_realm_routes_registry_boxing_lookup_and_errors() {
             .call(
                 &first_symbol,
                 Value::Undefined,
-                &[Value::String(JsString::from("fresh"))],
+                &[Value::String(JsString::try_from_utf8("fresh").unwrap())],
             )
             .unwrap(),
         second
             .call(
                 &second_symbol,
                 Value::Undefined,
-                &[Value::String(JsString::from("fresh"))],
+                &[Value::String(JsString::try_from_utf8("fresh").unwrap())],
             )
             .unwrap(),
     );
@@ -1271,8 +1287,12 @@ fn symbol_cross_realm_routes_registry_boxing_lookup_and_errors() {
         property_callable(&runtime, &mut second, &second_object_prototype, "valueOf");
     let first_object_to_string =
         property_callable(&runtime, &mut first, &first_object_prototype, "toString");
-    let seven = runtime.new_symbol(Some(JsString::from("seven"))).unwrap();
-    let nine = runtime.new_symbol(Some(JsString::from("nine"))).unwrap();
+    let seven = runtime
+        .new_symbol(Some(JsString::try_from_utf8("seven").unwrap()))
+        .unwrap();
+    let nine = runtime
+        .new_symbol(Some(JsString::try_from_utf8("nine").unwrap()))
+        .unwrap();
     let first_wrapper = expect_object(
         second
             .call(&first_object_value_of, Value::Symbol(seven.clone()), &[])
@@ -1312,7 +1332,7 @@ fn symbol_cross_realm_routes_registry_boxing_lookup_and_errors() {
         &runtime,
         &first_prototype,
         "__realmMarker",
-        Value::String(JsString::from("first")),
+        Value::String(JsString::try_from_utf8("first").unwrap()),
         true,
         false,
         true,
@@ -1321,7 +1341,7 @@ fn symbol_cross_realm_routes_registry_boxing_lookup_and_errors() {
         &runtime,
         &second_prototype,
         "__realmMarker",
-        Value::String(JsString::from("second")),
+        Value::String(JsString::try_from_utf8("second").unwrap()),
         true,
         false,
         true,
@@ -1333,7 +1353,7 @@ fn symbol_cross_realm_routes_registry_boxing_lookup_and_errors() {
     );
     assert_eq!(
         second.call(&first_reader, Value::Undefined, &[]).unwrap(),
-        Value::String(JsString::from("first")),
+        Value::String(JsString::try_from_utf8("first").unwrap()),
         "primitive member lookup must use the bytecode function's realm"
     );
 
@@ -1342,7 +1362,7 @@ fn symbol_cross_realm_routes_registry_boxing_lookup_and_errors() {
         &runtime,
         &first_prototype,
         &tag,
-        Value::String(JsString::from("FirstSymbol")),
+        Value::String(JsString::try_from_utf8("FirstSymbol").unwrap()),
         false,
         false,
         true,
@@ -1351,7 +1371,7 @@ fn symbol_cross_realm_routes_registry_boxing_lookup_and_errors() {
         &runtime,
         &second_prototype,
         &tag,
-        Value::String(JsString::from("SecondSymbol")),
+        Value::String(JsString::try_from_utf8("SecondSymbol").unwrap()),
         false,
         false,
         true,
@@ -1360,7 +1380,7 @@ fn symbol_cross_realm_routes_registry_boxing_lookup_and_errors() {
         second
             .call(&first_object_to_string, Value::Symbol(seven.clone()), &[],)
             .unwrap(),
-        Value::String(JsString::from("[object FirstSymbol]")),
+        Value::String(JsString::try_from_utf8("[object FirstSymbol]").unwrap()),
         "Object.prototype.toString must box in the method's defining realm"
     );
 
@@ -1368,7 +1388,7 @@ fn symbol_cross_realm_routes_registry_boxing_lookup_and_errors() {
     let second_type_error = intrinsic_prototype(&runtime, &mut second, "TypeError");
     assert_ne!(first_type_error, second_type_error);
     let symbol_argument = runtime
-        .new_symbol(Some(JsString::from("argument")))
+        .new_symbol(Some(JsString::try_from_utf8("argument").unwrap()))
         .unwrap();
     assert_eq!(
         second.call(
@@ -1471,7 +1491,9 @@ fn symbol_primitives_do_not_retain_realms_but_wrappers_do_and_atoms_survive() {
         call_symbol(
             &mut context,
             &constructor,
-            &[Value::String(JsString::from_utf16([0x61, 0xd800, 0x62]))],
+            &[Value::String(
+                JsString::try_from_utf16([0x61, 0xd800, 0x62]).unwrap(),
+            )],
         )
     };
     runtime.run_gc().unwrap();
@@ -1482,7 +1504,7 @@ fn symbol_primitives_do_not_retain_realms_but_wrappers_do_and_atoms_survive() {
     );
     assert_eq!(
         runtime.symbol_description(&primitive).unwrap(),
-        Some(JsString::from_utf16([0x61, 0xd800, 0x62])),
+        Some(JsString::try_from_utf16([0x61, 0xd800, 0x62]).unwrap()),
         "the symbol atom must outlive its creating context while rooted"
     );
     drop(primitive);
@@ -1495,7 +1517,7 @@ fn symbol_primitives_do_not_retain_realms_but_wrappers_do_and_atoms_survive() {
         let object_value_of =
             property_callable(&runtime, &mut context, &object_prototype, "valueOf");
         let symbol = runtime
-            .new_symbol(Some(JsString::from("wrapper-only")))
+            .new_symbol(Some(JsString::try_from_utf8("wrapper-only").unwrap()))
             .unwrap();
         expect_object(
             context
@@ -1921,10 +1943,11 @@ fn symbol_record(runtime: &Runtime, symbol: &SymbolRef) -> String {
     let description_units = description
         .as_ref()
         .map_or_else(|| "undefined".to_owned(), utf16_units);
-    let text = JsString::from("Symbol(")
-        .try_concat(&description.unwrap_or_else(|| JsString::from("")))
+    let text = JsString::try_from_utf8("Symbol(")
         .unwrap()
-        .try_concat(&JsString::from(")"))
+        .try_concat(&description.unwrap_or_else(|| JsString::try_from_utf8("").unwrap()))
+        .unwrap()
+        .try_concat(&JsString::try_from_utf8(")").unwrap())
         .unwrap();
     format!("{description_units}/{}", utf16_units(&text))
 }

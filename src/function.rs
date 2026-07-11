@@ -394,7 +394,7 @@ mod tests {
             Value::Int(42),
             Value::Float(-0.0),
             Value::BigInt(JsBigInt::one()),
-            Value::String(JsString::from_utf16([0xd800, 0x61])),
+            Value::String(JsString::try_from_utf16([0xd800, 0x61]).unwrap()),
         ];
 
         for value in values {

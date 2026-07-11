@@ -98,8 +98,12 @@ fn rust_observations() -> Vec<String> {
     let mut output = Vec::new();
 
     let ordered = runtime.new_object(None).unwrap();
-    let symbol_a = runtime.new_symbol(Some(JsString::from("a"))).unwrap();
-    let symbol_b = runtime.new_symbol(Some(JsString::from("b"))).unwrap();
+    let symbol_a = runtime
+        .new_symbol(Some(JsString::try_from_utf8("a").unwrap()))
+        .unwrap();
+    let symbol_b = runtime
+        .new_symbol(Some(JsString::try_from_utf8("b").unwrap()))
+        .unwrap();
     let symbol_key_a = PropertyKey::from(&symbol_a);
     let symbol_key_b = PropertyKey::from(&symbol_b);
     for (key, value) in [
@@ -262,7 +266,7 @@ fn rust_observations() -> Vec<String> {
     let surrogate = runtime.new_object(None).unwrap();
     for (unit, value) in [(0xd800, 1), (0xfffd, 2), (0xd801, 3)] {
         let key = runtime
-            .intern_property_key_js_string(&JsString::from_utf16([unit]))
+            .intern_property_key_js_string(&JsString::try_from_utf16([unit]).unwrap())
             .unwrap();
         assert!(
             context
@@ -281,7 +285,7 @@ fn rust_observations() -> Vec<String> {
             .join("|")
     ));
 
-    let name = JsString::from("Symbol.iterator");
+    let name = JsString::try_from_utf8("Symbol.iterator").unwrap();
     let well_known = runtime.well_known_symbol(WellKnownSymbol::Iterator);
     let registry = runtime.symbol_for(&name).unwrap();
     output.push(format!(

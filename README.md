@@ -56,8 +56,15 @@ buckets, content equality/hash, cross-leaf UTF-16 access, and cached
 linearization are implemented without putting ropes in the object GC graph.
 VM `+`, `String.prototype.concat`, and the implemented native concatenation
 sites share the checked 30-bit path; property-key/atom publication
-linearizes by UTF-16 content. Public dynamic flat-string construction and
-recoverable allocator failures are still separate unfinished invariants.
+linearizes by UTF-16 content. Public valid-UTF-8 and exact-UTF-16 dynamic
+construction now enforce the same limit through fallible APIs; hostile
+iterator hints cannot trigger an enormous eager reserve. A shared latched
+UTF-16 builder covers backtraces and Annex-B escaping, while lexer String,
+template and ASCII-identifier buffers, dynamic Function source assembly, and
+URI expansion use checked length paths with their distinct QuickJS error
+ordering. Arbitrary host bytes with `JS_NewStringLen`'s WTF-8/replacement
+rules, C/WTF-8/CESU-8 export, native error's fixed 256-byte formatter, and
+recoverable allocator failures remain unfinished invariants.
 `%Number.prototype%` is the pinned boxed-`+0` Number-class object. The global
 `%Number%` publishes the exact ordered 17/7 constructor/prototype surface:
 call/construct and BigInt conversion, parser aliases captured by identity,
@@ -161,8 +168,9 @@ followed by `DeleteProperty`; strict direct references are early errors. Each
 realm also installs the frozen `Infinity`, `NaN` and `undefined` global data
 properties. Dynamic object-environment resolution through `with`/direct
 `eval`, Proxy/exotic delete dispatch, the global String constructor, the
-remaining 43 String-prototype own keys, global checked flat-string construction,
-and recoverable string-allocation failures remain unfinished slices.
+remaining 43 String-prototype own keys, arbitrary-byte/WTF-8 host String
+construction and C-string export, and recoverable string-allocation failures
+remain unfinished slices.
 Runtime-wide full/strip-source/strip-debug modes follow QuickJS's immutable
 bytecode publication boundary, and the `qjs` CLI exposes `--strip-source` and
 `-s` with upstream last-option-wins behavior.
@@ -194,6 +202,7 @@ language and builtin library remain unfinished. See
 
 ```sh
 cargo test --workspace --all-targets
+cargo test --test checked_string_construction
 cargo run --bin qjs -- -e '(function(a) { return a + 1; })(41)'
 ```
 

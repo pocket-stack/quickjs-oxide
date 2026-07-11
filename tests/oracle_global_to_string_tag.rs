@@ -170,7 +170,7 @@ fn object_to_string_cross_realm_uses_receiver_tag_and_method_defining_realm() {
         &mut first,
         &first_global,
         &tag,
-        Value::String(JsString::from("first-global")),
+        Value::String(JsString::try_from_utf8("first-global").unwrap()),
         false,
         false,
         true,
@@ -179,7 +179,7 @@ fn object_to_string_cross_realm_uses_receiver_tag_and_method_defining_realm() {
         &mut second,
         &second_global,
         &tag,
-        Value::String(JsString::from("second-global")),
+        Value::String(JsString::try_from_utf8("second-global").unwrap()),
         false,
         false,
         true,
@@ -188,14 +188,14 @@ fn object_to_string_cross_realm_uses_receiver_tag_and_method_defining_realm() {
         second
             .call(&first_to_string, Value::Object(second_global.clone()), &[],)
             .unwrap(),
-        Value::String(JsString::from("[object second-global]")),
+        Value::String(JsString::try_from_utf8("[object second-global]").unwrap()),
         "a foreign native method must read the receiver global's own tag"
     );
     assert_eq!(
         first
             .call(&second_to_string, Value::Object(first_global.clone()), &[],)
             .unwrap(),
-        Value::String(JsString::from("[object first-global]"))
+        Value::String(JsString::try_from_utf8("[object first-global]").unwrap())
     );
 
     let first_number_prototype = first.number_prototype().unwrap();
@@ -204,7 +204,7 @@ fn object_to_string_cross_realm_uses_receiver_tag_and_method_defining_realm() {
         &mut first,
         &first_number_prototype,
         &tag,
-        Value::String(JsString::from("FirstNumber")),
+        Value::String(JsString::try_from_utf8("FirstNumber").unwrap()),
         false,
         false,
         true,
@@ -213,19 +213,19 @@ fn object_to_string_cross_realm_uses_receiver_tag_and_method_defining_realm() {
         &mut second,
         &second_number_prototype,
         &tag,
-        Value::String(JsString::from("SecondNumber")),
+        Value::String(JsString::try_from_utf8("SecondNumber").unwrap()),
         false,
         false,
         true,
     );
     assert_eq!(
         second.call(&first_to_string, Value::Int(1), &[]).unwrap(),
-        Value::String(JsString::from("[object FirstNumber]")),
+        Value::String(JsString::try_from_utf8("[object FirstNumber]").unwrap()),
         "primitive boxing must use Object.prototype.toString's defining realm"
     );
     assert_eq!(
         first.call(&second_to_string, Value::Int(1), &[]).unwrap(),
-        Value::String(JsString::from("[object SecondNumber]"))
+        Value::String(JsString::try_from_utf8("[object SecondNumber]").unwrap())
     );
 }
 
@@ -251,7 +251,7 @@ fn rust_observations() -> Vec<String> {
         .set_property(
             &global,
             &tag,
-            Value::String(JsString::from("assigned-global")),
+            Value::String(JsString::try_from_utf8("assigned-global").unwrap()),
         )
         .unwrap();
     observations.push(format!(
@@ -264,7 +264,7 @@ fn rust_observations() -> Vec<String> {
         &mut context,
         &global,
         &tag,
-        Value::String(JsString::from("direct-global")),
+        Value::String(JsString::try_from_utf8("direct-global").unwrap()),
     );
     let direct = runtime.get_own_property(&global, &tag).unwrap().unwrap();
     observations.push(format!(
@@ -278,7 +278,7 @@ fn rust_observations() -> Vec<String> {
         &mut context,
         &global,
         &tag,
-        Value::String(JsString::from("global")),
+        Value::String(JsString::try_from_utf8("global").unwrap()),
     );
 
     let marker = runtime
@@ -295,7 +295,7 @@ fn rust_observations() -> Vec<String> {
     );
     let extra = PropertyKey::from(
         runtime
-            .new_symbol(Some(JsString::from("extra-global-key")))
+            .new_symbol(Some(JsString::try_from_utf8("extra-global-key").unwrap()))
             .unwrap(),
     );
     define_data_key(
@@ -360,7 +360,7 @@ fn rust_observations() -> Vec<String> {
         &mut context,
         &global,
         &tag,
-        Value::String(JsString::from("custom-global")),
+        Value::String(JsString::try_from_utf8("custom-global").unwrap()),
         true,
         true,
         true,
@@ -377,7 +377,7 @@ fn rust_observations() -> Vec<String> {
 
     let object_value = context.new_object().unwrap();
     let symbol_value = runtime
-        .new_symbol(Some(JsString::from("not-a-tag")))
+        .new_symbol(Some(JsString::try_from_utf8("not-a-tag").unwrap()))
         .unwrap();
     let non_strings = [
         Value::Undefined,
@@ -401,7 +401,7 @@ fn rust_observations() -> Vec<String> {
         &mut context,
         &global,
         &tag,
-        Value::String(JsString::from("restored-global")),
+        Value::String(JsString::try_from_utf8("restored-global").unwrap()),
         true,
         true,
         true,

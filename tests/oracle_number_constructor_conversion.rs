@@ -126,7 +126,7 @@ fn number_construct_converts_before_new_target_prototype_and_uses_its_realm() {
         &runtime,
         &first_global,
         "orderLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let custom_prototype = second.new_object().unwrap();
     define_global(
@@ -259,7 +259,7 @@ fn number_construct_preserves_conversion_and_prototype_getter_throws_in_order() 
         &runtime,
         &global,
         "orderLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
 
     let conversion_throw = eval_callable(
@@ -353,7 +353,9 @@ fn number_constructor_and_brand_errors_use_the_defining_realm() {
     let second_type_error = intrinsic_prototype(&runtime, &mut second, "TypeError");
     assert_ne!(first_type_error, second_type_error);
 
-    let symbol = runtime.new_symbol(Some(JsString::from("number"))).unwrap();
+    let symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("number").unwrap()))
+        .unwrap();
     assert_eq!(
         second.call(&first_number, Value::Undefined, &[Value::Symbol(symbol)],),
         Err(RuntimeError::Exception)
@@ -498,14 +500,14 @@ fn rust_constructor_observations() -> Vec<String> {
             .call(
                 &number,
                 Value::Undefined,
-                &[Value::String(JsString::from(" 0x10 "))],
+                &[Value::String(JsString::try_from_utf8(" 0x10 ").unwrap())],
             )
             .unwrap(),
         context
             .call(
                 &number,
                 Value::Undefined,
-                &[Value::String(JsString::from("1.25"))],
+                &[Value::String(JsString::try_from_utf8("1.25").unwrap())],
             )
             .unwrap(),
     ];
@@ -534,7 +536,7 @@ fn rust_constructor_observations() -> Vec<String> {
         &runtime,
         &global,
         "exoticLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let exotic = context.new_object().unwrap();
     let exotic_conversion = eval_callable(
@@ -556,7 +558,7 @@ fn rust_constructor_observations() -> Vec<String> {
         &runtime,
         &global,
         "fallbackLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let fallback = context.new_object().unwrap();
     let fallback_result = context.new_object().unwrap();
@@ -605,7 +607,9 @@ fn rust_constructor_observations() -> Vec<String> {
         result => panic!("throwing Number conversion unexpectedly returned {result:?}"),
     };
 
-    let symbol = runtime.new_symbol(Some(JsString::from("number"))).unwrap();
+    let symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("number").unwrap()))
+        .unwrap();
     let symbol_error = match context.call(&number, Value::Undefined, &[Value::Symbol(symbol)]) {
         Err(RuntimeError::Exception) => take_exception_object(&mut context),
         result => panic!("Number(Symbol) unexpectedly returned {result:?}"),

@@ -3114,7 +3114,8 @@ mod tests {
         let number_payload = PrimitiveObjectData::Number(f64::NAN);
         assert_eq!(number_payload.kind(), PrimitiveKind::Number);
         assert_eq!(
-            PrimitiveObjectData::String(JsString::from_utf16([0x61, 0xd800, 0x62])).kind(),
+            PrimitiveObjectData::String(JsString::try_from_utf16([0x61, 0xd800, 0x62]).unwrap(),)
+                .kind(),
             PrimitiveKind::String
         );
         assert_eq!(
@@ -3164,7 +3165,7 @@ mod tests {
         assert_eq!(object_edges(number_data), vec![RawId::Shape(shape)]);
         assert_eq!(object_atoms(number_data).count(), 0);
 
-        let string_value = JsString::from_utf16([0x61, 0xd800, 0x62]);
+        let string_value = JsString::try_from_utf16([0x61, 0xd800, 0x62]).unwrap();
         let string = heap
             .allocate_object(ObjectData::primitive(
                 shape,

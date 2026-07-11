@@ -361,7 +361,7 @@ fn rust_to_primitive_observations() -> Vec<String> {
         &harness.runtime,
         &mut harness.context,
         "hintSeen",
-        Value::String(JsString::from("none")),
+        Value::String(JsString::try_from_utf8("none").unwrap()),
     );
     let hint = harness.function("(function(hint){ hintSeen = hint; return 2; })");
     let hint_length = harness.context.new_object().unwrap();
@@ -504,7 +504,10 @@ fn rust_to_length_observations() -> Vec<String> {
         ("length-negative", Value::Int(-2)),
         ("length-fraction", Value::Float(2.9)),
         ("length-infinity", Value::Float(f64::INFINITY)),
-        ("length-string", Value::String(JsString::from("2.9"))),
+        (
+            "length-string",
+            Value::String(JsString::try_from_utf8("2.9").unwrap()),
+        ),
         ("length-bigint", Value::BigInt(JsBigInt::one())),
     ];
     cases

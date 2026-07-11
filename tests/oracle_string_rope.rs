@@ -179,7 +179,7 @@ fn string_rope_overflow_uses_vm_and_native_defining_realms() {
     assert_eq!(
         second.call(
             &concat,
-            Value::String(JsString::from("")),
+            Value::String(JsString::try_from_utf8("").unwrap()),
             &[Value::String(near.clone()), Value::String(near)],
         ),
         Err(RuntimeError::Exception)
@@ -288,7 +288,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &global,
         "ropeLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let later = context.new_object().unwrap();
     let later_to_string = context
@@ -298,7 +298,7 @@ fn rust_observations() -> Vec<String> {
     assert_eq!(
         context.call(
             &concat,
-            Value::String(JsString::from("")),
+            Value::String(JsString::try_from_utf8("").unwrap()),
             &[
                 Value::String(near.clone()),
                 Value::String(near.clone()),
@@ -335,7 +335,7 @@ fn rust_observations() -> Vec<String> {
 }
 
 fn near_limit_rope() -> JsString {
-    let mut value = JsString::from_utf8(&"x".repeat(8193));
+    let mut value = JsString::try_from_utf8(&"x".repeat(8193)).unwrap();
     for _ in 0..16 {
         value = value.try_concat(&value).unwrap();
     }
@@ -344,10 +344,10 @@ fn near_limit_rope() -> JsString {
 }
 
 fn rebalanced_marker_rope() -> JsString {
-    let mut value = JsString::from("");
+    let mut value = JsString::try_from_utf8("").unwrap();
     for index in 0..70 {
         let marker = char::from(b'A' + u8::try_from(index % 26).unwrap());
-        let chunk = JsString::from_utf8(&marker.to_string().repeat(8193));
+        let chunk = JsString::try_from_utf8(&marker.to_string().repeat(8193)).unwrap();
         value = value.try_concat(&chunk).unwrap();
     }
     assert_eq!(value.len(), 573_510);
@@ -356,13 +356,13 @@ fn rebalanced_marker_rope() -> JsString {
 
 fn exact_max_rope() -> JsString {
     let mut powers = Vec::with_capacity(30);
-    let mut power = JsString::from("m");
+    let mut power = JsString::try_from_utf8("m").unwrap();
     powers.push(power.clone());
     for _ in 1..30 {
         power = power.try_concat(&power).unwrap();
         powers.push(power.clone());
     }
-    let mut value = JsString::from("");
+    let mut value = JsString::try_from_utf8("").unwrap();
     for power in powers.into_iter().rev() {
         value = value.try_concat(&power).unwrap();
     }
@@ -371,30 +371,36 @@ fn exact_max_rope() -> JsString {
 }
 
 fn ordinary_ropes() -> (JsString, JsString, JsString, JsString) {
-    let high = JsString::from_utf16([0xd83d]);
-    let low = JsString::from_utf16([0xde80]);
-    let z = JsString::from_utf8(&"z".repeat(513));
-    let ordinary = JsString::from_utf8(&"A".repeat(8193))
+    let high = JsString::try_from_utf16([0xd83d]).unwrap();
+    let low = JsString::try_from_utf16([0xde80]).unwrap();
+    let z = JsString::try_from_utf8(&"z".repeat(513)).unwrap();
+    let ordinary = JsString::try_from_utf8(&"A".repeat(8193))
+        .unwrap()
         .try_concat(&high)
         .unwrap()
         .try_concat(&low)
         .unwrap()
         .try_concat(&z)
         .unwrap();
-    let peer_tail = JsString::from_utf16([0x41, 0xd83d, 0xde80])
+    let peer_tail = JsString::try_from_utf16([0x41, 0xd83d, 0xde80])
+        .unwrap()
         .try_concat(&z)
         .unwrap();
-    let peer = JsString::from_utf8(&"A".repeat(8192))
+    let peer = JsString::try_from_utf8(&"A".repeat(8192))
+        .unwrap()
         .try_concat(&peer_tail)
         .unwrap();
-    let boundary_peer = JsString::from_utf8(&"A".repeat(8193))
+    let boundary_peer = JsString::try_from_utf8(&"A".repeat(8193))
+        .unwrap()
         .try_concat(&high)
         .unwrap()
-        .try_concat(&JsString::from_utf16([0xde81]))
+        .try_concat(&JsString::try_from_utf16([0xde81]).unwrap())
         .unwrap()
         .try_concat(&z)
         .unwrap();
-    let prefix_peer = ordinary.try_concat(&JsString::from("q")).unwrap();
+    let prefix_peer = ordinary
+        .try_concat(&JsString::try_from_utf8("q").unwrap())
+        .unwrap();
     assert_eq!(ordinary.len(), 8708);
     assert_eq!(ordinary, peer);
     (ordinary, peer, boundary_peer, prefix_peer)
@@ -460,11 +466,11 @@ fn take_exception_object(context: &mut Context) -> ObjectRef {
 fn assert_internal_string_too_long(runtime: &Runtime, context: &mut Context, error: &ObjectRef) {
     assert_eq!(
         error_string(runtime, context, error, "name"),
-        JsString::from("InternalError")
+        JsString::try_from_utf8("InternalError").unwrap()
     );
     assert_eq!(
         error_string(runtime, context, error, "message"),
-        JsString::from("string too long")
+        JsString::try_from_utf8("string too long").unwrap()
     );
 }
 

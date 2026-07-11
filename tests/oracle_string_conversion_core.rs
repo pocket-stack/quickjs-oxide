@@ -133,13 +133,13 @@ fn rust_observations() -> Vec<String> {
     let ots = property_callable(&runtime, &mut context, &object_prototype, "toString");
     let ols = property_callable(&runtime, &mut context, &object_prototype, "toLocaleString");
     let ovo = property_callable(&runtime, &mut context, &object_prototype, "valueOf");
-    let source = JsString::from_utf16([0x41, 0xd800, 0x42]);
+    let source = JsString::try_from_utf16([0x41, 0xd800, 0x42]).unwrap();
     let mut out = Vec::with_capacity(9);
 
     let implemented = own_key_names(&runtime, &prototype)
         .into_iter()
         .filter(|key| matches!(key.as_str(), "length" | "toString" | "valueOf"))
-        .map(|key| hex(&JsString::from(key.as_str())))
+        .map(|key| hex(&JsString::try_from_utf8(key.as_str()).unwrap()))
         .collect::<Vec<_>>()
         .join(",");
     out.push(format!(
@@ -266,7 +266,7 @@ fn rust_observations() -> Vec<String> {
         call_string(&mut context, &vo, Value::Object(box_a.clone())),
         own_key_names(&runtime, &box_a)
             .into_iter()
-            .map(|key| hex(&JsString::from(key.as_str())))
+            .map(|key| hex(&JsString::try_from_utf8(key.as_str()).unwrap()))
             .collect::<Vec<_>>()
             .join(","),
         data_flags(&runtime, &box_a, "length")
@@ -277,7 +277,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &prototype,
         &tag,
-        Value::String(JsString::from("CustomString")),
+        Value::String(JsString::try_from_utf8("CustomString").unwrap()),
     );
     let custom = call_string(&mut context, &ots, Value::String(source.clone()));
     define_data_key(&runtime, &prototype, &tag, Value::Int(1));
@@ -319,7 +319,7 @@ fn string_conversion_core_cross_realm_and_error_realm_match_quickjs() {
     let second_vo = property_callable(&runtime, &mut second, &second_string, "valueOf");
     let first_ovo = property_callable(&runtime, &mut first, &first_object, "valueOf");
     let first_ots = property_callable(&runtime, &mut first, &first_object, "toString");
-    let source = JsString::from_utf16([0x41, 0xd800, 0x42]);
+    let source = JsString::try_from_utf16([0x41, 0xd800, 0x42]).unwrap();
 
     let wrapper = box_string(&mut second, &first_ovo, source.clone());
     assert_eq!(
@@ -338,19 +338,23 @@ fn string_conversion_core_cross_realm_and_error_realm_match_quickjs() {
         &runtime,
         &first_string,
         &tag,
-        Value::String(JsString::from("FirstString")),
+        Value::String(JsString::try_from_utf8("FirstString").unwrap()),
     );
     define_data_key(
         &runtime,
         &second_string,
         &tag,
-        Value::String(JsString::from("SecondString")),
+        Value::String(JsString::try_from_utf8("SecondString").unwrap()),
     );
     assert_eq!(
         second
-            .call(&first_ots, Value::String(JsString::from("x")), &[])
+            .call(
+                &first_ots,
+                Value::String(JsString::try_from_utf8("x").unwrap()),
+                &[]
+            )
             .unwrap(),
-        Value::String(JsString::from("[object FirstString]"))
+        Value::String(JsString::try_from_utf8("[object FirstString]").unwrap())
     );
 
     let first_type_error = intrinsic_prototype(&runtime, &mut first, "TypeError");
@@ -376,7 +380,7 @@ fn string_conversion_core_wrapper_realm_graph_is_collectable() {
         box_string(
             &mut context,
             &ovo,
-            JsString::from_utf16([0x41, 0xd800, 0x42]),
+            JsString::try_from_utf16([0x41, 0xd800, 0x42]).unwrap(),
         )
     };
     runtime.run_gc().unwrap();
@@ -425,7 +429,7 @@ fn signature(runtime: &Runtime, context: &mut Context, callable: &CallableRef) -
         hex(&name),
         own_key_names(runtime, callable.as_object())
             .into_iter()
-            .map(|key| hex(&JsString::from(key.as_str())))
+            .map(|key| hex(&JsString::try_from_utf8(key.as_str()).unwrap()))
             .collect::<Vec<_>>()
             .join(",")
     )

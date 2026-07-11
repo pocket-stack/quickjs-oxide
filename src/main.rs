@@ -206,7 +206,9 @@ fn format_thrown_value(runtime: &Runtime, value: &Value) -> Option<String> {
 }
 
 fn diagnostic_c_string(value: &JsString) -> String {
-    JsString::from_utf16(value.utf16_units().take_while(|unit| *unit != 0)).to_utf8_lossy()
+    char::decode_utf16(value.utf16_units().take_while(|unit| *unit != 0))
+        .map(|result| result.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect()
 }
 
 fn quote_js_string(value: &JsString, max_length: Option<usize>) -> String {
@@ -334,7 +336,9 @@ mod tests {
                     .define_own_property(
                         &prototype,
                         &key,
-                        &data_descriptor(Value::String(JsString::from(prototype_value))),
+                        &data_descriptor(Value::String(
+                            JsString::try_from_utf8(prototype_value).unwrap(),
+                        )),
                     )
                     .unwrap()
             );
@@ -377,7 +381,7 @@ mod tests {
                     .define_own_property(
                         &prototype,
                         &key,
-                        &data_descriptor(Value::String(JsString::from(value))),
+                        &data_descriptor(Value::String(JsString::try_from_utf8(value).unwrap())),
                     )
                     .unwrap()
             );

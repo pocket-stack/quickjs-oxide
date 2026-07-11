@@ -140,7 +140,7 @@ fn string_wrapper_exotic_matches_pinned_quickjs() {
 fn rust_observations() -> Vec<String> {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
-    let payload = JsString::from_utf16([0x41, 0xd83d, 0xde00, 0xd800]);
+    let payload = JsString::try_from_utf16([0x41, 0xd83d, 0xde00, 0xd800]).unwrap();
     let wrapper = box_string(&runtime, &mut context, payload.clone());
     let prototype = runtime
         .get_prototype_of(&wrapper)
@@ -175,7 +175,10 @@ fn rust_observations() -> Vec<String> {
     for (index, unit) in [0x41, 0xd83d, 0xde00, 0xd800].into_iter().enumerate() {
         let key = runtime.intern_property_key(&index.to_string()).unwrap();
         let (value, writable, enumerable, configurable) = data_descriptor(&runtime, &wrapper, &key);
-        assert_eq!(value, Value::String(JsString::from_utf16([unit])));
+        assert_eq!(
+            value,
+            Value::String(JsString::try_from_utf16([unit]).unwrap())
+        );
         index_rows.push(format!(
             "{index}:{}:{}:{}",
             value_units(&value),
@@ -200,7 +203,11 @@ fn rust_observations() -> Vec<String> {
     let foo_key = runtime.intern_property_key("foo").unwrap();
     let leading_zero = runtime.intern_property_key("01").unwrap();
     let eight = runtime.intern_property_key("8").unwrap();
-    let tail = PropertyKey::from(runtime.new_symbol(Some(JsString::from("tail"))).unwrap());
+    let tail = PropertyKey::from(
+        runtime
+            .new_symbol(Some(JsString::try_from_utf8("tail").unwrap()))
+            .unwrap(),
+    );
     for (key, value) in [
         (&foo_key, Value::Int(1)),
         (&leading_zero, Value::Int(2)),
@@ -241,11 +248,11 @@ fn rust_observations() -> Vec<String> {
     let compatible = [
         OrdinaryPropertyDescriptor::new(),
         OrdinaryPropertyDescriptor {
-            value: DescriptorField::Present(Value::String(JsString::from("A"))),
+            value: DescriptorField::Present(Value::String(JsString::try_from_utf8("A").unwrap())),
             ..OrdinaryPropertyDescriptor::new()
         },
         OrdinaryPropertyDescriptor {
-            value: DescriptorField::Present(Value::String(JsString::from("A"))),
+            value: DescriptorField::Present(Value::String(JsString::try_from_utf8("A").unwrap())),
             writable: DescriptorField::Present(false),
             enumerable: DescriptorField::Present(true),
             configurable: DescriptorField::Present(false),
@@ -265,7 +272,9 @@ fn rust_observations() -> Vec<String> {
                 &wrapper,
                 &one,
                 &OrdinaryPropertyDescriptor {
-                    value: DescriptorField::Present(Value::String(JsString::from_utf16([0xd83d]))),
+                    value: DescriptorField::Present(Value::String(
+                        JsString::try_from_utf16([0xd83d]).unwrap(),
+                    )),
                     ..OrdinaryPropertyDescriptor::new()
                 },
             )
@@ -277,7 +286,7 @@ fn rust_observations() -> Vec<String> {
 
     let incompatible = [
         OrdinaryPropertyDescriptor {
-            value: DescriptorField::Present(Value::String(JsString::from("X"))),
+            value: DescriptorField::Present(Value::String(JsString::try_from_utf8("X").unwrap())),
             ..OrdinaryPropertyDescriptor::new()
         },
         OrdinaryPropertyDescriptor {
@@ -345,7 +354,9 @@ fn rust_observations() -> Vec<String> {
                 &fixed,
                 &fixed_zero,
                 &OrdinaryPropertyDescriptor {
-                    value: DescriptorField::Present(Value::String(JsString::from("A"))),
+                    value: DescriptorField::Present(Value::String(
+                        JsString::try_from_utf8("A").unwrap(),
+                    )),
                     ..OrdinaryPropertyDescriptor::new()
                 },
             )
@@ -356,7 +367,9 @@ fn rust_observations() -> Vec<String> {
                 &fixed,
                 &fixed_zero,
                 &OrdinaryPropertyDescriptor {
-                    value: DescriptorField::Present(Value::String(JsString::from("X"))),
+                    value: DescriptorField::Present(Value::String(
+                        JsString::try_from_utf8("X").unwrap(),
+                    )),
                     ..OrdinaryPropertyDescriptor::new()
                 },
             )
@@ -414,7 +427,7 @@ fn sloppy_string_boxing_uses_the_bytecode_functions_defining_realm() {
     let mut second = runtime.new_context();
     let first_boxer = eval_callable(&runtime, &mut first, "(function () { return this; })");
     let second_boxer = eval_callable(&runtime, &mut second, "(function () { return this; })");
-    let payload = JsString::from_utf16([0x41, 0xd800]);
+    let payload = JsString::try_from_utf16([0x41, 0xd800]).unwrap();
 
     let first_wrapper = expect_object(
         second
@@ -462,7 +475,7 @@ fn rooted_string_wrapper_preserves_payload_and_final_release_collects_the_graph(
         box_string(
             &runtime,
             &mut context,
-            JsString::from_utf16([0x41, 0xd83d, 0xde00, 0xd800]),
+            JsString::try_from_utf16([0x41, 0xd83d, 0xde00, 0xd800]).unwrap(),
         )
     };
 
@@ -471,7 +484,7 @@ fn rooted_string_wrapper_preserves_payload_and_final_release_collects_the_graph(
     assert_eq!(
         data_descriptor(&runtime, &wrapper, &index),
         (
-            Value::String(JsString::from_utf16([0xd800])),
+            Value::String(JsString::try_from_utf16([0xd800]).unwrap()),
             false,
             true,
             false,

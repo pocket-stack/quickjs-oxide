@@ -416,7 +416,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     define_global(&runtime, &mut context, "seenThis", Value::Bool(false));
     define_global(&runtime, &mut context, "seenValue", Value::Undefined);
@@ -584,10 +584,10 @@ fn rust_observations() -> Vec<String> {
         Value::Object(throwing_key),
     );
     let compound_symbol = runtime
-        .new_symbol(Some(JsString::from("compound-key")))
+        .new_symbol(Some(JsString::try_from_utf8("compound-key").unwrap()))
         .unwrap();
     let other_compound_symbol = runtime
-        .new_symbol(Some(JsString::from("compound-key")))
+        .new_symbol(Some(JsString::try_from_utf8("compound-key").unwrap()))
         .unwrap();
     define_global(
         &runtime,
@@ -667,7 +667,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "powerPhase",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let power_throw = function(
         &runtime,
@@ -742,7 +742,9 @@ fn rust_observations() -> Vec<String> {
 
     define_global(&runtime, &mut context, "powerOuterSeen", Value::Undefined);
     define_global(&runtime, &mut context, "powerInnerSeen", Value::Undefined);
-    let power_symbol = runtime.new_symbol(Some(JsString::from("power"))).unwrap();
+    let power_symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("power").unwrap()))
+        .unwrap();
     define_global(
         &runtime,
         &mut context,
@@ -854,7 +856,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     set_global(&runtime, &mut context, "seenThis", Value::Bool(false));
     set_global(&runtime, &mut context, "seenValue", Value::Undefined);
@@ -875,7 +877,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let delete_result = context.eval("delete baseExpr()[keyExpr()]").unwrap();
     output.push(format!(
@@ -892,7 +894,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     set_global(&runtime, &mut context, "seenThis", Value::Bool(false));
     set_global(&runtime, &mut context, "seenValue", Value::Undefined);
@@ -914,7 +916,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     set_global(&runtime, &mut context, "seenThis", Value::Bool(false));
     set_global(&runtime, &mut context, "seenValue", Value::Undefined);
@@ -936,7 +938,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     set_global(&runtime, &mut context, "seenThis", Value::Bool(false));
     set_global(&runtime, &mut context, "seenValue", Value::Undefined);
@@ -959,7 +961,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     set_global(&runtime, &mut context, "seenThis", Value::Bool(false));
     set_global(&runtime, &mut context, "seenValue", Value::Undefined);
@@ -987,13 +989,13 @@ fn rust_observations() -> Vec<String> {
             &runtime,
             &mut context,
             "powerPhase",
-            Value::String(JsString::from(phase)),
+            Value::String(JsString::try_from_utf8(phase).unwrap()),
         );
         set_global(
             &runtime,
             &mut context,
             "log",
-            Value::String(JsString::from("")),
+            Value::String(JsString::try_from_utf8("").unwrap()),
         );
         set_global(&runtime, &mut context, "seenValue", Value::Undefined);
         let observation = observe(
@@ -1011,7 +1013,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     set_global(&runtime, &mut context, "powerOuterSeen", Value::Undefined);
     set_global(&runtime, &mut context, "powerInnerSeen", Value::Undefined);
@@ -1029,7 +1031,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "powerAnonymousName",
-        Value::String(JsString::from("unset")),
+        Value::String(JsString::try_from_utf8("unset").unwrap()),
     );
     context
         .eval(
@@ -1050,7 +1052,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let null_compound = observe(
         &runtime,
@@ -1065,7 +1067,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let null_bitwise_compound = observe(
         &runtime,
@@ -1080,7 +1082,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let null_shift_compound = observe(
         &runtime,
@@ -1095,7 +1097,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let null_power_compound = observe(
         &runtime,
@@ -1112,7 +1114,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let object_symbol_compound = context.eval("target[symbolKeyObject] += 4").unwrap();
     runtime.run_gc().unwrap();
@@ -1142,7 +1144,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let object_symbol_logical = context.eval("target[symbolKeyObject] ||= 8").unwrap();
     runtime.run_gc().unwrap();
@@ -1157,7 +1159,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let object_symbol_logical_short = context.eval("target[symbolKeyObject] ||= 10").unwrap();
     runtime.run_gc().unwrap();
@@ -1259,7 +1261,7 @@ fn rust_observations() -> Vec<String> {
             &runtime,
             &mut context,
             "log",
-            Value::String(JsString::from("")),
+            Value::String(JsString::try_from_utf8("").unwrap()),
         );
         set_global(&runtime, &mut context, "seenThis", Value::Bool(false));
         set_global(&runtime, &mut context, "seenValue", Value::Undefined);
@@ -1297,7 +1299,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let binary_nullish_object = context.eval("coercionBomb ?? null").unwrap();
     runtime.run_gc().unwrap();
@@ -1318,7 +1320,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let logical_object_and = context
         .eval("baseExpr()[compoundKeyExpr()] &&= rhsExpr()")
@@ -1349,7 +1351,7 @@ fn rust_observations() -> Vec<String> {
             &runtime,
             &mut context,
             "log",
-            Value::String(JsString::from("")),
+            Value::String(JsString::try_from_utf8("").unwrap()),
         );
         let result = context.eval(source).unwrap();
         runtime.run_gc().unwrap();
@@ -1379,7 +1381,7 @@ fn rust_observations() -> Vec<String> {
             &runtime,
             &mut context,
             "log",
-            Value::String(JsString::from("")),
+            Value::String(JsString::try_from_utf8("").unwrap()),
         );
         let observation = observe(&runtime, &mut context, source);
         output.push(format!(
@@ -1425,7 +1427,7 @@ fn rust_observations() -> Vec<String> {
             &runtime,
             &mut context,
             "log",
-            Value::String(JsString::from("")),
+            Value::String(JsString::try_from_utf8("").unwrap()),
         );
         set_global(
             &runtime,
@@ -1464,7 +1466,7 @@ fn rust_observations() -> Vec<String> {
             &runtime,
             &mut context,
             "log",
-            Value::String(JsString::from("")),
+            Value::String(JsString::try_from_utf8("").unwrap()),
         );
         set_global(&runtime, &mut context, "seenValue", Value::Undefined);
         let Value::Object(result) = context.eval(source).unwrap() else {
@@ -1535,7 +1537,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let identifier_missing = observe(&runtime, &mut context, "identifierMissing += rhsExpr()");
     output.push(format!(
@@ -1546,7 +1548,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let identifier_bitwise_missing =
         observe(&runtime, &mut context, "identifierMissingBits &= rhsExpr()");
@@ -1558,7 +1560,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let identifier_shift_missing = observe(
         &runtime,
@@ -1573,7 +1575,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let identifier_power_missing = observe(
         &runtime,
@@ -1588,7 +1590,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let identifier_getter_throw =
         observe(&runtime, &mut context, "identifierThrowing ||= rhsExpr()");
@@ -1601,7 +1603,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let null_logical = observe(
         &runtime,
@@ -1617,7 +1619,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let null_set = observe(&runtime, &mut context, "null[keyExpr()] = rhsExpr()");
     output.push(format!(
@@ -1628,7 +1630,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &mut context,
         "log",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let null_delete = observe(&runtime, &mut context, "delete null[keyExpr()]");
     output.push(format!(
@@ -1669,7 +1671,7 @@ fn rust_observations() -> Vec<String> {
                 &runtime,
                 &mut context,
                 "log",
-                Value::String(JsString::from("")),
+                Value::String(JsString::try_from_utf8("").unwrap()),
             );
             let observation = observe(
                 &runtime,
@@ -1687,7 +1689,7 @@ fn rust_observations() -> Vec<String> {
             &runtime,
             &mut context,
             "log",
-            Value::String(JsString::from("")),
+            Value::String(JsString::try_from_utf8("").unwrap()),
         );
         let observation = observe(
             &runtime,
@@ -1704,7 +1706,7 @@ fn rust_observations() -> Vec<String> {
             &runtime,
             &mut context,
             "log",
-            Value::String(JsString::from("")),
+            Value::String(JsString::try_from_utf8("").unwrap()),
         );
         let observation = observe(
             &runtime,
@@ -1721,7 +1723,7 @@ fn rust_observations() -> Vec<String> {
             &runtime,
             &mut context,
             "log",
-            Value::String(JsString::from("")),
+            Value::String(JsString::try_from_utf8("").unwrap()),
         );
         let observation = observe(
             &runtime,
@@ -1738,7 +1740,7 @@ fn rust_observations() -> Vec<String> {
             &runtime,
             &mut context,
             "log",
-            Value::String(JsString::from("")),
+            Value::String(JsString::try_from_utf8("").unwrap()),
         );
         let observation = observe(
             &runtime,
@@ -1768,7 +1770,7 @@ fn rust_observations() -> Vec<String> {
             &runtime,
             &mut context,
             "log",
-            Value::String(JsString::from("")),
+            Value::String(JsString::try_from_utf8("").unwrap()),
         );
         let observation = observe(&runtime, &mut context, source);
         output.push(format!(
@@ -1816,8 +1818,12 @@ fn rust_observations() -> Vec<String> {
         )
     ));
 
-    let symbol = runtime.new_symbol(Some(JsString::from("same"))).unwrap();
-    let other_symbol = runtime.new_symbol(Some(JsString::from("same"))).unwrap();
+    let symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("same").unwrap()))
+        .unwrap();
+    let other_symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("same").unwrap()))
+        .unwrap();
     define_global(
         &runtime,
         &mut context,

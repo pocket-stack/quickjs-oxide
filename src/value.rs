@@ -70,6 +70,74 @@ struct Utf16Units {
     remaining: usize,
 }
 
+pub(crate) struct JsStringBuilder {
+    units: Vec<u16>,
+    limit: usize,
+    failed: bool,
+}
+
+impl JsStringBuilder {
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self::with_limit(capacity, JsString::MAX_LEN)
+    }
+
+    pub(crate) fn with_limit(capacity: usize, limit: usize) -> Self {
+        let limit = limit.min(JsString::MAX_LEN);
+        Self {
+            units: Vec::with_capacity(capacity.min(limit).min(4096)),
+            limit,
+            failed: false,
+        }
+    }
+
+    pub(crate) fn push_utf8(&mut self, value: &str) -> Result<(), JsStringError> {
+        let additional = value.encode_utf16().count();
+        self.ensure_additional(additional)?;
+        self.units.extend(value.encode_utf16());
+        Ok(())
+    }
+
+    pub(crate) fn push_js_string(&mut self, value: &JsString) -> Result<(), JsStringError> {
+        self.ensure_additional(value.len())?;
+        self.units.extend(value.utf16_units());
+        Ok(())
+    }
+
+    pub(crate) fn push_code_point(&mut self, value: u32) -> Result<(), JsStringError> {
+        debug_assert!(value <= 0x10_ffff);
+        let additional = if value <= 0xffff { 1 } else { 2 };
+        self.ensure_additional(additional)?;
+        if value <= 0xffff {
+            self.units.push(value as u16);
+        } else {
+            let adjusted = value - 0x1_0000;
+            self.units.push(0xd800 | ((adjusted >> 10) as u16));
+            self.units.push(0xdc00 | ((adjusted & 0x3ff) as u16));
+        }
+        Ok(())
+    }
+
+    fn ensure_additional(&mut self, additional: usize) -> Result<(), JsStringError> {
+        if self.failed {
+            return Err(JsStringError::TooLong);
+        }
+        if JsString::checked_length_with_limit(self.units.len(), additional, self.limit).is_err() {
+            self.units = Vec::new();
+            self.failed = true;
+            return Err(JsStringError::TooLong);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> Result<JsString, JsStringError> {
+        if self.failed {
+            return Err(JsStringError::TooLong);
+        }
+        debug_assert!(self.units.len() <= self.limit);
+        Ok(JsString::from_validated_utf16(self.units))
+    }
+}
+
 impl Utf16Units {
     fn new(string: &JsString) -> Self {
         let mut iterator = Self {
@@ -160,14 +228,79 @@ impl JsString {
         267914296, 433494437, 701408733, 1134903170,
     ];
 
-    #[must_use]
-    pub fn from_utf8(value: &str) -> Self {
-        Self::from_utf16(value.encode_utf16())
+    pub(crate) fn checked_length_with_limit(
+        current: usize,
+        additional: usize,
+        limit: usize,
+    ) -> Result<usize, JsStringError> {
+        current
+            .checked_add(additional)
+            .filter(|length| *length <= limit)
+            .ok_or(JsStringError::TooLong)
     }
 
-    #[must_use]
-    pub fn from_utf16(units: impl IntoIterator<Item = u16>) -> Self {
-        let units: Vec<u16> = units.into_iter().collect();
+    pub(crate) fn checked_length(
+        current: usize,
+        additional: usize,
+    ) -> Result<usize, JsStringError> {
+        Self::checked_length_with_limit(current, additional, Self::MAX_LEN)
+    }
+
+    /// Construct a dynamically supplied UTF-8 string while enforcing
+    /// QuickJS's 30-bit UTF-16 length limit.
+    ///
+    /// # Errors
+    /// Returns [`JsStringError::TooLong`] when the decoded value exceeds
+    /// [`Self::MAX_LEN`]. Recoverable allocator failure remains a separate
+    /// parity gap.
+    pub fn try_from_utf8(value: &str) -> Result<Self, JsStringError> {
+        Self::try_from_utf16(value.encode_utf16())
+    }
+
+    /// Construct one of the engine's trusted static table/literal strings.
+    /// Dynamic host input must use [`Self::try_from_utf8`].
+    pub(crate) fn from_static(value: &'static str) -> Self {
+        Self::try_from_utf8(value).expect("static ECMAScript String exceeded QuickJS's length cap")
+    }
+
+    /// Construct a dynamically supplied UTF-16 string while enforcing
+    /// QuickJS's 30-bit code-unit length limit.
+    ///
+    /// The iterator is consumed only after its lower size bound is validated;
+    /// a dishonest or unbounded upper hint is never used for an enormous eager
+    /// allocation.
+    ///
+    /// # Errors
+    /// Returns [`JsStringError::TooLong`] when the value exceeds
+    /// [`Self::MAX_LEN`]. Recoverable allocator failure remains a separate
+    /// parity gap.
+    pub fn try_from_utf16(units: impl IntoIterator<Item = u16>) -> Result<Self, JsStringError> {
+        Self::try_from_utf16_with_limit(units, Self::MAX_LEN)
+    }
+
+    pub(crate) fn try_from_utf16_with_limit(
+        units: impl IntoIterator<Item = u16>,
+        max_len: usize,
+    ) -> Result<Self, JsStringError> {
+        let max_len = max_len.min(Self::MAX_LEN);
+        let mut iterator = units.into_iter();
+        let (lower, upper) = iterator.size_hint();
+        if lower > max_len {
+            return Err(JsStringError::TooLong);
+        }
+        let initial_capacity = upper.unwrap_or(lower).min(max_len).min(4096);
+        let mut collected = Vec::with_capacity(initial_capacity);
+        for unit in &mut iterator {
+            if collected.len() == max_len {
+                return Err(JsStringError::TooLong);
+            }
+            collected.push(unit);
+        }
+        Ok(Self::from_validated_utf16(collected))
+    }
+
+    fn from_validated_utf16(units: Vec<u16>) -> Self {
+        debug_assert!(units.len() <= Self::MAX_LEN);
         let latin1 = units
             .iter()
             .copied()
@@ -282,7 +415,7 @@ impl JsString {
                 index += 1;
             }
         }
-        Self::from_utf16(units)
+        Self::from_validated_utf16(units)
     }
 
     fn first_unpaired_surrogate(&self) -> Option<usize> {
@@ -339,7 +472,7 @@ impl JsString {
     fn rope_children(rope: &RopeRepr) -> (Self, Self) {
         match &*rope.state.borrow() {
             RopeState::Tree { left, right } => (left.clone(), right.clone()),
-            RopeState::Linearized { flat } => (flat.clone(), Self::from("")),
+            RopeState::Linearized { flat } => (flat.clone(), Self::from_static("")),
         }
     }
 
@@ -472,7 +605,7 @@ impl JsString {
                 Some(result) => Self::new_rope_unbalanced(bucket, result)?,
             });
         }
-        Ok(result.unwrap_or_else(|| Self::from("")))
+        Ok(result.unwrap_or_else(|| Self::from_static("")))
     }
 
     /// Return a compact flat string, caching the result on a rope. This is the
@@ -511,10 +644,7 @@ impl JsString {
     /// Returns [`JsStringError::TooLong`] when the result would exceed
     /// [`Self::MAX_LEN`] UTF-16 code units.
     pub fn try_concat(&self, other: &Self) -> Result<Self, JsStringError> {
-        self.len()
-            .checked_add(other.len())
-            .filter(|len| *len <= Self::MAX_LEN)
-            .ok_or(JsStringError::TooLong)?;
+        Self::checked_length(self.len(), other.len())?;
 
         if other.is_flat() {
             if other.is_empty() {
@@ -572,12 +702,6 @@ impl Eq for JsString {}
 impl Hash for JsString {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.write_u32(self.quickjs_hash(0));
-    }
-}
-
-impl From<&str> for JsString {
-    fn from(value: &str) -> Self {
-        Self::from_utf8(value)
     }
 }
 
@@ -712,7 +836,7 @@ impl Value {
                 ));
             }
         };
-        Ok(JsString::from_utf8(&text))
+        Ok(JsString::try_from_utf8(&text)?)
     }
 
     #[must_use]
@@ -909,11 +1033,12 @@ impl PartialEq for Value {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     use std::rc::Rc;
 
-    use super::{JsString, JsStringError, Value, number_to_string};
+    use super::{JsString, JsStringBuilder, JsStringError, Value, number_to_string};
     use crate::bigint::JsBigInt;
     use crate::error::{Error, ErrorKind};
 
@@ -924,8 +1049,122 @@ mod tests {
     }
 
     #[test]
+    fn checked_string_construction_rejects_limits_and_hostile_hints_without_overpolling() {
+        struct PanicOnPoll;
+        impl Iterator for PanicOnPoll {
+            type Item = u16;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                panic!("oversized lower bound should reject before polling")
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                (usize::MAX, None)
+            }
+        }
+
+        struct LateOverflow {
+            polls: Rc<Cell<usize>>,
+        }
+        impl Iterator for LateOverflow {
+            type Item = u16;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                let poll = self.polls.get();
+                self.polls.set(poll + 1);
+                match poll {
+                    0..=3 => Some(u16::from(b'a') + u16::try_from(poll).unwrap()),
+                    _ => panic!("constructor polled after observing the overflowing unit"),
+                }
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                (0, Some(0))
+            }
+        }
+
+        assert_eq!(JsString::MAX_LEN, 0x3fff_ffff);
+        assert_eq!(
+            JsString::checked_length(JsString::MAX_LEN - 1, 1),
+            Ok(JsString::MAX_LEN)
+        );
+        assert_eq!(
+            JsString::checked_length(JsString::MAX_LEN, 1),
+            Err(JsStringError::TooLong)
+        );
+        assert_eq!(
+            JsString::checked_length(usize::MAX, 1),
+            Err(JsStringError::TooLong)
+        );
+        assert_eq!(
+            JsString::try_from_utf16_with_limit(PanicOnPoll, 3),
+            Err(JsStringError::TooLong)
+        );
+
+        struct UpperHint<I>(I);
+        impl<I: Iterator<Item = u16>> Iterator for UpperHint<I> {
+            type Item = u16;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                self.0.next()
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                (0, Some(usize::MAX))
+            }
+        }
+        let accepted =
+            JsString::try_from_utf16_with_limit(UpperHint([0x61, 0x100].into_iter()), 2).unwrap();
+        assert_eq!(accepted.utf16_units().collect::<Vec<_>>(), [0x61, 0x100]);
+
+        let polls = Rc::new(Cell::new(0));
+        assert_eq!(
+            JsString::try_from_utf16_with_limit(
+                LateOverflow {
+                    polls: polls.clone(),
+                },
+                3,
+            ),
+            Err(JsStringError::TooLong)
+        );
+        assert_eq!(polls.get(), 4);
+        assert!(JsString::try_from_utf16_with_limit([], 0).is_ok());
+        assert_eq!(
+            JsString::try_from_utf16_with_limit([0x61], 0),
+            Err(JsStringError::TooLong)
+        );
+        assert!(JsString::try_from_utf16_with_limit("😀".encode_utf16(), 2).is_ok());
+        assert_eq!(
+            JsString::try_from_utf16_with_limit("😀".encode_utf16(), 1),
+            Err(JsStringError::TooLong)
+        );
+    }
+
+    #[test]
+    fn checked_string_builder_latches_and_keeps_code_points_atomic() {
+        let mut exact = JsStringBuilder::with_limit(0, 3);
+        exact.push_utf8("a").unwrap();
+        exact.push_code_point(0x1f600).unwrap();
+        let exact = exact.finish().unwrap();
+        assert_eq!(
+            exact.utf16_units().collect::<Vec<_>>(),
+            [0x61, 0xd83d, 0xde00]
+        );
+
+        let mut copied = JsStringBuilder::with_limit(0, 2);
+        copied.push_js_string(&JsString::from_static("ab")).unwrap();
+        assert_eq!(copied.finish().unwrap(), JsString::from_static("ab"));
+
+        let mut failed = JsStringBuilder::with_limit(0, 2);
+        failed.push_utf8("a").unwrap();
+        assert_eq!(failed.push_code_point(0x1f600), Err(JsStringError::TooLong));
+        assert_eq!(failed.push_utf8("b"), Err(JsStringError::TooLong));
+        assert_eq!(failed.finish(), Err(JsStringError::TooLong));
+    }
+
+    #[test]
     fn string_length_counts_utf16_code_units() {
-        let text = JsString::from("a🚀");
+        let text = JsString::from_static("a🚀");
         assert_eq!(text.len(), 3);
         assert_eq!(
             text.utf16_units().collect::<Vec<_>>(),
@@ -935,14 +1174,14 @@ mod tests {
 
     #[test]
     fn strings_preserve_lone_surrogates() {
-        let text = JsString::from_utf16([0xd800, 0x61]);
+        let text = JsString::try_from_utf16([0xd800, 0x61]).unwrap();
         assert_eq!(text.utf16_units().collect::<Vec<_>>(), vec![0xd800, 0x61]);
         assert_eq!(text.to_utf8_lossy(), "�a");
     }
 
     #[test]
     fn utf16_index_code_point_and_well_formed_helpers_preserve_quickjs_rules() {
-        let text = JsString::from_utf16([0x41, 0xd83d, 0xde80, 0xd800, 0x42, 0xdc00]);
+        let text = JsString::try_from_utf16([0x41, 0xd83d, 0xde80, 0xd800, 0x42, 0xdc00]).unwrap();
         assert_eq!(text.code_unit_at(0), Some(0x41));
         assert_eq!(text.code_unit_at(6), None);
         assert_eq!(text.code_point_at(1), Some(0x1f680));
@@ -954,27 +1193,27 @@ mod tests {
             vec![0x41, 0xd83d, 0xde80, 0xfffd, 0x42, 0xfffd]
         );
 
-        let well_formed = JsString::from_utf16([0xd83d, 0xde80]);
+        let well_formed = JsString::try_from_utf16([0xd83d, 0xde80]).unwrap();
         assert!(well_formed.is_well_formed());
         assert_eq!(well_formed.to_well_formed(), well_formed);
     }
 
     #[test]
     fn rope_thresholds_fringe_merges_and_content_identity_match_quickjs() {
-        let flat_8192 = JsString::from_utf8(&"a".repeat(8192));
-        let short_512 = JsString::from_utf8(&"b".repeat(512));
+        let flat_8192 = JsString::try_from_utf8(&"a".repeat(8192)).unwrap();
+        let short_512 = JsString::try_from_utf8(&"b".repeat(512)).unwrap();
         let merged_flat = flat_8192.try_concat(&short_512).unwrap();
         assert!(merged_flat.is_flat());
         assert_eq!(merged_flat.len(), 8704);
 
-        let flat_8193 = JsString::from_utf8(&"a".repeat(8193));
+        let flat_8193 = JsString::try_from_utf8(&"a".repeat(8193)).unwrap();
         let rope = flat_8193.try_concat(&short_512).unwrap();
         assert!(!rope.is_flat());
         assert_eq!(rope.depth(), 1);
         assert_eq!(rope.code_unit_at(8192), Some(u16::from(b'a')));
         assert_eq!(rope.code_unit_at(8193), Some(u16::from(b'b')));
 
-        let expected = JsString::from_utf8(&("a".repeat(8193) + &"b".repeat(512)));
+        let expected = JsString::try_from_utf8(&("a".repeat(8193) + &"b".repeat(512))).unwrap();
         assert_eq!(rope, expected);
         assert_eq!(content_hash(&rope), content_hash(&expected));
         let mut units = rope.utf16_units();
@@ -982,7 +1221,7 @@ mod tests {
         assert_eq!(units.next(), Some(u16::from(b'a')));
         assert_eq!(units.len(), rope.len() - 1);
 
-        let one = JsString::from("c");
+        let one = JsString::from_static("c");
         let tail_merged = rope.try_concat(&one).unwrap();
         assert_eq!(tail_merged.depth(), 1);
         let super::StringRepr::Rope(tail) = tail_merged.0.as_ref() else {
@@ -992,7 +1231,7 @@ mod tests {
         assert_eq!(tail_right.len(), 513);
         assert!(tail_right.is_flat());
 
-        let right_513 = JsString::from_utf8(&"z".repeat(513));
+        let right_513 = JsString::try_from_utf8(&"z".repeat(513)).unwrap();
         let threshold_rope = flat_8192.try_concat(&right_513).unwrap();
         assert!(!threshold_rope.is_flat());
         let no_tail_merge = threshold_rope.try_concat(&one).unwrap();
@@ -1023,8 +1262,8 @@ mod tests {
         assert_eq!(head_left.len(), 513);
         assert!(head_left.is_flat());
 
-        let empty = JsString::from("");
-        let large_flat = JsString::from_utf8(&"q".repeat(8193));
+        let empty = JsString::from_static("");
+        let large_flat = JsString::try_from_utf8(&"q".repeat(8193)).unwrap();
         let empty_plus_flat = empty.try_concat(&large_flat).unwrap();
         assert!(!empty_plus_flat.is_flat());
         let empty_plus_rope = empty.try_concat(&empty_plus_flat).unwrap();
@@ -1034,7 +1273,9 @@ mod tests {
 
         let cached_flat = empty_plus_flat.linearize();
         assert!(cached_flat.is_flat());
-        let cached_concat = empty_plus_flat.try_concat(&JsString::from("!")).unwrap();
+        let cached_concat = empty_plus_flat
+            .try_concat(&JsString::from_static("!"))
+            .unwrap();
         assert!(!cached_concat.is_flat());
         assert_eq!(
             cached_concat.code_unit_at(cached_concat.len() - 1),
@@ -1048,20 +1289,25 @@ mod tests {
         left.push(0xd83d);
         let mut right = vec![0xde80];
         right.extend(std::iter::repeat_n(u16::from(b'b'), 512));
-        let valid = JsString::from_utf16(left)
-            .try_concat(&JsString::from_utf16(right))
+        let valid = JsString::try_from_utf16(left)
+            .unwrap()
+            .try_concat(&JsString::try_from_utf16(right).unwrap())
             .unwrap();
         assert!(!valid.is_flat());
         assert_eq!(valid.code_point_at(8192), Some(0x1f680));
         assert!(valid.is_well_formed());
 
         let invalid =
-            JsString::from_utf16(std::iter::repeat_n(u16::from(b'a'), 8192).chain([0xd800]))
-                .try_concat(&JsString::from_utf16(
-                    [u16::from(b'x')]
-                        .into_iter()
-                        .chain(std::iter::repeat_n(u16::from(b'b'), 512)),
-                ))
+            JsString::try_from_utf16(std::iter::repeat_n(u16::from(b'a'), 8192).chain([0xd800]))
+                .unwrap()
+                .try_concat(
+                    &JsString::try_from_utf16(
+                        [u16::from(b'x')]
+                            .into_iter()
+                            .chain(std::iter::repeat_n(u16::from(b'b'), 512)),
+                    )
+                    .unwrap(),
+                )
                 .unwrap();
         assert!(!invalid.is_well_formed());
         let repaired = invalid.to_well_formed();
@@ -1073,7 +1319,7 @@ mod tests {
     fn rope_rebalances_and_reaches_the_quickjs_length_guard_without_flattening() {
         let marker_chunk = |index: usize| {
             let marker = char::from(b'A' + u8::try_from(index % 26).unwrap());
-            JsString::from_utf8(&marker.to_string().repeat(8193))
+            JsString::try_from_utf8(&marker.to_string().repeat(8193)).unwrap()
         };
         let mut deep = marker_chunk(0);
         for index in 1..101 {
@@ -1104,7 +1350,7 @@ mod tests {
         assert_eq!(before_hash, content_hash(&deep));
         assert_eq!(before_hash, content_hash(&flat));
 
-        let chunk = JsString::from_utf8(&"x".repeat(8193));
+        let chunk = JsString::try_from_utf8(&"x".repeat(8193)).unwrap();
         let mut near_limit = chunk;
         for _ in 0..16 {
             near_limit = near_limit.try_concat(&near_limit).unwrap();
@@ -1119,22 +1365,22 @@ mod tests {
         assert_eq!(error.message(), "string too long");
 
         let mut powers = Vec::with_capacity(30);
-        let mut power = JsString::from("x");
+        let mut power = JsString::from_static("x");
         powers.push(power.clone());
         for _ in 1..30 {
             power = power.try_concat(&power).unwrap();
             powers.push(power.clone());
         }
-        let mut exact_max = JsString::from("");
+        let mut exact_max = JsString::from_static("");
         for power in powers.into_iter().rev() {
             exact_max = exact_max.try_concat(&power).unwrap();
         }
         assert_eq!(exact_max.len(), JsString::MAX_LEN);
         assert!(matches!(
-            exact_max.try_concat(&JsString::from("x")),
+            exact_max.try_concat(&JsString::from_static("x")),
             Err(JsStringError::TooLong)
         ));
-        let exact_plus_empty = exact_max.try_concat(&JsString::from("")).unwrap();
+        let exact_plus_empty = exact_max.try_concat(&JsString::from_static("")).unwrap();
         assert!(Rc::ptr_eq(&exact_plus_empty.0, &exact_max.0));
     }
 
@@ -1161,24 +1407,26 @@ mod tests {
     #[test]
     fn primitive_coercions_follow_ecmascript() {
         assert_eq!(
-            Value::String(JsString::from("  \u{feff}  "))
+            Value::String(JsString::from_static("  \u{feff}  "))
                 .to_number()
                 .unwrap(),
             0.0
         );
         assert_eq!(
-            Value::String(JsString::from("0xff")).to_number().unwrap(),
+            Value::String(JsString::from_static("0xff"))
+                .to_number()
+                .unwrap(),
             255.0
         );
         assert!(
-            Value::String(JsString::from("-0x1"))
+            Value::String(JsString::from_static("-0x1"))
                 .to_number()
                 .unwrap()
                 .is_nan()
         );
         for invalid in ["0x1_", "0x+1", "0b1_", "0o7_"] {
             assert!(
-                Value::String(JsString::from(invalid))
+                Value::String(JsString::try_from_utf8(invalid).unwrap())
                     .to_number()
                     .unwrap()
                     .is_nan(),
@@ -1205,7 +1453,7 @@ mod tests {
         assert!(!zero.to_boolean());
         assert!(one.to_boolean());
         assert!(one.to_number().is_err());
-        assert_eq!(one.to_js_string().unwrap(), JsString::from("1"));
+        assert_eq!(one.to_js_string().unwrap(), JsString::from_static("1"));
         assert_eq!(one.type_of(), "bigint");
     }
 }

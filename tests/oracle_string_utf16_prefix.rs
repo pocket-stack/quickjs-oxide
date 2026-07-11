@@ -188,7 +188,7 @@ fn rust_observations() -> Vec<String> {
     let filtered = own_key_names(&runtime, &prototype)
         .into_iter()
         .filter(|key| implemented.contains(&key.as_str()))
-        .map(|key| hex(&JsString::from(key.as_str())))
+        .map(|key| hex(&JsString::try_from_utf8(key.as_str()).unwrap()))
         .collect::<Vec<_>>()
         .join(",");
     let flags = implemented[..8]
@@ -206,7 +206,7 @@ fn rust_observations() -> Vec<String> {
             .join("|")
     ));
 
-    let source = JsString::from_utf16([0x41, 0xd83d, 0xde00, 0xd800, 0x5a]);
+    let source = JsString::try_from_utf16([0x41, 0xd83d, 0xde00, 0xd800, 0x5a]).unwrap();
     let indices = [
         Value::Undefined,
         Value::Float(f64::NAN),
@@ -253,7 +253,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &global,
         "conversionLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let receiver = context.new_object().unwrap();
     let receiver_conversion = eval_callable(
@@ -285,13 +285,21 @@ fn rust_observations() -> Vec<String> {
     ));
 
     let Value::Object(generic_wrapper) = context
-        .call(&object_value_of, Value::String(JsString::from("xy")), &[])
+        .call(
+            &object_value_of,
+            Value::String(JsString::try_from_utf8("xy").unwrap()),
+            &[],
+        )
         .unwrap()
     else {
         panic!("Object.prototype.valueOf did not box String");
     };
     let missing_index = context
-        .call(&at, Value::String(JsString::from("x")), &[])
+        .call(
+            &at,
+            Value::String(JsString::try_from_utf8("x").unwrap()),
+            &[],
+        )
         .unwrap();
     let generic_number = context
         .call(&at, Value::Int(123), &[Value::Int(1)])
@@ -322,7 +330,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &global,
         "concatLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let fallback = context.new_object().unwrap();
     define_data(&runtime, &global, "concatFallback", Value::Object(fallback));
@@ -381,7 +389,11 @@ fn rust_observations() -> Vec<String> {
         "(function(){concatLog=concatLog+'d,';return 'D';})",
     );
     let no_args = context
-        .call(&concat, Value::String(JsString::from("R")), &[])
+        .call(
+            &concat,
+            Value::String(JsString::try_from_utf8("R").unwrap()),
+            &[],
+        )
         .unwrap();
     let concatenated = context
         .call(
@@ -395,7 +407,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &global,
         "concatLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let thrown = observe_call_args(
         &runtime,
@@ -419,14 +431,14 @@ fn rust_observations() -> Vec<String> {
     ));
 
     let well_inputs = [
-        JsString::from(""),
-        JsString::from("abc"),
-        JsString::from_utf16([0xd83d, 0xde00]),
-        JsString::from_utf16([0xd800]),
-        JsString::from_utf16([0xdc00]),
-        JsString::from_utf16([0xdc00, 0xd800]),
-        JsString::from_utf16([0x41, 0xd800, 0x42, 0xdc00, 0x43]),
-        JsString::from_utf16([0xd800, 0xdc00, 0xd800, 0xdc00]),
+        JsString::try_from_utf8("").unwrap(),
+        JsString::try_from_utf8("abc").unwrap(),
+        JsString::try_from_utf16([0xd83d, 0xde00]).unwrap(),
+        JsString::try_from_utf16([0xd800]).unwrap(),
+        JsString::try_from_utf16([0xdc00]).unwrap(),
+        JsString::try_from_utf16([0xdc00, 0xd800]).unwrap(),
+        JsString::try_from_utf16([0x41, 0xd800, 0x42, 0xdc00, 0x43]).unwrap(),
+        JsString::try_from_utf16([0xd800, 0xdc00, 0xd800, 0xdc00]).unwrap(),
     ];
     let mut well = Vec::with_capacity(well_inputs.len());
     for input in well_inputs {
@@ -443,7 +455,7 @@ fn rust_observations() -> Vec<String> {
         &runtime,
         &global,
         "wellLog",
-        Value::String(JsString::from("")),
+        Value::String(JsString::try_from_utf8("").unwrap()),
     );
     let well_receiver = context.new_object().unwrap();
     define_method(
@@ -486,11 +498,13 @@ fn rust_observations() -> Vec<String> {
     ));
 
     let receiver_symbol = runtime
-        .new_symbol(Some(JsString::from("receiver")))
+        .new_symbol(Some(JsString::try_from_utf8("receiver").unwrap()))
         .unwrap();
-    let index_symbol = runtime.new_symbol(Some(JsString::from("index"))).unwrap();
+    let index_symbol = runtime
+        .new_symbol(Some(JsString::try_from_utf8("index").unwrap()))
+        .unwrap();
     let argument_symbol = runtime
-        .new_symbol(Some(JsString::from("argument")))
+        .new_symbol(Some(JsString::try_from_utf8("argument").unwrap()))
         .unwrap();
     out.push(format!(
         "errors={}|{}|{}|{}|{}|{}",
@@ -513,21 +527,21 @@ fn rust_observations() -> Vec<String> {
             &runtime,
             &mut context,
             &at,
-            Value::String(JsString::from("x")),
+            Value::String(JsString::try_from_utf8("x").unwrap()),
             &[Value::BigInt(JsBigInt::one())],
         ),
         observe_call_args(
             &runtime,
             &mut context,
             &at,
-            Value::String(JsString::from("x")),
+            Value::String(JsString::try_from_utf8("x").unwrap()),
             &[Value::Symbol(index_symbol)],
         ),
         observe_call_args(
             &runtime,
             &mut context,
             &concat,
-            Value::String(JsString::from("x")),
+            Value::String(JsString::try_from_utf8("x").unwrap()),
             &[Value::Symbol(argument_symbol)],
         )
     ));
@@ -546,18 +560,18 @@ fn string_utf16_prefix_cross_realm_and_error_realms_match_quickjs() {
         second
             .call(
                 &at,
-                Value::String(JsString::from_utf16([0xd83d, 0xde00])),
+                Value::String(JsString::try_from_utf16([0xd83d, 0xde00]).unwrap()),
                 &[Value::Int(0)],
             )
             .unwrap(),
-        Value::String(JsString::from_utf16([0xd83d]))
+        Value::String(JsString::try_from_utf16([0xd83d]).unwrap())
     );
 
     let first_type_error = intrinsic_prototype(&runtime, &mut first, "TypeError");
     assert_eq!(
         second.call(
             &at,
-            Value::String(JsString::from("x")),
+            Value::String(JsString::try_from_utf8("x").unwrap()),
             &[Value::BigInt(JsBigInt::one())],
         ),
         Err(RuntimeError::Exception)
@@ -579,7 +593,7 @@ fn string_utf16_prefix_cross_realm_and_error_realms_match_quickjs() {
     assert_eq!(
         first.call(
             &at,
-            Value::String(JsString::from("x")),
+            Value::String(JsString::try_from_utf8("x").unwrap()),
             &[Value::Object(throwing_index)],
         ),
         Err(RuntimeError::Exception)
@@ -666,7 +680,7 @@ fn signature(runtime: &Runtime, context: &mut Context, callable: &CallableRef) -
         hex(&name),
         own_key_names(runtime, callable.as_object())
             .into_iter()
-            .map(|key| hex(&JsString::from(key.as_str())))
+            .map(|key| hex(&JsString::try_from_utf8(key.as_str()).unwrap()))
             .collect::<Vec<_>>()
             .join(","),
         runtime.is_constructor(callable.as_object()).unwrap()

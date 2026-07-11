@@ -242,7 +242,7 @@ fn value_text(value: Value) -> String {
 }
 
 fn string(value: &str) -> Value {
-    Value::String(JsString::from(value))
+    Value::String(JsString::try_from_utf8(value).unwrap())
 }
 
 fn oracle_observations(oracle: &OsStr) -> Vec<String> {

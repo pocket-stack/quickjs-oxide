@@ -318,7 +318,7 @@ mod tests {
     use crate::value::JsString;
 
     fn string(source: &str) -> JsString {
-        JsString::from_utf8(source)
+        JsString::try_from_utf8(source).unwrap()
     }
 
     fn assert_same_number(actual: f64, expected: f64) {
@@ -457,13 +457,13 @@ mod tests {
             0x0009, 0x000a, 0x000b, 0x000c, 0x000d, 0x0020, 0x00a0, 0x1680, 0x2000, 0x200a, 0x2028,
             0x2029, 0x202f, 0x205f, 0x3000, 0xfeff,
         ] {
-            let input = JsString::from_utf16([whitespace, u16::from(b'1')]);
+            let input = JsString::try_from_utf16([whitespace, u16::from(b'1')]).unwrap();
             assert_same_number(parse_int(&input, 10), 1.0);
             assert_same_number(parse_float(&input), 1.0);
         }
 
         for non_whitespace in [0x0085, 0x180e] {
-            let input = JsString::from_utf16([non_whitespace, u16::from(b'1')]);
+            let input = JsString::try_from_utf16([non_whitespace, u16::from(b'1')]).unwrap();
             assert!(parse_int(&input, 10).is_nan());
             assert!(parse_float(&input).is_nan());
         }
@@ -471,7 +471,9 @@ mod tests {
 
     #[test]
     fn embedded_nul_terminates_the_prefix_without_losing_prior_digits() {
-        let input = JsString::from_utf16([u16::from(b'1'), u16::from(b'2'), 0, u16::from(b'3')]);
+        let input =
+            JsString::try_from_utf16([u16::from(b'1'), u16::from(b'2'), 0, u16::from(b'3')])
+                .unwrap();
         assert_same_number(parse_int(&input, 10), 12.0);
         assert_same_number(parse_float(&input), 12.0);
     }
