@@ -760,8 +760,9 @@ claim full parity.
   `of`, and `@@species`; `from` covers iterable and array-like routes, mapper
   ordering, constructor receivers, CreateDataProperty, iterator closing, and
   final length Set. The currently implemented prototype subset contains `at`,
-  `with`, `fill`, `indexOf`, `lastIndexOf`, `includes`, `copyWithin`, generic
-  `values`, `keys`, `entries`, and the `@@iterator` alias in their pinned filtered order. `at` uses
+  `with`, `fill`, `find`, `findIndex`, `findLast`, `findLastIndex`, `indexOf`,
+  `lastIndexOf`, `includes`, `copyWithin`, generic `values`, `keys`, `entries`,
+  and the `@@iterator` alias in their pinned filtered order. `at` uses
   saturating Int64 index conversion and HasProperty-before-Get; the three
   searches snapshot ToLength, skip `fromIndex` conversion for zero length,
   preserve omitted-versus-explicit-undefined behavior, and use QuickJS's
@@ -779,7 +780,12 @@ claim full parity.
   before `end` even for an empty range, and applies ascending ordinary throwing
   Set operations. Holes become own values, inherited setters remain observable,
   a failing write preserves earlier mutations, and boxing/native errors use the
-  method's defining realm while user throws are preserved. `copyWithin`
+  method's defining realm while user throws are preserved. The four `find*`
+  methods share QuickJS's callback kernel: they validate the predicate after
+  ToLength even for empty receivers, Get and visit every snapshotted index
+  including holes, pass value/index/the original unboxed receiver, traverse in
+  the selected direction, and preserve callback/Get abrupt completions and
+  defining-realm native errors. `copyWithin`
   snapshots and clamps all three bounds in QuickJS order, selects a backward
   traversal only for overlapping ranges, and performs source HasProperty/Get
   followed by a throwing target Set, or a throwing Delete for a source hole.
@@ -792,7 +798,7 @@ claim full parity.
   remaining mutation/search/sort methods, `@@unscopables`, and species-based result
   creation remain later slices. The pinned runtime anchors are `quickjs.c`
   5628-5671, 9433-9524, 10369-10592, 13210-13255, 41472-41900,
-  42228-42407, 42975-43013, 43344-43454, 44519-44583, and 56220-56390.
+  42228-42480, 42975-43013, 43344-43454, 44519-44583, and 56220-56390.
 - Every realm now publishes `%Object%` as a constructor-or-function native
   linked to `%Object.prototype%`. Call and construction preserve existing
   objects, box every primitive family in the defining realm, allocate ordinary
@@ -1484,6 +1490,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_fill -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_copy_within -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_array_find -- --nocapture
 
 ./scripts/test-parity-slice.sh
 ```
@@ -1494,7 +1502,7 @@ String-rope/byte/native-Error kernels, Unicode identifier core, global
 BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials, and
 the Program-var/function, Program/body/block/switch/classic-for lexical-scope,
 single/labelled Annex B, synchronous try/catch/finally, synchronous for-of,
-Array core/literal/iterator/search/mutation/change-by-copy, and Object
+Array core/literal/iterator/search/callback/mutation/change-by-copy, and Object
 constructor/static-prefix/prototype slices. The atom-Error target contains thirteen
 pinned-oracle inputs in addition to its Rust-side expectation test. The Unicode
 target checks every scalar, real compiler/runtime cases, and the parser-driven

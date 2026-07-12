@@ -23,13 +23,13 @@ use crate::function::{
     UnlinkedVariableDefinition,
 };
 use crate::heap::{
-    ArrayIteratorKind, ArraySearchKind, AutoInitProperty, BigIntAsNKind, BytecodeConstant,
-    ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
-    ContextData, ContextId, DynamicFunctionKind, ErrorConstructorKind, FunctionBytecodeData,
-    FunctionBytecodeId, FunctionDebugInfo, FunctionDebugPosition, FunctionKind, FunctionMetadata,
-    GcStats, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts,
-    HeapError, NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind,
-    NumberPredicateKind, ObjectAccessorKind, ObjectData, ObjectId, ObjectKind,
+    ArrayFindKind, ArrayIteratorKind, ArraySearchKind, AutoInitProperty, BigIntAsNKind,
+    BytecodeConstant, ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName,
+    ConstructorKind, ContextData, ContextId, DynamicFunctionKind, ErrorConstructorKind,
+    FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo, FunctionDebugPosition,
+    FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap,
+    HeapCleanup, HeapCounts, HeapError, NativeCProto, NativeFunctionId, NumberFormatKind,
+    NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData, ObjectId, ObjectKind,
     ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot,
     RawValue, ShapeId, StringCharAtKind, StringWellFormedKind, SymbolRegistryKind, VarRefData,
     VarRefId, VariableDefinition,
@@ -3492,6 +3492,21 @@ impl Runtime {
             1,
             1,
         )?;
+        for (kind, name) in [
+            (ArrayFindKind::Find, "find"),
+            (ArrayFindKind::FindIndex, "findIndex"),
+            (ArrayFindKind::FindLast, "findLast"),
+            (ArrayFindKind::FindLastIndex, "findLastIndex"),
+        ] {
+            self.define_native_builtin_auto_init(
+                array_prototype,
+                realm,
+                NativeFunctionId::ArrayPrototypeFind(kind),
+                name,
+                1,
+                1,
+            )?;
+        }
         for (kind, name) in [
             (ArraySearchKind::IndexOf, "indexOf"),
             (ArraySearchKind::LastIndexOf, "lastIndexOf"),
@@ -11350,6 +11365,81 @@ impl Runtime {
         Ok(Completion::Return(Value::Object(object)))
     }
 
+    fn call_array_prototype_find(
+        &self,
+        realm: ContextId,
+        kind: ArrayFindKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype find method did not receive a generic invocation",
+            ));
+        };
+        let original_this = this_value.clone();
+        let (object, length) = match self.native_array_like_object_and_length(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let predicate = self.callable_from_value(
+            arguments
+                .readable
+                .first()
+                .ok_or(RuntimeError::Invariant(
+                    "Array.prototype find predicate argv was not padded",
+                ))?
+                .clone(),
+        )?;
+        let this_arg = if arguments.actual_arg_count > 1 {
+            arguments
+                .readable
+                .get(1)
+                .ok_or(RuntimeError::Invariant(
+                    "Array.prototype find thisArg was missing",
+                ))?
+                .clone()
+        } else {
+            Value::Undefined
+        };
+        let length = i64::try_from(length)
+            .map_err(|_| RuntimeError::Invariant("array-like length exceeded Int64"))?;
+        let (mut index, end, direction) = match kind {
+            ArrayFindKind::Find | ArrayFindKind::FindIndex => (0, length, 1),
+            ArrayFindKind::FindLast | ArrayFindKind::FindLastIndex => (length - 1, -1, -1),
+        };
+
+        while index != end {
+            let key = self.intern_property_key(&index.to_string())?;
+            let value = match self.get_property_in_realm(realm, &object, &key)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            let index_value = Value::number(index as f64);
+            let callback_arguments = [value.clone(), index_value.clone(), original_this.clone()];
+            let matches = match self.call_internal(
+                realm,
+                &predicate,
+                this_arg.clone(),
+                &callback_arguments,
+            )? {
+                Completion::Return(value) => value.to_boolean(),
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            if matches {
+                return Ok(Completion::Return(match kind {
+                    ArrayFindKind::Find | ArrayFindKind::FindLast => value,
+                    ArrayFindKind::FindIndex | ArrayFindKind::FindLastIndex => index_value,
+                }));
+            }
+            index += direction;
+        }
+        Ok(Completion::Return(match kind {
+            ArrayFindKind::Find | ArrayFindKind::FindLast => Value::Undefined,
+            ArrayFindKind::FindIndex | ArrayFindKind::FindLastIndex => Value::Int(-1),
+        }))
+    }
+
     fn call_array_prototype_copy_within(
         &self,
         realm: ContextId,
@@ -13959,6 +14049,9 @@ impl Runtime {
             }
             NativeFunctionId::ArrayPrototypeFill => {
                 self.call_array_prototype_fill(realm, invocation, arguments)
+            }
+            NativeFunctionId::ArrayPrototypeFind(kind) => {
+                self.call_array_prototype_find(realm, kind, invocation, arguments)
             }
             NativeFunctionId::ArrayPrototypeCopyWithin => {
                 self.call_array_prototype_copy_within(realm, invocation, arguments)
