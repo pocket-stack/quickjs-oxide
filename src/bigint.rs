@@ -88,6 +88,19 @@ enum BigIntRepr {
 pub struct JsBigInt(BigIntRepr);
 
 impl JsBigInt {
+    /// Test the tagged representation identity observed by QuickJS's raw
+    /// `JSValue` equality shortcuts. Heap values must share the same cell;
+    /// numeric equality alone is deliberately insufficient.
+    #[must_use]
+    pub(crate) fn same_representation(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (BigIntRepr::Short(left), BigIntRepr::Short(right)) => left == right,
+            (BigIntRepr::Heap(left), BigIntRepr::Heap(right)) => Rc::ptr_eq(left, right),
+            (BigIntRepr::Short(_), BigIntRepr::Heap(_))
+            | (BigIntRepr::Heap(_), BigIntRepr::Short(_)) => false,
+        }
+    }
+
     /// Construct zero in the short representation.
     #[must_use]
     pub const fn zero() -> Self {

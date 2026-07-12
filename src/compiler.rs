@@ -11,6 +11,7 @@
 //! diagnostic on the current token. Directive-prologue probes clone and seek
 //! the lexer, then the committed stream is rescanned under its strict context.
 
+use crate::atom::AtomTable;
 use crate::bigint::JsBigInt;
 use crate::bytecode::{BytecodeFunction, Instruction, MAX_LOCAL_SLOTS, verify_parts};
 use crate::debug::{DebugInfoMode, Pc2LineEntry, Pc2LineTable, QuickJsSourceLocator, SourceOffset};
@@ -29,6 +30,7 @@ use crate::lexer::{
 use crate::value::{JsString, JsStringError, Value};
 use num_bigint::BigUint;
 use num_traits::ToPrimitive;
+use std::collections::HashMap;
 use std::ops::Range;
 
 /// Default filename used by the Rust convenience compile/eval APIs.
@@ -280,6 +282,8 @@ struct IrProgramAnnexFunction {
 #[derive(Debug)]
 enum IrConstant {
     Primitive(Value),
+    /// Source String emitted through QuickJS's atom-value constant path.
+    AtomString(JsString),
     Child(FunctionId),
 }
 
@@ -3712,7 +3716,7 @@ impl<'source> Parser<'source> {
                     ));
                 }
                 self.advance()?;
-                self.emit_value(Value::String(JsString::try_from_utf16(string.value.utf16)?))?;
+                self.emit_atom_string(JsString::try_from_utf16(string.value.utf16)?)?;
             }
             TokenKind::Punctuator(Punctuator::LeftParen) => {
                 self.advance()?;
@@ -3927,7 +3931,7 @@ impl<'source> Parser<'source> {
             };
 
             if !cooked.utf16.is_empty() || depth == 0 {
-                self.emit_value(Value::String(JsString::try_from_utf16(cooked.utf16)?))?;
+                self.emit_atom_string(JsString::try_from_utf16(cooked.utf16)?)?;
                 if depth == 0 {
                     if kind == TemplatePartKind::NoSubstitution {
                         self.advance()?;
@@ -4520,6 +4524,11 @@ impl<'source> Parser<'source> {
 
     fn emit_value(&mut self, value: Value) -> Result<(), Error> {
         self.emit_value_with_site(value, None)
+    }
+
+    fn emit_atom_string(&mut self, value: JsString) -> Result<(), Error> {
+        let index = self.add_constant(IrConstant::AtomString(value))?;
+        self.emit(IrOp::PushConstant(index)).map(|_| ())
     }
 
     fn emit_value_with_site(
@@ -7355,11 +7364,25 @@ fn lower_detached_script(tree: FunctionTree) -> Result<BytecodeFunction, Error> 
     let captured_locals = vec![false; function.locals.len()];
     let scope_lifecycles = build_scope_lifecycles(&function, &captured_locals)?;
     let code = lower_ops(function.ops, &scope_lifecycles)?.code;
+    let mut atom_strings = HashMap::<u32, Vec<JsString>>::new();
     let constants = function
         .constants
         .into_iter()
         .map(|constant| match constant {
             IrConstant::Primitive(value) => Ok(value),
+            IrConstant::AtomString(value) => {
+                if AtomTable::immediate_integer_atom(&value).is_some() {
+                    Ok(Value::String(value))
+                } else {
+                    let strings = atom_strings.entry(value.content_hash()).or_default();
+                    if let Some(canonical) = strings.iter().find(|string| *string == &value) {
+                        Ok(Value::String(canonical.clone()))
+                    } else {
+                        strings.push(value.clone());
+                        Ok(Value::String(value))
+                    }
+                }
+            }
             IrConstant::Child(_) => Err(Error::internal(
                 "detached compiler accepted a child-function constant",
             )),
@@ -7459,6 +7482,7 @@ fn lower_unlinked_tree(
             .constants
             .into_iter()
             .map(|constant| match constant {
+                IrConstant::AtomString(value) => Ok(UnlinkedConstant::atom_string(value)),
                 IrConstant::Primitive(value) => unlinked_primitive(value),
                 IrConstant::Child(child) => lowered
                     .get_mut(child)
@@ -14056,6 +14080,36 @@ mod tests {
             assert_eq!(constant.as_primitive(), Some(expected));
             assert!(constant.as_child().is_none());
         }
+    }
+
+    #[test]
+    fn detached_string_literals_follow_quickjs_atom_identity_boundaries() {
+        let atomized = compile_script("['same','same']").unwrap();
+        let Value::String(first) = &atomized.constants[0] else {
+            panic!("first atomized literal was not a String");
+        };
+        let Value::String(second) = &atomized.constants[1] else {
+            panic!("second atomized literal was not a String");
+        };
+        assert!(first.same_representation(second));
+
+        let immediate = compile_script("['2147483647','2147483647']").unwrap();
+        let Value::String(first) = &immediate.constants[0] else {
+            panic!("first immediate-atom literal was not a String");
+        };
+        let Value::String(second) = &immediate.constants[1] else {
+            panic!("second immediate-atom literal was not a String");
+        };
+        assert!(!first.same_representation(second));
+
+        let table_backed = compile_script("['2147483648','2147483648']").unwrap();
+        let Value::String(first) = &table_backed.constants[0] else {
+            panic!("first table-backed numeric literal was not a String");
+        };
+        let Value::String(second) = &table_backed.constants[1] else {
+            panic!("second table-backed numeric literal was not a String");
+        };
+        assert!(first.same_representation(second));
     }
 
     #[test]

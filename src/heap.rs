@@ -875,6 +875,8 @@ pub enum NativeFunctionId {
     ArrayPrototypePush(ArrayPushKind),
     ArrayPrototypeReverse,
     ArrayPrototypeToReversed,
+    ArrayPrototypeSort,
+    ArrayPrototypeToSorted,
     ArrayPrototypeCopyWithin,
     ArrayIteratorNext,
     ThrowTypeError,
@@ -1145,6 +1147,8 @@ impl NativeFunctionId {
             | Self::ArrayPrototypeToString
             | Self::ArrayPrototypeReverse
             | Self::ArrayPrototypeToReversed
+            | Self::ArrayPrototypeSort
+            | Self::ArrayPrototypeToSorted
             | Self::ArrayPrototypeCopyWithin
             | Self::SymbolRegistry(_)
             | Self::GlobalNumberParse(_)
@@ -4079,6 +4083,17 @@ mod tests {
         for target in [
             NativeFunctionId::ArrayPrototypeReverse,
             NativeFunctionId::ArrayPrototypeToReversed,
+        ] {
+            assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
+    }
+
+    #[test]
+    fn array_sort_native_targets_use_pinned_cproto() {
+        for target in [
+            NativeFunctionId::ArrayPrototypeSort,
+            NativeFunctionId::ArrayPrototypeToSorted,
         ] {
             assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
             assert!(!target.descriptor().cproto.default_is_constructor());

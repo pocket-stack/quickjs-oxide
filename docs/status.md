@@ -763,9 +763,9 @@ claim full parity.
   `with`, `concat`, `every`, `some`, `forEach`, `map`, `filter`, `reduce`,
   `reduceRight`, `fill`, `find`, `findIndex`, `findLast`, `findLastIndex`,
   `indexOf`, `lastIndexOf`, `includes`, `join`, `toString`, `toLocaleString`,
-  `pop`, `push`, `shift`, `unshift`, `reverse`, `toReversed`, `copyWithin`,
-  generic `values`, `keys`, `entries`, and the `@@iterator` alias in their
-  pinned filtered order. `at` uses
+  `pop`, `push`, `shift`, `unshift`, `reverse`, `toReversed`, `sort`,
+  `toSorted`, `copyWithin`, generic `values`, `keys`, `entries`, and the
+  `@@iterator` alias in their pinned filtered order. `at` uses
   saturating Int64 index conversion and HasProperty-before-Get; the three
   searches snapshot ToLength, skip `fromIndex` conversion for zero length,
   preserve omitted-versus-explicit-undefined behavior, and use QuickJS's
@@ -861,6 +861,38 @@ claim full parity.
   Array object after those reads; exact allocator-failure ordering still needs
   a bulk dense-array allocator. The `toReversed` `@@unscopables` entry remains
   grouped with the not-yet-published unscopables object.
+  `sort` validates a supplied comparator before ToObject, snapshots ToLength,
+  and collects present values in ascending HasProperty/Get order. Holes are
+  omitted and explicit `undefined` values are counted separately. Its fallible
+  iterative sorter is a direct port of pinned `rqsort`, including the exact
+  median-of-three/insertion/heapsort comparison choreography. Default ordering
+  lazily caches each slot's ToString result and compares raw UTF-16 code units;
+  a custom comparator receives undefined `this`, skips bit-identical raw
+  values, ToNumbers its result, and uses original positions to stabilize ties.
+  Source String literals now retain QuickJS's runtime-wide atom identity across
+  functions, eval publications, contexts, and property-key round trips; the
+  canonical decimal tagged-integer spellings `"0"` through `"2147483647"`
+  deliberately remain independent per constant-pool occurrence, and released
+  atoms keep only weak canonical identities while a derived String value is
+  still live.
+  Writeback first places non-undefined values, then always Sets each undefined,
+  then Deletes the hole suffix. Matching a pinned QuickJS optimization, a
+  non-undefined slot whose original position already equals its destination
+  skips Set entirely; accessor effects and comparator mutations can therefore
+  survive, while later Set/Delete failures retain every completed prefix.
+  `toSorted` validates the same way, preallocates the signed-31-bit dense result,
+  copies source indices in ascending conditional HasProperty/Get order so holes
+  become own undefined, then runs the identical sort kernel without consulting
+  constructor or species. Its defining-realm base Array is now created before
+  comparator/ToString effects, though—as for `with` and `toReversed`—the actual
+  object still follows source reads rather than QuickJS's earlier allocation;
+  recoverable OOM ordering remains a bulk-allocator gap. Recursive comparator
+  and ToString calls use a deterministic 16-sort-frame safety ceiling and throw
+  catchable `InternalError: stack overflow`; pinned QuickJS permits more frames,
+  so an iterative native-call trampoline is still required for exact threshold
+  and side-effect parity. The pinned conditional-Get Proxy behavior and the
+  `toSorted` `@@unscopables` entry remain attached to their wider pending
+  object-model slices.
   `copyWithin`
   snapshots and clamps all three bounds in QuickJS order, selects a backward
   traversal only for overlapping ranges, and performs source HasProperty/Get
@@ -873,7 +905,8 @@ claim full parity.
   on exhaustion. The remaining Array mutation/order/slice/flatten methods and
   `@@unscopables` remain later slices. The pinned runtime anchors are `quickjs.c`
   212, 5628-5671, 9433-9524, 10369-10592, 13210-13663, 41472-42226,
-  42228-42791, 42975-43013, 43344-43454, 44519-44583, and 56220-56390.
+  42228-42791, 42975-43013, 43122-43335, 43344-43454, 44519-44583, and
+  56220-56390.
 - Every realm now publishes `%Object%` as a constructor-or-function native
   linked to `%Object.prototype%`. Call and construction preserve existing
   objects, box every primitive family in the defining realm, allocate ordinary
@@ -1569,6 +1602,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_mutators -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_reverse -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_array_sort -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_fill -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

@@ -3,7 +3,7 @@ use std::collections::TryReserveError;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::iter::FusedIterator;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use num_bigint::BigUint;
 use num_traits::ToPrimitive;
@@ -17,6 +17,27 @@ use crate::object::{ObjectRef, SymbolRef};
 /// current representation while preserving lone surrogates.
 #[derive(Clone)]
 pub struct JsString(Rc<StringRepr>);
+
+/// Non-owning handle used by the runtime atom table to recover the identity of
+/// an atom-backed String value without keeping otherwise-dead strings alive.
+#[derive(Clone)]
+pub(crate) struct WeakJsString(Weak<StringRepr>);
+
+impl WeakJsString {
+    #[must_use]
+    pub(crate) fn upgrade(&self) -> Option<JsString> {
+        self.0.upgrade().map(JsString)
+    }
+}
+
+impl fmt::Debug for WeakJsString {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("WeakJsString")
+            .field(&self.0.as_ptr())
+            .finish()
+    }
+}
 
 /// Fallible string-kernel operations which map to JavaScript-visible QuickJS
 /// InternalErrors at the VM/native realm boundary.
@@ -300,6 +321,21 @@ impl JsString {
         3524578, 5702887, 9227465, 14930352, 24157817, 39088169, 63245986, 102334155, 165580141,
         267914296, 433494437, 701408733, 1134903170,
     ];
+
+    #[must_use]
+    pub(crate) fn downgrade(&self) -> WeakJsString {
+        WeakJsString(Rc::downgrade(&self.0))
+    }
+
+    #[must_use]
+    pub(crate) fn same_representation(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    #[must_use]
+    pub(crate) fn content_hash(&self) -> u32 {
+        self.quickjs_hash(0)
+    }
 
     pub(crate) fn checked_length_with_limit(
         current: usize,
@@ -993,7 +1029,7 @@ impl Eq for JsString {}
 
 impl Hash for JsString {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u32(self.quickjs_hash(0));
+        state.write_u32(self.content_hash());
     }
 }
 
@@ -1036,6 +1072,24 @@ impl Value {
             Self::Int(value as i32)
         } else {
             Self::Float(value)
+        }
+    }
+
+    /// Match QuickJS's representation-only `JSValue` comparison. This is
+    /// narrower than JavaScript equality: heap-backed primitives must retain
+    /// the same cell and floating-point payload bits must match exactly.
+    #[must_use]
+    pub(crate) fn same_quickjs_representation(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Undefined, Self::Undefined) | (Self::Null, Self::Null) => true,
+            (Self::Bool(left), Self::Bool(right)) => left == right,
+            (Self::Int(left), Self::Int(right)) => left == right,
+            (Self::Float(left), Self::Float(right)) => left.to_bits() == right.to_bits(),
+            (Self::BigInt(left), Self::BigInt(right)) => left.same_representation(right),
+            (Self::String(left), Self::String(right)) => left.same_representation(right),
+            (Self::Symbol(left), Self::Symbol(right)) => left == right,
+            (Self::Object(left), Self::Object(right)) => left == right,
+            _ => false,
         }
     }
 

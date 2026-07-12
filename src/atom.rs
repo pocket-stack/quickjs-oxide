@@ -25,7 +25,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::NativeErrorMessage;
-use crate::value::{JsString, JsStringError};
+use crate::value::{JsString, JsStringError, WeakJsString};
 
 /// The tag used by `QuickJS` for immediate, non-negative integer atoms.
 pub const ATOM_TAG_INT: u32 = 1 << 31;
@@ -275,6 +275,11 @@ pub struct AtomTable {
     generations: Vec<u32>,
     free: Vec<u32>,
     strings: HashMap<JsString, Atom>,
+    /// Released String atoms retain only weak identities. If an atom-derived
+    /// JavaScript String is still live, a later interning operation must reuse
+    /// that exact cell just as QuickJS's unified JSString/atom refcount does.
+    released_strings: HashMap<u32, Vec<WeakJsString>>,
+    released_string_cleanup_budget: u16,
     global_symbols: HashMap<JsString, Atom>,
     live_table_atoms: usize,
 }
@@ -297,6 +302,8 @@ impl AtomTable {
             generations: vec![0],
             free: Vec::new(),
             strings: HashMap::new(),
+            released_strings: HashMap::new(),
+            released_string_cleanup_budget: 256,
             global_symbols: HashMap::new(),
             live_table_atoms: 0,
         }
@@ -339,6 +346,77 @@ impl AtomTable {
         self.live_table_atoms == 0
     }
 
+    fn string_identity_hash(text: &JsString) -> u32 {
+        text.content_hash()
+    }
+
+    fn recover_released_string(&mut self, text: &JsString) -> Option<JsString> {
+        let hash = Self::string_identity_hash(text);
+        let mut recovered = None;
+        let mut remove_bucket = false;
+        if let Some(strings) = self.released_strings.get_mut(&hash) {
+            let mut index = 0;
+            while index < strings.len() {
+                let Some(candidate) = strings[index].upgrade() else {
+                    strings.swap_remove(index);
+                    continue;
+                };
+                if recovered.is_none() && &candidate == text {
+                    recovered = Some(candidate);
+                }
+                index += 1;
+            }
+            remove_bucket = strings.is_empty();
+        }
+        if remove_bucket {
+            self.released_strings.remove(&hash);
+        }
+        recovered
+    }
+
+    fn forget_released_string(&mut self, text: &JsString) {
+        let hash = Self::string_identity_hash(text);
+        let mut remove_bucket = false;
+        if let Some(strings) = self.released_strings.get_mut(&hash) {
+            let mut index = 0;
+            while index < strings.len() {
+                match strings[index].upgrade() {
+                    Some(candidate) if &candidate != text => index += 1,
+                    Some(_) | None => {
+                        strings.swap_remove(index);
+                    }
+                }
+            }
+            remove_bucket = strings.is_empty();
+        }
+        if remove_bucket {
+            self.released_strings.remove(&hash);
+        }
+    }
+
+    fn maintain_released_strings(&mut self) {
+        if self.released_string_cleanup_budget != 0 {
+            self.released_string_cleanup_budget -= 1;
+            return;
+        }
+        self.sweep_released_strings();
+    }
+
+    pub(crate) fn sweep_released_strings(&mut self) {
+        self.released_string_cleanup_budget = 256;
+        self.released_strings.retain(|_, strings| {
+            strings.retain(|string| string.upgrade().is_some());
+            !strings.is_empty()
+        });
+    }
+
+    /// Return QuickJS's tagged-integer atom representation for a canonical
+    /// decimal String, if that String must bypass the atom-value opcode.
+    #[must_use]
+    pub(crate) fn immediate_integer_atom(text: &JsString) -> Option<Atom> {
+        parse_canonical_u32_js_string(text).and_then(Atom::from_immediate_integer)
+    }
+
     /// Intern a string property name and return one owning reference.
     ///
     /// Canonical decimal strings in `0..=2^31 - 1` are returned as immediate
@@ -361,10 +439,9 @@ impl AtomTable {
     /// Returns [`AtomError::RefCountOverflow`] if an existing atom cannot be
     /// retained, or [`AtomError::TableFull`] if a new atom cannot be assigned.
     pub fn intern_js_string(&mut self, text: &JsString) -> Result<Atom, AtomError> {
-        let text = text.linearize();
-        if let Some(atom) =
-            parse_canonical_u32_js_string(&text).and_then(Atom::from_immediate_integer)
-        {
+        self.maintain_released_strings();
+        let mut text = text.linearize();
+        if let Some(atom) = Self::immediate_integer_atom(&text) {
             return Ok(atom);
         }
 
@@ -372,8 +449,17 @@ impl AtomTable {
             return self.retain(atom);
         }
 
+        let recovered = self.recover_released_string(&text);
+        if let Some(released) = recovered.as_ref() {
+            text = released.clone();
+        }
+        let recovered = recovered.map(|_| text.clone());
+
         let atom = self.allocate(AtomKind::String, Some(text.clone()), false)?;
         self.strings.insert(text, atom);
+        if let Some(text) = recovered {
+            self.forget_released_string(&text);
+        }
         Ok(atom)
     }
 
@@ -415,10 +501,9 @@ impl AtomTable {
     ///
     /// Returns [`AtomError::TableFull`] if a new atom cannot be assigned.
     pub fn intern_static_js_string(&mut self, text: &JsString) -> Result<Atom, AtomError> {
-        let text = text.linearize();
-        if let Some(atom) =
-            parse_canonical_u32_js_string(&text).and_then(Atom::from_immediate_integer)
-        {
+        self.maintain_released_strings();
+        let mut text = text.linearize();
+        if let Some(atom) = Self::immediate_integer_atom(&text) {
             return Ok(atom);
         }
 
@@ -427,8 +512,17 @@ impl AtomTable {
             return Ok(atom);
         }
 
+        let recovered = self.recover_released_string(&text);
+        if let Some(released) = recovered.as_ref() {
+            text = released.clone();
+        }
+        let recovered = recovered.map(|_| text.clone());
+
         let atom = self.allocate(AtomKind::String, Some(text.clone()), true)?;
         self.strings.insert(text, atom);
+        if let Some(text) = recovered {
+            self.forget_released_string(&text);
+        }
         Ok(atom)
     }
 
@@ -650,7 +744,11 @@ impl AtomTable {
         match entry.kind {
             AtomKind::String => {
                 if let Some(text) = entry.text {
+                    let hash = Self::string_identity_hash(&text);
+                    let weak = text.downgrade();
                     self.strings.remove(&text);
+                    self.released_strings.entry(hash).or_default().push(weak);
+                    self.maintain_released_strings();
                 }
             }
             AtomKind::GlobalSymbol => {
@@ -942,6 +1040,70 @@ mod tests {
             atoms.resolve(first),
             Err(AtomError::UnknownAtom(atom)) if atom == first
         ));
+    }
+
+    #[test]
+    fn released_string_atom_recovers_a_still_live_value_identity() {
+        let mut atoms = AtomTable::new();
+        let original = JsString::from_static("literal identity");
+        let atom = atoms.intern_js_string(&original).unwrap();
+        let canonical = atoms.to_js_string(atom).unwrap();
+        assert_eq!(atoms.release(atom), Ok(ReleaseOutcome::Removed));
+
+        let equal_but_distinct = JsString::try_from_utf8("literal identity").unwrap();
+        assert!(!canonical.same_representation(&equal_but_distinct));
+        let recovered_atom = atoms.intern_js_string(&equal_but_distinct).unwrap();
+        let recovered = atoms.to_js_string(recovered_atom).unwrap();
+        assert!(canonical.same_representation(&recovered));
+        assert_eq!(atoms.release(recovered_atom), Ok(ReleaseOutcome::Removed));
+    }
+
+    #[test]
+    fn static_interning_recovers_a_released_live_string_identity() {
+        let mut atoms = AtomTable::new();
+        let original = JsString::from_static("late static literal");
+        let atom = atoms.intern_js_string(&original).unwrap();
+        let canonical = atoms.to_js_string(atom).unwrap();
+        assert_eq!(atoms.release(atom), Ok(ReleaseOutcome::Removed));
+
+        let equal_but_distinct = JsString::try_from_utf8("late static literal").unwrap();
+        let static_atom = atoms.intern_static_js_string(&equal_but_distinct).unwrap();
+        let recovered = atoms.to_js_string(static_atom).unwrap();
+        assert!(canonical.same_representation(&recovered));
+        assert_eq!(atoms.release(static_atom), Ok(ReleaseOutcome::Permanent));
+    }
+
+    #[test]
+    fn released_string_maintenance_discards_expired_weak_buckets() {
+        let mut atoms = AtomTable::new();
+        let mut values = Vec::new();
+        for index in 0..32 {
+            let text = JsString::try_from_utf8(&format!("released literal {index}")).unwrap();
+            let atom = atoms.intern_js_string(&text).unwrap();
+            values.push(atoms.to_js_string(atom).unwrap());
+            assert_eq!(atoms.release(atom), Ok(ReleaseOutcome::Removed));
+        }
+        assert!(!atoms.released_strings.is_empty());
+        drop(values);
+        for _ in 0..300 {
+            assert!(atoms.intern("0").unwrap().is_immediate_integer());
+        }
+        assert!(atoms.released_strings.is_empty());
+    }
+
+    #[test]
+    fn immediate_integer_strings_do_not_enter_the_released_identity_pool() {
+        let mut atoms = AtomTable::new();
+        for text in ["0", "1", "2147483647"] {
+            let first = JsString::try_from_utf8(text).unwrap();
+            let second = JsString::try_from_utf8(text).unwrap();
+            assert!(AtomTable::immediate_integer_atom(&first).is_some());
+            let atom = atoms.intern_js_string(&first).unwrap();
+            assert!(atom.is_immediate_integer());
+            assert_eq!(atoms.release(atom), Ok(ReleaseOutcome::Permanent));
+            assert!(atoms.released_strings.is_empty());
+            assert!(!first.same_representation(&second));
+        }
     }
 
     #[test]

@@ -167,6 +167,9 @@ impl Error for UnlinkedConstantError {}
 #[allow(dead_code)] // Constructed by the function-syntax compiler slice.
 enum UnlinkedConstantKind {
     Primitive(Value),
+    /// Source String lowered through QuickJS `emit_push_const(..., as_atom=1)`.
+    /// Publication canonicalizes non-immediate atoms in the runtime domain.
+    AtomString(Value),
     Child(Box<UnlinkedFunction>),
 }
 
@@ -194,6 +197,14 @@ impl UnlinkedConstant {
         }
     }
 
+    /// Mark one compiler-produced String value for runtime atom
+    /// canonicalization. Keeping this distinct from an ordinary primitive
+    /// constant preserves QuickJS's non-atom constant-pool paths.
+    #[must_use]
+    pub(crate) fn atom_string(value: crate::value::JsString) -> Self {
+        Self(UnlinkedConstantKind::AtomString(Value::String(value)))
+    }
+
     /// Store one recursively compiled child-function draft.
     #[must_use]
     #[allow(dead_code)] // The runtime publisher already supports this future compiler output.
@@ -205,7 +216,9 @@ impl UnlinkedConstant {
     #[must_use]
     pub(crate) fn as_primitive(&self) -> Option<&Value> {
         match &self.0 {
-            UnlinkedConstantKind::Primitive(value) => Some(value),
+            UnlinkedConstantKind::Primitive(value) | UnlinkedConstantKind::AtomString(value) => {
+                Some(value)
+            }
             UnlinkedConstantKind::Child(_) => None,
         }
     }
@@ -214,20 +227,22 @@ impl UnlinkedConstant {
     #[must_use]
     pub(crate) fn as_child(&self) -> Option<&UnlinkedFunction> {
         match &self.0 {
-            UnlinkedConstantKind::Primitive(_) => None,
+            UnlinkedConstantKind::Primitive(_) | UnlinkedConstantKind::AtomString(_) => None,
             UnlinkedConstantKind::Child(function) => Some(function),
         }
     }
 
     /// Consume this constant for transactional runtime publication.
     ///
-    /// Exactly one tuple field is `Some`.  Returning output-only options keeps
-    /// the private representation invariant from being bypassed by callers.
+    /// Exactly one optional tuple field is `Some`; the middle flag marks the
+    /// atom-string representation of a primitive payload. Returning output-only
+    /// parts keeps the private invariant from being bypassed by callers.
     #[must_use]
-    pub(crate) fn into_parts(self) -> (Option<Value>, Option<UnlinkedFunction>) {
+    pub(crate) fn into_parts(self) -> (Option<Value>, bool, Option<UnlinkedFunction>) {
         match self.0 {
-            UnlinkedConstantKind::Primitive(value) => (Some(value), None),
-            UnlinkedConstantKind::Child(function) => (None, Some(*function)),
+            UnlinkedConstantKind::Primitive(value) => (Some(value), false, None),
+            UnlinkedConstantKind::AtomString(value) => (Some(value), true, None),
+            UnlinkedConstantKind::Child(function) => (None, false, Some(*function)),
         }
     }
 }
@@ -521,8 +536,9 @@ mod tests {
             let constant = UnlinkedConstant::primitive(value).unwrap();
             assert!(constant.as_primitive().is_some());
             assert!(constant.as_child().is_none());
-            let (primitive, child) = constant.into_parts();
+            let (primitive, atom_string, child) = constant.into_parts();
             assert!(primitive.is_some());
+            assert!(!atom_string);
             assert!(child.is_none());
         }
     }
@@ -538,9 +554,21 @@ mod tests {
 
         assert!(constant.as_primitive().is_none());
         assert_eq!(constant.as_child().unwrap().code().len(), 2);
-        let (primitive, child) = constant.into_parts();
+        let (primitive, atom_string, child) = constant.into_parts();
         assert!(primitive.is_none());
+        assert!(!atom_string);
         assert!(child.is_some());
+    }
+
+    #[test]
+    fn compiler_atom_string_keeps_a_structural_publication_marker() {
+        let constant = UnlinkedConstant::atom_string(JsString::from_static("literal"));
+        assert!(matches!(constant.as_primitive(), Some(Value::String(_))));
+        assert!(constant.as_child().is_none());
+        let (primitive, atom_string, child) = constant.into_parts();
+        assert!(matches!(primitive, Some(Value::String(_))));
+        assert!(atom_string);
+        assert!(child.is_none());
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! intrinsics extend this boundary; they are not hidden in the compiler or VM.
 
 use std::cell::{Cell, RefCell};
+use std::cmp::Ordering as ComparisonOrdering;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
@@ -202,6 +203,212 @@ struct NativeArguments {
 enum NativeConversion<T> {
     Value(T),
     Throw(Value),
+}
+
+struct ArraySortSlot {
+    value: Value,
+    cached_string: Option<JsString>,
+    original_position: u64,
+}
+
+enum ArraySortAbort {
+    Throw(Value),
+    Runtime(RuntimeError),
+}
+
+/// Port of QuickJS's `rqsort` index choreography. The comparator receives
+/// mutable access to the backing slice because Array's default comparison
+/// caches each element's ToString result inside its moving sort slot.
+fn quickjs_rqsort_by<T, E>(
+    values: &mut [T],
+    mut compare: impl FnMut(&mut [T], usize, usize) -> Result<ComparisonOrdering, E>,
+) -> Result<(), E> {
+    if values.len() < 2 {
+        return Ok(());
+    }
+
+    let mut stack = [(0_usize, 0_usize, 0_usize); 50];
+    stack[0] = (0, values.len(), 0);
+    let mut stack_len = 1;
+
+    while stack_len != 0 {
+        stack_len -= 1;
+        let (mut base, mut count, mut depth) = stack[stack_len];
+
+        while count > 6 {
+            depth += 1;
+            if depth > 50 {
+                quickjs_heapsort_by(values, base, count, &mut compare)?;
+                count = 0;
+                break;
+            }
+
+            let quarter = count >> 2;
+            let pivot = quickjs_sort_median_of_three(
+                values,
+                base + quarter,
+                base + 2 * quarter,
+                base + 3 * quarter,
+                &mut compare,
+            )?;
+            values.swap(base, pivot);
+
+            let mut scanned = 1_usize;
+            let mut lower_equal = 1_usize;
+            let mut left = base + 1;
+            let mut lower_equal_end = left;
+            let mut upper_equal = count;
+            let mut right = base + count;
+            let mut upper_equal_start = right;
+            let top = right;
+
+            loop {
+                while left < right {
+                    let ordering = compare(values, base, left)?;
+                    if ordering.is_lt() {
+                        break;
+                    }
+                    if ordering.is_eq() {
+                        values.swap(lower_equal_end, left);
+                        lower_equal += 1;
+                        lower_equal_end += 1;
+                    }
+                    scanned += 1;
+                    left += 1;
+                }
+
+                loop {
+                    right -= 1;
+                    if left >= right {
+                        break;
+                    }
+                    let ordering = compare(values, base, right)?;
+                    if ordering.is_gt() {
+                        break;
+                    }
+                    if ordering.is_eq() {
+                        upper_equal -= 1;
+                        upper_equal_start -= 1;
+                        values.swap(upper_equal_start, right);
+                    }
+                }
+
+                if left >= right {
+                    break;
+                }
+                values.swap(left, right);
+                scanned += 1;
+                left += 1;
+            }
+
+            let mut span = lower_equal_end - base;
+            let lower_middle_span = left - lower_equal_end;
+            let lower_count = scanned - lower_equal;
+            span = span.min(lower_middle_span);
+            for offset in 0..span {
+                values.swap(base + offset, left - span + offset);
+            }
+
+            span = top - upper_equal_start;
+            let upper_middle_span = upper_equal_start - left;
+            let upper_base = top - upper_middle_span;
+            let upper_start = count - (upper_equal - scanned);
+            span = span.min(upper_middle_span);
+            for offset in 0..span {
+                values.swap(left + offset, top - span + offset);
+            }
+
+            debug_assert!(stack_len < stack.len());
+            if lower_count > count - upper_start {
+                stack[stack_len] = (base, lower_count, depth);
+                stack_len += 1;
+                base = upper_base;
+                count -= upper_start;
+            } else {
+                stack[stack_len] = (upper_base, count - upper_start, depth);
+                stack_len += 1;
+                count = lower_count;
+            }
+        }
+
+        for current in (base + 1)..(base + count) {
+            let mut position = current;
+            while position > base && compare(values, position - 1, position)?.is_gt() {
+                values.swap(position, position - 1);
+                position -= 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn quickjs_sort_median_of_three<T, E>(
+    values: &mut [T],
+    first: usize,
+    second: usize,
+    third: usize,
+    compare: &mut impl FnMut(&mut [T], usize, usize) -> Result<ComparisonOrdering, E>,
+) -> Result<usize, E> {
+    if compare(values, first, second)?.is_lt() {
+        if compare(values, second, third)?.is_lt() {
+            Ok(second)
+        } else if compare(values, first, third)?.is_lt() {
+            Ok(third)
+        } else {
+            Ok(first)
+        }
+    } else if compare(values, second, third)?.is_gt() {
+        Ok(second)
+    } else if compare(values, first, third)?.is_lt() {
+        Ok(first)
+    } else {
+        Ok(third)
+    }
+}
+
+fn quickjs_heapsort_by<T, E>(
+    values: &mut [T],
+    base: usize,
+    count: usize,
+    compare: &mut impl FnMut(&mut [T], usize, usize) -> Result<ComparisonOrdering, E>,
+) -> Result<(), E> {
+    if count < 2 {
+        return Ok(());
+    }
+
+    let mut root = count / 2;
+    while root != 0 {
+        root -= 1;
+        quickjs_heap_sift(values, base, root, count, compare)?;
+    }
+    for end in (1..count).rev() {
+        values.swap(base, base + end);
+        quickjs_heap_sift(values, base, 0, end, compare)?;
+    }
+    Ok(())
+}
+
+fn quickjs_heap_sift<T, E>(
+    values: &mut [T],
+    base: usize,
+    mut root: usize,
+    end: usize,
+    compare: &mut impl FnMut(&mut [T], usize, usize) -> Result<ComparisonOrdering, E>,
+) -> Result<(), E> {
+    loop {
+        let mut child = root * 2 + 1;
+        if child >= end {
+            return Ok(());
+        }
+        if child + 1 < end && !compare(values, base + child, base + child + 1)?.is_gt() {
+            child += 1;
+        }
+        if compare(values, base + root, base + child)?.is_gt() {
+            return Ok(());
+        }
+        values.swap(base + root, base + child);
+        root = child;
+    }
 }
 
 enum Compilation {
@@ -2182,6 +2389,7 @@ impl VmHost for RuntimeVmHost {
 
 enum FlatConstant {
     Value(RawValue),
+    AtomString(JsString),
     Child(usize),
 }
 
@@ -3622,6 +3830,22 @@ impl Runtime {
             "toReversed",
             0,
             0,
+        )?;
+        self.define_native_builtin_auto_init(
+            array_prototype,
+            realm,
+            NativeFunctionId::ArrayPrototypeSort,
+            "sort",
+            1,
+            1,
+        )?;
+        self.define_native_builtin_auto_init(
+            array_prototype,
+            realm,
+            NativeFunctionId::ArrayPrototypeToSorted,
+            "toSorted",
+            1,
+            1,
         )?;
         self.define_native_builtin_auto_init(
             array_prototype,
@@ -7510,6 +7734,7 @@ impl Runtime {
         let atoms = std::mem::take(&mut stats.cleanup.atoms);
         state.unlink_finalized_shapes(stats.cleanup.finalized_shape_ids.iter().copied());
         state.release_atoms(atoms)?;
+        state.atoms.sweep_released_strings();
         Ok(stats)
     }
 
@@ -7584,11 +7809,16 @@ impl Runtime {
 
         for function in flat_functions {
             let mut linked_constants = Vec::with_capacity(function.constants.len());
+            let mut atom_string_constants = Vec::new();
             let mut children = Vec::new();
             for constant in function.constants {
                 match constant {
                     FlatConstant::Value(value) => {
                         linked_constants.push(BytecodeConstant::Value(value));
+                    }
+                    FlatConstant::AtomString(value) => {
+                        atom_string_constants.push(linked_constants.len());
+                        linked_constants.push(BytecodeConstant::Value(RawValue::String(value)));
                     }
                     FlatConstant::Child(index) => {
                         let child = roots.get(index).and_then(Option::as_ref).ok_or(
@@ -7613,6 +7843,28 @@ impl Runtime {
             let id = {
                 let mut state = self.0.state.borrow_mut();
                 let linking = (|| -> Result<(), RuntimeError> {
+                    for index in atom_string_constants {
+                        let value = match linked_constants.get(index) {
+                            Some(BytecodeConstant::Value(RawValue::String(value))) => value.clone(),
+                            Some(BytecodeConstant::Value(_))
+                            | Some(BytecodeConstant::Function(_))
+                            | None => {
+                                return Err(RuntimeError::Invariant(
+                                    "atom-string constant lost its String payload",
+                                ));
+                            }
+                        };
+                        let atom = state.atoms.intern_property_key_js_string(&value)?;
+                        // QuickJS falls back to an ordinary independent cpool
+                        // String when JS_NewAtomStr produces a tagged integer.
+                        if atom.is_immediate_integer() {
+                            continue;
+                        }
+                        auxiliary_atoms.push(atom);
+                        let canonical = state.atoms.to_js_string(atom)?;
+                        linked_constants[index] =
+                            BytecodeConstant::Value(RawValue::String(canonical));
+                    }
                     if let Some(debug) = unlinked_debug.take() {
                         let filename =
                             state.atoms.intern_property_key_js_string(&debug.filename)?;
@@ -8457,7 +8709,7 @@ impl Runtime {
                     realm,
                     min_readable_args,
                 } => {
-                    if self.array_stringification_call_would_overflow(target) {
+                    if self.native_call_would_overflow(target) {
                         return Ok(Completion::Throw(self.new_native_error(
                             caller_realm,
                             NativeErrorKind::Internal,
@@ -12195,37 +12447,49 @@ impl Runtime {
         Ok(Completion::Return(not_found()))
     }
 
-    fn array_stringification_call_would_overflow(&self, target: NativeFunctionId) -> bool {
+    fn native_call_would_overflow(&self, target: NativeFunctionId) -> bool {
         // QuickJS checks its platform C-stack pointer before every native
         // call. Rust frame sizes do not map to that byte threshold, so keep a
-        // deterministic call-entry ceiling on the newly recursive
-        // join/toString path and preserve the same JavaScript-visible
-        // stack-overflow completion without risking the host stack.
-        const MAX_ARRAY_STRINGIFICATION_FRAMES: usize = 64;
+        // deterministic call-entry ceiling on the recursive Array
+        // stringification and sort-comparator paths. Preserve a catchable
+        // JavaScript stack-overflow completion without risking the host stack.
+        let limit = match target {
+            NativeFunctionId::ArrayPrototypeJoin(_) | NativeFunctionId::ArrayPrototypeToString => {
+                64
+            }
+            NativeFunctionId::ArrayPrototypeSort | NativeFunctionId::ArrayPrototypeToSorted => 16,
+            _ => return false,
+        };
 
-        if !matches!(
-            target,
-            NativeFunctionId::ArrayPrototypeJoin(_) | NativeFunctionId::ArrayPrototypeToString
-        ) {
-            return false;
-        }
+        let in_family = |candidate| match target {
+            NativeFunctionId::ArrayPrototypeJoin(_) | NativeFunctionId::ArrayPrototypeToString => {
+                matches!(
+                    candidate,
+                    NativeFunctionId::ArrayPrototypeJoin(_)
+                        | NativeFunctionId::ArrayPrototypeToString
+                )
+            }
+            NativeFunctionId::ArrayPrototypeSort | NativeFunctionId::ArrayPrototypeToSorted => {
+                matches!(
+                    candidate,
+                    NativeFunctionId::ArrayPrototypeSort | NativeFunctionId::ArrayPrototypeToSorted
+                )
+            }
+            _ => false,
+        };
         self.0
             .state
             .borrow()
             .active_frames
             .iter()
             .filter(|frame| {
-                matches!(
-                    frame.kind,
-                    ActiveFrameKind::Native {
-                        target: NativeFunctionId::ArrayPrototypeJoin(_)
-                            | NativeFunctionId::ArrayPrototypeToString,
-                        ..
-                    }
-                )
+                let ActiveFrameKind::Native { target, .. } = frame.kind else {
+                    return false;
+                };
+                in_family(target)
             })
             .count()
-            >= MAX_ARRAY_STRINGIFICATION_FRAMES
+            >= limit
     }
 
     fn native_array_element_locale_value(
@@ -12706,6 +12970,354 @@ impl Runtime {
         Ok(Completion::Return(Value::Object(
             self.new_array_from_values(realm, values)?,
         )))
+    }
+
+    fn native_array_sort_comparator(
+        &self,
+        realm: ContextId,
+        arguments: &NativeArguments,
+    ) -> Result<NativeConversion<Option<CallableRef>>, RuntimeError> {
+        let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "Array.prototype sort comparator argv was not padded",
+        ))?;
+        if matches!(argument, Value::Undefined) {
+            return Ok(NativeConversion::Value(None));
+        }
+        if let Value::Object(object) = argument
+            && let Some(callable) = self.as_callable(object)?
+        {
+            return Ok(NativeConversion::Value(Some(callable)));
+        }
+        Ok(NativeConversion::Throw(self.new_native_error(
+            realm,
+            NativeErrorKind::Type,
+            "not a function",
+        )?))
+    }
+
+    fn reserve_array_sort_slot_capacity(
+        slots: &mut Vec<ArraySortSlot>,
+        logical_capacity: &mut usize,
+    ) -> Result<(), RuntimeError> {
+        if slots.len() < *logical_capacity {
+            return Ok(());
+        }
+        let next = logical_capacity
+            .checked_add(*logical_capacity >> 1)
+            .and_then(|value| value.checked_add(31))
+            .map(|value| value & !15)
+            .ok_or_else(|| {
+                RuntimeError::Engine(Error::new(ErrorKind::JsInternal, "out of memory"))
+            })?;
+        if next > slots.capacity() {
+            slots.try_reserve_exact(next - slots.len()).map_err(|_| {
+                RuntimeError::Engine(Error::new(ErrorKind::JsInternal, "out of memory"))
+            })?;
+        }
+        *logical_capacity = next;
+        Ok(())
+    }
+
+    fn collect_array_sort_slots(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+        length: u64,
+    ) -> Result<NativeConversion<(Vec<ArraySortSlot>, u64)>, RuntimeError> {
+        let mut slots = Vec::new();
+        let mut logical_capacity = 0_usize;
+        let mut undefined_count = 0_u64;
+        for index in 0..length {
+            // QuickJS grows its ValueSlot buffer before TryGet, including for
+            // the first hole. Keep that resource-failure boundary distinct
+            // from the later property query.
+            Self::reserve_array_sort_slot_capacity(&mut slots, &mut logical_capacity)?;
+            let value = match self.try_get_array_like_index(realm, object, index)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+            };
+            let Some(value) = value else {
+                continue;
+            };
+            if matches!(value, Value::Undefined) {
+                undefined_count = undefined_count
+                    .checked_add(1)
+                    .ok_or(RuntimeError::Invariant(
+                        "Array sort undefined count overflowed Uint64",
+                    ))?;
+                continue;
+            }
+            slots.push(ArraySortSlot {
+                value,
+                cached_string: None,
+                original_position: index,
+            });
+        }
+        Ok(NativeConversion::Value((slots, undefined_count)))
+    }
+
+    fn collect_dense_array_sort_slots(
+        values: &[Value],
+    ) -> Result<(Vec<ArraySortSlot>, u64), RuntimeError> {
+        let mut slots = Vec::new();
+        let mut logical_capacity = 0_usize;
+        let mut undefined_count = 0_u64;
+        for (position, value) in values.iter().cloned().enumerate() {
+            Self::reserve_array_sort_slot_capacity(&mut slots, &mut logical_capacity)?;
+            if matches!(value, Value::Undefined) {
+                undefined_count = undefined_count
+                    .checked_add(1)
+                    .ok_or(RuntimeError::Invariant(
+                        "Array sort undefined count overflowed Uint64",
+                    ))?;
+                continue;
+            }
+            slots.push(ArraySortSlot {
+                value,
+                cached_string: None,
+                original_position: u64::try_from(position).map_err(|_| {
+                    RuntimeError::Invariant("dense Array sort position exceeded Uint64")
+                })?,
+            });
+        }
+        Ok((slots, undefined_count))
+    }
+
+    fn compare_array_sort_slots(
+        &self,
+        realm: ContextId,
+        comparator: Option<&CallableRef>,
+        slots: &mut [ArraySortSlot],
+        left: usize,
+        right: usize,
+    ) -> Result<NativeConversion<ComparisonOrdering>, RuntimeError> {
+        let ordering = if let Some(comparator) = comparator {
+            if slots[left]
+                .value
+                .same_quickjs_representation(&slots[right].value)
+            {
+                ComparisonOrdering::Equal
+            } else {
+                let result = match self.call_internal(
+                    realm,
+                    comparator,
+                    Value::Undefined,
+                    &[slots[left].value.clone(), slots[right].value.clone()],
+                )? {
+                    Completion::Return(value) => value,
+                    Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+                };
+                let number = if let Value::Int(value) = result {
+                    f64::from(value)
+                } else {
+                    match self.native_to_number(realm, &result)? {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => {
+                            return Ok(NativeConversion::Throw(value));
+                        }
+                    }
+                };
+                if number > 0.0 {
+                    ComparisonOrdering::Greater
+                } else if number < 0.0 {
+                    ComparisonOrdering::Less
+                } else {
+                    ComparisonOrdering::Equal
+                }
+            }
+        } else {
+            if slots[left].cached_string.is_none() {
+                let string = match self.native_to_js_string(realm, &slots[left].value)? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => {
+                        return Ok(NativeConversion::Throw(value));
+                    }
+                };
+                slots[left].cached_string = Some(string);
+            }
+            if slots[right].cached_string.is_none() {
+                let string = match self.native_to_js_string(realm, &slots[right].value)? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => {
+                        return Ok(NativeConversion::Throw(value));
+                    }
+                };
+                slots[right].cached_string = Some(string);
+            }
+            slots[left]
+                .cached_string
+                .as_ref()
+                .ok_or(RuntimeError::Invariant(
+                    "Array sort left string cache was missing",
+                ))?
+                .utf16_units()
+                .cmp(
+                    slots[right]
+                        .cached_string
+                        .as_ref()
+                        .ok_or(RuntimeError::Invariant(
+                            "Array sort right string cache was missing",
+                        ))?
+                        .utf16_units(),
+                )
+        };
+
+        Ok(NativeConversion::Value(if ordering.is_eq() {
+            slots[left]
+                .original_position
+                .cmp(&slots[right].original_position)
+        } else {
+            ordering
+        }))
+    }
+
+    fn sort_array_slots(
+        &self,
+        realm: ContextId,
+        comparator: Option<&CallableRef>,
+        slots: &mut [ArraySortSlot],
+    ) -> Result<NativeConversion<()>, RuntimeError> {
+        let result = quickjs_rqsort_by(slots, |slots, left, right| {
+            match self.compare_array_sort_slots(realm, comparator, slots, left, right) {
+                Ok(NativeConversion::Value(ordering)) => Ok(ordering),
+                Ok(NativeConversion::Throw(value)) => Err(ArraySortAbort::Throw(value)),
+                Err(error) => Err(ArraySortAbort::Runtime(error)),
+            }
+        });
+        match result {
+            Ok(()) => Ok(NativeConversion::Value(())),
+            Err(ArraySortAbort::Throw(value)) => Ok(NativeConversion::Throw(value)),
+            Err(ArraySortAbort::Runtime(error)) => Err(error),
+        }
+    }
+
+    fn write_array_sort_slots(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+        length: u64,
+        mut slots: Vec<ArraySortSlot>,
+        undefined_count: u64,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let defined_count = u64::try_from(slots.len())
+            .map_err(|_| RuntimeError::Invariant("Array sort slot count exceeded Uint64"))?;
+        for (position, slot) in slots.iter_mut().enumerate() {
+            slot.cached_string.take();
+            let position = u64::try_from(position)
+                .map_err(|_| RuntimeError::Invariant("Array sort position exceeded Uint64"))?;
+            if slot.original_position == position {
+                slot.value = Value::Undefined;
+                continue;
+            }
+            let key = self.intern_property_key(&position.to_string())?;
+            let value = std::mem::replace(&mut slot.value, Value::Undefined);
+            if let Some(value) = self.set_property_or_throw(realm, object, &key, value)? {
+                return Ok(Some(value));
+            }
+        }
+        drop(slots);
+
+        let mut index = defined_count;
+        for _ in 0..undefined_count {
+            let key = self.intern_property_key(&index.to_string())?;
+            if let Some(value) =
+                self.set_property_or_throw(realm, object, &key, Value::Undefined)?
+            {
+                return Ok(Some(value));
+            }
+            index += 1;
+        }
+        while index < length {
+            if let Some(value) = self.delete_array_like_index_or_throw(realm, object, index)? {
+                return Ok(Some(value));
+            }
+            index += 1;
+        }
+        Ok(None)
+    }
+
+    fn call_array_prototype_sort(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let comparator = match self.native_array_sort_comparator(realm, arguments)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype.sort did not receive a generic invocation",
+            ));
+        };
+        let (object, length) = match self.native_array_like_object_and_length(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let (mut slots, undefined_count) =
+            match self.collect_array_sort_slots(realm, &object, length)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+        match self.sort_array_slots(realm, comparator.as_ref(), &mut slots)? {
+            NativeConversion::Value(()) => {}
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        }
+
+        if let Some(value) =
+            self.write_array_sort_slots(realm, &object, length, slots, undefined_count)?
+        {
+            return Ok(Completion::Throw(value));
+        }
+        Ok(Completion::Return(Value::Object(object)))
+    }
+
+    fn call_array_prototype_to_sorted(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let comparator = match self.native_array_sort_comparator(realm, arguments)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype.toSorted did not receive a generic invocation",
+            ));
+        };
+        let (object, length) = match self.native_array_like_object_and_length(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let mut values = match self.native_allocate_fast_array_values(realm, length)? {
+            NativeConversion::Value(values) => values,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        for (index, slot) in values.iter_mut().enumerate() {
+            let index = u64::try_from(index)
+                .map_err(|_| RuntimeError::Invariant("Array.toSorted index exceeded Uint64"))?;
+            *slot = match self.try_get_array_like_index(realm, &object, index)? {
+                NativeConversion::Value(Some(value)) => value,
+                NativeConversion::Value(None) => Value::Undefined,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+        }
+
+        let (mut slots, undefined_count) = Self::collect_dense_array_sort_slots(&values)?;
+        let result = self.new_array_from_values(realm, values)?;
+        match self.sort_array_slots(realm, comparator.as_ref(), &mut slots)? {
+            NativeConversion::Value(()) => {}
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        }
+        if let Some(value) =
+            self.write_array_sort_slots(realm, &result, length, slots, undefined_count)?
+        {
+            return Ok(Completion::Throw(value));
+        }
+        Ok(Completion::Return(Value::Object(result)))
     }
 
     fn call_array_prototype_iterator(
@@ -15137,6 +15749,12 @@ impl Runtime {
             NativeFunctionId::ArrayPrototypeToReversed => {
                 self.call_array_prototype_to_reversed(realm, invocation)
             }
+            NativeFunctionId::ArrayPrototypeSort => {
+                self.call_array_prototype_sort(realm, invocation, arguments)
+            }
+            NativeFunctionId::ArrayPrototypeToSorted => {
+                self.call_array_prototype_to_sorted(realm, invocation, arguments)
+            }
             NativeFunctionId::ArrayPrototypeIterator(kind) => {
                 self.call_array_prototype_iterator(realm, kind, invocation)
             }
@@ -16995,15 +17613,23 @@ fn flatten_unlinked_tree(function: UnlinkedFunction) -> Result<Vec<FlatFunction>
             .remaining
             .next();
         if let Some(constant) = next {
-            let (primitive, child) = constant.into_parts();
-            match (primitive, child) {
-                (Some(value), None) => frames
+            let (primitive, atom_string, child) = constant.into_parts();
+            match (primitive, atom_string, child) {
+                (Some(Value::String(value)), true, None) => frames
+                    .last_mut()
+                    .expect("flatten frame remains present")
+                    .constants
+                    .push(FlatConstant::AtomString(value)),
+                (Some(value), false, None) => frames
                     .last_mut()
                     .expect("flatten frame remains present")
                     .constants
                     .push(FlatConstant::Value(raw_unlinked_primitive(value)?)),
-                (None, Some(child)) => frames.push(FlattenFrame::new(child)),
-                (None, None) | (Some(_), Some(_)) => {
+                (None, false, Some(child)) => frames.push(FlattenFrame::new(child)),
+                (None, _, None)
+                | (Some(_), true, None)
+                | (Some(_), _, Some(_))
+                | (None, true, Some(_)) => {
                     return Err(RuntimeError::Invariant(
                         "unlinked constant did not contain exactly one payload",
                     ));
