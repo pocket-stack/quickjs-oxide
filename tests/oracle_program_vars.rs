@@ -81,12 +81,7 @@ const BOUNDARY_CASES: &[BoundaryCase] = &[
     BoundaryCase {
         description: "Program var for-in head",
         source: "for(var key in Function);typeof key",
-        rust_message: "for-in and for-of loops are not implemented yet",
-    },
-    BoundaryCase {
-        description: "Program var for-of head",
-        source: "for(var item of 'a');item",
-        rust_message: "for-in and for-of loops are not implemented yet",
+        rust_message: "for-in loops are not implemented yet",
     },
 ];
 

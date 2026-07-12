@@ -168,6 +168,21 @@ pub enum Instruction {
     /// Typed finally cleanup for an abrupt path which discards, rather than
     /// follows, the real Int return PC pushed by `Gosub`.
     DropGosub,
+    /// QuickJS `OP_for_of_start`: replace one iterable with the two public
+    /// iterator-record values (`iterator`, `next`) plus a private unwind
+    /// marker represented only in the verifier and VM region stack.
+    ForOfStart,
+    /// QuickJS `OP_for_of_next`: retain the three-slot iterator record below
+    /// `offset` intermediate operands and append `value`, `done`.
+    ForOfNext(u8),
+    /// QuickJS `OP_iterator_close`: remove the innermost iterator record and
+    /// close it for a normal abrupt completion.
+    IteratorClose,
+    /// Preserve the top operand while removing the innermost iterator record
+    /// and every intermediate operand, then close the iterator. This is the
+    /// typed equivalent of QuickJS's `nip_catch; rot3r; undefined;
+    /// iterator_close` return-unwind sequence.
+    IteratorClosePreserve,
     Call(u16),
     CallMethod(u16),
     /// QuickJS `OP_call_constructor`: `func new.target args -> result`.
@@ -188,6 +203,8 @@ impl Instruction {
             // The verifier models this marker in its conceptual stack even
             // though runtime execution stores it in private handler metadata.
             Self::Catch(_) => (0, 1),
+            Self::ForOfStart => (1, 3),
+            Self::ForOfNext(_) => (3, 5),
             Self::PushI32(_)
             | Self::PushConst(_)
             | Self::FClosure(_)
@@ -241,7 +258,8 @@ impl Instruction {
             Self::Nip => (2, 1),
             // The verifier replaces this nominal value-preserving effect with
             // the active handler's recorded entry depth.
-            Self::NipCatch => (1, 1),
+            Self::NipCatch | Self::IteratorClosePreserve => (1, 1),
+            Self::IteratorClose => (3, 0),
             Self::SetLocal(_) | Self::SetLocalCheck(_) | Self::SetArg(_) | Self::SetVarRef(_) => {
                 (1, 1)
             }
@@ -405,7 +423,7 @@ pub(crate) fn verify_parts(
         0_usize,
         VerificationState {
             depth: 0,
-            handlers: Vec::new(),
+            regions: Vec::new(),
             return_addresses: Vec::new(),
         },
     )]);
@@ -420,8 +438,8 @@ pub(crate) fn verify_parts(
             if previous != &state {
                 let message = if previous.depth != state.depth {
                     "control flow joins with inconsistent stack depth"
-                } else if previous.handlers != state.handlers {
-                    "control flow joins with inconsistent catch handlers"
+                } else if previous.regions != state.regions {
+                    "control flow joins with inconsistent unwind regions"
                 } else {
                     "control flow joins with inconsistent gosub return addresses"
                 };
@@ -440,25 +458,35 @@ pub(crate) fn verify_parts(
         let mut next_depth = remaining_depth
             .checked_add(pushed)
             .ok_or_else(|| Error::internal("bytecode stack depth overflow"))?;
-        let mut next_handlers = state.handlers.clone();
+        let mut next_regions = state.regions.clone();
         let mut next_return_addresses = state.return_addresses.clone();
 
         match instruction {
             Instruction::DropCatch => {
-                let handler = next_handlers
+                let region = next_regions
                     .pop()
                     .ok_or_else(|| Error::internal("DropCatch has no active catch handler"))?;
-                if state.depth != handler.stack_depth {
+                let UnwindRegionState::Catch { marker_depth, .. } = region else {
+                    return Err(Error::internal(
+                        "DropCatch did not target the innermost unwind region",
+                    ));
+                };
+                if state.depth != marker_depth {
                     return Err(Error::internal(
                         "DropCatch did not reach its catch entry depth",
                     ));
                 }
             }
             Instruction::NipCatch => {
-                let handler = next_handlers
+                let region = next_regions
                     .pop()
                     .ok_or_else(|| Error::internal("NipCatch has no active catch handler"))?;
-                if state.depth <= handler.stack_depth {
+                let UnwindRegionState::Catch { marker_depth, .. } = region else {
+                    return Err(Error::internal(
+                        "NipCatch did not target the innermost unwind region",
+                    ));
+                };
+                if state.depth <= marker_depth {
                     return Err(Error::internal(
                         "NipCatch has no value above its catch marker",
                     ));
@@ -472,8 +500,107 @@ pub(crate) fn verify_parts(
                         "NipCatch cannot preserve a gosub return address",
                     ));
                 }
-                next_depth = handler.stack_depth;
-                next_return_addresses.retain(|address| *address < handler.stack_depth);
+                let marker_index = marker_depth - 1;
+                // QuickJS `OP_nip_catch` deliberately performs a dynamic
+                // truncation: an abrupt completion from a nested finally may
+                // discard the real return PC of a finally subroutine together
+                // with every other value above the catch marker.  Keep an
+                // address below the marker typed, reject preserving one as the
+                // result above, and forget only addresses that the truncation
+                // actually destroys.
+                next_return_addresses.retain(|address| *address < marker_index);
+                next_depth = marker_depth;
+            }
+            Instruction::ForOfStart => {
+                verify_ordinary_consumption(&state, remaining_depth, popped)?;
+                let record_base = remaining_depth;
+                next_regions.push(UnwindRegionState::Iterator {
+                    record_base,
+                    marker_depth: next_depth,
+                });
+            }
+            Instruction::ForOfNext(offset) => {
+                let Some(UnwindRegionState::Iterator { marker_depth, .. }) = next_regions.last()
+                else {
+                    return Err(Error::internal(
+                        "ForOfNext has no innermost iterator region",
+                    ));
+                };
+                let expected_depth = marker_depth
+                    .checked_add(usize::from(*offset))
+                    .ok_or_else(|| Error::internal("for-of offset overflow"))?;
+                if state.depth != expected_depth {
+                    return Err(Error::internal(
+                        "ForOfNext offset does not reach its iterator record",
+                    ));
+                }
+            }
+            Instruction::IteratorClose => {
+                let region = next_regions
+                    .pop()
+                    .ok_or_else(|| Error::internal("IteratorClose has no iterator region"))?;
+                let UnwindRegionState::Iterator {
+                    record_base,
+                    marker_depth,
+                } = region
+                else {
+                    return Err(Error::internal(
+                        "IteratorClose did not target the innermost unwind region",
+                    ));
+                };
+                if state.depth != marker_depth || remaining_depth != record_base {
+                    return Err(Error::internal(
+                        "IteratorClose did not reach its iterator record",
+                    ));
+                }
+                if state
+                    .return_addresses
+                    .iter()
+                    .any(|address| *address >= record_base)
+                {
+                    return Err(Error::internal(
+                        "IteratorClose cannot discard a gosub return address",
+                    ));
+                }
+            }
+            Instruction::IteratorClosePreserve => {
+                let region = next_regions.pop().ok_or_else(|| {
+                    Error::internal("IteratorClosePreserve has no iterator region")
+                })?;
+                let UnwindRegionState::Iterator {
+                    record_base,
+                    marker_depth,
+                } = region
+                else {
+                    return Err(Error::internal(
+                        "IteratorClosePreserve did not target the innermost unwind region",
+                    ));
+                };
+                if state.depth <= marker_depth {
+                    return Err(Error::internal(
+                        "IteratorClosePreserve has no value above its iterator marker",
+                    ));
+                }
+                if state
+                    .return_addresses
+                    .last()
+                    .is_some_and(|address| *address == state.depth - 1)
+                {
+                    return Err(Error::internal(
+                        "IteratorClosePreserve cannot preserve a gosub return address",
+                    ));
+                }
+                // Like `NipCatch`, this is a dynamic abrupt-completion
+                // cleanup. A return which crosses nested finally and for-of
+                // regions may have genuine Gosub return PCs among the
+                // intermediate values that are intentionally truncated.
+                // Addresses below the iterator record survive and remain
+                // typed; the preserved top was rejected above if it was an
+                // address itself.
+                next_return_addresses.retain(|address| *address < record_base);
+                next_depth = record_base
+                    .checked_add(1)
+                    .ok_or_else(|| Error::internal("bytecode stack depth overflow"))?;
             }
             Instruction::Ret | Instruction::DropGosub => {
                 if next_return_addresses.last().copied() != Some(state.depth - 1) {
@@ -488,36 +615,27 @@ pub(crate) fn verify_parts(
                 }
                 next_return_addresses.pop();
                 if state
-                    .handlers
+                    .regions
                     .last()
-                    .is_some_and(|handler| remaining_depth < handler.stack_depth)
+                    .is_some_and(|region| remaining_depth < region.marker_depth())
                 {
                     return Err(Error::internal(
-                        "gosub return address crossed an active catch marker",
+                        "gosub return address crossed an active unwind marker",
                     ));
                 }
             }
             _ => {
-                if popped > 0
-                    && state
-                        .return_addresses
-                        .last()
-                        .is_some_and(|address| *address >= remaining_depth)
-                {
-                    return Err(Error::internal(
-                        "ordinary bytecode consumed a gosub return address",
-                    ));
-                }
-                if state
-                    .handlers
-                    .last()
-                    .is_some_and(|handler| remaining_depth < handler.stack_depth)
-                {
-                    return Err(Error::internal(
-                        "bytecode stack crossed an active catch marker",
-                    ));
-                }
+                verify_ordinary_consumption(&state, remaining_depth, popped)?;
             }
+        }
+
+        if matches!(instruction, Instruction::Return)
+            && state
+                .regions
+                .iter()
+                .any(|region| matches!(region, UnwindRegionState::Iterator { .. }))
+        {
+            return Err(Error::internal("Return bypassed an active iterator close"));
         }
         record_maximum_depth(&mut maximum, next_depth, declared_max_stack)?;
         // QuickJS `compute_stack_size` stops as soon as a reachable PC crosses
@@ -541,7 +659,7 @@ pub(crate) fn verify_parts(
                     *target,
                     VerificationState {
                         depth: next_depth,
-                        handlers: next_handlers,
+                        regions: next_regions,
                         return_addresses: next_return_addresses,
                     },
                     code.len(),
@@ -550,7 +668,7 @@ pub(crate) fn verify_parts(
             Instruction::IfFalse(target) | Instruction::IfTrue(target) => {
                 let next = VerificationState {
                     depth: next_depth,
-                    handlers: next_handlers,
+                    regions: next_regions,
                     return_addresses: next_return_addresses,
                 };
                 enqueue_target(&mut worklist, *target, next.clone(), code.len())?;
@@ -564,21 +682,21 @@ pub(crate) fn verify_parts(
                     *target,
                     VerificationState {
                         depth: exceptional_depth,
-                        handlers: state.handlers.clone(),
+                        regions: state.regions.clone(),
                         return_addresses: state.return_addresses.clone(),
                     },
                     code.len(),
                 )?;
-                next_handlers.push(CatchHandlerState {
+                next_regions.push(UnwindRegionState::Catch {
                     target: *target,
-                    stack_depth: next_depth,
+                    marker_depth: next_depth,
                 });
                 enqueue_fallthrough(
                     &mut worklist,
                     pc,
                     VerificationState {
                         depth: next_depth,
-                        handlers: next_handlers,
+                        regions: next_regions,
                         return_addresses: next_return_addresses,
                     },
                     code.len(),
@@ -595,7 +713,7 @@ pub(crate) fn verify_parts(
                     *target,
                     VerificationState {
                         depth: subroutine_depth,
-                        handlers: state.handlers.clone(),
+                        regions: state.regions.clone(),
                         return_addresses: {
                             let mut addresses = state.return_addresses.clone();
                             addresses.push(state.depth);
@@ -609,7 +727,7 @@ pub(crate) fn verify_parts(
                     pc,
                     VerificationState {
                         depth: next_depth,
-                        handlers: next_handlers,
+                        regions: next_regions,
                         return_addresses: next_return_addresses,
                     },
                     code.len(),
@@ -620,7 +738,7 @@ pub(crate) fn verify_parts(
                 pc,
                 VerificationState {
                     depth: next_depth,
-                    handlers: next_handlers,
+                    regions: next_regions,
                     return_addresses: next_return_addresses,
                 },
                 code.len(),
@@ -634,19 +752,60 @@ pub(crate) fn verify_parts(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CatchHandlerState {
-    target: u32,
-    stack_depth: usize,
+enum UnwindRegionState {
+    Catch {
+        target: u32,
+        marker_depth: usize,
+    },
+    Iterator {
+        record_base: usize,
+        marker_depth: usize,
+    },
+}
+
+impl UnwindRegionState {
+    const fn marker_depth(&self) -> usize {
+        match self {
+            Self::Catch { marker_depth, .. } | Self::Iterator { marker_depth, .. } => *marker_depth,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct VerificationState {
     depth: usize,
-    handlers: Vec<CatchHandlerState>,
+    regions: Vec<UnwindRegionState>,
     /// Conceptual operand-stack indexes containing the genuine Int return PCs
     /// introduced by reachable `Gosub` edges. Ordinary opcodes may neither
     /// forge nor consume these typed slots.
     return_addresses: Vec<usize>,
+}
+
+fn verify_ordinary_consumption(
+    state: &VerificationState,
+    remaining_depth: usize,
+    popped: usize,
+) -> Result<(), Error> {
+    if popped > 0
+        && state
+            .return_addresses
+            .last()
+            .is_some_and(|address| *address >= remaining_depth)
+    {
+        return Err(Error::internal(
+            "ordinary bytecode consumed a gosub return address",
+        ));
+    }
+    if state
+        .regions
+        .last()
+        .is_some_and(|region| remaining_depth < region.marker_depth())
+    {
+        return Err(Error::internal(
+            "bytecode stack crossed an active unwind marker",
+        ));
+    }
+    Ok(())
 }
 
 fn record_maximum_depth(
@@ -987,6 +1146,309 @@ mod tests {
             ..returning
         };
         assert!(return_address_exceeds_declared_stack.verify().is_err());
+    }
+
+    #[test]
+    fn verifier_dynamic_cleanup_discards_intermediate_gosub_return_addresses() {
+        // A return from a finally subroutine can override the pending
+        // completion protected by this catch. NipCatch preserves the new
+        // return value and intentionally truncates the now-obsolete Gosub PC.
+        let nip_catch = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(10),
+                Instruction::Undefined,
+                Instruction::Gosub(7),
+                Instruction::Drop,
+                Instruction::DropCatch,
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::PushI32(7),
+                Instruction::NipCatch,
+                Instruction::Return,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        assert_eq!(nip_catch.verify().unwrap().max_stack, 4);
+
+        // The same dynamic truncation is required when a return crosses an
+        // iterator region while a nested finally Gosub is active.
+        let iterator_close = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::Gosub(6),
+                Instruction::IteratorClose,
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::PushI32(9),
+                Instruction::IteratorClosePreserve,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 5,
+        };
+        assert_eq!(iterator_close.verify().unwrap().max_stack, 5);
+    }
+
+    #[test]
+    fn verifier_tracks_for_of_records_offsets_and_dynamic_close() {
+        let normal = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::ForOfNext(0),
+                Instruction::Drop,
+                Instruction::Drop,
+                Instruction::IteratorClose,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 5,
+        };
+        assert_eq!(normal.verify().unwrap().max_stack, 5);
+
+        let offset = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::PushI32(2),
+                Instruction::ForOfNext(1),
+                Instruction::Drop,
+                Instruction::Drop,
+                Instruction::Drop,
+                Instruction::IteratorClose,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 6,
+        };
+        assert_eq!(offset.verify().unwrap().max_stack, 6);
+
+        let preserve = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::PushI32(42),
+                Instruction::IteratorClosePreserve,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        assert_eq!(preserve.verify().unwrap().max_stack, 4);
+    }
+
+    #[test]
+    fn verifier_orders_iterator_catch_and_gosub_regions() {
+        // The iterator is inside a catch region. Preserving the return value
+        // closes it first, then NipCatch removes the surrounding catch marker.
+        let iterator_inside_catch = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(7),
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::PushI32(9),
+                Instruction::IteratorClosePreserve,
+                Instruction::NipCatch,
+                Instruction::Return,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 5,
+        };
+        assert_eq!(iterator_inside_catch.verify().unwrap().max_stack, 5);
+
+        // The catch is inside an iterator. Its exceptional edge retains the
+        // outer iterator region, which is then explicitly closed.
+        let catch_inside_iterator = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::Catch(7),
+                Instruction::DropCatch,
+                Instruction::IteratorClose,
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::Drop,
+                Instruction::IteratorClose,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        assert_eq!(catch_inside_iterator.verify().unwrap().max_stack, 4);
+
+        // A finally return PC is below the iterator record. Closing the record
+        // must leave that typed address at TOS for Ret.
+        let iterator_above_outer_gosub = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Undefined,
+                Instruction::Gosub(5),
+                Instruction::Return,
+                Instruction::Nop,
+                Instruction::Nop,
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::IteratorClose,
+                Instruction::Ret,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 5,
+        };
+        assert_eq!(iterator_above_outer_gosub.verify().unwrap().max_stack, 5);
+
+        // Conversely a gosub may temporarily put its address above an outer
+        // iterator marker, provided Ret consumes it before iterator cleanup.
+        let gosub_above_iterator = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::Gosub(6),
+                Instruction::IteratorClose,
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::Ret,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        assert_eq!(gosub_above_iterator.verify().unwrap().max_stack, 4);
+    }
+
+    #[test]
+    fn verifier_rejects_iterator_marker_and_return_address_misuse() {
+        let malformed = [
+            vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::ForOfNext(0),
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::ForOfNext(1),
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::PushI32(2),
+                Instruction::IteratorClose,
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::IteratorClosePreserve,
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::PushI32(2),
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::DropCatch,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::Catch(5),
+                Instruction::Undefined,
+                Instruction::IteratorClose,
+                Instruction::Return,
+                Instruction::Nop,
+                Instruction::Return,
+            ],
+        ];
+        for code in malformed {
+            let function = BytecodeFunction {
+                name: None,
+                code,
+                constants: vec![],
+                local_count: 0,
+                max_stack: 8,
+            };
+            assert!(function.verify().is_err());
+        }
+
+        let preserve_return_address = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::Gosub(6),
+                Instruction::IteratorClose,
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::IteratorClosePreserve,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        assert_eq!(
+            preserve_return_address.verify().unwrap_err().message(),
+            "IteratorClosePreserve cannot preserve a gosub return address"
+        );
+
+        let inconsistent_regions = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushTrue,
+                Instruction::IfFalse(5),
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::Goto(8),
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 3,
+        };
+        assert_eq!(
+            inconsistent_regions.verify().unwrap_err().message(),
+            "control flow joins with inconsistent unwind regions"
+        );
     }
 
     #[test]

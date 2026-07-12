@@ -6,6 +6,8 @@ use crate::object::ObjectRef;
 use crate::value::{JsString, Value};
 use num_bigint::BigInt;
 use num_traits::FromPrimitive;
+#[cfg(test)]
+use std::collections::VecDeque;
 
 /// Executes verified stack bytecode inside a future `Context`. The VM is kept
 /// independent from parsing so the compiler and decoder can share it.
@@ -36,6 +38,27 @@ pub(crate) enum ToPrimitiveHint {
 
 enum OperationOutcome<T> {
     Value(T),
+    Throw(Value),
+}
+
+/// Result of the observable `GetIterator` and `Get(iterator, "next")`
+/// operations used by `ForOfStart`.
+pub(crate) enum ForOfStartOutcome {
+    Record { iterator: Value, next_method: Value },
+    Throw(Value),
+}
+
+/// Result of calling an iterator record's cached `next` method and reading its
+/// `done`/`value` properties.
+pub(crate) enum ForOfNextOutcome {
+    Result { value: Value, done: bool },
+    Throw(Value),
+}
+
+/// Result of `IteratorClose`. Engine failures remain [`Error`]s; JavaScript
+/// throws are explicit so the VM can apply completion precedence itself.
+pub(crate) enum IteratorCloseOutcome {
+    Closed,
     Throw(Value),
 }
 
@@ -88,6 +111,19 @@ pub(crate) trait VmHost {
     /// dispatching a caught throw and when unwinding a return through finally;
     /// detached execution has no captured cells.
     fn prepare_captured_local_reuse(&mut self) -> Result<(), Error>;
+    fn for_of_start(&mut self, iterable: Value) -> Result<ForOfStartOutcome, Error>;
+    fn for_of_next(
+        &mut self,
+        iterator: Value,
+        next_method: Value,
+    ) -> Result<ForOfNextOutcome, Error>;
+    /// Close an iterator. With `exception_pending`, the VM retains the
+    /// original thrown value even if this hook reports a JavaScript throw.
+    fn iterator_close(
+        &mut self,
+        iterator: Value,
+        exception_pending: bool,
+    ) -> Result<IteratorCloseOutcome, Error>;
     fn load_constant(&mut self, index: u32) -> Result<Value, Error>;
     /// Build the atom-named diagnostic for `ThrowReadOnly`. Runtime execution
     /// resolves the constant through its atom table; detached execution has no
@@ -182,6 +218,14 @@ struct DetachedHost<'a> {
     locals: Vec<DetachedLocal>,
     #[cfg(test)]
     captured_local_reuse_preparations: usize,
+    #[cfg(test)]
+    iterator_start_record: Option<(Value, Value)>,
+    #[cfg(test)]
+    iterator_next_results: VecDeque<Result<(Value, bool), Value>>,
+    #[cfg(test)]
+    iterator_close_results: VecDeque<Option<Value>>,
+    #[cfg(test)]
+    iterator_close_pending: Vec<bool>,
 }
 
 impl<'a> DetachedHost<'a> {
@@ -193,6 +237,14 @@ impl<'a> DetachedHost<'a> {
                 .collect(),
             #[cfg(test)]
             captured_local_reuse_preparations: 0,
+            #[cfg(test)]
+            iterator_start_record: None,
+            #[cfg(test)]
+            iterator_next_results: VecDeque::new(),
+            #[cfg(test)]
+            iterator_close_results: VecDeque::new(),
+            #[cfg(test)]
+            iterator_close_pending: Vec::new(),
         }
     }
 
@@ -224,6 +276,49 @@ impl VmHost for DetachedHost<'_> {
             self.captured_local_reuse_preparations += 1;
         }
         Ok(())
+    }
+
+    fn for_of_start(&mut self, _iterable: Value) -> Result<ForOfStartOutcome, Error> {
+        #[cfg(test)]
+        if let Some((iterator, next_method)) = self.iterator_start_record.take() {
+            return Ok(ForOfStartOutcome::Record {
+                iterator,
+                next_method,
+            });
+        }
+        Err(Error::internal("detached VM has no iterator intrinsics"))
+    }
+
+    fn for_of_next(
+        &mut self,
+        _iterator: Value,
+        _next_method: Value,
+    ) -> Result<ForOfNextOutcome, Error> {
+        #[cfg(test)]
+        if let Some(outcome) = self.iterator_next_results.pop_front() {
+            return Ok(match outcome {
+                Ok((value, done)) => ForOfNextOutcome::Result { value, done },
+                Err(value) => ForOfNextOutcome::Throw(value),
+            });
+        }
+        Err(Error::internal("detached VM has no iterator intrinsics"))
+    }
+
+    fn iterator_close(
+        &mut self,
+        _iterator: Value,
+        exception_pending: bool,
+    ) -> Result<IteratorCloseOutcome, Error> {
+        #[cfg(test)]
+        if let Some(outcome) = self.iterator_close_results.pop_front() {
+            self.iterator_close_pending.push(exception_pending);
+            return Ok(match outcome {
+                Some(value) => IteratorCloseOutcome::Throw(value),
+                None => IteratorCloseOutcome::Closed,
+            });
+        }
+        let _ = exception_pending;
+        Err(Error::internal("detached VM has no iterator intrinsics"))
     }
 
     fn load_constant(&mut self, index: u32) -> Result<Value, Error> {
@@ -560,15 +655,25 @@ impl Vm {
 /// `JSStackFrame` fields (arguments, locals, closure variables and realm), but
 /// its ownership boundary is already the final one.
 #[derive(Clone, Copy, Debug)]
-struct ExceptionHandler {
-    target: usize,
-    /// Runtime operand depth before the private catch marker was installed.
-    stack_depth: usize,
+enum UnwindRegion {
+    Catch {
+        target: usize,
+        /// Runtime operand depth before the private catch marker was
+        /// installed.
+        stack_depth: usize,
+    },
+    Iterator {
+        /// Runtime operand index of `iterator`; `next` immediately follows.
+        record_base: usize,
+        /// `ForOfNext` disables the record before propagating its throw or
+        /// publishing `done = true`, so later unwinding must not call return.
+        enabled: bool,
+    },
 }
 
 struct CallFrame {
     stack: Vec<Value>,
-    handlers: Vec<ExceptionHandler>,
+    regions: Vec<UnwindRegion>,
     pc: usize,
     _caller_realm: Option<ContextId>,
     /// The realm captured by the executing bytecode.
@@ -585,7 +690,7 @@ impl CallFrame {
     fn new(max_stack: usize) -> Self {
         Self {
             stack: Vec::with_capacity(max_stack),
-            handlers: Vec::new(),
+            regions: Vec::new(),
             pc: 0,
             _caller_realm: None,
             _callee_realm: None,
@@ -609,7 +714,7 @@ impl CallFrame {
     ) -> Self {
         Self {
             stack: Vec::with_capacity(usize::from(metadata.max_stack)),
-            handlers: Vec::new(),
+            regions: Vec::new(),
             pc: 0,
             _caller_realm: Some(caller_realm),
             _callee_realm: Some(callee_realm),
@@ -1151,28 +1256,38 @@ impl CallFrame {
                     self.pc = checked_target(*target, code.len())?;
                 }
                 Instruction::Catch(target) => {
-                    self.handlers.push(ExceptionHandler {
+                    self.regions.push(UnwindRegion::Catch {
                         target: checked_target(*target, code.len())?,
                         stack_depth: self.stack.len(),
                     });
                 }
                 Instruction::DropCatch => {
-                    let handler = self
-                        .handlers
+                    let region = self
+                        .regions
                         .pop()
                         .ok_or_else(|| Error::internal("DropCatch has no active catch handler"))?;
-                    if self.stack.len() != handler.stack_depth {
+                    let UnwindRegion::Catch { stack_depth, .. } = region else {
+                        return Err(Error::internal(
+                            "DropCatch did not target the innermost unwind region",
+                        ));
+                    };
+                    if self.stack.len() != stack_depth {
                         return Err(Error::internal(
                             "DropCatch did not reach its catch entry depth",
                         ));
                     }
                 }
                 Instruction::NipCatch => {
-                    let handler = *self
-                        .handlers
+                    let region = *self
+                        .regions
                         .last()
                         .ok_or_else(|| Error::internal("NipCatch has no active catch handler"))?;
-                    if self.stack.len() <= handler.stack_depth {
+                    let UnwindRegion::Catch { stack_depth, .. } = region else {
+                        return Err(Error::internal(
+                            "NipCatch did not target the innermost unwind region",
+                        ));
+                    };
+                    if self.stack.len() <= stack_depth {
                         return Err(Error::internal(
                             "NipCatch has no value above its catch marker",
                         ));
@@ -1183,9 +1298,9 @@ impl CallFrame {
                     // if the finally body overrides the return, the same frame
                     // may re-enter those captured lexical slots.
                     host.prepare_captured_local_reuse()?;
-                    self.handlers.pop();
+                    self.regions.pop();
                     let value = self.pop()?;
-                    self.stack.truncate(handler.stack_depth);
+                    self.stack.truncate(stack_depth);
                     self.stack.push(value);
                 }
                 Instruction::Gosub(target) => {
@@ -1208,6 +1323,98 @@ impl CallFrame {
                 Instruction::DropGosub => {
                     if !matches!(self.pop()?, Value::Int(_)) {
                         return Err(Error::internal("invalid gosub cleanup value"));
+                    }
+                }
+                Instruction::ForOfStart => {
+                    let iterable = self.pop()?;
+                    match host.for_of_start(iterable)? {
+                        ForOfStartOutcome::Record {
+                            iterator,
+                            next_method,
+                        } => {
+                            let record_base = self.stack.len();
+                            self.stack.push(iterator);
+                            self.stack.push(next_method);
+                            self.regions.push(UnwindRegion::Iterator {
+                                record_base,
+                                enabled: true,
+                            });
+                        }
+                        ForOfStartOutcome::Throw(value) => {
+                            return Ok(Completion::Throw(value));
+                        }
+                    }
+                }
+                Instruction::ForOfNext(offset) => {
+                    let (record_base, enabled) = match self.regions.last() {
+                        Some(UnwindRegion::Iterator {
+                            record_base,
+                            enabled,
+                        }) => (*record_base, *enabled),
+                        _ => {
+                            return Err(Error::internal(
+                                "ForOfNext has no innermost iterator region",
+                            ));
+                        }
+                    };
+                    let expected_depth = record_base
+                        .checked_add(2)
+                        .and_then(|depth| depth.checked_add(usize::from(*offset)))
+                        .ok_or_else(|| Error::internal("for-of offset overflow"))?;
+                    if self.stack.len() != expected_depth {
+                        return Err(Error::internal(
+                            "ForOfNext offset does not reach its iterator record",
+                        ));
+                    }
+                    if !enabled {
+                        self.stack.push(Value::Undefined);
+                        self.stack.push(Value::Bool(true));
+                        continue;
+                    }
+                    let iterator = self
+                        .stack
+                        .get(record_base)
+                        .cloned()
+                        .ok_or_else(|| Error::internal("iterator record is truncated"))?;
+                    let next_method = self
+                        .stack
+                        .get(record_base + 1)
+                        .cloned()
+                        .ok_or_else(|| Error::internal("iterator record is truncated"))?;
+                    match host.for_of_next(iterator, next_method)? {
+                        ForOfNextOutcome::Result { value, done } => {
+                            if done {
+                                self.disable_iterator_region(record_base)?;
+                            }
+                            self.stack.push(value);
+                            self.stack.push(Value::Bool(done));
+                        }
+                        ForOfNextOutcome::Throw(value) => {
+                            self.disable_iterator_region(record_base)?;
+                            return Ok(Completion::Throw(value));
+                        }
+                    }
+                }
+                Instruction::IteratorClose => {
+                    let (iterator, enabled) = self.take_iterator_region(false)?;
+                    if enabled {
+                        match host.iterator_close(iterator, false)? {
+                            IteratorCloseOutcome::Closed => {}
+                            IteratorCloseOutcome::Throw(value) => {
+                                return Ok(Completion::Throw(value));
+                            }
+                        }
+                    }
+                }
+                Instruction::IteratorClosePreserve => {
+                    let (iterator, enabled) = self.take_iterator_region(true)?;
+                    if enabled {
+                        match host.iterator_close(iterator, false)? {
+                            IteratorCloseOutcome::Closed => {}
+                            IteratorCloseOutcome::Throw(value) => {
+                                return Ok(Completion::Throw(value));
+                            }
+                        }
                     }
                 }
                 Instruction::Call(argument_count) => {
@@ -1249,22 +1456,129 @@ impl CallFrame {
         code_len: usize,
     ) -> Result<Option<Completion>, Error> {
         host.ensure_backtrace(&value)?;
-        let Some(handler) = self.handlers.pop() else {
-            return Ok(Some(Completion::Throw(value)));
-        };
-        host.prepare_captured_local_reuse()?;
-        if self.stack.len() < handler.stack_depth {
+        loop {
+            let Some(region) = self.regions.pop() else {
+                return Ok(Some(Completion::Throw(value)));
+            };
+            match region {
+                UnwindRegion::Catch {
+                    target,
+                    stack_depth,
+                } => {
+                    host.prepare_captured_local_reuse()?;
+                    if self.stack.len() < stack_depth {
+                        return Err(Error::internal(
+                            "exception handler stack depth exceeds the VM stack",
+                        ));
+                    }
+                    self.stack.truncate(stack_depth);
+                    self.stack.push(value);
+                    self.pc = checked_target(
+                        u32::try_from(target)
+                            .map_err(|_| Error::internal("catch target overflow"))?,
+                        code_len,
+                    )?;
+                    return Ok(None);
+                }
+                UnwindRegion::Iterator {
+                    record_base,
+                    enabled,
+                } => {
+                    let required_depth = record_base
+                        .checked_add(2)
+                        .ok_or_else(|| Error::internal("iterator record depth overflow"))?;
+                    if self.stack.len() < required_depth {
+                        return Err(Error::internal(
+                            "iterator unwind region exceeds the VM stack",
+                        ));
+                    }
+                    let iterator = self.stack[record_base].clone();
+                    self.stack.truncate(record_base);
+                    if enabled {
+                        // IteratorClose with a pending throw never replaces
+                        // that throw, including when `return` lookup/call
+                        // itself throws. Engine invariant failures still
+                        // escape through `Err`.
+                        match host.iterator_close(iterator, true)? {
+                            IteratorCloseOutcome::Closed | IteratorCloseOutcome::Throw(_) => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn disable_iterator_region(&mut self, record_base: usize) -> Result<(), Error> {
+        let Some(UnwindRegion::Iterator {
+            record_base: active_base,
+            enabled,
+        }) = self.regions.last_mut()
+        else {
             return Err(Error::internal(
-                "exception handler stack depth exceeds the VM stack",
+                "ForOfNext has no innermost iterator region",
+            ));
+        };
+        if *active_base != record_base {
+            return Err(Error::internal(
+                "iterator unwind region changed during next",
             ));
         }
-        self.stack.truncate(handler.stack_depth);
-        self.stack.push(value);
-        self.pc = checked_target(
-            u32::try_from(handler.target).map_err(|_| Error::internal("catch target overflow"))?,
-            code_len,
-        )?;
-        Ok(None)
+        *enabled = false;
+        let iterator = self
+            .stack
+            .get_mut(record_base)
+            .ok_or_else(|| Error::internal("iterator record is truncated"))?;
+        *iterator = Value::Undefined;
+        Ok(())
+    }
+
+    /// Remove the innermost iterator region. When `preserve_top` is true, the
+    /// top operand replaces the complete iterator record and all intermediate
+    /// values, matching an abrupt return crossing a for-of loop.
+    fn take_iterator_region(&mut self, preserve_top: bool) -> Result<(Value, bool), Error> {
+        let region = self.regions.pop().ok_or_else(|| {
+            Error::internal(if preserve_top {
+                "IteratorClosePreserve has no iterator region"
+            } else {
+                "IteratorClose has no iterator region"
+            })
+        })?;
+        let UnwindRegion::Iterator {
+            record_base,
+            enabled,
+        } = region
+        else {
+            return Err(Error::internal(if preserve_top {
+                "IteratorClosePreserve did not target the innermost unwind region"
+            } else {
+                "IteratorClose did not target the innermost unwind region"
+            }));
+        };
+        let record_end = record_base
+            .checked_add(2)
+            .ok_or_else(|| Error::internal("iterator record depth overflow"))?;
+        if preserve_top {
+            if self.stack.len() <= record_end {
+                return Err(Error::internal(
+                    "IteratorClosePreserve has no value above its iterator marker",
+                ));
+            }
+        } else if self.stack.len() != record_end {
+            return Err(Error::internal(
+                "IteratorClose did not reach its iterator record",
+            ));
+        }
+        let iterator = self
+            .stack
+            .get(record_base)
+            .cloned()
+            .ok_or_else(|| Error::internal("iterator record is truncated"))?;
+        let preserved = preserve_top.then(|| self.stack.pop()).flatten();
+        self.stack.truncate(record_base);
+        if let Some(value) = preserved {
+            self.stack.push(value);
+        }
+        Ok((iterator, enabled))
     }
 
     fn pop(&mut self) -> Result<Value, Error> {
@@ -1786,6 +2100,183 @@ mod tests {
             max_stack: 3,
         };
         assert_eq!(Vm::new().execute(&nested).unwrap(), Value::Int(11));
+    }
+
+    #[test]
+    fn iterator_unwind_preserves_exception_and_completion_precedence() {
+        let pending_throw = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(6),
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::PushI32(41),
+                Instruction::Throw,
+                Instruction::Nop,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 5,
+        };
+        pending_throw.verify().unwrap();
+        let mut host = DetachedHost::new(&pending_throw);
+        host.iterator_start_record = Some((Value::Int(10), Value::Int(11)));
+        // A close throw must not replace the already-pending value 41.
+        host.iterator_close_results.push_back(Some(Value::Int(99)));
+        assert_eq!(
+            CallFrame::new(5)
+                .execute(&pending_throw.code, &mut host)
+                .unwrap(),
+            Completion::Return(Value::Int(41))
+        );
+        assert_eq!(host.iterator_close_pending, vec![true]);
+
+        let normal_close_throw = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(7),
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::IteratorClose,
+                Instruction::DropCatch,
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        normal_close_throw.verify().unwrap();
+        let mut host = DetachedHost::new(&normal_close_throw);
+        host.iterator_start_record = Some((Value::Int(10), Value::Int(11)));
+        host.iterator_close_results.push_back(Some(Value::Int(77)));
+        assert_eq!(
+            CallFrame::new(4)
+                .execute(&normal_close_throw.code, &mut host)
+                .unwrap(),
+            Completion::Return(Value::Int(77))
+        );
+        assert_eq!(host.iterator_close_pending, vec![false]);
+
+        let preserve_close_throw = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::PushI32(42),
+                Instruction::IteratorClosePreserve,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        preserve_close_throw.verify().unwrap();
+        let mut host = DetachedHost::new(&preserve_close_throw);
+        host.iterator_start_record = Some((Value::Int(10), Value::Int(11)));
+        host.iterator_close_results.push_back(Some(Value::Int(88)));
+        assert_eq!(
+            CallFrame::new(4)
+                .execute(&preserve_close_throw.code, &mut host)
+                .unwrap(),
+            Completion::Throw(Value::Int(88))
+        );
+        assert_eq!(host.iterator_close_pending, vec![false]);
+    }
+
+    #[test]
+    fn for_of_next_disables_done_and_throwing_iterators() {
+        let done = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::ForOfNext(0),
+                Instruction::Drop,
+                Instruction::Drop,
+                Instruction::IteratorClose,
+                Instruction::PushI32(3),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 5,
+        };
+        done.verify().unwrap();
+        let mut host = DetachedHost::new(&done);
+        host.iterator_start_record = Some((Value::Int(10), Value::Int(11)));
+        host.iterator_next_results
+            .push_back(Ok((Value::Undefined, true)));
+        assert_eq!(
+            CallFrame::new(5).execute(&done.code, &mut host).unwrap(),
+            Completion::Return(Value::Int(3))
+        );
+        assert!(host.iterator_close_pending.is_empty());
+
+        let next_throw = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(10),
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::ForOfNext(0),
+                Instruction::Drop,
+                Instruction::Drop,
+                Instruction::IteratorClose,
+                Instruction::DropCatch,
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 6,
+        };
+        next_throw.verify().unwrap();
+        let mut host = DetachedHost::new(&next_throw);
+        host.iterator_start_record = Some((Value::Int(10), Value::Int(11)));
+        host.iterator_next_results.push_back(Err(Value::Int(55)));
+        assert_eq!(
+            CallFrame::new(6)
+                .execute(&next_throw.code, &mut host)
+                .unwrap(),
+            Completion::Return(Value::Int(55))
+        );
+        assert!(host.iterator_close_pending.is_empty());
+    }
+
+    #[test]
+    fn iterator_region_above_gosub_address_closes_without_consuming_it() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(9),
+                Instruction::Gosub(5),
+                Instruction::Return,
+                Instruction::Nop,
+                Instruction::Nop,
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::IteratorClose,
+                Instruction::Ret,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 5,
+        };
+        function.verify().unwrap();
+        let mut host = DetachedHost::new(&function);
+        host.iterator_start_record = Some((Value::Int(10), Value::Int(11)));
+        host.iterator_close_results.push_back(None);
+        assert_eq!(
+            CallFrame::new(5)
+                .execute(&function.code, &mut host)
+                .unwrap(),
+            Completion::Return(Value::Int(9))
+        );
+        assert_eq!(host.iterator_close_pending, vec![false]);
     }
 
     #[test]

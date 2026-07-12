@@ -375,7 +375,7 @@ claim full parity.
   scoped lexical creation, Annex source writes, and argument/local hoist
   attachment)
   in QuickJS 2026-06-04. Direct/indirect eval declaration environments,
-  async/generator declarations, `for-in`/`for-of`/`for-await`, destructuring,
+  async/generator declarations, `for-in`/`for-await`, for-of destructuring,
   single-statement lexical declarations, and catch/class scopes remain explicit
   boundaries rather than falling back to local or ordinary global storage.
 
@@ -484,11 +484,49 @@ claim full parity.
   duplicate declarations conflict across cases, and normal or abrupt exits
   close captured cells while preserving selector cleanup. This is the current
   simple-name switch lexical slice, not complete SwitchStatement parity.
-  `for-in`/`for-of`/`for-await` remain separate grammar/runtime slices. The classic head
-  already ports QuickJS's sloppy `is_let(..., DECL_MASK_OTHER)` ambiguity to
-  the implemented simple-name lexical head. The shared statement parser applies
-  the corresponding list-versus-single-statement mask. Destructuring,
-  including catch binding patterns, remains a later slice.
+  Synchronous `for-of` now follows QuickJS `js_parse_for_in_of` for simple
+  `var`/`let`/`const`, identifier, fixed-member and computed-member targets.
+  The assignment fragment is emitted before the iterable expression and
+  skipped on first entry; the head lexical environment is therefore already
+  in TDZ while evaluating the iterable. Captured lexical head cells close at
+  the pinned per-iteration boundary. Local and labelled continue retain the
+  active iterator, while edges crossing an iterator control close it in
+  inner-to-outer order and interleave correctly with switch cleanup and
+  try/finally subroutines. `for-in`, `for-await-of`, and for-of destructuring
+  remain explicit frontiers. The classic head continues to port QuickJS's
+  sloppy `is_let(..., DECL_MASK_OTHER)` ambiguity; the shared statement parser
+  applies the corresponding list-versus-single-statement mask.
+
+  Typed `ForOfStart`, `ForOfNext`, `IteratorClose`, and
+  `IteratorClosePreserve` bytecode model QuickJS's three-slot iterator record,
+  with the catch-offset marker kept private and unforgeable. Ordered Catch and
+  Iterator unwind regions are checked at bytecode verification and again by
+  the VM. Exhaustion and next/done/value faults disable the record before
+  propagating, so they do not call `return`; body, assignment, break, return,
+  and outer jumps do. Pending throws retain their original value across close
+  getter/call failures and skip the close-result Object check, while a close
+  fault replaces a normal break or return. Direct native
+  `NativeCProto::IteratorNext` methods use QuickJS's raw value/done ABI through
+  the same active frame and defining realm; ordinary JavaScript calls still
+  receive a realm-correct `{ value, done }` object, and bound/bytecode methods
+  retain generic result-object parsing.
+
+  The generic runtime protocol performs observable `@@iterator`, cached
+  `next`, `done`, `value`, and `return` operations in pinned order. Realm-rooted
+  `%IteratorPrototype%` and `%StringIteratorPrototype%` provide iterator
+  identity plus the pinned `@@toStringTag` accessor/data descriptors without
+  exposing the still-pending global `Iterator` or Iterator Helpers. String
+  iteration advances by Unicode code point while preserving lone UTF-16
+  surrogates and releases its source at exhaustion. `oracle_for_of` locks the
+  value, accessor, close-precedence, nested-control, cross-realm, diagnostics,
+  stack and strip-mode matrix against QuickJS 2026-06-04.
+
+  The pinned anchors are `quickjs.c` 16512-16720 (iterator protocol and
+  IteratorClose), 18985-19049 (for-of and close opcodes), 20545-20570
+  (exception-time iterator closing), 28225-28335 (abrupt-control cleanup),
+  28546-28769 (`js_parse_for_in_of`), 44182-44510 (Iterator prototype), and
+  46508-46680 (String Iterator), plus `quickjs-opcode.h` 201-210.
+
 - Untagged template literals follow QuickJS `js_parse_template` rather than a
   generic string-interpolation rewrite. A no-substitution template pushes only
   its cooked String. An interpolated template keeps the cooked head as a
@@ -1109,7 +1147,7 @@ claim full parity.
   cross-eval captures, initializer/body/update cell identity, the pinned
   shared-head-cell continue quirk, labeled jumps through a nested switch,
   conflicts, exact full/StripDebug TDZ and read-only stacks, and explicit
-  `for-in`/`for-of`/destructuring boundaries.
+  `for-in`/destructuring boundaries.
   The `oracle_program_lexicals` target locks direct Program values, declaration
   source order, repeated eval persistence, globalThis separation and VarRef
   splitting, preflight atomicity, failed-initializer behavior, exact
@@ -1152,13 +1190,19 @@ claim full parity.
   abrupt-finally control flow, Script completion, the pinned caught-throw cell
   quirk, realm splitting, three debug modes, exact diagnostics, and the still
   explicit catch-destructuring frontier.
+  The `oracle_for_of` target locks simple binding/reference heads, the generic
+  iterator protocol and accessor order, Unicode String iteration, natural and
+  abrupt close behavior, completion precedence, nested labels/switch/finally,
+  raw native-next dispatch, realm splitting, exact diagnostics, and all three
+  debug modes. `for-in`, `for-await-of`, for-of destructuring, Array iteration,
+  and Iterator Helpers remain separate milestones.
 - `Runtime` and `Context` are distinct; `qjs -e` and file execution use the
   Rust compiler/VM path and never delegate to an external engine.
 
 ## Not implemented yet
 
 The language slice is intentionally narrow. Async/generator declarations,
-`for-in`/`for-of`/`for-await`, destructuring, other general
+`for-in`/`for-await`, for-of destructuring, other general
 assignment targets, module
 resolution, computed property-definition naming, mapped `arguments`,
 direct/indirect eval declaration environments, arrow/async/generator functions,
@@ -1167,10 +1211,11 @@ implemented. Unsupported declaration contexts are rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` is currently
 limited to simple identifier lists in direct Program code, authored
 ordinary-function bodies, non-empty nested brace blocks, shared switch scopes,
-and classic `for (;;)` heads. Nested and classic-for forms also work in scripts,
+classic `for (;;)` heads, and synchronous simple-binding `for-of` heads. These
+forms also work in scripts,
 and ordinary bodies including classic heads are available through the normal
 `%Function%` constructor.
-Single-statement lexical declarations, nonclassic lexical loop heads,
+Single-statement lexical declarations, `for-in` and destructuring loop heads,
 destructuring (including catch binding patterns), and class lexical
 environments remain later compiler slices. Direct
 Program lexicals now use the production global VarRef path with two-phase
@@ -1194,12 +1239,13 @@ Derived/class/super construction, dynamic Generator/Async/AsyncGenerator
 Function constructors, `AggregateError`, other native builtin constructor
 families, Proxy construct dispatch, and Reflect APIs remain. Typed
 target/cproto, data-bearing Error selector, realm, arity padding, production
-BoundFunction allocation and frame foundations exist, but specialized
-setter/F64/iterator cproto adapters and the wider builtin table remain.
+BoundFunction allocation and frame foundations exist. Generic setter and raw
+iterator-next cproto adapters are active; specialized F64 adapters and the
+wider builtin table remain.
 
 Explicit `throw`, nested propagation, VM-generated native errors, eager Error
-backtraces, and synchronous catch/finally regions share the implemented
-completion path. Async/generator/Promise frame integration, iterator cleanup,
+backtraces, synchronous catch/finally regions, and synchronous iterator cleanup
+share the implemented completion path. Async/generator/Promise frame integration,
 recoverable OOM and backtrace-allocation fallback, interrupt/termination, and
 the remaining abrupt-completion surfaces are still open. The `JS_STRIP_DEBUG` /
 `JS_STRIP_SOURCE` debug/source-stripping decision is implemented as a
@@ -1268,9 +1314,10 @@ global String constructor, the remaining 43 entries of its 53-key prototype
 surface, Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. The global `Object`
 constructor, AggregateError iterable-to-Array, remaining Object prototype
-methods and uncatchable termination state are also pending. Arrays, iterators,
-RegExp, Unicode-backed String methods, remaining object-literal forms and the
-rest of the builtin table build on those layers.
+methods and uncatchable termination state are also pending. Arrays, the
+remaining iterator classes and helpers, RegExp, Unicode-backed String methods,
+remaining object-literal forms and the rest of the builtin table build on
+those layers.
 
 The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 case/normalization/script/property tables beyond the implemented
@@ -1333,6 +1380,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_try_catch_finally -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_for_of -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_for_lexicals -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_program_lexicals -- --nocapture
@@ -1349,7 +1398,8 @@ String-exotic substrate, String UTF-16 prefix, String-conversion core,
 String-rope/byte/native-Error kernels, Unicode identifier core, global
 BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials, and
 the Program-var/function, Program/body/block/switch/classic-for lexical-scope,
-and single/labelled Annex B slices. The atom-Error target contains thirteen
+single/labelled Annex B, synchronous try/catch/finally, and synchronous for-of
+slices. The atom-Error target contains thirteen
 pinned-oracle inputs in addition to its Rust-side expectation test. The Unicode
 target checks every scalar, real compiler/runtime cases, and the parser-driven
 identifier diagnostic matrix. A

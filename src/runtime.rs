@@ -43,7 +43,10 @@ use crate::property::{
 };
 use crate::shape::{PropertyFlags, Shape, ShapeEntry, ShapeError};
 use crate::value::{JsString, JsStringBuilder, JsStringError, Value};
-use crate::vm::{BytecodePc, CallInput, Completion, ToPrimitiveHint, Vm, VmHost};
+use crate::vm::{
+    BytecodePc, CallInput, Completion, ForOfNextOutcome, ForOfStartOutcome, IteratorCloseOutcome,
+    ToPrimitiveHint, Vm, VmHost,
+};
 
 static NEXT_RUNTIME_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -102,6 +105,11 @@ struct RuntimeState {
     next_active_frame_token: u64,
     #[cfg(test)]
     active_frame_probe_snapshots: Vec<Vec<ActiveFrameRecord>>,
+    /// Counts the ordinary `{ value, done }` wrappers produced by the native
+    /// iterator-next call adapter.  The direct VM fast path deliberately does
+    /// not increment this counter.
+    #[cfg(test)]
+    iterator_result_allocations: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,6 +165,31 @@ enum NativeInvocation {
     Call { this_value: Value },
     Construct { new_target: Value },
     Getter { this_value: Value },
+    Setter { this_value: Value },
+}
+
+enum NativeInvocationAdaptation {
+    Invoke(NativeInvocation),
+    Complete(Completion),
+}
+
+/// Result of invoking one native function before the public call adapter has
+/// necessarily materialized its JavaScript result shape.
+///
+/// QuickJS's `JS_CFUNC_iterator_next` ABI returns the iterated value and a
+/// side-channel `done` bit.  An ordinary JavaScript call wraps that pair in an
+/// iterator-result object, while `JS_IteratorNext2` consumes it directly.  A
+/// normal completion remains available for future iterator-next natives which
+/// return an already-materialized result object (`pdone == 2`).
+enum NativeInvokeOutcome {
+    Completion(Completion),
+    IteratorNextRaw { value: Value, done: bool },
+}
+
+#[derive(Clone, Copy)]
+enum NativeInvokeMode {
+    Ordinary,
+    IteratorNextRaw,
 }
 
 struct NativeArguments {
@@ -847,6 +880,43 @@ impl RuntimeVmHost {
         }
         Ok(Completion::Return(Value::Bool(deleted)))
     }
+
+    /// Convert only JavaScript-visible engine errors into rooted thrown
+    /// values. Arena/domain invariants remain Rust errors and must never be
+    /// swallowed by IteratorClose's exception-precedence rule.
+    fn materialize_iterator_error(&self, error: Error) -> Result<Value, Error> {
+        let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
+            return Err(error);
+        };
+        self.runtime
+            .new_native_error_from_error(self.current_realm, kind, &error)
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn iterator_type_error(&self, message: &str) -> Result<Value, Error> {
+        self.runtime
+            .new_native_error(self.current_realm, NativeErrorKind::Type, message)
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn iterator_callable(&self, value: Value) -> Result<Option<CallableRef>, Error> {
+        let Value::Object(object) = value else {
+            return Ok(None);
+        };
+        self.runtime
+            .as_callable(&object)
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn call_iterator_method(
+        &self,
+        callable: &CallableRef,
+        receiver: Value,
+    ) -> Result<Completion, Error> {
+        self.runtime
+            .call_internal(self.current_realm, callable, receiver, &[])
+            .map_err(runtime_error_to_vm_error)
+    }
 }
 
 impl VmHost for RuntimeVmHost {
@@ -872,6 +942,190 @@ impl VmHost for RuntimeVmHost {
             *reusable = matches!(binding, FrameBinding::Captured(_));
         }
         Ok(())
+    }
+
+    fn for_of_start(&mut self, iterable: Value) -> Result<ForOfStartOutcome, Error> {
+        let iterator_key =
+            PropertyKey::from(self.runtime.well_known_symbol(WellKnownSymbol::Iterator));
+        let method = match self.get_property_with_key(iterable.clone(), &iterator_key, false) {
+            Ok(Completion::Return(value)) => value,
+            Ok(Completion::Throw(value)) => return Ok(ForOfStartOutcome::Throw(value)),
+            Err(error) => {
+                return Ok(ForOfStartOutcome::Throw(
+                    self.materialize_iterator_error(error)?,
+                ));
+            }
+        };
+        let Some(method) = self.iterator_callable(method)? else {
+            return Ok(ForOfStartOutcome::Throw(
+                self.iterator_type_error("value is not iterable")?,
+            ));
+        };
+        let iterator = match self.call_iterator_method(&method, iterable) {
+            Ok(Completion::Return(value)) => value,
+            Ok(Completion::Throw(value)) => return Ok(ForOfStartOutcome::Throw(value)),
+            Err(error) => {
+                return Ok(ForOfStartOutcome::Throw(
+                    self.materialize_iterator_error(error)?,
+                ));
+            }
+        };
+        if !matches!(iterator, Value::Object(_)) {
+            return Ok(ForOfStartOutcome::Throw(
+                self.iterator_type_error("not an object")?,
+            ));
+        }
+
+        // Cache `next` exactly once when the iterator record is created.
+        // Subsequent mutation or accessors on the iterator's property cannot
+        // change the method used by ForOfNext.
+        let next_key = self
+            .runtime
+            .intern_property_key("next")
+            .map_err(|error| Error::internal(error.to_string()))?;
+        let next_method = match self.get_property_with_key(iterator.clone(), &next_key, false) {
+            Ok(Completion::Return(value)) => value,
+            Ok(Completion::Throw(value)) => return Ok(ForOfStartOutcome::Throw(value)),
+            Err(error) => {
+                return Ok(ForOfStartOutcome::Throw(
+                    self.materialize_iterator_error(error)?,
+                ));
+            }
+        };
+        Ok(ForOfStartOutcome::Record {
+            iterator,
+            next_method,
+        })
+    }
+
+    fn for_of_next(
+        &mut self,
+        iterator: Value,
+        next_method: Value,
+    ) -> Result<ForOfNextOutcome, Error> {
+        let Some(next_method) = self.iterator_callable(next_method)? else {
+            return Ok(ForOfNextOutcome::Throw(
+                self.iterator_type_error("not a function")?,
+            ));
+        };
+        let result = match self
+            .runtime
+            .try_call_native_iterator_next_raw(&next_method, iterator.clone())
+            .map_err(runtime_error_to_vm_error)?
+        {
+            Some(NativeInvokeOutcome::IteratorNextRaw { value, done }) => {
+                return Ok(ForOfNextOutcome::Result {
+                    value: if done { Value::Undefined } else { value },
+                    done,
+                });
+            }
+            Some(NativeInvokeOutcome::Completion(Completion::Throw(value))) => {
+                return Ok(ForOfNextOutcome::Throw(value));
+            }
+            Some(NativeInvokeOutcome::Completion(Completion::Return(result))) => result,
+            None => match self.call_iterator_method(&next_method, iterator) {
+                Ok(Completion::Return(value)) => value,
+                Ok(Completion::Throw(value)) => return Ok(ForOfNextOutcome::Throw(value)),
+                Err(error) => {
+                    return Ok(ForOfNextOutcome::Throw(
+                        self.materialize_iterator_error(error)?,
+                    ));
+                }
+            },
+        };
+        if !matches!(result, Value::Object(_)) {
+            return Ok(ForOfNextOutcome::Throw(
+                self.iterator_type_error("iterator must return an object")?,
+            ));
+        }
+
+        let done_key = self
+            .runtime
+            .intern_property_key("done")
+            .map_err(|error| Error::internal(error.to_string()))?;
+        let done = match self.get_property_with_key(result.clone(), &done_key, false) {
+            Ok(Completion::Return(value)) => value.to_boolean(),
+            Ok(Completion::Throw(value)) => return Ok(ForOfNextOutcome::Throw(value)),
+            Err(error) => {
+                return Ok(ForOfNextOutcome::Throw(
+                    self.materialize_iterator_error(error)?,
+                ));
+            }
+        };
+        if done {
+            // QuickJS deliberately does not Get `value` for a completed
+            // iterator result, so a getter there remains unobserved.
+            return Ok(ForOfNextOutcome::Result {
+                value: Value::Undefined,
+                done: true,
+            });
+        }
+
+        let value_key = self
+            .runtime
+            .intern_property_key("value")
+            .map_err(|error| Error::internal(error.to_string()))?;
+        let value = match self.get_property_with_key(result, &value_key, false) {
+            Ok(Completion::Return(value)) => value,
+            Ok(Completion::Throw(value)) => return Ok(ForOfNextOutcome::Throw(value)),
+            Err(error) => {
+                return Ok(ForOfNextOutcome::Throw(
+                    self.materialize_iterator_error(error)?,
+                ));
+            }
+        };
+        Ok(ForOfNextOutcome::Result { value, done: false })
+    }
+
+    fn iterator_close(
+        &mut self,
+        iterator: Value,
+        exception_pending: bool,
+    ) -> Result<IteratorCloseOutcome, Error> {
+        let return_key = self
+            .runtime
+            .intern_property_key("return")
+            .map_err(|error| Error::internal(error.to_string()))?;
+        let method = match self.get_property_with_key(iterator.clone(), &return_key, false) {
+            Ok(Completion::Return(value)) => value,
+            Ok(Completion::Throw(value)) => return Ok(IteratorCloseOutcome::Throw(value)),
+            Err(error) => {
+                return Ok(IteratorCloseOutcome::Throw(
+                    self.materialize_iterator_error(error)?,
+                ));
+            }
+        };
+        if matches!(method, Value::Undefined | Value::Null) {
+            return Ok(IteratorCloseOutcome::Closed);
+        }
+        let Some(method) = self.iterator_callable(method)? else {
+            return Ok(IteratorCloseOutcome::Throw(
+                self.iterator_type_error("not a function")?,
+            ));
+        };
+        let result = match self.call_iterator_method(&method, iterator) {
+            Ok(Completion::Return(value)) => value,
+            Ok(Completion::Throw(value)) => return Ok(IteratorCloseOutcome::Throw(value)),
+            Err(error) => {
+                return Ok(IteratorCloseOutcome::Throw(
+                    self.materialize_iterator_error(error)?,
+                ));
+            }
+        };
+        // QuickJS deliberately skips the iterator-result Object check while
+        // an earlier exception is pending. Getter/call/non-callable failures
+        // still occur above so the VM can preserve the original completion,
+        // but a normally returned primitive must not synthesize a new
+        // TypeError on the pending-exception path.
+        if exception_pending {
+            return Ok(IteratorCloseOutcome::Closed);
+        }
+        if !matches!(result, Value::Object(_)) {
+            return Ok(IteratorCloseOutcome::Throw(
+                self.iterator_type_error("not an object")?,
+            ));
+        }
+        Ok(IteratorCloseOutcome::Closed)
     }
 
     fn load_constant(&mut self, index: u32) -> Result<Value, Error> {
@@ -916,7 +1170,8 @@ impl VmHost for RuntimeVmHost {
             ObjectPayload::Ordinary
             | ObjectPayload::Primitive(_)
             | ObjectPayload::GlobalObject { .. }
-            | ObjectPayload::Error => "object",
+            | ObjectPayload::Error
+            | ObjectPayload::StringIterator { .. } => "object",
         })
     }
 
@@ -1984,6 +2239,8 @@ impl Runtime {
                 next_active_frame_token: 1,
                 #[cfg(test)]
                 active_frame_probe_snapshots: Vec::new(),
+                #[cfg(test)]
+                iterator_result_allocations: 0,
             }),
             deferred_references: RefCell::new(VecDeque::new()),
             next_context_id: Cell::new(0),
@@ -2039,6 +2296,12 @@ impl Runtime {
             true,
         )
         .expect("Function.prototype.name initialization must succeed");
+        let iterator_prototype = self
+            .new_object(Some(&object_prototype))
+            .expect("initial Iterator.prototype allocation must succeed");
+        let string_iterator_prototype = self
+            .new_object(Some(&iterator_prototype))
+            .expect("initial StringIterator.prototype allocation must succeed");
         let error_prototype = self
             .new_object(Some(&object_prototype))
             .expect("initial Error.prototype allocation must succeed");
@@ -2103,6 +2366,8 @@ impl Runtime {
                     ContextData::new(
                         object_prototype.object_id(),
                         function_prototype.object_id(),
+                        iterator_prototype.object_id(),
+                        string_iterator_prototype.object_id(),
                         global_object.object_id(),
                         global_var_object.object_id(),
                     )
@@ -2136,6 +2401,8 @@ impl Runtime {
             .expect("Object.prototype intrinsic initialization must succeed");
         self.initialize_function_prototype_methods(realm, &function_prototype)
             .expect("Function.prototype method initialization must succeed");
+        self.initialize_iterator_prototype(realm, &iterator_prototype)
+            .expect("Iterator.prototype intrinsic initialization must succeed");
         self.initialize_error_intrinsics(
             realm,
             &function_prototype,
@@ -2173,6 +2440,12 @@ impl Runtime {
             .expect("String UTF-16 method-prefix initialization must succeed");
         self.initialize_string_conversion_core(realm, &string_prototype)
             .expect("String conversion-core initialization must succeed");
+        self.initialize_string_iterator_intrinsics(
+            realm,
+            &string_prototype,
+            &string_iterator_prototype,
+        )
+        .expect("String iterator intrinsic initialization must succeed");
         self.initialize_symbol_intrinsic(
             realm,
             &function_prototype,
@@ -2198,6 +2471,8 @@ impl Runtime {
         drop(uninitialized_vars);
         drop(bigint_prototype);
         drop(symbol_prototype);
+        drop(string_iterator_prototype);
+        drop(iterator_prototype);
         drop(string_prototype);
         drop(boolean_prototype);
         drop(number_prototype);
@@ -2391,6 +2666,78 @@ impl Runtime {
         state.apply_cleanup(cleanup)?;
         drop(state);
         Ok(ObjectRef::from_owned_handle(self.clone(), object))
+    }
+
+    fn new_string_iterator(
+        &self,
+        realm: ContextId,
+        string: JsString,
+    ) -> Result<ObjectRef, RuntimeError> {
+        let _operation = self.operation();
+        let prototype_id = self
+            .0
+            .state
+            .borrow()
+            .heap
+            .context(realm)?
+            .string_iterator_prototype;
+        let prototype = ObjectRef::from_borrowed_handle(self.clone(), prototype_id)?;
+        let mut state = self.0.state.borrow_mut();
+        let shape = state.get_or_create_shape(Some(prototype.object_id()), &[])?;
+        let object =
+            match state
+                .heap
+                .allocate_object(ObjectData::string_iterator(shape, Vec::new(), string))
+            {
+                Ok(object) => object,
+                Err(error) => {
+                    let cleanup = state.heap.release_shape(shape)?;
+                    state.apply_cleanup(cleanup)?;
+                    return Err(error.into());
+                }
+            };
+        let cleanup = state.heap.release_shape(shape)?;
+        state.apply_cleanup(cleanup)?;
+        drop(state);
+        Ok(ObjectRef::from_owned_handle(self.clone(), object))
+    }
+
+    fn new_iterator_result(
+        &self,
+        realm: ContextId,
+        value: Value,
+        done: bool,
+    ) -> Result<ObjectRef, RuntimeError> {
+        #[cfg(test)]
+        {
+            let mut state = self.0.state.borrow_mut();
+            state.iterator_result_allocations = state
+                .iterator_result_allocations
+                .checked_add(1)
+                .expect("iterator-result allocation counter overflow");
+        }
+        let prototype_id = self.0.state.borrow().heap.context(realm)?.object_prototype;
+        let prototype = ObjectRef::from_borrowed_handle(self.clone(), prototype_id)?;
+        let result = self.new_object(Some(&prototype))?;
+        for (name, value) in [("value", value), ("done", Value::Bool(done))] {
+            let key = self.intern_property_key(name)?;
+            if !self.define_own_property(
+                &result,
+                &key,
+                &OrdinaryPropertyDescriptor {
+                    value: DescriptorField::Present(value),
+                    writable: DescriptorField::Present(true),
+                    enumerable: DescriptorField::Present(true),
+                    configurable: DescriptorField::Present(true),
+                    ..OrdinaryPropertyDescriptor::new()
+                },
+            )? {
+                return Err(RuntimeError::Invariant(
+                    "iterator result property definition was rejected",
+                ));
+            }
+        }
+        Ok(result)
     }
 
     fn new_primitive_object(
@@ -3026,6 +3373,122 @@ impl Runtime {
             0,
             0,
         )
+    }
+
+    /// Install the intrinsic iterator identity method without exposing the
+    /// still-out-of-scope global `Iterator` constructor or Iterator Helpers.
+    fn initialize_iterator_prototype(
+        &self,
+        realm: ContextId,
+        iterator_prototype: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        let key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Iterator));
+        self.define_native_builtin_auto_init_with_key(
+            iterator_prototype,
+            realm,
+            &key,
+            NativeFunctionId::IteratorPrototypeIterator,
+            "[Symbol.iterator]",
+            0,
+            0,
+            PropertyFlags::data(true, false, true),
+        )?;
+
+        // QuickJS installs @@toStringTag as a genuine C getter/setter pair,
+        // not as the data property used by concrete iterator prototypes. The
+        // setter deliberately gives inheriting iterator objects a writable,
+        // enumerable and configurable own tag while keeping this intrinsic's
+        // inherited value protected.
+        let function_prototype = self
+            .0
+            .state
+            .borrow()
+            .heap
+            .context(realm)?
+            .function_prototype;
+        let function_prototype = ObjectRef::from_borrowed_handle(self.clone(), function_prototype)?;
+        let getter = self.new_native_builtin(
+            &function_prototype,
+            realm,
+            NativeFunctionId::IteratorPrototypeToStringTagGetter,
+            0,
+            "get [Symbol.toStringTag]",
+            0,
+        )?;
+        let setter = self.new_native_builtin(
+            &function_prototype,
+            realm,
+            NativeFunctionId::IteratorPrototypeToStringTagSetter,
+            1,
+            "set [Symbol.toStringTag]",
+            1,
+        )?;
+        let key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));
+        if !self.define_own_property(
+            iterator_prototype,
+            &key,
+            &OrdinaryPropertyDescriptor {
+                get: DescriptorField::Present(AccessorValue::Callable(getter)),
+                set: DescriptorField::Present(AccessorValue::Callable(setter)),
+                enumerable: DescriptorField::Present(false),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )? {
+            return Err(RuntimeError::Invariant(
+                "Iterator.prototype toStringTag definition was rejected",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Complete the String iterator class slice: the generic String method,
+    /// branded iterator prototype, native-next ABI and configurable tag.
+    fn initialize_string_iterator_intrinsics(
+        &self,
+        realm: ContextId,
+        string_prototype: &ObjectRef,
+        string_iterator_prototype: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        let iterator = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Iterator));
+        self.define_native_builtin_auto_init_with_key(
+            string_prototype,
+            realm,
+            &iterator,
+            NativeFunctionId::StringPrototypeIterator,
+            "[Symbol.iterator]",
+            0,
+            0,
+            PropertyFlags::data(true, false, true),
+        )?;
+        self.define_native_builtin_auto_init(
+            string_iterator_prototype,
+            realm,
+            NativeFunctionId::StringIteratorNext,
+            "next",
+            0,
+            0,
+        )?;
+
+        let tag = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));
+        if !self.define_own_property(
+            string_iterator_prototype,
+            &tag,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(Value::String(JsString::from_static(
+                    "String Iterator",
+                ))),
+                writable: DescriptorField::Present(false),
+                enumerable: DescriptorField::Present(false),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )? {
+            return Err(RuntimeError::Invariant(
+                "String Iterator toStringTag definition was rejected",
+            ));
+        }
+        Ok(())
     }
 
     /// Install QuickJS's first seven String prototype methods in exact table
@@ -4971,6 +5434,7 @@ impl Runtime {
             | ObjectPayload::Primitive(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
+            | ObjectPayload::StringIterator { .. }
             | ObjectPayload::NativeFunction { .. }
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. } => None,
@@ -5535,6 +5999,7 @@ impl Runtime {
                 ObjectPayload::Ordinary
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::Error
+                | ObjectPayload::StringIterator { .. }
                 | ObjectPayload::NativeFunction { .. }
                 | ObjectPayload::BoundFunction { .. }
                 | ObjectPayload::BytecodeFunction { .. } => None,
@@ -6474,7 +6939,8 @@ impl Runtime {
                 ObjectPayload::Ordinary
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
-                | ObjectPayload::Error => {
+                | ObjectPayload::Error
+                | ObjectPayload::StringIterator { .. } => {
                     return Err(RuntimeError::Engine(Error::new(
                         ErrorKind::Type,
                         "not a function",
@@ -6491,6 +6957,73 @@ impl Runtime {
             bytecode,
             closure_slots,
         })
+    }
+
+    /// Snapshot only a direct native callable. Bound and bytecode functions
+    /// deliberately return `None`: QuickJS's iterator-next fast path tests the
+    /// method object itself and does not unwrap wrappers before deciding which
+    /// ABI to use.
+    fn direct_native_callable_metadata(
+        &self,
+        callable: &CallableRef,
+    ) -> Result<Option<(NativeFunctionId, ContextId, u8)>, RuntimeError> {
+        let _operation = self.operation();
+        if !callable.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("native callable"));
+        }
+        let state = self.0.state.borrow();
+        let object = state.heap.object(callable.as_object().object_id())?;
+        match &object.payload {
+            ObjectPayload::NativeFunction { data } => {
+                let realm = data.realm.ok_or(RuntimeError::Invariant(
+                    "native function was called before its defining realm was attached",
+                ))?;
+                state.heap.context(realm)?;
+                Ok(Some((data.target, realm, data.min_readable_args)))
+            }
+            ObjectPayload::BoundFunction { .. } | ObjectPayload::BytecodeFunction { .. } => {
+                Ok(None)
+            }
+            ObjectPayload::Ordinary
+            | ObjectPayload::Primitive(_)
+            | ObjectPayload::GlobalObject { .. }
+            | ObjectPayload::Error
+            | ObjectPayload::StringIterator { .. } => Err(RuntimeError::Invariant(
+                "validated callable no longer has a callable payload",
+            )),
+        }
+    }
+
+    /// Invoke a direct `NativeCProto::IteratorNext` method through the same
+    /// defining-realm native frame used by an ordinary call, but retain its raw
+    /// value/done result for the VM. All other callable shapes use the generic
+    /// JavaScript call and iterator-result parsing path.
+    fn try_call_native_iterator_next_raw(
+        &self,
+        callable: &CallableRef,
+        iterator: Value,
+    ) -> Result<Option<NativeInvokeOutcome>, RuntimeError> {
+        self.validate_value_domain(&iterator, "iterator-next receiver")?;
+        let Some((target, realm, min_readable_args)) =
+            self.direct_native_callable_metadata(callable)?
+        else {
+            return Ok(None);
+        };
+        if target.descriptor().cproto != NativeCProto::IteratorNext {
+            return Ok(None);
+        }
+        self.invoke_native_function(
+            callable,
+            realm,
+            target,
+            min_readable_args,
+            NativeInvocation::Call {
+                this_value: iterator,
+            },
+            &[],
+            NativeInvokeMode::IteratorNextRaw,
+        )
+        .map(Some)
     }
 
     fn callable_from_value(&self, value: Value) -> Result<CallableRef, RuntimeError> {
@@ -6959,7 +7492,8 @@ impl Runtime {
                 ObjectPayload::Ordinary
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
-                | ObjectPayload::Error => {
+                | ObjectPayload::Error
+                | ObjectPayload::StringIterator { .. } => {
                     return Err(RuntimeError::Engine(Error::new(
                         ErrorKind::Type,
                         "not a function",
@@ -6979,7 +7513,7 @@ impl Runtime {
         new_target: &CallableRef,
         arguments: &[Value],
     ) -> Result<Completion, RuntimeError> {
-        self.invoke_native_function(
+        let outcome = self.invoke_native_function(
             callable,
             realm,
             target,
@@ -6988,7 +7522,9 @@ impl Runtime {
                 new_target: Value::Object(new_target.as_object().clone()),
             },
             arguments,
-        )
+            NativeInvokeMode::Ordinary,
+        )?;
+        Self::ordinary_native_completion(outcome)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -7001,14 +7537,27 @@ impl Runtime {
         this_value: Value,
         arguments: &[Value],
     ) -> Result<Completion, RuntimeError> {
-        self.invoke_native_function(
+        let outcome = self.invoke_native_function(
             callable,
             realm,
             target,
             min_readable_args,
             NativeInvocation::Call { this_value },
             arguments,
-        )
+            NativeInvokeMode::Ordinary,
+        )?;
+        Self::ordinary_native_completion(outcome)
+    }
+
+    fn ordinary_native_completion(
+        outcome: NativeInvokeOutcome,
+    ) -> Result<Completion, RuntimeError> {
+        match outcome {
+            NativeInvokeOutcome::Completion(completion) => Ok(completion),
+            NativeInvokeOutcome::IteratorNextRaw { .. } => Err(RuntimeError::Invariant(
+                "ordinary native call leaked an unwrapped iterator-next outcome",
+            )),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -7020,7 +7569,8 @@ impl Runtime {
         min_readable_args: u8,
         invocation: NativeInvocation,
         arguments: &[Value],
-    ) -> Result<Completion, RuntimeError> {
+        mode: NativeInvokeMode,
+    ) -> Result<NativeInvokeOutcome, RuntimeError> {
         if !callable.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("native callable"));
         }
@@ -7069,17 +7619,31 @@ impl Runtime {
         // pre-existing Error returned as an ordinary Throw completion is not
         // captured here: QuickJS pops the C frame first and lets the enclosing
         // bytecode exception boundary add any missing stack.
-        let result = (|| match self.dispatch_native_function(target, realm, invocation, &arguments)
-        {
-            Err(RuntimeError::Engine(error))
-                if NativeErrorKind::from_javascript_error(error.kind()).is_some() =>
-            {
-                let kind = NativeErrorKind::from_javascript_error(error.kind())
-                    .expect("guard proved this is a JavaScript-visible native error");
-                let value = self.new_native_error_from_error(realm, kind, &error)?;
-                Ok(Completion::Throw(value))
+        let result = (|| {
+            let result = match mode {
+                NativeInvokeMode::Ordinary => self
+                    .dispatch_native_function(target, realm, invocation, &arguments)
+                    .map(NativeInvokeOutcome::Completion),
+                NativeInvokeMode::IteratorNextRaw => {
+                    if target.descriptor().cproto != NativeCProto::IteratorNext {
+                        return Err(RuntimeError::Invariant(
+                            "raw iterator-next dispatch targeted another native cproto",
+                        ));
+                    }
+                    self.dispatch_native_iterator_next_raw(target, realm, invocation, &arguments)
+                }
+            };
+            match result {
+                Err(RuntimeError::Engine(error))
+                    if NativeErrorKind::from_javascript_error(error.kind()).is_some() =>
+                {
+                    let kind = NativeErrorKind::from_javascript_error(error.kind())
+                        .expect("guard proved this is a JavaScript-visible native error");
+                    let value = self.new_native_error_from_error(realm, kind, &error)?;
+                    Ok(NativeInvokeOutcome::Completion(Completion::Throw(value)))
+                }
+                result => result,
             }
-            result => result,
         })();
         active_frame.finish()?;
         result
@@ -7813,6 +8377,7 @@ impl Runtime {
                         | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
                         | ObjectPayload::Error
+                        | ObjectPayload::StringIterator { .. }
                         | ObjectPayload::BoundFunction { .. }
                         | ObjectPayload::NativeFunction { .. } => false,
                     }
@@ -8177,7 +8742,8 @@ impl Runtime {
                 ObjectPayload::Ordinary
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
-                | ObjectPayload::Error => (false, None, FunctionKind::Normal),
+                | ObjectPayload::Error
+                | ObjectPayload::StringIterator { .. } => (false, None, FunctionKind::Normal),
             }
         };
         if !is_callable {
@@ -8381,7 +8947,8 @@ impl Runtime {
                         ObjectPayload::Ordinary
                         | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
-                        | ObjectPayload::Error => {
+                        | ObjectPayload::Error
+                        | ObjectPayload::StringIterator { .. } => {
                             return Err(RuntimeError::Invariant(
                                 "ordinary instanceof received a non-callable target",
                             ));
@@ -8475,6 +9042,7 @@ impl Runtime {
                         | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
                         | ObjectPayload::Error
+                        | ObjectPayload::StringIterator { .. }
                         | ObjectPayload::NativeFunction { .. }
                         | ObjectPayload::BoundFunction { .. }
                         | ObjectPayload::BytecodeFunction { .. } => None,
@@ -8793,6 +9361,7 @@ impl Runtime {
                     | ObjectPayload::Primitive(_)
                     | ObjectPayload::GlobalObject { .. }
                     | ObjectPayload::Error
+                    | ObjectPayload::StringIterator { .. }
                     | ObjectPayload::NativeFunction { .. }
                     | ObjectPayload::BoundFunction { .. }
                     | ObjectPayload::BytecodeFunction { .. } => None,
@@ -8863,6 +9432,210 @@ impl Runtime {
         Ok(Completion::Return(Value::String(JsString::from_code_unit(
             unit,
         ))))
+    }
+
+    fn call_iterator_prototype_iterator(
+        &self,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Iterator.prototype iterator did not receive a generic invocation",
+            ));
+        };
+        Ok(Completion::Return(this_value))
+    }
+
+    fn call_iterator_prototype_to_string_tag_getter(
+        &self,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Getter { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Iterator.prototype toStringTag getter received the wrong native invocation",
+            ));
+        };
+        Ok(Completion::Return(Value::String(JsString::from_static(
+            "Iterator",
+        ))))
+    }
+
+    fn call_iterator_prototype_to_string_tag_setter(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Setter { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Iterator.prototype toStringTag setter received the wrong native invocation",
+            ));
+        };
+        let Value::Object(receiver) = this_value else {
+            return Err(RuntimeError::Engine(Error::new(
+                ErrorKind::Type,
+                "not an object",
+            )));
+        };
+        let value = arguments
+            .readable
+            .first()
+            .cloned()
+            .ok_or(RuntimeError::Invariant(
+                "Iterator.prototype toStringTag setter argv was not padded",
+            ))?;
+        let iterator_prototype = self
+            .0
+            .state
+            .borrow()
+            .heap
+            .context(realm)?
+            .iterator_prototype;
+        if receiver.object_id() == iterator_prototype {
+            return Err(RuntimeError::Engine(Error::new(
+                ErrorKind::Type,
+                "Cannot assign to read only property",
+            )));
+        }
+
+        let key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));
+        if !self.has_own_property(&receiver, &key)? {
+            let defined = self.define_own_property(
+                &receiver,
+                &key,
+                &OrdinaryPropertyDescriptor {
+                    value: DescriptorField::Present(value),
+                    writable: DescriptorField::Present(true),
+                    enumerable: DescriptorField::Present(true),
+                    configurable: DescriptorField::Present(true),
+                    ..OrdinaryPropertyDescriptor::new()
+                },
+            )?;
+            if !defined {
+                return Err(RuntimeError::Engine(Error::new(
+                    ErrorKind::Type,
+                    "object is not extensible",
+                )));
+            }
+            return Ok(Completion::Return(Value::Undefined));
+        }
+
+        match self.prepare_set_property(&receiver, &key, value)? {
+            PropertySetAction::Complete => Ok(Completion::Return(Value::Undefined)),
+            PropertySetAction::Call {
+                setter,
+                receiver,
+                argument,
+            } => match self.call_internal(realm, &setter, receiver, &[argument])? {
+                Completion::Return(_) => Ok(Completion::Return(Value::Undefined)),
+                Completion::Throw(value) => Ok(Completion::Throw(value)),
+            },
+            PropertySetAction::Rejected(PropertySetRejection::ReadOnly) => {
+                Err(RuntimeError::Engine(self.native_atom_error(
+                    ErrorKind::Type,
+                    "'",
+                    &key,
+                    "' is read-only",
+                )?))
+            }
+            PropertySetAction::Rejected(PropertySetRejection::NoSetter) => Err(
+                RuntimeError::Engine(Error::new(ErrorKind::Type, "no setter for property")),
+            ),
+            PropertySetAction::Rejected(PropertySetRejection::NotExtensible) => Err(
+                RuntimeError::Engine(Error::new(ErrorKind::Type, "object is not extensible")),
+            ),
+            PropertySetAction::Rejected(PropertySetRejection::NotObject) => {
+                Err(RuntimeError::Invariant(
+                    "Iterator.prototype tag setter rejected its object receiver",
+                ))
+            }
+        }
+    }
+
+    fn call_string_prototype_iterator(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String.prototype iterator did not receive a generic invocation",
+            ));
+        };
+        let string = match self.native_to_string_check_object(realm, &this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        Ok(Completion::Return(Value::Object(
+            self.new_string_iterator(realm, string)?,
+        )))
+    }
+
+    fn call_string_iterator_next(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        match self.call_string_iterator_next_raw(realm, invocation)? {
+            NativeInvokeOutcome::Completion(completion) => Ok(completion),
+            NativeInvokeOutcome::IteratorNextRaw { value, done } => Ok(Completion::Return(
+                Value::Object(self.new_iterator_result(realm, value, done)?),
+            )),
+        }
+    }
+
+    /// Execute the QuickJS `JS_CFUNC_iterator_next` half of String Iterator
+    /// without materializing the public iterator-result object. The ordinary
+    /// JavaScript call adapter above wraps this outcome; the VM's direct-native
+    /// `ForOfNext` path consumes it as-is.
+    fn call_string_iterator_next_raw(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+    ) -> Result<NativeInvokeOutcome, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String Iterator next did not receive an iterator-next invocation",
+            ));
+        };
+        let Value::Object(iterator) = this_value else {
+            return Ok(NativeInvokeOutcome::Completion(Completion::Throw(
+                self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "String Iterator object expected",
+                )?,
+            )));
+        };
+        let branded = matches!(
+            self.0
+                .state
+                .borrow()
+                .heap
+                .object(iterator.object_id())?
+                .payload,
+            ObjectPayload::StringIterator { .. }
+        );
+        if !branded {
+            return Ok(NativeInvokeOutcome::Completion(Completion::Throw(
+                self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "String Iterator object expected",
+                )?,
+            )));
+        }
+        let value = self
+            .0
+            .state
+            .borrow_mut()
+            .heap
+            .string_iterator_next(iterator.object_id())?;
+        let (value, done) = match value {
+            Some(value) => (Value::String(value), false),
+            None => (Value::Undefined, true),
+        };
+        Ok(NativeInvokeOutcome::IteratorNextRaw { value, done })
     }
 
     fn call_string_prototype_char_code_at(
@@ -9362,6 +10135,7 @@ impl Runtime {
                 ObjectPayload::Ordinary | ObjectPayload::GlobalObject { .. } => {
                     JsString::from_static("Object")
                 }
+                ObjectPayload::StringIterator { .. } => JsString::from_static("Object"),
             }
         };
         let to_string_tag = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));
@@ -9737,13 +10511,16 @@ impl Runtime {
         }
     }
 
-    fn dispatch_native_function(
+    /// Validate the active native frame and adapt the public call shape to the
+    /// target's typed C-function protocol. Both ordinary calls and the raw
+    /// iterator-next fast path pass through this single boundary.
+    fn adapt_native_invocation(
         &self,
         target: NativeFunctionId,
         realm: ContextId,
         invocation: NativeInvocation,
         arguments: &NativeArguments,
-    ) -> Result<Completion, RuntimeError> {
+    ) -> Result<NativeInvocationAdaptation, RuntimeError> {
         let frame =
             self.0
                 .state
@@ -9801,7 +10578,9 @@ impl Runtime {
             ) => {
                 let exception =
                     self.new_native_error(realm, NativeErrorKind::Type, "must be called with new")?;
-                return Ok(Completion::Throw(exception));
+                return Ok(NativeInvocationAdaptation::Complete(Completion::Throw(
+                    exception,
+                )));
             }
             (
                 NativeCProto::ConstructorOrFunction | NativeCProto::ConstructorOrFunctionMagic,
@@ -9823,25 +10602,75 @@ impl Runtime {
             ) => NativeInvocation::Getter {
                 this_value: new_target,
             },
-            (_, NativeInvocation::Getter { .. }) => {
+            (
+                NativeCProto::Setter | NativeCProto::SetterMagic,
+                NativeInvocation::Call { this_value },
+            ) => NativeInvocation::Setter { this_value },
+            (
+                NativeCProto::Setter | NativeCProto::SetterMagic,
+                NativeInvocation::Construct { new_target },
+            ) => NativeInvocation::Setter {
+                this_value: new_target,
+            },
+            (NativeCProto::IteratorNext, NativeInvocation::Call { this_value }) => {
+                NativeInvocation::Call { this_value }
+            }
+            (NativeCProto::IteratorNext, NativeInvocation::Construct { new_target }) => {
+                // Iterator-next functions are non-constructors by default.
+                // If an embedder independently enables [[Construct]], QuickJS
+                // passes new.target through the same native receiver slot.
+                NativeInvocation::Call {
+                    this_value: new_target,
+                }
+            }
+            (_, NativeInvocation::Getter { .. } | NativeInvocation::Setter { .. }) => {
                 return Err(RuntimeError::Invariant(
-                    "native invocation was adapted as a getter more than once",
+                    "native invocation was adapted more than once",
                 ));
             }
-            (
-                NativeCProto::UnaryF64
-                | NativeCProto::BinaryF64
-                | NativeCProto::Setter
-                | NativeCProto::SetterMagic
-                | NativeCProto::IteratorNext,
-                _,
-            ) => {
+            (NativeCProto::UnaryF64 | NativeCProto::BinaryF64, _) => {
                 return Err(RuntimeError::Invariant(
                     "native cproto adapter is not implemented yet",
                 ));
             }
         };
-        let _ = &invocation;
+        Ok(NativeInvocationAdaptation::Invoke(invocation))
+    }
+
+    fn dispatch_native_iterator_next_raw(
+        &self,
+        target: NativeFunctionId,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<NativeInvokeOutcome, RuntimeError> {
+        let invocation = match self.adapt_native_invocation(target, realm, invocation, arguments)? {
+            NativeInvocationAdaptation::Invoke(invocation) => invocation,
+            NativeInvocationAdaptation::Complete(completion) => {
+                return Ok(NativeInvokeOutcome::Completion(completion));
+            }
+        };
+        match target {
+            NativeFunctionId::StringIteratorNext => {
+                self.call_string_iterator_next_raw(realm, invocation)
+            }
+            _ => Err(RuntimeError::Invariant(
+                "IteratorNext cproto has no raw native dispatcher",
+            )),
+        }
+    }
+
+    fn dispatch_native_function(
+        &self,
+        target: NativeFunctionId,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let invocation = match self.adapt_native_invocation(target, realm, invocation, arguments)? {
+            NativeInvocationAdaptation::Invoke(invocation) => invocation,
+            NativeInvocationAdaptation::Complete(completion) => return Ok(completion),
+        };
         match target {
             NativeFunctionId::FunctionPrototype => Ok(Completion::Return(Value::Undefined)),
             NativeFunctionId::FunctionConstructor(kind) => {
@@ -9904,6 +10733,21 @@ impl Runtime {
             NativeFunctionId::StringPrototypeWellFormed(selector) => {
                 self.call_string_prototype_well_formed(realm, selector, invocation)
             }
+            NativeFunctionId::IteratorPrototypeIterator => {
+                self.call_iterator_prototype_iterator(invocation)
+            }
+            NativeFunctionId::IteratorPrototypeToStringTagGetter => {
+                self.call_iterator_prototype_to_string_tag_getter(invocation)
+            }
+            NativeFunctionId::IteratorPrototypeToStringTagSetter => {
+                self.call_iterator_prototype_to_string_tag_setter(realm, invocation, arguments)
+            }
+            NativeFunctionId::StringPrototypeIterator => {
+                self.call_string_prototype_iterator(realm, invocation)
+            }
+            NativeFunctionId::StringIteratorNext => {
+                self.call_string_iterator_next(realm, invocation)
+            }
             NativeFunctionId::SymbolRegistry(kind) => {
                 self.call_symbol_registry(realm, kind, invocation, arguments)
             }
@@ -9953,19 +10797,24 @@ impl Runtime {
                     .iter()
                     .filter(|value| matches!(value, Value::Undefined))
                     .count();
+                let active_function = self.active_function()?.object_id();
                 let invocation_target_is_function = match invocation {
                     NativeInvocation::Call {
                         this_value: Value::Object(object),
-                    } => object.object_id() == frame.function,
+                    } => object.object_id() == active_function,
                     NativeInvocation::Construct {
                         new_target: Value::Object(object),
-                    } => object.object_id() == frame.function,
+                    } => object.object_id() == active_function,
                     NativeInvocation::Getter {
                         this_value: Value::Object(object),
-                    } => object.object_id() == frame.function,
+                    } => object.object_id() == active_function,
+                    NativeInvocation::Setter {
+                        this_value: Value::Object(object),
+                    } => object.object_id() == active_function,
                     NativeInvocation::Call { .. }
                     | NativeInvocation::Construct { .. }
-                    | NativeInvocation::Getter { .. } => false,
+                    | NativeInvocation::Getter { .. }
+                    | NativeInvocation::Setter { .. } => false,
                 };
                 let result = format!(
                     "{}|{}|{}|{}",
@@ -10092,6 +10941,7 @@ impl Runtime {
                 ObjectPayload::Ordinary
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::Error
+                | ObjectPayload::StringIterator { .. }
                 | ObjectPayload::NativeFunction { .. }
                 | ObjectPayload::BoundFunction { .. }
                 | ObjectPayload::BytecodeFunction { .. } => None,
@@ -11886,6 +12736,39 @@ impl Context {
         )?)
     }
 
+    /// Return this realm's `%IteratorPrototype%` root. The global `Iterator`
+    /// constructor and Iterator Helpers are intentionally not exposed yet.
+    pub fn iterator_prototype(&self) -> Result<ObjectRef, RuntimeError> {
+        let object = self
+            .runtime
+            .0
+            .state
+            .borrow()
+            .heap
+            .context(self.realm)?
+            .iterator_prototype;
+        Ok(ObjectRef::from_borrowed_handle(
+            self.runtime.clone(),
+            object,
+        )?)
+    }
+
+    /// Return this realm's `%StringIteratorPrototype%` root.
+    pub fn string_iterator_prototype(&self) -> Result<ObjectRef, RuntimeError> {
+        let object = self
+            .runtime
+            .0
+            .state
+            .borrow()
+            .heap
+            .context(self.realm)?
+            .string_iterator_prototype;
+        Ok(ObjectRef::from_borrowed_handle(
+            self.runtime.clone(),
+            object,
+        )?)
+    }
+
     /// Return this realm's boxed-+0 `%Number.prototype%` root.
     pub fn number_prototype(&self) -> Result<ObjectRef, RuntimeError> {
         self.runtime
@@ -12280,6 +13163,8 @@ impl Context {
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
     use crate::JsBigInt;
     use crate::bytecode::{BytecodeFunction, Instruction};
     use crate::debug::{DebugInfoMode, LineColumn, Pc2LineEntry, Pc2LineTable};
@@ -12297,11 +13182,12 @@ mod tests {
         OrdinaryPropertyDescriptor, PropertyKey, WellKnownSymbol,
     };
     use crate::value::{JsString, JsStringError, Value};
-    use crate::vm::Completion;
+    use crate::vm::{Completion, IteratorCloseOutcome, VmHost};
 
     use super::{
-        ActiveFrameKind, CallableExecution, DeferredRefOp, DynamicSourceBuilder, EvalOptions,
-        PropertyGetAction, PropertySetAction, Runtime, RuntimeError, ToPrimitiveHint, VarRefRoot,
+        ActiveFrameKind, ActiveFrameToken, CallableExecution, DeferredRefOp, DynamicSourceBuilder,
+        EvalOptions, PropertyGetAction, PropertySetAction, Runtime, RuntimeError, RuntimeVmHost,
+        ToPrimitiveHint, VarRefRoot,
     };
 
     #[test]
@@ -13024,6 +13910,7 @@ mod tests {
                 "toWellFormed",
                 "toString",
                 "valueOf",
+                "Symbol.iterator",
             ],
             "implemented-key filtered order, not the complete String prototype table"
         );
@@ -13221,6 +14108,7 @@ mod tests {
                 "toWellFormed",
                 "toString",
                 "valueOf",
+                "Symbol.iterator",
             ],
             "implemented entries must retain their pinned QuickJS table order"
         );
@@ -13511,6 +14399,7 @@ mod tests {
                 "toWellFormed",
                 "toString",
                 "valueOf",
+                "Symbol.iterator",
             ],
             "implemented-key filtered order, not the complete String prototype table"
         );
@@ -15416,6 +16305,599 @@ mod tests {
                 .unwrap(),
             Value::String(JsString::from_static("boolean"))
         );
+    }
+
+    #[test]
+    fn iterator_to_string_tag_accessor_matches_quickjs_metadata_and_setter_semantics() {
+        let runtime = Runtime::new();
+        let mut first = runtime.new_context();
+        let mut second = runtime.new_context();
+        let iterator_prototype = first.iterator_prototype().unwrap();
+        let function_prototype = first.function_prototype().unwrap();
+        let tag = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::ToStringTag));
+        let CompleteOrdinaryPropertyDescriptor::Accessor {
+            get: Some(getter),
+            set: Some(setter),
+            enumerable: false,
+            configurable: true,
+        } = runtime
+            .get_own_property(&iterator_prototype, &tag)
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("Iterator.prototype @@toStringTag was not the QuickJS accessor pair");
+        };
+
+        let name = runtime.intern_property_key("name").unwrap();
+        let length = runtime.intern_property_key("length").unwrap();
+        let prototype = runtime.intern_property_key("prototype").unwrap();
+        for (callable, target, cproto, expected_name, expected_length) in [
+            (
+                &getter,
+                NativeFunctionId::IteratorPrototypeToStringTagGetter,
+                NativeCProto::Getter,
+                "get [Symbol.toStringTag]",
+                0,
+            ),
+            (
+                &setter,
+                NativeFunctionId::IteratorPrototypeToStringTagSetter,
+                NativeCProto::Setter,
+                "set [Symbol.toStringTag]",
+                1,
+            ),
+        ] {
+            assert_eq!(runtime.callable_realm(callable).unwrap(), first.realm);
+            assert_eq!(
+                runtime.get_prototype_of(callable.as_object()).unwrap(),
+                Some(function_prototype.clone())
+            );
+            assert!(!runtime.is_constructor(callable.as_object()).unwrap());
+            assert_eq!(
+                runtime
+                    .get_own_property(callable.as_object(), &prototype)
+                    .unwrap(),
+                None
+            );
+            assert!(matches!(
+                runtime
+                    .get_own_property(callable.as_object(), &name)
+                    .unwrap(),
+                Some(CompleteOrdinaryPropertyDescriptor::Data {
+                    value: Value::String(value),
+                    writable: false,
+                    enumerable: false,
+                    configurable: true,
+                }) if value == JsString::try_from_utf8(expected_name).unwrap()
+            ));
+            assert!(matches!(
+                runtime
+                    .get_own_property(callable.as_object(), &length)
+                    .unwrap(),
+                Some(CompleteOrdinaryPropertyDescriptor::Data {
+                    value: Value::Int(value),
+                    writable: false,
+                    enumerable: false,
+                    configurable: true,
+                }) if value == expected_length
+            ));
+            let state = runtime.0.state.borrow();
+            let ObjectPayload::NativeFunction { data } = &state
+                .heap
+                .object(callable.as_object().object_id())
+                .unwrap()
+                .payload
+            else {
+                panic!("Iterator tag accessor was not a native function");
+            };
+            assert_eq!(data.target, target);
+            assert_eq!(data.target.descriptor().cproto, cproto);
+        }
+
+        for receiver in [
+            Value::Null,
+            Value::Int(1),
+            Value::Object(first.new_object().unwrap()),
+        ] {
+            assert_eq!(
+                second.call(&getter, receiver, &[]).unwrap(),
+                Value::String(JsString::from_static("Iterator"))
+            );
+        }
+
+        let iterator_global = runtime.intern_property_key("Iterator").unwrap();
+        assert!(
+            !runtime
+                .has_own_property(&first.global_object().unwrap(), &iterator_global)
+                .unwrap(),
+            "this intrinsic slice must not publish the global Iterator constructor"
+        );
+
+        let inherited = runtime.new_object(Some(&iterator_prototype)).unwrap();
+        assert!(!runtime.has_own_property(&inherited, &tag).unwrap());
+        assert!(
+            first
+                .set_property(
+                    &inherited,
+                    &tag,
+                    Value::String(JsString::from_static("Custom")),
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            runtime.get_own_property(&inherited, &tag).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::String(JsString::from_static("Custom")),
+                writable: true,
+                enumerable: true,
+                configurable: true,
+            })
+        );
+
+        let existing = runtime.new_object(Some(&iterator_prototype)).unwrap();
+        assert!(
+            runtime
+                .define_own_property(
+                    &existing,
+                    &tag,
+                    &data_descriptor(
+                        Value::String(JsString::from_static("old")),
+                        true,
+                        false,
+                        false,
+                    ),
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            first
+                .call(
+                    &setter,
+                    Value::Object(existing.clone()),
+                    &[Value::String(JsString::from_static("new"))],
+                )
+                .unwrap(),
+            Value::Undefined
+        );
+        assert_eq!(
+            runtime.get_own_property(&existing, &tag).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::String(JsString::from_static("new")),
+                writable: true,
+                enumerable: false,
+                configurable: false,
+            })
+        );
+
+        let seen = runtime.intern_property_key("iteratorTagSeen").unwrap();
+        let first_global = first.global_object().unwrap();
+        assert!(
+            first
+                .define_own_property(
+                    &first_global,
+                    &seen,
+                    &data_descriptor(Value::Undefined, true, true, true),
+                )
+                .unwrap()
+        );
+        let recording_setter = eval_callable(
+            &runtime,
+            &mut first,
+            "(function(value) { iteratorTagSeen = value; })",
+        );
+        let own_accessor = runtime.new_object(Some(&iterator_prototype)).unwrap();
+        assert!(
+            runtime
+                .define_own_property(
+                    &own_accessor,
+                    &tag,
+                    &OrdinaryPropertyDescriptor {
+                        get: DescriptorField::Present(AccessorValue::Undefined),
+                        set: DescriptorField::Present(AccessorValue::Callable(recording_setter)),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            first
+                .call(
+                    &setter,
+                    Value::Object(own_accessor),
+                    &[Value::String(JsString::from_static("seen"))],
+                )
+                .unwrap(),
+            Value::Undefined
+        );
+        assert_eq!(
+            first.get_property(&first_global, &seen).unwrap(),
+            Value::String(JsString::from_static("seen"))
+        );
+
+        let readonly = runtime.new_object(Some(&iterator_prototype)).unwrap();
+        assert!(
+            runtime
+                .define_own_property(
+                    &readonly,
+                    &tag,
+                    &data_descriptor(
+                        Value::String(JsString::from_static("fixed")),
+                        false,
+                        false,
+                        false,
+                    ),
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            first.call(
+                &setter,
+                Value::Object(readonly),
+                &[Value::String(JsString::from_static("no"))],
+            ),
+            Err(RuntimeError::Exception)
+        );
+        assert_eq!(
+            take_error_message(&runtime, &mut first),
+            JsString::from_static("'Symbol.toStringTag' is read-only")
+        );
+
+        assert_eq!(
+            first.set_property(
+                &iterator_prototype,
+                &tag,
+                Value::String(JsString::from_static("no")),
+            ),
+            Err(RuntimeError::Exception)
+        );
+        assert_eq!(
+            take_error_message(&runtime, &mut first),
+            JsString::from_static("Cannot assign to read only property")
+        );
+
+        assert_eq!(
+            second.call(
+                &setter,
+                Value::Int(1),
+                &[Value::String(JsString::from_static("no"))],
+            ),
+            Err(RuntimeError::Exception)
+        );
+        let Value::Object(type_error) = second.take_exception().unwrap().unwrap() else {
+            panic!("primitive Iterator tag receiver did not throw an Error object");
+        };
+        let type_error_constructor = global_callable(&runtime, &mut first, "TypeError");
+        let Value::Object(type_error_prototype) = first
+            .get_property(type_error_constructor.as_object(), &prototype)
+            .unwrap()
+        else {
+            panic!("TypeError.prototype was not an object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&type_error).unwrap(),
+            Some(type_error_prototype),
+            "native accessor errors must use the accessor's defining realm"
+        );
+    }
+
+    #[test]
+    fn string_iterator_inherits_iterator_tag_after_own_tag_is_deleted() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let string_prototype = context.string_prototype().unwrap();
+        let string_iterator_prototype = context.string_iterator_prototype().unwrap();
+        let iterator_prototype = context.iterator_prototype().unwrap();
+        let iterator = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::Iterator));
+        let tag = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::ToStringTag));
+        assert_eq!(
+            own_key_names(&runtime, &iterator_prototype),
+            ["Symbol.iterator", "Symbol.toStringTag"]
+        );
+
+        let Value::Object(method) = context.get_property(&string_prototype, &iterator).unwrap()
+        else {
+            panic!("String.prototype @@iterator was not an object");
+        };
+        let method = runtime.as_callable(&method).unwrap().unwrap();
+        let Value::Object(string_iterator) = context
+            .call(&method, Value::String(JsString::from_static("x")), &[])
+            .unwrap()
+        else {
+            panic!("String.prototype @@iterator did not return an object");
+        };
+        let object_prototype = context.object_prototype().unwrap();
+        let object_to_string =
+            property_callable(&runtime, &mut context, &object_prototype, "toString");
+        assert_eq!(
+            context
+                .call(
+                    &object_to_string,
+                    Value::Object(string_iterator.clone()),
+                    &[],
+                )
+                .unwrap(),
+            Value::String(JsString::from_static("[object String Iterator]"))
+        );
+
+        assert!(
+            runtime
+                .delete_property(&string_iterator_prototype, &tag)
+                .unwrap()
+        );
+        assert_eq!(
+            context.get_property(&string_iterator, &tag).unwrap(),
+            Value::String(JsString::from_static("Iterator"))
+        );
+        assert_eq!(
+            context
+                .call(&object_to_string, Value::Object(string_iterator), &[],)
+                .unwrap(),
+            Value::String(JsString::from_static("[object Iterator]"))
+        );
+    }
+
+    #[test]
+    fn iterator_close_skips_only_result_brand_check_for_pending_exception() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let primitive_return = eval_callable(&runtime, &mut context, "(function(){ return 1; })");
+        let return_key = runtime.intern_property_key("return").unwrap();
+        let iterator = context.new_object().unwrap();
+        assert!(
+            runtime
+                .define_own_property(
+                    &iterator,
+                    &return_key,
+                    &data_descriptor(
+                        Value::Object(primitive_return.as_object().clone()),
+                        true,
+                        true,
+                        true,
+                    ),
+                )
+                .unwrap()
+        );
+        let mut host = RuntimeVmHost {
+            runtime: runtime.clone(),
+            active_frame_token: ActiveFrameToken(0),
+            current_realm: context.realm,
+            constants: Rc::from([]),
+            argument_definitions: Rc::from([]),
+            local_definitions: Rc::from([]),
+            closure_variables: Rc::from([]),
+            closure_slots: Vec::new(),
+            arguments: Vec::new(),
+            locals: Vec::new(),
+            reusable_captured_locals: Vec::new(),
+        };
+        assert!(matches!(
+            VmHost::iterator_close(&mut host, Value::Object(iterator.clone()), true).unwrap(),
+            IteratorCloseOutcome::Closed
+        ));
+        assert!(matches!(
+            VmHost::iterator_close(&mut host, Value::Object(iterator), false).unwrap(),
+            IteratorCloseOutcome::Throw(Value::Object(_))
+        ));
+
+        let non_callable = context.new_object().unwrap();
+        assert!(
+            runtime
+                .define_own_property(
+                    &non_callable,
+                    &return_key,
+                    &data_descriptor(Value::Int(1), true, true, true),
+                )
+                .unwrap()
+        );
+        assert!(matches!(
+            VmHost::iterator_close(&mut host, Value::Object(non_callable), true).unwrap(),
+            IteratorCloseOutcome::Throw(Value::Object(_))
+        ));
+    }
+
+    #[test]
+    fn native_iterator_next_wraps_public_calls_but_for_of_consumes_raw_outcomes() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let iterator_key = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::Iterator));
+        let string_prototype = context.string_prototype().unwrap();
+        let Value::Object(iterator_method) = context
+            .get_property(&string_prototype, &iterator_key)
+            .unwrap()
+        else {
+            panic!("String.prototype @@iterator was not an object");
+        };
+        let iterator_method = runtime.as_callable(&iterator_method).unwrap().unwrap();
+        let Value::Object(iterator) = context
+            .call(
+                &iterator_method,
+                Value::String(JsString::from_static("A")),
+                &[],
+            )
+            .unwrap()
+        else {
+            panic!("String.prototype @@iterator did not return an object");
+        };
+        let next_key = runtime.intern_property_key("next").unwrap();
+        let Value::Object(next) = context.get_property(&iterator, &next_key).unwrap() else {
+            panic!("String Iterator next was not an object");
+        };
+        let next = runtime.as_callable(&next).unwrap().unwrap();
+        {
+            let state = runtime.0.state.borrow();
+            let ObjectPayload::NativeFunction { data } = &state
+                .heap
+                .object(next.as_object().object_id())
+                .unwrap()
+                .payload
+            else {
+                panic!("String Iterator next was not a direct native function");
+            };
+            assert_eq!(data.target, NativeFunctionId::StringIteratorNext);
+            assert_eq!(data.target.descriptor().cproto, NativeCProto::IteratorNext);
+        }
+
+        let before_public = runtime.0.state.borrow().iterator_result_allocations;
+        let Value::Object(result) = context.call(&next, Value::Object(iterator), &[]).unwrap()
+        else {
+            panic!("ordinary String Iterator next call did not return an object");
+        };
+        assert_eq!(
+            runtime.0.state.borrow().iterator_result_allocations,
+            before_public + 1
+        );
+        assert_eq!(
+            runtime.get_prototype_of(&result).unwrap(),
+            Some(context.object_prototype().unwrap())
+        );
+        let value_key = runtime.intern_property_key("value").unwrap();
+        let done_key = runtime.intern_property_key("done").unwrap();
+        assert_eq!(
+            runtime.get_own_property(&result, &value_key).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::String(JsString::from_static("A")),
+                writable: true,
+                enumerable: true,
+                configurable: true,
+            })
+        );
+        assert_eq!(
+            runtime.get_own_property(&result, &done_key).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Bool(false),
+                writable: true,
+                enumerable: true,
+                configurable: true,
+            })
+        );
+
+        let before_raw = runtime.0.state.borrow().iterator_result_allocations;
+        assert_eq!(
+            context
+                .eval("(function(){var s='';for(var value of 'ab')s+=value;return s})()")
+                .unwrap(),
+            Value::String(JsString::from_static("ab"))
+        );
+        assert_eq!(
+            runtime.0.state.borrow().iterator_result_allocations,
+            before_raw,
+            "direct native ForOfNext must not allocate iterator-result wrappers"
+        );
+
+        let before_bound = runtime.0.state.borrow().iterator_result_allocations;
+        assert_eq!(
+            context
+                .eval(
+                    "(function(){var iterator='z'[Symbol.iterator]();iterator.next=iterator.next.bind(iterator);function Iterable(){};Iterable.prototype[Symbol.iterator]=function(){return iterator};var s='';for(var value of new Iterable)s+=value;return s})()",
+                )
+                .unwrap(),
+            Value::String(JsString::from_static("z"))
+        );
+        assert_eq!(
+            runtime.0.state.borrow().iterator_result_allocations,
+            before_bound + 2,
+            "a bound iterator-next method must retain generic call wrapping"
+        );
+        assert!(runtime.0.state.borrow().active_frames.is_empty());
+    }
+
+    #[test]
+    fn native_iterator_next_raw_dispatch_keeps_the_function_defining_realm() {
+        let runtime = Runtime::new();
+        let mut defining = runtime.new_context();
+        let mut caller = runtime.new_context();
+        let iterator_key = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::Iterator));
+        let next_key = runtime.intern_property_key("next").unwrap();
+        let string_prototype = defining.string_prototype().unwrap();
+        let Value::Object(iterator_method) = defining
+            .get_property(&string_prototype, &iterator_key)
+            .unwrap()
+        else {
+            panic!("defining String.prototype @@iterator was not an object");
+        };
+        let iterator_method = runtime.as_callable(&iterator_method).unwrap().unwrap();
+        let Value::Object(foreign_iterator) = caller
+            .call(
+                &iterator_method,
+                Value::String(JsString::from_static("xy")),
+                &[],
+            )
+            .unwrap()
+        else {
+            panic!("cross-realm String iterator creation did not return an object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&foreign_iterator).unwrap(),
+            Some(defining.string_iterator_prototype().unwrap())
+        );
+        let Value::Object(foreign_next) =
+            defining.get_property(&foreign_iterator, &next_key).unwrap()
+        else {
+            panic!("cross-realm String Iterator next was not an object");
+        };
+
+        let foreign_iterator_key = runtime.intern_property_key("foreignIterator").unwrap();
+        let foreign_next_key = runtime.intern_property_key("foreignNext").unwrap();
+        let caller_global = caller.global_object().unwrap();
+        for (key, value) in [
+            (
+                &foreign_iterator_key,
+                Value::Object(foreign_iterator.clone()),
+            ),
+            (&foreign_next_key, Value::Object(foreign_next.clone())),
+        ] {
+            assert!(
+                caller
+                    .define_own_property(
+                        &caller_global,
+                        key,
+                        &data_descriptor(value, true, true, true),
+                    )
+                    .unwrap()
+            );
+        }
+
+        let before_raw = runtime.0.state.borrow().iterator_result_allocations;
+        assert_eq!(
+            caller
+                .eval(
+                    "(function(){var s='';for(var value of foreignIterator)s+=value;return s})()",
+                )
+                .unwrap(),
+            Value::String(JsString::from_static("xy"))
+        );
+        assert_eq!(
+            runtime.0.state.borrow().iterator_result_allocations,
+            before_raw
+        );
+
+        let Value::Object(error) = caller
+            .eval(
+                "(function(){function Invalid(){};Invalid.prototype[Symbol.iterator]=function(){return this};Invalid.prototype.next=foreignNext;try{for(var value of new Invalid)value}catch(error){return error}})()",
+            )
+            .unwrap()
+        else {
+            panic!("wrong-brand raw iterator-next call did not return its caught Error");
+        };
+        let type_error = global_callable(&runtime, &mut defining, "TypeError");
+        let prototype_key = runtime.intern_property_key("prototype").unwrap();
+        let Value::Object(type_error_prototype) = defining
+            .get_property(type_error.as_object(), &prototype_key)
+            .unwrap()
+        else {
+            panic!("defining TypeError.prototype was not an object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&error).unwrap(),
+            Some(type_error_prototype),
+            "raw iterator-next errors must use the native function's defining realm"
+        );
+        assert_eq!(
+            runtime.0.state.borrow().iterator_result_allocations,
+            before_raw
+        );
+        assert!(runtime.0.state.borrow().active_frames.is_empty());
     }
 
     #[test]

@@ -346,6 +346,13 @@ pub enum AutoInitProperty {
 pub struct ContextData {
     pub object_prototype: ObjectId,
     pub function_prototype: ObjectId,
+    /// Realm-local `%IteratorPrototype%`.  It is rooted independently rather
+    /// than rediscovered through a concrete iterator so empty realms retain
+    /// the intrinsic identity required by cross-realm iterator creation.
+    pub iterator_prototype: ObjectId,
+    /// Realm-local `%StringIteratorPrototype%`, whose prototype is the realm's
+    /// `%IteratorPrototype%`.
+    pub string_iterator_prototype: ObjectId,
     /// Realm-local equivalents of QuickJS `class_proto[JS_CLASS_*]` for the
     /// five primitive wrapper classes. An absent entry remains an explicit
     /// implementation gap rather than inheriting from the wrong prototype.
@@ -367,17 +374,26 @@ pub struct ContextData {
 }
 
 impl ContextData {
-    /// Construct the smallest usable realm root set.
+    /// Construct the complete mandatory realm root set.
+    ///
+    /// Iterator prototype identities are required arguments rather than
+    /// builder-populated placeholders so the public low-level allocator
+    /// cannot publish a realm whose `%IteratorPrototype%` silently aliases
+    /// `%Object.prototype%`.
     #[must_use]
     pub const fn new(
         object_prototype: ObjectId,
         function_prototype: ObjectId,
+        iterator_prototype: ObjectId,
+        string_iterator_prototype: ObjectId,
         global_object: ObjectId,
         global_var_object: ObjectId,
     ) -> Self {
         Self {
             object_prototype,
             function_prototype,
+            iterator_prototype,
+            string_iterator_prototype,
             primitive_prototypes: [None; PrimitiveKind::COUNT],
             function_constructor: None,
             throw_type_error: None,
@@ -668,6 +684,14 @@ pub enum ObjectPayload {
         uninitialized_vars: ObjectId,
     },
     Error,
+    /// `%StringIteratorPrototype%` instances own the iterated UTF-16 string
+    /// and the next code-unit index.  The string is reference counted outside
+    /// the GC arena, so this payload adds no arena edge while still keeping
+    /// lone surrogates and rope-backed strings exact.
+    StringIterator {
+        string: Option<JsString>,
+        next_index: usize,
+    },
     NativeFunction {
         data: NativeFunctionData,
     },
@@ -695,6 +719,7 @@ pub enum ObjectKind {
     Primitive,
     GlobalObject,
     Error,
+    StringIterator,
     NativeFunction,
     BoundFunction,
     BytecodeFunction,
@@ -725,6 +750,11 @@ pub enum NativeFunctionId {
     StringPrototypeConcat,
     StringPrototypeCodePointAt,
     StringPrototypeWellFormed(StringWellFormedKind),
+    IteratorPrototypeIterator,
+    IteratorPrototypeToStringTagGetter,
+    IteratorPrototypeToStringTagSetter,
+    StringPrototypeIterator,
+    StringIteratorNext,
     SymbolRegistry(SymbolRegistryKind),
     SymbolPrototypeDescription,
     BigIntAsN(BigIntAsNKind),
@@ -934,6 +964,8 @@ impl NativeFunctionId {
             | Self::StringPrototypeConcat
             | Self::StringPrototypeCodePointAt
             | Self::StringPrototypeWellFormed(_)
+            | Self::IteratorPrototypeIterator
+            | Self::StringPrototypeIterator
             | Self::SymbolRegistry(_)
             | Self::GlobalNumberParse(_)
             | Self::GlobalNumberPredicate(_)
@@ -970,6 +1002,15 @@ impl NativeFunctionId {
             },
             Self::SymbolPrototypeDescription => NativeFunctionDescriptor {
                 cproto: NativeCProto::Getter,
+            },
+            Self::IteratorPrototypeToStringTagGetter => NativeFunctionDescriptor {
+                cproto: NativeCProto::Getter,
+            },
+            Self::IteratorPrototypeToStringTagSetter => NativeFunctionDescriptor {
+                cproto: NativeCProto::Setter,
+            },
+            Self::StringIteratorNext => NativeFunctionDescriptor {
+                cproto: NativeCProto::IteratorNext,
             },
             Self::FunctionPrototypePosition(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::GetterMagic,
@@ -1092,6 +1133,27 @@ impl ObjectData {
             is_constructor: false,
             kind: ObjectKind::Error,
             payload: ObjectPayload::Error,
+        }
+    }
+
+    /// Construct a branded String Iterator at code-unit index zero.
+    #[must_use]
+    pub const fn string_iterator(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        string: JsString,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::StringIterator,
+            payload: ObjectPayload::StringIterator {
+                string: Some(string),
+                next_index: 0,
+            },
         }
     }
 
@@ -1555,6 +1617,7 @@ impl Heap {
             | ObjectPayload::Primitive(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
+            | ObjectPayload::StringIterator { .. }
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. } => {
                 return Err(HeapError::Invariant(
@@ -2116,6 +2179,47 @@ impl Heap {
         Ok(())
     }
 
+    /// Advance one branded String Iterator by one Unicode code point.
+    ///
+    /// The stored cursor is a UTF-16 code-unit index. A valid lead/trail pair
+    /// advances by two and is returned unchanged as a two-unit string; every
+    /// lone surrogate advances by one and is preserved verbatim. At end the
+    /// backing string is released eagerly, matching QuickJS's transition to
+    /// an undefined iterator target.
+    pub fn string_iterator_next(&mut self, id: ObjectId) -> Result<Option<JsString>, HeapError> {
+        let object = self.object_mut(id)?;
+        let ObjectPayload::StringIterator { string, next_index } = &mut object.payload else {
+            return Err(HeapError::Invariant(
+                "String Iterator next reached an object with the wrong class",
+            ));
+        };
+        let Some(value) = string.as_ref() else {
+            return Ok(None);
+        };
+        if *next_index >= value.len() {
+            *string = None;
+            return Ok(None);
+        }
+
+        let first = value
+            .code_unit_at(*next_index)
+            .expect("validated String Iterator index must name a code unit");
+        let pair = (0xd800..=0xdbff).contains(&first)
+            && next_index
+                .checked_add(1)
+                .and_then(|index| value.code_unit_at(index))
+                .is_some_and(|unit| (0xdc00..=0xdfff).contains(&unit));
+        let width = if pair { 2 } else { 1 };
+        let result = JsString::try_from_utf16((0..width).map(|offset| {
+            value
+                .code_unit_at(*next_index + offset)
+                .expect("validated String Iterator code-point width must remain in bounds")
+        }))
+        .map_err(|_| HeapError::Invariant("String Iterator produced an oversized code point"))?;
+        *next_index += width;
+        Ok(Some(result))
+    }
+
     /// Update the ordinary object's extensibility bit without changing its
     /// shape or property payloads.
     pub fn set_object_extensible(
@@ -2494,6 +2598,10 @@ impl Heap {
                 | (ObjectKind::Primitive, ObjectPayload::Primitive(_))
                 | (ObjectKind::GlobalObject, ObjectPayload::GlobalObject { .. })
                 | (ObjectKind::Error, ObjectPayload::Error)
+                | (
+                    ObjectKind::StringIterator,
+                    ObjectPayload::StringIterator { .. }
+                )
                 | (
                     ObjectKind::NativeFunction,
                     ObjectPayload::NativeFunction { .. }
@@ -2943,6 +3051,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::Primitive(_)
         | ObjectPayload::GlobalObject { .. }
         | ObjectPayload::Error
+        | ObjectPayload::StringIterator { .. }
         | ObjectPayload::NativeFunction { .. } => 0,
         ObjectPayload::BoundFunction { arguments, .. } => arguments.len().saturating_add(2),
         ObjectPayload::BytecodeFunction { closure_slots, .. } => closure_slots.len(),
@@ -2959,7 +3068,10 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
     }
     edges.push(RawId::Shape(object.shape));
     match &object.payload {
-        ObjectPayload::Ordinary | ObjectPayload::Primitive(_) | ObjectPayload::Error => {}
+        ObjectPayload::Ordinary
+        | ObjectPayload::Primitive(_)
+        | ObjectPayload::Error
+        | ObjectPayload::StringIterator { .. } => {}
         ObjectPayload::GlobalObject { uninitialized_vars } => {
             edges.push(RawId::Object(*uninitialized_vars))
         }
@@ -3052,6 +3164,8 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     );
     edges.push(RawId::Object(context.object_prototype));
     edges.push(RawId::Object(context.function_prototype));
+    edges.push(RawId::Object(context.iterator_prototype));
+    edges.push(RawId::Object(context.string_iterator_prototype));
     edges.extend(
         context
             .primitive_prototypes
@@ -3130,6 +3244,7 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
         ObjectPayload::Ordinary
         | ObjectPayload::GlobalObject { .. }
         | ObjectPayload::Error
+        | ObjectPayload::StringIterator { .. }
         | ObjectPayload::NativeFunction { .. }
         | ObjectPayload::BytecodeFunction { .. } => Vec::new(),
     };
@@ -3254,7 +3369,9 @@ mod tests {
             ))
             .unwrap();
         let realm = heap
-            .allocate_context(ContextData::new(prototype, function, prototype, prototype))
+            .allocate_context(ContextData::new(
+                prototype, function, prototype, prototype, prototype, prototype,
+            ))
             .unwrap();
 
         heap.attach_native_function_realm(function, realm).unwrap();
@@ -3391,6 +3508,54 @@ mod tests {
     }
 
     #[test]
+    fn string_iterator_payload_advances_by_code_point_and_releases_at_end() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let source = JsString::try_from_utf16([
+            u16::from(b'A'),
+            0xd83d,
+            0xde00,
+            0xd800,
+            u16::from(b'X'),
+            0xdc00,
+            u16::from(b'Z'),
+        ])
+        .unwrap();
+        let iterator = heap
+            .allocate_object(ObjectData::string_iterator(shape, Vec::new(), source))
+            .unwrap();
+
+        let mut next = || {
+            heap.string_iterator_next(iterator)
+                .unwrap()
+                .map(|value| value.utf16_units().collect::<Vec<_>>())
+        };
+        assert_eq!(next(), Some(vec![u16::from(b'A')]));
+        assert_eq!(next(), Some(vec![0xd83d, 0xde00]));
+        assert_eq!(next(), Some(vec![0xd800]));
+        assert_eq!(next(), Some(vec![u16::from(b'X')]));
+        assert_eq!(next(), Some(vec![0xdc00]));
+        assert_eq!(next(), Some(vec![u16::from(b'Z')]));
+        assert_eq!(next(), None);
+        assert_eq!(next(), None);
+        assert!(matches!(
+            &heap.object(iterator).unwrap().payload,
+            ObjectPayload::StringIterator {
+                string: None,
+                next_index: 7
+            }
+        ));
+        assert_eq!(
+            object_edges(heap.object(iterator).unwrap()),
+            vec![RawId::Shape(shape)]
+        );
+
+        heap.release_object(iterator).unwrap();
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
     fn numeric_and_uri_native_selectors_use_pinned_cproto() {
         let targets = [
             NativeFunctionId::GlobalNumberParse(NumberParseKind::ParseInt),
@@ -3439,6 +3604,11 @@ mod tests {
                 .cproto,
             NativeCProto::Getter
         );
+        assert_eq!(
+            NativeFunctionId::StringIteratorNext.descriptor().cproto,
+            NativeCProto::IteratorNext
+        );
+        assert!(!NativeCProto::IteratorNext.default_is_constructor());
     }
 
     fn one_slot_shape(heap: &mut Heap) -> ShapeId {
@@ -3478,6 +3648,53 @@ mod tests {
         assert_eq!(cleanup.finalized_objects, 1);
         assert!(matches!(heap.object(object), Err(HeapError::Stale { .. })));
         assert_eq!(heap.shape_strong_count(shape), Ok(1));
+        assert_eq!(heap.release_shape(shape).unwrap().finalized_shapes, 1);
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn context_roots_iterator_prototypes_until_realm_finalization() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let object_prototype = leaf(&mut heap, shape);
+        let function_prototype = leaf(&mut heap, shape);
+        let iterator_prototype = leaf(&mut heap, shape);
+        let string_iterator_prototype = leaf(&mut heap, shape);
+        let global_object = leaf(&mut heap, shape);
+        let global_var_object = leaf(&mut heap, shape);
+        let context = heap
+            .allocate_context(ContextData::new(
+                object_prototype,
+                function_prototype,
+                iterator_prototype,
+                string_iterator_prototype,
+                global_object,
+                global_var_object,
+            ))
+            .unwrap();
+        assert_eq!(
+            heap.context(context).unwrap().iterator_prototype,
+            iterator_prototype
+        );
+        assert_eq!(
+            heap.context(context).unwrap().string_iterator_prototype,
+            string_iterator_prototype
+        );
+
+        for object in [
+            object_prototype,
+            function_prototype,
+            iterator_prototype,
+            string_iterator_prototype,
+            global_object,
+            global_var_object,
+        ] {
+            assert_eq!(heap.release_object(object).unwrap(), HeapCleanup::default());
+            assert_eq!(heap.object_strong_count(object), Ok(1));
+        }
+        let cleanup = heap.release_context(context).unwrap();
+        assert_eq!(cleanup.finalized_contexts, 1);
+        assert_eq!(cleanup.finalized_objects, 6);
         assert_eq!(heap.release_shape(shape).unwrap().finalized_shapes, 1);
         assert_eq!(heap.counts().live, 0);
     }
@@ -3753,7 +3970,9 @@ mod tests {
             .allocate_object(ObjectData::ordinary(shape, Vec::new()))
             .unwrap();
         let realm = heap
-            .allocate_context(ContextData::new(prototype, prototype, prototype, prototype))
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype,
+            ))
             .unwrap();
         let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
         let filename = Atom::from_raw(19);
@@ -3791,7 +4010,9 @@ mod tests {
         let shape = empty_shape(&mut heap);
         let prototype = leaf(&mut heap, shape);
         let context = heap
-            .allocate_context(ContextData::new(prototype, prototype, prototype, prototype))
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype,
+            ))
             .unwrap();
         heap.release_object(prototype).unwrap();
 
@@ -3839,7 +4060,9 @@ mod tests {
         let shape = empty_shape(&mut heap);
         let prototype = leaf(&mut heap, shape);
         let context = heap
-            .allocate_context(ContextData::new(prototype, prototype, prototype, prototype))
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype,
+            ))
             .unwrap();
         heap.release_object(prototype).unwrap();
         let code: Rc<[Instruction]> = Rc::from([]);
@@ -3900,7 +4123,9 @@ mod tests {
         let shape = empty_shape(&mut heap);
         let prototype = leaf(&mut heap, shape);
         let context = heap
-            .allocate_context(ContextData::new(prototype, prototype, prototype, prototype))
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype,
+            ))
             .unwrap();
         heap.release_object(prototype).unwrap();
 
@@ -3970,7 +4195,9 @@ mod tests {
         let property_shape = one_slot_shape(&mut heap);
         let prototype = leaf(&mut heap, empty);
         let realm = heap
-            .allocate_context(ContextData::new(prototype, prototype, prototype, prototype))
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype,
+            ))
             .unwrap();
         assert_eq!(heap.context_strong_count(realm), Ok(1));
 
@@ -4003,7 +4230,9 @@ mod tests {
         let data = one_slot_shape(&mut heap);
         let prototype = leaf(&mut heap, empty);
         let context = heap
-            .allocate_context(ContextData::new(prototype, prototype, prototype, prototype))
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype,
+            ))
             .unwrap();
         let code: Rc<[Instruction]> = Rc::from([]);
         let bytecode = heap
@@ -4059,7 +4288,9 @@ mod tests {
         let shape = empty_shape(&mut heap);
         let prototype = leaf(&mut heap, shape);
         let context = heap
-            .allocate_context(ContextData::new(prototype, prototype, prototype, prototype))
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype,
+            ))
             .unwrap();
         heap.release_object(prototype).unwrap();
         let code: Rc<[Instruction]> = Rc::from([]);
@@ -4117,7 +4348,9 @@ mod tests {
             ))
             .unwrap();
         let context = heap
-            .allocate_context(ContextData::new(prototype, prototype, prototype, prototype))
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype,
+            ))
             .unwrap();
         let code: Rc<[Instruction]> = Rc::from([]);
         let function_bytecode = heap
@@ -4157,7 +4390,9 @@ mod tests {
         let shape = empty_shape(&mut heap);
         let prototype = leaf(&mut heap, shape);
         let context = heap
-            .allocate_context(ContextData::new(prototype, prototype, prototype, prototype))
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype,
+            ))
             .unwrap();
         heap.release_object(prototype).unwrap();
         heap.release_shape(shape).unwrap();
@@ -4208,7 +4443,9 @@ mod tests {
         let shape = empty_shape(&mut heap);
         let prototype = leaf(&mut heap, shape);
         let context = heap
-            .allocate_context(ContextData::new(prototype, prototype, prototype, prototype))
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype,
+            ))
             .unwrap();
         heap.release_object(prototype).unwrap();
         heap.release_shape(shape).unwrap();

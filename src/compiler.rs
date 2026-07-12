@@ -345,6 +345,12 @@ enum ForHeadDelimiter {
     Template,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForIterationKind {
+    In,
+    Of,
+}
+
 #[derive(Debug)]
 enum IrOp {
     Bytecode(Instruction),
@@ -387,11 +393,16 @@ struct SpannedIrOp {
 /// target an outer statement. `drop_count` models the values which must be
 /// removed when an abrupt jump crosses a control (the retained switch
 /// discriminant today). Try/finally unwinding is represented by the dedicated
-/// control kinds below; iterator cleanup remains a later slice.
+/// control kinds below.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BreakControlKind {
     RegularStatement,
     Loop,
+    /// QuickJS's `has_iterator` BlockEnv. Its target depth retains the
+    /// conceptual `iterator`, `next`, and private unwind marker slots. A
+    /// same-loop continue keeps that record, a break reaches the shared close
+    /// tail, and an edge crossing the loop closes it immediately.
+    ForOf,
     Switch,
     /// QuickJS's catch-marker BlockEnv. It is not itself breakable, but every
     /// abrupt edge crossing it must discard the marker and call its finally
@@ -1158,21 +1169,35 @@ impl<'source> Parser<'source> {
         if matches!(completion, StatementCompletion::Eval) {
             self.set_eval_ret_undefined()?;
         }
+        if matches!(self.current().kind, TokenKind::Keyword(Keyword::Await))
+            || matches!(
+                &self.current().kind,
+                TokenKind::Identifier(identifier)
+                    if identifier.value == "await" && !identifier.has_escape
+            )
+        {
+            return Err(self.unsupported_here("for-await-of loops are not implemented yet"));
+        }
         let classic_head = self.for_head_has_top_level_semicolon();
         self.expect_punctuator(Punctuator::LeftParen)?;
         let outer_scope = self.current_ir().current_scope;
         let scope = self.push_scope(ScopeKind::For);
+
+        if !classic_head {
+            return self.parse_for_in_of_statement(
+                completion,
+                label_name,
+                entry_depth,
+                outer_scope,
+                scope,
+            );
+        }
 
         // QuickJS parses the classic initializer with PF_IN_ACCEPTED clear.
         // Keep that mode explicit even while the AllowIn operator itself
         // remains a later runtime slice.
         if !self.is_punctuator(Punctuator::Semicolon) {
             if self.lexical_declaration_ahead(true)? {
-                if !classic_head {
-                    return Err(
-                        self.unsupported_here("for-in and for-of loops are not implemented yet")
-                    );
-                }
                 self.parse_lexical_declarations_with_in(InMode::Disallow)?;
             } else if matches!(self.current().kind, TokenKind::Keyword(Keyword::Var)) {
                 self.advance()?;
@@ -1182,11 +1207,6 @@ impl<'source> Parser<'source> {
                 self.emit_instruction(Instruction::Drop)?;
             }
             self.require_stack_depth(entry_depth, "for initializer")?;
-            if !classic_head {
-                return Err(
-                    self.unsupported_here("for-in and for-of loops are not implemented yet")
-                );
-            }
             // Detach any initializer capture before the first test while the
             // initialized value remains in the local slot for the iteration.
             self.emit_scope_closures(scope, outer_scope)?;
@@ -1277,6 +1297,277 @@ impl<'source> Parser<'source> {
         }
         self.finish_control_statement();
         self.pop_scope(scope)?;
+        Ok(())
+    }
+
+    /// Lower the simple-binding synchronous half of QuickJS
+    /// `js_parse_for_in_of`. The assignment fragment is emitted before the
+    /// iterable expression and skipped on first entry, just as upstream does;
+    /// each `done == false` edge jumps back to it with the yielded value above
+    /// the retained three-slot iterator record.
+    fn parse_for_in_of_statement(
+        &mut self,
+        completion: StatementCompletion,
+        label_name: Option<String>,
+        entry_depth: usize,
+        outer_scope: ScopeId,
+        scope: ScopeId,
+    ) -> Result<(), Error> {
+        if self.for_iteration_kind_ahead() == Some(ForIterationKind::In) {
+            return Err(self.unsupported_here("for-in loops are not implemented yet"));
+        }
+
+        let expression_jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
+        let assignment_target = self.current_ir().ops.len();
+
+        // `ForOfNext` supplies `iterator, next, marker, value` on this edge.
+        self.current_ir_mut().stack_depth = entry_depth
+            .checked_add(4)
+            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+        self.parse_for_of_assignment_target()?;
+        self.require_stack_depth(entry_depth + 3, "for-of assignment target")?;
+        let body_jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
+
+        let expression_target = self.current_ir().ops.len();
+        self.patch_jump(expression_jump, expression_target)?;
+        self.current_ir_mut().stack_depth = entry_depth;
+
+        let has_initializer = if self.consume_punctuator(Punctuator::Equal)? {
+            self.parse_assignment_allow_in()?;
+            self.emit_instruction(Instruction::Drop)?;
+            true
+        } else {
+            false
+        };
+
+        let iteration_kind = if self.is_for_of_keyword() {
+            ForIterationKind::Of
+        } else if matches!(self.current().kind, TokenKind::Keyword(Keyword::In)) {
+            ForIterationKind::In
+        } else {
+            return Err(self.syntax_here("expected 'of' or 'in' in for control expression"));
+        };
+        if iteration_kind == ForIterationKind::In {
+            return Err(self.unsupported_here("for-in loops are not implemented yet"));
+        }
+        if has_initializer {
+            return Err(self.syntax_here(
+                "a declaration in the head of a for-of loop can't have an initializer",
+            ));
+        }
+
+        // After contextual `of`, a slash starts the right-hand side's RegExp
+        // lexical goal. The literal itself remains an explicit frontier, but
+        // it must not drift into the division-token diagnostic.
+        self.advance_expression_start()?;
+        // Unlike a classic-for initializer, the right side is exactly one
+        // AssignmentExpression and restores AllowIn for its complete subtree.
+        self.parse_assignment_allow_in()?;
+        self.emit_scope_closures(scope, outer_scope)?;
+        self.emit_instruction(Instruction::ForOfStart)?;
+        self.require_stack_depth(entry_depth + 3, "for-of iterator start")?;
+        let next_jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
+        self.expect_punctuator(Punctuator::RightParen)?;
+
+        let body_target = self.current_ir().ops.len();
+        self.patch_jump(body_jump, body_target)?;
+        self.current_ir_mut().stack_depth = entry_depth + 3;
+        self.push_for_of_control(entry_depth, label_name, outer_scope)?;
+        self.parse_statement_or_decl(completion, StatementPosition::Single)?;
+        self.require_stack_depth(entry_depth + 3, "for-of body")?;
+        self.emit_scope_closures(scope, outer_scope)?;
+
+        let next_target = self.current_ir().ops.len();
+        self.patch_jump(next_jump, next_target)?;
+        self.emit_instruction(Instruction::ForOfNext(0))?;
+        let assignment_jump = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
+        self.patch_jump(assignment_jump, assignment_target)?;
+
+        // A completed iterator contributes an undefined value above its
+        // retained record. Natural exhaustion removes that value and uses the
+        // same close/drop tail as a local break (without invoking `return`).
+        self.emit_instruction(Instruction::Drop)?;
+        let break_target = self.current_ir().ops.len();
+        self.emit_instruction(Instruction::IteratorClose)?;
+        self.require_stack_depth(entry_depth, "for-of close")?;
+
+        let control = self.pop_break_control()?;
+        if control.kind != BreakControlKind::ForOf || control.drop_count != 3 {
+            return Err(Error::internal("for-of control stack is unbalanced"));
+        }
+        for jump in control.continue_jumps {
+            self.patch_jump(jump, next_target)?;
+        }
+        for jump in control.break_jumps {
+            self.patch_jump(jump, break_target)?;
+        }
+        self.finish_control_statement();
+        self.pop_scope(scope)?;
+        Ok(())
+    }
+
+    /// Parse and consume the yielded value for one supported for-of head.
+    /// Declarations bind in the enumeration scope; ordinary references keep
+    /// their base/key evaluation in the per-iteration assignment fragment.
+    fn parse_for_of_assignment_target(&mut self) -> Result<(), Error> {
+        if matches!(
+            self.current().kind,
+            TokenKind::Punctuator(Punctuator::LeftBrace | Punctuator::LeftBracket)
+        ) {
+            return Err(
+                self.unsupported_here("for-of destructuring bindings are not implemented yet")
+            );
+        }
+
+        if self.lexical_declaration_ahead(true)? {
+            let is_const = matches!(self.current().kind, TokenKind::Keyword(Keyword::Const));
+            self.advance()?;
+            if matches!(
+                self.current().kind,
+                TokenKind::Punctuator(Punctuator::LeftBrace | Punctuator::LeftBracket)
+            ) {
+                return Err(
+                    self.unsupported_here("for-of destructuring bindings are not implemented yet")
+                );
+            }
+            let token = self.current().clone();
+            let TokenKind::Identifier(identifier) = token.kind else {
+                return Err(self.syntax_here("variable name expected"));
+            };
+            validate_identifier_reservation(
+                &identifier,
+                token.span,
+                self.current_ir().strict,
+                IdentifierContext::Variable,
+            )?;
+            if identifier.value == "let" {
+                return Err(Error::syntax(
+                    "'let' is not a valid lexical identifier",
+                    source_span(token.span),
+                ));
+            }
+            let name = identifier.value;
+            let strict = self.current_ir().strict;
+            self.advance()?;
+            if strict && matches!(name.as_str(), "eval" | "arguments") {
+                return Err(Error::syntax(
+                    "invalid variable name in strict mode",
+                    source_span(self.current().span),
+                ));
+            }
+            self.register_lexical_binding(&name, token.span, self.current().span, is_const, false)?;
+            self.emit_identifier_at(
+                name,
+                token.span,
+                IdentifierAccess::Initialize,
+                source_offset(token.span)?,
+            )?;
+            return Ok(());
+        }
+
+        if matches!(self.current().kind, TokenKind::Keyword(Keyword::Var)) {
+            self.advance()?;
+            if matches!(
+                self.current().kind,
+                TokenKind::Punctuator(Punctuator::LeftBrace | Punctuator::LeftBracket)
+            ) {
+                return Err(
+                    self.unsupported_here("for-of destructuring bindings are not implemented yet")
+                );
+            }
+            let token = self.current().clone();
+            let TokenKind::Identifier(identifier) = token.kind else {
+                return Err(self.syntax_here("variable name expected"));
+            };
+            validate_identifier_reservation(
+                &identifier,
+                token.span,
+                self.current_ir().strict,
+                IdentifierContext::Variable,
+            )?;
+            let strict = self.current_ir().strict;
+            let name = identifier.value;
+            self.advance()?;
+            if strict && matches!(name.as_str(), "eval" | "arguments") {
+                return Err(Error::syntax(
+                    "invalid variable name in strict mode",
+                    source_span(self.current().span),
+                ));
+            }
+            if matches!(self.current_ir().kind, FunctionKind::Ordinary)
+                && name == "arguments"
+                && !self
+                    .current_ir()
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter == "arguments")
+            {
+                let span = self.current().span;
+                self.current_ir_mut()
+                    .deferred_implicit_arguments_var
+                    .get_or_insert(span);
+            }
+            self.register_var_binding(&name, token.span, self.current().span)?;
+            self.emit_identifier_at(
+                name,
+                token.span,
+                IdentifierAccess::Put,
+                source_offset(token.span)?,
+            )?;
+            return Ok(());
+        }
+
+        let async_span = match &self.current().kind {
+            TokenKind::Identifier(identifier)
+                if identifier.value == "async" && !identifier.has_escape =>
+            {
+                Some(self.current().span)
+            }
+            _ => None,
+        };
+        self.parse_left_hand_side_expression()?;
+        if let Some(async_span) = async_span
+            && self.is_for_of_keyword()
+        {
+            return Err(Error::syntax(
+                "'for of' expression cannot start with 'async'",
+                source_span(async_span),
+            ));
+        }
+        if let Some(target) = self.take_tail_identifier_reference()? {
+            self.validate_identifier_assignment_target(&target)?;
+            self.emit_identifier_inherited(
+                target.name,
+                target.span,
+                target.scope,
+                IdentifierAccess::Put,
+            )?;
+            return Ok(());
+        }
+        let Some(target) = self.take_tail_member_reference()? else {
+            return Err(self.syntax_here("invalid assignment left-hand side"));
+        };
+        self.emit_for_of_member_put(target)
+    }
+
+    /// Reorder `value, base[, key]` into the ordinary property-write layout
+    /// without introducing a forgeable temporary. `Insert2; Drop` is the
+    /// existing typed bytecode's two-value swap; `Perm3` first rotates the
+    /// computed form into position.
+    fn emit_for_of_member_put(&mut self, target: MemberReference) -> Result<(), Error> {
+        match target {
+            MemberReference::Field { key, site } => {
+                self.emit_instruction(Instruction::Insert2)?;
+                self.emit_instruction(Instruction::Drop)?;
+                self.emit_instruction_at(Instruction::PutField(key), site)?;
+            }
+            MemberReference::Computed { site } => {
+                self.emit_instruction(Instruction::Perm3)?;
+                self.emit_instruction(Instruction::Insert2)?;
+                self.emit_instruction(Instruction::Drop)?;
+                self.emit_instruction_at(Instruction::PutArrayEl, site)?;
+            }
+        }
         Ok(())
     }
 
@@ -1596,14 +1887,21 @@ impl<'source> Parser<'source> {
             .iter()
             .rposition(|control| match label_name.as_deref() {
                 Some(label_name) if is_continue => {
-                    control.kind == BreakControlKind::Loop
-                        && control.label_name.as_deref() == Some(label_name)
+                    matches!(
+                        control.kind,
+                        BreakControlKind::Loop | BreakControlKind::ForOf
+                    ) && control.label_name.as_deref() == Some(label_name)
                 }
                 Some(label_name) => control.label_name.as_deref() == Some(label_name),
-                None if is_continue => control.kind == BreakControlKind::Loop,
+                None if is_continue => {
+                    matches!(
+                        control.kind,
+                        BreakControlKind::Loop | BreakControlKind::ForOf
+                    )
+                }
                 None => matches!(
                     control.kind,
-                    BreakControlKind::Loop | BreakControlKind::Switch
+                    BreakControlKind::Loop | BreakControlKind::ForOf | BreakControlKind::Switch
                 ),
             });
         let Some(target) = target else {
@@ -1669,6 +1967,14 @@ impl<'source> Parser<'source> {
                     self.emit_instruction(Instruction::DropGosub)?;
                     self.emit_instruction(Instruction::Drop)?;
                 }
+                BreakControlKind::ForOf => {
+                    if drop_count != 3 {
+                        return Err(Error::internal(
+                            "for-of control has the wrong iterator-record depth",
+                        ));
+                    }
+                    self.emit_instruction(Instruction::IteratorClose)?;
+                }
                 BreakControlKind::RegularStatement
                 | BreakControlKind::Loop
                 | BreakControlKind::Switch => {
@@ -1704,6 +2010,34 @@ impl<'source> Parser<'source> {
 
     fn push_loop_control(&mut self, entry_depth: usize, label_name: Option<String>) {
         self.push_break_control(BreakControlKind::Loop, label_name, entry_depth, 0);
+    }
+
+    /// QuickJS changes a for-of `BlockEnv`'s scope level back to the level
+    /// outside the enumeration scope. Thus a same-loop break/continue closes
+    /// the current lexical head cell while retaining the three-slot iterator
+    /// record for the loop's shared next/close tail.
+    fn push_for_of_control(
+        &mut self,
+        entry_depth: usize,
+        label_name: Option<String>,
+        outer_scope: ScopeId,
+    ) -> Result<(), Error> {
+        let record_depth = entry_depth
+            .checked_add(3)
+            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+        self.current_ir_mut()
+            .break_controls
+            .push(BreakControlContext {
+                kind: BreakControlKind::ForOf,
+                label_name,
+                scope: outer_scope,
+                entry_depth: record_depth,
+                drop_count: 3,
+                break_jumps: Vec::new(),
+                continue_jumps: Vec::new(),
+                finally_gosubs: Vec::new(),
+            });
+        Ok(())
     }
 
     fn push_break_control(
@@ -1815,32 +2149,57 @@ impl<'source> Parser<'source> {
                 *pc_site = Some(source_offset(return_span)?);
             }
         }
-        let finally_controls = self
+        // QuickJS walks BlockEnv entries from inner to outer and interleaves
+        // iterator closing with finally execution. Keeping that order is
+        // observable when either an iterator `return` method or a finally body
+        // throws, and is also required for the VM's nested unwind regions.
+        let unwind_controls = self
             .current_ir()
             .break_controls
             .iter()
             .enumerate()
             .rev()
             .filter_map(|(index, control)| {
-                (control.kind == BreakControlKind::TryFinally)
-                    .then_some((index, control.entry_depth))
+                matches!(
+                    control.kind,
+                    BreakControlKind::ForOf | BreakControlKind::TryFinally
+                )
+                .then_some((index, control.kind, control.entry_depth))
             })
             .collect::<Vec<_>>();
-        for (control_index, handler_depth) in finally_controls {
-            // Preserve the return value while removing everything through the
-            // nearest catch marker, then call the associated finally body.
-            self.emit_instruction(Instruction::NipCatch)?;
-            if handler_depth > self.current_ir().stack_depth {
-                return Err(Error::internal(
-                    "return unwind targeted a deeper catch marker",
-                ));
+        for (control_index, kind, handler_depth) in unwind_controls {
+            match kind {
+                BreakControlKind::ForOf => {
+                    if handler_depth < 3 || handler_depth >= self.current_ir().stack_depth {
+                        return Err(Error::internal(
+                            "return unwind targeted an invalid iterator record",
+                        ));
+                    }
+                    self.emit_instruction(Instruction::IteratorClosePreserve)?;
+                    // The generic instruction effect is value preserving, but
+                    // this typed form also truncates the complete iterator
+                    // record and any intermediate finally operands.
+                    self.current_ir_mut().stack_depth = handler_depth - 2;
+                }
+                BreakControlKind::TryFinally => {
+                    // Preserve the return value while removing everything
+                    // through the nearest catch marker, then call the
+                    // associated finally body.
+                    self.emit_instruction(Instruction::NipCatch)?;
+                    if handler_depth > self.current_ir().stack_depth {
+                        return Err(Error::internal(
+                            "return unwind targeted a deeper catch marker",
+                        ));
+                    }
+                    self.current_ir_mut().stack_depth = handler_depth;
+                    self.require_stack_depth(handler_depth, "return catch cleanup")?;
+                    let gosub = self.emit_instruction(Instruction::Gosub(u32::MAX))?;
+                    self.current_ir_mut().break_controls[control_index]
+                        .finally_gosubs
+                        .push(gosub);
+                }
+                _ => unreachable!("return unwind list contains an ordinary control"),
             }
-            self.current_ir_mut().stack_depth = handler_depth;
-            self.require_stack_depth(handler_depth, "return catch cleanup")?;
-            let gosub = self.emit_instruction(Instruction::Gosub(u32::MAX))?;
-            self.current_ir_mut().break_controls[control_index]
-                .finally_gosubs
-                .push(gosub);
         }
         self.emit_instruction_at(Instruction::Return, source_offset(return_span)?)?;
         self.consume_statement_terminator()?;
@@ -2899,6 +3258,24 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_postfix(&mut self) -> Result<(), Error> {
+        self.parse_left_hand_side_expression()?;
+        if !self.current().line_terminator_before
+            && matches!(
+                self.current().kind,
+                TokenKind::Punctuator(Punctuator::Increment | Punctuator::Decrement)
+            )
+        {
+            let operator_span = self.current().span;
+            let increment = self.is_punctuator(Punctuator::Increment);
+            self.lower_update_expression(operator_span, increment, true)?;
+            self.advance()?;
+        }
+        Ok(())
+    }
+
+    /// Parse the LeftHandSideExpression subset shared by assignment and a
+    /// for-of assignment target, deliberately stopping before postfix update.
+    fn parse_left_hand_side_expression(&mut self) -> Result<(), Error> {
         self.parse_primary()?;
         loop {
             if self.parse_member_suffix()? {
@@ -2925,17 +3302,6 @@ impl<'source> Parser<'source> {
                 );
             }
             break;
-        }
-        if !self.current().line_terminator_before
-            && matches!(
-                self.current().kind,
-                TokenKind::Punctuator(Punctuator::Increment | Punctuator::Decrement)
-            )
-        {
-            let operator_span = self.current().span;
-            let increment = self.is_punctuator(Punctuator::Increment);
-            self.lower_update_expression(operator_span, increment, true)?;
-            self.advance()?;
         }
         Ok(())
     }
@@ -4209,6 +4575,111 @@ impl<'source> Parser<'source> {
         matches!(self.current().kind, TokenKind::Punctuator(current) if current == punctuator)
     }
 
+    /// `of` is a QuickJS pseudo-keyword: escapes prevent it from acting as
+    /// the for-of delimiter even though the decoded identifier text matches.
+    fn is_for_of_keyword(&self) -> bool {
+        matches!(
+            &self.current().kind,
+            TokenKind::Identifier(identifier)
+                if identifier.value == "of" && !identifier.has_escape
+        )
+    }
+
+    /// Non-committing delimiter probe for a semicolon-free for head. It is
+    /// used only to keep the explicit for-in frontier ahead of the for-of
+    /// destructuring frontier; the real parser still validates the complete
+    /// LeftHandSideExpression and reports source-ordered syntax errors.
+    fn for_iteration_kind_ahead(&self) -> Option<ForIterationKind> {
+        let mut lexer = self.lexer.clone();
+        lexer.seek(self.current().span.start);
+        let mut delimiters = Vec::new();
+        let mut goal = LexicalGoal::Div;
+        let mut regexp_allowed = true;
+
+        loop {
+            let requested_goal = goal;
+            goal = LexicalGoal::Div;
+            let Ok(mut token) = lexer.next_token_with_goal(requested_goal) else {
+                return None;
+            };
+            if requested_goal == LexicalGoal::Div
+                && regexp_allowed
+                && matches!(
+                    token.kind,
+                    TokenKind::Punctuator(Punctuator::Divide | Punctuator::DivideAssign)
+                )
+            {
+                lexer.seek(token.span.start);
+                let Ok(regexp) = lexer.next_token_with_goal(LexicalGoal::RegExp) else {
+                    return None;
+                };
+                token = regexp;
+            }
+
+            if delimiters.is_empty() {
+                match &token.kind {
+                    TokenKind::Keyword(Keyword::In) => return Some(ForIterationKind::In),
+                    TokenKind::Identifier(identifier)
+                        if identifier.value == "of" && !identifier.has_escape =>
+                    {
+                        return Some(ForIterationKind::Of);
+                    }
+                    TokenKind::Punctuator(Punctuator::RightParen) | TokenKind::Eof => return None,
+                    _ => {}
+                }
+            }
+
+            match &token.kind {
+                TokenKind::Punctuator(Punctuator::LeftParen) => {
+                    delimiters.push(ForHeadDelimiter::Parenthesis);
+                }
+                TokenKind::Punctuator(Punctuator::LeftBracket) => {
+                    delimiters.push(ForHeadDelimiter::Bracket);
+                }
+                TokenKind::Punctuator(Punctuator::LeftBrace) => {
+                    delimiters.push(ForHeadDelimiter::Brace);
+                }
+                TokenKind::Punctuator(Punctuator::RightParen) => {
+                    if delimiters.pop() != Some(ForHeadDelimiter::Parenthesis) {
+                        return None;
+                    }
+                }
+                TokenKind::Punctuator(Punctuator::RightBracket) => {
+                    if delimiters.pop() != Some(ForHeadDelimiter::Bracket) {
+                        return None;
+                    }
+                }
+                TokenKind::Punctuator(Punctuator::RightBrace) => {
+                    if delimiters.last() == Some(&ForHeadDelimiter::Template) {
+                        goal = LexicalGoal::TemplateContinuation;
+                        regexp_allowed = true;
+                        continue;
+                    }
+                    if delimiters.pop() != Some(ForHeadDelimiter::Brace) {
+                        return None;
+                    }
+                }
+                TokenKind::Template(part) => match part.kind {
+                    TemplatePartKind::Head => delimiters.push(ForHeadDelimiter::Template),
+                    TemplatePartKind::Middle => {
+                        if delimiters.last() != Some(&ForHeadDelimiter::Template) {
+                            return None;
+                        }
+                    }
+                    TemplatePartKind::Tail => {
+                        if delimiters.pop() != Some(ForHeadDelimiter::Template) {
+                            return None;
+                        }
+                    }
+                    TemplatePartKind::NoSubstitution => {}
+                },
+                TokenKind::Eof => return None,
+                _ => {}
+            }
+            regexp_allowed = for_head_regexp_allowed_after(&token.kind);
+        }
+    }
+
     /// Mirror QuickJS `js_parse_skip_parens_token` for the one decision needed
     /// by classic `for`: any semicolon at the outer head depth selects classic
     /// grammar, even when its NoIn initializer later stops at `in` or `of`.
@@ -4416,6 +4887,28 @@ impl<'source> Parser<'source> {
 
     fn advance(&mut self) -> Result<(), Error> {
         self.advance_with_goal(LexicalGoal::Div)
+    }
+
+    /// Advance from a grammar delimiter to the first token of an expression,
+    /// selecting RegExp only when the ordinary scanner sees a leading slash.
+    fn advance_expression_start(&mut self) -> Result<(), Error> {
+        let start = self.current().span.end;
+        if self.tokens.len() > self.cursor + 1 {
+            self.tokens.truncate(self.cursor + 1);
+            self.lexer.seek(start);
+        }
+        let mut probe = self.lexer.clone();
+        probe.seek(start);
+        let next = probe.next_token().map_err(lex_error)?;
+        let goal = if matches!(
+            next.kind,
+            TokenKind::Punctuator(Punctuator::Divide | Punctuator::DivideAssign)
+        ) {
+            LexicalGoal::RegExp
+        } else {
+            LexicalGoal::Div
+        };
+        self.advance_with_goal(goal)
     }
 
     fn advance_with_goal(&mut self, goal: LexicalGoal) -> Result<(), Error> {
@@ -9734,20 +10227,21 @@ mod tests {
             );
         }
 
+        let error = compile_unlinked_script("for(Function.item in Function);").unwrap_err();
+        assert_eq!(error.message(), "for-in loops are not implemented yet");
         for source in [
-            "for(Function.item in Function);",
             "for(Function.item of Function);",
-            "for(Function.item of /a;b/);",
             "for(Function.item of 'a;b');",
             "for(Function.item of `a;b`);",
-            "for(Function.item of `a${1;2}b`);",
         ] {
-            let error = compile_unlinked_script(source).unwrap_err();
-            assert_eq!(
-                error.message(),
-                "for-in and for-of loops are not implemented yet"
-            );
+            compile_unlinked_script(source).unwrap();
         }
+        assert_eq!(
+            compile_unlinked_script("for(Function.item of /a;b/);")
+                .unwrap_err()
+                .message(),
+            "this literal form is not implemented yet"
+        );
         for source in [
             "for(Function.item in Function;;);",
             "for(Function.item of Function;;);",

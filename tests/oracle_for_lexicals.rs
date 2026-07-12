@@ -203,12 +203,7 @@ const BOUNDARY_CASES: &[BoundaryCase] = &[
     BoundaryCase {
         description: "lexical for-in",
         source: "(function(){for(let key in Function){break;}return 1;})()",
-        rust_message: "for-in and for-of loops are not implemented yet",
-    },
-    BoundaryCase {
-        description: "lexical for-of",
-        source: "(function(){for(const value of ''){}return 1;})()",
-        rust_message: "for-in and for-of loops are not implemented yet",
+        rust_message: "for-in loops are not implemented yet",
     },
     BoundaryCase {
         description: "classic for lexical destructuring",
