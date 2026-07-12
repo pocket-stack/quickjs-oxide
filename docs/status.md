@@ -1,6 +1,6 @@
 # Implementation status
 
-Last audited: 2026-07-12. The completion definition remains
+Last audited: 2026-07-13. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
@@ -764,8 +764,9 @@ claim full parity.
   `reduceRight`, `fill`, `find`, `findIndex`, `findLast`, `findLastIndex`,
   `indexOf`, `lastIndexOf`, `includes`, `join`, `toString`, `toLocaleString`,
   `pop`, `push`, `shift`, `unshift`, `reverse`, `toReversed`, `sort`,
-  `toSorted`, `copyWithin`, generic `values`, `keys`, `entries`, and the
-  `@@iterator` alias in their pinned filtered order. `at` uses
+  `toSorted`, `slice`, `splice`, `toSpliced`, `copyWithin`, generic `values`,
+  `keys`, `entries`, and the `@@iterator` alias in their pinned filtered order.
+  `at` uses
   saturating Int64 index conversion and HasProperty-before-Get; the three
   searches snapshot ToLength, skip `fromIndex` conversion for zero length,
   preserve omitted-versus-explicit-undefined behavior, and use QuickJS's
@@ -893,6 +894,37 @@ claim full parity.
   and side-effect parity. The pinned conditional-Get Proxy behavior and the
   `toSorted` `@@unscopables` entry remain attached to their wider pending
   object-model slices.
+  `slice` and `splice` retain QuickJS's shared magic-selected kernel. Both
+  snapshot ToLength, apply saturating Int64 relative-index clamps, distinguish
+  omitted arguments from explicit `undefined` where `argc` requires it, and
+  complete `ArraySpeciesCreate` before copying present values in ascending
+  HasProperty/Get/CreateDataProperty order. Holes remain holes, inherited
+  values become own C/W/E data properties, species may return the source
+  itself, and even an empty result receives the final ordinary throwing length
+  Set. `splice` finishes that entire removed-result phase before source
+  mutation. It then moves a shrinking tail forward or a growing tail backward,
+  Deletes an old tail in descending order, Sets inserted items in ascending
+  order, and always Sets the final source length. Every completed result write,
+  move, Delete, insertion and genuine-Array length growth remains visible when
+  a later operation fails. The full MAX_SAFE and ordinary `"4294967295"`
+  property boundaries are retained, including QuickJS's exact
+  `TypeError: Array loo long` spelling and the later genuine-Array RangeError.
+  `toSpliced` uses the adjacent non-species path: it checks MAX_SAFE, reserves a
+  signed-31-bit dense defining-realm result before indexed reads, queries only
+  the retained prefix and suffix in ascending conditional Has/Get order, and
+  turns every retained hole into an own `undefined`. Constructor/species,
+  deleted indices and a replaceable global Array are not observed. Its
+  MAX_SAFE overflow is a TypeError while the dense INT32 ceiling is a
+  RangeError, both with `invalid array length`. A deterministic four-frame
+  slice-family safety ceiling makes recursive getters catchable as
+  `InternalError: stack overflow`; pinned QuickJS permits a deeper
+  platform-stack-dependent chain, so exact threshold and side-effect parity
+  still require the general native-call trampoline. As with the other dense
+  change-by-copy methods, Rust reserves the complete value buffer before
+  source access but creates indexed Array storage afterward; exact recoverable
+  allocator ordering and bulk-storage complexity remain pending. Proxy trap
+  behavior and the `toSpliced` `@@unscopables` entry remain attached to their
+  wider object-model slices.
   `copyWithin`
   snapshots and clamps all three bounds in QuickJS order, selects a backward
   traversal only for overlapping ranges, and performs source HasProperty/Get
@@ -902,11 +934,10 @@ claim full parity.
   Array Iterators re-read Uint32 length on every `next`, observe holes and
   mutation through ordinary Get, allocate entry-pair Arrays in the defining
   realm, use the raw native-next ABI in for-of, and eagerly release their source
-  on exhaustion. The remaining Array mutation/order/slice/flatten methods and
+  on exhaustion. The remaining Array flattening and other prototype methods and
   `@@unscopables` remain later slices. The pinned runtime anchors are `quickjs.c`
   212, 5628-5671, 9433-9524, 10369-10592, 13210-13663, 41472-42226,
-  42228-42791, 42975-43013, 43122-43335, 43344-43454, 44519-44583, and
-  56220-56390.
+  42228-43013, 43122-43335, 43344-43454, 44519-44583, and 56220-56390.
 - Every realm now publishes `%Object%` as a constructor-or-function native
   linked to `%Object.prototype%`. Call and construction preserve existing
   objects, box every primitive family in the defining realm, allocate ordinary
@@ -1523,6 +1554,13 @@ generators, TypedArrays/Atomics, WeakRef/finalization, bytecode version 5 and
 BJSON interoperability, `std`/`os`, workers, REPL/qjsc, and the complete Rust
 and C embedding APIs.
 
+Code organization is also not final: `runtime.rs` still co-locates the runtime
+facade, property machinery, native dispatch, intrinsic families, and extensive
+white-box tests, while `compiler.rs` similarly combines several compiler
+phases. Dedicated no-semantic-change milestones must split these into focused
+submodules with the same differential and Rust-only gates; future feature
+work must not keep extending either monolith indefinitely.
+
 ## Reproduce current evidence
 
 ```sh
@@ -1604,6 +1642,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_reverse -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_sort -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_array_slice_splice -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_fill -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

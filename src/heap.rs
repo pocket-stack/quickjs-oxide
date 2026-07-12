@@ -800,6 +800,15 @@ pub enum ArrayPushKind {
     Unshift,
 }
 
+/// Copy/removal mode selected by QuickJS's shared `js_array_slice` kernel.
+/// `slice` only materializes the selected range, whereas `splice` returns the
+/// same species-created range before mutating the receiver in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ArraySliceKind {
+    Slice,
+    Splice,
+}
+
 /// Observable traversal and result mode selected by the four
 /// `Array.prototype.find*` methods. QuickJS passes this as the magic value to
 /// one shared generic callback kernel.
@@ -877,6 +886,8 @@ pub enum NativeFunctionId {
     ArrayPrototypeToReversed,
     ArrayPrototypeSort,
     ArrayPrototypeToSorted,
+    ArrayPrototypeSlice(ArraySliceKind),
+    ArrayPrototypeToSpliced,
     ArrayPrototypeCopyWithin,
     ArrayIteratorNext,
     ThrowTypeError,
@@ -1149,6 +1160,7 @@ impl NativeFunctionId {
             | Self::ArrayPrototypeToReversed
             | Self::ArrayPrototypeSort
             | Self::ArrayPrototypeToSorted
+            | Self::ArrayPrototypeToSpliced
             | Self::ArrayPrototypeCopyWithin
             | Self::SymbolRegistry(_)
             | Self::GlobalNumberParse(_)
@@ -1167,7 +1179,8 @@ impl NativeFunctionId {
             | Self::ArrayPrototypeReduce(_)
             | Self::ArrayPrototypeJoin(_)
             | Self::ArrayPrototypePop(_)
-            | Self::ArrayPrototypePush(_) => NativeFunctionDescriptor {
+            | Self::ArrayPrototypePush(_)
+            | Self::ArrayPrototypeSlice(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::GenericMagic,
             },
             Self::GlobalUriCodec(
@@ -4098,6 +4111,18 @@ mod tests {
             assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
             assert!(!target.descriptor().cproto.default_is_constructor());
         }
+    }
+
+    #[test]
+    fn array_slice_native_targets_use_pinned_cproto() {
+        for kind in [ArraySliceKind::Slice, ArraySliceKind::Splice] {
+            let target = NativeFunctionId::ArrayPrototypeSlice(kind);
+            assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
+        let target = NativeFunctionId::ArrayPrototypeToSpliced;
+        assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
+        assert!(!target.descriptor().cproto.default_is_constructor());
     }
 
     #[test]

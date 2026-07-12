@@ -25,16 +25,16 @@ use crate::function::{
 };
 use crate::heap::{
     ArrayFindKind, ArrayIterationKind, ArrayIteratorKind, ArrayJoinKind, ArrayPopKind,
-    ArrayPushKind, ArrayReduceKind, ArraySearchKind, AutoInitProperty, BigIntAsNKind,
-    BytecodeConstant, ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName,
-    ConstructorKind, ContextData, ContextId, DynamicFunctionKind, ErrorConstructorKind,
-    FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo, FunctionDebugPosition,
-    FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap,
-    HeapCleanup, HeapCounts, HeapError, NativeCProto, NativeFunctionId, NumberFormatKind,
-    NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData, ObjectId, ObjectKind,
-    ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot,
-    RawValue, ShapeId, StringCharAtKind, StringWellFormedKind, SymbolRegistryKind, VarRefData,
-    VarRefId, VariableDefinition,
+    ArrayPushKind, ArrayReduceKind, ArraySearchKind, ArraySliceKind, AutoInitProperty,
+    BigIntAsNKind, BytecodeConstant, ClosureSource, ClosureVariable, ClosureVariableKind,
+    ClosureVariableName, ConstructorKind, ContextData, ContextId, DynamicFunctionKind,
+    ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo,
+    FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind,
+    GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError, NativeCProto, NativeFunctionId,
+    NumberFormatKind, NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData,
+    ObjectId, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind,
+    PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCharAtKind, StringWellFormedKind,
+    SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -3846,6 +3846,27 @@ impl Runtime {
             "toSorted",
             1,
             1,
+        )?;
+        for (kind, name) in [
+            (ArraySliceKind::Slice, "slice"),
+            (ArraySliceKind::Splice, "splice"),
+        ] {
+            self.define_native_builtin_auto_init(
+                array_prototype,
+                realm,
+                NativeFunctionId::ArrayPrototypeSlice(kind),
+                name,
+                2,
+                2,
+            )?;
+        }
+        self.define_native_builtin_auto_init(
+            array_prototype,
+            realm,
+            NativeFunctionId::ArrayPrototypeToSpliced,
+            "toSpliced",
+            2,
+            2,
         )?;
         self.define_native_builtin_auto_init(
             array_prototype,
@@ -12458,6 +12479,8 @@ impl Runtime {
                 64
             }
             NativeFunctionId::ArrayPrototypeSort | NativeFunctionId::ArrayPrototypeToSorted => 16,
+            NativeFunctionId::ArrayPrototypeSlice(_)
+            | NativeFunctionId::ArrayPrototypeToSpliced => 4,
             _ => return false,
         };
 
@@ -12473,6 +12496,14 @@ impl Runtime {
                 matches!(
                     candidate,
                     NativeFunctionId::ArrayPrototypeSort | NativeFunctionId::ArrayPrototypeToSorted
+                )
+            }
+            NativeFunctionId::ArrayPrototypeSlice(_)
+            | NativeFunctionId::ArrayPrototypeToSpliced => {
+                matches!(
+                    candidate,
+                    NativeFunctionId::ArrayPrototypeSlice(_)
+                        | NativeFunctionId::ArrayPrototypeToSpliced
                 )
             }
             _ => false,
@@ -13318,6 +13349,337 @@ impl Runtime {
             return Ok(Completion::Throw(value));
         }
         Ok(Completion::Return(Value::Object(result)))
+    }
+
+    /// Shared Rust port of QuickJS `js_array_slice`. The upstream `splice`
+    /// selector first creates and fills the deleted-elements result through
+    /// ArraySpeciesCreate, then moves/deletes/inserts on the receiver while
+    /// retaining every completed mutation if a later operation throws.
+    fn call_array_prototype_slice(
+        &self,
+        realm: ContextId,
+        kind: ArraySliceKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        const MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype slice/splice did not receive a generic invocation",
+            ));
+        };
+        let (object, length) = match self.native_array_like_object_and_length(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let signed_length = i64::try_from(length)
+            .map_err(|_| RuntimeError::Invariant("array-like length exceeded Int64"))?;
+        let start = match self.native_to_int64_clamp(
+            realm,
+            arguments.readable.first().ok_or(RuntimeError::Invariant(
+                "Array.prototype slice/splice start argv was not padded",
+            ))?,
+            0,
+            signed_length,
+            signed_length,
+        )? {
+            NativeConversion::Value(value) => u64::try_from(value).map_err(|_| {
+                RuntimeError::Invariant("clamped Array slice/splice start was negative")
+            })?,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        let (copy_count, delete_count, item_count, new_length) = match kind {
+            ArraySliceKind::Slice => {
+                let final_index = if arguments.actual_arg_count > 1
+                    && !matches!(arguments.readable.get(1), Some(Value::Undefined))
+                {
+                    match self.native_to_int64_clamp(
+                        realm,
+                        arguments.readable.get(1).ok_or(RuntimeError::Invariant(
+                            "Array.prototype.slice end argv was not padded",
+                        ))?,
+                        0,
+                        signed_length,
+                        signed_length,
+                    )? {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => {
+                            return Ok(Completion::Throw(value));
+                        }
+                    }
+                } else {
+                    signed_length
+                };
+                let start = i64::try_from(start)
+                    .map_err(|_| RuntimeError::Invariant("Array.slice start exceeded Int64"))?;
+                let count = u64::try_from((final_index - start).max(0))
+                    .map_err(|_| RuntimeError::Invariant("Array.slice count was negative"))?;
+                (count, 0, 0, None)
+            }
+            ArraySliceKind::Splice => {
+                let item_count = u64::try_from(arguments.actual_arg_count.saturating_sub(2))
+                    .map_err(|_| {
+                        RuntimeError::Invariant("Array.splice argument count exceeded Uint64")
+                    })?;
+                let delete_count = match arguments.actual_arg_count {
+                    0 => 0,
+                    1 => length - start,
+                    _ => {
+                        let remaining = length - start;
+                        let remaining = i64::try_from(remaining).map_err(|_| {
+                            RuntimeError::Invariant("Array.splice remaining length exceeded Int64")
+                        })?;
+                        match self.native_to_int64_clamp(
+                            realm,
+                            arguments.readable.get(1).ok_or(RuntimeError::Invariant(
+                                "Array.prototype.splice deleteCount argv was not padded",
+                            ))?,
+                            0,
+                            remaining,
+                            0,
+                        )? {
+                            NativeConversion::Value(value) => {
+                                u64::try_from(value).map_err(|_| {
+                                    RuntimeError::Invariant(
+                                        "clamped Array.splice deleteCount was negative",
+                                    )
+                                })?
+                            }
+                            NativeConversion::Throw(value) => {
+                                return Ok(Completion::Throw(value));
+                            }
+                        }
+                    }
+                };
+                let new_length = (length - delete_count)
+                    .checked_add(item_count)
+                    .filter(|value| *value <= MAX_SAFE_INTEGER);
+                let Some(new_length) = new_length else {
+                    return Ok(Completion::Throw(self.new_native_error(
+                        realm,
+                        NativeErrorKind::Type,
+                        "Array loo long",
+                    )?));
+                };
+                (delete_count, delete_count, item_count, Some(new_length))
+            }
+        };
+
+        let result = match self.array_species_create(realm, &object, copy_count)? {
+            Completion::Return(Value::Object(object)) => object,
+            Completion::Return(_) => {
+                return Err(RuntimeError::Invariant(
+                    "ArraySpeciesCreate returned a primitive",
+                ));
+            }
+            Completion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        for output_index in 0..copy_count {
+            let source_index = start
+                .checked_add(output_index)
+                .ok_or(RuntimeError::Invariant(
+                    "Array slice source index overflowed",
+                ))?;
+            let value = match self.try_get_array_like_index(realm, &object, source_index)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            if let Some(value) = value
+                && let Some(value) =
+                    self.create_indexed_data_property(realm, &result, output_index, value)?
+            {
+                return Ok(Completion::Throw(value));
+            }
+        }
+        if let Some(value) = self.set_array_like_length(realm, &result, copy_count)? {
+            return Ok(Completion::Throw(value));
+        }
+
+        if matches!(kind, ArraySliceKind::Slice) {
+            return Ok(Completion::Return(Value::Object(result)));
+        }
+
+        let new_length = new_length.ok_or(RuntimeError::Invariant(
+            "Array.splice new length was not computed",
+        ))?;
+        if item_count != delete_count {
+            let from = start
+                .checked_add(delete_count)
+                .ok_or(RuntimeError::Invariant(
+                    "Array.splice tail start overflowed",
+                ))?;
+            let to = start
+                .checked_add(item_count)
+                .ok_or(RuntimeError::Invariant(
+                    "Array.splice target start overflowed",
+                ))?;
+            let count = length - from;
+            if let Some(value) = self.copy_array_like_range(
+                realm,
+                &object,
+                to,
+                from,
+                count,
+                item_count > delete_count,
+            )? {
+                return Ok(Completion::Throw(value));
+            }
+
+            for index in (new_length..length).rev() {
+                if let Some(value) = self.delete_array_like_index_or_throw(realm, &object, index)? {
+                    return Ok(Completion::Throw(value));
+                }
+            }
+        }
+
+        for (offset, value) in arguments.readable[..arguments.actual_arg_count]
+            .iter()
+            .skip(2)
+            .cloned()
+            .enumerate()
+        {
+            let offset = u64::try_from(offset)
+                .map_err(|_| RuntimeError::Invariant("Array.splice item offset exceeded Uint64"))?;
+            let index = start.checked_add(offset).ok_or(RuntimeError::Invariant(
+                "Array.splice item index overflowed",
+            ))?;
+            let key = self.intern_property_key(&index.to_string())?;
+            if let Some(value) = self.set_property_or_throw(realm, &object, &key, value)? {
+                return Ok(Completion::Throw(value));
+            }
+        }
+        if let Some(value) = self.set_array_like_length(realm, &object, new_length)? {
+            return Ok(Completion::Throw(value));
+        }
+        Ok(Completion::Return(Value::Object(result)))
+    }
+
+    /// QuickJS `js_array_toSpliced`: allocate a defining-realm dense base
+    /// Array, copy the prefix and suffix through conditional Has/Get queries,
+    /// and place the supplied values between them without consulting species.
+    fn call_array_prototype_to_spliced(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        const MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype.toSpliced did not receive a generic invocation",
+            ));
+        };
+        let (object, length) = match self.native_array_like_object_and_length(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let signed_length = i64::try_from(length)
+            .map_err(|_| RuntimeError::Invariant("array-like length exceeded Int64"))?;
+        let start = if arguments.actual_arg_count == 0 {
+            0
+        } else {
+            match self.native_to_int64_clamp(
+                realm,
+                arguments.readable.first().ok_or(RuntimeError::Invariant(
+                    "Array.prototype.toSpliced start argv was not padded",
+                ))?,
+                0,
+                signed_length,
+                signed_length,
+            )? {
+                NativeConversion::Value(value) => u64::try_from(value).map_err(|_| {
+                    RuntimeError::Invariant("clamped Array.toSpliced start was negative")
+                })?,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            }
+        };
+        let mut delete_count = if arguments.actual_arg_count == 0 {
+            0
+        } else {
+            length - start
+        };
+        if arguments.actual_arg_count > 1 {
+            let remaining = i64::try_from(delete_count).map_err(|_| {
+                RuntimeError::Invariant("Array.toSpliced remaining length exceeded Int64")
+            })?;
+            delete_count = match self.native_to_int64_clamp(
+                realm,
+                arguments.readable.get(1).ok_or(RuntimeError::Invariant(
+                    "Array.prototype.toSpliced deleteCount argv was not padded",
+                ))?,
+                0,
+                remaining,
+                0,
+            )? {
+                NativeConversion::Value(value) => u64::try_from(value).map_err(|_| {
+                    RuntimeError::Invariant("clamped Array.toSpliced deleteCount was negative")
+                })?,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+        }
+        let item_count =
+            u64::try_from(arguments.actual_arg_count.saturating_sub(2)).map_err(|_| {
+                RuntimeError::Invariant("Array.toSpliced argument count exceeded Uint64")
+            })?;
+        let new_length = (length - delete_count)
+            .checked_add(item_count)
+            .filter(|value| *value <= MAX_SAFE_INTEGER);
+        let Some(new_length) = new_length else {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "invalid array length",
+            )?));
+        };
+        let mut values = match self.native_allocate_fast_array_values(realm, new_length)? {
+            NativeConversion::Value(values) => values,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        let mut output_index = 0_usize;
+        for source_index in 0..start {
+            values[output_index] =
+                match self.try_get_array_like_index(realm, &object, source_index)? {
+                    NativeConversion::Value(Some(value)) => value,
+                    NativeConversion::Value(None) => Value::Undefined,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+            output_index += 1;
+        }
+        for value in arguments.readable[..arguments.actual_arg_count]
+            .iter()
+            .skip(2)
+        {
+            values[output_index] = value.clone();
+            output_index += 1;
+        }
+        let suffix_start = start
+            .checked_add(delete_count)
+            .ok_or(RuntimeError::Invariant(
+                "Array.toSpliced suffix start overflowed",
+            ))?;
+        for source_index in suffix_start..length {
+            values[output_index] =
+                match self.try_get_array_like_index(realm, &object, source_index)? {
+                    NativeConversion::Value(Some(value)) => value,
+                    NativeConversion::Value(None) => Value::Undefined,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+            output_index += 1;
+        }
+        if output_index != values.len() {
+            return Err(RuntimeError::Invariant(
+                "Array.toSpliced did not fill its dense result",
+            ));
+        }
+
+        Ok(Completion::Return(Value::Object(
+            self.new_array_from_values(realm, values)?,
+        )))
     }
 
     fn call_array_prototype_iterator(
@@ -15754,6 +16116,12 @@ impl Runtime {
             }
             NativeFunctionId::ArrayPrototypeToSorted => {
                 self.call_array_prototype_to_sorted(realm, invocation, arguments)
+            }
+            NativeFunctionId::ArrayPrototypeSlice(kind) => {
+                self.call_array_prototype_slice(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::ArrayPrototypeToSpliced => {
+                self.call_array_prototype_to_spliced(realm, invocation, arguments)
             }
             NativeFunctionId::ArrayPrototypeIterator(kind) => {
                 self.call_array_prototype_iterator(realm, kind, invocation)
