@@ -760,10 +760,10 @@ claim full parity.
   `of`, and `@@species`; `from` covers iterable and array-like routes, mapper
   ordering, constructor receivers, CreateDataProperty, iterator closing, and
   final length Set. The currently implemented prototype subset contains `at`,
-  `with`, `every`, `some`, `forEach`, `reduce`, `reduceRight`, `fill`, `find`,
-  `findIndex`, `findLast`, `findLastIndex`, `indexOf`, `lastIndexOf`, `includes`,
-  `copyWithin`, generic `values`, `keys`, `entries`, and the `@@iterator` alias
-  in their pinned filtered order. `at` uses
+  `with`, `every`, `some`, `forEach`, `map`, `filter`, `reduce`, `reduceRight`,
+  `fill`, `find`, `findIndex`, `findLast`, `findLastIndex`, `indexOf`,
+  `lastIndexOf`, `includes`, `copyWithin`, generic `values`, `keys`, `entries`,
+  and the `@@iterator` alias in their pinned filtered order. `at` uses
   saturating Int64 index conversion and HasProperty-before-Get; the three
   searches snapshot ToLength, skip `fromIndex` conversion for zero length,
   preserve omitted-versus-explicit-undefined behavior, and use QuickJS's
@@ -786,9 +786,15 @@ claim full parity.
   kernel: they validate the callback after ToLength, skip holes through
   HasProperty/Get while observing inherited values and mutation, pass the
   boxed receiver plus index/value and exact `thisArg`, and preserve the pinned
-  short-circuit or exhaustive completion mode. `reduce` and `reduceRight`
-  share QuickJS's directional accumulator kernel. They distinguish an omitted
-  initial value from an explicitly supplied `undefined`, scan holes with
+  short-circuit or exhaustive completion mode. Their allocating `map` and
+  `filter` modes use the complete `ArraySpeciesCreate` path for genuine Arrays,
+  including constructor/species observation, custom result objects, and the
+  cross-realm default-Array exception. `map` preallocates the snapshotted length
+  and preserves holes; `filter` starts at zero, applies ToBoolean only to the
+  callback result, and compactly defines the original values. Both use
+  CreateDataProperty without a final length Set on custom results. `reduce`
+  and `reduceRight` share QuickJS's directional accumulator kernel. They
+  distinguish an omitted initial value from an explicitly supplied `undefined`, scan holes with
   HasProperty to select the first accumulator, throw the exact `empty array`
   TypeError when none exists, and pass accumulator/value/index/boxed receiver
   to each callback with undefined `this`. The four `find*`
@@ -805,9 +811,9 @@ claim full parity.
   Array Iterators re-read Uint32 length on every `next`, observe holes and
   mutation through ordinary Get, allocate entry-pair Arrays in the defining
   realm, use the raw native-next ABI in for-of, and eagerly release their source
-  on exhaustion. Array prototype algorithms such as `concat`, `map`, the
-  remaining mutation/search/sort methods, `@@unscopables`, and species-based result
-  creation remain later slices. The pinned runtime anchors are `quickjs.c`
+  on exhaustion. Array prototype algorithms such as `concat`, the remaining
+  mutation/search/sort methods, and `@@unscopables` remain later slices. The
+  pinned runtime anchors are `quickjs.c`
   5628-5671, 9433-9524, 10369-10592, 13210-13255, 41472-42226,
   42228-42480, 42975-43013, 43344-43454, 44519-44583, and 56220-56390.
 - Every realm now publishes `%Object%` as a constructor-or-function native
@@ -1505,6 +1511,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_find -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_iteration -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_array_map_filter -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_reduce -- --nocapture
 

@@ -787,14 +787,16 @@ pub enum ArrayFindKind {
     FindLastIndex,
 }
 
-/// Non-allocating modes of QuickJS's shared `js_array_every` callback kernel.
-/// `map` and `filter` intentionally remain separate future result/species
-/// slices even though upstream shares the same C entry point.
+/// Modes of QuickJS's shared `js_array_every` callback kernel. The typed
+/// selector preserves the upstream branch identity without leaking C magic
+/// integers into runtime dispatch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ArrayIterationKind {
     Every,
     Some,
     ForEach,
+    Map,
+    Filter,
 }
 
 /// Direction selected by QuickJS's shared `js_array_reduce` accumulator
@@ -4029,6 +4031,8 @@ mod tests {
             ArrayIterationKind::Every,
             ArrayIterationKind::Some,
             ArrayIterationKind::ForEach,
+            ArrayIterationKind::Map,
+            ArrayIterationKind::Filter,
         ] {
             let target = NativeFunctionId::ArrayPrototypeIteration(kind);
             assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);

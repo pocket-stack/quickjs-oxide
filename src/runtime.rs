@@ -3488,6 +3488,8 @@ impl Runtime {
             (ArrayIterationKind::Every, "every"),
             (ArrayIterationKind::Some, "some"),
             (ArrayIterationKind::ForEach, "forEach"),
+            (ArrayIterationKind::Map, "map"),
+            (ArrayIterationKind::Filter, "filter"),
         ] {
             self.define_native_builtin_auto_init(
                 array_prototype,
@@ -11428,9 +11430,31 @@ impl Runtime {
         } else {
             Value::Undefined
         };
+        let result = match kind {
+            ArrayIterationKind::Every => Value::Bool(true),
+            ArrayIterationKind::Some => Value::Bool(false),
+            ArrayIterationKind::ForEach => Value::Undefined,
+            ArrayIterationKind::Map | ArrayIterationKind::Filter => {
+                let result_length = if kind == ArrayIterationKind::Map {
+                    length
+                } else {
+                    0
+                };
+                match self.array_species_create(realm, &object, result_length)? {
+                    Completion::Return(value @ Value::Object(_)) => value,
+                    Completion::Return(_) => {
+                        return Err(RuntimeError::Invariant(
+                            "ArraySpeciesCreate returned a primitive",
+                        ));
+                    }
+                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                }
+            }
+        };
         let length = i64::try_from(length)
             .map_err(|_| RuntimeError::Invariant("array-like length exceeded Int64"))?;
         let callback_receiver = Value::Object(object.clone());
+        let mut selected_count = 0_u64;
 
         for index in 0..length {
             let key = self.intern_property_key(&index.to_string())?;
@@ -11451,7 +11475,7 @@ impl Runtime {
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
             };
             let callback_arguments = [
-                value,
+                value.clone(),
                 Value::number(index as f64),
                 callback_receiver.clone(),
             ];
@@ -11471,16 +11495,115 @@ impl Runtime {
                 ArrayIterationKind::Some if callback_result.to_boolean() => {
                     return Ok(Completion::Return(Value::Bool(true)));
                 }
+                ArrayIterationKind::Map => {
+                    let Value::Object(result) = &result else {
+                        return Err(RuntimeError::Invariant(
+                            "Array.map result was not an object",
+                        ));
+                    };
+                    let index = u64::try_from(index)
+                        .map_err(|_| RuntimeError::Invariant("Array.map index was negative"))?;
+                    if let Some(value) =
+                        self.create_indexed_data_property(realm, result, index, callback_result)?
+                    {
+                        return Ok(Completion::Throw(value));
+                    }
+                }
+                ArrayIterationKind::Filter if callback_result.to_boolean() => {
+                    let Value::Object(result) = &result else {
+                        return Err(RuntimeError::Invariant(
+                            "Array.filter result was not an object",
+                        ));
+                    };
+                    if let Some(value) =
+                        self.create_indexed_data_property(realm, result, selected_count, value)?
+                    {
+                        return Ok(Completion::Throw(value));
+                    }
+                    selected_count =
+                        selected_count
+                            .checked_add(1)
+                            .ok_or(RuntimeError::Invariant(
+                                "Array.filter result index overflowed u64",
+                            ))?;
+                }
                 ArrayIterationKind::Every
                 | ArrayIterationKind::Some
-                | ArrayIterationKind::ForEach => {}
+                | ArrayIterationKind::ForEach
+                | ArrayIterationKind::Filter => {}
             }
         }
-        Ok(Completion::Return(match kind {
-            ArrayIterationKind::Every => Value::Bool(true),
-            ArrayIterationKind::Some => Value::Bool(false),
-            ArrayIterationKind::ForEach => Value::Undefined,
-        }))
+        Ok(Completion::Return(result))
+    }
+
+    /// QuickJS `JS_ArraySpeciesCreate`: generic receivers always allocate a
+    /// defining-realm base Array, while genuine Arrays observe constructor and
+    /// @@species with the cross-realm default-Array compatibility exception.
+    fn array_species_create(
+        &self,
+        realm: ContextId,
+        source: &ObjectRef,
+        length: u64,
+    ) -> Result<Completion, RuntimeError> {
+        if !self.is_array_object(source)? {
+            return self.array_from_result(
+                realm,
+                Value::Undefined,
+                Some(Value::number(length as f64)),
+            );
+        }
+
+        let constructor_key = self.intern_property_key("constructor")?;
+        let mut constructor = match self.get_property_in_realm(realm, source, &constructor_key)? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        if let Value::Object(object) = &constructor
+            && self.is_constructor(object)?
+        {
+            let callable = self.as_callable(object)?.ok_or(RuntimeError::Invariant(
+                "constructable Array constructor value was not callable",
+            ))?;
+            let constructor_realm = self.callable_realm(&callable)?;
+            let is_cross_realm_default = if constructor_realm != realm {
+                self.0
+                    .state
+                    .borrow()
+                    .heap
+                    .context(constructor_realm)?
+                    .array_constructor
+                    .is_some_and(|default| default == object.object_id())
+            } else {
+                false
+            };
+            if is_cross_realm_default {
+                constructor = Value::Undefined;
+            }
+        }
+
+        if let Value::Object(object) = &constructor {
+            let species_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Species));
+            constructor = match self.get_property_in_realm(realm, object, &species_key)? {
+                Completion::Return(Value::Null) => Value::Undefined,
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+        }
+
+        if matches!(constructor, Value::Undefined) {
+            return self.array_from_result(
+                realm,
+                Value::Undefined,
+                Some(Value::number(length as f64)),
+            );
+        }
+
+        let callable = match self.constructor_from_value(realm, constructor)? {
+            NativeConversion::Value(callable) => callable,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        self.construct_internal(realm, &callable, &callable, &[Value::number(length as f64)])
     }
 
     fn call_array_prototype_reduce(
