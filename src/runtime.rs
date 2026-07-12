@@ -23,16 +23,16 @@ use crate::function::{
     UnlinkedVariableDefinition,
 };
 use crate::heap::{
-    ArrayFindKind, ArrayIterationKind, ArrayIteratorKind, ArraySearchKind, AutoInitProperty,
-    BigIntAsNKind, BytecodeConstant, ClosureSource, ClosureVariable, ClosureVariableKind,
-    ClosureVariableName, ConstructorKind, ContextData, ContextId, DynamicFunctionKind,
-    ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo,
-    FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind,
-    GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError, NativeCProto, NativeFunctionId,
-    NumberFormatKind, NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData,
-    ObjectId, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind,
-    PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCharAtKind, StringWellFormedKind,
-    SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
+    ArrayFindKind, ArrayIterationKind, ArrayIteratorKind, ArrayReduceKind, ArraySearchKind,
+    AutoInitProperty, BigIntAsNKind, BytecodeConstant, ClosureSource, ClosureVariable,
+    ClosureVariableKind, ClosureVariableName, ConstructorKind, ContextData, ContextId,
+    DynamicFunctionKind, ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId,
+    FunctionDebugInfo, FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats,
+    GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError,
+    NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
+    ObjectAccessorKind, ObjectData, ObjectId, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload,
+    PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCharAtKind,
+    StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -3493,6 +3493,19 @@ impl Runtime {
                 array_prototype,
                 realm,
                 NativeFunctionId::ArrayPrototypeIteration(kind),
+                name,
+                1,
+                1,
+            )?;
+        }
+        for (kind, name) in [
+            (ArrayReduceKind::Reduce, "reduce"),
+            (ArrayReduceKind::ReduceRight, "reduceRight"),
+        ] {
+            self.define_native_builtin_auto_init(
+                array_prototype,
+                realm,
+                NativeFunctionId::ArrayPrototypeReduce(kind),
                 name,
                 1,
                 1,
@@ -11470,6 +11483,121 @@ impl Runtime {
         }))
     }
 
+    fn call_array_prototype_reduce(
+        &self,
+        realm: ContextId,
+        kind: ArrayReduceKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype reduce method did not receive a generic invocation",
+            ));
+        };
+        let (object, length) = match self.native_array_like_object_and_length(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let callback = self.callable_from_value(
+            arguments
+                .readable
+                .first()
+                .ok_or(RuntimeError::Invariant(
+                    "Array.prototype reduce callback argv was not padded",
+                ))?
+                .clone(),
+        )?;
+        let length = i64::try_from(length)
+            .map_err(|_| RuntimeError::Invariant("array-like length exceeded Int64"))?;
+        let callback_receiver = Value::Object(object.clone());
+        let mut step = 0_i64;
+
+        let mut accumulator = if arguments.actual_arg_count > 1 {
+            arguments
+                .readable
+                .get(1)
+                .ok_or(RuntimeError::Invariant(
+                    "Array.prototype reduce initial value was missing",
+                ))?
+                .clone()
+        } else {
+            let mut found = None;
+            while step < length {
+                let index = match kind {
+                    ArrayReduceKind::Reduce => step,
+                    ArrayReduceKind::ReduceRight => length - step - 1,
+                };
+                step += 1;
+                let key = self.intern_property_key(&index.to_string())?;
+                let present = match self.has_property_in_realm(realm, &object, &key)? {
+                    Completion::Return(Value::Bool(value)) => value,
+                    Completion::Return(_) => {
+                        return Err(RuntimeError::Invariant(
+                            "Array reduce HasProperty did not return a boolean",
+                        ));
+                    }
+                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+                if present {
+                    found = Some(match self.get_property_in_realm(realm, &object, &key)? {
+                        Completion::Return(value) => value,
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    });
+                    break;
+                }
+            }
+            let Some(value) = found else {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "empty array",
+                )?));
+            };
+            value
+        };
+
+        while step < length {
+            let index = match kind {
+                ArrayReduceKind::Reduce => step,
+                ArrayReduceKind::ReduceRight => length - step - 1,
+            };
+            step += 1;
+            let key = self.intern_property_key(&index.to_string())?;
+            let present = match self.has_property_in_realm(realm, &object, &key)? {
+                Completion::Return(Value::Bool(value)) => value,
+                Completion::Return(_) => {
+                    return Err(RuntimeError::Invariant(
+                        "Array reduce HasProperty did not return a boolean",
+                    ));
+                }
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            if !present {
+                continue;
+            }
+            let value = match self.get_property_in_realm(realm, &object, &key)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            accumulator = match self.call_internal(
+                realm,
+                &callback,
+                Value::Undefined,
+                &[
+                    accumulator,
+                    value,
+                    Value::number(index as f64),
+                    callback_receiver.clone(),
+                ],
+            )? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+        }
+        Ok(Completion::Return(accumulator))
+    }
+
     fn call_array_prototype_find(
         &self,
         realm: ContextId,
@@ -14154,6 +14282,9 @@ impl Runtime {
             }
             NativeFunctionId::ArrayPrototypeIteration(kind) => {
                 self.call_array_prototype_iteration(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::ArrayPrototypeReduce(kind) => {
+                self.call_array_prototype_reduce(realm, kind, invocation, arguments)
             }
             NativeFunctionId::ArrayPrototypeFill => {
                 self.call_array_prototype_fill(realm, invocation, arguments)

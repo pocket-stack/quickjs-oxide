@@ -797,6 +797,14 @@ pub enum ArrayIterationKind {
     ForEach,
 }
 
+/// Direction selected by QuickJS's shared `js_array_reduce` accumulator
+/// kernel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ArrayReduceKind {
+    Reduce,
+    ReduceRight,
+}
+
 /// Observable key category selected by `%Object%.getOwnPropertyNames` and
 /// `%Object%.getOwnPropertySymbols`. QuickJS uses two thin C wrappers around
 /// the same `JS_GetOwnPropertyNames2` kernel; retaining the distinction in the
@@ -830,6 +838,7 @@ pub enum NativeFunctionId {
     ArrayPrototypeAt,
     ArrayPrototypeWith,
     ArrayPrototypeIteration(ArrayIterationKind),
+    ArrayPrototypeReduce(ArrayReduceKind),
     ArrayPrototypeFill,
     ArrayPrototypeFind(ArrayFindKind),
     ArrayPrototypeSearch(ArraySearchKind),
@@ -1113,7 +1122,8 @@ impl NativeFunctionId {
             | Self::ObjectPrototypeLookupAccessor(_)
             | Self::StringPrototypeCharAt(_)
             | Self::ArrayPrototypeFind(_)
-            | Self::ArrayPrototypeIteration(_) => NativeFunctionDescriptor {
+            | Self::ArrayPrototypeIteration(_)
+            | Self::ArrayPrototypeReduce(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::GenericMagic,
             },
             Self::GlobalUriCodec(
@@ -4021,6 +4031,15 @@ mod tests {
             ArrayIterationKind::ForEach,
         ] {
             let target = NativeFunctionId::ArrayPrototypeIteration(kind);
+            assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
+    }
+
+    #[test]
+    fn array_reduce_native_selectors_use_pinned_cproto() {
+        for kind in [ArrayReduceKind::Reduce, ArrayReduceKind::ReduceRight] {
+            let target = NativeFunctionId::ArrayPrototypeReduce(kind);
             assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);
             assert!(!target.descriptor().cproto.default_is_constructor());
         }
