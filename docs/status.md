@@ -760,8 +760,8 @@ claim full parity.
   `of`, and `@@species`; `from` covers iterable and array-like routes, mapper
   ordering, constructor receivers, CreateDataProperty, iterator closing, and
   final length Set. The currently implemented prototype subset contains `at`,
-  `with`, `fill`, `indexOf`, `lastIndexOf`, `includes`, generic `values`,
-  `keys`, `entries`, and the `@@iterator` alias in their pinned filtered order. `at` uses
+  `with`, `fill`, `indexOf`, `lastIndexOf`, `includes`, `copyWithin`, generic
+  `values`, `keys`, `entries`, and the `@@iterator` alias in their pinned filtered order. `at` uses
   saturating Int64 index conversion and HasProperty-before-Get; the three
   searches snapshot ToLength, skip `fromIndex` conversion for zero length,
   preserve omitted-versus-explicit-undefined behavior, and use QuickJS's
@@ -779,15 +779,20 @@ claim full parity.
   before `end` even for an empty range, and applies ascending ordinary throwing
   Set operations. Holes become own values, inherited setters remain observable,
   a failing write preserves earlier mutations, and boxing/native errors use the
-  method's defining realm while user throws are preserved.
+  method's defining realm while user throws are preserved. `copyWithin`
+  snapshots and clamps all three bounds in QuickJS order, selects a backward
+  traversal only for overlapping ranges, and performs source HasProperty/Get
+  followed by a throwing target Set, or a throwing Delete for a source hole.
+  Inherited source values, deletion failures, and partial mutation remain
+  observable without allocating a result Array.
   Array Iterators re-read Uint32 length on every `next`, observe holes and
   mutation through ordinary Get, allocate entry-pair Arrays in the defining
   realm, use the raw native-next ABI in for-of, and eagerly release their source
   on exhaustion. Array prototype algorithms such as `concat`, `map`, the
   remaining mutation/search/sort methods, `@@unscopables`, and species-based result
   creation remain later slices. The pinned runtime anchors are `quickjs.c`
-  5628-5671, 9433-9524, 10369-10592, 13210-13255, 41552-41900,
-  42228-42407, 43344-43454, 44519-44583, and 56220-56390.
+  5628-5671, 9433-9524, 10369-10592, 13210-13255, 41472-41900,
+  42228-42407, 42975-43013, 43344-43454, 44519-44583, and 56220-56390.
 - Every realm now publishes `%Object%` as a constructor-or-function native
   linked to `%Object.prototype%`. Call and construction preserve existing
   objects, box every primitive family in the defining realm, allocate ordinary
@@ -1477,6 +1482,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_with -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_fill -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_array_copy_within -- --nocapture
 
 ./scripts/test-parity-slice.sh
 ```

@@ -810,6 +810,7 @@ pub enum NativeFunctionId {
     ArrayPrototypeWith,
     ArrayPrototypeFill,
     ArrayPrototypeSearch(ArraySearchKind),
+    ArrayPrototypeCopyWithin,
     ArrayIteratorNext,
     ThrowTypeError,
     FunctionPrototypeCall,
@@ -1075,6 +1076,7 @@ impl NativeFunctionId {
             | Self::ArrayPrototypeWith
             | Self::ArrayPrototypeFill
             | Self::ArrayPrototypeSearch(_)
+            | Self::ArrayPrototypeCopyWithin
             | Self::SymbolRegistry(_)
             | Self::GlobalNumberParse(_)
             | Self::GlobalNumberPredicate(_)
@@ -3968,6 +3970,13 @@ mod tests {
     #[test]
     fn array_fill_native_selector_uses_pinned_cproto() {
         let target = NativeFunctionId::ArrayPrototypeFill;
+        assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
+        assert!(!target.descriptor().cproto.default_is_constructor());
+    }
+
+    #[test]
+    fn array_copy_within_native_selector_uses_pinned_cproto() {
+        let target = NativeFunctionId::ArrayPrototypeCopyWithin;
         assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
         assert!(!target.descriptor().cproto.default_is_constructor());
     }

@@ -3506,6 +3506,14 @@ impl Runtime {
                 1,
             )?;
         }
+        self.define_native_builtin_auto_init(
+            array_prototype,
+            realm,
+            NativeFunctionId::ArrayPrototypeCopyWithin,
+            "copyWithin",
+            2,
+            2,
+        )?;
         for (kind, name) in [
             (ArrayIteratorKind::Value, "values"),
             (ArrayIteratorKind::Key, "keys"),
@@ -11342,6 +11350,114 @@ impl Runtime {
         Ok(Completion::Return(Value::Object(object)))
     }
 
+    fn call_array_prototype_copy_within(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype.copyWithin did not receive a generic invocation",
+            ));
+        };
+        let (object, length) = match self.native_array_like_object_and_length(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let length = i64::try_from(length)
+            .map_err(|_| RuntimeError::Invariant("array-like length exceeded Int64"))?;
+        let mut to = match self.native_to_int64_clamp(
+            realm,
+            arguments.readable.first().ok_or(RuntimeError::Invariant(
+                "Array.prototype.copyWithin target argv was not padded",
+            ))?,
+            0,
+            length,
+            length,
+        )? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let mut from = match self.native_to_int64_clamp(
+            realm,
+            arguments.readable.get(1).ok_or(RuntimeError::Invariant(
+                "Array.prototype.copyWithin start argv was not padded",
+            ))?,
+            0,
+            length,
+            length,
+        )? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let final_index = if arguments.actual_arg_count > 2
+            && !matches!(arguments.readable.get(2), Some(Value::Undefined))
+        {
+            match self.native_to_int64_clamp(
+                realm,
+                arguments.readable.get(2).ok_or(RuntimeError::Invariant(
+                    "Array.prototype.copyWithin end argument was missing",
+                ))?,
+                0,
+                length,
+                length,
+            )? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            }
+        } else {
+            length
+        };
+        let mut count = (final_index - from).min(length - to);
+        let direction = if from < to && to < from + count {
+            from += count - 1;
+            to += count - 1;
+            -1
+        } else {
+            1
+        };
+
+        while count > 0 {
+            let from_key = self.intern_property_key(&from.to_string())?;
+            let present = match self.has_property_in_realm(realm, &object, &from_key)? {
+                Completion::Return(Value::Bool(value)) => value,
+                Completion::Return(_) => {
+                    return Err(RuntimeError::Invariant(
+                        "Array.copyWithin HasProperty did not return a boolean",
+                    ));
+                }
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            let source_value = if present {
+                match self.get_property_in_realm(realm, &object, &from_key)? {
+                    Completion::Return(value) => Some(value),
+                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                }
+            } else {
+                None
+            };
+            let to_key = self.intern_property_key(&to.to_string())?;
+            if let Some(source_value) = source_value {
+                if let Some(value) =
+                    self.set_property_or_throw(realm, &object, &to_key, source_value)?
+                {
+                    return Ok(Completion::Throw(value));
+                }
+            } else if !self.delete_property(&object, &to_key)? {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "could not delete property",
+                )?));
+            }
+            from += direction;
+            to += direction;
+            count -= 1;
+        }
+        Ok(Completion::Return(Value::Object(object)))
+    }
+
     fn call_array_prototype_search(
         &self,
         realm: ContextId,
@@ -13843,6 +13959,9 @@ impl Runtime {
             }
             NativeFunctionId::ArrayPrototypeFill => {
                 self.call_array_prototype_fill(realm, invocation, arguments)
+            }
+            NativeFunctionId::ArrayPrototypeCopyWithin => {
+                self.call_array_prototype_copy_within(realm, invocation, arguments)
             }
             NativeFunctionId::ArrayPrototypeSearch(kind) => {
                 self.call_array_prototype_search(realm, kind, invocation, arguments)
