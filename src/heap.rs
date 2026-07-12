@@ -765,6 +765,24 @@ pub enum ArrayIteratorKind {
     KeyAndValue,
 }
 
+/// Observable key category selected by `%Object%.getOwnPropertyNames` and
+/// `%Object%.getOwnPropertySymbols`. QuickJS uses two thin C wrappers around
+/// the same `JS_GetOwnPropertyNames2` kernel; retaining the distinction in the
+/// native identity keeps Rust dispatch free of string-name tests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ObjectOwnPropertyKeysKind {
+    Names,
+    Symbols,
+}
+
+/// Type-safe replacement for QuickJS's getter/setter magic values shared by
+/// the Annex-B `__define*__` and `__lookup*__` method families.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ObjectAccessorKind {
+    Getter,
+    Setter,
+}
+
 /// Runtime-provided callable identities. The enum is stored in heap payloads
 /// so native dispatch stays typed and does not rely on function pointers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -786,9 +804,23 @@ pub enum NativeFunctionId {
     FunctionPrototypeHasInstance,
     FunctionPrototypeFileName,
     FunctionPrototypePosition(FunctionDebugPosition),
+    ObjectConstructor,
+    ObjectCreate,
+    ObjectGetPrototypeOf,
+    ObjectSetPrototypeOf,
+    ObjectDefineProperty,
+    ObjectDefineProperties,
+    ObjectGetOwnPropertyKeys(ObjectOwnPropertyKeysKind),
     ObjectPrototypeToString,
     ObjectPrototypeToLocaleString,
     ObjectPrototypeValueOf,
+    ObjectPrototypeHasOwnProperty,
+    ObjectPrototypeIsPrototypeOf,
+    ObjectPrototypePropertyIsEnumerable,
+    ObjectPrototypeProtoGetter,
+    ObjectPrototypeProtoSetter,
+    ObjectPrototypeDefineAccessor(ObjectAccessorKind),
+    ObjectPrototypeLookupAccessor(ObjectAccessorKind),
     PrimitiveConstructor(PrimitiveKind),
     PrimitivePrototypeToString(PrimitiveKind),
     PrimitivePrototypeValueOf(PrimitiveKind),
@@ -1002,9 +1034,16 @@ impl NativeFunctionId {
             | Self::FunctionPrototypeBind
             | Self::FunctionPrototypeToString
             | Self::FunctionPrototypeHasInstance
+            | Self::ObjectCreate
+            | Self::ObjectSetPrototypeOf
+            | Self::ObjectDefineProperties
+            | Self::ObjectGetOwnPropertyKeys(_)
             | Self::ObjectPrototypeToString
             | Self::ObjectPrototypeToLocaleString
             | Self::ObjectPrototypeValueOf
+            | Self::ObjectPrototypeHasOwnProperty
+            | Self::ObjectPrototypeIsPrototypeOf
+            | Self::ObjectPrototypePropertyIsEnumerable
             | Self::PrimitivePrototypeToString(_)
             | Self::PrimitivePrototypeValueOf(_)
             | Self::StringPrototypeCharCodeAt
@@ -1024,7 +1063,11 @@ impl NativeFunctionId {
             | Self::NumberPrototypeFormat(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::Generic,
             },
-            Self::StringPrototypeCharAt(_) => NativeFunctionDescriptor {
+            Self::ObjectGetPrototypeOf
+            | Self::ObjectDefineProperty
+            | Self::ObjectPrototypeDefineAccessor(_)
+            | Self::ObjectPrototypeLookupAccessor(_)
+            | Self::StringPrototypeCharAt(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::GenericMagic,
             },
             Self::GlobalUriCodec(
@@ -1048,11 +1091,16 @@ impl NativeFunctionId {
                     cproto: NativeCProto::ConstructorOrFunctionMagic,
                 }
             }
-            Self::ArrayConstructor => NativeFunctionDescriptor {
+            Self::ArrayConstructor | Self::ObjectConstructor => NativeFunctionDescriptor {
                 cproto: NativeCProto::ConstructorOrFunction,
             },
-            Self::FunctionPrototypeFileName => NativeFunctionDescriptor {
-                cproto: NativeCProto::Getter,
+            Self::FunctionPrototypeFileName | Self::ObjectPrototypeProtoGetter => {
+                NativeFunctionDescriptor {
+                    cproto: NativeCProto::Getter,
+                }
+            }
+            Self::ObjectPrototypeProtoSetter => NativeFunctionDescriptor {
+                cproto: NativeCProto::Setter,
             },
             Self::SymbolPrototypeDescription | Self::ArraySpeciesGetter => {
                 NativeFunctionDescriptor {
@@ -3876,6 +3924,58 @@ mod tests {
             NativeCProto::IteratorNext
         );
         assert!(!NativeCProto::IteratorNext.default_is_constructor());
+    }
+
+    #[test]
+    fn object_native_selectors_use_pinned_cproto() {
+        for target in [
+            NativeFunctionId::ObjectCreate,
+            NativeFunctionId::ObjectSetPrototypeOf,
+            NativeFunctionId::ObjectDefineProperties,
+            NativeFunctionId::ObjectGetOwnPropertyKeys(ObjectOwnPropertyKeysKind::Names),
+            NativeFunctionId::ObjectGetOwnPropertyKeys(ObjectOwnPropertyKeysKind::Symbols),
+            NativeFunctionId::ObjectPrototypeHasOwnProperty,
+            NativeFunctionId::ObjectPrototypeIsPrototypeOf,
+            NativeFunctionId::ObjectPrototypePropertyIsEnumerable,
+        ] {
+            assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
+
+        for target in [
+            NativeFunctionId::ObjectGetPrototypeOf,
+            NativeFunctionId::ObjectDefineProperty,
+            NativeFunctionId::ObjectPrototypeDefineAccessor(ObjectAccessorKind::Getter),
+            NativeFunctionId::ObjectPrototypeDefineAccessor(ObjectAccessorKind::Setter),
+            NativeFunctionId::ObjectPrototypeLookupAccessor(ObjectAccessorKind::Getter),
+            NativeFunctionId::ObjectPrototypeLookupAccessor(ObjectAccessorKind::Setter),
+        ] {
+            assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
+
+        assert_eq!(
+            NativeFunctionId::ObjectConstructor.descriptor().cproto,
+            NativeCProto::ConstructorOrFunction
+        );
+        assert!(
+            NativeFunctionId::ObjectConstructor
+                .descriptor()
+                .cproto
+                .default_is_constructor()
+        );
+        assert_eq!(
+            NativeFunctionId::ObjectPrototypeProtoGetter
+                .descriptor()
+                .cproto,
+            NativeCProto::Getter
+        );
+        assert_eq!(
+            NativeFunctionId::ObjectPrototypeProtoSetter
+                .descriptor()
+                .cproto,
+            NativeCProto::Setter
+        );
     }
 
     fn one_slot_shape(heap: &mut Heap) -> ShapeId {

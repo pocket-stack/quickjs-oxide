@@ -769,6 +769,23 @@ claim full parity.
   creation remain later slices. The pinned runtime anchors are `quickjs.c`
   5628-5671, 9433-9524, 10369-10592, 41552-41799, 43344-43454,
   44519-44583, and 56220-56390.
+- Every realm now publishes `%Object%` as a constructor-or-function native
+  linked to `%Object.prototype%`. Call and construction preserve existing
+  objects, box every primitive family in the defining realm, allocate ordinary
+  objects for nullish values, and honor custom `newTarget.prototype` with the
+  new-target realm fallback. The implemented static-table prefix is exactly
+  `create`, `getPrototypeOf`, `setPrototypeOf`, `defineProperty`,
+  `defineProperties`, `getOwnPropertyNames`, `getOwnPropertySymbols`; the next
+  entry, `groupBy`, remains the deliberate boundary. Prototype mutation keeps
+  same-value success plus exact immutable, non-extensible and cycle failures.
+  Descriptor conversion follows QuickJS's inherited field probes and
+  `enumerable`, `configurable`, `value`, `writable`, `get`, `set` order,
+  including its `invalid getter`/`invalid setter` exception-overwrite quirk.
+  The pinned non-spec `defineProperties` path snapshots enumerable own keys but
+  converts and defines each descriptor immediately; its flag filtering does
+  not materialize lazy AutoInit properties. Own-name/symbol results are genuine
+  defining-realm Arrays and cover ordinary, Array and String-exotic ordering.
+  Anchors: `quickjs.c` 39796-40349, 40748-40927, and 56291-56313.
 - Shape caches are weak and unlink by finalized generational Shape ID. Shape
   and Symbol atom ownership is paired through heap cleanup, including failure
   paths and runtime teardown.
@@ -896,7 +913,7 @@ claim full parity.
   non-enumerable, non-configurable global data properties, matching the pinned
   QuickJS 2026-06-04 descriptors and direct-delete results. The implemented
   global string-key surface preserves upstream relative own-key order as the
-  Error family, `Array`, `Function`, `parseInt`, `parseFloat`, `isNaN`,
+  Error family, `Array`, `Object`, `Function`, `parseInt`, `parseFloat`, `isNaN`,
   `isFinite`, the six URI/escape functions, the three constants, `Number`,
   `Boolean`, `Symbol`, `globalThis`, then `BigInt`. This is not a claim that the
   wider global builtin table is complete.
@@ -1062,8 +1079,13 @@ claim full parity.
   builtins can be replaced by data or accessor descriptors. Initializer
   failure commits an ordinary `undefined` slot while releasing that realm
   edge.
-- `%Object.prototype%` currently installs the exact initial function-list
-  prefix `toString`, `toLocaleString`, `valueOf`. Completion-aware
+- `%Object.prototype%` installs the complete pinned table in order:
+  `toString`, `toLocaleString`, `valueOf`, `hasOwnProperty`, `isPrototypeOf`,
+  `propertyIsEnumerable`, the `__proto__` getter/setter, the four Annex-B
+  `__define*__`/`__lookup*__` helpers, then `constructor`. Property-key and
+  receiver conversion ordering, inherited accessor lookup, prototype walking,
+  primitive short-circuits, exact nullish diagnostics and lazy method metadata
+  are differential-tested. Completion-aware
   `ToPrimitive` implements observable `@@toPrimitive` with the exact
   `"string"`, `"number"`, or `"default"` hint, then the hint-selected ordinary
   `toString`/`valueOf` Get/Call ordering. It preserves user-thrown values and
@@ -1078,8 +1100,8 @@ claim full parity.
   tags from ordinary prototypes and fall back to `[object Object]` when those
   tags are deleted or non-string. Separate calls allocate distinct wrappers.
   Core tags also include Object, Function and Error plus primitive
-  null/undefined tags. The global `Object` constructor remains unimplemented;
-  null/undefined `toLocaleString` diagnostics are also outside this prefix.
+  null/undefined tags. `toLocaleString` preserves QuickJS's exact nullish
+  property-read diagnostics.
 - Sloppy ordinary bytecode functions normalize primitive `this` lazily and
   cache the normalized value in the frame. Number, Boolean, Symbol, BigInt and
   the String exotic substrate therefore allocate at most one genuine wrapper
@@ -1349,9 +1371,9 @@ for the current static scope tree and defining-realm global object. Dynamic
 object-environment lookup/deletion introduced by `with` or direct `eval`, the
 global String constructor, the remaining 43 entries of its 53-key prototype
 surface, Proxy/exotic internal methods, and the full
-`function_accessors.js` fixture are still pending. The global `Object`
-constructor, AggregateError, remaining Object prototype methods and
-uncatchable termination state are also pending. The remaining Array prototype
+`function_accessors.js` fixture are still pending. The Object static table after
+`getOwnPropertySymbols`, AggregateError, and uncatchable termination state are
+also pending. The remaining Array prototype
 algorithms, Array destructuring consumers, other iterator classes and helpers,
 RegExp, Unicode-backed String methods, remaining object-literal forms and the
 rest of the builtin table build on those layers.
@@ -1428,6 +1450,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_program_vars -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_program_functions -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_object_intrinsic -- --nocapture
 
 ./scripts/test-parity-slice.sh
 ```
@@ -1438,7 +1462,8 @@ String-rope/byte/native-Error kernels, Unicode identifier core, global
 BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials, and
 the Program-var/function, Program/body/block/switch/classic-for lexical-scope,
 single/labelled Annex B, synchronous try/catch/finally, synchronous for-of,
-and Array core/literal/iterator slices. The atom-Error target contains thirteen
+Array core/literal/iterator, and Object constructor/static-prefix/prototype
+slices. The atom-Error target contains thirteen
 pinned-oracle inputs in addition to its Rust-side expectation test. The Unicode
 target checks every scalar, real compiler/runtime cases, and the parser-driven
 identifier diagnostic matrix. A
