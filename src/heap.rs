@@ -787,6 +787,16 @@ pub enum ArrayFindKind {
     FindLastIndex,
 }
 
+/// Non-allocating modes of QuickJS's shared `js_array_every` callback kernel.
+/// `map` and `filter` intentionally remain separate future result/species
+/// slices even though upstream shares the same C entry point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ArrayIterationKind {
+    Every,
+    Some,
+    ForEach,
+}
+
 /// Observable key category selected by `%Object%.getOwnPropertyNames` and
 /// `%Object%.getOwnPropertySymbols`. QuickJS uses two thin C wrappers around
 /// the same `JS_GetOwnPropertyNames2` kernel; retaining the distinction in the
@@ -819,6 +829,7 @@ pub enum NativeFunctionId {
     ArrayPrototypeIterator(ArrayIteratorKind),
     ArrayPrototypeAt,
     ArrayPrototypeWith,
+    ArrayPrototypeIteration(ArrayIterationKind),
     ArrayPrototypeFill,
     ArrayPrototypeFind(ArrayFindKind),
     ArrayPrototypeSearch(ArraySearchKind),
@@ -1101,7 +1112,8 @@ impl NativeFunctionId {
             | Self::ObjectPrototypeDefineAccessor(_)
             | Self::ObjectPrototypeLookupAccessor(_)
             | Self::StringPrototypeCharAt(_)
-            | Self::ArrayPrototypeFind(_) => NativeFunctionDescriptor {
+            | Self::ArrayPrototypeFind(_)
+            | Self::ArrayPrototypeIteration(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::GenericMagic,
             },
             Self::GlobalUriCodec(
@@ -3996,6 +4008,19 @@ mod tests {
             ArrayFindKind::FindLastIndex,
         ] {
             let target = NativeFunctionId::ArrayPrototypeFind(kind);
+            assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
+    }
+
+    #[test]
+    fn array_iteration_native_selectors_use_pinned_cproto() {
+        for kind in [
+            ArrayIterationKind::Every,
+            ArrayIterationKind::Some,
+            ArrayIterationKind::ForEach,
+        ] {
+            let target = NativeFunctionId::ArrayPrototypeIteration(kind);
             assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);
             assert!(!target.descriptor().cproto.default_is_constructor());
         }

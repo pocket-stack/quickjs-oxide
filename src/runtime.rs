@@ -23,16 +23,16 @@ use crate::function::{
     UnlinkedVariableDefinition,
 };
 use crate::heap::{
-    ArrayFindKind, ArrayIteratorKind, ArraySearchKind, AutoInitProperty, BigIntAsNKind,
-    BytecodeConstant, ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName,
-    ConstructorKind, ContextData, ContextId, DynamicFunctionKind, ErrorConstructorKind,
-    FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo, FunctionDebugPosition,
-    FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap,
-    HeapCleanup, HeapCounts, HeapError, NativeCProto, NativeFunctionId, NumberFormatKind,
-    NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData, ObjectId, ObjectKind,
-    ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot,
-    RawValue, ShapeId, StringCharAtKind, StringWellFormedKind, SymbolRegistryKind, VarRefData,
-    VarRefId, VariableDefinition,
+    ArrayFindKind, ArrayIterationKind, ArrayIteratorKind, ArraySearchKind, AutoInitProperty,
+    BigIntAsNKind, BytecodeConstant, ClosureSource, ClosureVariable, ClosureVariableKind,
+    ClosureVariableName, ConstructorKind, ContextData, ContextId, DynamicFunctionKind,
+    ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo,
+    FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind,
+    GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError, NativeCProto, NativeFunctionId,
+    NumberFormatKind, NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData,
+    ObjectId, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind,
+    PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCharAtKind, StringWellFormedKind,
+    SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -3484,6 +3484,20 @@ impl Runtime {
             2,
             2,
         )?;
+        for (kind, name) in [
+            (ArrayIterationKind::Every, "every"),
+            (ArrayIterationKind::Some, "some"),
+            (ArrayIterationKind::ForEach, "forEach"),
+        ] {
+            self.define_native_builtin_auto_init(
+                array_prototype,
+                realm,
+                NativeFunctionId::ArrayPrototypeIteration(kind),
+                name,
+                1,
+                1,
+            )?;
+        }
         self.define_native_builtin_auto_init(
             array_prototype,
             realm,
@@ -11365,6 +11379,97 @@ impl Runtime {
         Ok(Completion::Return(Value::Object(object)))
     }
 
+    fn call_array_prototype_iteration(
+        &self,
+        realm: ContextId,
+        kind: ArrayIterationKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype iteration method did not receive a generic invocation",
+            ));
+        };
+        let (object, length) = match self.native_array_like_object_and_length(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let callback = self.callable_from_value(
+            arguments
+                .readable
+                .first()
+                .ok_or(RuntimeError::Invariant(
+                    "Array.prototype iteration callback argv was not padded",
+                ))?
+                .clone(),
+        )?;
+        let this_arg = if arguments.actual_arg_count > 1 {
+            arguments
+                .readable
+                .get(1)
+                .ok_or(RuntimeError::Invariant(
+                    "Array.prototype iteration thisArg was missing",
+                ))?
+                .clone()
+        } else {
+            Value::Undefined
+        };
+        let length = i64::try_from(length)
+            .map_err(|_| RuntimeError::Invariant("array-like length exceeded Int64"))?;
+        let callback_receiver = Value::Object(object.clone());
+
+        for index in 0..length {
+            let key = self.intern_property_key(&index.to_string())?;
+            let present = match self.has_property_in_realm(realm, &object, &key)? {
+                Completion::Return(Value::Bool(value)) => value,
+                Completion::Return(_) => {
+                    return Err(RuntimeError::Invariant(
+                        "Array iteration HasProperty did not return a boolean",
+                    ));
+                }
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            if !present {
+                continue;
+            }
+            let value = match self.get_property_in_realm(realm, &object, &key)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            let callback_arguments = [
+                value,
+                Value::number(index as f64),
+                callback_receiver.clone(),
+            ];
+            let callback_result = match self.call_internal(
+                realm,
+                &callback,
+                this_arg.clone(),
+                &callback_arguments,
+            )? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            match kind {
+                ArrayIterationKind::Every if !callback_result.to_boolean() => {
+                    return Ok(Completion::Return(Value::Bool(false)));
+                }
+                ArrayIterationKind::Some if callback_result.to_boolean() => {
+                    return Ok(Completion::Return(Value::Bool(true)));
+                }
+                ArrayIterationKind::Every
+                | ArrayIterationKind::Some
+                | ArrayIterationKind::ForEach => {}
+            }
+        }
+        Ok(Completion::Return(match kind {
+            ArrayIterationKind::Every => Value::Bool(true),
+            ArrayIterationKind::Some => Value::Bool(false),
+            ArrayIterationKind::ForEach => Value::Undefined,
+        }))
+    }
+
     fn call_array_prototype_find(
         &self,
         realm: ContextId,
@@ -14046,6 +14151,9 @@ impl Runtime {
             }
             NativeFunctionId::ArrayPrototypeWith => {
                 self.call_array_prototype_with(realm, invocation, arguments)
+            }
+            NativeFunctionId::ArrayPrototypeIteration(kind) => {
+                self.call_array_prototype_iteration(realm, kind, invocation, arguments)
             }
             NativeFunctionId::ArrayPrototypeFill => {
                 self.call_array_prototype_fill(realm, invocation, arguments)
