@@ -3484,6 +3484,14 @@ impl Runtime {
             2,
             2,
         )?;
+        self.define_native_builtin_auto_init(
+            array_prototype,
+            realm,
+            NativeFunctionId::ArrayPrototypeFill,
+            "fill",
+            1,
+            1,
+        )?;
         for (kind, name) in [
             (ArraySearchKind::IndexOf, "indexOf"),
             (ArraySearchKind::LastIndexOf, "lastIndexOf"),
@@ -11261,6 +11269,79 @@ impl Runtime {
         )))
     }
 
+    fn call_array_prototype_fill(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype.fill did not receive a generic invocation",
+            ));
+        };
+        let (object, length) = match self.native_array_like_object_and_length(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let length = i64::try_from(length)
+            .map_err(|_| RuntimeError::Invariant("array-like length exceeded Int64"))?;
+
+        // QuickJS deliberately skips conversion for an omitted or explicit
+        // undefined bound. Every other start is converted before end, even
+        // when the snapshot length is zero or the eventual range is empty.
+        let mut start = if arguments.actual_arg_count > 1
+            && !matches!(arguments.readable.get(1), Some(Value::Undefined))
+        {
+            match self.native_to_int64_clamp(
+                realm,
+                arguments.readable.get(1).ok_or(RuntimeError::Invariant(
+                    "Array.prototype.fill start argument was missing",
+                ))?,
+                0,
+                length,
+                length,
+            )? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            }
+        } else {
+            0
+        };
+        let end = if arguments.actual_arg_count > 2
+            && !matches!(arguments.readable.get(2), Some(Value::Undefined))
+        {
+            match self.native_to_int64_clamp(
+                realm,
+                arguments.readable.get(2).ok_or(RuntimeError::Invariant(
+                    "Array.prototype.fill end argument was missing",
+                ))?,
+                0,
+                length,
+                length,
+            )? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            }
+        } else {
+            length
+        };
+        let fill_value = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "Array.prototype.fill value argv was not padded",
+        ))?;
+
+        while start < end {
+            let key = self.intern_property_key(&start.to_string())?;
+            if let Some(value) =
+                self.set_property_or_throw(realm, &object, &key, fill_value.clone())?
+            {
+                return Ok(Completion::Throw(value));
+            }
+            start += 1;
+        }
+        Ok(Completion::Return(Value::Object(object)))
+    }
+
     fn call_array_prototype_search(
         &self,
         realm: ContextId,
@@ -13759,6 +13840,9 @@ impl Runtime {
             }
             NativeFunctionId::ArrayPrototypeWith => {
                 self.call_array_prototype_with(realm, invocation, arguments)
+            }
+            NativeFunctionId::ArrayPrototypeFill => {
+                self.call_array_prototype_fill(realm, invocation, arguments)
             }
             NativeFunctionId::ArrayPrototypeSearch(kind) => {
                 self.call_array_prototype_search(realm, kind, invocation, arguments)
