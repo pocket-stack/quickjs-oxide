@@ -839,6 +839,7 @@ pub enum NativeFunctionId {
     ArrayPrototypeIterator(ArrayIteratorKind),
     ArrayPrototypeAt,
     ArrayPrototypeWith,
+    ArrayPrototypeConcat,
     ArrayPrototypeIteration(ArrayIterationKind),
     ArrayPrototypeReduce(ArrayReduceKind),
     ArrayPrototypeFill,
@@ -1108,6 +1109,7 @@ impl NativeFunctionId {
             | Self::ArrayPrototypeIterator(_)
             | Self::ArrayPrototypeAt
             | Self::ArrayPrototypeWith
+            | Self::ArrayPrototypeConcat
             | Self::ArrayPrototypeFill
             | Self::ArrayPrototypeSearch(_)
             | Self::ArrayPrototypeCopyWithin
@@ -4000,6 +4002,13 @@ mod tests {
     #[test]
     fn array_with_native_selector_uses_pinned_cproto() {
         let target = NativeFunctionId::ArrayPrototypeWith;
+        assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
+        assert!(!target.descriptor().cproto.default_is_constructor());
+    }
+
+    #[test]
+    fn array_concat_native_selector_uses_pinned_cproto() {
+        let target = NativeFunctionId::ArrayPrototypeConcat;
         assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
         assert!(!target.descriptor().cproto.default_is_constructor());
     }

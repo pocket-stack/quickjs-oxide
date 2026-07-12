@@ -760,10 +760,10 @@ claim full parity.
   `of`, and `@@species`; `from` covers iterable and array-like routes, mapper
   ordering, constructor receivers, CreateDataProperty, iterator closing, and
   final length Set. The currently implemented prototype subset contains `at`,
-  `with`, `every`, `some`, `forEach`, `map`, `filter`, `reduce`, `reduceRight`,
-  `fill`, `find`, `findIndex`, `findLast`, `findLastIndex`, `indexOf`,
-  `lastIndexOf`, `includes`, `copyWithin`, generic `values`, `keys`, `entries`,
-  and the `@@iterator` alias in their pinned filtered order. `at` uses
+  `with`, `concat`, `every`, `some`, `forEach`, `map`, `filter`, `reduce`,
+  `reduceRight`, `fill`, `find`, `findIndex`, `findLast`, `findLastIndex`,
+  `indexOf`, `lastIndexOf`, `includes`, `copyWithin`, generic `values`, `keys`,
+  `entries`, and the `@@iterator` alias in their pinned filtered order. `at` uses
   saturating Int64 index conversion and HasProperty-before-Get; the three
   searches snapshot ToLength, skip `fromIndex` conversion for zero length,
   preserve omitted-versus-explicit-undefined behavior, and use QuickJS's
@@ -776,8 +776,16 @@ claim full parity.
   base Array without constructor/species lookup. It enforces QuickJS's signed
   31-bit dense allocation limit before indexed reads, skips the replaced
   source getter, copies the others in ascending HasProperty/Get order, and
-  turns holes into own `undefined` elements. `fill` is a generic in-place
-  mutation: it snapshots ToLength, converts explicit non-undefined `start`
+  turns holes into own `undefined` elements. `concat` uses ArraySpeciesCreate
+  before examining spreadability, processes the boxed receiver followed by
+  actual arguments, and observes `@@isConcatSpreadable` before the Array
+  fallback. Spread values snapshot ToLength and copy present Has/Get values
+  while preserving holes; single values remain unboxed. Numeric writes use
+  CreateDataProperty, whereas the final result length uses an ordinary
+  throwing Set. Custom result properties under holes therefore survive, and
+  partial writes, inherited length setters, the MAX_SAFE limit, and QuickJS's
+  exact `Array loo long` diagnostic remain observable. `fill` is a generic
+  in-place mutation: it snapshots ToLength, converts explicit non-undefined `start`
   before `end` even for an empty range, and applies ascending ordinary throwing
   Set operations. Holes become own values, inherited setters remain observable,
   a failing write preserves earlier mutations, and boxing/native errors use the
@@ -811,9 +819,8 @@ claim full parity.
   Array Iterators re-read Uint32 length on every `next`, observe holes and
   mutation through ordinary Get, allocate entry-pair Arrays in the defining
   realm, use the raw native-next ABI in for-of, and eagerly release their source
-  on exhaustion. Array prototype algorithms such as `concat`, the remaining
-  mutation/search/sort methods, and `@@unscopables` remain later slices. The
-  pinned runtime anchors are `quickjs.c`
+  on exhaustion. The remaining Array mutation/search/sort methods and
+  `@@unscopables` remain later slices. The pinned runtime anchors are `quickjs.c`
   5628-5671, 9433-9524, 10369-10592, 13210-13255, 41472-42226,
   42228-42480, 42975-43013, 43344-43454, 44519-44583, and 56220-56390.
 - Every realm now publishes `%Object%` as a constructor-or-function native
@@ -1503,6 +1510,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_search -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_with -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_array_concat -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_fill -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

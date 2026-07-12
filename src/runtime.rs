@@ -3484,6 +3484,14 @@ impl Runtime {
             2,
             2,
         )?;
+        self.define_native_builtin_auto_init(
+            array_prototype,
+            realm,
+            NativeFunctionId::ArrayPrototypeConcat,
+            "concat",
+            1,
+            0,
+        )?;
         for (kind, name) in [
             (ArrayIterationKind::Every, "every"),
             (ArrayIterationKind::Some, "some"),
@@ -11321,6 +11329,128 @@ impl Runtime {
         )))
     }
 
+    fn native_is_concat_spreadable(
+        &self,
+        realm: ContextId,
+        value: &Value,
+    ) -> Result<NativeConversion<bool>, RuntimeError> {
+        let Value::Object(object) = value else {
+            return Ok(NativeConversion::Value(false));
+        };
+        let key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::IsConcatSpreadable));
+        match self.get_property_in_realm(realm, object, &key)? {
+            Completion::Return(Value::Undefined) => {
+                Ok(NativeConversion::Value(self.is_array_object(object)?))
+            }
+            Completion::Return(value) => Ok(NativeConversion::Value(value.to_boolean())),
+            Completion::Throw(value) => Ok(NativeConversion::Throw(value)),
+        }
+    }
+
+    fn call_array_prototype_concat(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        const MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype.concat did not receive a generic invocation",
+            ));
+        };
+        let source = match self.native_to_object(realm, this_value)? {
+            NativeConversion::Value(object) => object,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let result = match self.array_species_create(realm, &source, 0)? {
+            Completion::Return(Value::Object(object)) => object,
+            Completion::Return(_) => {
+                return Err(RuntimeError::Invariant(
+                    "ArraySpeciesCreate returned a primitive",
+                ));
+            }
+            Completion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let mut next_index = 0_u64;
+
+        for element in std::iter::once(Value::Object(source.clone())).chain(
+            arguments.readable[..arguments.actual_arg_count]
+                .iter()
+                .cloned(),
+        ) {
+            let spreadable = match self.native_is_concat_spreadable(realm, &element)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            if spreadable {
+                let (element, length) =
+                    match self.native_array_like_object_and_length(realm, element)? {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                    };
+                let Some(end) = next_index.checked_add(length) else {
+                    return Ok(Completion::Throw(self.new_native_error(
+                        realm,
+                        NativeErrorKind::Type,
+                        "Array loo long",
+                    )?));
+                };
+                if end > MAX_SAFE_INTEGER {
+                    return Ok(Completion::Throw(self.new_native_error(
+                        realm,
+                        NativeErrorKind::Type,
+                        "Array loo long",
+                    )?));
+                }
+                for source_index in 0..length {
+                    let key = self.intern_property_key(&source_index.to_string())?;
+                    let present = match self.has_property_in_realm(realm, &element, &key)? {
+                        Completion::Return(Value::Bool(value)) => value,
+                        Completion::Return(_) => {
+                            return Err(RuntimeError::Invariant(
+                                "Array.concat HasProperty did not return a boolean",
+                            ));
+                        }
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    };
+                    if present {
+                        let value = match self.get_property_in_realm(realm, &element, &key)? {
+                            Completion::Return(value) => value,
+                            Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                        };
+                        if let Some(value) =
+                            self.create_indexed_data_property(realm, &result, next_index, value)?
+                        {
+                            return Ok(Completion::Throw(value));
+                        }
+                    }
+                    next_index += 1;
+                }
+            } else {
+                if next_index >= MAX_SAFE_INTEGER {
+                    return Ok(Completion::Throw(self.new_native_error(
+                        realm,
+                        NativeErrorKind::Type,
+                        "Array loo long",
+                    )?));
+                }
+                if let Some(value) =
+                    self.create_indexed_data_property(realm, &result, next_index, element)?
+                {
+                    return Ok(Completion::Throw(value));
+                }
+                next_index += 1;
+            }
+        }
+
+        if let Some(value) = self.set_array_like_length(realm, &result, next_index)? {
+            return Ok(Completion::Throw(value));
+        }
+        Ok(Completion::Return(Value::Object(result)))
+    }
+
     fn call_array_prototype_fill(
         &self,
         realm: ContextId,
@@ -14402,6 +14532,9 @@ impl Runtime {
             }
             NativeFunctionId::ArrayPrototypeWith => {
                 self.call_array_prototype_with(realm, invocation, arguments)
+            }
+            NativeFunctionId::ArrayPrototypeConcat => {
+                self.call_array_prototype_concat(realm, invocation, arguments)
             }
             NativeFunctionId::ArrayPrototypeIteration(kind) => {
                 self.call_array_prototype_iteration(realm, kind, invocation, arguments)
