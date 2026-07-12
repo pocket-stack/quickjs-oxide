@@ -10988,16 +10988,25 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                     std::collections::hash_map::Entry::Vacant(entry) => {
                         entry.insert(descriptor.is_lexical);
                     }
-                    std::collections::hash_map::Entry::Occupied(entry)
-                        if descriptor.is_lexical
-                            || (*entry.get()
-                                && descriptor.kind != ClosureVariableKind::GlobalFunction) =>
-                    {
-                        return Err(RuntimeError::Engine(Error::internal(
-                            "duplicate lexical global declaration descriptor name",
-                        )));
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        let already_lexical = *entry.get();
+                        if already_lexical
+                            && (descriptor.is_lexical
+                                || descriptor.kind != ClosureVariableKind::GlobalFunction)
+                        {
+                            return Err(RuntimeError::Engine(Error::internal(
+                                "duplicate lexical global declaration descriptor name",
+                            )));
+                        }
+                        // Sloppy Annex B can register a normal global var
+                        // before a later Program lexical of the same name.
+                        // QuickJS accepts that source order, creates both
+                        // environments, then lets the authored Annex write hit
+                        // the lexical TDZ dynamically.
+                        if descriptor.is_lexical {
+                            entry.insert(true);
+                        }
                     }
-                    std::collections::hash_map::Entry::Occupied(_) => {}
                 }
             }
             let allows_name = requires_name || descriptor.is_lexical;

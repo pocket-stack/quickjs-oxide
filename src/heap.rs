@@ -1859,16 +1859,24 @@ impl Heap {
                     std::collections::hash_map::Entry::Vacant(entry) => {
                         entry.insert(descriptor.is_lexical);
                     }
-                    std::collections::hash_map::Entry::Occupied(entry)
-                        if descriptor.is_lexical
-                            || (*entry.get()
-                                && descriptor.kind != ClosureVariableKind::GlobalFunction) =>
-                    {
-                        return Err(HeapError::Invariant(
-                            "duplicate lexical global declaration descriptor name",
-                        ));
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        let already_lexical = *entry.get();
+                        if already_lexical
+                            && (descriptor.is_lexical
+                                || descriptor.kind != ClosureVariableKind::GlobalFunction)
+                        {
+                            return Err(HeapError::Invariant(
+                                "duplicate lexical global declaration descriptor name",
+                            ));
+                        }
+                        // A sloppy Annex B var registered before a later
+                        // Program lexical creates both global environments;
+                        // retain that source-ordered combination at the heap
+                        // publication trust boundary too.
+                        if descriptor.is_lexical {
+                            entry.insert(true);
+                        }
                     }
-                    std::collections::hash_map::Entry::Occupied(_) => {}
                 }
             }
             if matches!(

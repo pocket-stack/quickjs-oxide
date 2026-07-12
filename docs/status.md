@@ -200,9 +200,9 @@ claim full parity.
   property retains its cell identity. Compile-in-A/execute-in-B instantiates
   the property and reports preflight errors in B, while the hoisted function
   object and authored-body errors retain A's function realm. Direct Program
-  declarations are covered by a pinned differential matrix; block,
-  single-statement, labelled Annex B, async, and generator declarations remain
-  explicit boundaries.
+  declarations are covered by a pinned differential matrix; single-statement,
+  labelled Annex B, async, and generator declarations remain explicit
+  boundaries.
 
   Direct ordinary FunctionBody declarations now use QuickJS's separate local
   hoist path. Each named child is parsed immediately but emits no closure at its
@@ -231,8 +231,41 @@ claim full parity.
   initializers match QuickJS. QuickJS still allocates its implicit arguments
   object before overwriting that cell, an allocation-only difference until
   parameter expressions are implemented. Mapped `arguments`, parameter
-  expressions, block/single-statement/labelled Annex B, and async/generator
+  expressions, single-statement/labelled Annex B, and async/generator
   declarations remain separate slices.
+
+  Ordinary declarations in brace blocks and a switch CaseBlock use QuickJS's
+  distinct scoped-function path. The binding is registered immediately after
+  its name, before parsing parameters or the child body, so redefinition error
+  priority matches upstream. Every syntax node owns a mutable lexical local and
+  an entry closure; sloppy same-scope duplicates keep separate slots and child
+  constants, with the last declaration visible by name, while strict duplicates
+  are rejected. A switch uses one shared declaration scope entered after the
+  discriminant and before every case test.
+
+  QuickJS also evaluates a second `FClosure` at every declaration's authored
+  position. In sloppy code the first eligible declaration duplicates that
+  second object into a function-root normal var (or a normal global var), then
+  drops the remaining value. Consequently the block lexical and Annex B outer
+  function have different identity; with duplicates, the block name uses the
+  last child while the outer name uses the first. A prior enclosing lexical,
+  a simple same-name parameter, or the `arguments` name suppresses the outer
+  update. Existing vars are reused. A newly synthesized root local records the
+  root as its declaration scope, preserving QuickJS's later-block and later
+  body-lexical quirks. Program Annex writes resolve dynamically rather than
+  through the declaration slot, so an Annex var registered before a later
+  same-name Program lexical hits that lexical's TDZ at runtime exactly as in
+  the pinned release.
+
+  Scope entry resets ordinary lexical lifetimes before allocating scoped
+  function closures, then initializes function locals in QuickJS's newest-first
+  order. This ordering preserves fresh captured cells on loop re-entry without
+  weakening the runtime's missing-`CloseLocal` invariant. It differs from
+  QuickJS's interleaved TDZ/function allocation order only under an injected
+  allocation failure; values, identity, closure cells, errors, stacks, and
+  realm behavior are pinned by differential tests. Normal exits, `break`, and
+  `continue` close captured block cells. The known QuickJS caught-throw quirk
+  remains bookkeeping for the future `try`/`catch` slice.
 
   `return` and an uncaught `throw` do not emit lexical leave operations;
   whole-frame teardown detaches their captured locals, as in QuickJS. A future
@@ -246,20 +279,23 @@ claim full parity.
   (`close_lexical_var`), 18487-18555 (`GetVar`/`PutVarInit`
   descriptor-versus-cell checks), 23933
   (`find_var_in_child_scope`), 23989/24035/24047
-  (`push_scope`/`pop_scope`/`close_scopes`), 24156-24173/24277-24295
-  (ordered global-var records), 24186 and 26096
+  (`push_scope`/`pop_scope`/`close_scopes`), 24156-24173/24202-24307
+  (ordered global-var records and scoped declaration conflicts), 24186 and 26096
   (`define_var`/`js_define_var`), 28225 (`emit_break`), 28378
   (`js_parse_block`), 28398-28456 (var initializers), 29004-29147 (classic
   `for`, including initializer and
-  normal-body closes plus the `continue` quirk), 29172 (SwitchStatement),
+  normal-body closes plus the `continue` quirk), 29172-29268
+  (SwitchStatement and its shared CaseBlock scope), 29460-29494
+  (statement-list function declarations),
   31917-31940 (direct function source elements), 32577-32614 (closure append
   and first-name lookup), 33888-33977
   (hoisted definitions and raw global-function writes), 34281/34315
   (`OP_enter_scope`/`OP_leave_scope` expansion), and 35837-35902
-  (`add_global_variables`), plus 36383-36942 (function declaration parsing and
-  argument/local hoist attachment)
-  in QuickJS 2026-06-04. Block/single-statement/labelled function declarations
-  and Annex B, `for-in`/`for-of`/`for-await`, destructuring,
+  (`add_global_variables`), plus 36383-36942 (function declaration parsing,
+  scoped lexical creation, Annex source writes, and argument/local hoist
+  attachment)
+  in QuickJS 2026-06-04. Single-statement/labelled function declarations and
+  their Annex B paths, `for-in`/`for-of`/`for-await`, destructuring,
   single-statement lexical declarations, and catch/class scopes remain explicit
   boundaries rather than falling back to local or ordinary global storage.
 
@@ -1017,13 +1053,20 @@ claim full parity.
   captured later lexicals and failed initializers, normal `%Function%` bodies,
   exact full/StripDebug stacks and parser errors, explicit unsupported
   declaration boundaries, and the pinned cross-realm regression.
+  The `oracle_block_functions` target locks block/switch entry visibility,
+  separate lexical/Annex closure identity, sloppy duplicate first-versus-last
+  behavior, strict and source-ordered conflicts, parameter/`arguments` Annex
+  suppression, mutation before the authored declaration, captured-cell loop
+  re-entry, failed initializers, Program Annex/global-lexical ordering, normal
+  `%Function%` bodies, exact full/StripDebug stacks, realm splitting, and the
+  remaining explicit single-statement/labelled/async/generator boundaries.
 - `Runtime` and `Context` are distinct; `qjs -e` and file execution use the
   Rust compiler/VM path and never delegate to an external engine.
 
 ## Not implemented yet
 
-The language slice is intentionally narrow. Block, labelled, and
-single-statement Annex B declarations, async/generator declarations,
+The language slice is intentionally narrow. Labelled and single-statement
+Annex B declarations, async/generator declarations,
 `for-in`/`for-of`/`for-await`, destructuring, try/catch/finally, other general
 assignment targets, module
 resolution, computed property-definition naming, mapped `arguments`,
@@ -1190,6 +1233,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_lexicals -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_declarations -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_block_functions -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_for_lexicals -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

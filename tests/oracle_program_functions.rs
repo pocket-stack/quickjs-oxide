@@ -101,10 +101,6 @@ const SYNTAX_ERROR_CASES: &[(&str, &str)] = &[
 
 const UNSUPPORTED_BOUNDARY_CASES: &[(&str, &str)] = &[
     (
-        "sloppy block function declaration",
-        "{function unsupportedBlock(){}}",
-    ),
-    (
         "sloppy single-statement function declaration",
         "if(true)function unsupportedSingle(){}",
     ),
