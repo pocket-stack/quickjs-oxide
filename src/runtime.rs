@@ -23,15 +23,16 @@ use crate::function::{
     UnlinkedVariableDefinition,
 };
 use crate::heap::{
-    ArrayIteratorKind, AutoInitProperty, BigIntAsNKind, BytecodeConstant, ClosureSource,
-    ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind, ContextData,
-    ContextId, DynamicFunctionKind, ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId,
-    FunctionDebugInfo, FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats,
-    GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError,
-    NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
-    ObjectAccessorKind, ObjectData, ObjectId, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload,
-    PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCharAtKind,
-    StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
+    ArrayIteratorKind, ArraySearchKind, AutoInitProperty, BigIntAsNKind, BytecodeConstant,
+    ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
+    ContextData, ContextId, DynamicFunctionKind, ErrorConstructorKind, FunctionBytecodeData,
+    FunctionBytecodeId, FunctionDebugInfo, FunctionDebugPosition, FunctionKind, FunctionMetadata,
+    GcStats, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts,
+    HeapError, NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind,
+    NumberPredicateKind, ObjectAccessorKind, ObjectData, ObjectId, ObjectKind,
+    ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot,
+    RawValue, ShapeId, StringCharAtKind, StringWellFormedKind, SymbolRegistryKind, VarRefData,
+    VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -3467,6 +3468,28 @@ impl Runtime {
         array_iterator_prototype: &ObjectRef,
         global_object: &ObjectRef,
     ) -> Result<(), RuntimeError> {
+        self.define_native_builtin_auto_init(
+            array_prototype,
+            realm,
+            NativeFunctionId::ArrayPrototypeAt,
+            "at",
+            1,
+            1,
+        )?;
+        for (kind, name) in [
+            (ArraySearchKind::IndexOf, "indexOf"),
+            (ArraySearchKind::LastIndexOf, "lastIndexOf"),
+            (ArraySearchKind::Includes, "includes"),
+        ] {
+            self.define_native_builtin_auto_init(
+                array_prototype,
+                realm,
+                NativeFunctionId::ArrayPrototypeSearch(kind),
+                name,
+                1,
+                1,
+            )?;
+        }
         for (kind, name) in [
             (ArrayIteratorKind::Value, "values"),
             (ArrayIteratorKind::Key, "keys"),
@@ -9552,18 +9575,9 @@ impl Runtime {
         value: &Value,
     ) -> Result<NativeConversion<u64>, RuntimeError> {
         const MAX_SAFE_INTEGER: i64 = (1_i64 << 53) - 1;
-        let number = match self.native_to_number(realm, value)? {
+        let value = match self.native_to_int64_sat(realm, value)? {
             NativeConversion::Value(value) => value,
             NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        let value = if number.is_nan() {
-            0
-        } else if number < i64::MIN as f64 {
-            i64::MIN
-        } else if number >= 2_f64.powi(63) {
-            i64::MAX
-        } else {
-            number as i64
         };
         if !(0..=MAX_SAFE_INTEGER).contains(&value) {
             return Ok(NativeConversion::Throw(self.new_native_error(
@@ -9575,6 +9589,49 @@ impl Runtime {
         Ok(NativeConversion::Value(
             u64::try_from(value).expect("validated non-negative ToIndex value fits u64"),
         ))
+    }
+
+    /// Pinned QuickJS `JS_ToInt64Sat`: number-hint coercion followed by
+    /// truncation toward zero with NaN mapped to zero and infinities/outliers
+    /// saturated at the signed 64-bit bounds.
+    fn native_to_int64_sat(
+        &self,
+        realm: ContextId,
+        value: &Value,
+    ) -> Result<NativeConversion<i64>, RuntimeError> {
+        let number = match self.native_to_number(realm, value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        Ok(NativeConversion::Value(if number.is_nan() {
+            0
+        } else if number < i64::MIN as f64 {
+            i64::MIN
+        } else if number >= 2_f64.powi(63) {
+            i64::MAX
+        } else {
+            number as i64
+        }))
+    }
+
+    /// Pinned QuickJS `JS_ToInt64Clamp`, including its negative offset before
+    /// the final inclusive clamp.
+    fn native_to_int64_clamp(
+        &self,
+        realm: ContextId,
+        value: &Value,
+        min: i64,
+        max: i64,
+        negative_offset: i64,
+    ) -> Result<NativeConversion<i64>, RuntimeError> {
+        let mut value = match self.native_to_int64_sat(realm, value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        if value < 0 {
+            value += negative_offset;
+        }
+        Ok(NativeConversion::Value(value.clamp(min, max)))
     }
 
     fn native_to_length(
@@ -11040,6 +11097,182 @@ impl Runtime {
         Ok(NativeConversion::Value(
             self.new_primitive_object(&prototype, kind, value)?,
         ))
+    }
+
+    fn native_array_like_object_and_length(
+        &self,
+        realm: ContextId,
+        this_value: Value,
+    ) -> Result<NativeConversion<(ObjectRef, u64)>, RuntimeError> {
+        let object = match self.native_to_object(realm, this_value)? {
+            NativeConversion::Value(object) => object,
+            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        let length_key = self.intern_property_key("length")?;
+        let length_value = match self.get_property_in_realm(realm, &object, &length_key)? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        let length = match self.native_to_length(realm, &length_value)? {
+            NativeConversion::Value(length) => length,
+            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        Ok(NativeConversion::Value((object, length)))
+    }
+
+    fn call_array_prototype_at(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype.at did not receive a generic invocation",
+            ));
+        };
+        let (object, length) = match self.native_array_like_object_and_length(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let index = match self.native_to_int64_sat(
+            realm,
+            arguments.readable.first().ok_or(RuntimeError::Invariant(
+                "Array.prototype.at index argv was not padded",
+            ))?,
+        )? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let length = i64::try_from(length)
+            .map_err(|_| RuntimeError::Invariant("array-like length exceeded Int64"))?;
+        let index = if index < 0 { length + index } else { index };
+        if index < 0 || index >= length {
+            return Ok(Completion::Return(Value::Undefined));
+        }
+        let key = self.intern_property_key(&index.to_string())?;
+        let present = match self.has_property_in_realm(realm, &object, &key)? {
+            Completion::Return(Value::Bool(value)) => value,
+            Completion::Return(_) => {
+                return Err(RuntimeError::Invariant(
+                    "array at HasProperty did not return a boolean",
+                ));
+            }
+            Completion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        if !present {
+            return Ok(Completion::Return(Value::Undefined));
+        }
+        self.get_property_in_realm(realm, &object, &key)
+    }
+
+    fn call_array_prototype_search(
+        &self,
+        realm: ContextId,
+        kind: ArraySearchKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype search method did not receive a generic invocation",
+            ));
+        };
+        let (object, length) = match self.native_array_like_object_and_length(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let not_found = || match kind {
+            ArraySearchKind::Includes => Value::Bool(false),
+            ArraySearchKind::IndexOf | ArraySearchKind::LastIndexOf => Value::Int(-1),
+        };
+        if length == 0 {
+            return Ok(Completion::Return(not_found()));
+        }
+        let length = i64::try_from(length)
+            .map_err(|_| RuntimeError::Invariant("array-like length exceeded Int64"))?;
+        let search = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "Array.prototype search value argv was not padded",
+        ))?;
+        let from_index = if arguments.actual_arg_count > 1 {
+            Some(arguments.readable.get(1).ok_or(RuntimeError::Invariant(
+                "Array.prototype search fromIndex argv was missing",
+            ))?)
+        } else {
+            None
+        };
+
+        let (mut index, end, step) = match kind {
+            ArraySearchKind::Includes | ArraySearchKind::IndexOf => {
+                let index = if let Some(from_index) = from_index {
+                    match self.native_to_int64_clamp(realm, from_index, 0, length, length)? {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                } else {
+                    0
+                };
+                (index, length, 1)
+            }
+            ArraySearchKind::LastIndexOf => {
+                let index = if let Some(from_index) = from_index {
+                    match self.native_to_int64_clamp(realm, from_index, -1, length - 1, length)? {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                } else {
+                    length - 1
+                };
+                (index, -1, -1)
+            }
+        };
+
+        while index != end {
+            let key = self.intern_property_key(&index.to_string())?;
+            let value = match kind {
+                ArraySearchKind::Includes => {
+                    match self.get_property_in_realm(realm, &object, &key)? {
+                        Completion::Return(value) => Some(value),
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                }
+                ArraySearchKind::IndexOf | ArraySearchKind::LastIndexOf => {
+                    let present = match self.has_property_in_realm(realm, &object, &key)? {
+                        Completion::Return(Value::Bool(value)) => value,
+                        Completion::Return(_) => {
+                            return Err(RuntimeError::Invariant(
+                                "array search HasProperty did not return a boolean",
+                            ));
+                        }
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    };
+                    if !present {
+                        None
+                    } else {
+                        match self.get_property_in_realm(realm, &object, &key)? {
+                            Completion::Return(value) => Some(value),
+                            Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                        }
+                    }
+                }
+            };
+            let matches = value.is_some_and(|value| match kind {
+                ArraySearchKind::Includes => search.same_value_zero(&value),
+                ArraySearchKind::IndexOf | ArraySearchKind::LastIndexOf => {
+                    search.strict_equal(&value)
+                }
+            });
+            if matches {
+                return Ok(Completion::Return(match kind {
+                    ArraySearchKind::Includes => Value::Bool(true),
+                    ArraySearchKind::IndexOf | ArraySearchKind::LastIndexOf => {
+                        Value::number(index as f64)
+                    }
+                }));
+            }
+            index += step;
+        }
+        Ok(Completion::Return(not_found()))
     }
 
     fn call_array_prototype_iterator(
@@ -13426,6 +13659,12 @@ impl Runtime {
             NativeFunctionId::ArrayFrom => self.call_array_from(realm, invocation, arguments),
             NativeFunctionId::ArrayOf => self.call_array_of(realm, invocation, arguments),
             NativeFunctionId::ArraySpeciesGetter => self.call_array_species_getter(invocation),
+            NativeFunctionId::ArrayPrototypeAt => {
+                self.call_array_prototype_at(realm, invocation, arguments)
+            }
+            NativeFunctionId::ArrayPrototypeSearch(kind) => {
+                self.call_array_prototype_search(realm, kind, invocation, arguments)
+            }
             NativeFunctionId::ArrayPrototypeIterator(kind) => {
                 self.call_array_prototype_iterator(realm, kind, invocation)
             }

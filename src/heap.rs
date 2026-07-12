@@ -765,6 +765,17 @@ pub enum ArrayIteratorKind {
     KeyAndValue,
 }
 
+/// Observable comparison and traversal mode selected by
+/// `Array.prototype.includes`, `indexOf`, or `lastIndexOf`. QuickJS exposes
+/// three generic C functions with one algorithmic kernel per mode; retaining
+/// that distinction in the native identity avoids dispatch by property name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ArraySearchKind {
+    Includes,
+    IndexOf,
+    LastIndexOf,
+}
+
 /// Observable key category selected by `%Object%.getOwnPropertyNames` and
 /// `%Object%.getOwnPropertySymbols`. QuickJS uses two thin C wrappers around
 /// the same `JS_GetOwnPropertyNames2` kernel; retaining the distinction in the
@@ -795,6 +806,8 @@ pub enum NativeFunctionId {
     ArrayOf,
     ArraySpeciesGetter,
     ArrayPrototypeIterator(ArrayIteratorKind),
+    ArrayPrototypeAt,
+    ArrayPrototypeSearch(ArraySearchKind),
     ArrayIteratorNext,
     ThrowTypeError,
     FunctionPrototypeCall,
@@ -1056,6 +1069,8 @@ impl NativeFunctionId {
             | Self::ArrayFrom
             | Self::ArrayOf
             | Self::ArrayPrototypeIterator(_)
+            | Self::ArrayPrototypeAt
+            | Self::ArrayPrototypeSearch(_)
             | Self::SymbolRegistry(_)
             | Self::GlobalNumberParse(_)
             | Self::GlobalNumberPredicate(_)
@@ -3924,6 +3939,19 @@ mod tests {
             NativeCProto::IteratorNext
         );
         assert!(!NativeCProto::IteratorNext.default_is_constructor());
+    }
+
+    #[test]
+    fn array_search_native_selectors_use_pinned_cproto() {
+        for target in [
+            NativeFunctionId::ArrayPrototypeAt,
+            NativeFunctionId::ArrayPrototypeSearch(ArraySearchKind::Includes),
+            NativeFunctionId::ArrayPrototypeSearch(ArraySearchKind::IndexOf),
+            NativeFunctionId::ArrayPrototypeSearch(ArraySearchKind::LastIndexOf),
+        ] {
+            assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
     }
 
     #[test]
