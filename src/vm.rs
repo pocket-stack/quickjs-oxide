@@ -83,6 +83,11 @@ pub(crate) trait VmHost {
     /// Detached execution has no realm heap and therefore implements this as
     /// a no-op.
     fn ensure_backtrace(&mut self, value: &Value) -> Result<(), Error>;
+    /// Mark captured lexical cells which may be reset by the next same-frame
+    /// scope entry. QuickJS can skip the ordinary `CloseLocal` path both when
+    /// dispatching a caught throw and when unwinding a return through finally;
+    /// detached execution has no captured cells.
+    fn prepare_captured_local_reuse(&mut self) -> Result<(), Error>;
     fn load_constant(&mut self, index: u32) -> Result<Value, Error>;
     /// Build the atom-named diagnostic for `ThrowReadOnly`. Runtime execution
     /// resolves the constant through its atom table; detached execution has no
@@ -175,6 +180,8 @@ enum DetachedLocal {
 struct DetachedHost<'a> {
     function: &'a BytecodeFunction,
     locals: Vec<DetachedLocal>,
+    #[cfg(test)]
+    captured_local_reuse_preparations: usize,
 }
 
 impl<'a> DetachedHost<'a> {
@@ -184,6 +191,8 @@ impl<'a> DetachedHost<'a> {
             locals: (0..function.local_count)
                 .map(|_| DetachedLocal::Initialized(Value::Undefined))
                 .collect(),
+            #[cfg(test)]
+            captured_local_reuse_preparations: 0,
         }
     }
 
@@ -206,6 +215,14 @@ impl VmHost for DetachedHost<'_> {
     }
 
     fn ensure_backtrace(&mut self, _value: &Value) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn prepare_captured_local_reuse(&mut self) -> Result<(), Error> {
+        #[cfg(test)]
+        {
+            self.captured_local_reuse_preparations += 1;
+        }
         Ok(())
     }
 
@@ -542,8 +559,17 @@ impl Vm {
 /// Per-invocation value stack. This will later grow the remaining
 /// `JSStackFrame` fields (arguments, locals, closure variables and realm), but
 /// its ownership boundary is already the final one.
+#[derive(Clone, Copy, Debug)]
+struct ExceptionHandler {
+    target: usize,
+    /// Runtime operand depth before the private catch marker was installed.
+    stack_depth: usize,
+}
+
 struct CallFrame {
     stack: Vec<Value>,
+    handlers: Vec<ExceptionHandler>,
+    pc: usize,
     _caller_realm: Option<ContextId>,
     /// The realm captured by the executing bytecode.
     _callee_realm: Option<ContextId>,
@@ -559,6 +585,8 @@ impl CallFrame {
     fn new(max_stack: usize) -> Self {
         Self {
             stack: Vec::with_capacity(max_stack),
+            handlers: Vec::new(),
+            pc: 0,
             _caller_realm: None,
             _callee_realm: None,
             _current_function: None,
@@ -581,6 +609,8 @@ impl CallFrame {
     ) -> Self {
         Self {
             stack: Vec::with_capacity(usize::from(metadata.max_stack)),
+            handlers: Vec::new(),
+            pc: 0,
             _caller_realm: Some(caller_realm),
             _callee_realm: Some(callee_realm),
             _current_function: Some(current_function),
@@ -597,14 +627,18 @@ impl CallFrame {
         code: &[Instruction],
         host: &mut impl VmHost,
     ) -> Result<Completion, Error> {
-        match self.execute_inner(code, host) {
-            Ok(Completion::Throw(value)) => self.raise(value, host),
-            Ok(completion) => Ok(completion),
-            Err(error) if NativeErrorKind::from_javascript_error(error.kind()).is_some() => {
-                let value = host.materialize_error(error)?;
-                self.raise(value, host)
+        loop {
+            let raised = match self.execute_inner(code, host) {
+                Ok(Completion::Return(value)) => return Ok(Completion::Return(value)),
+                Ok(Completion::Throw(value)) => value,
+                Err(error) if NativeErrorKind::from_javascript_error(error.kind()).is_some() => {
+                    host.materialize_error(error)?
+                }
+                Err(error) => return Err(error),
+            };
+            if let Some(completion) = self.raise(raised, host, code.len())? {
+                return Ok(completion);
             }
-            Err(error) => Err(error),
         }
     }
 
@@ -613,14 +647,15 @@ impl CallFrame {
         code: &[Instruction],
         host: &mut impl VmHost,
     ) -> Result<Completion, Error> {
-        let mut pc = 0_usize;
-
         loop {
             let instruction = code
-                .get(pc)
+                .get(self.pc)
                 .ok_or_else(|| Error::internal("bytecode ended without return"))?;
-            host.update_active_bytecode_pc(BytecodePc::new(pc))?;
-            pc += 1;
+            host.update_active_bytecode_pc(BytecodePc::new(self.pc))?;
+            self.pc = self
+                .pc
+                .checked_add(1)
+                .ok_or_else(|| Error::internal("program counter overflow"))?;
 
             match instruction {
                 Instruction::Nop => {}
@@ -1104,16 +1139,76 @@ impl CallFrame {
                 }
                 Instruction::IfFalse(target) => {
                     if !self.pop()?.to_boolean() {
-                        pc = checked_target(*target, code.len())?;
+                        self.pc = checked_target(*target, code.len())?;
                     }
                 }
                 Instruction::IfTrue(target) => {
                     if self.pop()?.to_boolean() {
-                        pc = checked_target(*target, code.len())?;
+                        self.pc = checked_target(*target, code.len())?;
                     }
                 }
                 Instruction::Goto(target) => {
-                    pc = checked_target(*target, code.len())?;
+                    self.pc = checked_target(*target, code.len())?;
+                }
+                Instruction::Catch(target) => {
+                    self.handlers.push(ExceptionHandler {
+                        target: checked_target(*target, code.len())?,
+                        stack_depth: self.stack.len(),
+                    });
+                }
+                Instruction::DropCatch => {
+                    let handler = self
+                        .handlers
+                        .pop()
+                        .ok_or_else(|| Error::internal("DropCatch has no active catch handler"))?;
+                    if self.stack.len() != handler.stack_depth {
+                        return Err(Error::internal(
+                            "DropCatch did not reach its catch entry depth",
+                        ));
+                    }
+                }
+                Instruction::NipCatch => {
+                    let handler = *self
+                        .handlers
+                        .last()
+                        .ok_or_else(|| Error::internal("NipCatch has no active catch handler"))?;
+                    if self.stack.len() <= handler.stack_depth {
+                        return Err(Error::internal(
+                            "NipCatch has no value above its catch marker",
+                        ));
+                    }
+                    // A return crossing a try/finally uses NipCatch to retain
+                    // its pending value while removing the private handler.
+                    // QuickJS does not synthesize CloseLocal along that edge;
+                    // if the finally body overrides the return, the same frame
+                    // may re-enter those captured lexical slots.
+                    host.prepare_captured_local_reuse()?;
+                    self.handlers.pop();
+                    let value = self.pop()?;
+                    self.stack.truncate(handler.stack_depth);
+                    self.stack.push(value);
+                }
+                Instruction::Gosub(target) => {
+                    let return_pc = i32::try_from(self.pc)
+                        .map_err(|_| Error::internal("gosub return PC does not fit Int"))?;
+                    self.stack.push(Value::Int(return_pc));
+                    self.pc = checked_target(*target, code.len())?;
+                }
+                Instruction::Ret => {
+                    let Value::Int(target) = self.pop()? else {
+                        return Err(Error::internal("invalid ret value"));
+                    };
+                    let target = usize::try_from(target)
+                        .map_err(|_| Error::internal("invalid ret value"))?;
+                    if target >= code.len() {
+                        return Err(Error::internal("invalid ret value"));
+                    }
+                    self.pc = target;
+                }
+                Instruction::DropGosub => {
+                    if !matches!(self.pop()?, Value::Int(_)) {
+                        return Err(Error::internal("invalid gosub cleanup value"));
+                    }
                 }
                 Instruction::Call(argument_count) => {
                     let arguments = self.take_call_arguments(*argument_count, 1)?;
@@ -1147,11 +1242,29 @@ impl CallFrame {
         }
     }
 
-    fn raise(&mut self, value: Value, host: &mut impl VmHost) -> Result<Completion, Error> {
+    fn raise(
+        &mut self,
+        value: Value,
+        host: &mut impl VmHost,
+        code_len: usize,
+    ) -> Result<Option<Completion>, Error> {
         host.ensure_backtrace(&value)?;
-        // Catch/finally handler lookup will live at this single boundary. Until
-        // handler metadata is present, every raised value escapes the frame.
-        Ok(Completion::Throw(value))
+        let Some(handler) = self.handlers.pop() else {
+            return Ok(Some(Completion::Throw(value)));
+        };
+        host.prepare_captured_local_reuse()?;
+        if self.stack.len() < handler.stack_depth {
+            return Err(Error::internal(
+                "exception handler stack depth exceeds the VM stack",
+            ));
+        }
+        self.stack.truncate(handler.stack_depth);
+        self.stack.push(value);
+        self.pc = checked_target(
+            u32::try_from(handler.target).map_err(|_| Error::internal("catch target overflow"))?,
+            code_len,
+        )?;
+        Ok(None)
     }
 
     fn pop(&mut self) -> Result<Value, Error> {
@@ -1586,7 +1699,9 @@ mod tests {
     use crate::error::ErrorKind;
     use crate::value::{JsString, Value};
 
-    use super::{Vm, number_pow, number_to_int32, number_to_uint32};
+    use super::{
+        CallFrame, Completion, DetachedHost, Vm, number_pow, number_to_int32, number_to_uint32,
+    };
 
     #[test]
     fn executes_arithmetic_stack_bytecode() {
@@ -1604,6 +1719,238 @@ mod tests {
         };
 
         assert_eq!(Vm::new().execute(&function).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn detached_vm_catches_values_and_manages_private_handlers() {
+        let thrown = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(3),
+                Instruction::PushI32(7),
+                Instruction::Throw,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        assert_eq!(Vm::new().execute(&thrown).unwrap(), Value::Int(7));
+
+        let normal = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(4),
+                Instruction::DropCatch,
+                Instruction::PushI32(3),
+                Instruction::Return,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        assert_eq!(Vm::new().execute(&normal).unwrap(), Value::Int(3));
+
+        let nip = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(10),
+                Instruction::Catch(6),
+                Instruction::PushI32(20),
+                Instruction::PushI32(30),
+                Instruction::NipCatch,
+                Instruction::Return,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        assert_eq!(Vm::new().execute(&nip).unwrap(), Value::Int(30));
+
+        let nested = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(7),
+                Instruction::Catch(5),
+                Instruction::PushI32(11),
+                Instruction::Throw,
+                Instruction::Nop,
+                Instruction::Throw,
+                Instruction::Nop,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 3,
+        };
+        assert_eq!(Vm::new().execute(&nested).unwrap(), Value::Int(11));
+    }
+
+    #[test]
+    fn detached_vm_executes_typed_gosub_return_and_cleanup() {
+        let returning = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(9),
+                Instruction::Gosub(4),
+                Instruction::Return,
+                Instruction::Nop,
+                Instruction::Ret,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        assert_eq!(Vm::new().execute(&returning).unwrap(), Value::Int(9));
+
+        let abrupt = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(9),
+                Instruction::Gosub(4),
+                Instruction::Return,
+                Instruction::Nop,
+                Instruction::DropGosub,
+                Instruction::Drop,
+                Instruction::PushI32(4),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        assert_eq!(Vm::new().execute(&abrupt).unwrap(), Value::Int(4));
+
+        let caught_inside_gosub = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(9),
+                Instruction::Gosub(4),
+                Instruction::Return,
+                Instruction::Nop,
+                Instruction::Catch(8),
+                Instruction::PushI32(7),
+                Instruction::Throw,
+                Instruction::Nop,
+                Instruction::Drop,
+                Instruction::Ret,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        assert_eq!(
+            Vm::new().execute(&caught_inside_gosub).unwrap(),
+            Value::Int(9)
+        );
+    }
+
+    #[test]
+    fn captured_local_reuse_hook_is_limited_to_abrupt_resume_boundaries() {
+        let return_unwind = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(4),
+                Instruction::PushI32(9),
+                Instruction::NipCatch,
+                Instruction::Return,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        let mut host = DetachedHost::new(&return_unwind);
+        assert_eq!(
+            CallFrame::new(2)
+                .execute(&return_unwind.code, &mut host)
+                .unwrap(),
+            Completion::Return(Value::Int(9))
+        );
+        assert_eq!(host.captured_local_reuse_preparations, 1);
+
+        let caught_throw = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(4),
+                Instruction::PushI32(7),
+                Instruction::Throw,
+                Instruction::Nop,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        let mut host = DetachedHost::new(&caught_throw);
+        assert_eq!(
+            CallFrame::new(2)
+                .execute(&caught_throw.code, &mut host)
+                .unwrap(),
+            Completion::Return(Value::Int(7))
+        );
+        assert_eq!(host.captured_local_reuse_preparations, 1);
+
+        let ordinary_gosub = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(5),
+                Instruction::Gosub(4),
+                Instruction::Return,
+                Instruction::Nop,
+                Instruction::Ret,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        let mut host = DetachedHost::new(&ordinary_gosub);
+        assert_eq!(
+            CallFrame::new(2)
+                .execute(&ordinary_gosub.code, &mut host)
+                .unwrap(),
+            Completion::Return(Value::Int(5))
+        );
+        assert_eq!(host.captured_local_reuse_preparations, 0);
+
+        let malformed_nip = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::PushI32(1), Instruction::NipCatch],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        let mut host = DetachedHost::new(&malformed_nip);
+        let error = CallFrame::new(1)
+            .execute(&malformed_nip.code, &mut host)
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Internal);
+        assert_eq!(host.captured_local_reuse_preparations, 0);
+    }
+
+    #[test]
+    fn runtime_ret_validation_is_an_uncatchable_engine_invariant() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(4),
+                Instruction::Undefined,
+                Instruction::Ret,
+                Instruction::Nop,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        let mut host = DetachedHost::new(&function);
+        let error = CallFrame::new(2)
+            .execute(&function.code, &mut host)
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Internal);
+        assert_eq!(error.message(), "invalid ret value");
     }
 
     #[test]

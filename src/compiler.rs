@@ -117,6 +117,11 @@ const MAX_CALL_ARGUMENTS: usize = 65_535;
 // QuickJS `js_parse_program` allocates `JS_ATOM__ret_` as the first local of
 // every script. Source text cannot spell this sentinel as an IdentifierName.
 const EVAL_RET_LOCAL_NAME: &str = "<ret>";
+// A finally clause in script code must preserve the incoming completion value
+// when it terminates normally. Keep those implementation-only save slots in
+// the same explicit metadata domain as `<ret>` rather than letting an unbound
+// ordinary local silently escape the scope-graph trust boundary.
+const FINALLY_EVAL_RET_LOCAL_NAME: &str = "<finally-ret>";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FunctionKind {
@@ -170,6 +175,28 @@ enum ScopeKind {
     If,
     For,
     Switch,
+    Catch,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SyntheticLocalKind {
+    EvalCompletion,
+    FinallySavedEvalCompletion,
+}
+
+impl SyntheticLocalKind {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::EvalCompletion => EVAL_RET_LOCAL_NAME,
+            Self::FinallySavedEvalCompletion => FINALLY_EVAL_RET_LOCAL_NAME,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SyntheticLocal {
+    index: u16,
+    kind: SyntheticLocalKind,
 }
 
 #[derive(Debug)]
@@ -205,6 +232,10 @@ struct IrBinding {
     /// Header-time marker for a block/switch FunctionDeclaration. The child
     /// constant is attached separately after its body parses successfully.
     is_scoped_function: bool,
+    /// Catch parameters behave as mutable lexicals for resolution/lifetime,
+    /// but `var` of the same name is explicitly permitted and resolves its
+    /// initializer through this nearer cell.
+    is_catch_parameter: bool,
     declaration_span: Option<Span>,
 }
 
@@ -355,13 +386,21 @@ struct SpannedIrOp {
 /// `BlockEnv`. Each function owns its own stack so a nested function cannot
 /// target an outer statement. `drop_count` models the values which must be
 /// removed when an abrupt jump crosses a control (the retained switch
-/// discriminant today); iterator cleanup and finally unwinding remain later
-/// slices.
+/// discriminant today). Try/finally unwinding is represented by the dedicated
+/// control kinds below; iterator cleanup remains a later slice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BreakControlKind {
     RegularStatement,
     Loop,
     Switch,
+    /// QuickJS's catch-marker BlockEnv. It is not itself breakable, but every
+    /// abrupt edge crossing it must discard the marker and call its finally
+    /// subroutine (which may be the empty `Ret` used by try/catch).
+    TryFinally,
+    /// The BlockEnv active while parsing a finally body. A break/continue
+    /// leaving it discards the pending value and gosub return address so the
+    /// new abrupt completion overrides the old one.
+    FinallyBody,
 }
 
 #[derive(Debug)]
@@ -376,6 +415,9 @@ struct BreakControlContext {
     drop_count: usize,
     break_jumps: Vec<usize>,
     continue_jumps: Vec<usize>,
+    /// Parser-IR Gosub sites whose common target is known only after the catch
+    /// and optional finally clauses have been parsed.
+    finally_gosubs: Vec<usize>,
 }
 
 impl IrOp {
@@ -448,6 +490,9 @@ struct FunctionIr {
     /// Keeping the typed slot separate from its unspellable debug name avoids
     /// confusing it with future source bindings or other synthetic locals.
     eval_ret_local: Option<u16>,
+    /// Every local which deliberately has no source binding identity. This is
+    /// validated separately from authored locals before publication.
+    synthetic_locals: Vec<SyntheticLocal>,
     ops: Vec<SpannedIrOp>,
     /// Parser-only Reference marker for the final member getter. QuickJS uses
     /// `last_opcode_pos` for the same rewrite, but an explicit index prevents
@@ -481,10 +526,17 @@ impl FunctionIr {
         parameters: Vec<String>,
         strict: bool,
     ) -> Result<Self, Error> {
-        let (locals, eval_ret_local) = if matches!(kind, FunctionKind::Script) {
-            (vec![EVAL_RET_LOCAL_NAME.to_owned()], Some(0))
+        let (locals, eval_ret_local, synthetic_locals) = if matches!(kind, FunctionKind::Script) {
+            (
+                vec![EVAL_RET_LOCAL_NAME.to_owned()],
+                Some(0),
+                vec![SyntheticLocal {
+                    index: 0,
+                    kind: SyntheticLocalKind::EvalCompletion,
+                }],
+            )
         } else {
-            (Vec::new(), None)
+            (Vec::new(), None, Vec::new())
         };
         // QuickJS reserves scope zero for arguments/function-scoped storage,
         // then pushes the authored body scope. Named-expression self storage
@@ -538,6 +590,7 @@ impl FunctionIr {
             var_scope,
             body_scope: body,
             eval_ret_local,
+            synthetic_locals,
             ops,
             last_member_reference: None,
             last_identifier_reference: None,
@@ -579,10 +632,25 @@ impl FunctionIr {
             storage,
             kind,
             is_scoped_function: false,
+            is_catch_parameter: false,
             declaration_span,
         });
         self.scopes[storage_scope.0].bindings.push(binding);
         binding
+    }
+
+    fn add_synthetic_local(&mut self, kind: SyntheticLocalKind) -> Result<u16, Error> {
+        if self.locals.len() >= MAX_LOCAL_VARIABLES {
+            return Err(Error::new(
+                ErrorKind::JsInternal,
+                "too many local variables",
+            ));
+        }
+        let index = u16::try_from(self.locals.len())
+            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+        self.locals.push(kind.name().to_owned());
+        self.synthetic_locals.push(SyntheticLocal { index, kind });
+        Ok(index)
     }
 
     fn binding_in_scope(&self, scope: ScopeId, name: &str) -> Option<&IrBinding> {
@@ -827,6 +895,7 @@ impl<'source> Parser<'source> {
             TokenKind::Keyword(Keyword::Do) => self.parse_do_while_statement(completion, None),
             TokenKind::Keyword(Keyword::For) => self.parse_for_statement(completion, None),
             TokenKind::Keyword(Keyword::Switch) => self.parse_switch_statement(completion),
+            TokenKind::Keyword(Keyword::Try) => self.parse_try_statement(completion),
             TokenKind::Keyword(Keyword::With) => {
                 Err(self.unsupported_here("with statements are not implemented yet"))
             }
@@ -1318,6 +1387,197 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
+    /// Lower TryStatement with the same catch-marker/finally-subroutine shape
+    /// as the pinned QuickJS release. Even a catch-only statement owns an
+    /// empty `Ret` subroutine: abrupt break/continue/return code can therefore
+    /// be emitted while the parser is still unaware whether a source finally
+    /// clause follows.
+    fn parse_try_statement(&mut self, completion: StatementCompletion) -> Result<(), Error> {
+        let entry_depth = self.current_ir().stack_depth;
+        if matches!(completion, StatementCompletion::Eval) {
+            self.set_eval_ret_undefined()?;
+        }
+        self.advance()?;
+
+        if !self.is_punctuator(Punctuator::LeftBrace) {
+            return Err(self.syntax_here("expecting '{'"));
+        }
+
+        let catch_jump = self.emit_instruction(Instruction::Catch(u32::MAX))?;
+        self.push_break_control(BreakControlKind::TryFinally, None, entry_depth + 1, 1);
+        self.parse_block_statement(completion)?;
+        self.require_stack_depth(entry_depth + 1, "try block")?;
+        let try_control = self.pop_break_control()?;
+        if try_control.kind != BreakControlKind::TryFinally {
+            return Err(Error::internal("try block lost its finally control"));
+        }
+        let mut finally_gosubs = try_control.finally_gosubs;
+
+        self.emit_instruction(Instruction::DropCatch)?;
+        self.emit_instruction(Instruction::Undefined)?;
+        finally_gosubs.push(self.emit_instruction(Instruction::Gosub(u32::MAX))?);
+        self.emit_instruction(Instruction::Drop)?;
+        let mut end_jumps = vec![self.emit_instruction(Instruction::Goto(u32::MAX))?];
+
+        // A catch target receives the thrown value where the catch marker had
+        // lived. Restore that exceptional stack shape explicitly before
+        // parsing the handler's linear IR.
+        let catch_target = self.current_ir().ops.len();
+        self.patch_jump(catch_jump, catch_target)?;
+        self.current_ir_mut().stack_depth = entry_depth + 1;
+
+        if matches!(self.current().kind, TokenKind::Keyword(Keyword::Catch)) {
+            self.advance()?;
+            let catch_scope = self.push_scope(ScopeKind::Catch);
+
+            if self.is_punctuator(Punctuator::LeftBrace) {
+                // Optional catch binding: discard the exception before the
+                // catch body installs its own protection marker.
+                self.emit_instruction(Instruction::Drop)?;
+            } else {
+                self.expect_punctuator(Punctuator::LeftParen)?;
+                if self.is_punctuator(Punctuator::LeftBrace)
+                    || self.is_punctuator(Punctuator::LeftBracket)
+                {
+                    return Err(self
+                        .unsupported_here("catch destructuring bindings are not implemented yet"));
+                }
+                let token = self.current().clone();
+                let TokenKind::Identifier(identifier) = token.kind else {
+                    return Err(self.syntax_here("identifier expected"));
+                };
+                validate_identifier_reservation(
+                    &identifier,
+                    token.span,
+                    self.current_ir().strict,
+                    IdentifierContext::Variable,
+                )?;
+                let invalid_strict_name = self.current_ir().strict
+                    && matches!(identifier.value.as_str(), "eval" | "arguments");
+                let name = identifier.value;
+                self.advance()?;
+                if invalid_strict_name {
+                    return Err(Error::syntax(
+                        "invalid variable name in strict mode",
+                        source_span(self.current().span),
+                    ));
+                }
+                self.register_lexical_binding(
+                    &name,
+                    token.span,
+                    self.current().span,
+                    false,
+                    false,
+                )?;
+                let catch_binding = self
+                    .current_ir()
+                    .binding_id_in_scope(catch_scope, &name)
+                    .ok_or_else(|| Error::internal("catch binding was not registered"))?;
+                self.current_ir_mut().bindings[catch_binding.0].is_catch_parameter = true;
+                self.emit_identifier(name, token.span, IdentifierAccess::Initialize)?;
+                self.expect_punctuator(Punctuator::RightParen)?;
+            }
+
+            let catch2_jump = self.emit_instruction(Instruction::Catch(u32::MAX))?;
+            self.expect_punctuator(Punctuator::LeftBrace)?;
+            let catch_body_scope = if self.is_punctuator(Punctuator::RightBrace) {
+                None
+            } else {
+                Some(self.push_scope(ScopeKind::Block))
+            };
+            self.push_break_control(BreakControlKind::TryFinally, None, entry_depth + 1, 1);
+            while !self.is_punctuator(Punctuator::RightBrace) {
+                if self.at_eof() {
+                    return Err(self.syntax_here("unterminated catch block"));
+                }
+                self.parse_statement_or_decl(completion, StatementPosition::NestedList)?;
+            }
+            self.advance()?;
+            self.require_stack_depth(entry_depth + 1, "catch block")?;
+            let catch_control = self.pop_break_control()?;
+            if catch_control.kind != BreakControlKind::TryFinally {
+                return Err(Error::internal("catch block lost its finally control"));
+            }
+            finally_gosubs.extend(catch_control.finally_gosubs);
+            if let Some(catch_body_scope) = catch_body_scope {
+                self.pop_scope(catch_body_scope)?;
+            }
+            self.pop_scope(catch_scope)?;
+
+            self.emit_instruction(Instruction::DropCatch)?;
+            self.emit_instruction(Instruction::Undefined)?;
+            finally_gosubs.push(self.emit_instruction(Instruction::Gosub(u32::MAX))?);
+            self.emit_instruction(Instruction::Drop)?;
+            end_jumps.push(self.emit_instruction(Instruction::Goto(u32::MAX))?);
+
+            // A throw from the catch body bypasses its normal LeaveScope. This
+            // deliberately preserves QuickJS's captured catch-cell lifetime
+            // quirk rather than synthesizing exception-path CloseLocal ops.
+            let catch2_target = self.current_ir().ops.len();
+            self.patch_jump(catch2_jump, catch2_target)?;
+            self.current_ir_mut().stack_depth = entry_depth + 1;
+            finally_gosubs.push(self.emit_instruction(Instruction::Gosub(u32::MAX))?);
+            self.emit_instruction(Instruction::Throw)?;
+        } else if matches!(self.current().kind, TokenKind::Keyword(Keyword::Finally)) {
+            // A try-finally handler retains the exception as the pending value;
+            // the subroutine returns to the following rethrow.
+            finally_gosubs.push(self.emit_instruction(Instruction::Gosub(u32::MAX))?);
+            self.emit_instruction(Instruction::Throw)?;
+        } else {
+            return Err(self.syntax_here("expecting catch or finally"));
+        }
+
+        let finally_target = self.current_ir().ops.len();
+        for gosub in finally_gosubs {
+            self.patch_jump(gosub, finally_target)?;
+        }
+
+        // Every call enters with a pending value plus the Gosub return address.
+        self.current_ir_mut().stack_depth = entry_depth + 2;
+        if matches!(self.current().kind, TokenKind::Keyword(Keyword::Finally)) {
+            self.advance()?;
+            self.push_break_control(BreakControlKind::FinallyBody, None, entry_depth + 2, 2);
+
+            let saved_eval_ret = if matches!(completion, StatementCompletion::Eval) {
+                let eval_ret = self.eval_ret_local()?;
+                let saved = self
+                    .current_ir_mut()
+                    .add_synthetic_local(SyntheticLocalKind::FinallySavedEvalCompletion)?;
+                self.emit_instruction(Instruction::GetLocal(eval_ret))?;
+                self.emit_instruction(Instruction::PutLocal(saved))?;
+                self.set_eval_ret_undefined()?;
+                Some(saved)
+            } else {
+                None
+            };
+
+            if !self.is_punctuator(Punctuator::LeftBrace) {
+                return Err(self.syntax_here("expecting '{'"));
+            }
+            self.parse_block_statement(completion)?;
+            if let Some(saved) = saved_eval_ret {
+                self.emit_instruction(Instruction::GetLocal(saved))?;
+                self.emit_instruction(Instruction::PutLocal(self.eval_ret_local()?))?;
+            }
+            self.require_stack_depth(entry_depth + 2, "finally block")?;
+            let finally_control = self.pop_break_control()?;
+            if finally_control.kind != BreakControlKind::FinallyBody
+                || !finally_control.finally_gosubs.is_empty()
+            {
+                return Err(Error::internal("finally body control is malformed"));
+            }
+        }
+        self.emit_instruction(Instruction::Ret)?;
+
+        let end_target = self.current_ir().ops.len();
+        for jump in end_jumps {
+            self.patch_jump(jump, end_target)?;
+        }
+        self.current_ir_mut().stack_depth = entry_depth;
+        self.finish_control_statement();
+        Ok(())
+    }
+
     fn parse_loop_jump_statement(&mut self, is_continue: bool) -> Result<(), Error> {
         self.advance()?;
 
@@ -1341,7 +1601,10 @@ impl<'source> Parser<'source> {
                 }
                 Some(label_name) => control.label_name.as_deref() == Some(label_name),
                 None if is_continue => control.kind == BreakControlKind::Loop,
-                None => control.kind != BreakControlKind::RegularStatement,
+                None => matches!(
+                    control.kind,
+                    BreakControlKind::Loop | BreakControlKind::Switch
+                ),
             });
         let Some(target) = target else {
             return Err(self.syntax_here(if label_name.is_some() {
@@ -1359,8 +1622,16 @@ impl<'source> Parser<'source> {
             let target_control = &controls[target];
             let crossed_controls = controls[target + 1..]
                 .iter()
+                .enumerate()
                 .rev()
-                .map(|control| (control.scope, control.drop_count))
+                .map(|(offset, control)| {
+                    (
+                        target + 1 + offset,
+                        control.kind,
+                        control.scope,
+                        control.drop_count,
+                    )
+                })
                 .collect::<Vec<_>>();
             (
                 target_control.scope,
@@ -1369,11 +1640,42 @@ impl<'source> Parser<'source> {
             )
         };
         let mut cleanup_scope = current_scope;
-        for (control_scope, drop_count) in crossed_controls {
+        for (control_index, control_kind, control_scope, drop_count) in crossed_controls {
             self.emit_scope_closures(cleanup_scope, control_scope)?;
             cleanup_scope = control_scope;
-            for _ in 0..drop_count {
-                self.emit_instruction(Instruction::Drop)?;
+            match control_kind {
+                BreakControlKind::TryFinally => {
+                    if drop_count != 1 {
+                        return Err(Error::internal(
+                            "try/finally control has the wrong catch-marker depth",
+                        ));
+                    }
+                    self.emit_instruction(Instruction::DropCatch)?;
+                    self.emit_instruction(Instruction::Undefined)?;
+                    let gosub = self.emit_instruction(Instruction::Gosub(u32::MAX))?;
+                    self.current_ir_mut().break_controls[control_index]
+                        .finally_gosubs
+                        .push(gosub);
+                    self.emit_instruction(Instruction::Drop)?;
+                }
+                BreakControlKind::FinallyBody => {
+                    if drop_count != 2 {
+                        return Err(Error::internal(
+                            "finally-body control has the wrong cleanup depth",
+                        ));
+                    }
+                    // The typed return-address value is at TOS and must never
+                    // pass through the ordinary JavaScript-value Drop path.
+                    self.emit_instruction(Instruction::DropGosub)?;
+                    self.emit_instruction(Instruction::Drop)?;
+                }
+                BreakControlKind::RegularStatement
+                | BreakControlKind::Loop
+                | BreakControlKind::Switch => {
+                    for _ in 0..drop_count {
+                        self.emit_instruction(Instruction::Drop)?;
+                    }
+                }
             }
         }
         self.emit_scope_closures(cleanup_scope, target_scope)?;
@@ -1422,6 +1724,7 @@ impl<'source> Parser<'source> {
                 drop_count,
                 break_jumps: Vec::new(),
                 continue_jumps: Vec::new(),
+                finally_gosubs: Vec::new(),
             });
     }
 
@@ -1488,6 +1791,7 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_return_statement(&mut self) -> Result<(), Error> {
+        let statement_depth = self.current_ir().stack_depth;
         let return_span = self.current().span;
         self.advance()?;
         if self.current().line_terminator_before
@@ -1511,8 +1815,39 @@ impl<'source> Parser<'source> {
                 *pc_site = Some(source_offset(return_span)?);
             }
         }
+        let finally_controls = self
+            .current_ir()
+            .break_controls
+            .iter()
+            .enumerate()
+            .rev()
+            .filter_map(|(index, control)| {
+                (control.kind == BreakControlKind::TryFinally)
+                    .then_some((index, control.entry_depth))
+            })
+            .collect::<Vec<_>>();
+        for (control_index, handler_depth) in finally_controls {
+            // Preserve the return value while removing everything through the
+            // nearest catch marker, then call the associated finally body.
+            self.emit_instruction(Instruction::NipCatch)?;
+            if handler_depth > self.current_ir().stack_depth {
+                return Err(Error::internal(
+                    "return unwind targeted a deeper catch marker",
+                ));
+            }
+            self.current_ir_mut().stack_depth = handler_depth;
+            self.require_stack_depth(handler_depth, "return catch cleanup")?;
+            let gosub = self.emit_instruction(Instruction::Gosub(u32::MAX))?;
+            self.current_ir_mut().break_controls[control_index]
+                .finally_gosubs
+                .push(gosub);
+        }
         self.emit_instruction_at(Instruction::Return, source_offset(return_span)?)?;
-        self.consume_statement_terminator()
+        self.consume_statement_terminator()?;
+        // Parsing continues through unreachable source. Retain the enclosing
+        // statement's marker/discriminant shape just as break/continue do.
+        self.current_ir_mut().stack_depth = statement_depth;
+        Ok(())
     }
 
     fn parse_throw_statement(&mut self) -> Result<(), Error> {
@@ -1705,10 +2040,11 @@ impl<'source> Parser<'source> {
                 BindingKind::Lexical { .. }
             )
         {
+            let catch_parameter = function.bindings[binding.0].is_catch_parameter;
             let masked_program_lexical = matches!(function.kind, FunctionKind::Script)
                 && binding_scope == function.body_scope
                 && function.first_global_declaration_is_normal(name);
-            if !masked_program_lexical {
+            if !catch_parameter && !masked_program_lexical {
                 return Err(Error::syntax(
                     "invalid redefinition of lexical identifier",
                     source_span(conflict_span),
@@ -1778,7 +2114,11 @@ impl<'source> Parser<'source> {
         let supported_scope = is_global
             || matches!(
                 scope_kind,
-                ScopeKind::Block | ScopeKind::If | ScopeKind::For | ScopeKind::Switch
+                ScopeKind::Block
+                    | ScopeKind::If
+                    | ScopeKind::For
+                    | ScopeKind::Switch
+                    | ScopeKind::Catch
             )
             || (matches!(scope_kind, ScopeKind::FunctionBody)
                 && matches!(function.kind, FunctionKind::Ordinary)
@@ -1786,6 +2126,17 @@ impl<'source> Parser<'source> {
         if !supported_scope {
             return Err(Error::internal(
                 "lexical declaration escaped its supported parser scope",
+            ));
+        }
+        let direct_catch_parameter_conflict = function.scopes[scope.0]
+            .parent
+            .filter(|parent| function.scopes[parent.0].kind == ScopeKind::Catch)
+            .and_then(|parent| function.binding_id_in_scope(parent, name))
+            .is_some_and(|binding| function.bindings[binding.0].is_catch_parameter);
+        if direct_catch_parameter_conflict {
+            return Err(Error::syntax(
+                "invalid redefinition of lexical identifier",
+                source_span(conflict_span),
             ));
         }
         if let Some(existing) = function.binding_id_in_scope(scope, name) {
@@ -3023,7 +3374,13 @@ impl<'source> Parser<'source> {
             TokenKind::Keyword(Keyword::New) => {
                 self.parse_new_expression()?;
             }
-            TokenKind::Keyword(keyword @ (Keyword::Else | Keyword::Case | Keyword::Default)) => {
+            TokenKind::Keyword(
+                keyword @ (Keyword::Else
+                | Keyword::Case
+                | Keyword::Default
+                | Keyword::Catch
+                | Keyword::Finally),
+            ) => {
                 return Err(self.syntax_here(format!(
                     "unexpected token in expression: '{}'",
                     keyword.as_str()
@@ -3818,7 +4175,11 @@ impl<'source> Parser<'source> {
             .ok_or_else(|| Error::internal("missing jump instruction"))?;
         match &mut operation.op {
             IrOp::Bytecode(
-                Instruction::IfFalse(value) | Instruction::IfTrue(value) | Instruction::Goto(value),
+                Instruction::IfFalse(value)
+                | Instruction::IfTrue(value)
+                | Instruction::Goto(value)
+                | Instruction::Catch(value)
+                | Instruction::Gosub(value),
             ) => {
                 *value = target;
                 Ok(())
@@ -4209,7 +4570,11 @@ fn relocate_ir_fragment(
 ) -> Result<(), Error> {
     for operation in operations {
         let IrOp::Bytecode(
-            Instruction::Goto(target) | Instruction::IfFalse(target) | Instruction::IfTrue(target),
+            Instruction::Goto(target)
+            | Instruction::IfFalse(target)
+            | Instruction::IfTrue(target)
+            | Instruction::Catch(target)
+            | Instruction::Gosub(target),
         ) = &mut operation.op
         else {
             continue;
@@ -4920,7 +5285,8 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                             .parameters
                             .get(index)
                             .ok_or_else(|| Error::internal("argument binding is out of bounds"))?;
-                        if binding.storage_scope != function.var_scope
+                        if binding.is_catch_parameter
+                            || binding.storage_scope != function.var_scope
                             || binding.declaration_scope != function.var_scope
                             || binding.kind != BindingKind::Normal
                             || binding.name != *parameter
@@ -4942,6 +5308,15 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         if binding.name != *local {
                             return Err(Error::internal("local binding metadata is malformed"));
                         }
+                        let catch_parameter_metadata = binding.is_catch_parameter
+                            && binding.storage_scope == binding.declaration_scope
+                            && function.scopes[binding.storage_scope.0].kind == ScopeKind::Catch
+                            && binding.kind == (BindingKind::Lexical { is_const: false });
+                        if binding.is_catch_parameter != catch_parameter_metadata {
+                            return Err(Error::internal(
+                                "catch parameter binding metadata is malformed",
+                            ));
+                        }
                         if matches!(binding.kind, BindingKind::Lexical { .. }) {
                             let scope_kind = function.scopes[binding.storage_scope.0].kind;
                             let supported_scope =
@@ -4951,6 +5326,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                                         | ScopeKind::If
                                         | ScopeKind::For
                                         | ScopeKind::Switch
+                                        | ScopeKind::Catch
                                 ) || (matches!(scope_kind, ScopeKind::FunctionBody)
                                     && matches!(function.kind, FunctionKind::Ordinary)
                                     && binding.storage_scope == function.body_scope);
@@ -4976,7 +5352,8 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                                 == ScopeKind::ProgramBody;
                         let valid_var = binding.kind == BindingKind::Normal
                             && binding.storage_scope == function.var_scope;
-                        if !matches!(function.kind, FunctionKind::Script)
+                        if binding.is_catch_parameter
+                            || !matches!(function.kind, FunctionKind::Script)
                             || (!valid_lexical && !valid_var)
                         {
                             return Err(Error::internal("global binding metadata is malformed"));
@@ -4994,39 +5371,75 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             ));
         }
         let eval_ret_index = function.eval_ret_local.map(usize::from);
+        let mut seen_synthetic = vec![false; function.locals.len()];
+        let mut synthetic_eval_ret = None;
+        for synthetic in &function.synthetic_locals {
+            let index = usize::from(synthetic.index);
+            let name = function
+                .locals
+                .get(index)
+                .ok_or_else(|| Error::internal("synthetic local is out of bounds"))?;
+            if std::mem::replace(
+                seen_synthetic
+                    .get_mut(index)
+                    .ok_or_else(|| Error::internal("synthetic local is out of bounds"))?,
+                true,
+            ) || name != synthetic.kind.name()
+            {
+                return Err(Error::internal("synthetic local metadata is malformed"));
+            }
+            match synthetic.kind {
+                SyntheticLocalKind::EvalCompletion => {
+                    if synthetic_eval_ret.replace(index).is_some() {
+                        return Err(Error::internal(
+                            "eval completion slot metadata is malformed",
+                        ));
+                    }
+                }
+                SyntheticLocalKind::FinallySavedEvalCompletion
+                    if matches!(function.kind, FunctionKind::Script) => {}
+                SyntheticLocalKind::FinallySavedEvalCompletion => {
+                    return Err(Error::internal(
+                        "ordinary function contains a finally eval-completion save slot",
+                    ));
+                }
+            }
+        }
         match function.kind {
             FunctionKind::Script
                 if eval_ret_index == Some(0)
+                    && synthetic_eval_ret == eval_ret_index
                     && function
                         .locals
                         .first()
                         .is_some_and(|name| name == EVAL_RET_LOCAL_NAME) => {}
-            FunctionKind::Ordinary if eval_ret_index.is_none() => {}
+            FunctionKind::Ordinary if eval_ret_index.is_none() && synthetic_eval_ret.is_none() => {}
             _ => {
                 return Err(Error::internal(
                     "eval completion slot metadata is malformed",
                 ));
             }
         }
-        if function
-            .locals
-            .iter()
-            .enumerate()
-            .any(|(index, name)| name == EVAL_RET_LOCAL_NAME && Some(index) != eval_ret_index)
-            || function
-                .bindings
-                .iter()
-                .any(|binding| binding.name == EVAL_RET_LOCAL_NAME)
-        {
+        if function.bindings.iter().any(|binding| {
+            matches!(
+                binding.name.as_str(),
+                EVAL_RET_LOCAL_NAME | FINALLY_EVAL_RET_LOCAL_NAME
+            )
+        }) || function.locals.iter().enumerate().any(|(index, name)| {
+            matches!(
+                name.as_str(),
+                EVAL_RET_LOCAL_NAME | FINALLY_EVAL_RET_LOCAL_NAME
+            ) && !seen_synthetic[index]
+        }) {
             return Err(Error::internal(
-                "eval completion slot leaked into source binding lookup",
+                "synthetic local leaked into source binding lookup",
             ));
         }
         for (index, seen) in seen_locals.into_iter().enumerate() {
-            if Some(index) == eval_ret_index {
+            if seen_synthetic[index] {
                 if seen {
                     return Err(Error::internal(
-                        "eval completion slot has a source binding identity",
+                        "synthetic local has a source binding identity",
                     ));
                 }
             } else if !seen {
@@ -5320,7 +5733,9 @@ fn prepend_hoist_prefix(
             IrOp::Bytecode(
                 Instruction::Goto(target)
                 | Instruction::IfFalse(target)
-                | Instruction::IfTrue(target),
+                | Instruction::IfTrue(target)
+                | Instruction::Catch(target)
+                | Instruction::Gosub(target),
             ) => target,
             _ => continue,
         };
@@ -5345,7 +5760,20 @@ fn apply_quickjs_late_throw_sites(
     // Maintenance invariant: every new label-bearing instruction or
     // resolve-labels peephole must update this projection and add a pinned
     // fault-stack oracle before that control-flow slice is enabled.
-    let jump_target = |instruction: &Instruction| -> Result<Option<usize>, Error> {
+    let label_target = |instruction: &Instruction| -> Result<Option<usize>, Error> {
+        let (Instruction::Goto(target)
+        | Instruction::IfFalse(target)
+        | Instruction::IfTrue(target)
+        | Instruction::Catch(target)
+        | Instruction::Gosub(target)) = instruction
+        else {
+            return Ok(None);
+        };
+        usize::try_from(*target)
+            .map(Some)
+            .map_err(|_| Error::internal("jump target did not fit usize"))
+    };
+    let branch_target = |instruction: &Instruction| -> Result<Option<usize>, Error> {
         let (Instruction::Goto(target)
         | Instruction::IfFalse(target)
         | Instruction::IfTrue(target)) = instruction
@@ -5368,7 +5796,7 @@ fn apply_quickjs_late_throw_sites(
     let mut label_references = vec![0_usize; code.len()];
     let mut has_physical_label = vec![false; code.len()];
     for instruction in code {
-        let Some(target) = jump_target(instruction)? else {
+        let Some(target) = label_target(instruction)? else {
             continue;
         };
         let references = label_references
@@ -5387,7 +5815,7 @@ fn apply_quickjs_late_throw_sites(
         survives_first_pass[index] = true;
         let parser_terminal = matches!(
             code[index],
-            Instruction::Goto(_) | Instruction::Return | Instruction::Throw
+            Instruction::Goto(_) | Instruction::Return | Instruction::Throw | Instruction::Ret
         );
         if !parser_terminal {
             index += 1;
@@ -5406,7 +5834,7 @@ fn apply_quickjs_late_throw_sites(
             if pc_sites[dead_index].is_some() {
                 final_dead_marker = pc_sites[dead_index];
             }
-            if let Some(target) = jump_target(&code[dead_index])? {
+            if let Some(target) = label_target(&code[dead_index])? {
                 label_references[target] = label_references[target]
                     .checked_sub(1)
                     .ok_or_else(|| Error::internal("jump label reference count underflow"))?;
@@ -5442,7 +5870,7 @@ fn apply_quickjs_late_throw_sites(
                         "jump target did not survive variable resolution",
                     ));
                 }
-                let Some(next_target) = jump_target(&code[target])? else {
+                let Some(next_target) = branch_target(&code[target])? else {
                     followed_ten_gotos = false;
                     break;
                 };
@@ -5531,7 +5959,7 @@ fn apply_quickjs_late_throw_sites(
         }
 
         let mut followed_target = None;
-        if !folded_goto && let Some(target) = jump_target(&code[index])? {
+        if !folded_goto && let Some(target) = branch_target(&code[index])? {
             followed_target = Some(follow_jump_target(target, &mut label_references)?);
         }
 
@@ -5562,7 +5990,7 @@ fn apply_quickjs_late_throw_sites(
                 let has_effective_label = after_goto < code.len()
                     && ((has_physical_label[after_goto] && after_goto == effective_target)
                         || (matches!(code[after_goto], Instruction::Goto(_))
-                            && jump_target(&code[after_goto])? == Some(effective_target)));
+                            && branch_target(&code[after_goto])? == Some(effective_target)));
                 if has_effective_label {
                     if pc_sites[goto_index].is_some() {
                         current_site = pc_sites[goto_index];
@@ -5582,6 +6010,7 @@ fn apply_quickjs_late_throw_sites(
                 Instruction::Goto(_)
                     | Instruction::Return
                     | Instruction::Throw
+                    | Instruction::Ret
                     | Instruction::ThrowReadOnly(_)
             );
         if !terminal {
@@ -5608,7 +6037,7 @@ fn apply_quickjs_late_throw_sites(
             if pc_sites[dead_index].is_some() {
                 current_site = pc_sites[dead_index];
             }
-            if let Some(target) = jump_target(&code[dead_index])? {
+            if let Some(target) = label_target(&code[dead_index])? {
                 label_references[target] = label_references[target]
                     .checked_sub(1)
                     .ok_or_else(|| Error::internal("jump label reference count underflow"))?;
@@ -6599,6 +7028,14 @@ fn lower_ops(operations: Vec<SpannedIrOp>, scopes: &[ScopeLifecycle]) -> Result<
                 code.push(Instruction::IfTrue(remap_target(target)?));
                 pc_sites.push(pc_site);
             }
+            IrOp::Bytecode(Instruction::Catch(target)) => {
+                code.push(Instruction::Catch(remap_target(target)?));
+                pc_sites.push(pc_site);
+            }
+            IrOp::Bytecode(Instruction::Gosub(target)) => {
+                code.push(Instruction::Gosub(remap_target(target)?));
+                pc_sites.push(pc_site);
+            }
             IrOp::Bytecode(instruction) => {
                 code.push(instruction);
                 pc_sites.push(pc_site);
@@ -6652,7 +7089,9 @@ fn fold_quickjs_constant_branches(code: &mut [Instruction]) {
     for instruction in code.iter() {
         if let Instruction::Goto(target)
         | Instruction::IfFalse(target)
-        | Instruction::IfTrue(target) = instruction
+        | Instruction::IfTrue(target)
+        | Instruction::Catch(target)
+        | Instruction::Gosub(target) = instruction
             && let Ok(target) = usize::try_from(*target)
             && let Some(targeted) = targeted.get_mut(target)
         {
@@ -12721,6 +13160,226 @@ mod tests {
                 .any(|instruction| matches!(instruction, crate::bytecode::Instruction::Throw))
         );
         assert!(compile_script("throw\n9").is_err());
+    }
+
+    #[test]
+    fn try_catch_lowering_keeps_parameter_and_body_scopes_distinct() {
+        let source = r#"
+            try { throw 1; }
+            catch (e) { let x = e; function f(){ return e + x; } }
+        "#;
+        let tree = Parser::parse(source, JsString::from_static("<try-scope-test>")).unwrap();
+        let root = &tree.functions[0];
+        let catch_scope = root
+            .scopes
+            .iter()
+            .position(|scope| scope.kind == ScopeKind::Catch)
+            .map(super::ScopeId)
+            .unwrap();
+        let catch_body_scope = root
+            .scopes
+            .iter()
+            .enumerate()
+            .find(|(_, scope)| scope.kind == ScopeKind::Block && scope.parent == Some(catch_scope))
+            .map(|(index, _)| super::ScopeId(index))
+            .unwrap();
+        let catch_binding = root.binding_in_scope(catch_scope, "e").unwrap();
+        let BindingStorage::Local(catch_local) = catch_binding.storage else {
+            panic!("catch parameter did not use local storage");
+        };
+        assert!(catch_binding.is_catch_parameter);
+        assert_eq!(catch_binding.kind, BindingKind::Lexical { is_const: false });
+        assert!(root.binding_in_scope(catch_body_scope, "x").is_some());
+        assert!(root.binding_in_scope(catch_body_scope, "f").is_some());
+        assert_eq!(
+            tree.functions
+                .iter()
+                .find(|function| function.function_name.as_deref() == Some("f"))
+                .and_then(|function| function.parent)
+                .map(|parent| parent.definition_scope),
+            Some(catch_body_scope)
+        );
+
+        let bytecode = compile_unlinked_script(source).unwrap();
+        assert_eq!(
+            bytecode
+                .code()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::Catch(_)))
+                .count(),
+            2
+        );
+        assert!(bytecode.code().iter().any(
+            |instruction| matches!(instruction, Instruction::SetLocalUninitialized(index) if *index == catch_local)
+        ));
+        assert!(bytecode.code().iter().any(
+            |instruction| matches!(instruction, Instruction::CloseLocal(index) if *index == catch_local)
+        ));
+        assert!(
+            bytecode
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Ret))
+        );
+    }
+
+    #[test]
+    fn catch_binding_conflicts_and_var_initializer_follow_quickjs() {
+        for (source, keyword) in [("catch (e) {}", "catch"), ("finally {}", "finally")] {
+            let error = compile_unlinked_script(source).unwrap_err();
+            assert_eq!(
+                error.message(),
+                format!("unexpected token in expression: '{keyword}'"),
+                "{source}"
+            );
+        }
+        let extra_catch = compile_unlinked_script("try {} finally {} catch (e) {}").unwrap_err();
+        assert_eq!(
+            extra_catch.message(),
+            "unexpected token in expression: 'catch'"
+        );
+
+        for source in [
+            "try {} catch (e) { let e; }",
+            "try {} catch (e) { function e(){} }",
+        ] {
+            let error = compile_unlinked_script(source).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+            assert_eq!(
+                error.message(),
+                "invalid redefinition of lexical identifier",
+                "{source}"
+            );
+        }
+        compile_unlinked_script("try {} catch (e) { { let e = 1; e; } }").unwrap();
+
+        for source in ["try {} catch ({e}) {}", "try {} catch ([e]) {}"] {
+            let error = compile_unlinked_script(source).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+            assert_eq!(
+                error.message(),
+                "catch destructuring bindings are not implemented yet",
+                "{source}"
+            );
+        }
+
+        let source = "try { throw 1; } catch (e) { var e = e + 1; e; }";
+        let tree = Parser::parse(source, JsString::from_static("<catch-var-test>")).unwrap();
+        let catch_local = tree.functions[0]
+            .bindings
+            .iter()
+            .find(|binding| binding.is_catch_parameter)
+            .and_then(|binding| match binding.storage {
+                BindingStorage::Local(index) => Some(index),
+                _ => None,
+            })
+            .unwrap();
+        let bytecode = compile_unlinked_script(source).unwrap();
+        assert!(bytecode.code().iter().any(
+            |instruction| matches!(instruction, Instruction::GetLocalCheck(index) if *index == catch_local)
+        ));
+        assert!(bytecode.code().iter().any(
+            |instruction| matches!(instruction, Instruction::PutLocalCheck(index) if *index == catch_local)
+        ));
+        assert_eq!(evaluate_in_context(source), Value::Int(2));
+
+        let strict_source = "\"use strict\"; try {} catch (eval) {}";
+        let strict_error = compile_unlinked_script(strict_source).unwrap_err();
+        assert_eq!(
+            strict_error.message(),
+            "invalid variable name in strict mode"
+        );
+        assert_eq!(
+            strict_error.span().unwrap().start.column,
+            u32::try_from(strict_source.find(')').unwrap() + 1).unwrap()
+        );
+    }
+
+    #[test]
+    fn nested_finally_abrupt_edges_use_typed_cleanup_and_shared_subroutines() {
+        let source = r#"
+            (function f(){
+                outer: while (1) {
+                    try {
+                        try { return 1; }
+                        finally { break outer; }
+                    } finally { return 3; }
+                }
+                return 4;
+            })()
+        "#;
+        let bytecode = compile_unlinked_script(source).unwrap();
+        let function = bytecode
+            .constants()
+            .iter()
+            .find_map(|constant| constant.as_child())
+            .unwrap();
+        assert_eq!(
+            function
+                .code()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::Catch(_)))
+                .count(),
+            2
+        );
+        assert_eq!(
+            function
+                .code()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::Ret))
+                .count(),
+            2
+        );
+        assert!(
+            function
+                .code()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::NipCatch))
+                .count()
+                >= 2
+        );
+        assert!(
+            function
+                .code()
+                .windows(2)
+                .any(|window| matches!(window, [Instruction::DropGosub, Instruction::Drop]))
+        );
+        assert_eq!(evaluate_in_context(source), Value::Int(3));
+    }
+
+    #[test]
+    fn script_finally_saves_and_normally_restores_eval_completion() {
+        let source = "1; try { 2; } finally { 3; }";
+        let bytecode = compile_unlinked_script(source).unwrap();
+        assert_eq!(bytecode.local_definitions().len(), 2);
+        assert!(
+            bytecode
+                .local_definitions()
+                .iter()
+                .all(|definition| definition.name.is_none() && !definition.is_lexical)
+        );
+        assert!(bytecode.code().windows(4).any(|window| matches!(
+            window,
+            [
+                Instruction::GetLocal(0),
+                Instruction::PutLocal(1),
+                Instruction::Undefined,
+                Instruction::PutLocal(0)
+            ]
+        )));
+        assert!(bytecode.code().windows(3).any(|window| matches!(
+            window,
+            [
+                Instruction::GetLocal(1),
+                Instruction::PutLocal(0),
+                Instruction::Ret
+            ]
+        )));
+        assert_eq!(evaluate_in_context(source), Value::Int(2));
+        assert_eq!(
+            evaluate_in_context("try { throw 1; } catch { 4; } finally { 5; }"),
+            Value::Int(4)
+        );
     }
 
     #[test]

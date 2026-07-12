@@ -314,14 +314,41 @@ claim full parity.
   QuickJS's interleaved TDZ/function allocation order only under an injected
   allocation failure; values, identity, closure cells, errors, stacks, and
   realm behavior are pinned by differential tests. Normal exits, `break`, and
-  `continue` close captured block cells. The known QuickJS caught-throw quirk
-  remains bookkeeping for the future `try`/`catch` slice.
+  `continue` close captured block cells. A caught throw deliberately leaves
+  intervening captured block cells open, preserving the pinned QuickJS reuse
+  quirk when control resumes in the same frame.
 
   `return` and an uncaught `throw` do not emit lexical leave operations;
-  whole-frame teardown detaches their captured locals, as in QuickJS. A future
-  same-function `try`/`catch` slice must also preserve the pinned release's
-  observable quirk that a caught `throw` does not close the intervening block
-  scope before control resumes; `try`/`catch` is not implemented yet.
+  whole-frame teardown detaches their captured locals, as in QuickJS. A caught
+  `throw` resumes at the nearest same-frame handler without synthesizing those
+  leave operations, including the pinned observable captured-cell result
+  `2|2|false` on repeated block entry. A `return` crossing `finally` has the
+  same skipped-close behavior if the finally body replaces it with a same-frame
+  `break`, `continue`, return, or throw; the reuse hook is limited to exception
+  dispatch and verified `NipCatch` return unwinds rather than ordinary gosubs.
+
+  The `oracle_try_catch_finally` target locks the implemented synchronous
+  exception-region boundary. It compares the same source
+  against the Rust engine and the checksum-pinned QuickJS process for primitive,
+  object, native, getter, callee, and constructor throws; nearest handlers,
+  rethrows, catch binding scopes and closures; and normal plus abrupt `finally`
+  completion. Its control-flow matrix includes return override, labelled and
+  unlabelled break/continue across nested finally clauses, retained switch
+  state, Script completion, the pinned caught-throw captured-cell result
+  `2|2|false`, and captured-cell reuse across nested abrupt-finally overrides.
+  Separate checks lock compile-A/execute-in-B realm behavior, exact
+  Full/StripSource/StripDebug stacks and parser diagnostics. Catch binding
+  destructuring remains an explicit compiler frontier rather than being
+  treated as a simple identifier binding.
+
+  The upstream anchors for this slice are `quickjs.c` 21775-21785
+  (`BlockEnv`), 28225-28361 (break/continue/return through finally),
+  29270-29423 (try/catch/finally parsing), 18948-18981 and 19052-19065
+  (`catch`/`gosub`/`ret`/`nip_catch` execution), and 20545-20570 (same-frame
+  exception-handler search), plus `quickjs-opcode.h` 181-184. The Rust VM keeps
+  catch markers private, models `gosub` return PCs as verified typed stack
+  slots, and resumes thrown values or materialized native errors in the same
+  frame. Internal and I/O engine invariants remain uncatchable.
 
   The pinned source anchors for this slice are `quickjs.c` 10817-10855
   (`JS_CheckDefineGlobalVar`), 17151-17285 (global declaration/reference VarRef
@@ -457,12 +484,11 @@ claim full parity.
   duplicate declarations conflict across cases, and normal or abrupt exits
   close captured cells while preserving selector cleanup. This is the current
   simple-name switch lexical slice, not complete SwitchStatement parity.
-  `for-in`/`for-of`/`for-await` and try/catch/finally remain separate
-  grammar/runtime slices. The classic head
+  `for-in`/`for-of`/`for-await` remain separate grammar/runtime slices. The classic head
   already ports QuickJS's sloppy `is_let(..., DECL_MASK_OTHER)` ambiguity to
   the implemented simple-name lexical head. The shared statement parser applies
-  the corresponding list-versus-single-statement mask. Destructuring and
-  catch/finally scopes remain later slices.
+  the corresponding list-versus-single-statement mask. Destructuring,
+  including catch binding patterns, remains a later slice.
 - Untagged template literals follow QuickJS `js_parse_template` rather than a
   generic string-interpolation rewrite. A no-substitution template pushes only
   its cooked String. An interpolated template keeps the cooked head as a
@@ -1121,13 +1147,18 @@ claim full parity.
   bodies, compile/execute realm splitting, exact parser diagnostics and
   full/StripDebug runtime stacks, plus the explicit `with` boundary and its
   nested-`if` future behavior.
+  The `oracle_try_catch_finally` target locks the implemented synchronous
+  exception-region boundary: catch dispatch and scopes, complete
+  abrupt-finally control flow, Script completion, the pinned caught-throw cell
+  quirk, realm splitting, three debug modes, exact diagnostics, and the still
+  explicit catch-destructuring frontier.
 - `Runtime` and `Context` are distinct; `qjs -e` and file execution use the
   Rust compiler/VM path and never delegate to an external engine.
 
 ## Not implemented yet
 
 The language slice is intentionally narrow. Async/generator declarations,
-`for-in`/`for-of`/`for-await`, destructuring, try/catch/finally, other general
+`for-in`/`for-of`/`for-await`, destructuring, other general
 assignment targets, module
 resolution, computed property-definition naming, mapped `arguments`,
 direct/indirect eval declaration environments, arrow/async/generator functions,
@@ -1140,8 +1171,8 @@ and classic `for (;;)` heads. Nested and classic-for forms also work in scripts,
 and ordinary bodies including classic heads are available through the normal
 `%Function%` constructor.
 Single-statement lexical declarations, nonclassic lexical loop heads,
-destructuring, and catch/class lexical environments remain later compiler
-slices. Direct
+destructuring (including catch binding patterns), and class lexical
+environments remain later compiler slices. Direct
 Program lexicals now use the production global VarRef path with two-phase
 instantiation; simple-name Program vars and direct ordinary function
 declarations use ordered, kind-specific global declaration records. One
@@ -1166,11 +1197,11 @@ target/cproto, data-bearing Error selector, realm, arity padding, production
 BoundFunction allocation and frame foundations exist, but specialized
 setter/F64/iterator cproto adapters and the wider builtin table remain.
 
-Explicit `throw`, nested propagation, VM-generated native errors and eager
-Error backtraces share the completion path for the current synchronous slice,
-but catch/finally handler tables, async/generator/Promise frame integration,
-recoverable OOM and backtrace-allocation fallback, interrupt/termination and
-full abrupt-completion semantics remain. The `JS_STRIP_DEBUG` /
+Explicit `throw`, nested propagation, VM-generated native errors, eager Error
+backtraces, and synchronous catch/finally regions share the implemented
+completion path. Async/generator/Promise frame integration, iterator cleanup,
+recoverable OOM and backtrace-allocation fallback, interrupt/termination, and
+the remaining abrupt-completion surfaces are still open. The `JS_STRIP_DEBUG` /
 `JS_STRIP_SOURCE` debug/source-stripping decision is implemented as a
 runtime-wide three-state policy sampled by subsequent compilation: strip-source
 retains filename/PC metadata but removes authored source, while strip-debug
@@ -1299,6 +1330,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_block_functions -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_annex_b_statements -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_try_catch_finally -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_for_lexicals -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

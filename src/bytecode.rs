@@ -152,6 +152,22 @@ pub enum Instruction {
     IfFalse(u32),
     IfTrue(u32),
     Goto(u32),
+    /// QuickJS `OP_catch`, represented as private VM handler metadata rather
+    /// than a forgeable operand-stack value.
+    Catch(u32),
+    /// Remove the innermost active catch marker on a normal path.
+    DropCatch,
+    /// Preserve the top value while discarding the innermost catch marker and
+    /// every intermediate operand above its entry depth.
+    NipCatch,
+    /// QuickJS `OP_gosub`: push the fallthrough PC as a real Int value and
+    /// enter a shared finally subroutine.
+    Gosub(u32),
+    /// QuickJS `OP_ret`: pop and validate the Int return PC from `Gosub`.
+    Ret,
+    /// Typed finally cleanup for an abrupt path which discards, rather than
+    /// follows, the real Int return PC pushed by `Gosub`.
+    DropGosub,
     Call(u16),
     CallMethod(u16),
     /// QuickJS `OP_call_constructor`: `func new.target args -> result`.
@@ -164,9 +180,14 @@ impl Instruction {
     #[must_use]
     pub const fn stack_effect(&self) -> (usize, usize) {
         match self {
-            Self::Nop | Self::Goto(_) | Self::SetLocalUninitialized(_) | Self::CloseLocal(_) => {
-                (0, 0)
-            }
+            Self::Nop
+            | Self::Goto(_)
+            | Self::Gosub(_)
+            | Self::SetLocalUninitialized(_)
+            | Self::CloseLocal(_) => (0, 0),
+            // The verifier models this marker in its conceptual stack even
+            // though runtime execution stores it in private handler metadata.
+            Self::Catch(_) => (0, 1),
             Self::PushI32(_)
             | Self::PushConst(_)
             | Self::FClosure(_)
@@ -211,11 +232,16 @@ impl Instruction {
             | Self::PutVar(_)
             | Self::PutVarInit(_)
             | Self::ThrowReadOnly(_)
+            | Self::DropCatch
+            | Self::DropGosub
             | Self::IfFalse(_)
             | Self::IfTrue(_)
             | Self::Return
             | Self::Throw => (1, 0),
             Self::Nip => (2, 1),
+            // The verifier replaces this nominal value-preserving effect with
+            // the active handler's recorded entry depth.
+            Self::NipCatch => (1, 1),
             Self::SetLocal(_) | Self::SetLocalCheck(_) | Self::SetArg(_) | Self::SetVarRef(_) => {
                 (1, 1)
             }
@@ -251,6 +277,7 @@ impl Instruction {
             | Self::Gte
             | Self::In
             | Self::InstanceOf => (2, 1),
+            Self::Ret => (1, 0),
         }
     }
 }
@@ -339,7 +366,7 @@ pub(crate) fn verify_parts(
     // every instruction, including dead code, before the reachability walk.
     // Later kind-specific verification may then index the constant pool
     // without letting malformed unreachable bytecode panic the runtime.
-    for instruction in code {
+    for (pc, instruction) in code.iter().enumerate() {
         match instruction {
             Instruction::PushConst(index)
             | Instruction::FClosure(index)
@@ -357,68 +384,247 @@ pub(crate) fn verify_parts(
             }
             Instruction::Goto(target)
             | Instruction::IfFalse(target)
-            | Instruction::IfTrue(target) => {
+            | Instruction::IfTrue(target)
+            | Instruction::Catch(target)
+            | Instruction::Gosub(target) => {
                 validate_target(*target, code.len())?;
+                if matches!(instruction, Instruction::Gosub(_)) {
+                    let return_pc = pc
+                        .checked_add(1)
+                        .ok_or_else(|| Error::internal("gosub return PC overflow"))?;
+                    i32::try_from(return_pc)
+                        .map_err(|_| Error::internal("gosub return PC does not fit Int"))?;
+                }
             }
             _ => {}
         }
     }
 
-    let mut depths = vec![None; code.len()];
-    let mut worklist = VecDeque::from([(0_usize, 0_usize)]);
+    let mut states: Vec<Option<VerificationState>> = vec![None; code.len()];
+    let mut worklist = VecDeque::from([(
+        0_usize,
+        VerificationState {
+            depth: 0,
+            handlers: Vec::new(),
+            return_addresses: Vec::new(),
+        },
+    )]);
     let mut maximum = 0_usize;
 
-    while let Some((pc, depth)) = worklist.pop_front() {
-        let slot = depths
+    while let Some((pc, state)) = worklist.pop_front() {
+        record_maximum_depth(&mut maximum, state.depth, declared_max_stack)?;
+        let slot = states
             .get_mut(pc)
             .ok_or_else(|| Error::internal("control flow target is out of bounds"))?;
-        if let Some(previous) = *slot {
-            if previous != depth {
-                return Err(Error::internal(
-                    "control flow joins with inconsistent stack depth",
-                ));
+        if let Some(previous) = slot {
+            if previous != &state {
+                let message = if previous.depth != state.depth {
+                    "control flow joins with inconsistent stack depth"
+                } else if previous.handlers != state.handlers {
+                    "control flow joins with inconsistent catch handlers"
+                } else {
+                    "control flow joins with inconsistent gosub return addresses"
+                };
+                return Err(Error::internal(message));
             }
             continue;
         }
-        *slot = Some(depth);
+        *slot = Some(state.clone());
 
         let instruction = &code[pc];
         let (popped, pushed) = instruction.stack_effect();
-        let next_depth = depth
+        let remaining_depth = state
+            .depth
             .checked_sub(popped)
-            .ok_or_else(|| Error::internal("bytecode stack underflow"))?
+            .ok_or_else(|| Error::internal("bytecode stack underflow"))?;
+        let mut next_depth = remaining_depth
             .checked_add(pushed)
             .ok_or_else(|| Error::internal("bytecode stack depth overflow"))?;
-        maximum = maximum.max(next_depth);
+        let mut next_handlers = state.handlers.clone();
+        let mut next_return_addresses = state.return_addresses.clone();
+
+        match instruction {
+            Instruction::DropCatch => {
+                let handler = next_handlers
+                    .pop()
+                    .ok_or_else(|| Error::internal("DropCatch has no active catch handler"))?;
+                if state.depth != handler.stack_depth {
+                    return Err(Error::internal(
+                        "DropCatch did not reach its catch entry depth",
+                    ));
+                }
+            }
+            Instruction::NipCatch => {
+                let handler = next_handlers
+                    .pop()
+                    .ok_or_else(|| Error::internal("NipCatch has no active catch handler"))?;
+                if state.depth <= handler.stack_depth {
+                    return Err(Error::internal(
+                        "NipCatch has no value above its catch marker",
+                    ));
+                }
+                if state
+                    .return_addresses
+                    .last()
+                    .is_some_and(|address| *address == state.depth - 1)
+                {
+                    return Err(Error::internal(
+                        "NipCatch cannot preserve a gosub return address",
+                    ));
+                }
+                next_depth = handler.stack_depth;
+                next_return_addresses.retain(|address| *address < handler.stack_depth);
+            }
+            Instruction::Ret | Instruction::DropGosub => {
+                if next_return_addresses.last().copied() != Some(state.depth - 1) {
+                    let name = if matches!(instruction, Instruction::Ret) {
+                        "Ret"
+                    } else {
+                        "DropGosub"
+                    };
+                    return Err(Error::internal(format!(
+                        "{name} did not consume a gosub return address"
+                    )));
+                }
+                next_return_addresses.pop();
+                if state
+                    .handlers
+                    .last()
+                    .is_some_and(|handler| remaining_depth < handler.stack_depth)
+                {
+                    return Err(Error::internal(
+                        "gosub return address crossed an active catch marker",
+                    ));
+                }
+            }
+            _ => {
+                if popped > 0
+                    && state
+                        .return_addresses
+                        .last()
+                        .is_some_and(|address| *address >= remaining_depth)
+                {
+                    return Err(Error::internal(
+                        "ordinary bytecode consumed a gosub return address",
+                    ));
+                }
+                if state
+                    .handlers
+                    .last()
+                    .is_some_and(|handler| remaining_depth < handler.stack_depth)
+                {
+                    return Err(Error::internal(
+                        "bytecode stack crossed an active catch marker",
+                    ));
+                }
+            }
+        }
+        record_maximum_depth(&mut maximum, next_depth, declared_max_stack)?;
         // QuickJS `compute_stack_size` stops as soon as a reachable PC crosses
         // JS_STACK_SIZE_MAX. This must win over diagnostics from later
         // instructions, including the intentionally truncated call operand in
         // a template with more than 65,535 arguments.
-        if maximum > usize::from(declared_max_stack) {
-            return Err(Error::internal(
-                "declared maximum stack is smaller than required",
-            ));
-        }
-
         match instruction {
             // QuickJS terminal completion opcodes consume their completion
             // value and abandon the rest of the frame stack. In particular,
             // `return` and `throw` inside a switch leave its discriminant
             // below that value rather than emitting synthetic cleanup.
-            Instruction::Return | Instruction::Throw => {}
+            Instruction::Return | Instruction::Throw | Instruction::Ret => {}
             // QuickJS `OP_throw_error` is terminal and abandons the complete
             // frame stack. A postfix update can legitimately retain its old
             // value below the attempted write when immutable-binding
             // resolution replaces that write with this instruction.
             Instruction::ThrowReadOnly(_) => {}
             Instruction::Goto(target) => {
-                enqueue_target(&mut worklist, *target, next_depth, code.len())?;
+                enqueue_target(
+                    &mut worklist,
+                    *target,
+                    VerificationState {
+                        depth: next_depth,
+                        handlers: next_handlers,
+                        return_addresses: next_return_addresses,
+                    },
+                    code.len(),
+                )?;
             }
             Instruction::IfFalse(target) | Instruction::IfTrue(target) => {
-                enqueue_target(&mut worklist, *target, next_depth, code.len())?;
-                enqueue_fallthrough(&mut worklist, pc, next_depth, code.len())?;
+                let next = VerificationState {
+                    depth: next_depth,
+                    handlers: next_handlers,
+                    return_addresses: next_return_addresses,
+                };
+                enqueue_target(&mut worklist, *target, next.clone(), code.len())?;
+                enqueue_fallthrough(&mut worklist, pc, next, code.len())?;
             }
-            _ => enqueue_fallthrough(&mut worklist, pc, next_depth, code.len())?,
+            Instruction::Catch(target) => {
+                let exceptional_depth = next_depth;
+                record_maximum_depth(&mut maximum, exceptional_depth, declared_max_stack)?;
+                enqueue_target(
+                    &mut worklist,
+                    *target,
+                    VerificationState {
+                        depth: exceptional_depth,
+                        handlers: state.handlers.clone(),
+                        return_addresses: state.return_addresses.clone(),
+                    },
+                    code.len(),
+                )?;
+                next_handlers.push(CatchHandlerState {
+                    target: *target,
+                    stack_depth: next_depth,
+                });
+                enqueue_fallthrough(
+                    &mut worklist,
+                    pc,
+                    VerificationState {
+                        depth: next_depth,
+                        handlers: next_handlers,
+                        return_addresses: next_return_addresses,
+                    },
+                    code.len(),
+                )?;
+            }
+            Instruction::Gosub(target) => {
+                let subroutine_depth = state
+                    .depth
+                    .checked_add(1)
+                    .ok_or_else(|| Error::internal("bytecode stack depth overflow"))?;
+                record_maximum_depth(&mut maximum, subroutine_depth, declared_max_stack)?;
+                enqueue_target(
+                    &mut worklist,
+                    *target,
+                    VerificationState {
+                        depth: subroutine_depth,
+                        handlers: state.handlers.clone(),
+                        return_addresses: {
+                            let mut addresses = state.return_addresses.clone();
+                            addresses.push(state.depth);
+                            addresses
+                        },
+                    },
+                    code.len(),
+                )?;
+                enqueue_fallthrough(
+                    &mut worklist,
+                    pc,
+                    VerificationState {
+                        depth: next_depth,
+                        handlers: next_handlers,
+                        return_addresses: next_return_addresses,
+                    },
+                    code.len(),
+                )?;
+            }
+            _ => enqueue_fallthrough(
+                &mut worklist,
+                pc,
+                VerificationState {
+                    depth: next_depth,
+                    handlers: next_handlers,
+                    return_addresses: next_return_addresses,
+                },
+                code.len(),
+            )?,
         }
     }
 
@@ -427,19 +633,49 @@ pub(crate) fn verify_parts(
     Ok(VerifiedBytecode { max_stack: maximum })
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CatchHandlerState {
+    target: u32,
+    stack_depth: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct VerificationState {
+    depth: usize,
+    handlers: Vec<CatchHandlerState>,
+    /// Conceptual operand-stack indexes containing the genuine Int return PCs
+    /// introduced by reachable `Gosub` edges. Ordinary opcodes may neither
+    /// forge nor consume these typed slots.
+    return_addresses: Vec<usize>,
+}
+
+fn record_maximum_depth(
+    maximum: &mut usize,
+    depth: usize,
+    declared_max_stack: u16,
+) -> Result<(), Error> {
+    *maximum = (*maximum).max(depth);
+    if *maximum > usize::from(declared_max_stack) {
+        return Err(Error::internal(
+            "declared maximum stack is smaller than required",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VerifiedBytecode {
     pub max_stack: u16,
 }
 
 fn enqueue_target(
-    worklist: &mut VecDeque<(usize, usize)>,
+    worklist: &mut VecDeque<(usize, VerificationState)>,
     target: u32,
-    depth: usize,
+    state: VerificationState,
     code_len: usize,
 ) -> Result<(), Error> {
     let target = validate_target(target, code_len)?;
-    worklist.push_back((target, depth));
+    worklist.push_back((target, state));
     Ok(())
 }
 
@@ -452,9 +688,9 @@ fn validate_target(target: u32, code_len: usize) -> Result<usize, Error> {
 }
 
 fn enqueue_fallthrough(
-    worklist: &mut VecDeque<(usize, usize)>,
+    worklist: &mut VecDeque<(usize, VerificationState)>,
     pc: usize,
-    depth: usize,
+    state: VerificationState,
     code_len: usize,
 ) -> Result<(), Error> {
     let next = pc
@@ -463,7 +699,7 @@ fn enqueue_fallthrough(
     if next >= code_len {
         return Err(Error::internal("bytecode ended without return"));
     }
-    worklist.push_back((next, depth));
+    worklist.push_back((next, state));
     Ok(())
 }
 
@@ -555,6 +791,202 @@ mod tests {
             };
             assert_eq!(function.verify().unwrap().max_stack, 2);
         }
+    }
+
+    #[test]
+    fn verifier_tracks_catch_markers_and_exceptional_edges() {
+        let normal = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(4),
+                Instruction::DropCatch,
+                Instruction::PushI32(3),
+                Instruction::Return,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        assert_eq!(normal.verify().unwrap().max_stack, 1);
+
+        let thrown = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(3),
+                Instruction::PushI32(7),
+                Instruction::Throw,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        assert_eq!(thrown.verify().unwrap().max_stack, 2);
+
+        let nip = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(10),
+                Instruction::Catch(6),
+                Instruction::PushI32(20),
+                Instruction::PushI32(30),
+                Instruction::NipCatch,
+                Instruction::Return,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        assert_eq!(nip.verify().unwrap().max_stack, 4);
+
+        for code in [
+            vec![
+                Instruction::PushI32(1),
+                Instruction::DropCatch,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::Catch(4),
+                Instruction::PushI32(1),
+                Instruction::DropCatch,
+                Instruction::Return,
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::PushI32(1),
+                Instruction::NipCatch,
+                Instruction::Return,
+            ],
+        ] {
+            let malformed = BytecodeFunction {
+                name: None,
+                code,
+                constants: vec![],
+                local_count: 0,
+                max_stack: 2,
+            };
+            assert!(malformed.verify().is_err());
+        }
+
+        let inconsistent_handlers = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushTrue,
+                Instruction::IfFalse(4),
+                Instruction::Catch(5),
+                Instruction::Goto(5),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        assert!(inconsistent_handlers.verify().is_err());
+
+        let marker_exceeds_declared_stack = BytecodeFunction {
+            max_stack: 0,
+            ..normal
+        };
+        assert!(marker_exceeds_declared_stack.verify().is_err());
+    }
+
+    #[test]
+    fn verifier_tracks_typed_gosub_return_addresses() {
+        let returning = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(9),
+                Instruction::Gosub(4),
+                Instruction::Return,
+                Instruction::Nop,
+                Instruction::Ret,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        assert_eq!(returning.verify().unwrap().max_stack, 2);
+
+        let abrupt_cleanup = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(9),
+                Instruction::Gosub(4),
+                Instruction::Return,
+                Instruction::Nop,
+                Instruction::DropGosub,
+                Instruction::Drop,
+                Instruction::PushI32(4),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        assert_eq!(abrupt_cleanup.verify().unwrap().max_stack, 2);
+
+        let nip_catch_return_address = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(6),
+                Instruction::Undefined,
+                Instruction::Gosub(4),
+                Instruction::Return,
+                Instruction::NipCatch,
+                Instruction::Ret,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 3,
+        };
+        assert_eq!(
+            nip_catch_return_address.verify().unwrap_err().message(),
+            "NipCatch cannot preserve a gosub return address"
+        );
+
+        for code in [
+            vec![Instruction::PushI32(0), Instruction::Ret],
+            vec![
+                Instruction::Catch(3),
+                Instruction::Ret,
+                Instruction::Nop,
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::Gosub(3),
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::PushI32(0),
+                Instruction::DropGosub,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+        ] {
+            let forged = BytecodeFunction {
+                name: None,
+                code,
+                constants: vec![],
+                local_count: 0,
+                max_stack: 1,
+            };
+            assert!(forged.verify().is_err());
+        }
+
+        let return_address_exceeds_declared_stack = BytecodeFunction {
+            max_stack: 1,
+            ..returning
+        };
+        assert!(return_address_exceeds_declared_stack.verify().is_err());
     }
 
     #[test]
@@ -739,6 +1171,17 @@ mod tests {
             max_stack: 1,
         };
         assert!(bad_jump.verify().is_err());
+
+        for instruction in [Instruction::Catch(99), Instruction::Gosub(99)] {
+            let bad_handler_target = BytecodeFunction {
+                name: None,
+                code: vec![Instruction::Undefined, Instruction::Return, instruction],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 1,
+            };
+            assert!(bad_handler_target.verify().is_err());
+        }
     }
 
     #[test]

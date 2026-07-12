@@ -461,6 +461,11 @@ struct RuntimeVmHost {
     closure_slots: Vec<VarRefRoot>,
     arguments: Vec<FrameBinding>,
     locals: Vec<FrameBinding>,
+    /// QuickJS can resume the same frame after a caught throw or a return
+    /// unwind without emitting `CloseLocal` for captured lexical cells. Only
+    /// cells captured at one of those exact boundaries may be reset in place
+    /// by the next lexical scope entry.
+    reusable_captured_locals: Vec<bool>,
 }
 
 enum VmPropertyKeyConversion {
@@ -855,6 +860,18 @@ impl VmHost for RuntimeVmHost {
         self.runtime
             .ensure_error_backtrace(value, false, None)
             .map_err(runtime_error_to_vm_error)
+    }
+
+    fn prepare_captured_local_reuse(&mut self) -> Result<(), Error> {
+        if self.reusable_captured_locals.len() != self.locals.len() {
+            return Err(Error::internal(
+                "reusable captured-local flags disagree with the frame",
+            ));
+        }
+        for (reusable, binding) in self.reusable_captured_locals.iter_mut().zip(&self.locals) {
+            *reusable = matches!(binding, FrameBinding::Captured(_));
+        }
+        Ok(())
     }
 
     fn load_constant(&mut self, index: u32) -> Result<Value, Error> {
@@ -1481,6 +1498,11 @@ impl VmHost for RuntimeVmHost {
                 "lexical scope entry referenced an ordinary local definition",
             ));
         }
+        let reusable = self
+            .reusable_captured_locals
+            .get_mut(usize::from(index))
+            .ok_or_else(|| Error::internal("local reuse flag index is out of bounds"))?;
+        let reusable = std::mem::take(reusable);
         let binding = self
             .locals
             .get_mut(usize::from(index))
@@ -1497,6 +1519,12 @@ impl VmHost for RuntimeVmHost {
                 // before SetLocalUninitialized reaches it; entering that same
                 // initial lifetime is a no-op. A live initialized capture still
                 // proves that a later lifetime skipped CloseLocal.
+                return Ok(());
+            }
+            if reusable {
+                self.runtime
+                    .reset_var_ref_uninitialized(root)
+                    .map_err(runtime_error_to_vm_error)?;
                 return Ok(());
             }
             return Err(Error::internal(
@@ -1612,6 +1640,11 @@ impl VmHost for RuntimeVmHost {
                 "CloseLocal referenced an ordinary local definition",
             ));
         }
+        let reusable = self
+            .reusable_captured_locals
+            .get_mut(usize::from(index))
+            .ok_or_else(|| Error::internal("local reuse flag index is out of bounds"))?;
+        *reusable = false;
         let binding = self
             .locals
             .get_mut(usize::from(index))
@@ -6660,6 +6693,7 @@ impl Runtime {
                     ))?;
             *binding = FrameBinding::Direct(Value::Object(callable.as_object().clone()));
         }
+        let frame_local_count = frame_locals.len();
         let mut host = RuntimeVmHost {
             runtime: self.clone(),
             active_frame_token: active_frame.token(),
@@ -6671,6 +6705,7 @@ impl Runtime {
             closure_slots,
             arguments: frame_arguments,
             locals: frame_locals,
+            reusable_captured_locals: vec![false; frame_local_count],
         };
         let result = Vm::new().execute_published(
             CallInput {
@@ -20783,6 +20818,291 @@ mod tests {
     }
 
     #[test]
+    fn published_exception_regions_catch_native_callee_and_accessor_throws() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+
+        let native_error = UnlinkedFunction::new(
+            vec![
+                Instruction::Catch(5),
+                Instruction::Null,
+                Instruction::GetField(0),
+                Instruction::NipCatch,
+                Instruction::Return,
+                Instruction::Return,
+            ],
+            vec![
+                UnlinkedConstant::primitive(Value::String(JsString::from_static("field"))).unwrap(),
+            ],
+            FunctionMetadata {
+                max_stack: 2,
+                ..FunctionMetadata::default()
+            },
+        );
+        let native_error = runtime
+            .publish_unlinked_function(context.realm, native_error)
+            .unwrap();
+        let native_error = runtime
+            .new_bytecode_closure(context.realm, &native_error)
+            .unwrap();
+        let Value::Object(error) = context.call(&native_error, Value::Undefined, &[]).unwrap()
+        else {
+            panic!("caught native throw was not an Error object");
+        };
+        assert!(runtime.is_error_object(&error).unwrap());
+        let name = runtime.intern_property_key("name").unwrap();
+        assert_eq!(
+            context.get_property(&error, &name).unwrap(),
+            Value::String(JsString::from_static("TypeError"))
+        );
+        let stack = runtime.intern_property_key("stack").unwrap();
+        assert!(matches!(
+            context.get_property(&error, &stack).unwrap(),
+            Value::String(_)
+        ));
+
+        let child = UnlinkedFunction::new(
+            vec![Instruction::PushI32(17), Instruction::Throw],
+            Vec::new(),
+            FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        let caller = UnlinkedFunction::new(
+            vec![
+                Instruction::Catch(5),
+                Instruction::FClosure(0),
+                Instruction::Call(0),
+                Instruction::NipCatch,
+                Instruction::Return,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(child)],
+            FunctionMetadata {
+                max_stack: 2,
+                ..FunctionMetadata::default()
+            },
+        );
+        let caller = runtime
+            .publish_unlinked_function(context.realm, caller)
+            .unwrap();
+        let caller = runtime
+            .new_bytecode_closure(context.realm, &caller)
+            .unwrap();
+        assert_eq!(
+            context.call(&caller, Value::Undefined, &[]).unwrap(),
+            Value::Int(17)
+        );
+
+        let Value::Object(getter) = context.eval("(function(){throw 23})").unwrap() else {
+            panic!("accessor getter was not callable");
+        };
+        let getter = runtime.as_callable(&getter).unwrap().unwrap();
+        let global = context.global_object().unwrap();
+        let accessor_name = runtime.intern_property_key("__caught_accessor").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &global,
+                    &accessor_name,
+                    &OrdinaryPropertyDescriptor {
+                        get: DescriptorField::Present(AccessorValue::Callable(getter)),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        let accessor = UnlinkedFunction::new_with_closure_variables(
+            vec![
+                Instruction::Catch(4),
+                Instruction::GetVar(0),
+                Instruction::NipCatch,
+                Instruction::Return,
+                Instruction::Return,
+            ],
+            vec![
+                UnlinkedConstant::primitive(Value::String(JsString::from_static(
+                    "__caught_accessor",
+                )))
+                .unwrap(),
+            ],
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 2,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::Global,
+                name: ClosureVariableName::Constant(0),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        );
+        let accessor = runtime
+            .publish_unlinked_function(context.realm, accessor)
+            .unwrap();
+        let accessor = runtime
+            .new_bytecode_closure(context.realm, &accessor)
+            .unwrap();
+        assert_eq!(
+            context.call(&accessor, Value::Undefined, &[]).unwrap(),
+            Value::Int(23)
+        );
+    }
+
+    #[test]
+    fn publication_rejects_malformed_exception_and_gosub_regions() {
+        let runtime = Runtime::new();
+        let context = runtime.new_context();
+        let baseline = runtime.heap_counts().function_bytecode_nodes;
+
+        for code in [
+            vec![
+                Instruction::Catch(99),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::Gosub(99),
+            ],
+            vec![Instruction::PushI32(0), Instruction::Ret],
+            vec![
+                Instruction::Gosub(3),
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+        ] {
+            let malformed = UnlinkedFunction::new(
+                code,
+                Vec::new(),
+                FunctionMetadata {
+                    max_stack: 2,
+                    ..FunctionMetadata::default()
+                },
+            );
+            assert!(matches!(
+                runtime.publish_unlinked_function(context.realm, malformed),
+                Err(RuntimeError::Engine(_))
+            ));
+        }
+        assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+    }
+
+    #[test]
+    fn caught_throw_reuses_captured_lexical_without_close_local() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let child = UnlinkedFunction::new_with_closure_variables(
+            vec![Instruction::GetVarRefCheck(0), Instruction::Return],
+            vec![
+                UnlinkedConstant::primitive(Value::String(JsString::from_static(
+                    "exceptionReused",
+                )))
+                .unwrap(),
+            ],
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentLocal(0),
+                name: ClosureVariableName::Constant(0),
+                is_lexical: true,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        );
+        let parent = UnlinkedFunction::new(
+            vec![
+                Instruction::SetLocalUninitialized(0),
+                Instruction::PushI32(1),
+                Instruction::InitializeLocal(0),
+                Instruction::FClosure(0),
+                Instruction::PutLocal(1),
+                Instruction::Catch(9),
+                Instruction::PushI32(0),
+                Instruction::Throw,
+                Instruction::Nop,
+                Instruction::Drop,
+                Instruction::SetLocalUninitialized(0),
+                Instruction::PushI32(2),
+                Instruction::InitializeLocal(0),
+                Instruction::FClosure(0),
+                Instruction::PutLocal(2),
+                Instruction::GetLocal(1),
+                Instruction::Call(0),
+                Instruction::PushConst(1),
+                Instruction::Add,
+                Instruction::GetLocal(2),
+                Instruction::Call(0),
+                Instruction::Add,
+                Instruction::PushConst(1),
+                Instruction::Add,
+                Instruction::GetLocal(1),
+                Instruction::GetLocal(2),
+                Instruction::StrictEq,
+                Instruction::Add,
+                Instruction::Return,
+            ],
+            vec![
+                UnlinkedConstant::child(child),
+                UnlinkedConstant::primitive(Value::String(JsString::from_static("|"))).unwrap(),
+            ],
+            FunctionMetadata {
+                local_count: 3,
+                max_stack: 3,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_variable_definitions(
+            Vec::new(),
+            vec![
+                UnlinkedVariableDefinition::lexical(
+                    Some(JsString::from_static("exceptionReused")),
+                    false,
+                ),
+                UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("first"))),
+                UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("second"))),
+            ],
+        );
+        let parent = runtime
+            .publish_unlinked_function(context.realm, parent)
+            .unwrap();
+        let parent = runtime
+            .new_bytecode_closure(context.realm, &parent)
+            .unwrap();
+        assert_eq!(
+            context.call(&parent, Value::Undefined, &[]).unwrap(),
+            Value::String(JsString::from_static("2|2|false"))
+        );
+    }
+
+    #[test]
+    fn finally_overridden_return_reuses_captured_lexical_without_close_local() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let source = concat!(
+            "(function(){var f,g,i=0;while(i<2){i++;try{{let x=i;",
+            "if(i===1)f=function(){return x};else g=function(){return x};",
+            "return 9}}finally{continue}}return f()+'|'+g()})()"
+        );
+
+        assert_eq!(
+            context.eval(source).unwrap(),
+            Value::String(JsString::from_static("2|2"))
+        );
+    }
+
+    #[test]
     fn close_local_detaches_a_captured_uninitialized_lexical_lifetime() {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
@@ -20895,14 +21215,18 @@ mod tests {
                 Instruction::Drop,
                 Instruction::PushI32(1),
                 Instruction::InitializeLocal(0),
+                Instruction::Undefined,
+                Instruction::Gosub(11),
+                Instruction::Drop,
                 Instruction::SetLocalUninitialized(0),
                 Instruction::Undefined,
                 Instruction::Return,
+                Instruction::Ret,
             ],
             vec![UnlinkedConstant::child(child)],
             FunctionMetadata {
                 local_count: 1,
-                max_stack: 1,
+                max_stack: 2,
                 ..FunctionMetadata::default()
             },
         )
