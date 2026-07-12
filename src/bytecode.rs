@@ -89,6 +89,9 @@ pub enum Instruction {
     /// QuickJS `OP_get_array_el3`: `base raw-key -> base converted-key value`
     /// for compound/logical assignment without repeated key conversion.
     GetArrayEl3,
+    /// QuickJS `OP_array_from`: consume `element_count` dense literal values
+    /// and replace them with a fresh Array in the bytecode's realm.
+    ArrayFrom(u16),
     /// QuickJS `OP_to_propkey`: observable `ToPropertyKey` while retaining a
     /// canonical Int/String/Symbol value on the VM stack.
     ToPropKey,
@@ -105,6 +108,18 @@ pub enum Instruction {
     /// QuickJS `OP_put_array_el`: assign a computed property, converting the
     /// still-raw key only after the right-hand side has been evaluated.
     PutArrayEl,
+    /// QuickJS `OP_define_field`: define one C_W_E data property while
+    /// preserving the object below it (`object value -> object`). Array
+    /// literals use this after their initial dense prefix.
+    DefineField(u32),
+    /// QuickJS `OP_define_array_el`: define a computed C_W_E data property
+    /// while preserving the Array and its dynamic index
+    /// (`array index value -> array index`).
+    DefineArrayEl,
+    /// QuickJS `OP_append`: append every value from one iterable and replace
+    /// the dynamic index with the first unused index
+    /// (`array index iterable -> array index`).
+    Append,
     /// QuickJS `OP_delete`: `base key -> bool` with strictness supplied by the
     /// active call frame.
     Delete,
@@ -113,6 +128,9 @@ pub enum Instruction {
     /// preserving the top value (`a b -> b`).
     Nip,
     Dup,
+    /// QuickJS `OP_dup1`: duplicate the value immediately below the stack top
+    /// in place (`a b -> a a b`).
+    Dup1,
     Neg,
     Plus,
     Inc,
@@ -228,6 +246,7 @@ impl Instruction {
             Self::GetArrayEl => (2, 1),
             Self::GetArrayEl2 => (2, 2),
             Self::GetArrayEl3 => (2, 3),
+            Self::ArrayFrom(element_count) => (*element_count as usize, 1),
             Self::ToPropKey => (1, 1),
             Self::Insert2 => (2, 3),
             Self::Insert3 => (3, 4),
@@ -235,6 +254,8 @@ impl Instruction {
             Self::Perm4 => (4, 4),
             Self::PutField(_) => (2, 0),
             Self::PutArrayEl => (3, 0),
+            Self::DefineField(_) => (2, 1),
+            Self::DefineArrayEl | Self::Append => (3, 2),
             Self::Delete => (2, 1),
             Self::Call(argument_count) => (*argument_count as usize + 1, 1),
             Self::CallMethod(argument_count) => (*argument_count as usize + 2, 1),
@@ -264,6 +285,7 @@ impl Instruction {
                 (1, 1)
             }
             Self::Dup => (1, 2),
+            Self::Dup1 => (2, 3),
             Self::Neg
             | Self::Plus
             | Self::Inc
@@ -335,7 +357,8 @@ impl BytecodeFunction {
             | Instruction::ThrowReadOnly(index)
             | Instruction::GetField(index)
             | Instruction::GetField2(index)
-            | Instruction::PutField(index) = instruction
+            | Instruction::PutField(index)
+            | Instruction::DefineField(index) = instruction
                 && !matches!(self.constant(*index), Some(Value::String(_)))
             {
                 return Err(Error::internal(
@@ -392,7 +415,8 @@ pub(crate) fn verify_parts(
             | Instruction::ThrowReadOnly(index)
             | Instruction::GetField(index)
             | Instruction::GetField2(index)
-            | Instruction::PutField(index) => {
+            | Instruction::PutField(index)
+            | Instruction::DefineField(index) => {
                 let is_valid = usize::try_from(*index)
                     .ok()
                     .is_some_and(|index| index < constant_count);
@@ -1798,5 +1822,90 @@ mod tests {
                 "local bytecode operand is out of bounds"
             );
         }
+    }
+
+    #[test]
+    fn verifier_models_array_literal_stack_contracts() {
+        let fixed = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::PushI32(2),
+                Instruction::ArrayFrom(2),
+                Instruction::PushI32(3),
+                Instruction::DefineField(0),
+                Instruction::Return,
+            ],
+            constants: vec![Value::String(crate::value::JsString::from_static("2"))],
+            local_count: 0,
+            max_stack: 3,
+        };
+        assert_eq!(fixed.verify().unwrap().max_stack, 2);
+
+        let dynamic = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::ArrayFrom(0),
+                Instruction::PushI32(0),
+                Instruction::Undefined,
+                Instruction::DefineArrayEl,
+                Instruction::Inc,
+                Instruction::Undefined,
+                Instruction::Append,
+                Instruction::Drop,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 3,
+        };
+        assert_eq!(dynamic.verify().unwrap().max_stack, 3);
+
+        let trailing_hole = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::ArrayFrom(0),
+                Instruction::PushI32(2),
+                Instruction::Dup1,
+                Instruction::PutField(0),
+                Instruction::Return,
+            ],
+            constants: vec![Value::String(crate::value::JsString::from_static("length"))],
+            local_count: 0,
+            max_stack: 3,
+        };
+        assert_eq!(trailing_hole.verify().unwrap().max_stack, 3);
+    }
+
+    #[test]
+    fn verifier_rejects_malformed_array_literal_operands() {
+        let non_string_field = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::DefineField(0),
+                Instruction::Return,
+            ],
+            constants: vec![Value::Int(0)],
+            local_count: 0,
+            max_stack: 2,
+        };
+        assert_eq!(
+            non_string_field.verify().unwrap_err().message(),
+            "string-key opcode referenced a non-string constant"
+        );
+
+        let array_from_underflow = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::ArrayFrom(1), Instruction::Return],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        assert_eq!(
+            array_from_underflow.verify().unwrap_err().message(),
+            "bytecode stack underflow"
+        );
     }
 }

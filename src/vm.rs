@@ -135,6 +135,27 @@ pub(crate) trait VmHost {
     fn materialize_error(&mut self, error: Error) -> Result<Value, Error>;
     fn instantiate_closure(&mut self, index: u32) -> Result<Value, Error>;
     fn set_function_name(&mut self, value: &Value, name_index: u32) -> Result<(), Error>;
+    /// Create a fresh Array in the executing bytecode's realm from one dense
+    /// literal prefix. `Return` carries the Array; `Throw` carries allocation
+    /// or Array-exotic failure.
+    fn array_from(&mut self, elements: Vec<Value>) -> Result<Completion, Error>;
+    /// QuickJS `OP_define_field`: define one own C_W_E data property named by
+    /// a verified string constant. The VM preserves `base` on success.
+    fn define_field(
+        &mut self,
+        base: Value,
+        key_index: u32,
+        value: Value,
+    ) -> Result<Completion, Error>;
+    /// QuickJS `OP_define_array_el`: define one own C_W_E data property using
+    /// the dynamic internal Array-literal index. The VM preserves both base
+    /// and index on success.
+    fn define_array_element(
+        &mut self,
+        base: Value,
+        index: Value,
+        value: Value,
+    ) -> Result<Completion, Error>;
     fn get_global_var(&mut self, index: u16, throw_if_missing: bool) -> Result<Completion, Error>;
     fn delete_global_var(&mut self, index: u16) -> Result<Completion, Error>;
     fn put_global_var(
@@ -226,6 +247,18 @@ struct DetachedHost<'a> {
     iterator_close_results: VecDeque<Option<Value>>,
     #[cfg(test)]
     iterator_close_pending: Vec<bool>,
+    #[cfg(test)]
+    array_from_results: VecDeque<Completion>,
+    #[cfg(test)]
+    array_from_inputs: Vec<Vec<Value>>,
+    #[cfg(test)]
+    define_field_results: VecDeque<Completion>,
+    #[cfg(test)]
+    defined_fields: Vec<(Value, u32, Value)>,
+    #[cfg(test)]
+    define_array_element_results: VecDeque<Completion>,
+    #[cfg(test)]
+    defined_array_elements: Vec<(Value, Value, Value)>,
 }
 
 impl<'a> DetachedHost<'a> {
@@ -245,6 +278,18 @@ impl<'a> DetachedHost<'a> {
             iterator_close_results: VecDeque::new(),
             #[cfg(test)]
             iterator_close_pending: Vec::new(),
+            #[cfg(test)]
+            array_from_results: VecDeque::new(),
+            #[cfg(test)]
+            array_from_inputs: Vec::new(),
+            #[cfg(test)]
+            define_field_results: VecDeque::new(),
+            #[cfg(test)]
+            defined_fields: Vec::new(),
+            #[cfg(test)]
+            define_array_element_results: VecDeque::new(),
+            #[cfg(test)]
+            defined_array_elements: Vec::new(),
         }
     }
 
@@ -374,6 +419,52 @@ impl VmHost for DetachedHost<'_> {
     fn set_function_name(&mut self, _value: &Value, _name_index: u32) -> Result<(), Error> {
         Err(Error::internal(
             "detached VM cannot name a runtime-owned function object",
+        ))
+    }
+
+    fn array_from(&mut self, elements: Vec<Value>) -> Result<Completion, Error> {
+        #[cfg(test)]
+        if let Some(outcome) = self.array_from_results.pop_front() {
+            self.array_from_inputs.push(elements);
+            return Ok(outcome);
+        }
+        let _ = elements;
+        Err(Error::internal(
+            "detached VM cannot create runtime-owned Array objects",
+        ))
+    }
+
+    fn define_field(
+        &mut self,
+        base: Value,
+        key_index: u32,
+        value: Value,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        if let Some(outcome) = self.define_field_results.pop_front() {
+            self.defined_fields.push((base, key_index, value));
+            return Ok(outcome);
+        }
+        let _ = (base, key_index, value);
+        Err(Error::internal(
+            "detached VM cannot define runtime-owned properties",
+        ))
+    }
+
+    fn define_array_element(
+        &mut self,
+        base: Value,
+        index: Value,
+        value: Value,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        if let Some(outcome) = self.define_array_element_results.pop_front() {
+            self.defined_array_elements.push((base, index, value));
+            return Ok(outcome);
+        }
+        let _ = (base, index, value);
+        Err(Error::internal(
+            "detached VM cannot define runtime-owned Array elements",
         ))
     }
 
@@ -771,6 +862,19 @@ impl CallFrame {
                 Instruction::FClosure(index) => {
                     self.stack.push(host.instantiate_closure(*index)?);
                 }
+                Instruction::ArrayFrom(element_count) => {
+                    let element_count = usize::from(*element_count);
+                    let first = self
+                        .stack
+                        .len()
+                        .checked_sub(element_count)
+                        .ok_or_else(|| Error::internal("array_from stack underflow"))?;
+                    let elements = self.stack.drain(first..).collect();
+                    match host.array_from(elements)? {
+                        Completion::Return(array) => self.stack.push(array),
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                }
                 Instruction::SetName(index) => {
                     let value = self
                         .stack
@@ -1006,6 +1110,42 @@ impl CallFrame {
                         return Ok(Completion::Throw(value));
                     }
                 }
+                Instruction::DefineField(index) => {
+                    let (base, value) = self.pop_pair()?;
+                    let retained_base = base.clone();
+                    match host.define_field(base, *index, value)? {
+                        Completion::Return(_) => self.stack.push(retained_base),
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                }
+                Instruction::DefineArrayEl => {
+                    let value = self.pop()?;
+                    let index = self.pop()?;
+                    let base = self.pop()?;
+                    let retained_base = base.clone();
+                    let retained_index = index.clone();
+                    match host.define_array_element(base, index, value)? {
+                        Completion::Return(_) => {
+                            self.stack.push(retained_base);
+                            self.stack.push(retained_index);
+                        }
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                }
+                Instruction::Append => {
+                    let iterable = self.pop()?;
+                    let index = self.pop()?;
+                    let array = self.pop()?;
+                    match Self::append_iterable(host, array, index, iterable)? {
+                        OperationOutcome::Value((array, index)) => {
+                            self.stack.push(array);
+                            self.stack.push(index);
+                        }
+                        OperationOutcome::Throw(value) => {
+                            return Ok(Completion::Throw(value));
+                        }
+                    }
+                }
                 Instruction::Delete => {
                     let (base, key) = self.pop_pair()?;
                     match host.delete_property(base, key, self.strict)? {
@@ -1027,6 +1167,15 @@ impl CallFrame {
                         .cloned()
                         .ok_or_else(|| Error::internal("dup on an empty stack"))?;
                     self.stack.push(value);
+                }
+                Instruction::Dup1 => {
+                    let index = self
+                        .stack
+                        .len()
+                        .checked_sub(2)
+                        .ok_or_else(|| Error::internal("dup1 needs two stack values"))?;
+                    let value = self.stack[index].clone();
+                    self.stack.insert(index + 1, value);
                 }
                 Instruction::Neg => {
                     if let OperationOutcome::Throw(value) = self.neg(host)? {
@@ -1449,6 +1598,60 @@ impl CallFrame {
         }
     }
 
+    /// Execute QuickJS `OP_append` without publishing a private iterator
+    /// region on the frame stack. Unlike ordinary `for-of`, QuickJS closes an
+    /// already-created iterator even when its cached `next` path throws while
+    /// expanding an Array literal. A close failure cannot replace that
+    /// pending throw.
+    fn append_iterable(
+        host: &mut impl VmHost,
+        array: Value,
+        mut index: Value,
+        iterable: Value,
+    ) -> Result<OperationOutcome<(Value, Value)>, Error> {
+        let (iterator, next_method) = match host.for_of_start(iterable)? {
+            ForOfStartOutcome::Record {
+                iterator,
+                next_method,
+            } => (iterator, next_method),
+            ForOfStartOutcome::Throw(value) => return Ok(OperationOutcome::Throw(value)),
+        };
+
+        loop {
+            let value = match host.for_of_next(iterator.clone(), next_method.clone())? {
+                ForOfNextOutcome::Result { done: true, .. } => {
+                    return Ok(OperationOutcome::Value((array, index)));
+                }
+                ForOfNextOutcome::Result { value, done: false } => value,
+                ForOfNextOutcome::Throw(value) => {
+                    match host.iterator_close(iterator, true)? {
+                        IteratorCloseOutcome::Closed | IteratorCloseOutcome::Throw(_) => {}
+                    }
+                    return Ok(OperationOutcome::Throw(value));
+                }
+            };
+
+            if let Err(error) = validate_array_literal_index(&index) {
+                let pending = host.materialize_error(error)?;
+                match host.iterator_close(iterator, true)? {
+                    IteratorCloseOutcome::Closed | IteratorCloseOutcome::Throw(_) => {}
+                }
+                return Ok(OperationOutcome::Throw(pending));
+            }
+
+            match host.define_array_element(array.clone(), index.clone(), value)? {
+                Completion::Return(_) => {}
+                Completion::Throw(value) => {
+                    match host.iterator_close(iterator, true)? {
+                        IteratorCloseOutcome::Closed | IteratorCloseOutcome::Throw(_) => {}
+                    }
+                    return Ok(OperationOutcome::Throw(value));
+                }
+            }
+            index = increment_array_literal_index(index)?;
+        }
+    }
+
     fn raise(
         &mut self,
         value: Value,
@@ -1860,6 +2063,41 @@ fn checked_target(target: u32, code_len: usize) -> Result<usize, Error> {
     Ok(target)
 }
 
+fn validate_array_literal_index(index: &Value) -> Result<(), Error> {
+    let value = match index {
+        Value::Int(value) if *value >= 0 => {
+            u32::try_from(*value).expect("non-negative i32 always fits u32")
+        }
+        Value::Float(value)
+            if value.is_finite()
+                && *value >= 0.0
+                && *value <= f64::from(u32::MAX)
+                && value.fract() == 0.0 =>
+        {
+            number_to_uint32(*value)
+        }
+        _ => {
+            return Err(Error::internal(
+                "Array literal dynamic index is not a non-negative uint32",
+            ));
+        }
+    };
+    if value == u32::MAX {
+        return Err(Error::new(ErrorKind::Range, "invalid array length"));
+    }
+    Ok(())
+}
+
+fn increment_array_literal_index(index: Value) -> Result<Value, Error> {
+    validate_array_literal_index(&index)?;
+    let value = match index {
+        Value::Int(value) => u32::try_from(value).expect("validated non-negative i32 fits u32"),
+        Value::Float(value) => number_to_uint32(value),
+        _ => unreachable!("validated Array literal index is numeric"),
+    };
+    Ok(Value::number(f64::from(value + 1)))
+}
+
 fn abstract_equal(
     host: &mut impl VmHost,
     mut left: Value,
@@ -2245,6 +2483,187 @@ mod tests {
             Completion::Return(Value::Int(55))
         );
         assert!(host.iterator_close_pending.is_empty());
+    }
+
+    #[test]
+    fn array_literal_opcodes_preserve_operands_and_element_order() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::PushI32(2),
+                Instruction::ArrayFrom(2),
+                Instruction::PushI32(3),
+                Instruction::DefineField(0),
+                Instruction::PushI32(4),
+                Instruction::PushI32(5),
+                Instruction::DefineArrayEl,
+                Instruction::Drop,
+                Instruction::Return,
+            ],
+            constants: vec![Value::String(JsString::from_static("2"))],
+            local_count: 0,
+            max_stack: 3,
+        };
+        function.verify().unwrap();
+        let mut host = DetachedHost::new(&function);
+        host.array_from_results
+            .push_back(Completion::Return(Value::String(JsString::from_static(
+                "array",
+            ))));
+        host.define_field_results
+            .push_back(Completion::Return(Value::Undefined));
+        host.define_array_element_results
+            .push_back(Completion::Return(Value::Undefined));
+        assert_eq!(
+            CallFrame::new(3)
+                .execute(&function.code, &mut host)
+                .unwrap(),
+            Completion::Return(Value::String(JsString::from_static("array")))
+        );
+        assert_eq!(host.array_from_inputs, [vec![Value::Int(1), Value::Int(2)]]);
+        assert_eq!(
+            host.defined_fields,
+            [(
+                Value::String(JsString::from_static("array")),
+                0,
+                Value::Int(3)
+            )]
+        );
+        assert_eq!(
+            host.defined_array_elements,
+            [(
+                Value::String(JsString::from_static("array")),
+                Value::Int(4),
+                Value::Int(5)
+            )]
+        );
+
+        let dup1 = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::PushI32(2),
+                Instruction::Dup1,
+                Instruction::Add,
+                Instruction::Add,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 3,
+        };
+        assert_eq!(Vm::new().execute(&dup1).unwrap(), Value::Int(4));
+    }
+
+    #[test]
+    fn append_uses_iterator_protocol_and_preserves_pending_throw_on_close() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushConst(0),
+                Instruction::PushI32(0),
+                Instruction::PushConst(1),
+                Instruction::Append,
+                Instruction::Drop,
+                Instruction::Return,
+            ],
+            constants: vec![
+                Value::String(JsString::from_static("array")),
+                Value::String(JsString::from_static("iterable")),
+            ],
+            local_count: 0,
+            max_stack: 3,
+        };
+        function.verify().unwrap();
+
+        let mut success = DetachedHost::new(&function);
+        success.iterator_start_record = Some((Value::Int(10), Value::Int(11)));
+        success
+            .iterator_next_results
+            .push_back(Ok((Value::Int(7), false)));
+        success
+            .iterator_next_results
+            .push_back(Ok((Value::Int(8), false)));
+        success
+            .iterator_next_results
+            .push_back(Ok((Value::Undefined, true)));
+        success
+            .define_array_element_results
+            .push_back(Completion::Return(Value::Undefined));
+        success
+            .define_array_element_results
+            .push_back(Completion::Return(Value::Undefined));
+        assert_eq!(
+            CallFrame::new(3)
+                .execute(&function.code, &mut success)
+                .unwrap(),
+            Completion::Return(Value::String(JsString::from_static("array")))
+        );
+        assert_eq!(
+            success.defined_array_elements,
+            [
+                (
+                    Value::String(JsString::from_static("array")),
+                    Value::Int(0),
+                    Value::Int(7)
+                ),
+                (
+                    Value::String(JsString::from_static("array")),
+                    Value::Int(1),
+                    Value::Int(8)
+                )
+            ]
+        );
+        assert!(success.iterator_close_pending.is_empty());
+
+        let mut next_throw = DetachedHost::new(&function);
+        next_throw.iterator_start_record = Some((Value::Int(10), Value::Int(11)));
+        next_throw
+            .iterator_next_results
+            .push_back(Err(Value::Int(55)));
+        next_throw
+            .iterator_close_results
+            .push_back(Some(Value::Int(99)));
+        assert_eq!(
+            CallFrame::new(3)
+                .execute(&function.code, &mut next_throw)
+                .unwrap(),
+            Completion::Throw(Value::Int(55))
+        );
+        assert_eq!(next_throw.iterator_close_pending, [true]);
+
+        let mut define_throw = DetachedHost::new(&function);
+        define_throw.iterator_start_record = Some((Value::Int(10), Value::Int(11)));
+        define_throw
+            .iterator_next_results
+            .push_back(Ok((Value::Int(7), false)));
+        define_throw
+            .define_array_element_results
+            .push_back(Completion::Throw(Value::Int(66)));
+        define_throw.iterator_close_results.push_back(None);
+        assert_eq!(
+            CallFrame::new(3)
+                .execute(&function.code, &mut define_throw)
+                .unwrap(),
+            Completion::Throw(Value::Int(66))
+        );
+        assert_eq!(define_throw.iterator_close_pending, [true]);
+    }
+
+    #[test]
+    fn detached_vm_rejects_array_allocation_without_runtime_intrinsics() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::ArrayFrom(0), Instruction::Return],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        assert_eq!(
+            Vm::new().execute(&function).unwrap_err().message(),
+            "detached VM cannot create runtime-owned Array objects"
+        );
     }
 
     #[test]

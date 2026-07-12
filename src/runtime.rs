@@ -23,9 +23,9 @@ use crate::function::{
     UnlinkedVariableDefinition,
 };
 use crate::heap::{
-    AutoInitProperty, BigIntAsNKind, BytecodeConstant, ClosureSource, ClosureVariable,
-    ClosureVariableKind, ClosureVariableName, ConstructorKind, ContextData, ContextId,
-    DynamicFunctionKind, ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId,
+    ArrayIteratorKind, AutoInitProperty, BigIntAsNKind, BytecodeConstant, ClosureSource,
+    ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind, ContextData,
+    ContextId, DynamicFunctionKind, ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId,
     FunctionDebugInfo, FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats,
     GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError,
     NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
@@ -291,6 +291,7 @@ enum PropertyGetAction {
 enum PropertySetAction {
     Complete,
     Rejected(PropertySetRejection),
+    Throw(Value),
     Call {
         setter: CallableRef,
         receiver: Value,
@@ -298,9 +299,28 @@ enum PropertySetAction {
     },
 }
 
+enum PropertyDefineOutcome {
+    Defined(bool),
+    Throw(Value),
+}
+
+enum ArrayLengthConversion {
+    Length(u32),
+    Throw(Value),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArrayOwnKey {
+    Length,
+    Index(u32),
+    Other,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PropertySetRejection {
     ReadOnly,
+    ArrayLengthReadOnly,
+    NotConfigurable,
     NoSetter,
     NotExtensible,
     NotObject,
@@ -507,6 +527,31 @@ enum VmPropertyKeyConversion {
 }
 
 impl RuntimeVmHost {
+    fn finish_property_define(
+        &mut self,
+        result: Result<PropertyDefineOutcome, RuntimeError>,
+    ) -> Result<Completion, Error> {
+        match result {
+            Ok(PropertyDefineOutcome::Defined(true)) => Ok(Completion::Return(Value::Undefined)),
+            Ok(PropertyDefineOutcome::Defined(false)) => {
+                Err(Error::new(ErrorKind::Type, "property is not configurable"))
+            }
+            Ok(PropertyDefineOutcome::Throw(value)) => Ok(Completion::Throw(value)),
+            Err(RuntimeError::Engine(error))
+                if NativeErrorKind::from_javascript_error(error.kind()).is_some() =>
+            {
+                let kind = NativeErrorKind::from_javascript_error(error.kind())
+                    .expect("guard proved a JavaScript-visible property error");
+                let value = self
+                    .runtime
+                    .new_native_error_from_error(self.current_realm, kind, &error)
+                    .map_err(runtime_error_to_vm_error)?;
+                Ok(Completion::Throw(value))
+            }
+            Err(error) => Err(runtime_error_to_vm_error(error)),
+        }
+    }
+
     fn local_definition(&self, index: u16) -> Result<VariableDefinition, Error> {
         self.local_definitions
             .get(usize::from(index))
@@ -672,6 +717,7 @@ impl RuntimeVmHost {
     ) -> Result<Completion, Error> {
         match action {
             PropertySetAction::Complete => Ok(Completion::Return(Value::Undefined)),
+            PropertySetAction::Throw(value) => Ok(Completion::Throw(value)),
             PropertySetAction::Rejected(_) if !strict => Ok(Completion::Return(Value::Undefined)),
             PropertySetAction::Rejected(PropertySetRejection::ReadOnly) => {
                 let error = self
@@ -679,6 +725,20 @@ impl RuntimeVmHost {
                     .native_atom_error(ErrorKind::Type, "'", key, "' is read-only")
                     .map_err(runtime_error_to_vm_error)?;
                 Err(error)
+            }
+            PropertySetAction::Rejected(PropertySetRejection::ArrayLengthReadOnly) => {
+                let length = self
+                    .runtime
+                    .intern_property_key("length")
+                    .map_err(|error| Error::internal(error.to_string()))?;
+                let error = self
+                    .runtime
+                    .native_atom_error(ErrorKind::Type, "'", &length, "' is read-only")
+                    .map_err(runtime_error_to_vm_error)?;
+                Err(error)
+            }
+            PropertySetAction::Rejected(PropertySetRejection::NotConfigurable) => {
+                Err(Error::new(ErrorKind::Type, "not configurable"))
             }
             PropertySetAction::Rejected(PropertySetRejection::NoSetter) => {
                 Err(Error::new(ErrorKind::Type, "no setter for property"))
@@ -785,7 +845,13 @@ impl RuntimeVmHost {
         let action = match &base {
             Value::Object(object) => self
                 .runtime
-                .prepare_set_property_with_receiver(object, key, value, base.clone())
+                .prepare_set_property_with_receiver_in_realm(
+                    Some(self.current_realm),
+                    object,
+                    key,
+                    value,
+                    base.clone(),
+                )
                 .map_err(runtime_error_to_vm_error)?,
             Value::Bool(_)
             | Value::Int(_)
@@ -804,7 +870,13 @@ impl RuntimeVmHost {
                     .primitive_prototype_for_realm(self.current_realm, kind)
                     .map_err(runtime_error_to_vm_error)?;
                 self.runtime
-                    .prepare_set_property_with_receiver(&prototype, key, value, base.clone())
+                    .prepare_set_property_with_receiver_in_realm(
+                        Some(self.current_realm),
+                        &prototype,
+                        key,
+                        value,
+                        base.clone(),
+                    )
                     .map_err(runtime_error_to_vm_error)?
             }
             Value::Null | Value::Undefined => {
@@ -830,7 +902,13 @@ impl RuntimeVmHost {
                     .primitive_prototype_for_realm(self.current_realm, PrimitiveKind::String)
                     .map_err(runtime_error_to_vm_error)?;
                 self.runtime
-                    .prepare_set_property_with_receiver(&prototype, key, value, base.clone())
+                    .prepare_set_property_with_receiver_in_realm(
+                        Some(self.current_realm),
+                        &prototype,
+                        key,
+                        value,
+                        base.clone(),
+                    )
                     .map_err(runtime_error_to_vm_error)?
             }
         };
@@ -1168,6 +1246,8 @@ impl VmHost for RuntimeVmHost {
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. } => "function",
             ObjectPayload::Ordinary
+            | ObjectPayload::Array
+            | ObjectPayload::ArrayIterator { .. }
             | ObjectPayload::Primitive(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
@@ -1321,6 +1401,66 @@ impl VmHost for RuntimeVmHost {
         self.runtime
             .define_object_name(value, name)
             .map_err(runtime_error_to_vm_error)
+    }
+
+    fn array_from(&mut self, elements: Vec<Value>) -> Result<Completion, Error> {
+        self.runtime
+            .new_array_from_values(self.current_realm, elements)
+            .map(|array| Completion::Return(Value::Object(array)))
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn define_field(
+        &mut self,
+        base: Value,
+        key_index: u32,
+        value: Value,
+    ) -> Result<Completion, Error> {
+        let Value::Object(object) = base else {
+            return Err(Error::new(ErrorKind::Type, "not an object"));
+        };
+        let key = self.constant_property_key(key_index)?;
+        let result = self.runtime.define_own_property_in_realm(
+            Some(self.current_realm),
+            &object,
+            &key,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(value),
+                writable: DescriptorField::Present(true),
+                enumerable: DescriptorField::Present(true),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        );
+        self.finish_property_define(result)
+    }
+
+    fn define_array_element(
+        &mut self,
+        base: Value,
+        index: Value,
+        value: Value,
+    ) -> Result<Completion, Error> {
+        let Value::Object(object) = base else {
+            return Err(Error::new(ErrorKind::Type, "not an object"));
+        };
+        let key = match self.property_key_from_value(index)? {
+            VmPropertyKeyConversion::Key(key) => key,
+            VmPropertyKeyConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let result = self.runtime.define_own_property_in_realm(
+            Some(self.current_realm),
+            &object,
+            &key,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(value),
+                writable: DescriptorField::Present(true),
+                enumerable: DescriptorField::Present(true),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        );
+        self.finish_property_define(result)
     }
 
     fn get_global_var(&mut self, index: u16, throw_if_missing: bool) -> Result<Completion, Error> {
@@ -1529,10 +1669,11 @@ impl VmHost for RuntimeVmHost {
         }
         match self
             .runtime
-            .prepare_set_property(&global_object, &key, value)
+            .prepare_set_property_in_realm(self.current_realm, &global_object, &key, value)
             .map_err(runtime_error_to_vm_error)?
         {
             PropertySetAction::Complete => Ok(Completion::Return(Value::Undefined)),
+            PropertySetAction::Throw(value) => Ok(Completion::Throw(value)),
             PropertySetAction::Rejected(_) if !strict => Ok(Completion::Return(Value::Undefined)),
             PropertySetAction::Rejected(PropertySetRejection::ReadOnly) => {
                 let error = self
@@ -1540,6 +1681,20 @@ impl VmHost for RuntimeVmHost {
                     .native_atom_error(ErrorKind::Type, "'", &key, "' is read-only")
                     .map_err(runtime_error_to_vm_error)?;
                 Err(error)
+            }
+            PropertySetAction::Rejected(PropertySetRejection::ArrayLengthReadOnly) => {
+                let length = self
+                    .runtime
+                    .intern_property_key("length")
+                    .map_err(|error| Error::internal(error.to_string()))?;
+                let error = self
+                    .runtime
+                    .native_atom_error(ErrorKind::Type, "'", &length, "' is read-only")
+                    .map_err(runtime_error_to_vm_error)?;
+                Err(error)
+            }
+            PropertySetAction::Rejected(PropertySetRejection::NotConfigurable) => {
+                Err(Error::new(ErrorKind::Type, "not configurable"))
             }
             PropertySetAction::Rejected(PropertySetRejection::NoSetter) => {
                 Err(Error::new(ErrorKind::Type, "no setter for property"))
@@ -2296,9 +2451,19 @@ impl Runtime {
             true,
         )
         .expect("Function.prototype.name initialization must succeed");
+        // QuickJS's `%Array.prototype%` is itself a genuine empty Array,
+        // rather than an ordinary object wearing the same prototype chain.
+        // Publish the class-correct root before the Array constructor and
+        // method tables become observable in later milestones.
+        let array_prototype = self
+            .new_empty_array_with_prototype(&object_prototype)
+            .expect("initial Array.prototype allocation must succeed");
         let iterator_prototype = self
             .new_object(Some(&object_prototype))
             .expect("initial Iterator.prototype allocation must succeed");
+        let array_iterator_prototype = self
+            .new_object(Some(&iterator_prototype))
+            .expect("initial ArrayIterator.prototype allocation must succeed");
         let string_iterator_prototype = self
             .new_object(Some(&iterator_prototype))
             .expect("initial StringIterator.prototype allocation must succeed");
@@ -2366,7 +2531,9 @@ impl Runtime {
                     ContextData::new(
                         object_prototype.object_id(),
                         function_prototype.object_id(),
+                        array_prototype.object_id(),
                         iterator_prototype.object_id(),
+                        array_iterator_prototype.object_id(),
                         string_iterator_prototype.object_id(),
                         global_object.object_id(),
                         global_var_object.object_id(),
@@ -2411,6 +2578,14 @@ impl Runtime {
             &global_object,
         )
         .expect("Error intrinsic initialization must succeed");
+        self.initialize_array_intrinsics(
+            realm,
+            &function_prototype,
+            &array_prototype,
+            &array_iterator_prototype,
+            &global_object,
+        )
+        .expect("Array intrinsic initialization must succeed");
         self.initialize_function_constructor(realm, &function_prototype, &global_object)
             .expect("Function constructor initialization must succeed");
         self.initialize_global_functions_prefix(realm, &function_prototype, &global_object)
@@ -2472,12 +2647,14 @@ impl Runtime {
         drop(bigint_prototype);
         drop(symbol_prototype);
         drop(string_iterator_prototype);
+        drop(array_iterator_prototype);
         drop(iterator_prototype);
         drop(string_prototype);
         drop(boolean_prototype);
         drop(number_prototype);
         drop(native_error_prototypes);
         drop(error_prototype);
+        drop(array_prototype);
         drop(function_prototype);
         drop(object_prototype);
         context
@@ -2666,6 +2843,130 @@ impl Runtime {
         state.apply_cleanup(cleanup)?;
         drop(state);
         Ok(ObjectRef::from_owned_handle(self.clone(), object))
+    }
+
+    /// Allocate one genuine empty Array with an explicit prototype. The
+    /// non-configurable `length` data property is installed as physical slot
+    /// zero so later ArraySetLength updates never depend on insertion order.
+    fn new_empty_array_with_prototype(
+        &self,
+        prototype: &ObjectRef,
+    ) -> Result<ObjectRef, RuntimeError> {
+        let _operation = self.operation();
+        if !prototype.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("Array prototype"));
+        }
+        let length = self.intern_property_key("length")?;
+        let entries = [ShapeEntry {
+            atom: length.atom(),
+            flags: PropertyFlags::data(true, false, false),
+        }];
+        let mut state = self.0.state.borrow_mut();
+        let shape = state.get_or_create_shape(Some(prototype.object_id()), &entries)?;
+        let object = match state.heap.allocate_object(ObjectData::array(
+            shape,
+            vec![PropertySlot::Data(RawValue::Int(0))],
+        )) {
+            Ok(object) => object,
+            Err(error) => {
+                let cleanup = state.heap.release_shape(shape)?;
+                state.apply_cleanup(cleanup)?;
+                return Err(error.into());
+            }
+        };
+        let cleanup = state.heap.release_shape(shape)?;
+        state.apply_cleanup(cleanup)?;
+        drop(state);
+        Ok(ObjectRef::from_owned_handle(self.clone(), object))
+    }
+
+    /// Allocate an empty Array rooted in `realm`'s `%Array.prototype%`.
+    pub(crate) fn new_array(&self, realm: ContextId) -> Result<ObjectRef, RuntimeError> {
+        let prototype = self.0.state.borrow().heap.context(realm)?.array_prototype;
+        let prototype = ObjectRef::from_borrowed_handle(self.clone(), prototype)?;
+        self.new_empty_array_with_prototype(&prototype)
+    }
+
+    /// Allocate a realm-correct Array and create consecutive C/W/E indexed
+    /// data properties from `values`. This is the final VM-facing substrate
+    /// for QuickJS `OP_array_from` and the dense prefix of Array literals.
+    pub(crate) fn new_array_from_values(
+        &self,
+        realm: ContextId,
+        values: Vec<Value>,
+    ) -> Result<ObjectRef, RuntimeError> {
+        for value in &values {
+            self.validate_value_domain(value, "Array element")?;
+        }
+        let array = self.new_array(realm)?;
+        for (index, value) in values.into_iter().enumerate() {
+            let index = u32::try_from(index).map_err(|_| {
+                RuntimeError::Engine(Error::new(ErrorKind::Range, "invalid array length"))
+            })?;
+            if index == u32::MAX {
+                return Err(RuntimeError::Engine(Error::new(
+                    ErrorKind::Range,
+                    "invalid array length",
+                )));
+            }
+            let key = self.intern_property_key(&index.to_string())?;
+            let defined = self.define_own_property(
+                &array,
+                &key,
+                &OrdinaryPropertyDescriptor {
+                    value: DescriptorField::Present(value),
+                    writable: DescriptorField::Present(true),
+                    enumerable: DescriptorField::Present(true),
+                    configurable: DescriptorField::Present(true),
+                    ..OrdinaryPropertyDescriptor::new()
+                },
+            )?;
+            if !defined {
+                return Err(RuntimeError::Invariant(
+                    "fresh Array element definition was rejected",
+                ));
+            }
+        }
+        Ok(array)
+    }
+
+    fn new_array_iterator(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+        kind: ArrayIteratorKind,
+    ) -> Result<ObjectRef, RuntimeError> {
+        let _operation = self.operation();
+        if !object.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("Array Iterator target"));
+        }
+        let prototype_id = self
+            .0
+            .state
+            .borrow()
+            .heap
+            .context(realm)?
+            .array_iterator_prototype;
+        let prototype = ObjectRef::from_borrowed_handle(self.clone(), prototype_id)?;
+        let mut state = self.0.state.borrow_mut();
+        let shape = state.get_or_create_shape(Some(prototype.object_id()), &[])?;
+        let iterator = match state.heap.allocate_object(ObjectData::array_iterator(
+            shape,
+            Vec::new(),
+            object.object_id(),
+            kind,
+        )) {
+            Ok(iterator) => iterator,
+            Err(error) => {
+                let cleanup = state.heap.release_shape(shape)?;
+                state.apply_cleanup(cleanup)?;
+                return Err(error.into());
+            }
+        };
+        let cleanup = state.heap.release_shape(shape)?;
+        state.apply_cleanup(cleanup)?;
+        drop(state);
+        Ok(ObjectRef::from_owned_handle(self.clone(), iterator))
     }
 
     fn new_string_iterator(
@@ -3120,9 +3421,8 @@ impl Runtime {
         self.define_constructor_relationship(&error_constructor, error_prototype)?;
 
         for kind in NativeErrorKind::ALL {
-            // AggregateError needs iterable-to-array semantics and an Array
-            // instance for its `errors` property. Do not expose a fake
-            // constructor before that substrate exists.
+            // AggregateError's constructor, `errors` population, and stack
+            // behavior remain a separate intrinsic milestone.
             if kind == NativeErrorKind::Aggregate {
                 continue;
             }
@@ -3149,6 +3449,161 @@ impl Runtime {
             )?;
             self.define_constructor_relationship(&constructor, prototype)?;
         }
+        Ok(())
+    }
+
+    fn initialize_array_intrinsics(
+        &self,
+        realm: ContextId,
+        function_prototype: &ObjectRef,
+        array_prototype: &ObjectRef,
+        array_iterator_prototype: &ObjectRef,
+        global_object: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        for (kind, name) in [
+            (ArrayIteratorKind::Value, "values"),
+            (ArrayIteratorKind::Key, "keys"),
+            (ArrayIteratorKind::KeyAndValue, "entries"),
+        ] {
+            self.define_native_builtin_auto_init(
+                array_prototype,
+                realm,
+                NativeFunctionId::ArrayPrototypeIterator(kind),
+                name,
+                0,
+                0,
+            )?;
+        }
+
+        self.define_native_builtin_auto_init(
+            array_iterator_prototype,
+            realm,
+            NativeFunctionId::ArrayIteratorNext,
+            "next",
+            0,
+            0,
+        )?;
+        let tag = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));
+        if !self.define_own_property(
+            array_iterator_prototype,
+            &tag,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(Value::String(JsString::from_static(
+                    "Array Iterator",
+                ))),
+                writable: DescriptorField::Present(false),
+                enumerable: DescriptorField::Present(false),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )? {
+            return Err(RuntimeError::Invariant(
+                "Array Iterator toStringTag definition was rejected",
+            ));
+        }
+
+        let constructor = self.new_native_builtin(
+            function_prototype,
+            realm,
+            NativeFunctionId::ArrayConstructor,
+            1,
+            "Array",
+            1,
+        )?;
+        self.define_native_builtin_auto_init(
+            constructor.as_object(),
+            realm,
+            NativeFunctionId::ArrayIsArray,
+            "isArray",
+            1,
+            1,
+        )?;
+        self.define_native_builtin_auto_init(
+            constructor.as_object(),
+            realm,
+            NativeFunctionId::ArrayFrom,
+            "from",
+            1,
+            3,
+        )?;
+        self.define_native_builtin_auto_init(
+            constructor.as_object(),
+            realm,
+            NativeFunctionId::ArrayOf,
+            "of",
+            0,
+            0,
+        )?;
+        self.define_constructor_relationship(&constructor, array_prototype)?;
+
+        let getter = self.new_native_builtin(
+            function_prototype,
+            realm,
+            NativeFunctionId::ArraySpeciesGetter,
+            0,
+            "get [Symbol.species]",
+            0,
+        )?;
+        let species = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Species));
+        if !self.define_own_property(
+            constructor.as_object(),
+            &species,
+            &OrdinaryPropertyDescriptor {
+                get: DescriptorField::Present(AccessorValue::Callable(getter)),
+                set: DescriptorField::Present(AccessorValue::Undefined),
+                enumerable: DescriptorField::Present(false),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )? {
+            return Err(RuntimeError::Invariant(
+                "Array species definition was rejected",
+            ));
+        }
+
+        let values = self.intern_property_key("values")?;
+        let values = match self.get_property_in_realm(realm, array_prototype, &values)? {
+            Completion::Return(value @ Value::Object(_)) => value,
+            Completion::Return(_) => {
+                return Err(RuntimeError::Invariant(
+                    "Array.prototype.values was not callable during alias bootstrap",
+                ));
+            }
+            Completion::Throw(_) => {
+                return Err(RuntimeError::Invariant(
+                    "Array.prototype.values initialization threw during bootstrap",
+                ));
+            }
+        };
+        let iterator = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Iterator));
+        if !self.define_own_property(
+            array_prototype,
+            &iterator,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(values),
+                writable: DescriptorField::Present(true),
+                enumerable: DescriptorField::Present(false),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )? {
+            return Err(RuntimeError::Invariant(
+                "Array iterator alias definition was rejected",
+            ));
+        }
+
+        self.define_function_data_property(
+            global_object,
+            "Array",
+            Value::Object(constructor.as_object().clone()),
+            true,
+            true,
+        )?;
+        self.0
+            .state
+            .borrow_mut()
+            .heap
+            .attach_array_constructor(realm, constructor.as_object().object_id())?;
         Ok(())
     }
 
@@ -4227,6 +4682,24 @@ impl Runtime {
             return Err(RuntimeError::WrongRuntime("object"));
         }
         Ok(self.0.state.borrow().heap.object(object.object_id())?.kind == ObjectKind::Error)
+    }
+
+    /// Return whether `object` carries the genuine Array exotic class tag.
+    /// Prototype spoofing alone never makes an ordinary object an Array.
+    pub fn is_array_object(&self, object: &ObjectRef) -> Result<bool, RuntimeError> {
+        let _operation = self.operation();
+        if !object.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("object"));
+        }
+        Ok(matches!(
+            self.0
+                .state
+                .borrow()
+                .heap
+                .object(object.object_id())?
+                .payload,
+            ObjectPayload::Array
+        ))
     }
 
     /// Return the object's `[[Construct]]` capability bit. Callability and
@@ -5431,6 +5904,8 @@ impl Runtime {
         Ok(match &object.payload {
             ObjectPayload::Primitive(PrimitiveObjectData::String(value)) => Some(value.len()),
             ObjectPayload::Ordinary
+            | ObjectPayload::Array
+            | ObjectPayload::ArrayIterator { .. }
             | ObjectPayload::Primitive(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
@@ -5746,6 +6221,7 @@ impl Runtime {
         Ok(None)
     }
 
+    #[cfg(test)]
     fn prepare_set_property(
         &self,
         object: &ObjectRef,
@@ -5753,11 +6229,45 @@ impl Runtime {
         value: Value,
     ) -> Result<PropertySetAction, RuntimeError> {
         let _operation = self.operation();
-        self.prepare_set_property_with_receiver(object, key, value, Value::Object(object.clone()))
+        self.prepare_set_property_with_receiver_in_realm(
+            None,
+            object,
+            key,
+            value,
+            Value::Object(object.clone()),
+        )
     }
 
+    fn prepare_set_property_in_realm(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+        key: &PropertyKey,
+        value: Value,
+    ) -> Result<PropertySetAction, RuntimeError> {
+        self.prepare_set_property_with_receiver_in_realm(
+            Some(realm),
+            object,
+            key,
+            value,
+            Value::Object(object.clone()),
+        )
+    }
+
+    #[cfg(test)]
     fn prepare_set_property_with_receiver(
         &self,
+        object: &ObjectRef,
+        key: &PropertyKey,
+        value: Value,
+        receiver: Value,
+    ) -> Result<PropertySetAction, RuntimeError> {
+        self.prepare_set_property_with_receiver_in_realm(None, object, key, value, receiver)
+    }
+
+    fn prepare_set_property_with_receiver_in_realm(
+        &self,
+        realm: Option<ContextId>,
         object: &ObjectRef,
         key: &PropertyKey,
         value: Value,
@@ -5769,10 +6279,14 @@ impl Runtime {
         self.validate_value_domain(&receiver, "property receiver")?;
         let mut cursor = Some(object.clone());
         let mut inherited_allows_write = true;
+        let mut direct_array_length = false;
         while let Some(current) = cursor {
             if let Some(property) = self.get_own_property(&current, key)? {
                 match property {
                     CompleteOrdinaryPropertyDescriptor::Data { writable, .. } => {
+                        direct_array_length = matches!(&receiver, Value::Object(receiver)
+                            if receiver == &current
+                                && self.array_own_key(&current, key)? == ArrayOwnKey::Length);
                         inherited_allows_write = writable;
                         break;
                     }
@@ -5791,6 +6305,14 @@ impl Runtime {
                 }
             }
             cursor = self.get_prototype_of(&current)?;
+        }
+        if direct_array_length {
+            let Value::Object(receiver) = receiver else {
+                return Err(RuntimeError::Invariant(
+                    "direct Array length write lost its object receiver",
+                ));
+            };
+            return self.prepare_set_array_length(realm, &receiver, key, value);
         }
         if !inherited_allows_write {
             return Ok(PropertySetAction::Rejected(PropertySetRejection::ReadOnly));
@@ -5830,24 +6352,113 @@ impl Runtime {
                 }
             }
         };
-        if self.define_own_property(&receiver, key, &descriptor)? {
-            Ok(PropertySetAction::Complete)
-        } else {
-            Ok(PropertySetAction::Rejected(PropertySetRejection::ReadOnly))
-        }
+        Ok(
+            match self.define_own_property_in_realm(realm, &receiver, key, &descriptor)? {
+                PropertyDefineOutcome::Defined(true) => PropertySetAction::Complete,
+                PropertyDefineOutcome::Defined(false) => {
+                    let rejection =
+                        if matches!(self.array_own_key(&receiver, key)?, ArrayOwnKey::Index(_))
+                            && !self.array_length_state(&receiver)?.1
+                        {
+                            PropertySetRejection::ArrayLengthReadOnly
+                        } else {
+                            PropertySetRejection::ReadOnly
+                        };
+                    PropertySetAction::Rejected(rejection)
+                }
+                PropertyDefineOutcome::Throw(value) => PropertySetAction::Throw(value),
+            },
+        )
     }
 
-    /// Validate and apply an ordinary own-property descriptor.
-    ///
-    /// Ordinary semantic rejection is returned as `Ok(false)` so `Reflect`
-    /// and throwing callers can make their distinct language-level choices.
+    /// Array `length` assignment has the same conversion and deletion kernel
+    /// as DefineOwnProperty, but Set must reject every write once length is
+    /// read-only, including a SameValue write that DefineOwnProperty accepts.
+    fn prepare_set_array_length(
+        &self,
+        realm: Option<ContextId>,
+        object: &ObjectRef,
+        key: &PropertyKey,
+        value: Value,
+    ) -> Result<PropertySetAction, RuntimeError> {
+        let new_length = match self.to_array_length(realm, &value)? {
+            ArrayLengthConversion::Length(length) => length,
+            ArrayLengthConversion::Throw(value) => return Ok(PropertySetAction::Throw(value)),
+        };
+        let (_, writable) = self.array_length_state(object)?;
+        if !writable {
+            return Ok(PropertySetAction::Rejected(
+                PropertySetRejection::ArrayLengthReadOnly,
+            ));
+        }
+        let descriptor = OrdinaryPropertyDescriptor {
+            value: DescriptorField::Present(Self::array_length_value(new_length)),
+            ..OrdinaryPropertyDescriptor::new()
+        };
+        Ok(
+            match self.define_array_length(realm, object, key, &descriptor)? {
+                PropertyDefineOutcome::Defined(true) => PropertySetAction::Complete,
+                PropertyDefineOutcome::Defined(false) => {
+                    PropertySetAction::Rejected(PropertySetRejection::NotConfigurable)
+                }
+                PropertyDefineOutcome::Throw(value) => PropertySetAction::Throw(value),
+            },
+        )
+    }
+
+    /// Validate and apply an own-property descriptor, including genuine Array
+    /// index and length exotic semantics. This context-free entry point is
+    /// sufficient for primitive descriptor values and host construction; VM
+    /// and Context callers use the realm-aware path so object-to-number
+    /// conversions can preserve arbitrary JavaScript throws.
     pub fn define_own_property(
         &self,
         object: &ObjectRef,
         key: &PropertyKey,
         descriptor: &OrdinaryPropertyDescriptor,
     ) -> Result<bool, RuntimeError> {
+        match self.define_own_property_in_realm(None, object, key, descriptor)? {
+            PropertyDefineOutcome::Defined(defined) => Ok(defined),
+            PropertyDefineOutcome::Throw(_) => Err(RuntimeError::Invariant(
+                "context-free property definition produced a JavaScript throw",
+            )),
+        }
+    }
+
+    fn define_own_property_in_realm(
+        &self,
+        realm: Option<ContextId>,
+        object: &ObjectRef,
+        key: &PropertyKey,
+        descriptor: &OrdinaryPropertyDescriptor,
+    ) -> Result<PropertyDefineOutcome, RuntimeError> {
         let _operation = self.operation();
+        self.validate_object_and_key(object, key)?;
+        self.validate_descriptor_domains(descriptor)?;
+        if descriptor.is_mixed_descriptor() {
+            return Err(PropertyDefinitionError::InvalidDescriptor.into());
+        }
+        match self.array_own_key(object, key)? {
+            ArrayOwnKey::Length => {
+                return self.define_array_length(realm, object, key, descriptor);
+            }
+            ArrayOwnKey::Index(index) => {
+                return self.define_array_index(object, key, index, descriptor);
+            }
+            ArrayOwnKey::Other => {}
+        }
+        self.define_ordinary_own_property(object, key, descriptor)
+            .map(PropertyDefineOutcome::Defined)
+    }
+
+    /// Apply the shared ordinary descriptor algorithm after any class exotic
+    /// preconditions and side effects have been handled by the caller.
+    fn define_ordinary_own_property(
+        &self,
+        object: &ObjectRef,
+        key: &PropertyKey,
+        descriptor: &OrdinaryPropertyDescriptor,
+    ) -> Result<bool, RuntimeError> {
         self.validate_object_and_key(object, key)?;
         self.validate_descriptor_domains(descriptor)?;
         if let Some(current) = self.string_exotic_own_property(object, key)? {
@@ -5912,6 +6523,331 @@ impl Runtime {
         let complete = validation_record_to_complete(complete)?;
         self.store_complete_property(object, key, complete)?;
         Ok(true)
+    }
+
+    fn array_own_key(
+        &self,
+        object: &ObjectRef,
+        key: &PropertyKey,
+    ) -> Result<ArrayOwnKey, RuntimeError> {
+        let length = self.intern_property_key("length")?;
+        let state = self.0.state.borrow();
+        let object_data = state.heap.object(object.object_id())?;
+        if !matches!(object_data.payload, ObjectPayload::Array) {
+            return Ok(ArrayOwnKey::Other);
+        }
+        if key == &length {
+            return Ok(ArrayOwnKey::Length);
+        }
+        Ok(state
+            .atoms
+            .array_index(key.atom())?
+            .map_or(ArrayOwnKey::Other, ArrayOwnKey::Index))
+    }
+
+    /// Read and structurally validate a genuine Array's mandatory first
+    /// `length` slot. The numeric payload is always an exact Uint32, using an
+    /// Int for the compact half and a Float above `i32::MAX`.
+    fn array_length_state(&self, object: &ObjectRef) -> Result<(u32, bool), RuntimeError> {
+        let length = self.intern_property_key("length")?;
+        let state = self.0.state.borrow();
+        let object_data = state.heap.object(object.object_id())?;
+        if !matches!(object_data.payload, ObjectPayload::Array) {
+            return Err(RuntimeError::Invariant(
+                "Array length state requested for a non-Array object",
+            ));
+        }
+        let shape = state.heap.shape(object_data.shape)?;
+        let index = shape
+            .find(length.atom())
+            .ok_or(RuntimeError::Invariant("Array has no length property"))?;
+        if index != 0 {
+            return Err(RuntimeError::Invariant(
+                "Array length property is not physical slot zero",
+            ));
+        }
+        let entry = shape.entries().first().ok_or(RuntimeError::Invariant(
+            "Array length shape entry is missing",
+        ))?;
+        if entry.flags.enumerable
+            || entry.flags.configurable
+            || entry.flags.storage != crate::shape::PropertyStorageKind::Data
+        {
+            return Err(RuntimeError::Invariant(
+                "Array length property has invalid structural flags",
+            ));
+        }
+        let raw = object_data.slots.first().ok_or(RuntimeError::Invariant(
+            "Array length property slot is missing",
+        ))?;
+        let value = match raw {
+            PropertySlot::Data(RawValue::Int(value)) if *value >= 0 => *value as u32,
+            PropertySlot::Data(RawValue::Float(value))
+                if value.is_finite()
+                    && *value >= 0.0
+                    && *value <= f64::from(u32::MAX)
+                    && value.fract() == 0.0 =>
+            {
+                *value as u32
+            }
+            PropertySlot::Data(_)
+            | PropertySlot::VarRef(_)
+            | PropertySlot::Accessor { .. }
+            | PropertySlot::AutoInit(_) => {
+                return Err(RuntimeError::Invariant(
+                    "Array length property is not an exact Uint32 data value",
+                ));
+            }
+        };
+        Ok((value, entry.flags.writable))
+    }
+
+    fn array_length_value(length: u32) -> Value {
+        if let Ok(length) = i32::try_from(length) {
+            Value::Int(length)
+        } else {
+            Value::Float(f64::from(length))
+        }
+    }
+
+    fn define_array_index(
+        &self,
+        object: &ObjectRef,
+        key: &PropertyKey,
+        index: u32,
+        descriptor: &OrdinaryPropertyDescriptor,
+    ) -> Result<PropertyDefineOutcome, RuntimeError> {
+        let (old_length, length_writable) = self.array_length_state(object)?;
+        if index >= old_length && !length_writable {
+            return Ok(PropertyDefineOutcome::Defined(false));
+        }
+        if !self.define_ordinary_own_property(object, key, descriptor)? {
+            return Ok(PropertyDefineOutcome::Defined(false));
+        }
+        if index < old_length {
+            return Ok(PropertyDefineOutcome::Defined(true));
+        }
+
+        let length = self.intern_property_key("length")?;
+        let next_length = index
+            .checked_add(1)
+            .ok_or(RuntimeError::Invariant("Array index exceeded Uint32 range"))?;
+        let updated = self.define_ordinary_own_property(
+            object,
+            &length,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(Self::array_length_value(next_length)),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )?;
+        if !updated {
+            return Err(RuntimeError::Invariant(
+                "writable Array length rejected index growth",
+            ));
+        }
+        Ok(PropertyDefineOutcome::Defined(true))
+    }
+
+    fn define_array_length(
+        &self,
+        realm: Option<ContextId>,
+        object: &ObjectRef,
+        key: &PropertyKey,
+        descriptor: &OrdinaryPropertyDescriptor,
+    ) -> Result<PropertyDefineOutcome, RuntimeError> {
+        let DescriptorField::Present(requested) = &descriptor.value else {
+            return self
+                .define_ordinary_own_property(object, key, descriptor)
+                .map(PropertyDefineOutcome::Defined);
+        };
+        let new_length = match self.to_array_length(realm, requested)? {
+            ArrayLengthConversion::Length(length) => length,
+            ArrayLengthConversion::Throw(value) => {
+                return Ok(PropertyDefineOutcome::Throw(value));
+            }
+        };
+
+        // Conversion may execute JavaScript and mutate this same Array. Match
+        // QuickJS by reloading the length slot only after conversion returns.
+        let (old_length, old_writable) = self.array_length_state(object)?;
+        let mut canonical = descriptor.clone();
+        canonical.value = DescriptorField::Present(Self::array_length_value(new_length));
+        if new_length >= old_length || !old_writable {
+            return self
+                .define_ordinary_own_property(object, key, &canonical)
+                .map(PropertyDefineOutcome::Defined);
+        }
+
+        let finish_read_only = matches!(canonical.writable, DescriptorField::Present(false));
+        if finish_read_only {
+            canonical.writable = DescriptorField::Present(true);
+        }
+        if !self.define_ordinary_own_property(object, key, &canonical)? {
+            return Ok(PropertyDefineOutcome::Defined(false));
+        }
+
+        for index in self.array_indices_at_or_above(object, new_length)? {
+            let index_key = self.intern_property_key(&index.to_string())?;
+            if self.delete_property(object, &index_key)? {
+                continue;
+            }
+
+            // ArraySetLength keeps already deleted higher indices, restores
+            // length to the first undeletable index plus one, and still
+            // applies a requested writable:false transition.
+            let restored_length = index
+                .checked_add(1)
+                .ok_or(RuntimeError::Invariant("Array index exceeded Uint32 range"))?;
+            let restored = self.define_ordinary_own_property(
+                object,
+                key,
+                &OrdinaryPropertyDescriptor {
+                    value: DescriptorField::Present(Self::array_length_value(restored_length)),
+                    writable: finish_read_only.then_some(false).into(),
+                    ..OrdinaryPropertyDescriptor::new()
+                },
+            )?;
+            if !restored {
+                return Err(RuntimeError::Invariant(
+                    "Array length rollback was rejected",
+                ));
+            }
+            return Ok(PropertyDefineOutcome::Defined(false));
+        }
+
+        if finish_read_only {
+            let updated = self.define_ordinary_own_property(
+                object,
+                key,
+                &OrdinaryPropertyDescriptor {
+                    writable: DescriptorField::Present(false),
+                    ..OrdinaryPropertyDescriptor::new()
+                },
+            )?;
+            if !updated {
+                return Err(RuntimeError::Invariant(
+                    "Array length writable transition was rejected",
+                ));
+            }
+        }
+        Ok(PropertyDefineOutcome::Defined(true))
+    }
+
+    fn array_indices_at_or_above(
+        &self,
+        object: &ObjectRef,
+        minimum: u32,
+    ) -> Result<Vec<u32>, RuntimeError> {
+        let state = self.0.state.borrow();
+        let object_data = state.heap.object(object.object_id())?;
+        if !matches!(object_data.payload, ObjectPayload::Array) {
+            return Err(RuntimeError::Invariant(
+                "Array index scan reached a non-Array object",
+            ));
+        }
+        let shape = state.heap.shape(object_data.shape)?;
+        let mut indices = shape
+            .entries()
+            .iter()
+            .filter_map(|entry| state.atoms.array_index(entry.atom).transpose())
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|index| *index >= minimum)
+            .collect::<Vec<_>>();
+        indices.sort_unstable_by(|left, right| right.cmp(left));
+        Ok(indices)
+    }
+
+    fn to_array_length(
+        &self,
+        realm: Option<ContextId>,
+        value: &Value,
+    ) -> Result<ArrayLengthConversion, RuntimeError> {
+        match value {
+            Value::Int(value) if *value >= 0 => {
+                return Ok(ArrayLengthConversion::Length(*value as u32));
+            }
+            Value::Bool(value) => {
+                return Ok(ArrayLengthConversion::Length(u32::from(*value)));
+            }
+            Value::Null => return Ok(ArrayLengthConversion::Length(0)),
+            Value::Float(value) => return self.validate_array_length_number(realm, *value, None),
+            Value::Int(_) => return self.invalid_array_length(realm),
+            Value::Undefined
+            | Value::BigInt(_)
+            | Value::String(_)
+            | Value::Symbol(_)
+            | Value::Object(_) => {}
+        }
+
+        // QuickJS deliberately preserves the legacy two-conversion behavior
+        // for non-number Array length definitions: ToUint32(value), then a
+        // second ToNumber(value), followed by equality with an exact Uint32.
+        let first = match self.array_length_to_number(realm, value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(ArrayLengthConversion::Throw(value)),
+        };
+        let uint32 = Self::to_uint32_number(first);
+        let second = match self.array_length_to_number(realm, value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(ArrayLengthConversion::Throw(value)),
+        };
+        self.validate_array_length_number(realm, second, Some(uint32))
+    }
+
+    fn array_length_to_number(
+        &self,
+        realm: Option<ContextId>,
+        value: &Value,
+    ) -> Result<NativeConversion<f64>, RuntimeError> {
+        if let Some(realm) = realm {
+            self.native_to_number(realm, value)
+        } else {
+            value
+                .to_number()
+                .map(NativeConversion::Value)
+                .map_err(RuntimeError::Engine)
+        }
+    }
+
+    fn validate_array_length_number(
+        &self,
+        realm: Option<ContextId>,
+        value: f64,
+        expected_uint32: Option<u32>,
+    ) -> Result<ArrayLengthConversion, RuntimeError> {
+        if value >= 0.0 && value <= f64::from(u32::MAX) && value.fract() == 0.0 {
+            let length = value as u32;
+            if expected_uint32.is_none_or(|expected| expected == length) {
+                return Ok(ArrayLengthConversion::Length(length));
+            }
+        }
+        self.invalid_array_length(realm)
+    }
+
+    fn invalid_array_length(
+        &self,
+        realm: Option<ContextId>,
+    ) -> Result<ArrayLengthConversion, RuntimeError> {
+        if let Some(realm) = realm {
+            return Ok(ArrayLengthConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Range,
+                "invalid array length",
+            )?));
+        }
+        Err(RuntimeError::Engine(Error::new(
+            ErrorKind::Range,
+            "invalid array length",
+        )))
+    }
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn to_uint32_number(value: f64) -> u32 {
+        if !value.is_finite() || value == 0.0 {
+            return 0;
+        }
+        value.trunc().rem_euclid(4_294_967_296.0) as u32
     }
 
     fn auto_init_own_property_flags(
@@ -5997,6 +6933,8 @@ impl Runtime {
                     }
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::Array
+                | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }
@@ -6937,6 +7875,8 @@ impl Runtime {
                     ..
                 } => (*bytecode, closure_slots.clone()),
                 ObjectPayload::Ordinary
+                | ObjectPayload::Array
+                | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
@@ -6985,6 +7925,8 @@ impl Runtime {
                 Ok(None)
             }
             ObjectPayload::Ordinary
+            | ObjectPayload::Array
+            | ObjectPayload::ArrayIterator { .. }
             | ObjectPayload::Primitive(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
@@ -7457,6 +8399,33 @@ impl Runtime {
         )))
     }
 
+    fn create_array_from_constructor(
+        &self,
+        caller_realm: ContextId,
+        new_target: &CallableRef,
+    ) -> Result<Completion, RuntimeError> {
+        let prototype_key = self.intern_property_key("prototype")?;
+        let prototype = match self.prepare_get_property(new_target.as_object(), &prototype_key)? {
+            PropertyGetAction::Complete(value) => value,
+            PropertyGetAction::Call { getter, receiver } => {
+                match self.call_internal(caller_realm, &getter, receiver, &[])? {
+                    Completion::Return(value) => value,
+                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                }
+            }
+        };
+        let prototype = if let Value::Object(prototype) = prototype {
+            prototype
+        } else {
+            let realm = self.callable_realm(new_target)?;
+            let array_prototype = self.0.state.borrow().heap.context(realm)?.array_prototype;
+            ObjectRef::from_borrowed_handle(self.clone(), array_prototype)?
+        };
+        Ok(Completion::Return(Value::Object(
+            self.new_empty_array_with_prototype(&prototype)?,
+        )))
+    }
+
     fn callable_realm(&self, callable: &CallableRef) -> Result<ContextId, RuntimeError> {
         if !callable.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("callable"));
@@ -7490,6 +8459,8 @@ impl Runtime {
                     ));
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::Array
+                | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
@@ -8374,6 +9345,8 @@ impl Runtime {
                             !metadata.strict && metadata.has_prototype
                         }
                         ObjectPayload::Ordinary
+                        | ObjectPayload::Array
+                        | ObjectPayload::ArrayIterator { .. }
                         | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
                         | ObjectPayload::Error
@@ -8740,6 +9713,8 @@ impl Runtime {
                     (true, None, FunctionKind::Normal)
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::Array
+                | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
@@ -8945,6 +9920,8 @@ impl Runtime {
                         ObjectPayload::NativeFunction { .. }
                         | ObjectPayload::BytecodeFunction { .. } => None,
                         ObjectPayload::Ordinary
+                        | ObjectPayload::Array
+                        | ObjectPayload::ArrayIterator { .. }
                         | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
                         | ObjectPayload::Error
@@ -9039,6 +10016,8 @@ impl Runtime {
                             ))
                         }
                         ObjectPayload::Ordinary
+                        | ObjectPayload::Array
+                        | ObjectPayload::ArrayIterator { .. }
                         | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
                         | ObjectPayload::Error
@@ -9093,6 +10072,744 @@ impl Runtime {
             return Err(error);
         }
         result
+    }
+
+    fn call_array_constructor(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Construct { mut new_target } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array constructor did not receive constructor-or-function invocation",
+            ));
+        };
+        if matches!(new_target, Value::Undefined) {
+            new_target = Value::Object(self.active_function()?);
+        }
+        let Value::Object(new_target) = new_target else {
+            return Err(RuntimeError::Invariant(
+                "Array constructor new.target was not an object",
+            ));
+        };
+        let new_target = self.callable_from_value(Value::Object(new_target))?;
+        let array = match self.create_array_from_constructor(realm, &new_target)? {
+            Completion::Return(Value::Object(array)) => array,
+            Completion::Return(_) => {
+                return Err(RuntimeError::Invariant(
+                    "Array constructor allocation returned a primitive",
+                ));
+            }
+            Completion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        if arguments.actual_arg_count == 1
+            && matches!(arguments.readable[0], Value::Int(_) | Value::Float(_))
+        {
+            let length = match self.array_constructor_length(realm, &arguments.readable[0])? {
+                ArrayLengthConversion::Length(length) => length,
+                ArrayLengthConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            let key = self.intern_property_key("length")?;
+            match self.define_own_property_in_realm(
+                Some(realm),
+                &array,
+                &key,
+                &OrdinaryPropertyDescriptor {
+                    value: DescriptorField::Present(Self::array_length_value(length)),
+                    ..OrdinaryPropertyDescriptor::new()
+                },
+            )? {
+                PropertyDefineOutcome::Defined(true) => {}
+                PropertyDefineOutcome::Defined(false) => {
+                    return Err(RuntimeError::Invariant(
+                        "fresh Array rejected its constructor length",
+                    ));
+                }
+                PropertyDefineOutcome::Throw(value) => return Ok(Completion::Throw(value)),
+            }
+        } else {
+            for (index, value) in arguments.readable[..arguments.actual_arg_count]
+                .iter()
+                .cloned()
+                .enumerate()
+            {
+                let index = u32::try_from(index).map_err(|_| {
+                    RuntimeError::Invariant("native Array argument count exceeded Uint32")
+                })?;
+                if let Some(value) =
+                    self.set_array_constructor_index(realm, &array, index, value)?
+                {
+                    return Ok(Completion::Throw(value));
+                }
+            }
+        }
+        Ok(Completion::Return(Value::Object(array)))
+    }
+
+    fn array_constructor_length(
+        &self,
+        realm: ContextId,
+        value: &Value,
+    ) -> Result<ArrayLengthConversion, RuntimeError> {
+        match value {
+            Value::Int(value) if *value >= 0 => Ok(ArrayLengthConversion::Length(*value as u32)),
+            Value::Float(value) => self.validate_array_length_number(Some(realm), *value, None),
+            Value::Int(_) => self.invalid_array_length(Some(realm)),
+            _ => Err(RuntimeError::Invariant(
+                "Array constructor length validator received a non-number",
+            )),
+        }
+    }
+
+    fn create_array_data_property(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+        index: u32,
+        value: Value,
+    ) -> Result<Option<Value>, RuntimeError> {
+        self.create_indexed_data_property(realm, object, u64::from(index), value)
+    }
+
+    /// Array construction uses ordinary `Set`, not CreateDataProperty. A
+    /// custom `newTarget.prototype` can therefore intercept an element with
+    /// an inherited setter or reject it with a fixed data/accessor property.
+    fn set_array_constructor_index(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+        index: u32,
+        value: Value,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let key = self.intern_property_key(&index.to_string())?;
+        self.set_property_or_throw(realm, object, &key, value)
+    }
+
+    fn create_indexed_data_property(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+        index: u64,
+        value: Value,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let key = self.intern_property_key(&index.to_string())?;
+        match self.define_own_property_in_realm(
+            Some(realm),
+            object,
+            &key,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(value),
+                writable: DescriptorField::Present(true),
+                enumerable: DescriptorField::Present(true),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )? {
+            PropertyDefineOutcome::Defined(true) => Ok(None),
+            PropertyDefineOutcome::Defined(false) => {
+                let array_length_read_only =
+                    if let ArrayOwnKey::Index(index) = self.array_own_key(object, &key)? {
+                        let (length, writable) = self.array_length_state(object)?;
+                        index >= length && !writable
+                    } else {
+                        false
+                    };
+                let error = if array_length_read_only {
+                    let length = self.intern_property_key("length")?;
+                    self.native_atom_error(ErrorKind::Type, "'", &length, "' is read-only")?
+                } else if !self.has_own_property(object, &key)? && !self.is_extensible(object)? {
+                    Error::new(ErrorKind::Type, "object is not extensible")
+                } else {
+                    Error::new(ErrorKind::Type, "property is not configurable")
+                };
+                Ok(Some(self.new_native_error_from_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    &error,
+                )?))
+            }
+            PropertyDefineOutcome::Throw(value) => Ok(Some(value)),
+        }
+    }
+
+    fn call_array_is_array(
+        &self,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.isArray did not receive a generic invocation",
+            ));
+        };
+        let result = match arguments.readable.first() {
+            Some(Value::Object(object)) => self.is_array_object(object)?,
+            Some(_) | None => false,
+        };
+        Ok(Completion::Return(Value::Bool(result)))
+    }
+
+    fn call_array_species_getter(
+        &self,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Getter { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array species getter did not receive a getter invocation",
+            ));
+        };
+        Ok(Completion::Return(this_value))
+    }
+
+    fn call_array_from(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.from did not receive a generic invocation",
+            ));
+        };
+        let items = arguments
+            .readable
+            .first()
+            .cloned()
+            .ok_or(RuntimeError::Invariant("Array.from argv was not padded"))?;
+        let mapping =
+            arguments.actual_arg_count > 1 && !matches!(arguments.readable[1], Value::Undefined);
+        let mapfn = if mapping {
+            let Value::Object(object) = arguments.readable[1].clone() else {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "not a function",
+                )?));
+            };
+            let Some(callable) = self.as_callable(&object)? else {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "not a function",
+                )?));
+            };
+            Some(callable)
+        } else {
+            None
+        };
+        let this_argument = if arguments.actual_arg_count > 2 {
+            arguments.readable[2].clone()
+        } else {
+            Value::Undefined
+        };
+
+        let iterator_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Iterator));
+        let iterator_method = match &items {
+            Value::Null | Value::Undefined => {
+                let base = if matches!(items, Value::Null) {
+                    "null"
+                } else {
+                    "undefined"
+                };
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    &format!("cannot read property 'Symbol.iterator' of {base}"),
+                )?));
+            }
+            _ => match self.get_value_property_in_realm(realm, items.clone(), &iterator_key)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            },
+        };
+
+        if !matches!(iterator_method, Value::Undefined | Value::Null) {
+            let Value::Object(method_object) = iterator_method else {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "value is not iterable",
+                )?));
+            };
+            let Some(method) = self.as_callable(&method_object)? else {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "value is not iterable",
+                )?));
+            };
+            let result = match self.array_from_result(realm, this_value, None)? {
+                Completion::Return(Value::Object(object)) => object,
+                Completion::Return(_) => {
+                    return Err(RuntimeError::Invariant(
+                        "Array.from result constructor returned a primitive",
+                    ));
+                }
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            let iterator = match self.call_internal(realm, &method, items, &[])? {
+                Completion::Return(Value::Object(iterator)) => iterator,
+                Completion::Return(_) => {
+                    return Ok(Completion::Throw(self.new_native_error(
+                        realm,
+                        NativeErrorKind::Type,
+                        "not an object",
+                    )?));
+                }
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            let next_key = self.intern_property_key("next")?;
+            let next = match self.get_property_in_realm(realm, &iterator, &next_key)? {
+                Completion::Return(Value::Object(next)) => {
+                    let Some(next) = self.as_callable(&next)? else {
+                        return Ok(Completion::Throw(self.new_native_error(
+                            realm,
+                            NativeErrorKind::Type,
+                            "not a function",
+                        )?));
+                    };
+                    next
+                }
+                Completion::Return(_) => {
+                    return Ok(Completion::Throw(self.new_native_error(
+                        realm,
+                        NativeErrorKind::Type,
+                        "not a function",
+                    )?));
+                }
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            let done_key = self.intern_property_key("done")?;
+            let value_key = self.intern_property_key("value")?;
+            let mut index = 0_u64;
+            loop {
+                let iteration =
+                    match self.call_internal(realm, &next, Value::Object(iterator.clone()), &[])? {
+                        Completion::Return(Value::Object(result)) => result,
+                        Completion::Return(_) => {
+                            return Ok(Completion::Throw(self.new_native_error(
+                                realm,
+                                NativeErrorKind::Type,
+                                "iterator must return an object",
+                            )?));
+                        }
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    };
+                let done = match self.get_property_in_realm(realm, &iteration, &done_key)? {
+                    Completion::Return(value) => value.to_boolean(),
+                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+                if done {
+                    if let Some(value) = self.set_array_like_length(realm, &result, index)? {
+                        return Ok(Completion::Throw(value));
+                    }
+                    return Ok(Completion::Return(Value::Object(result)));
+                }
+                let mut value = match self.get_property_in_realm(realm, &iteration, &value_key)? {
+                    Completion::Return(value) => value,
+                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+                if let Some(mapfn) = &mapfn {
+                    value = match self.call_internal(
+                        realm,
+                        mapfn,
+                        this_argument.clone(),
+                        &[value, Value::number(index as f64)],
+                    )? {
+                        Completion::Return(value) => value,
+                        Completion::Throw(value) => {
+                            self.close_iterator_preserving_throw(realm, &iterator)?;
+                            return Ok(Completion::Throw(value));
+                        }
+                    };
+                }
+                if let Some(value) =
+                    self.create_indexed_data_property(realm, &result, index, value)?
+                {
+                    self.close_iterator_preserving_throw(realm, &iterator)?;
+                    return Ok(Completion::Throw(value));
+                }
+                index = index.checked_add(1).ok_or(RuntimeError::Invariant(
+                    "Array.from iterator index overflowed u64",
+                ))?;
+            }
+        }
+
+        let source = match self.native_to_object(realm, items)? {
+            NativeConversion::Value(object) => object,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let length_key = self.intern_property_key("length")?;
+        let length_value = match self.get_property_in_realm(realm, &source, &length_key)? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let length = match self.native_to_length(realm, &length_value)? {
+            NativeConversion::Value(length) => length,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let result =
+            match self.array_from_result(realm, this_value, Some(Value::number(length as f64)))? {
+                Completion::Return(Value::Object(object)) => object,
+                Completion::Return(_) => {
+                    return Err(RuntimeError::Invariant(
+                        "Array.from result constructor returned a primitive",
+                    ));
+                }
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+        for index in 0..length {
+            let key = self.intern_property_key(&index.to_string())?;
+            let mut value = match self.get_property_in_realm(realm, &source, &key)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            if let Some(mapfn) = &mapfn {
+                value = match self.call_internal(
+                    realm,
+                    mapfn,
+                    this_argument.clone(),
+                    &[value, Value::number(index as f64)],
+                )? {
+                    Completion::Return(value) => value,
+                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+            }
+            if let Some(value) = self.create_indexed_data_property(realm, &result, index, value)? {
+                return Ok(Completion::Throw(value));
+            }
+        }
+        if let Some(value) = self.set_array_like_length(realm, &result, length)? {
+            return Ok(Completion::Throw(value));
+        }
+        Ok(Completion::Return(Value::Object(result)))
+    }
+
+    fn array_from_result(
+        &self,
+        realm: ContextId,
+        constructor: Value,
+        length: Option<Value>,
+    ) -> Result<Completion, RuntimeError> {
+        if let Value::Object(object) = &constructor
+            && self.is_constructor(object)?
+        {
+            let constructor = self.callable_from_value(constructor)?;
+            let arguments = length.into_iter().collect::<Vec<_>>();
+            return self.construct_internal(realm, &constructor, &constructor, &arguments);
+        }
+        let array = self.new_array(realm)?;
+        if let Some(length) = length {
+            let length = match self.to_array_length(Some(realm), &length)? {
+                ArrayLengthConversion::Length(length) => length,
+                ArrayLengthConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            let key = self.intern_property_key("length")?;
+            match self.define_own_property_in_realm(
+                Some(realm),
+                &array,
+                &key,
+                &OrdinaryPropertyDescriptor {
+                    value: DescriptorField::Present(Self::array_length_value(length)),
+                    ..OrdinaryPropertyDescriptor::new()
+                },
+            )? {
+                PropertyDefineOutcome::Defined(true) => {}
+                PropertyDefineOutcome::Defined(false) => {
+                    return Err(RuntimeError::Invariant(
+                        "fresh Array.from result rejected its length",
+                    ));
+                }
+                PropertyDefineOutcome::Throw(value) => return Ok(Completion::Throw(value)),
+            }
+        }
+        Ok(Completion::Return(Value::Object(array)))
+    }
+
+    fn set_array_like_length(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+        length: u64,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let key = self.intern_property_key("length")?;
+        self.set_property_or_throw(realm, object, &key, Value::number(length as f64))
+    }
+
+    fn set_property_or_throw(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+        key: &PropertyKey,
+        value: Value,
+    ) -> Result<Option<Value>, RuntimeError> {
+        match self.prepare_set_property_in_realm(realm, object, key, value)? {
+            PropertySetAction::Complete => Ok(None),
+            PropertySetAction::Throw(value) => Ok(Some(value)),
+            PropertySetAction::Call {
+                setter,
+                receiver,
+                argument,
+            } => match self.call_internal(realm, &setter, receiver, &[argument])? {
+                Completion::Return(_) => Ok(None),
+                Completion::Throw(value) => Ok(Some(value)),
+            },
+            PropertySetAction::Rejected(rejection) => {
+                let error = match rejection {
+                    PropertySetRejection::ReadOnly => {
+                        self.native_atom_error(ErrorKind::Type, "'", key, "' is read-only")?
+                    }
+                    PropertySetRejection::ArrayLengthReadOnly => {
+                        let length = self.intern_property_key("length")?;
+                        self.native_atom_error(ErrorKind::Type, "'", &length, "' is read-only")?
+                    }
+                    PropertySetRejection::NotConfigurable => {
+                        Error::new(ErrorKind::Type, "not configurable")
+                    }
+                    PropertySetRejection::NoSetter => {
+                        Error::new(ErrorKind::Type, "no setter for property")
+                    }
+                    PropertySetRejection::NotExtensible => {
+                        Error::new(ErrorKind::Type, "object is not extensible")
+                    }
+                    PropertySetRejection::NotObject => Error::new(ErrorKind::Type, "not an object"),
+                };
+                Ok(Some(self.new_native_error_from_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    &error,
+                )?))
+            }
+        }
+    }
+
+    fn close_iterator_preserving_throw(
+        &self,
+        realm: ContextId,
+        iterator: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        let key = self.intern_property_key("return")?;
+        let method = match self.get_property_in_realm(realm, iterator, &key)? {
+            Completion::Return(value) => value,
+            Completion::Throw(_) => return Ok(()),
+        };
+        if matches!(method, Value::Undefined | Value::Null) {
+            return Ok(());
+        }
+        let Value::Object(method) = method else {
+            return Ok(());
+        };
+        let Some(method) = self.as_callable(&method)? else {
+            return Ok(());
+        };
+        let _ = self.call_internal(realm, &method, Value::Object(iterator.clone()), &[])?;
+        Ok(())
+    }
+
+    fn call_array_of(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.of did not receive a generic invocation",
+            ));
+        };
+        let length = u32::try_from(arguments.actual_arg_count)
+            .map_err(|_| RuntimeError::Invariant("Array.of argument count exceeded Uint32"))?;
+        let result = if let Value::Object(object) = &this_value
+            && self.is_constructor(object)?
+        {
+            let constructor = self.callable_from_value(this_value)?;
+            match self.construct_internal(
+                realm,
+                &constructor,
+                &constructor,
+                &[Self::array_length_value(length)],
+            )? {
+                Completion::Return(Value::Object(object)) => object,
+                Completion::Return(_) => {
+                    return Err(RuntimeError::Invariant(
+                        "constructor invocation returned a primitive",
+                    ));
+                }
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            }
+        } else {
+            self.new_array(realm)?
+        };
+        for (index, value) in arguments.readable[..arguments.actual_arg_count]
+            .iter()
+            .cloned()
+            .enumerate()
+        {
+            let index = u32::try_from(index)
+                .map_err(|_| RuntimeError::Invariant("Array.of index exceeded Uint32"))?;
+            if let Some(value) = self.create_array_data_property(realm, &result, index, value)? {
+                return Ok(Completion::Throw(value));
+            }
+        }
+        if let Some(value) = self.set_array_like_length(realm, &result, u64::from(length))? {
+            return Ok(Completion::Throw(value));
+        }
+        Ok(Completion::Return(Value::Object(result)))
+    }
+
+    fn native_to_object(
+        &self,
+        realm: ContextId,
+        value: Value,
+    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
+        let (kind, value) = match value {
+            Value::Object(object) => return Ok(NativeConversion::Value(object)),
+            Value::Undefined | Value::Null => {
+                return Ok(NativeConversion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "cannot convert to object",
+                )?));
+            }
+            value @ Value::Bool(_) => (PrimitiveKind::Boolean, value),
+            value @ (Value::Int(_) | Value::Float(_)) => (PrimitiveKind::Number, value),
+            value @ Value::String(_) => (PrimitiveKind::String, value),
+            value @ Value::BigInt(_) => (PrimitiveKind::BigInt, value),
+            value @ Value::Symbol(_) => (PrimitiveKind::Symbol, value),
+        };
+        let prototype = self.primitive_prototype_for_realm(realm, kind)?;
+        Ok(NativeConversion::Value(
+            self.new_primitive_object(&prototype, kind, value)?,
+        ))
+    }
+
+    fn call_array_prototype_iterator(
+        &self,
+        realm: ContextId,
+        kind: ArrayIteratorKind,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array iterator factory did not receive a generic invocation",
+            ));
+        };
+        let object = match self.native_to_object(realm, this_value)? {
+            NativeConversion::Value(object) => object,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        Ok(Completion::Return(Value::Object(
+            self.new_array_iterator(realm, &object, kind)?,
+        )))
+    }
+
+    fn call_array_iterator_next(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        match self.call_array_iterator_next_raw(realm, invocation)? {
+            NativeInvokeOutcome::Completion(completion) => Ok(completion),
+            NativeInvokeOutcome::IteratorNextRaw { value, done } => Ok(Completion::Return(
+                Value::Object(self.new_iterator_result(realm, value, done)?),
+            )),
+        }
+    }
+
+    fn call_array_iterator_next_raw(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+    ) -> Result<NativeInvokeOutcome, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array Iterator next did not receive an iterator-next invocation",
+            ));
+        };
+        let Value::Object(iterator) = this_value else {
+            return Ok(NativeInvokeOutcome::Completion(Completion::Throw(
+                self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "Array Iterator object expected",
+                )?,
+            )));
+        };
+        let state = self
+            .0
+            .state
+            .borrow()
+            .heap
+            .array_iterator_state(iterator.object_id());
+        let (source, index, kind) = match state {
+            Ok(state) => state,
+            Err(HeapError::Invariant(_)) => {
+                return Ok(NativeInvokeOutcome::Completion(Completion::Throw(
+                    self.new_native_error(
+                        realm,
+                        NativeErrorKind::Type,
+                        "Array Iterator object expected",
+                    )?,
+                )));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let Some(source) = source else {
+            return Ok(NativeInvokeOutcome::IteratorNextRaw {
+                value: Value::Undefined,
+                done: true,
+            });
+        };
+        let source = ObjectRef::from_borrowed_handle(self.clone(), source)?;
+        let length_key = self.intern_property_key("length")?;
+        let length_value = match self.get_property_in_realm(realm, &source, &length_key)? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => {
+                return Ok(NativeInvokeOutcome::Completion(Completion::Throw(value)));
+            }
+        };
+        let length = match self.native_to_number(realm, &length_value)? {
+            NativeConversion::Value(value) => Self::to_uint32_number(value),
+            NativeConversion::Throw(value) => {
+                return Ok(NativeInvokeOutcome::Completion(Completion::Throw(value)));
+            }
+        };
+        if index >= length {
+            let mut state = self.0.state.borrow_mut();
+            let cleanup = state.heap.finish_array_iterator(iterator.object_id())?;
+            state.apply_cleanup(cleanup)?;
+            return Ok(NativeInvokeOutcome::IteratorNextRaw {
+                value: Value::Undefined,
+                done: true,
+            });
+        }
+        self.0
+            .state
+            .borrow_mut()
+            .heap
+            .set_array_iterator_index(iterator.object_id(), index + 1)?;
+        let key_value = Self::array_length_value(index);
+        let value = match kind {
+            ArrayIteratorKind::Key => key_value,
+            ArrayIteratorKind::Value | ArrayIteratorKind::KeyAndValue => {
+                let key = self.intern_property_key(&index.to_string())?;
+                let value = match self.get_property_in_realm(realm, &source, &key)? {
+                    Completion::Return(value) => value,
+                    Completion::Throw(value) => {
+                        return Ok(NativeInvokeOutcome::Completion(Completion::Throw(value)));
+                    }
+                };
+                if kind == ArrayIteratorKind::KeyAndValue {
+                    Value::Object(self.new_array_from_values(realm, vec![key_value, value])?)
+                } else {
+                    value
+                }
+            }
+        };
+        Ok(NativeInvokeOutcome::IteratorNextRaw { value, done: false })
     }
 
     fn call_primitive_constructor(
@@ -9358,6 +11075,8 @@ impl Runtime {
                         Some(Ok(Value::BigInt(value.clone())))
                     }
                     ObjectPayload::Ordinary
+                    | ObjectPayload::Array
+                    | ObjectPayload::ArrayIterator { .. }
                     | ObjectPayload::Primitive(_)
                     | ObjectPayload::GlobalObject { .. }
                     | ObjectPayload::Error
@@ -9520,8 +11239,9 @@ impl Runtime {
             return Ok(Completion::Return(Value::Undefined));
         }
 
-        match self.prepare_set_property(&receiver, &key, value)? {
+        match self.prepare_set_property_in_realm(realm, &receiver, &key, value)? {
             PropertySetAction::Complete => Ok(Completion::Return(Value::Undefined)),
+            PropertySetAction::Throw(value) => Ok(Completion::Throw(value)),
             PropertySetAction::Call {
                 setter,
                 receiver,
@@ -9538,6 +11258,18 @@ impl Runtime {
                     "' is read-only",
                 )?))
             }
+            PropertySetAction::Rejected(PropertySetRejection::ArrayLengthReadOnly) => {
+                let length = self.intern_property_key("length")?;
+                Err(RuntimeError::Engine(self.native_atom_error(
+                    ErrorKind::Type,
+                    "'",
+                    &length,
+                    "' is read-only",
+                )?))
+            }
+            PropertySetAction::Rejected(PropertySetRejection::NotConfigurable) => Err(
+                RuntimeError::Engine(Error::new(ErrorKind::Type, "not configurable")),
+            ),
             PropertySetAction::Rejected(PropertySetRejection::NoSetter) => Err(
                 RuntimeError::Engine(Error::new(ErrorKind::Type, "no setter for property")),
             ),
@@ -10132,10 +11864,13 @@ impl Runtime {
                 ObjectPayload::Primitive(
                     PrimitiveObjectData::Symbol(_) | PrimitiveObjectData::BigInt(_),
                 ) => JsString::from_static("Object"),
+                ObjectPayload::Array => JsString::from_static("Array"),
                 ObjectPayload::Ordinary | ObjectPayload::GlobalObject { .. } => {
                     JsString::from_static("Object")
                 }
-                ObjectPayload::StringIterator { .. } => JsString::from_static("Object"),
+                ObjectPayload::ArrayIterator { .. } | ObjectPayload::StringIterator { .. } => {
+                    JsString::from_static("Object")
+                }
             }
         };
         let to_string_tag = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));
@@ -10654,6 +12389,9 @@ impl Runtime {
             NativeFunctionId::StringIteratorNext => {
                 self.call_string_iterator_next_raw(realm, invocation)
             }
+            NativeFunctionId::ArrayIteratorNext => {
+                self.call_array_iterator_next_raw(realm, invocation)
+            }
             _ => Err(RuntimeError::Invariant(
                 "IteratorNext cproto has no raw native dispatcher",
             )),
@@ -10676,6 +12414,17 @@ impl Runtime {
             NativeFunctionId::FunctionConstructor(kind) => {
                 self.call_function_constructor(realm, kind, invocation, arguments)
             }
+            NativeFunctionId::ArrayConstructor => {
+                self.call_array_constructor(realm, invocation, arguments)
+            }
+            NativeFunctionId::ArrayIsArray => self.call_array_is_array(invocation, arguments),
+            NativeFunctionId::ArrayFrom => self.call_array_from(realm, invocation, arguments),
+            NativeFunctionId::ArrayOf => self.call_array_of(realm, invocation, arguments),
+            NativeFunctionId::ArraySpeciesGetter => self.call_array_species_getter(invocation),
+            NativeFunctionId::ArrayPrototypeIterator(kind) => {
+                self.call_array_prototype_iterator(realm, kind, invocation)
+            }
+            NativeFunctionId::ArrayIteratorNext => self.call_array_iterator_next(realm, invocation),
             NativeFunctionId::ThrowTypeError => {
                 self.call_throw_type_error(realm, invocation, arguments)
             }
@@ -10939,6 +12688,8 @@ impl Runtime {
             match state.heap.object(object.object_id())?.payload {
                 ObjectPayload::GlobalObject { uninitialized_vars } => Some(uninitialized_vars),
                 ObjectPayload::Ordinary
+                | ObjectPayload::Array
+                | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }
@@ -12051,7 +13802,8 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                 | crate::bytecode::Instruction::ThrowReadOnly(index)
                 | crate::bytecode::Instruction::GetField(index)
                 | crate::bytecode::Instruction::GetField2(index)
-                | crate::bytecode::Instruction::PutField(index) => {
+                | crate::bytecode::Instruction::PutField(index)
+                | crate::bytecode::Instruction::DefineField(index) => {
                     let index = usize::try_from(*index)
                         .map_err(|_| RuntimeError::Invariant("constant index did not fit usize"))?;
                     let constant = function.constants().get(index).ok_or_else(|| {
@@ -12720,6 +14472,22 @@ impl Context {
         )?)
     }
 
+    /// Return this realm's genuine empty `%Array.prototype%` root.
+    pub fn array_prototype(&self) -> Result<ObjectRef, RuntimeError> {
+        let object = self
+            .runtime
+            .0
+            .state
+            .borrow()
+            .heap
+            .context(self.realm)?
+            .array_prototype;
+        Ok(ObjectRef::from_borrowed_handle(
+            self.runtime.clone(),
+            object,
+        )?)
+    }
+
     /// Return this realm's `%Function.prototype%` root.
     pub fn function_prototype(&self) -> Result<ObjectRef, RuntimeError> {
         let object = self
@@ -12874,6 +14642,16 @@ impl Context {
         self.runtime.new_object(Some(&prototype))
     }
 
+    /// Allocate one genuine empty Array in this realm.
+    pub fn new_array(&mut self) -> Result<ObjectRef, RuntimeError> {
+        self.runtime.new_array(self.realm)
+    }
+
+    /// Allocate one genuine Array initialized from consecutive values.
+    pub fn new_array_from_values(&mut self, values: Vec<Value>) -> Result<ObjectRef, RuntimeError> {
+        self.runtime.new_array_from_values(self.realm, values)
+    }
+
     /// Allocate an ordinary object with an explicit object-or-null prototype.
     pub fn new_object_with_prototype(
         &mut self,
@@ -12896,7 +14674,18 @@ impl Context {
         key: &PropertyKey,
         descriptor: &OrdinaryPropertyDescriptor,
     ) -> Result<bool, RuntimeError> {
-        self.runtime.define_own_property(object, key, descriptor)
+        match self.runtime.define_own_property_in_realm(
+            Some(self.realm),
+            object,
+            key,
+            descriptor,
+        )? {
+            PropertyDefineOutcome::Defined(defined) => Ok(defined),
+            PropertyDefineOutcome::Throw(value) => {
+                self.runtime.set_pending_exception(value)?;
+                Err(RuntimeError::Exception)
+            }
+        }
     }
 
     pub fn get_property(
@@ -12941,8 +14730,15 @@ impl Context {
         key: &PropertyKey,
         value: Value,
     ) -> Result<bool, RuntimeError> {
-        match self.runtime.prepare_set_property(object, key, value)? {
+        match self
+            .runtime
+            .prepare_set_property_in_realm(self.realm, object, key, value)?
+        {
             PropertySetAction::Complete => Ok(true),
+            PropertySetAction::Throw(value) => {
+                self.runtime.set_pending_exception(value)?;
+                Err(RuntimeError::Exception)
+            }
             PropertySetAction::Rejected(_) => Ok(false),
             PropertySetAction::Call {
                 setter,
@@ -12966,11 +14762,18 @@ impl Context {
         value: Value,
         receiver: Value,
     ) -> Result<bool, RuntimeError> {
-        match self
-            .runtime
-            .prepare_set_property_with_receiver(object, key, value, receiver)?
-        {
+        match self.runtime.prepare_set_property_with_receiver_in_realm(
+            Some(self.realm),
+            object,
+            key,
+            value,
+            receiver,
+        )? {
             PropertySetAction::Complete => Ok(true),
+            PropertySetAction::Throw(value) => {
+                self.runtime.set_pending_exception(value)?;
+                Err(RuntimeError::Exception)
+            }
             PropertySetAction::Rejected(_) => Ok(false),
             PropertySetAction::Call {
                 setter,
@@ -13435,6 +15238,9 @@ mod tests {
         match runtime.prepare_set_property(object, key, value)? {
             PropertySetAction::Complete => Ok(true),
             PropertySetAction::Rejected(_) => Ok(false),
+            PropertySetAction::Throw(_) => Err(RuntimeError::Invariant(
+                "context-free property test produced a JavaScript throw",
+            )),
             PropertySetAction::Call { .. } => Err(RuntimeError::Invariant(
                 "ordinary-property test helper unexpectedly reached a setter",
             )),
@@ -13451,6 +15257,9 @@ mod tests {
         match runtime.prepare_set_property_with_receiver(object, key, value, receiver)? {
             PropertySetAction::Complete => Ok(true),
             PropertySetAction::Rejected(_) => Ok(false),
+            PropertySetAction::Throw(_) => Err(RuntimeError::Invariant(
+                "context-free property test produced a JavaScript throw",
+            )),
             PropertySetAction::Call { .. } => Err(RuntimeError::Invariant(
                 "ordinary-property test helper unexpectedly reached a setter",
             )),
@@ -13468,6 +15277,600 @@ mod tests {
                 "ordinary-property test helper unexpectedly reached a getter",
             )),
         }
+    }
+
+    #[test]
+    fn array_class_roots_length_layout_values_and_realm_prototype() {
+        let runtime = Runtime::new();
+        let mut first = runtime.new_context();
+        let mut second = runtime.new_context();
+        let first_prototype = first.array_prototype().unwrap();
+        let second_prototype = second.array_prototype().unwrap();
+        assert_ne!(first_prototype, second_prototype);
+        assert!(runtime.is_array_object(&first_prototype).unwrap());
+        assert_eq!(
+            runtime.get_prototype_of(&first_prototype).unwrap(),
+            Some(first.object_prototype().unwrap())
+        );
+
+        let foreign_realm_value = second.new_object().unwrap();
+        let array = first
+            .new_array_from_values(vec![Value::Int(10), Value::Object(foreign_realm_value)])
+            .unwrap();
+        assert!(runtime.is_array_object(&array).unwrap());
+        assert_eq!(
+            runtime.get_prototype_of(&array).unwrap(),
+            Some(first_prototype)
+        );
+
+        let length = runtime.intern_property_key("length").unwrap();
+        assert_eq!(
+            first.get_own_property(&array, &length).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Int(2),
+                writable: true,
+                enumerable: false,
+                configurable: false,
+            })
+        );
+        let keys = runtime
+            .own_property_keys(&array)
+            .unwrap()
+            .into_iter()
+            .map(|key| {
+                runtime
+                    .0
+                    .state
+                    .borrow()
+                    .atoms
+                    .to_string(key.atom())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(keys, ["0", "1", "length"]);
+        let zero = runtime.intern_property_key("0").unwrap();
+        assert_eq!(first.get_property(&array, &zero).unwrap(), Value::Int(10));
+
+        let other_runtime = Runtime::new();
+        let mut other_context = other_runtime.new_context();
+        let wrong_runtime_value = other_context.new_object().unwrap();
+        assert!(matches!(
+            first.new_array_from_values(vec![Value::Object(wrong_runtime_value)]),
+            Err(RuntimeError::WrongRuntime("Array element"))
+        ));
+    }
+
+    #[test]
+    fn array_indices_grow_length_and_obey_readonly_and_extensible_state() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let array = context.new_array().unwrap();
+        let length = runtime.intern_property_key("length").unwrap();
+        let five = runtime.intern_property_key("5").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &array,
+                    &five,
+                    &data_descriptor(Value::Int(50), true, true, true)
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context.get_property(&array, &length).unwrap(),
+            Value::Int(6)
+        );
+
+        let non_index = runtime.intern_property_key("4294967295").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &array,
+                    &non_index,
+                    &data_descriptor(Value::Int(99), true, true, true),
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context.get_property(&array, &length).unwrap(),
+            Value::Int(6)
+        );
+
+        assert!(
+            context
+                .define_own_property(
+                    &array,
+                    &length,
+                    &OrdinaryPropertyDescriptor {
+                        writable: DescriptorField::Present(false),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        let six = runtime.intern_property_key("6").unwrap();
+        assert!(
+            !context
+                .define_own_property(
+                    &array,
+                    &six,
+                    &data_descriptor(Value::Int(60), true, true, true)
+                )
+                .unwrap()
+        );
+        assert!(!context.set_property(&array, &six, Value::Int(60)).unwrap());
+        assert!(context.set_property(&array, &five, Value::Int(51)).unwrap());
+        assert_eq!(context.get_property(&array, &five).unwrap(), Value::Int(51));
+
+        let extensible = context.new_array().unwrap();
+        runtime.prevent_extensions(&extensible).unwrap();
+        let zero = runtime.intern_property_key("0").unwrap();
+        assert!(
+            !context
+                .define_own_property(
+                    &extensible,
+                    &zero,
+                    &data_descriptor(Value::Int(1), true, true, true),
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context.get_property(&extensible, &length).unwrap(),
+            Value::Int(0)
+        );
+    }
+
+    #[test]
+    fn array_length_shrink_deletes_descending_and_rolls_back_at_fixed_index() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let array = context
+            .new_array_from_values((0..5).map(Value::Int).collect())
+            .unwrap();
+        let length = runtime.intern_property_key("length").unwrap();
+        let fixed = runtime.intern_property_key("3").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &array,
+                    &fixed,
+                    &OrdinaryPropertyDescriptor {
+                        configurable: DescriptorField::Present(false),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+
+        assert!(
+            !context
+                .define_own_property(
+                    &array,
+                    &length,
+                    &OrdinaryPropertyDescriptor {
+                        value: DescriptorField::Present(Value::Int(1)),
+                        writable: DescriptorField::Present(false),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context.get_own_property(&array, &length).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Int(4),
+                writable: false,
+                enumerable: false,
+                configurable: false,
+            })
+        );
+        let four = runtime.intern_property_key("4").unwrap();
+        assert!(!runtime.has_own_property(&array, &four).unwrap());
+        assert!(runtime.has_own_property(&array, &fixed).unwrap());
+        let two = runtime.intern_property_key("2").unwrap();
+        assert!(runtime.has_own_property(&array, &two).unwrap());
+        assert!(!context.set_property(&array, &four, Value::Int(44)).unwrap());
+        assert!(context.set_property(&array, &two, Value::Int(22)).unwrap());
+    }
+
+    #[test]
+    fn array_assignment_rejections_keep_quickjs_length_diagnostics() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let global = context.global_object().unwrap();
+        let length = runtime.intern_property_key("length").unwrap();
+
+        let read_only = context.new_array().unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &read_only,
+                    &length,
+                    &OrdinaryPropertyDescriptor {
+                        writable: DescriptorField::Present(false),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        let read_only_key = runtime.intern_property_key("readOnlyArray").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &global,
+                    &read_only_key,
+                    &data_descriptor(Value::Object(read_only), true, true, true),
+                )
+                .unwrap()
+        );
+        for source in [
+            "(function(){'use strict';readOnlyArray[0]=1})()",
+            "(function(){'use strict';readOnlyArray.length=0})()",
+        ] {
+            assert_eq!(context.eval(source), Err(RuntimeError::Exception));
+            assert_eq!(
+                take_error_message(&runtime, &mut context),
+                JsString::from_static("'length' is read-only")
+            );
+        }
+
+        let fixed = context.new_array_from_values(vec![Value::Int(1)]).unwrap();
+        let zero = runtime.intern_property_key("0").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &fixed,
+                    &zero,
+                    &OrdinaryPropertyDescriptor {
+                        configurable: DescriptorField::Present(false),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        let fixed_key = runtime.intern_property_key("fixedArray").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &global,
+                    &fixed_key,
+                    &data_descriptor(Value::Object(fixed), true, true, true),
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context.eval("(function(){'use strict';fixedArray.length=0})()"),
+            Err(RuntimeError::Exception)
+        );
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from_static("not configurable")
+        );
+    }
+
+    #[test]
+    fn array_length_uses_quickjs_double_conversion_and_caller_realm_errors() {
+        let runtime = Runtime::new();
+        let mut first = runtime.new_context();
+        let mut caller = runtime.new_context();
+        let array = first.new_array_from_values(vec![Value::Int(1)]).unwrap();
+        let length = runtime.intern_property_key("length").unwrap();
+        let value = caller
+            .eval("(function(){function V(){this.count=0}V.prototype.valueOf=function(){this.count++;return this.count};return new V})()")
+            .unwrap();
+        assert_eq!(
+            caller.define_own_property(
+                &array,
+                &length,
+                &OrdinaryPropertyDescriptor {
+                    value: DescriptorField::Present(value.clone()),
+                    ..OrdinaryPropertyDescriptor::new()
+                },
+            ),
+            Err(RuntimeError::Exception)
+        );
+        assert_eq!(
+            take_error_message(&runtime, &mut caller),
+            JsString::from_static("invalid array length")
+        );
+        let Value::Object(value) = value else {
+            panic!("length conversion fixture was not an object");
+        };
+        let count = runtime.intern_property_key("count").unwrap();
+        assert_eq!(caller.get_property(&value, &count).unwrap(), Value::Int(2));
+        assert_eq!(caller.get_property(&array, &length).unwrap(), Value::Int(1));
+
+        assert_eq!(
+            caller.define_own_property(
+                &array,
+                &length,
+                &OrdinaryPropertyDescriptor {
+                    value: DescriptorField::Present(Value::Float(1.5)),
+                    ..OrdinaryPropertyDescriptor::new()
+                },
+            ),
+            Err(RuntimeError::Exception)
+        );
+        let Value::Object(error) = caller.take_exception().unwrap().unwrap() else {
+            panic!("invalid Array length did not materialize a RangeError");
+        };
+        let expected = runtime
+            .0
+            .state
+            .borrow()
+            .heap
+            .context(caller.realm)
+            .unwrap()
+            .native_error_prototypes[NativeErrorKind::Range.index()]
+        .unwrap();
+        assert_eq!(
+            runtime
+                .get_prototype_of(&error)
+                .unwrap()
+                .unwrap()
+                .object_id(),
+            expected
+        );
+
+        let throwing = caller
+            .eval("(function(){function V(){}V.prototype.valueOf=function(){throw 77};return new V})()")
+            .unwrap();
+        assert_eq!(
+            caller.define_own_property(
+                &array,
+                &length,
+                &OrdinaryPropertyDescriptor {
+                    value: DescriptorField::Present(throwing),
+                    ..OrdinaryPropertyDescriptor::new()
+                },
+            ),
+            Err(RuntimeError::Exception)
+        );
+        assert_eq!(caller.take_exception().unwrap(), Some(Value::Int(77)));
+    }
+
+    #[test]
+    fn array_slots_and_realm_roots_survive_gc_then_collect() {
+        let runtime = Runtime::new();
+        let (array, zero) = {
+            let mut context = runtime.new_context();
+            let element = context.new_object().unwrap();
+            let array = context
+                .new_array_from_values(vec![Value::Object(element.clone())])
+                .unwrap();
+            let zero = runtime.intern_property_key("0").unwrap();
+            (array, zero)
+        };
+        runtime.run_gc().unwrap();
+        assert_eq!(runtime.heap_counts().context_nodes, 1);
+        assert!(matches!(
+            get_property(&runtime, &array, &zero).unwrap(),
+            Value::Object(_)
+        ));
+        drop(array);
+        drop(zero);
+        runtime.run_gc().unwrap();
+        assert_eq!(runtime.heap_counts().live, 0);
+    }
+
+    #[test]
+    fn array_of_uses_set_for_a_custom_result_length() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let result = context.new_object().unwrap();
+        let length = runtime.intern_property_key("length").unwrap();
+        let setter = eval_callable(
+            &runtime,
+            &mut context,
+            "(function(value){ this.seen = value; })",
+        );
+        assert!(
+            context
+                .define_own_property(
+                    &result,
+                    &length,
+                    &OrdinaryPropertyDescriptor {
+                        set: DescriptorField::Present(AccessorValue::Callable(setter)),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+
+        let global = context.global_object().unwrap();
+        let result_key = runtime.intern_property_key("arrayOfResult").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &global,
+                    &result_key,
+                    &data_descriptor(Value::Object(result.clone()), true, true, true),
+                )
+                .unwrap()
+        );
+        let constructor = eval_callable(
+            &runtime,
+            &mut context,
+            "(function CustomArray(){ return arrayOfResult; })",
+        );
+        let array = global_callable(&runtime, &mut context, "Array");
+        let of = property_callable(&runtime, &mut context, array.as_object(), "of");
+        assert_eq!(
+            context
+                .call(
+                    &of,
+                    Value::Object(constructor.as_object().clone()),
+                    &[Value::Int(11), Value::Int(22)],
+                )
+                .unwrap(),
+            Value::Object(result.clone())
+        );
+
+        for (name, expected) in [("0", 11), ("1", 22), ("seen", 2)] {
+            let key = runtime.intern_property_key(name).unwrap();
+            assert_eq!(
+                context.get_property(&result, &key).unwrap(),
+                Value::Int(expected)
+            );
+        }
+        assert!(matches!(
+            context.get_own_property(&result, &length).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Accessor { .. })
+        ));
+    }
+
+    #[test]
+    fn array_of_create_data_property_reports_the_quickjs_rejection() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let global = context.global_object().unwrap();
+        let array = global_callable(&runtime, &mut context, "Array");
+        let of = property_callable(&runtime, &mut context, array.as_object(), "of");
+
+        let blocked = context.new_object().unwrap();
+        runtime.prevent_extensions(&blocked).unwrap();
+        let blocked_key = runtime.intern_property_key("blockedArrayResult").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &global,
+                    &blocked_key,
+                    &data_descriptor(Value::Object(blocked), true, true, true),
+                )
+                .unwrap()
+        );
+        let blocked_constructor = eval_callable(
+            &runtime,
+            &mut context,
+            "(function BlockedArray(){ return blockedArrayResult; })",
+        );
+        assert_eq!(
+            context.call(
+                &of,
+                Value::Object(blocked_constructor.as_object().clone()),
+                &[Value::Int(1)],
+            ),
+            Err(RuntimeError::Exception)
+        );
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from_static("object is not extensible")
+        );
+
+        let frozen = context.new_array().unwrap();
+        let length = runtime.intern_property_key("length").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &frozen,
+                    &length,
+                    &OrdinaryPropertyDescriptor {
+                        writable: DescriptorField::Present(false),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        let frozen_key = runtime.intern_property_key("frozenArrayResult").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &global,
+                    &frozen_key,
+                    &data_descriptor(Value::Object(frozen), true, true, true),
+                )
+                .unwrap()
+        );
+        let frozen_constructor = eval_callable(
+            &runtime,
+            &mut context,
+            "(function FrozenArray(){ return frozenArrayResult; })",
+        );
+        assert_eq!(
+            context.call(
+                &of,
+                Value::Object(frozen_constructor.as_object().clone()),
+                &[Value::Int(1)],
+            ),
+            Err(RuntimeError::Exception)
+        );
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from_static("'length' is read-only")
+        );
+    }
+
+    #[test]
+    fn array_constructor_sets_through_inherited_indices_like_quickjs() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let prototype = context.array_prototype().unwrap();
+        let zero = runtime.intern_property_key("0").unwrap();
+        let setter = eval_callable(
+            &runtime,
+            &mut context,
+            "(function(value){ this.hit = value; })",
+        );
+        assert!(
+            context
+                .define_own_property(
+                    &prototype,
+                    &zero,
+                    &OrdinaryPropertyDescriptor {
+                        set: DescriptorField::Present(AccessorValue::Callable(setter)),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+
+        let constructor = global_callable(&runtime, &mut context, "Array");
+        let Value::Object(array) = context
+            .call(
+                &constructor,
+                Value::Undefined,
+                &[Value::String(JsString::from_static("x"))],
+            )
+            .unwrap()
+        else {
+            panic!("Array call did not return an object");
+        };
+        let hit = runtime.intern_property_key("hit").unwrap();
+        let length = runtime.intern_property_key("length").unwrap();
+        assert_eq!(
+            context.get_property(&array, &hit).unwrap(),
+            Value::String(JsString::from_static("x"))
+        );
+        assert!(!runtime.has_own_property(&array, &zero).unwrap());
+        assert_eq!(
+            context.get_property(&array, &length).unwrap(),
+            Value::Int(0)
+        );
+
+        let one = runtime.intern_property_key("1").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &prototype,
+                    &one,
+                    &data_descriptor(Value::Int(1), false, false, true),
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context.call(
+                &constructor,
+                Value::Undefined,
+                &[Value::Int(10), Value::Int(20)],
+            ),
+            Err(RuntimeError::Exception)
+        );
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from_static("'1' is read-only")
+        );
     }
 
     fn global_callable(runtime: &Runtime, context: &mut super::Context, name: &str) -> CallableRef {
@@ -16785,6 +19188,19 @@ mod tests {
             "direct native ForOfNext must not allocate iterator-result wrappers"
         );
 
+        let before_array_raw = runtime.0.state.borrow().iterator_result_allocations;
+        assert_eq!(
+            context
+                .eval("(function(){var sum=0;for(var value of [20,22])sum+=value;return sum})()")
+                .unwrap(),
+            Value::Int(42)
+        );
+        assert_eq!(
+            runtime.0.state.borrow().iterator_result_allocations,
+            before_array_raw,
+            "direct Array Iterator next must use the raw native ABI"
+        );
+
         let before_bound = runtime.0.state.borrow().iterator_result_allocations;
         assert_eq!(
             context
@@ -17050,6 +19466,15 @@ mod tests {
                     Instruction::Undefined,
                     Instruction::PutField(0),
                     Instruction::Undefined,
+                    Instruction::Return,
+                ],
+                2,
+            ),
+            (
+                vec![
+                    Instruction::Undefined,
+                    Instruction::Undefined,
+                    Instruction::DefineField(0),
                     Instruction::Return,
                 ],
                 2,

@@ -527,6 +527,21 @@ claim full parity.
   28546-28769 (`js_parse_for_in_of`), 44182-44510 (Iterator prototype), and
   46508-46680 (String Iterator), plus `quickjs-opcode.h` 201-210.
 
+- Array literals follow QuickJS's three-phase lowering rather than a generic
+  builder rewrite: up to 32 leading dense elements use `ArrayFrom`, later
+  fixed elements use indexed defines, and the first elision or spread switches
+  to a dynamic index carried on the VM stack. Empty arrays, holes, trailing
+  commas, nested literals, prefixes beyond 32 elements, and iterable spread
+  therefore preserve the pinned stack shapes and source sites. Spread uses
+  the ordinary iterator protocol and the `js_append_enumerate` close rule: a
+  `next` or element-definition failure closes with a pending exception, and a
+  close failure cannot replace the original throw. Typed bytecode operands and
+  the verifier reject malformed counts, constant indices, and stack joins.
+  The pinned anchors are `quickjs.c` 16840-16925 (`js_append_enumerate`),
+  19685-19710 (Array opcodes), and 25669-25795
+  (`js_parse_array_literal`), plus the corresponding opcode definitions in
+  `quickjs-opcode.h`.
+
 - Untagged template literals follow QuickJS `js_parse_template` rather than a
   generic string-interpolation rewrite. A no-substitution template pushes only
   its cooked String. An interpolated template keeps the cooked head as a
@@ -541,8 +556,8 @@ claim full parity.
   synthetic concat operations emit no new marker, matching upstream; exact
   expression-statement entry seeding prevents them from inheriting a prior
   statement's marker and preserves the expression start inside composites.
-  Tagged templates remain explicit and unsupported pending Array objects,
-  frozen cooked/raw template objects and per-site identity caching.
+  Tagged templates remain explicit and unsupported pending frozen cooked/raw
+  template objects and per-site identity caching.
 - Source `MemberExpression` lowering follows QuickJS's typed
   `GetField`/`GetField2` and `GetArrayEl`/`GetArrayEl2` split. Fixed and
   computed reads can be chained across line terminators; a following call
@@ -733,6 +748,27 @@ claim full parity.
   internal methods cover complete descriptor validation/storage, data get/set
   with explicit receiver, delete, own-key order, extensibility, prototype cycle
   checks, exact lone-surrogate keys, and runtime-domain rejection.
+- Genuine Array objects have a dedicated heap class and a mandatory slot-zero
+  `length` property. Indexed defines grow length; `ArraySetLength` performs the
+  pinned conversion before the writable check, deletes descending indices,
+  rolls back to the first non-configurable index, and still applies a requested
+  writable-to-false transition. Realm roots own a genuine empty
+  `%Array.prototype%`, `%ArrayIteratorPrototype%`, and `%Array%` constructor.
+  Calls and construction implement the one-number length case, multi-element
+  creation, observable `newTarget.prototype`, and cross-realm fallback. The
+  constructor exposes the complete pinned static table `isArray`, `from`,
+  `of`, and `@@species`; `from` covers iterable and array-like routes, mapper
+  ordering, constructor receivers, CreateDataProperty, iterator closing, and
+  final length Set. The currently implemented prototype subset is deliberately
+  limited to generic `values`, `keys`, `entries`, and the `@@iterator` alias.
+  Array Iterators re-read Uint32 length on every `next`, observe holes and
+  mutation through ordinary Get, allocate entry-pair Arrays in the defining
+  realm, use the raw native-next ABI in for-of, and eagerly release their source
+  on exhaustion. Array prototype algorithms such as `at`, `concat`, `map`,
+  mutation/search/sort methods, `@@unscopables`, and species-based result
+  creation remain later slices. The pinned runtime anchors are `quickjs.c`
+  5628-5671, 9433-9524, 10369-10592, 41552-41799, 43344-43454,
+  44519-44583, and 56220-56390.
 - Shape caches are weak and unlink by finalized generational Shape ID. Shape
   and Symbol atom ownership is paired through heap cleanup, including failure
   paths and runtime teardown.
@@ -804,7 +840,7 @@ claim full parity.
   validation.
   Global `%String%`, the remaining 43 prototype own keys, Context-level
   observable `ToString`, borrowed C-pointer/refcount ownership, native atom
-  diagnostics attached to not-yet-implemented Array/private-field/module/
+  diagnostics attached to not-yet-implemented private-field/module/
   global-var/function-declaration surfaces, exact byte-sidecar migration for the remaining
   numeric-parser and lexer diagnostic builders, and general recoverable
   allocator failure handling stay unpublished.
@@ -859,11 +895,11 @@ claim full parity.
 - Every realm installs `Infinity`, `NaN` and `undefined` as non-writable,
   non-enumerable, non-configurable global data properties, matching the pinned
   QuickJS 2026-06-04 descriptors and direct-delete results. The implemented
-  global string-key surface preserves upstream relative own-key order as
-  `parseInt`, `parseFloat`, `isNaN`, `isFinite`, the six URI/escape functions,
-  the three constants, `Number`, `Boolean`, `Symbol`, `globalThis`, then
-  `BigInt`. This is not a claim that the wider global builtin table is
-  complete.
+  global string-key surface preserves upstream relative own-key order as the
+  Error family, `Array`, `Function`, `parseInt`, `parseFloat`, `isNaN`,
+  `isFinite`, the six URI/escape functions, the three constants, `Number`,
+  `Boolean`, `Symbol`, `globalThis`, then `BigInt`. This is not a claim that the
+  wider global builtin table is complete.
 - Every global object owns QuickJS's `[Symbol.toStringTag] = "global"` metadata
   as a non-writable, non-enumerable, configurable data property. The runtime's
   well-known identity is also exposed as the frozen public
@@ -1194,8 +1230,9 @@ claim full parity.
   iterator protocol and accessor order, Unicode String iteration, natural and
   abrupt close behavior, completion precedence, nested labels/switch/finally,
   raw native-next dispatch, realm splitting, exact diagnostics, and all three
-  debug modes. `for-in`, `for-await-of`, for-of destructuring, Array iteration,
-  and Iterator Helpers remain separate milestones.
+  debug modes. Generic Array iteration is now covered by `oracle_array`;
+  `for-in`, `for-await-of`, for-of destructuring, and Iterator Helpers remain
+  separate milestones.
 - `Runtime` and `Context` are distinct; `qjs -e` and file execution use the
   Rust compiler/VM path and never delegate to an external engine.
 
@@ -1313,11 +1350,11 @@ object-environment lookup/deletion introduced by `with` or direct `eval`, the
 global String constructor, the remaining 43 entries of its 53-key prototype
 surface, Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. The global `Object`
-constructor, AggregateError iterable-to-Array, remaining Object prototype
-methods and uncatchable termination state are also pending. Arrays, the
-remaining iterator classes and helpers, RegExp, Unicode-backed String methods,
-remaining object-literal forms and the rest of the builtin table build on
-those layers.
+constructor, AggregateError, remaining Object prototype methods and
+uncatchable termination state are also pending. The remaining Array prototype
+algorithms, Array destructuring consumers, other iterator classes and helpers,
+RegExp, Unicode-backed String methods, remaining object-literal forms and the
+rest of the builtin table build on those layers.
 
 The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 case/normalization/script/property tables beyond the implemented
@@ -1382,6 +1419,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_for_of -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_array -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_for_lexicals -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_program_lexicals -- --nocapture
@@ -1398,8 +1437,8 @@ String-exotic substrate, String UTF-16 prefix, String-conversion core,
 String-rope/byte/native-Error kernels, Unicode identifier core, global
 BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials, and
 the Program-var/function, Program/body/block/switch/classic-for lexical-scope,
-single/labelled Annex B, synchronous try/catch/finally, and synchronous for-of
-slices. The atom-Error target contains thirteen
+single/labelled Annex B, synchronous try/catch/finally, synchronous for-of,
+and Array core/literal/iterator slices. The atom-Error target contains thirteen
 pinned-oracle inputs in addition to its Rust-side expectation test. The Unicode
 target checks every scalar, real compiler/runtime cases, and the parser-driven
 identifier diagnostic matrix. A

@@ -3719,6 +3719,9 @@ impl<'source> Parser<'source> {
                 self.parse_expression()?;
                 self.expect_punctuator(Punctuator::RightParen)?;
             }
+            TokenKind::Punctuator(Punctuator::LeftBracket) => {
+                self.parse_array_literal()?;
+            }
             TokenKind::Template(_) => {
                 self.parse_template_literal()?;
             }
@@ -3777,6 +3780,125 @@ impl<'source> Parser<'source> {
                 return Err(self.syntax_here("unexpected token in expression: ''"));
             }
         }
+        Ok(())
+    }
+
+    /// Lower an Array literal with the same three phases as QuickJS
+    /// `js_parse_array_literal`: a dense prefix carried by `ArrayFrom`, fixed
+    /// post-prefix elements defined by atom, then a dynamic-index tail for
+    /// holes and spread.  Element grammar always admits `in`, even when the
+    /// literal occurs in an enclosing ExpressionNoIn.
+    fn parse_array_literal(&mut self) -> Result<(), Error> {
+        const DENSE_PREFIX_LIMIT: u32 = 32;
+        const MAX_STATIC_INDEX: u32 = i32::MAX as u32;
+
+        if !self.is_punctuator(Punctuator::LeftBracket) {
+            return Err(self.syntax_here("expecting '['"));
+        }
+        self.advance_expression_start()?;
+        let mut index = 0_u32;
+
+        // QuickJS keeps the common small dense case entirely on the operand
+        // stack and lets one ArrayFrom operation consume the prefix values.
+        while !self.is_punctuator(Punctuator::RightBracket) && index < DENSE_PREFIX_LIMIT {
+            if self.is_punctuator(Punctuator::Comma) || self.is_punctuator(Punctuator::Ellipsis) {
+                break;
+            }
+            self.parse_assignment_allow_in()?;
+            index += 1;
+            if self.is_punctuator(Punctuator::Comma) {
+                self.advance_expression_start()?;
+                // A comma immediately before `]` is trailing, not a hole.
+            } else if !self.is_punctuator(Punctuator::RightBracket) {
+                self.expect_punctuator(Punctuator::RightBracket)?;
+            }
+        }
+        self.emit_instruction(Instruction::ArrayFrom(u16::try_from(index).map_err(
+            |_| Error::internal("dense Array literal prefix does not fit u16"),
+        )?))?;
+
+        // Holes and elements after the dense prefix retain the Array on the
+        // stack. A final hole needs an explicit length write because no later
+        // indexed definition extends the exotic length for it.
+        let mut need_length = false;
+        while !self.is_punctuator(Punctuator::RightBracket) && index < MAX_STATIC_INDEX {
+            if self.is_punctuator(Punctuator::Ellipsis) {
+                break;
+            }
+            need_length = true;
+            if !self.is_punctuator(Punctuator::Comma) {
+                self.parse_assignment_allow_in()?;
+                let key = self.add_constant(IrConstant::Primitive(Value::String(
+                    JsString::try_from_utf8(&index.to_string())?,
+                )))?;
+                self.emit_instruction(Instruction::DefineField(key))?;
+                need_length = false;
+            }
+            index += 1;
+            if self.is_punctuator(Punctuator::Comma) {
+                self.advance_expression_start()?;
+                // Continue with the next element or trailing hole.
+            } else if !self.is_punctuator(Punctuator::RightBracket) {
+                self.expect_punctuator(Punctuator::RightBracket)?;
+            }
+        }
+
+        if self.is_punctuator(Punctuator::RightBracket) {
+            if need_length {
+                let length = self.add_constant(IrConstant::Primitive(Value::String(
+                    JsString::from_static("length"),
+                )))?;
+                self.emit_instruction(Instruction::Dup)?;
+                self.emit_instruction(Instruction::PushI32(
+                    i32::try_from(index)
+                        .map_err(|_| Error::internal("Array literal index does not fit i32"))?,
+                ))?;
+                self.emit_instruction(Instruction::PutField(length))?;
+            }
+            self.expect_punctuator(Punctuator::RightBracket)?;
+            self.anonymous_function_definition = None;
+            return Ok(());
+        }
+
+        // A spread, or the static-index boundary, switches to a runtime index
+        // kept immediately above the Array. DefineArrayEl and Append preserve
+        // both operands so the parser can continue without synthetic locals.
+        self.emit_instruction(Instruction::PushI32(
+            i32::try_from(index)
+                .map_err(|_| Error::internal("Array literal index does not fit i32"))?,
+        ))?;
+        while !self.is_punctuator(Punctuator::RightBracket) {
+            if self.is_punctuator(Punctuator::Ellipsis) {
+                self.advance_expression_start()?;
+                self.parse_assignment_allow_in()?;
+                self.emit_instruction(Instruction::Append)?;
+            } else {
+                need_length = true;
+                if !self.is_punctuator(Punctuator::Comma) {
+                    self.parse_assignment_allow_in()?;
+                    self.emit_instruction(Instruction::DefineArrayEl)?;
+                    need_length = false;
+                }
+                self.emit_instruction(Instruction::Inc)?;
+            }
+
+            if !self.is_punctuator(Punctuator::Comma) {
+                break;
+            }
+            self.advance_expression_start()?;
+        }
+
+        if need_length {
+            let length = self.add_constant(IrConstant::Primitive(Value::String(
+                JsString::from_static("length"),
+            )))?;
+            self.emit_instruction(Instruction::Dup1)?;
+            self.emit_instruction(Instruction::PutField(length))?;
+        } else {
+            self.emit_instruction(Instruction::Drop)?;
+        }
+        self.expect_punctuator(Punctuator::RightBracket)?;
+        self.anonymous_function_definition = None;
         Ok(())
     }
 
@@ -13934,6 +14056,128 @@ mod tests {
             assert_eq!(constant.as_primitive(), Some(expected));
             assert!(constant.as_child().is_none());
         }
+    }
+
+    #[test]
+    fn array_literals_lower_dense_fixed_hole_and_spread_phases() {
+        let dense = compile_unlinked_script("[1,2,3]").unwrap();
+        assert!(
+            dense
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::ArrayFrom(3)))
+        );
+        assert!(!dense.code().iter().any(|instruction| matches!(
+            instruction,
+            Instruction::DefineField(_) | Instruction::DefineArrayEl | Instruction::Append
+        )));
+
+        let large_source = format!(
+            "[{}]",
+            (0..33)
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let large = compile_unlinked_script(&large_source).unwrap();
+        assert!(
+            large
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::ArrayFrom(32)))
+        );
+        let fixed_key = large
+            .code()
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instruction::DefineField(index) => Some(*index),
+                _ => None,
+            })
+            .expect("33rd Array element must use DefineField");
+        assert!(matches!(
+            large.constants()[usize::try_from(fixed_key).unwrap()].as_primitive(),
+            Some(Value::String(value)) if value == &JsString::from_static("32")
+        ));
+
+        let holes = compile_unlinked_script("[,1,,]").unwrap();
+        let hole_code = holes.code();
+        assert!(
+            hole_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::ArrayFrom(0)))
+        );
+        assert!(
+            hole_code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::DefineField(_)))
+        );
+        assert!(hole_code.windows(3).any(|window| matches!(
+            window,
+            [
+                Instruction::Dup,
+                Instruction::PushI32(3),
+                Instruction::PutField(_)
+            ]
+        )));
+
+        let spread = compile_unlinked_script("[1,...'ab',,4]").unwrap();
+        assert!(
+            spread
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Append))
+        );
+        assert!(spread.code().windows(3).any(|window| matches!(
+            window,
+            [
+                Instruction::DefineArrayEl,
+                Instruction::Inc,
+                Instruction::Drop
+            ]
+        )));
+    }
+
+    #[test]
+    fn array_literal_grammar_keeps_quickjs_boundaries_and_reference_state() {
+        for source in [
+            "[]",
+            "[,]",
+            "[,,]",
+            "[1,]",
+            "[...'',]",
+            "for([1 in Function];false;);",
+        ] {
+            compile_unlinked_script(source)
+                .unwrap_or_else(|error| panic!("valid Array literal {source:?}: {error}"));
+        }
+        assert_eq!(
+            compile_unlinked_script("[1 2]").unwrap_err().message(),
+            "expecting ']'"
+        );
+        assert_eq!(
+            compile_unlinked_script("[/a/]").unwrap_err().message(),
+            "this literal form is not implemented yet"
+        );
+        for source in ["[... ]", "[1,, 2 3]"] {
+            assert!(
+                compile_unlinked_script(source).is_err(),
+                "invalid Array literal unexpectedly compiled: {source}"
+            );
+        }
+
+        let named = compile_unlinked_script("var named=[function(){}]").unwrap();
+        assert!(
+            !named
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::SetName(_)))
+        );
+        let child = named
+            .constants()
+            .iter()
+            .find_map(|constant| constant.as_child())
+            .expect("Array element function child");
+        assert_eq!(child.func_name(), None);
     }
 
     #[test]
