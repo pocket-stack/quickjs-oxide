@@ -762,8 +762,9 @@ claim full parity.
   final length Set. The currently implemented prototype subset contains `at`,
   `with`, `concat`, `every`, `some`, `forEach`, `map`, `filter`, `reduce`,
   `reduceRight`, `fill`, `find`, `findIndex`, `findLast`, `findLastIndex`,
-  `indexOf`, `lastIndexOf`, `includes`, `copyWithin`, generic `values`, `keys`,
-  `entries`, and the `@@iterator` alias in their pinned filtered order. `at` uses
+  `indexOf`, `lastIndexOf`, `includes`, `join`, `toString`, `toLocaleString`,
+  `copyWithin`, generic `values`, `keys`, `entries`, and the `@@iterator` alias
+  in their pinned filtered order. `at` uses
   saturating Int64 index conversion and HasProperty-before-Get; the three
   searches snapshot ToLength, skip `fromIndex` conversion for zero length,
   preserve omitted-versus-explicit-undefined behavior, and use QuickJS's
@@ -810,7 +811,24 @@ claim full parity.
   ToLength even for empty receivers, Get and visit every snapshotted index
   including holes, pass value/index/the original unboxed receiver, traverse in
   the selected direction, and preserve callback/Get abrupt completions and
-  defining-realm native errors. `copyWithin`
+  defining-realm native errors. `join` snapshots ToLength before converting
+  its separator, then performs a direct Uint32-indexed Get per slot so holes,
+  inherited values, mutation, and the pinned post-2^32 wrap remain observable.
+  Nullish elements contribute empty fields. `toLocaleString` shares that
+  kernel but ignores all supplied arguments, invokes each non-nullish
+  element's locale method with zero arguments, and ToStrings its return value.
+  Array `toString` dynamically reads `join`, returns a callable join's result
+  without conversion, and otherwise uses the intrinsic Object-toString
+  fallback. QuickJS's recursive-array behavior is retained as a catchable
+  `InternalError: stack overflow`; a deterministic call-entry ceiling protects
+  the Rust host stack. Its current 64-stringification-frame limit can reject
+  deeper acyclic nesting earlier than pinned QuickJS and observes fewer
+  recursive side effects; an iterative native-call trampoline remains required
+  for exact stack-threshold parity. The 30-bit StringBuffer failure order is
+  covered with a reduced-limit unit probe, including Gets and locale invocation
+  that occur after separator append failure while later result ToString is
+  skipped.
+  `copyWithin`
   snapshots and clamps all three bounds in QuickJS order, selects a backward
   traversal only for overlapping ranges, and performs source HasProperty/Get
   followed by a throwing target Set, or a throwing Delete for a source hole.
@@ -819,10 +837,10 @@ claim full parity.
   Array Iterators re-read Uint32 length on every `next`, observe holes and
   mutation through ordinary Get, allocate entry-pair Arrays in the defining
   realm, use the raw native-next ABI in for-of, and eagerly release their source
-  on exhaustion. The remaining Array mutation/search/sort methods and
+  on exhaustion. The remaining Array mutation/order/slice/flatten methods and
   `@@unscopables` remain later slices. The pinned runtime anchors are `quickjs.c`
-  5628-5671, 9433-9524, 10369-10592, 13210-13255, 41472-42226,
-  42228-42480, 42975-43013, 43344-43454, 44519-44583, and 56220-56390.
+  212, 5628-5671, 9433-9524, 10369-10592, 13210-13663, 41472-42226,
+  42228-42560, 42975-43013, 43344-43454, 44519-44583, and 56220-56390.
 - Every realm now publishes `%Object%` as a constructor-or-function native
   linked to `%Object.prototype%`. Call and construction preserve existing
   objects, box every primitive family in the defining realm, allocate ordinary
@@ -1512,6 +1530,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_with -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_concat -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_array_stringification -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_fill -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

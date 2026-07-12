@@ -23,10 +23,10 @@ use crate::function::{
     UnlinkedVariableDefinition,
 };
 use crate::heap::{
-    ArrayFindKind, ArrayIterationKind, ArrayIteratorKind, ArrayReduceKind, ArraySearchKind,
-    AutoInitProperty, BigIntAsNKind, BytecodeConstant, ClosureSource, ClosureVariable,
-    ClosureVariableKind, ClosureVariableName, ConstructorKind, ContextData, ContextId,
-    DynamicFunctionKind, ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId,
+    ArrayFindKind, ArrayIterationKind, ArrayIteratorKind, ArrayJoinKind, ArrayReduceKind,
+    ArraySearchKind, AutoInitProperty, BigIntAsNKind, BytecodeConstant, ClosureSource,
+    ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind, ContextData,
+    ContextId, DynamicFunctionKind, ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId,
     FunctionDebugInfo, FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats,
     GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError,
     NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
@@ -3558,6 +3558,30 @@ impl Runtime {
                 1,
             )?;
         }
+        self.define_native_builtin_auto_init(
+            array_prototype,
+            realm,
+            NativeFunctionId::ArrayPrototypeJoin(ArrayJoinKind::Join),
+            "join",
+            1,
+            1,
+        )?;
+        self.define_native_builtin_auto_init(
+            array_prototype,
+            realm,
+            NativeFunctionId::ArrayPrototypeToString,
+            "toString",
+            0,
+            0,
+        )?;
+        self.define_native_builtin_auto_init(
+            array_prototype,
+            realm,
+            NativeFunctionId::ArrayPrototypeJoin(ArrayJoinKind::ToLocaleString),
+            "toLocaleString",
+            0,
+            0,
+        )?;
         self.define_native_builtin_auto_init(
             array_prototype,
             realm,
@@ -8392,6 +8416,13 @@ impl Runtime {
                     realm,
                     min_readable_args,
                 } => {
+                    if self.array_stringification_call_would_overflow(target) {
+                        return Ok(Completion::Throw(self.new_native_error(
+                            caller_realm,
+                            NativeErrorKind::Internal,
+                            "stack overflow",
+                        )?));
+                    }
                     return self.call_native_function(
                         &callable,
                         realm,
@@ -12143,6 +12174,212 @@ impl Runtime {
         Ok(Completion::Return(not_found()))
     }
 
+    fn array_stringification_call_would_overflow(&self, target: NativeFunctionId) -> bool {
+        // QuickJS checks its platform C-stack pointer before every native
+        // call. Rust frame sizes do not map to that byte threshold, so keep a
+        // deterministic call-entry ceiling on the newly recursive
+        // join/toString path and preserve the same JavaScript-visible
+        // stack-overflow completion without risking the host stack.
+        const MAX_ARRAY_STRINGIFICATION_FRAMES: usize = 64;
+
+        if !matches!(
+            target,
+            NativeFunctionId::ArrayPrototypeJoin(_) | NativeFunctionId::ArrayPrototypeToString
+        ) {
+            return false;
+        }
+        self.0
+            .state
+            .borrow()
+            .active_frames
+            .iter()
+            .filter(|frame| {
+                matches!(
+                    frame.kind,
+                    ActiveFrameKind::Native {
+                        target: NativeFunctionId::ArrayPrototypeJoin(_)
+                            | NativeFunctionId::ArrayPrototypeToString,
+                        ..
+                    }
+                )
+            })
+            .count()
+            >= MAX_ARRAY_STRINGIFICATION_FRAMES
+    }
+
+    fn native_array_element_locale_value(
+        &self,
+        realm: ContextId,
+        value: Value,
+    ) -> Result<NativeConversion<Value>, RuntimeError> {
+        let key = self.intern_property_key("toLocaleString")?;
+        let method = match self.get_value_property_in_realm(realm, value.clone(), &key)? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        let Value::Object(method) = method else {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "not a function",
+            )?));
+        };
+        let Some(method) = self.as_callable(&method)? else {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "not a function",
+            )?));
+        };
+        match self.call_internal(realm, &method, value, &[])? {
+            Completion::Return(value) => Ok(NativeConversion::Value(value)),
+            Completion::Throw(value) => Ok(NativeConversion::Throw(value)),
+        }
+    }
+
+    fn call_array_prototype_join(
+        &self,
+        realm: ContextId,
+        kind: ArrayJoinKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        self.call_array_prototype_join_with_string_limit(
+            realm,
+            kind,
+            invocation,
+            arguments,
+            JsString::MAX_LEN,
+        )
+    }
+
+    fn call_array_prototype_join_with_string_limit(
+        &self,
+        realm: ContextId,
+        kind: ArrayJoinKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+        string_limit: usize,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype join method did not receive a generic invocation",
+            ));
+        };
+        let (object, length) = match self.native_array_like_object_and_length(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let separator = match kind {
+            ArrayJoinKind::ToLocaleString => JsString::from_static(","),
+            ArrayJoinKind::Join
+                if arguments.actual_arg_count == 0
+                    || matches!(arguments.readable.first(), Some(Value::Undefined)) =>
+            {
+                JsString::from_static(",")
+            }
+            ArrayJoinKind::Join => {
+                let separator = arguments.readable.first().ok_or(RuntimeError::Invariant(
+                    "Array.prototype.join separator argv was not padded",
+                ))?;
+                match self.native_to_js_string(realm, separator)? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                }
+            }
+        };
+
+        let mut output = JsStringBuilder::with_limit(0, string_limit);
+        let mut separator_error = None;
+        for index in 0..length {
+            if index != 0 {
+                if let Err(error) = output.push_js_string(&separator) {
+                    separator_error.get_or_insert(error);
+                }
+            }
+            // Pinned QuickJS passes its Int64 loop index through
+            // JS_GetPropertyUint32, including Uint32 wraparound above 2^32.
+            let key = self.intern_property_key(&(index as u32).to_string())?;
+            let element = match self.get_property_in_realm(realm, &object, &key)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            if matches!(element, Value::Null | Value::Undefined) {
+                continue;
+            }
+            let element = match kind {
+                ArrayJoinKind::Join => {
+                    // concat_value_free observes the failed buffer before
+                    // attempting ordinary ToString.
+                    if let Some(error) = separator_error {
+                        return Err(error.into());
+                    }
+                    match self.native_to_js_string(realm, &element)? {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                }
+                ArrayJoinKind::ToLocaleString => {
+                    let value = match self.native_array_element_locale_value(realm, element)? {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => {
+                            return Ok(Completion::Throw(value));
+                        }
+                    };
+                    // QuickJS invokes toLocaleString before handing the return
+                    // value to the already-failed StringBuffer. The return
+                    // value's own ToString is therefore skipped.
+                    if let Some(error) = separator_error {
+                        return Err(error.into());
+                    }
+                    match self.native_to_js_string(realm, &value)? {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => {
+                            return Ok(Completion::Throw(value));
+                        }
+                    }
+                }
+            };
+            output.push_js_string(&element)?;
+        }
+        if let Some(error) = separator_error {
+            return Err(error.into());
+        }
+        Ok(Completion::Return(Value::String(output.finish()?)))
+    }
+
+    fn call_array_prototype_to_string(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype.toString did not receive a generic invocation",
+            ));
+        };
+        let object = match self.native_to_object(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let join_key = self.intern_property_key("join")?;
+        let method = match self.get_property_in_realm(realm, &object, &join_key)? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        if let Value::Object(method) = method
+            && let Some(method) = self.as_callable(&method)?
+        {
+            return self.call_internal(realm, &method, Value::Object(object), &[]);
+        }
+        self.call_object_prototype_to_string(
+            realm,
+            NativeInvocation::Call {
+                this_value: Value::Object(object),
+            },
+        )
+    }
+
     fn call_array_prototype_iterator(
         &self,
         realm: ContextId,
@@ -14553,6 +14790,12 @@ impl Runtime {
             }
             NativeFunctionId::ArrayPrototypeSearch(kind) => {
                 self.call_array_prototype_search(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::ArrayPrototypeJoin(kind) => {
+                self.call_array_prototype_join(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::ArrayPrototypeToString => {
+                self.call_array_prototype_to_string(realm, invocation)
             }
             NativeFunctionId::ArrayPrototypeIterator(kind) => {
                 self.call_array_prototype_iterator(realm, kind, invocation)
@@ -17149,9 +17392,9 @@ mod tests {
         UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug, UnlinkedVariableDefinition,
     };
     use crate::heap::{
-        ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
-        DynamicFunctionKind, FunctionDebugPosition, FunctionMetadata, NativeCProto,
-        NativeFunctionId, ObjectPayload, PrimitiveKind, PrimitiveObjectData,
+        ArrayJoinKind, ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName,
+        ConstructorKind, DynamicFunctionKind, FunctionDebugPosition, FunctionMetadata,
+        NativeCProto, NativeFunctionId, ObjectPayload, PrimitiveKind, PrimitiveObjectData,
     };
     use crate::object::{
         AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField,
@@ -17719,6 +17962,127 @@ mod tests {
             take_error_message(&runtime, &mut context),
             JsString::from_static("not configurable")
         );
+    }
+
+    #[test]
+    fn array_join_separator_overflow_still_gets_nullish_slots_and_later_throw_wins() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let Value::Object(source) = context
+            .eval(
+                r#"(function(){
+                    var source=Object();globalThis.joinOverflowLog="";source.length=4;
+                    source[0]="a";
+                    source.__defineGetter__("1",function(){joinOverflowLog+="1";return null});
+                    source.__defineGetter__("2",function(){joinOverflowLog+="2";return undefined});
+                    source.__defineGetter__("3",function(){joinOverflowLog+="3";throw 77});
+                    return source;
+                })()"#,
+            )
+            .unwrap()
+        else {
+            panic!("Array.join overflow fixture was not an object");
+        };
+        let completion = runtime
+            .call_array_prototype_join_with_string_limit(
+                context.realm,
+                ArrayJoinKind::Join,
+                super::NativeInvocation::Call {
+                    this_value: Value::Object(source),
+                },
+                &super::NativeArguments {
+                    actual_arg_count: 1,
+                    readable: vec![Value::String(JsString::from_static("xx"))],
+                },
+                2,
+            )
+            .unwrap();
+        assert!(matches!(completion, Completion::Throw(Value::Int(77))));
+        assert_eq!(
+            context.eval("joinOverflowLog").unwrap(),
+            Value::String(JsString::from_static("123"))
+        );
+    }
+
+    #[test]
+    fn array_locale_separator_overflow_invokes_method_but_skips_result_to_string() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let Value::Object(source) = context
+            .eval(
+                r#"(function(){
+                    var source=Object(),element=Object();globalThis.localeOverflowLog="";
+                    source.length=2;source[0]="aa";source[1]=element;
+                    element.toLocaleString=function(){
+                        var result=Object();localeOverflowLog+="M";
+                        result.toString=function(){localeOverflowLog+="C";return "result"};
+                        return result;
+                    };
+                    return source;
+                })()"#,
+            )
+            .unwrap()
+        else {
+            panic!("Array.toLocaleString overflow fixture was not an object");
+        };
+        let error = runtime
+            .call_array_prototype_join_with_string_limit(
+                context.realm,
+                ArrayJoinKind::ToLocaleString,
+                super::NativeInvocation::Call {
+                    this_value: Value::Object(source),
+                },
+                &super::NativeArguments {
+                    actual_arg_count: 0,
+                    readable: Vec::new(),
+                },
+                2,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RuntimeError::Engine(ref error)
+                if error.kind() == ErrorKind::JsInternal
+                    && error.message() == "string too long"
+        ));
+        assert_eq!(
+            context.eval("localeOverflowLog").unwrap(),
+            Value::String(JsString::from_static("M"))
+        );
+    }
+
+    #[test]
+    fn array_locale_method_throw_replaces_pending_separator_overflow() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let Value::Object(source) = context
+            .eval(
+                r#"(function(){
+                    var source=Object(),element=Object();source.length=2;
+                    source[0]="aa";source[1]=element;
+                    element.toLocaleString=function(){throw 88};
+                    return source;
+                })()"#,
+            )
+            .unwrap()
+        else {
+            panic!("Array.toLocaleString throwing overflow fixture was not an object");
+        };
+        let completion = runtime
+            .call_array_prototype_join_with_string_limit(
+                context.realm,
+                ArrayJoinKind::ToLocaleString,
+                super::NativeInvocation::Call {
+                    this_value: Value::Object(source),
+                },
+                &super::NativeArguments {
+                    actual_arg_count: 0,
+                    readable: Vec::new(),
+                },
+                2,
+            )
+            .unwrap();
+        assert!(matches!(completion, Completion::Throw(Value::Int(88))));
     }
 
     #[test]

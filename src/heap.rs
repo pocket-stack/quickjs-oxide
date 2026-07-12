@@ -776,6 +776,15 @@ pub enum ArraySearchKind {
     LastIndexOf,
 }
 
+/// Stringification mode selected by QuickJS's shared `js_array_join` kernel.
+/// `join` converts an optional separator, whereas `toLocaleString` always uses
+/// a comma and invokes each non-nullish element's locale-string method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ArrayJoinKind {
+    Join,
+    ToLocaleString,
+}
+
 /// Observable traversal and result mode selected by the four
 /// `Array.prototype.find*` methods. QuickJS passes this as the magic value to
 /// one shared generic callback kernel.
@@ -845,6 +854,8 @@ pub enum NativeFunctionId {
     ArrayPrototypeFill,
     ArrayPrototypeFind(ArrayFindKind),
     ArrayPrototypeSearch(ArraySearchKind),
+    ArrayPrototypeJoin(ArrayJoinKind),
+    ArrayPrototypeToString,
     ArrayPrototypeCopyWithin,
     ArrayIteratorNext,
     ThrowTypeError,
@@ -1112,6 +1123,7 @@ impl NativeFunctionId {
             | Self::ArrayPrototypeConcat
             | Self::ArrayPrototypeFill
             | Self::ArrayPrototypeSearch(_)
+            | Self::ArrayPrototypeToString
             | Self::ArrayPrototypeCopyWithin
             | Self::SymbolRegistry(_)
             | Self::GlobalNumberParse(_)
@@ -1127,7 +1139,8 @@ impl NativeFunctionId {
             | Self::StringPrototypeCharAt(_)
             | Self::ArrayPrototypeFind(_)
             | Self::ArrayPrototypeIteration(_)
-            | Self::ArrayPrototypeReduce(_) => NativeFunctionDescriptor {
+            | Self::ArrayPrototypeReduce(_)
+            | Self::ArrayPrototypeJoin(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::GenericMagic,
             },
             Self::GlobalUriCodec(
@@ -4009,6 +4022,18 @@ mod tests {
     #[test]
     fn array_concat_native_selector_uses_pinned_cproto() {
         let target = NativeFunctionId::ArrayPrototypeConcat;
+        assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
+        assert!(!target.descriptor().cproto.default_is_constructor());
+    }
+
+    #[test]
+    fn array_stringification_native_selectors_use_pinned_cproto() {
+        for kind in [ArrayJoinKind::Join, ArrayJoinKind::ToLocaleString] {
+            let target = NativeFunctionId::ArrayPrototypeJoin(kind);
+            assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
+        let target = NativeFunctionId::ArrayPrototypeToString;
         assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
         assert!(!target.descriptor().cproto.default_is_constructor());
     }
