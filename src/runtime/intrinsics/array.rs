@@ -1248,7 +1248,7 @@ impl Runtime {
         }
     }
 
-    fn close_iterator_preserving_throw(
+    pub(in crate::runtime) fn close_iterator_preserving_throw(
         &self,
         realm: ContextId,
         iterator: &ObjectRef,

@@ -918,6 +918,7 @@ pub enum NativeFunctionId {
     ObjectDefineProperty,
     ObjectDefineProperties,
     ObjectGetOwnPropertyKeys(ObjectOwnPropertyKeysKind),
+    ObjectGroupBy,
     ObjectPrototypeToString,
     ObjectPrototypeToLocaleString,
     ObjectPrototypeValueOf,
@@ -1184,6 +1185,7 @@ impl NativeFunctionId {
             },
             Self::ObjectGetPrototypeOf
             | Self::ObjectDefineProperty
+            | Self::ObjectGroupBy
             | Self::ObjectPrototypeDefineAccessor(_)
             | Self::ObjectPrototypeLookupAccessor(_)
             | Self::StringPrototypeCharAt(_)
@@ -4220,6 +4222,7 @@ mod tests {
         for target in [
             NativeFunctionId::ObjectGetPrototypeOf,
             NativeFunctionId::ObjectDefineProperty,
+            NativeFunctionId::ObjectGroupBy,
             NativeFunctionId::ObjectPrototypeDefineAccessor(ObjectAccessorKind::Getter),
             NativeFunctionId::ObjectPrototypeDefineAccessor(ObjectAccessorKind::Setter),
             NativeFunctionId::ObjectPrototypeLookupAccessor(ObjectAccessorKind::Getter),

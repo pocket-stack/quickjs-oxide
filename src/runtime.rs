@@ -4510,6 +4510,7 @@ impl Runtime {
                 1,
                 1,
             ),
+            (NativeFunctionId::ObjectGroupBy, "groupBy", 2, 2),
         ] {
             self.define_native_builtin_auto_init(
                 constructor.as_object(),
@@ -10315,10 +10316,9 @@ impl Runtime {
     fn native_call_would_overflow(&self, target: NativeFunctionId) -> bool {
         // QuickJS checks its platform C-stack pointer before every native
         // call. Rust frame sizes do not map to that byte threshold, so keep a
-        // deterministic call-entry ceiling on the recursive Array
-        // stringification, flattening, and sort-comparator paths. Preserve a
-        // catchable JavaScript stack-overflow completion without risking the
-        // host stack.
+        // deterministic call-entry ceiling on recursive native/callback paths.
+        // Preserve a catchable JavaScript stack-overflow completion without
+        // risking the host stack.
         let limit = match target {
             NativeFunctionId::ArrayPrototypeJoin(_) | NativeFunctionId::ArrayPrototypeToString => {
                 64
@@ -10327,6 +10327,7 @@ impl Runtime {
             NativeFunctionId::ArrayPrototypeSlice(_)
             | NativeFunctionId::ArrayPrototypeToSpliced => 4,
             NativeFunctionId::ArrayPrototypeFlatten(_) => 8,
+            NativeFunctionId::ObjectGroupBy => 9,
             _ => return false,
         };
 
@@ -10354,6 +10355,9 @@ impl Runtime {
             }
             NativeFunctionId::ArrayPrototypeFlatten(_) => {
                 matches!(candidate, NativeFunctionId::ArrayPrototypeFlatten(_))
+            }
+            NativeFunctionId::ObjectGroupBy => {
+                matches!(candidate, NativeFunctionId::ObjectGroupBy)
             }
             _ => false,
         };
@@ -12736,6 +12740,9 @@ impl Runtime {
             }
             NativeFunctionId::ObjectGetOwnPropertyKeys(kind) => {
                 self.call_object_get_own_property_keys(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::ObjectGroupBy => {
+                self.call_object_group_by(realm, invocation, arguments)
             }
             NativeFunctionId::ObjectPrototypeToString => {
                 self.call_object_prototype_to_string(realm, invocation)

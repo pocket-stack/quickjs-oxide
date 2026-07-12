@@ -976,8 +976,9 @@ claim full parity.
   objects for nullish values, and honor custom `newTarget.prototype` with the
   new-target realm fallback. The implemented static-table prefix is exactly
   `create`, `getPrototypeOf`, `setPrototypeOf`, `defineProperty`,
-  `defineProperties`, `getOwnPropertyNames`, `getOwnPropertySymbols`; the next
-  entry, `groupBy`, remains the deliberate boundary. Prototype mutation keeps
+  `defineProperties`, `getOwnPropertyNames`, `getOwnPropertySymbols`,
+  `groupBy`; the next entry, `keys`, remains the deliberate boundary.
+  Prototype mutation keeps
   same-value success plus exact immutable, non-extensible and cycle failures.
   Descriptor conversion follows QuickJS's inherited field probes and
   `enumerable`, `configurable`, `value`, `writable`, `get`, `set` order,
@@ -986,7 +987,20 @@ claim full parity.
   converts and defines each descriptor immediately; its flag filtering does
   not materialize lazy AutoInit properties. Own-name/symbol results are genuine
   defining-realm Arrays and cover ordinary, Array and String-exotic ordering.
-  Anchors: `quickjs.c` 39796-40349, 40748-40927, and 56291-56313.
+  `groupBy` validates its callback before touching the iterable, caches `next`
+  once, and passes each value plus its monotonic safe-integer index with the
+  defining-realm global object as callback `this`. Callback and property-key
+  conversion failures close the iterator while preserving the original throw;
+  iterator-step and internal Array-push failures deliberately do not close it.
+  The result has a null prototype, supports string and Symbol keys, and defines
+  each group as a writable, enumerable, configurable property containing a
+  defining-realm Array. Appends reuse QuickJS's ordinary push Set/final-length
+  path, so an inherited Array index setter or rejection remains observable. A
+  deterministic nine-active-call guard keeps recursive callbacks catchable as
+  `InternalError: stack overflow`; pinned QuickJS permits a deeper
+  platform-stack-dependent chain, so exact threshold parity still requires the
+  general native-call trampoline.
+  Anchors: `quickjs.c` 39796-40349, 40748-40927, 52115-52230, and 56291-56313.
 - Shape caches are weak and unlink by finalized generational Shape ID. Shape
   and Symbol atom ownership is paired through heap cleanup, including failure
   paths and runtime teardown.
@@ -1573,7 +1587,7 @@ object-environment lookup/deletion introduced by `with` or direct `eval`, the
 global String constructor, the remaining 43 entries of its 53-key prototype
 surface, Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. The Object static table after
-`getOwnPropertySymbols`, AggregateError, and uncatchable termination state are
+`groupBy`, AggregateError, and uncatchable termination state are
 also pending. Array destructuring consumers, `with` object-environment
 semantics, other
 iterator classes and helpers,
@@ -1589,14 +1603,16 @@ and C embedding APIs.
 
 Code organization is also not final. The 151 runtime white-box tests live in
 `runtime/tests.rs`, while the Array constructor, prototype, iterator, species,
-and sorting implementation now lives in `runtime/intrinsics/array.rs`. These
-two no-semantic-change splits reduced `runtime.rs` from roughly thirty-two
-thousand lines to roughly fifteen thousand lines. It still co-locates property
-machinery, native dispatch, execution support, and the remaining intrinsic
-families; `compiler.rs` similarly combines several compiler phases. Dedicated
-structural milestones must keep splitting those seams under the same
-differential and Rust-only gates, and future feature work must not resume
-extending either monolith indefinitely.
+and sorting implementation now lives in `runtime/intrinsics/array.rs`.
+`Object.groupBy` starts `runtime/intrinsics/object.rs`; the earlier Object
+handlers still await migration into that module. The two no-semantic-change
+test/Array splits reduced `runtime.rs` from roughly thirty-two thousand lines
+to roughly fifteen thousand lines, and this Object feature added only table and
+dispatch wiring there. It still co-locates property machinery, execution
+support, and the remaining intrinsic families; `compiler.rs` similarly
+combines several compiler phases. Dedicated structural milestones must keep
+splitting those seams under the same differential and Rust-only gates, and
+future feature work must not resume extending either monolith indefinitely.
 
 ## Reproduce current evidence
 
@@ -1665,6 +1681,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_program_functions -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_intrinsic -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_object_group_by -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_search -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
