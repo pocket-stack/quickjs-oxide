@@ -3610,6 +3610,22 @@ impl Runtime {
         self.define_native_builtin_auto_init(
             array_prototype,
             realm,
+            NativeFunctionId::ArrayPrototypeReverse,
+            "reverse",
+            0,
+            0,
+        )?;
+        self.define_native_builtin_auto_init(
+            array_prototype,
+            realm,
+            NativeFunctionId::ArrayPrototypeToReversed,
+            "toReversed",
+            0,
+            0,
+        )?;
+        self.define_native_builtin_auto_init(
+            array_prototype,
+            realm,
             NativeFunctionId::ArrayPrototypeCopyWithin,
             "copyWithin",
             2,
@@ -11298,14 +11314,36 @@ impl Runtime {
         self.get_property_in_realm(realm, &object, &key)
     }
 
+    fn native_allocate_fast_array_values(
+        &self,
+        realm: ContextId,
+        length: u64,
+    ) -> Result<NativeConversion<Vec<Value>>, RuntimeError> {
+        const MAX_FAST_ARRAY_LENGTH: u64 = 2_147_483_647;
+
+        if length > MAX_FAST_ARRAY_LENGTH {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Range,
+                "invalid array length",
+            )?));
+        }
+        let length = usize::try_from(length)
+            .map_err(|_| RuntimeError::Invariant("fast Array length did not fit usize"))?;
+        let mut values = Vec::new();
+        values.try_reserve_exact(length).map_err(|_| {
+            RuntimeError::Engine(Error::new(ErrorKind::JsInternal, "out of memory"))
+        })?;
+        values.resize(length, Value::Undefined);
+        Ok(NativeConversion::Value(values))
+    }
+
     fn call_array_prototype_with(
         &self,
         realm: ContextId,
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        const MAX_FAST_ARRAY_LENGTH: u64 = 2_147_483_647;
-
         let NativeInvocation::Call { this_value } = invocation else {
             return Err(RuntimeError::Invariant(
                 "Array.prototype.with did not receive a generic invocation",
@@ -11334,26 +11372,15 @@ impl Runtime {
                 &format!("invalid array index: {index}"),
             )?));
         }
-        if length > MAX_FAST_ARRAY_LENGTH {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Range,
-                "invalid array length",
-            )?));
-        }
-
         // QuickJS allocates and initializes the complete dense fast-array
         // storage before observing any indexed source property. Reserve and
         // initialize the equivalent Rust value buffer at the same boundary.
-        let length = usize::try_from(length)
-            .map_err(|_| RuntimeError::Invariant("fast Array length did not fit usize"))?;
+        let mut values = match self.native_allocate_fast_array_values(realm, length)? {
+            NativeConversion::Value(values) => values,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
         let replacement_index = usize::try_from(index)
             .map_err(|_| RuntimeError::Invariant("validated Array.with index did not fit usize"))?;
-        let mut values = Vec::new();
-        values.try_reserve_exact(length).map_err(|_| {
-            RuntimeError::Engine(Error::new(ErrorKind::JsInternal, "out of memory"))
-        })?;
-        values.resize(length, Value::Undefined);
         let replacement = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
             "Array.prototype.with replacement argv was not padded",
         ))?;
@@ -12374,6 +12401,31 @@ impl Runtime {
         )
     }
 
+    fn try_get_array_like_index(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+        index: u64,
+    ) -> Result<NativeConversion<Option<Value>>, RuntimeError> {
+        let key = self.intern_property_key(&index.to_string())?;
+        let present = match self.has_property_in_realm(realm, object, &key)? {
+            Completion::Return(Value::Bool(value)) => value,
+            Completion::Return(_) => {
+                return Err(RuntimeError::Invariant(
+                    "Array indexed HasProperty did not return a boolean",
+                ));
+            }
+            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        if !present {
+            return Ok(NativeConversion::Value(None));
+        }
+        match self.get_property_in_realm(realm, object, &key)? {
+            Completion::Return(value) => Ok(NativeConversion::Value(Some(value))),
+            Completion::Throw(value) => Ok(NativeConversion::Throw(value)),
+        }
+    }
+
     fn copy_array_like_range(
         &self,
         realm: ContextId,
@@ -12399,22 +12451,12 @@ impl Runtime {
                 .ok_or(RuntimeError::Invariant(
                     "Array copy target index overflowed",
                 ))?;
-            let from_key = self.intern_property_key(&from.to_string())?;
-            let present = match self.has_property_in_realm(realm, object, &from_key)? {
-                Completion::Return(Value::Bool(value)) => value,
-                Completion::Return(_) => {
-                    return Err(RuntimeError::Invariant(
-                        "Array range copy HasProperty did not return a boolean",
-                    ));
-                }
-                Completion::Throw(value) => return Ok(Some(value)),
+            let value = match self.try_get_array_like_index(realm, object, from)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Some(value)),
             };
             let to_key = self.intern_property_key(&to.to_string())?;
-            if present {
-                let value = match self.get_property_in_realm(realm, object, &from_key)? {
-                    Completion::Return(value) => value,
-                    Completion::Throw(value) => return Ok(Some(value)),
-                };
+            if let Some(value) = value {
                 if let Some(value) = self.set_property_or_throw(realm, object, &to_key, value)? {
                     return Ok(Some(value));
                 }
@@ -12559,6 +12601,111 @@ impl Runtime {
             return Ok(Completion::Throw(value));
         }
         Ok(Completion::Return(Value::number(new_length as f64)))
+    }
+
+    fn call_array_prototype_reverse(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype.reverse did not receive a generic invocation",
+            ));
+        };
+        let (object, length) = match self.native_array_like_object_and_length(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        let mut lower = 0_u64;
+        let mut upper = length.saturating_sub(1);
+        while lower < upper {
+            let lower_value = match self.try_get_array_like_index(realm, &object, lower)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            let upper_value = match self.try_get_array_like_index(realm, &object, upper)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+
+            match (lower_value, upper_value) {
+                (lower_value, Some(upper_value)) => {
+                    let lower_key = self.intern_property_key(&lower.to_string())?;
+                    if let Some(value) =
+                        self.set_property_or_throw(realm, &object, &lower_key, upper_value)?
+                    {
+                        return Ok(Completion::Throw(value));
+                    }
+                    if let Some(lower_value) = lower_value {
+                        let upper_key = self.intern_property_key(&upper.to_string())?;
+                        if let Some(value) =
+                            self.set_property_or_throw(realm, &object, &upper_key, lower_value)?
+                        {
+                            return Ok(Completion::Throw(value));
+                        }
+                    } else if let Some(value) =
+                        self.delete_array_like_index_or_throw(realm, &object, upper)?
+                    {
+                        return Ok(Completion::Throw(value));
+                    }
+                }
+                (Some(lower_value), None) => {
+                    if let Some(value) =
+                        self.delete_array_like_index_or_throw(realm, &object, lower)?
+                    {
+                        return Ok(Completion::Throw(value));
+                    }
+                    let upper_key = self.intern_property_key(&upper.to_string())?;
+                    if let Some(value) =
+                        self.set_property_or_throw(realm, &object, &upper_key, lower_value)?
+                    {
+                        return Ok(Completion::Throw(value));
+                    }
+                }
+                (None, None) => {}
+            }
+
+            lower += 1;
+            upper -= 1;
+        }
+        Ok(Completion::Return(Value::Object(object)))
+    }
+
+    fn call_array_prototype_to_reversed(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype.toReversed did not receive a generic invocation",
+            ));
+        };
+        let (object, length) = match self.native_array_like_object_and_length(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let mut values = match self.native_allocate_fast_array_values(realm, length)? {
+            NativeConversion::Value(values) => values,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        for (output_index, slot) in values.iter_mut().enumerate() {
+            let output_index = u64::try_from(output_index)
+                .map_err(|_| RuntimeError::Invariant("Array.toReversed index exceeded Uint64"))?;
+            let source_index = length - output_index - 1;
+            *slot = match self.try_get_array_like_index(realm, &object, source_index)? {
+                NativeConversion::Value(Some(value)) => value,
+                NativeConversion::Value(None) => Value::Undefined,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+        }
+
+        Ok(Completion::Return(Value::Object(
+            self.new_array_from_values(realm, values)?,
+        )))
     }
 
     fn call_array_prototype_iterator(
@@ -14983,6 +15130,12 @@ impl Runtime {
             }
             NativeFunctionId::ArrayPrototypePush(kind) => {
                 self.call_array_prototype_push(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::ArrayPrototypeReverse => {
+                self.call_array_prototype_reverse(realm, invocation)
+            }
+            NativeFunctionId::ArrayPrototypeToReversed => {
+                self.call_array_prototype_to_reversed(realm, invocation)
             }
             NativeFunctionId::ArrayPrototypeIterator(kind) => {
                 self.call_array_prototype_iterator(realm, kind, invocation)

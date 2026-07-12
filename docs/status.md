@@ -763,8 +763,9 @@ claim full parity.
   `with`, `concat`, `every`, `some`, `forEach`, `map`, `filter`, `reduce`,
   `reduceRight`, `fill`, `find`, `findIndex`, `findLast`, `findLastIndex`,
   `indexOf`, `lastIndexOf`, `includes`, `join`, `toString`, `toLocaleString`,
-  `pop`, `push`, `shift`, `unshift`, `copyWithin`, generic `values`, `keys`,
-  `entries`, and the `@@iterator` alias in their pinned filtered order. `at` uses
+  `pop`, `push`, `shift`, `unshift`, `reverse`, `toReversed`, `copyWithin`,
+  generic `values`, `keys`, `entries`, and the `@@iterator` alias in their
+  pinned filtered order. `at` uses
   saturating Int64 index conversion and HasProperty-before-Get; the three
   searches snapshot ToLength, skip `fromIndex` conversion for zero length,
   preserve omitted-versus-explicit-undefined behavior, and use QuickJS's
@@ -841,6 +842,25 @@ claim full parity.
   Uint32 length boundary: a push at length 2^32-1 first creates the ordinary
   `"4294967295"` property, then the final length Set throws RangeError without
   rolling that property back.
+  `reverse` snapshots ToLength, then examines each lower/upper pair through
+  full Int64 HasProperty/Get operations before it begins that pair's mutation.
+  Its four presence combinations use QuickJS's exact Set/Set, Set/Delete,
+  Delete/Set, or no-op order, so sparse holes and inherited values move without
+  densification and every successful prefix survives a later failure. It never
+  writes length and returns the original boxed receiver. `toReversed` instead
+  preallocates a complete dense result buffer, reads source indices in descending
+  order, leaves an own `undefined` slot for every hole, and returns a
+  defining-realm base Array. It does not observe `constructor` or `@@species`.
+  The pinned implementation deliberately uses
+  HasProperty followed by a conditional Get rather than the specification's
+  unconditional Get; the eventual Proxy path must preserve that visible `has`
+  trap. It also inherits `js_allocate_fast_array`'s signed 31-bit length ceiling,
+  throwing defining-realm `RangeError: invalid array length` before any indexed
+  read above that boundary. As with `with`, Rust reserves and initializes the
+  equivalent dense value buffer before source access, but allocates the actual
+  Array object after those reads; exact allocator-failure ordering still needs
+  a bulk dense-array allocator. The `toReversed` `@@unscopables` entry remains
+  grouped with the not-yet-published unscopables object.
   `copyWithin`
   snapshots and clamps all three bounds in QuickJS order, selects a backward
   traversal only for overlapping ranges, and performs source HasProperty/Get
@@ -853,7 +873,7 @@ claim full parity.
   on exhaustion. The remaining Array mutation/order/slice/flatten methods and
   `@@unscopables` remain later slices. The pinned runtime anchors are `quickjs.c`
   212, 5628-5671, 9433-9524, 10369-10592, 13210-13663, 41472-42226,
-  42228-42673, 42975-43013, 43344-43454, 44519-44583, and 56220-56390.
+  42228-42791, 42975-43013, 43344-43454, 44519-44583, and 56220-56390.
 - Every realm now publishes `%Object%` as a constructor-or-function native
   linked to `%Object.prototype%`. Call and construction preserve existing
   objects, box every primitive family in the defining realm, allocate ordinary
@@ -1547,6 +1567,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_stringification -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_mutators -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_array_reverse -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_fill -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

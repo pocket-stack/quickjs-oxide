@@ -873,6 +873,8 @@ pub enum NativeFunctionId {
     ArrayPrototypeToString,
     ArrayPrototypePop(ArrayPopKind),
     ArrayPrototypePush(ArrayPushKind),
+    ArrayPrototypeReverse,
+    ArrayPrototypeToReversed,
     ArrayPrototypeCopyWithin,
     ArrayIteratorNext,
     ThrowTypeError,
@@ -1141,6 +1143,8 @@ impl NativeFunctionId {
             | Self::ArrayPrototypeFill
             | Self::ArrayPrototypeSearch(_)
             | Self::ArrayPrototypeToString
+            | Self::ArrayPrototypeReverse
+            | Self::ArrayPrototypeToReversed
             | Self::ArrayPrototypeCopyWithin
             | Self::SymbolRegistry(_)
             | Self::GlobalNumberParse(_)
@@ -4066,6 +4070,17 @@ mod tests {
             NativeFunctionId::ArrayPrototypePush(ArrayPushKind::Unshift),
         ] {
             assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
+    }
+
+    #[test]
+    fn array_reverse_native_targets_use_pinned_cproto() {
+        for target in [
+            NativeFunctionId::ArrayPrototypeReverse,
+            NativeFunctionId::ArrayPrototypeToReversed,
+        ] {
+            assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
             assert!(!target.descriptor().cproto.default_is_constructor());
         }
     }
