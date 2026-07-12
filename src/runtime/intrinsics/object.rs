@@ -479,6 +479,24 @@ impl Runtime {
                 1,
             ),
             (NativeFunctionId::ObjectGroupBy, "groupBy", 2, 2),
+            (
+                NativeFunctionId::ObjectKeys(ObjectKeysKind::Keys),
+                "keys",
+                1,
+                1,
+            ),
+            (
+                NativeFunctionId::ObjectKeys(ObjectKeysKind::Values),
+                "values",
+                1,
+                1,
+            ),
+            (
+                NativeFunctionId::ObjectKeys(ObjectKeysKind::Entries),
+                "entries",
+                1,
+                1,
+            ),
         ] {
             self.define_native_builtin_auto_init(
                 constructor.as_object(),
@@ -1090,6 +1108,122 @@ impl Runtime {
         Ok(Completion::Return(Value::Object(
             self.new_array_from_values(realm, values)?,
         )))
+    }
+
+    pub(in crate::runtime) fn call_object_keys(
+        &self,
+        realm: ContextId,
+        kind: ObjectKeysKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Object keys method did not receive a generic invocation",
+            ));
+        };
+        let value = arguments
+            .readable
+            .first()
+            .ok_or(RuntimeError::Invariant("Object keys argv was not padded"))?;
+        let object = match self.native_to_object(realm, value.clone())? {
+            NativeConversion::Value(object) => object,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        // QuickJS snapshots every own string key first, then rechecks the
+        // descriptor immediately before emitting each result. A preceding
+        // getter may therefore delete or make a later snapshotted key
+        // non-enumerable, while newly added keys remain absent.
+        let mut keys = Vec::new();
+        for key in self.own_property_keys(&object)? {
+            if self.0.state.borrow().atoms.property_key_kind(key.atom())? == PropertyKeyKind::String
+            {
+                keys.push(key);
+            }
+        }
+        let result = self.new_array(realm)?;
+        let mut result_index = 0_u32;
+        for key in keys {
+            let Some(descriptor) = self.get_own_property(&object, &key)? else {
+                continue;
+            };
+            let enumerable = match descriptor {
+                CompleteOrdinaryPropertyDescriptor::Data { enumerable, .. }
+                | CompleteOrdinaryPropertyDescriptor::Accessor { enumerable, .. } => enumerable,
+            };
+            if !enumerable {
+                continue;
+            }
+
+            let value = match kind {
+                ObjectKeysKind::Keys => {
+                    Value::String(self.0.state.borrow().atoms.to_js_string(key.atom())?)
+                }
+                ObjectKeysKind::Values => {
+                    match self.get_property_in_realm(realm, &object, &key)? {
+                        Completion::Return(value) => value,
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                }
+                ObjectKeysKind::Entries => {
+                    let entry = self.new_array(realm)?;
+                    let key_value =
+                        Value::String(self.0.state.borrow().atoms.to_js_string(key.atom())?);
+                    self.define_fresh_object_keys_array_element(
+                        &entry,
+                        0,
+                        key_value,
+                        "fresh Object.entries pair rejected its key",
+                    )?;
+                    let value = match self.get_property_in_realm(realm, &object, &key)? {
+                        Completion::Return(value) => value,
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    };
+                    self.define_fresh_object_keys_array_element(
+                        &entry,
+                        1,
+                        value,
+                        "fresh Object.entries pair rejected its value",
+                    )?;
+                    Value::Object(entry)
+                }
+            };
+            self.define_fresh_object_keys_array_element(
+                &result,
+                result_index,
+                value,
+                "fresh Object keys result rejected an element",
+            )?;
+            result_index = result_index.checked_add(1).ok_or_else(|| {
+                RuntimeError::Engine(Error::new(ErrorKind::Range, "invalid array length"))
+            })?;
+        }
+        Ok(Completion::Return(Value::Object(result)))
+    }
+
+    fn define_fresh_object_keys_array_element(
+        &self,
+        array: &ObjectRef,
+        index: u32,
+        value: Value,
+        rejection: &'static str,
+    ) -> Result<(), RuntimeError> {
+        let key = self.intern_property_key(&index.to_string())?;
+        if !self.define_own_property(
+            array,
+            &key,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(value),
+                writable: DescriptorField::Present(true),
+                enumerable: DescriptorField::Present(true),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )? {
+            return Err(RuntimeError::Invariant(rejection));
+        }
+        Ok(())
     }
 
     pub(in crate::runtime) fn call_object_prototype_has_own_property(

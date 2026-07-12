@@ -90,6 +90,313 @@ fn recursive_group_by_callback_ceiling_is_catchable() {
     );
 }
 
+#[test]
+fn object_keys_family_autoinit_preserves_pinned_metadata() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let global = context.global_object().unwrap();
+    let object_key = runtime.intern_property_key("Object").unwrap();
+    let Value::Object(object_constructor) = context.get_property(&global, &object_key).unwrap()
+    else {
+        panic!("global Object was not an object");
+    };
+
+    for (name, kind) in [
+        ("keys", ObjectKeysKind::Keys),
+        ("values", ObjectKeysKind::Values),
+        ("entries", ObjectKeysKind::Entries),
+    ] {
+        let key = runtime.intern_property_key(name).unwrap();
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(object_constructor.object_id()).unwrap();
+        let shape = state.heap.shape(object.shape).unwrap();
+        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        assert_eq!(
+            shape.entries()[slot_index].flags,
+            PropertyFlags::data(true, false, true),
+        );
+        assert!(matches!(
+            object.slots.get(slot_index),
+            Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                realm,
+                target: NativeFunctionId::ObjectKeys(target_kind),
+                name: target_name,
+                length: 1,
+                min_readable_args: 1,
+            })) if *realm == context.realm && *target_kind == kind && *target_name == name
+        ));
+    }
+}
+
+#[test]
+fn object_keys_descriptor_recheck_materializes_non_enumerable_autoinits() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let global = context.global_object().unwrap();
+    let object_key = runtime.intern_property_key("Object").unwrap();
+    let Value::Object(object_constructor) = context.get_property(&global, &object_key).unwrap()
+    else {
+        panic!("global Object was not an object");
+    };
+
+    for name in ["values", "entries"] {
+        let key = runtime.intern_property_key(name).unwrap();
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(object_constructor.object_id()).unwrap();
+        let shape = state.heap.shape(object.shape).unwrap();
+        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        assert!(matches!(
+            object.slots.get(slot_index),
+            Some(PropertySlot::AutoInit(
+                AutoInitProperty::NativeBuiltin { .. }
+            ))
+        ));
+    }
+
+    assert_eq!(
+        context.eval("Object.keys(Object).length").unwrap(),
+        Value::Int(0)
+    );
+
+    for (name, kind) in [
+        ("values", ObjectKeysKind::Values),
+        ("entries", ObjectKeysKind::Entries),
+    ] {
+        let key = runtime.intern_property_key(name).unwrap();
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(object_constructor.object_id()).unwrap();
+        let shape = state.heap.shape(object.shape).unwrap();
+        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let Some(PropertySlot::Data(RawValue::Object(function))) = object.slots.get(slot_index)
+        else {
+            panic!("Object.{name} was not materialized during descriptor recheck");
+        };
+        let function = state.heap.object(*function).unwrap();
+        assert!(matches!(
+            &function.payload,
+            ObjectPayload::NativeFunction { data }
+                if data.target == NativeFunctionId::ObjectKeys(kind)
+                    && data.realm == Some(context.realm)
+                    && data.min_readable_args == 1
+        ));
+    }
+}
+
+#[test]
+fn object_keys_family_filters_orders_and_boxes_string_code_units() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let result = context
+        .eval(
+            r#"(function(){
+                var object=Object();
+                object[2]="two";
+                object[1]="one";
+                object.beta="bee";
+                var hidden=Object();
+                hidden.value="hidden";
+                hidden.enumerable=false;
+                Object.defineProperty(object,"hidden",hidden);
+                object[Symbol("symbol") ]="ignored";
+                var keys=Object.keys(object);
+                var values=Object.values(object);
+                var entries=Object.entries(object);
+                var stringKeys=Object.keys("A\uD800");
+                var stringValues=Object.values("A\uD800");
+                return keys.join(",")+"|"+values.join(",")+"|"+
+                    Array.isArray(entries)+":"+Array.isArray(entries[0])+":"+
+                    entries[0][0]+"="+entries[0][1]+","+
+                    entries[1][0]+"="+entries[1][1]+","+
+                    entries[2][0]+"="+entries[2][1]+"|"+
+                    stringKeys.join(",")+":"+
+                    stringValues[0].charCodeAt(0)+","+stringValues[1].charCodeAt(0);
+            })()"#,
+        )
+        .unwrap();
+    assert_eq!(
+        result,
+        Value::String(JsString::from_static(
+            "1,2,beta|one,two,bee|true:true:1=one,2=two,beta=bee|0,1:65,55296",
+        )),
+    );
+}
+
+#[test]
+fn object_values_and_entries_recheck_descriptors_before_get() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let result = context
+        .eval(
+            r#"(function(){
+                var getterCalls=0;
+                function make(){
+                    var object=Object();
+                    var first=Object();
+                    first.enumerable=true;
+                    first.configurable=true;
+                    first.get=function(){
+                        getterCalls++;
+                        delete object.b;
+                        var changed=Object();
+                        changed.value="changed";
+                        changed.enumerable=false;
+                        changed.configurable=true;
+                        Object.defineProperty(object,"c",changed);
+                        object.d="late";
+                        return "A";
+                    };
+                    Object.defineProperty(object,"a",first);
+                    object.b="B";
+                    object.c="C";
+                    return object;
+                }
+                var keys=Object.keys(make()).join(",");
+                var callsAfterKeys=getterCalls;
+                var values=Object.values(make()).join(",");
+                var entries=Object.entries(make());
+                var marker=Object();
+                var throwing=Object();
+                var descriptor=Object();
+                descriptor.enumerable=true;
+                descriptor.get=function(){throw marker};
+                Object.defineProperty(throwing,"x",descriptor);
+                var keysSkippedGetter=Object.keys(throwing).join(",")==="x";
+                var throwPreserved=false;
+                try{Object.values(throwing)}catch(error){throwPreserved=error===marker}
+                return keys+"|"+callsAfterKeys+"|"+values+"|"+
+                    entries.length+":"+entries[0][0]+"="+entries[0][1]+"|"+
+                    getterCalls+"|"+keysSkippedGetter+":"+throwPreserved;
+            })()"#,
+        )
+        .unwrap();
+    assert_eq!(
+        result,
+        Value::String(JsString::from_static("a,b,c|0|A|1:a=A|2|true:true")),
+    );
+}
+
+#[test]
+fn borrowed_object_entries_uses_its_defining_realm_for_arrays_and_errors() {
+    let runtime = Runtime::new();
+    let mut defining_context = runtime.new_context();
+    let method = eval_object(&mut defining_context, "Object.entries");
+    let method = runtime.as_callable(&method).unwrap().unwrap();
+    let defining_array_prototype = defining_context.array_prototype().unwrap();
+    let defining_type_error_prototype = eval_object(&mut defining_context, "TypeError.prototype");
+    let mut caller_context = runtime.new_context();
+
+    let completion = runtime
+        .call_internal(
+            caller_context.realm,
+            &method,
+            Value::Undefined,
+            &[Value::String(JsString::from_static("x"))],
+        )
+        .unwrap();
+    let Completion::Return(Value::Object(result)) = completion else {
+        panic!("borrowed Object.entries did not return an Array");
+    };
+    assert_eq!(
+        runtime.get_prototype_of(&result).unwrap(),
+        Some(defining_array_prototype.clone()),
+    );
+    let zero = runtime.intern_property_key("0").unwrap();
+    let Value::Object(entry) = caller_context.get_property(&result, &zero).unwrap() else {
+        panic!("borrowed Object.entries result did not contain an entry pair");
+    };
+    assert_eq!(
+        runtime.get_prototype_of(&entry).unwrap(),
+        Some(defining_array_prototype),
+    );
+
+    let completion = runtime
+        .call_internal(
+            caller_context.realm,
+            &method,
+            Value::Undefined,
+            &[Value::Undefined],
+        )
+        .unwrap();
+    let Completion::Throw(Value::Object(error)) = completion else {
+        panic!("borrowed Object.entries nullish conversion did not throw");
+    };
+    assert_eq!(
+        runtime.get_prototype_of(&error).unwrap(),
+        Some(defining_type_error_prototype),
+    );
+    assert_eq!(
+        string_property(&runtime, &mut caller_context, &error, "message"),
+        "cannot convert to object",
+    );
+}
+
+#[test]
+fn recursive_object_keys_family_ceiling_protects_the_heaviest_measured_path() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    context
+        .eval(
+            r#"function objectKeysHeavyRecurse(depth){
+                    var object=Object();
+                    var descriptor=Object();
+                    descriptor.enumerable=true;
+                    descriptor.get=function(){
+                        if(depth===0)return 0;
+                        return objectKeysHeavyRecurse(depth-1);
+                    };
+                    Object.defineProperty(object,"value",descriptor);
+                    return Object.values(object)[0];
+                }
+                function objectKeysDirectRecurse(reentries){
+                    var remaining=reentries;
+                    var object=Object();
+                    var descriptor=Object();
+                    descriptor.enumerable=true;
+                    descriptor.get=function(){
+                        if(remaining===0)return 0;
+                        remaining--;
+                        if(remaining%2===0)return Object.values(object)[0];
+                        return Object.entries(object)[0][1];
+                    };
+                    Object.defineProperty(object,"value",descriptor);
+                    return Object.values(object)[0];
+                }"#,
+        )
+        .unwrap();
+
+    assert_eq!(
+        context.eval("objectKeysHeavyRecurse(8)").unwrap(),
+        Value::Int(0)
+    );
+    for depth in [9, 10, 11] {
+        let value = context
+            .eval(&format!(
+                r#"(function(){{
+                    try{{objectKeysHeavyRecurse({depth});return "missing"}}
+                    catch(error){{return error.name+":"+error.message}}
+                }})()"#,
+            ))
+            .unwrap();
+        assert_eq!(
+            value,
+            Value::String(JsString::from_static("InternalError:stack overflow")),
+        );
+    }
+
+    let value = context
+        .eval(
+            r#"(function(){
+                try{objectKeysDirectRecurse(80);return "missing"}
+                catch(error){return error.name+":"+error.message}
+            })()"#,
+        )
+        .unwrap();
+    assert_eq!(
+        value,
+        Value::String(JsString::from_static("InternalError:stack overflow")),
+    );
+}
+
 fn eval_object(context: &mut Context, source: &str) -> ObjectRef {
     let Value::Object(object) = context.eval(source).unwrap() else {
         panic!("{source:?} did not evaluate to an object");

@@ -978,7 +978,8 @@ claim full parity.
   new-target realm fallback. The implemented static-table prefix is exactly
   `create`, `getPrototypeOf`, `setPrototypeOf`, `defineProperty`,
   `defineProperties`, `getOwnPropertyNames`, `getOwnPropertySymbols`,
-  `groupBy`; the next entry, `keys`, remains the deliberate boundary.
+  `groupBy`, `keys`, `values`, `entries`; the next entry, `isExtensible`,
+  remains the deliberate boundary.
   Prototype mutation keeps
   same-value success plus exact immutable, non-extensible and cycle failures.
   Descriptor conversion follows QuickJS's inherited field probes and
@@ -1001,7 +1002,23 @@ claim full parity.
   `InternalError: stack overflow`; pinned QuickJS permits a deeper
   platform-stack-dependent chain, so exact threshold parity still requires the
   general native-call trampoline.
-  Anchors: `quickjs.c` 39796-40349, 40748-40927, 52115-52230, and 56291-56313.
+  `keys`, `values` and `entries` share the pinned `js_object_keys` kernel: they
+  box through `ToObject`, snapshot all own string keys once, then re-read each
+  current descriptor and skip a key which disappeared or became
+  non-enumerable. Only `values` and `entries` perform a subsequent Get, so an
+  earlier getter can delete, hide or redefine a later snapshotted key while a
+  newly added key remains absent. Numeric/string ordering, Symbol exclusion,
+  Array and String-exotic keys, and compact defining-realm result Arrays match
+  QuickJS; `entries` pairs are defining-realm Arrays as well. A conservative
+  nine-active-call family guard, selected from the heaviest measured getter and
+  helper reentry path on the default 2 MiB libtest thread, converts deeper
+  `values`/`entries` recursion into a catchable `InternalError: stack overflow`.
+  Pinned QuickJS permits a much deeper platform-dependent chain, so exact
+  threshold parity and general interleaved-frame protection still require the
+  native-call trampoline. Proxy trap order and invariants remain part of the
+  explicit global Proxy boundary because the runtime does not yet publish
+  Proxy objects.
+  Anchors: `quickjs.c` 39796-40409, 40748-40927, 52115-52230, and 56291-56313.
 - Shape caches are weak and unlink by finalized generational Shape ID. Shape
   and Symbol atom ownership is paired through heap cleanup, including failure
   paths and runtime teardown.
@@ -1594,7 +1611,7 @@ object-environment lookup/deletion introduced by `with` or direct `eval`, the
 global String constructor, the remaining 40 entries of its 53-key prototype
 surface, Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. The Object static table after
-`groupBy`, AggregateError, and uncatchable termination state are
+`entries`, AggregateError, and uncatchable termination state are
 also pending. Array destructuring consumers, `with` object-environment
 semantics, other
 iterator classes and helpers,
@@ -1616,8 +1633,8 @@ surface now live with `groupBy` in `runtime/intrinsics/object.rs`; the String
 index-search pair starts `runtime/intrinsics/string.rs`, while the earlier
 String handlers still await migration there. The test, Array and Object
 no-semantic-change splits reduced `runtime.rs` from roughly thirty-two thousand
-lines to 14,252 lines, and newer intrinsic features add only table and dispatch
-wiring there. Property machinery, execution support,
+lines to roughly 14.3k lines, and newer intrinsic features add only table and
+dispatch wiring there. Property machinery, execution support,
 and the remaining intrinsic families still share the file; `compiler.rs`
 similarly combines several compiler phases. Dedicated structural milestones
 must keep splitting those seams under the same differential and Rust-only
@@ -1695,6 +1712,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_group_by -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_object_enumeration -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_search -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

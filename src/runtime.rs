@@ -33,10 +33,10 @@ use crate::heap::{
     FunctionDebugInfo, FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats,
     GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError,
     NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
-    ObjectAccessorKind, ObjectData, ObjectId, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload,
-    PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCharAtKind,
-    StringIndexOfKind, StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId,
-    VariableDefinition,
+    ObjectAccessorKind, ObjectData, ObjectId, ObjectKeysKind, ObjectKind,
+    ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot,
+    RawValue, ShapeId, StringCharAtKind, StringIndexOfKind, StringWellFormedKind,
+    SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -10146,6 +10146,9 @@ impl Runtime {
             | NativeFunctionId::ArrayPrototypeToSpliced => 4,
             NativeFunctionId::ArrayPrototypeFlatten(_) => 8,
             NativeFunctionId::ObjectGroupBy => 9,
+            // The heaviest measured getter-reentry path can exhaust a 2 MiB
+            // host thread while entering the tenth family frame.
+            NativeFunctionId::ObjectKeys(_) => 9,
             _ => return false,
         };
 
@@ -10176,6 +10179,9 @@ impl Runtime {
             }
             NativeFunctionId::ObjectGroupBy => {
                 matches!(candidate, NativeFunctionId::ObjectGroupBy)
+            }
+            NativeFunctionId::ObjectKeys(_) => {
+                matches!(candidate, NativeFunctionId::ObjectKeys(_))
             }
             _ => false,
         };
@@ -11700,6 +11706,9 @@ impl Runtime {
             }
             NativeFunctionId::ObjectGroupBy => {
                 self.call_object_group_by(realm, invocation, arguments)
+            }
+            NativeFunctionId::ObjectKeys(kind) => {
+                self.call_object_keys(realm, kind, invocation, arguments)
             }
             NativeFunctionId::ObjectPrototypeToString => {
                 self.call_object_prototype_to_string(realm, invocation)

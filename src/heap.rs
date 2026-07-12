@@ -862,6 +862,15 @@ pub enum ObjectOwnPropertyKeysKind {
     Symbols,
 }
 
+/// Result shape selected by QuickJS's shared `js_object_keys` implementation
+/// for `%Object%.keys`, `%Object%.values`, and `%Object%.entries`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ObjectKeysKind {
+    Keys,
+    Values,
+    Entries,
+}
+
 /// Type-safe replacement for QuickJS's getter/setter magic values shared by
 /// the Annex-B `__define*__` and `__lookup*__` method families.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -919,6 +928,7 @@ pub enum NativeFunctionId {
     ObjectDefineProperties,
     ObjectGetOwnPropertyKeys(ObjectOwnPropertyKeysKind),
     ObjectGroupBy,
+    ObjectKeys(ObjectKeysKind),
     ObjectPrototypeToString,
     ObjectPrototypeToLocaleString,
     ObjectPrototypeValueOf,
@@ -1196,6 +1206,7 @@ impl NativeFunctionId {
             Self::ObjectGetPrototypeOf
             | Self::ObjectDefineProperty
             | Self::ObjectGroupBy
+            | Self::ObjectKeys(_)
             | Self::ObjectPrototypeDefineAccessor(_)
             | Self::ObjectPrototypeLookupAccessor(_)
             | Self::StringPrototypeCharAt(_)
@@ -4234,6 +4245,9 @@ mod tests {
             NativeFunctionId::ObjectGetPrototypeOf,
             NativeFunctionId::ObjectDefineProperty,
             NativeFunctionId::ObjectGroupBy,
+            NativeFunctionId::ObjectKeys(ObjectKeysKind::Keys),
+            NativeFunctionId::ObjectKeys(ObjectKeysKind::Values),
+            NativeFunctionId::ObjectKeys(ObjectKeysKind::Entries),
             NativeFunctionId::ObjectPrototypeDefineAccessor(ObjectAccessorKind::Getter),
             NativeFunctionId::ObjectPrototypeDefineAccessor(ObjectAccessorKind::Setter),
             NativeFunctionId::ObjectPrototypeLookupAccessor(ObjectAccessorKind::Getter),
