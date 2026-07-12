@@ -760,8 +760,8 @@ claim full parity.
   `of`, and `@@species`; `from` covers iterable and array-like routes, mapper
   ordering, constructor receivers, CreateDataProperty, iterator closing, and
   final length Set. The currently implemented prototype subset contains `at`,
-  `indexOf`, `lastIndexOf`, `includes`, generic `values`, `keys`, `entries`,
-  and the `@@iterator` alias in their pinned filtered order. `at` uses
+  `with`, `indexOf`, `lastIndexOf`, `includes`, generic `values`, `keys`,
+  `entries`, and the `@@iterator` alias in their pinned filtered order. `at` uses
   saturating Int64 index conversion and HasProperty-before-Get; the three
   searches snapshot ToLength, skip `fromIndex` conversion for zero length,
   preserve omitted-versus-explicit-undefined behavior, and use QuickJS's
@@ -770,14 +770,18 @@ claim full parity.
   HasProperty and strict equality so holes are skipped while inherited values
   remain visible. All four are generic over ordinary and primitive receivers,
   preserve getter/coercion order, and allocate native errors in the method's
-  defining realm.
+  defining realm. `with` reuses those index rules but allocates a defining-realm
+  base Array without constructor/species lookup. It enforces QuickJS's signed
+  31-bit dense allocation limit before indexed reads, skips the replaced
+  source getter, copies the others in ascending HasProperty/Get order, and
+  turns holes into own `undefined` elements.
   Array Iterators re-read Uint32 length on every `next`, observe holes and
   mutation through ordinary Get, allocate entry-pair Arrays in the defining
   realm, use the raw native-next ABI in for-of, and eagerly release their source
   on exhaustion. Array prototype algorithms such as `concat`, `map`, the
   remaining mutation/search/sort methods, `@@unscopables`, and species-based result
   creation remain later slices. The pinned runtime anchors are `quickjs.c`
-  5628-5671, 9433-9524, 10369-10592, 13210-13255, 41552-41842,
+  5628-5671, 9433-9524, 10369-10592, 13210-13255, 41552-41900,
   42264-42407, 43344-43454, 44519-44583, and 56220-56390.
 - Every realm now publishes `%Object%` as a constructor-or-function native
   linked to `%Object.prototype%`. Call and construction preserve existing
@@ -1464,6 +1468,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_search -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_array_with -- --nocapture
 
 ./scripts/test-parity-slice.sh
 ```
@@ -1474,7 +1480,7 @@ String-rope/byte/native-Error kernels, Unicode identifier core, global
 BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials, and
 the Program-var/function, Program/body/block/switch/classic-for lexical-scope,
 single/labelled Annex B, synchronous try/catch/finally, synchronous for-of,
-Array core/literal/iterator/search, and Object
+Array core/literal/iterator/search/change-by-copy, and Object
 constructor/static-prefix/prototype slices. The atom-Error target contains thirteen
 pinned-oracle inputs in addition to its Rust-side expectation test. The Unicode
 target checks every scalar, real compiler/runtime cases, and the parser-driven

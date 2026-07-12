@@ -3476,6 +3476,14 @@ impl Runtime {
             1,
             1,
         )?;
+        self.define_native_builtin_auto_init(
+            array_prototype,
+            realm,
+            NativeFunctionId::ArrayPrototypeWith,
+            "with",
+            2,
+            2,
+        )?;
         for (kind, name) in [
             (ArraySearchKind::IndexOf, "indexOf"),
             (ArraySearchKind::LastIndexOf, "lastIndexOf"),
@@ -11166,6 +11174,93 @@ impl Runtime {
         self.get_property_in_realm(realm, &object, &key)
     }
 
+    fn call_array_prototype_with(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        const MAX_FAST_ARRAY_LENGTH: u64 = 2_147_483_647;
+
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype.with did not receive a generic invocation",
+            ));
+        };
+        let (object, length) = match self.native_array_like_object_and_length(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let index = match self.native_to_int64_sat(
+            realm,
+            arguments.readable.first().ok_or(RuntimeError::Invariant(
+                "Array.prototype.with index argv was not padded",
+            ))?,
+        )? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let length_i64 = i64::try_from(length)
+            .map_err(|_| RuntimeError::Invariant("array-like length exceeded Int64"))?;
+        let index = if index < 0 { length_i64 + index } else { index };
+        if index < 0 || index >= length_i64 {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Range,
+                &format!("invalid array index: {index}"),
+            )?));
+        }
+        if length > MAX_FAST_ARRAY_LENGTH {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Range,
+                "invalid array length",
+            )?));
+        }
+
+        // QuickJS allocates and initializes the complete dense fast-array
+        // storage before observing any indexed source property. Reserve and
+        // initialize the equivalent Rust value buffer at the same boundary.
+        let length = usize::try_from(length)
+            .map_err(|_| RuntimeError::Invariant("fast Array length did not fit usize"))?;
+        let replacement_index = usize::try_from(index)
+            .map_err(|_| RuntimeError::Invariant("validated Array.with index did not fit usize"))?;
+        let mut values = Vec::new();
+        values.try_reserve_exact(length).map_err(|_| {
+            RuntimeError::Engine(Error::new(ErrorKind::JsInternal, "out of memory"))
+        })?;
+        values.resize(length, Value::Undefined);
+        let replacement = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
+            "Array.prototype.with replacement argv was not padded",
+        ))?;
+
+        for (position, slot) in values.iter_mut().enumerate() {
+            if position == replacement_index {
+                *slot = replacement.clone();
+                continue;
+            }
+            let key = self.intern_property_key(&position.to_string())?;
+            let present = match self.has_property_in_realm(realm, &object, &key)? {
+                Completion::Return(Value::Bool(value)) => value,
+                Completion::Return(_) => {
+                    return Err(RuntimeError::Invariant(
+                        "Array.with HasProperty did not return a boolean",
+                    ));
+                }
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            if present {
+                *slot = match self.get_property_in_realm(realm, &object, &key)? {
+                    Completion::Return(value) => value,
+                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+            }
+        }
+        Ok(Completion::Return(Value::Object(
+            self.new_array_from_values(realm, values)?,
+        )))
+    }
+
     fn call_array_prototype_search(
         &self,
         realm: ContextId,
@@ -13661,6 +13756,9 @@ impl Runtime {
             NativeFunctionId::ArraySpeciesGetter => self.call_array_species_getter(invocation),
             NativeFunctionId::ArrayPrototypeAt => {
                 self.call_array_prototype_at(realm, invocation, arguments)
+            }
+            NativeFunctionId::ArrayPrototypeWith => {
+                self.call_array_prototype_with(realm, invocation, arguments)
             }
             NativeFunctionId::ArrayPrototypeSearch(kind) => {
                 self.call_array_prototype_search(realm, kind, invocation, arguments)
