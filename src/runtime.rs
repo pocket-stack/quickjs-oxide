@@ -23,16 +23,17 @@ use crate::function::{
     UnlinkedVariableDefinition,
 };
 use crate::heap::{
-    ArrayFindKind, ArrayIterationKind, ArrayIteratorKind, ArrayJoinKind, ArrayReduceKind,
-    ArraySearchKind, AutoInitProperty, BigIntAsNKind, BytecodeConstant, ClosureSource,
-    ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind, ContextData,
-    ContextId, DynamicFunctionKind, ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId,
-    FunctionDebugInfo, FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats,
-    GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError,
-    NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
-    ObjectAccessorKind, ObjectData, ObjectId, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload,
-    PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCharAtKind,
-    StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
+    ArrayFindKind, ArrayIterationKind, ArrayIteratorKind, ArrayJoinKind, ArrayPopKind,
+    ArrayPushKind, ArrayReduceKind, ArraySearchKind, AutoInitProperty, BigIntAsNKind,
+    BytecodeConstant, ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName,
+    ConstructorKind, ContextData, ContextId, DynamicFunctionKind, ErrorConstructorKind,
+    FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo, FunctionDebugPosition,
+    FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap,
+    HeapCleanup, HeapCounts, HeapError, NativeCProto, NativeFunctionId, NumberFormatKind,
+    NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData, ObjectId, ObjectKind,
+    ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot,
+    RawValue, ShapeId, StringCharAtKind, StringWellFormedKind, SymbolRegistryKind, VarRefData,
+    VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -3582,6 +3583,30 @@ impl Runtime {
             0,
             0,
         )?;
+        for (target, name, length) in [
+            (
+                NativeFunctionId::ArrayPrototypePop(ArrayPopKind::Pop),
+                "pop",
+                0,
+            ),
+            (
+                NativeFunctionId::ArrayPrototypePush(ArrayPushKind::Push),
+                "push",
+                1,
+            ),
+            (
+                NativeFunctionId::ArrayPrototypePop(ArrayPopKind::Shift),
+                "shift",
+                0,
+            ),
+            (
+                NativeFunctionId::ArrayPrototypePush(ArrayPushKind::Unshift),
+                "unshift",
+                1,
+            ),
+        ] {
+            self.define_native_builtin_auto_init(array_prototype, realm, target, name, length, 0)?;
+        }
         self.define_native_builtin_auto_init(
             array_prototype,
             realm,
@@ -11974,7 +11999,7 @@ impl Runtime {
         };
         let length = i64::try_from(length)
             .map_err(|_| RuntimeError::Invariant("array-like length exceeded Int64"))?;
-        let mut to = match self.native_to_int64_clamp(
+        let to = match self.native_to_int64_clamp(
             realm,
             arguments.readable.first().ok_or(RuntimeError::Invariant(
                 "Array.prototype.copyWithin target argv was not padded",
@@ -11986,7 +12011,7 @@ impl Runtime {
             NativeConversion::Value(value) => value,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let mut from = match self.native_to_int64_clamp(
+        let from = match self.native_to_int64_clamp(
             realm,
             arguments.readable.get(1).ok_or(RuntimeError::Invariant(
                 "Array.prototype.copyWithin start argv was not padded",
@@ -12016,51 +12041,20 @@ impl Runtime {
         } else {
             length
         };
-        let mut count = (final_index - from).min(length - to);
-        let direction = if from < to && to < from + count {
-            from += count - 1;
-            to += count - 1;
-            -1
-        } else {
-            1
-        };
-
-        while count > 0 {
-            let from_key = self.intern_property_key(&from.to_string())?;
-            let present = match self.has_property_in_realm(realm, &object, &from_key)? {
-                Completion::Return(Value::Bool(value)) => value,
-                Completion::Return(_) => {
-                    return Err(RuntimeError::Invariant(
-                        "Array.copyWithin HasProperty did not return a boolean",
-                    ));
-                }
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            let source_value = if present {
-                match self.get_property_in_realm(realm, &object, &from_key)? {
-                    Completion::Return(value) => Some(value),
-                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                }
-            } else {
-                None
-            };
-            let to_key = self.intern_property_key(&to.to_string())?;
-            if let Some(source_value) = source_value {
-                if let Some(value) =
-                    self.set_property_or_throw(realm, &object, &to_key, source_value)?
-                {
-                    return Ok(Completion::Throw(value));
-                }
-            } else if !self.delete_property(&object, &to_key)? {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "could not delete property",
-                )?));
+        let count = (final_index - from).min(length - to);
+        if count > 0 {
+            let backwards = from < to && to < from + count;
+            let to = u64::try_from(to)
+                .map_err(|_| RuntimeError::Invariant("Array.copyWithin target was negative"))?;
+            let from = u64::try_from(from)
+                .map_err(|_| RuntimeError::Invariant("Array.copyWithin source was negative"))?;
+            let count = u64::try_from(count)
+                .map_err(|_| RuntimeError::Invariant("Array.copyWithin count was negative"))?;
+            if let Some(value) =
+                self.copy_array_like_range(realm, &object, to, from, count, backwards)?
+            {
+                return Ok(Completion::Throw(value));
             }
-            from += direction;
-            to += direction;
-            count -= 1;
         }
         Ok(Completion::Return(Value::Object(object)))
     }
@@ -12378,6 +12372,193 @@ impl Runtime {
                 this_value: Value::Object(object),
             },
         )
+    }
+
+    fn copy_array_like_range(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+        to_start: u64,
+        from_start: u64,
+        count: u64,
+        backwards: bool,
+    ) -> Result<Option<Value>, RuntimeError> {
+        for offset in 0..count {
+            let relative = if backwards {
+                count - offset - 1
+            } else {
+                offset
+            };
+            let from = from_start
+                .checked_add(relative)
+                .ok_or(RuntimeError::Invariant(
+                    "Array copy source index overflowed",
+                ))?;
+            let to = to_start
+                .checked_add(relative)
+                .ok_or(RuntimeError::Invariant(
+                    "Array copy target index overflowed",
+                ))?;
+            let from_key = self.intern_property_key(&from.to_string())?;
+            let present = match self.has_property_in_realm(realm, object, &from_key)? {
+                Completion::Return(Value::Bool(value)) => value,
+                Completion::Return(_) => {
+                    return Err(RuntimeError::Invariant(
+                        "Array range copy HasProperty did not return a boolean",
+                    ));
+                }
+                Completion::Throw(value) => return Ok(Some(value)),
+            };
+            let to_key = self.intern_property_key(&to.to_string())?;
+            if present {
+                let value = match self.get_property_in_realm(realm, object, &from_key)? {
+                    Completion::Return(value) => value,
+                    Completion::Throw(value) => return Ok(Some(value)),
+                };
+                if let Some(value) = self.set_property_or_throw(realm, object, &to_key, value)? {
+                    return Ok(Some(value));
+                }
+            } else if !self.delete_property(object, &to_key)? {
+                return Ok(Some(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "could not delete property",
+                )?));
+            }
+        }
+        Ok(None)
+    }
+
+    fn delete_array_like_index_or_throw(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+        index: u64,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let key = self.intern_property_key(&index.to_string())?;
+        if self.delete_property(object, &key)? {
+            Ok(None)
+        } else {
+            Ok(Some(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "could not delete property",
+            )?))
+        }
+    }
+
+    fn call_array_prototype_pop(
+        &self,
+        realm: ContextId,
+        kind: ArrayPopKind,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype pop/shift did not receive a generic invocation",
+            ));
+        };
+        let (object, length) = match self.native_array_like_object_and_length(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let new_length = length.saturating_sub(1);
+        let mut result = Value::Undefined;
+        if length != 0 {
+            let result_key = self.intern_property_key(
+                &(if kind == ArrayPopKind::Shift {
+                    0
+                } else {
+                    new_length
+                })
+                .to_string(),
+            )?;
+            result = match self.get_property_in_realm(realm, &object, &result_key)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            if kind == ArrayPopKind::Shift
+                && let Some(value) =
+                    self.copy_array_like_range(realm, &object, 0, 1, new_length, false)?
+            {
+                return Ok(Completion::Throw(value));
+            }
+            if let Some(value) =
+                self.delete_array_like_index_or_throw(realm, &object, new_length)?
+            {
+                return Ok(Completion::Throw(value));
+            }
+        }
+        if let Some(value) = self.set_array_like_length(realm, &object, new_length)? {
+            return Ok(Completion::Throw(value));
+        }
+        Ok(Completion::Return(result))
+    }
+
+    fn call_array_prototype_push(
+        &self,
+        realm: ContextId,
+        kind: ArrayPushKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        const MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype push/unshift did not receive a generic invocation",
+            ));
+        };
+        let (object, length) = match self.native_array_like_object_and_length(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let argument_count = u64::try_from(arguments.actual_arg_count)
+            .map_err(|_| RuntimeError::Invariant("Array push argument count exceeded Uint64"))?;
+        let Some(new_length) = length.checked_add(argument_count) else {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "Array loo long",
+            )?));
+        };
+        if new_length > MAX_SAFE_INTEGER {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "Array loo long",
+            )?));
+        }
+
+        let from = if kind == ArrayPushKind::Unshift && argument_count != 0 {
+            if let Some(value) =
+                self.copy_array_like_range(realm, &object, argument_count, 0, length, true)?
+            {
+                return Ok(Completion::Throw(value));
+            }
+            0
+        } else {
+            length
+        };
+        for (offset, value) in arguments.readable[..arguments.actual_arg_count]
+            .iter()
+            .cloned()
+            .enumerate()
+        {
+            let offset = u64::try_from(offset)
+                .map_err(|_| RuntimeError::Invariant("Array push offset exceeded Uint64"))?;
+            let index = from
+                .checked_add(offset)
+                .ok_or(RuntimeError::Invariant("Array push index overflowed"))?;
+            let key = self.intern_property_key(&index.to_string())?;
+            if let Some(value) = self.set_property_or_throw(realm, &object, &key, value)? {
+                return Ok(Completion::Throw(value));
+            }
+        }
+        if let Some(value) = self.set_array_like_length(realm, &object, new_length)? {
+            return Ok(Completion::Throw(value));
+        }
+        Ok(Completion::Return(Value::number(new_length as f64)))
     }
 
     fn call_array_prototype_iterator(
@@ -14796,6 +14977,12 @@ impl Runtime {
             }
             NativeFunctionId::ArrayPrototypeToString => {
                 self.call_array_prototype_to_string(realm, invocation)
+            }
+            NativeFunctionId::ArrayPrototypePop(kind) => {
+                self.call_array_prototype_pop(realm, kind, invocation)
+            }
+            NativeFunctionId::ArrayPrototypePush(kind) => {
+                self.call_array_prototype_push(realm, kind, invocation, arguments)
             }
             NativeFunctionId::ArrayPrototypeIterator(kind) => {
                 self.call_array_prototype_iterator(realm, kind, invocation)

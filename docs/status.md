@@ -763,8 +763,8 @@ claim full parity.
   `with`, `concat`, `every`, `some`, `forEach`, `map`, `filter`, `reduce`,
   `reduceRight`, `fill`, `find`, `findIndex`, `findLast`, `findLastIndex`,
   `indexOf`, `lastIndexOf`, `includes`, `join`, `toString`, `toLocaleString`,
-  `copyWithin`, generic `values`, `keys`, `entries`, and the `@@iterator` alias
-  in their pinned filtered order. `at` uses
+  `pop`, `push`, `shift`, `unshift`, `copyWithin`, generic `values`, `keys`,
+  `entries`, and the `@@iterator` alias in their pinned filtered order. `at` uses
   saturating Int64 index conversion and HasProperty-before-Get; the three
   searches snapshot ToLength, skip `fromIndex` conversion for zero length,
   preserve omitted-versus-explicit-undefined behavior, and use QuickJS's
@@ -828,6 +828,19 @@ claim full parity.
   covered with a reduced-limit unit probe, including Gets and locale invocation
   that occur after separator append failure while later result ToString is
   skipped.
+  `pop`/`shift` and `push`/`unshift` use the two shared QuickJS magic-selected
+  mutation kernels. They snapshot ToLength, retain full Int64 property keys,
+  and perform ordinary throwing Set/Delete operations. `shift` copies forward
+  while `unshift` copies backward, using HasProperty before Get so inherited
+  values and holes are preserved exactly; `pop` and `shift` save their result
+  before later mutations can fail. All four perform the final length Set even
+  for an empty removal or zero supplied arguments. Insertion uses the actual
+  argument count, rejects a result above MAX_SAFE before indexed writes with
+  QuickJS's exact `Array loo long` TypeError, and otherwise preserves every
+  completed prefix mutation on a later failure. Genuine Arrays also retain the
+  Uint32 length boundary: a push at length 2^32-1 first creates the ordinary
+  `"4294967295"` property, then the final length Set throws RangeError without
+  rolling that property back.
   `copyWithin`
   snapshots and clamps all three bounds in QuickJS order, selects a backward
   traversal only for overlapping ranges, and performs source HasProperty/Get
@@ -840,7 +853,7 @@ claim full parity.
   on exhaustion. The remaining Array mutation/order/slice/flatten methods and
   `@@unscopables` remain later slices. The pinned runtime anchors are `quickjs.c`
   212, 5628-5671, 9433-9524, 10369-10592, 13210-13663, 41472-42226,
-  42228-42560, 42975-43013, 43344-43454, 44519-44583, and 56220-56390.
+  42228-42673, 42975-43013, 43344-43454, 44519-44583, and 56220-56390.
 - Every realm now publishes `%Object%` as a constructor-or-function native
   linked to `%Object.prototype%`. Call and construction preserve existing
   objects, box every primitive family in the defining realm, allocate ordinary
@@ -1532,6 +1545,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_concat -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_stringification -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_array_mutators -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_fill -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

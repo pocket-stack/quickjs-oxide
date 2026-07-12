@@ -785,6 +785,21 @@ pub enum ArrayJoinKind {
     ToLocaleString,
 }
 
+/// Head/tail removal mode selected by QuickJS's shared `js_array_pop` kernel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ArrayPopKind {
+    Pop,
+    Shift,
+}
+
+/// Tail/head insertion mode selected by QuickJS's shared `js_array_push`
+/// kernel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ArrayPushKind {
+    Push,
+    Unshift,
+}
+
 /// Observable traversal and result mode selected by the four
 /// `Array.prototype.find*` methods. QuickJS passes this as the magic value to
 /// one shared generic callback kernel.
@@ -856,6 +871,8 @@ pub enum NativeFunctionId {
     ArrayPrototypeSearch(ArraySearchKind),
     ArrayPrototypeJoin(ArrayJoinKind),
     ArrayPrototypeToString,
+    ArrayPrototypePop(ArrayPopKind),
+    ArrayPrototypePush(ArrayPushKind),
     ArrayPrototypeCopyWithin,
     ArrayIteratorNext,
     ThrowTypeError,
@@ -1140,7 +1157,9 @@ impl NativeFunctionId {
             | Self::ArrayPrototypeFind(_)
             | Self::ArrayPrototypeIteration(_)
             | Self::ArrayPrototypeReduce(_)
-            | Self::ArrayPrototypeJoin(_) => NativeFunctionDescriptor {
+            | Self::ArrayPrototypeJoin(_)
+            | Self::ArrayPrototypePop(_)
+            | Self::ArrayPrototypePush(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::GenericMagic,
             },
             Self::GlobalUriCodec(
@@ -4036,6 +4055,19 @@ mod tests {
         let target = NativeFunctionId::ArrayPrototypeToString;
         assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
         assert!(!target.descriptor().cproto.default_is_constructor());
+    }
+
+    #[test]
+    fn array_pop_push_native_selectors_use_pinned_cproto() {
+        for target in [
+            NativeFunctionId::ArrayPrototypePop(ArrayPopKind::Pop),
+            NativeFunctionId::ArrayPrototypePop(ArrayPopKind::Shift),
+            NativeFunctionId::ArrayPrototypePush(ArrayPushKind::Push),
+            NativeFunctionId::ArrayPrototypePush(ArrayPushKind::Unshift),
+        ] {
+            assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
     }
 
     #[test]
