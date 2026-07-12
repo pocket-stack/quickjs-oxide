@@ -861,8 +861,7 @@ claim full parity.
   read above that boundary. As with `with`, Rust reserves and initializes the
   equivalent dense value buffer before source access, but allocates the actual
   Array object after those reads; exact allocator-failure ordering still needs
-  a bulk dense-array allocator. The `toReversed` `@@unscopables` entry remains
-  grouped with the not-yet-published unscopables object.
+  a bulk dense-array allocator.
   `sort` validates a supplied comparator before ToObject, snapshots ToLength,
   and collects present values in ascending HasProperty/Get order. Holes are
   omitted and explicit `undefined` values are counted separately. Its fallible
@@ -892,9 +891,8 @@ claim full parity.
   and ToString calls use a deterministic 16-sort-frame safety ceiling and throw
   catchable `InternalError: stack overflow`; pinned QuickJS permits more frames,
   so an iterative native-call trampoline is still required for exact threshold
-  and side-effect parity. The pinned conditional-Get Proxy behavior and the
-  `toSorted` `@@unscopables` entry remain attached to their wider pending
-  object-model slices.
+  and side-effect parity. The pinned conditional-Get Proxy behavior remains
+  attached to the wider pending Proxy/object-model slice.
   `slice` and `splice` retain QuickJS's shared magic-selected kernel. Both
   snapshot ToLength, apply saturating Int64 relative-index clamps, distinguish
   omitted arguments from explicit `undefined` where `argc` requires it, and
@@ -924,8 +922,7 @@ claim full parity.
   change-by-copy methods, Rust reserves the complete value buffer before
   source access but creates indexed Array storage afterward; exact recoverable
   allocator ordering and bulk-storage complexity remain pending. Proxy trap
-  behavior and the `toSpliced` `@@unscopables` entry remain attached to their
-  wider object-model slices.
+  behavior remains attached to the wider pending Proxy/object-model slice.
   `copyWithin`
   snapshots and clamps all three bounds in QuickJS order, selects a backward
   traversal only for overlapping ranges, and performs source HasProperty/Get
@@ -957,8 +954,19 @@ claim full parity.
   Array Iterators re-read Uint32 length on every `next`, observe holes and
   mutation through ordinary Get, allocate entry-pair Arrays in the defining
   realm, use the raw native-next ABI in for-of, and eagerly release their source
-  on exhaustion. The pinned Array prototype algorithm table is now complete;
-  its `@@unscopables` object remains the next separate table-publication slice.
+  on exhaustion. The pinned Array prototype algorithm table is now complete.
+  `Array.prototype[Symbol.unscopables]` follows QuickJS's lazy object-table
+  publication: the outer property is a non-writable, non-enumerable,
+  configurable data property whose auto-init slot retains its defining realm
+  until materialization or removal. Each realm receives a distinct
+  null-prototype object with the exact pinned 16-key order (`at`, `copyWithin`,
+  `entries`, `fill`, `find`, `findIndex`, `findLast`, `findLastIndex`, `flat`,
+  `flatMap`, `includes`, `keys`, `toReversed`, `toSorted`, `toSpliced`,
+  `values`); every value is `true` and every inner property is writable,
+  enumerable and configurable. QuickJS 2026-06-04 does not include `with` in
+  this table.
+  Source-level `with` statement parsing and object-environment lookup remain a
+  separate pending language/environment slice.
   The pinned runtime anchors are `quickjs.c`
   212, 5628-5671, 9433-9524, 10369-10592, 13210-13663, 41472-42226,
   42228-43118, 43122-43335, 43344-43454, 44519-44583, and 56220-56390.
@@ -1566,7 +1574,8 @@ global String constructor, the remaining 43 entries of its 53-key prototype
 surface, Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. The Object static table after
 `getOwnPropertySymbols`, AggregateError, and uncatchable termination state are
-also pending. Array `@@unscopables`, Array destructuring consumers, other
+also pending. Array destructuring consumers, `with` object-environment
+semantics, other
 iterator classes and helpers,
 RegExp, Unicode-backed String methods, remaining object-literal forms and the
 rest of the builtin table build on those layers.

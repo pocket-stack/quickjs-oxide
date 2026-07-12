@@ -6112,6 +6112,9 @@ impl Runtime {
                 AutoInitProperty::String { value, .. } => {
                     Value::String(JsString::from_static(value))
                 }
+                AutoInitProperty::ArrayUnscopables { realm } => {
+                    Value::Object(self.instantiate_array_unscopables(realm)?)
+                }
                 #[cfg(test)]
                 AutoInitProperty::FailureProbe { .. } => {
                     return Err(RuntimeError::Invariant("autoinit failure probe"));

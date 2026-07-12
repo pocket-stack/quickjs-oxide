@@ -331,6 +331,9 @@ pub enum AutoInitProperty {
         realm: ContextId,
         value: &'static str,
     },
+    ArrayUnscopables {
+        realm: ContextId,
+    },
     #[cfg(test)]
     FailureProbe {
         realm: ContextId,
@@ -3511,7 +3514,8 @@ fn property_slot_edges(slot: &PropertySlot) -> Vec<RawId> {
         PropertySlot::AutoInit(
             AutoInitProperty::FunctionPrototype { realm }
             | AutoInitProperty::NativeBuiltin { realm, .. }
-            | AutoInitProperty::String { realm, .. },
+            | AutoInitProperty::String { realm, .. }
+            | AutoInitProperty::ArrayUnscopables { realm },
         ) => vec![RawId::Context(*realm)],
         #[cfg(test)]
         PropertySlot::AutoInit(AutoInitProperty::FailureProbe { realm }) => {

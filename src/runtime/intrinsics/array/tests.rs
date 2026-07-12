@@ -85,6 +85,96 @@ fn reduced_flatten_frame_limit_is_catchable_without_rust_recursion() {
     );
 }
 
+#[test]
+fn array_unscopables_autoinit_retains_then_releases_its_realm_edge() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let array_prototype = context.array_prototype().unwrap();
+    let key = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::Unscopables));
+
+    let (slot_index, count_before) = {
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(array_prototype.object_id()).unwrap();
+        let shape = state.heap.shape(object.shape).unwrap();
+        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        assert!(matches!(
+            object.slots.get(slot_index),
+            Some(PropertySlot::AutoInit(
+                AutoInitProperty::ArrayUnscopables { realm }
+            )) if *realm == context.realm
+        ));
+        (
+            slot_index,
+            state.heap.context_strong_count(context.realm).unwrap(),
+        )
+    };
+
+    let Value::Object(unscopables) = context.get_property(&array_prototype, &key).unwrap() else {
+        panic!("Array.prototype[Symbol.unscopables] was not an object");
+    };
+    let state = runtime.0.state.borrow();
+    assert_eq!(
+        state.heap.context_strong_count(context.realm).unwrap(),
+        count_before - 1,
+        "materialization did not release the autoinit's defining-realm edge",
+    );
+    let object = state.heap.object(array_prototype.object_id()).unwrap();
+    assert!(matches!(
+        object.slots.get(slot_index),
+        Some(PropertySlot::Data(RawValue::Object(id))) if *id == unscopables.object_id()
+    ));
+    drop(state);
+    assert_eq!(runtime.get_prototype_of(&unscopables).unwrap(), None);
+}
+
+#[test]
+fn array_unscopables_metadata_and_delete_preserve_lazy_state() {
+    let runtime = Runtime::new();
+    let context = runtime.new_context();
+    let array_prototype = context.array_prototype().unwrap();
+    let key = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::Unscopables));
+
+    let count_before = {
+        let state = runtime.0.state.borrow();
+        state.heap.context_strong_count(context.realm).unwrap()
+    };
+    assert!(
+        runtime
+            .own_property_keys(&array_prototype)
+            .unwrap()
+            .contains(&key)
+    );
+    assert!(runtime.has_property(&array_prototype, &key).unwrap());
+    {
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(array_prototype.object_id()).unwrap();
+        let shape = state.heap.shape(object.shape).unwrap();
+        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        assert!(matches!(
+            object.slots.get(slot_index),
+            Some(PropertySlot::AutoInit(
+                AutoInitProperty::ArrayUnscopables { realm }
+            )) if *realm == context.realm
+        ));
+        assert_eq!(
+            state.heap.context_strong_count(context.realm).unwrap(),
+            count_before,
+            "ownKeys or HasProperty materialized the autoinit slot",
+        );
+    }
+
+    assert!(runtime.delete_property(&array_prototype, &key).unwrap());
+    let state = runtime.0.state.borrow();
+    assert_eq!(
+        state.heap.context_strong_count(context.realm).unwrap(),
+        count_before - 1,
+        "deleting the lazy property did not release its defining-realm edge",
+    );
+    let object = state.heap.object(array_prototype.object_id()).unwrap();
+    let shape = state.heap.shape(object.shape).unwrap();
+    assert!(shape.find(key.atom()).is_none());
+}
+
 fn eval_object(context: &mut Context, source: &str) -> ObjectRef {
     let Value::Object(object) = context.eval(source).unwrap() else {
         panic!("{source:?} did not evaluate to an object");

@@ -641,6 +641,7 @@ impl Runtime {
                 "Array iterator alias definition was rejected",
             ));
         }
+        self.define_array_unscopables_auto_init(array_prototype, realm)?;
 
         self.define_function_data_property(
             global_object,
@@ -655,6 +656,84 @@ impl Runtime {
             .heap
             .attach_array_constructor(realm, constructor.as_object().object_id())?;
         Ok(())
+    }
+
+    fn define_array_unscopables_auto_init(
+        &self,
+        array_prototype: &ObjectRef,
+        realm: ContextId,
+    ) -> Result<(), RuntimeError> {
+        let key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Unscopables));
+        self.validate_object_and_key(array_prototype, &key)?;
+        let mut state = self.0.state.borrow_mut();
+        state.heap.context(realm)?;
+        let object_id = array_prototype.object_id();
+        let (prototype, mut entries, mut slots) = {
+            let object = state.heap.object(object_id)?;
+            let shape = state.heap.shape(object.shape)?;
+            if shape.find(key.atom()).is_some() {
+                return Err(RuntimeError::Invariant(
+                    "Array unscopables autoinit property already exists",
+                ));
+            }
+            (
+                shape.prototype(),
+                shape.entries().to_vec(),
+                object.slots.clone(),
+            )
+        };
+        entries.push(ShapeEntry {
+            atom: key.atom(),
+            flags: PropertyFlags::data(false, false, true),
+        });
+        slots.push(PropertySlot::AutoInit(AutoInitProperty::ArrayUnscopables {
+            realm,
+        }));
+        state.replace_layout(object_id, prototype, &entries, slots)
+    }
+
+    pub(in crate::runtime) fn instantiate_array_unscopables(
+        &self,
+        realm: ContextId,
+    ) -> Result<ObjectRef, RuntimeError> {
+        self.0.state.borrow().heap.context(realm)?;
+        let object = self.new_object(None)?;
+        for name in [
+            "at",
+            "copyWithin",
+            "entries",
+            "fill",
+            "find",
+            "findIndex",
+            "findLast",
+            "findLastIndex",
+            "flat",
+            "flatMap",
+            "includes",
+            "keys",
+            "toReversed",
+            "toSorted",
+            "toSpliced",
+            "values",
+        ] {
+            let key = self.intern_property_key(name)?;
+            if !self.define_own_property(
+                &object,
+                &key,
+                &OrdinaryPropertyDescriptor {
+                    value: DescriptorField::Present(Value::Bool(true)),
+                    writable: DescriptorField::Present(true),
+                    enumerable: DescriptorField::Present(true),
+                    configurable: DescriptorField::Present(true),
+                    ..OrdinaryPropertyDescriptor::new()
+                },
+            )? {
+                return Err(RuntimeError::Invariant(
+                    "Array unscopables property definition was rejected",
+                ));
+            }
+        }
+        Ok(object)
     }
 
     pub(in crate::runtime) fn call_array_constructor(
