@@ -1554,15 +1554,16 @@ generators, TypedArrays/Atomics, WeakRef/finalization, bytecode version 5 and
 BJSON interoperability, `std`/`os`, workers, REPL/qjsc, and the complete Rust
 and C embedding APIs.
 
-Code organization is also not final. The 151 runtime white-box tests now live
-in `runtime/tests.rs` instead of adding roughly thirteen thousand lines to the
-production facade, but `runtime.rs` still co-locates property machinery,
-native dispatch, and every intrinsic family; `compiler.rs` similarly combines
-several compiler phases. Dedicated no-semantic-change milestones must continue
-splitting these into focused submodules with the same differential and
-Rust-only gates. The next production move is the largely contiguous Array
-intrinsic implementation block; future feature work must not keep extending
-either monolith indefinitely.
+Code organization is also not final. The 151 runtime white-box tests live in
+`runtime/tests.rs`, while the Array constructor, prototype, iterator, species,
+and sorting implementation now lives in `runtime/intrinsics/array.rs`. These
+two no-semantic-change splits reduced `runtime.rs` from roughly thirty-two
+thousand lines to roughly fifteen thousand lines. It still co-locates property
+machinery, native dispatch, execution support, and the remaining intrinsic
+families; `compiler.rs` similarly combines several compiler phases. Dedicated
+structural milestones must keep splitting those seams under the same
+differential and Rust-only gates, and future feature work must not resume
+extending either monolith indefinitely.
 
 ## Reproduce current evidence
 
