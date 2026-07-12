@@ -1611,12 +1611,13 @@ and C embedding APIs.
 Code organization is also not final. The 151 runtime white-box tests live in
 `runtime/tests.rs`, while the Array constructor, prototype, iterator, species,
 and sorting implementation now lives in `runtime/intrinsics/array.rs`.
-`Object.groupBy` starts `runtime/intrinsics/object.rs`, while the String index
-search pair starts `runtime/intrinsics/string.rs`; the earlier Object and String
-handlers still await migration into those modules. The two no-semantic-change
-test/Array splits reduced `runtime.rs` from roughly thirty-two thousand lines
-to roughly fifteen thousand lines, and these newer intrinsic features added
-only table and dispatch wiring there. Property machinery, execution support,
+The Object constructor, implemented statics and implemented prototype handler
+surface now live with `groupBy` in `runtime/intrinsics/object.rs`; the String
+index-search pair starts `runtime/intrinsics/string.rs`, while the earlier
+String handlers still await migration there. The test, Array and Object
+no-semantic-change splits reduced `runtime.rs` from roughly thirty-two thousand
+lines to 14,252 lines, and newer intrinsic features add only table and dispatch
+wiring there. Property machinery, execution support,
 and the remaining intrinsic families still share the file; `compiler.rs`
 similarly combines several compiler phases. Dedicated structural milestones
 must keep splitting those seams under the same differential and Rust-only
