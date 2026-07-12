@@ -35,7 +35,8 @@ use crate::heap::{
     NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
     ObjectAccessorKind, ObjectData, ObjectId, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload,
     PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCharAtKind,
-    StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
+    StringIndexOfKind, StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId,
+    VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -3764,7 +3765,7 @@ impl Runtime {
         Ok(())
     }
 
-    /// Install QuickJS's first seven String prototype methods in exact table
+    /// Install QuickJS's first nine String prototype methods in exact table
     /// order. They precede the conversion brand pair on every fresh realm,
     /// even though the still-incomplete global `%String%` is not published.
     fn initialize_string_utf16_prefix(
@@ -3811,6 +3812,19 @@ impl Runtime {
             ),
         ] {
             self.define_native_builtin_auto_init(string_prototype, realm, target, name, 0, 0)?;
+        }
+        for (selector, name) in [
+            (StringIndexOfKind::IndexOf, "indexOf"),
+            (StringIndexOfKind::LastIndexOf, "lastIndexOf"),
+        ] {
+            self.define_native_builtin_auto_init(
+                string_prototype,
+                realm,
+                NativeFunctionId::StringPrototypeIndexOf(selector),
+                name,
+                1,
+                1,
+            )?;
         }
         Ok(())
     }
@@ -12797,6 +12811,9 @@ impl Runtime {
             }
             NativeFunctionId::StringPrototypeWellFormed(selector) => {
                 self.call_string_prototype_well_formed(realm, selector, invocation)
+            }
+            NativeFunctionId::StringPrototypeIndexOf(selector) => {
+                self.call_string_prototype_index_of(realm, selector, invocation, arguments)
             }
             NativeFunctionId::IteratorPrototypeIterator => {
                 self.call_iterator_prototype_iterator(invocation)

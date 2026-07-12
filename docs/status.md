@@ -571,8 +571,9 @@ claim full parity.
   Boolean, Symbol and BigInt primitives additionally traverse the current
   bytecode realm's implemented matching prototype, preserving the raw
   primitive receiver for strict inherited getters and method calls. String's
-  standard non-index surface is intentionally limited to the first seven
-  UTF-16 methods plus the conversion pair until later table slices land.
+  standard non-index surface is intentionally limited to the first nine
+  UTF-16/search methods, the conversion pair and `Symbol.iterator` until later
+  table slices land.
 - Simple member assignment mirrors QuickJS's lvalue rewrite rather than
   evaluating the getter: fixed targets lower through `Insert2; PutField`, and
   computed targets through `Insert3; PutArrayEl`, preserving the RHS as the
@@ -1020,13 +1021,18 @@ claim full parity.
   get-own-property, define-own-property, has-own-property, delete-property and
   own-property-keys; ownKeys merges them with stored numeric, string and symbol
   keys in QuickJS order. The UTF-16 prefix then installs `at`, `charCodeAt`,
-  `charAt`, `concat`, `codePointAt`, `isWellFormed` and `toWellFormed` in the
-  pinned table order before the conversion core's exact `toString`/`valueOf`
-  brand methods. These generic methods preserve `JS_ToStringCheckObject`,
-  `JS_ToInt32Sat`, raw UTF-16 code units and lone surrogates; concat converts
-  actual arguments sequentially and enforces QuickJS's `(1 << 30) - 1` length
-  cap. This ten-key list is only the QuickJS-relative order filtered to
-  implemented keys, not a claim of full 53-key ownKeys parity. Primitive
+  `charAt`, `concat`, `codePointAt`, `isWellFormed`, `toWellFormed`, `indexOf`
+  and `lastIndexOf` in the pinned table order before the conversion core's
+  exact `toString`/`valueOf` brand methods. These generic methods preserve
+  `JS_ToStringCheckObject`, `JS_ToInt32Sat`, raw UTF-16 code units and lone
+  surrogates; concat converts actual arguments sequentially and enforces
+  QuickJS's `(1 << 30) - 1` length cap. The index-search pair converts receiver,
+  search value and only a present position in that order, scans exact code
+  units, and retains QuickJS's distinct `indexOf` clamping and `lastIndexOf`
+  NaN/default-position behavior. Together with `length`, the conversion pair
+  and `Symbol.iterator`, this thirteen-key list is only the QuickJS-relative
+  order filtered to implemented keys, not a claim of full 53-key ownKeys
+  parity. Primitive
   non-index reads and writes now traverse the bytecode realm's String prototype
   with the raw receiver, and String receivers use the implemented
   Object-prototype boxing/tag/value routes in the native method's defining
@@ -1070,7 +1076,7 @@ claim full parity.
   writes, fixed-name nullish reads, nullish writes, missing bindings, TDZ and
   VarRef descriptor reads, VM `ThrowReadOnly`, and reserved-identifier
   validation.
-  Global `%String%`, the remaining 43 prototype own keys, Context-level
+  Global `%String%`, the remaining 40 prototype own keys, Context-level
   observable `ToString`, borrowed C-pointer/refcount ownership, native atom
   diagnostics attached to not-yet-implemented private-field/module/
   global-var/function-declaration surfaces, exact byte-sidecar migration for the remaining
@@ -1562,8 +1568,9 @@ Symbol and BigInt primitive prototype slices; simple member assignment and
 property delete cover ordinary objects and the current primitive surface. The
 separate String exotic, UTF-16-prefix and conversion cores cover branded
 empty-prototype and sloppy-this wrappers, UTF-16 virtual own properties, the
-first seven generic code-unit methods, `toString`/`valueOf`, non-index prototype
-lookup and the implemented Object-prototype routes. Their shared value kernel
+first nine generic code-unit/search methods, `toString`/`valueOf`,
+`Symbol.iterator`, non-index prototype lookup and the implemented
+Object-prototype routes. Their shared value kernel
 does publish the pinned flat/rope concat thresholds, bounded Fibonacci
 rebalance, cross-leaf code-unit semantics, content identity, atom
 linearization, checked VM/native concat errors, valid-UTF-8/exact-UTF-16
@@ -1575,7 +1582,7 @@ retain exact raw bytes across compiler/VM Error transport. They also implement
 the not-constructor dynamic name plus the current `JS_AtomGetStr`-backed
 read-only/nullish/binding/TDZ/reserved-identifier diagnostics. It does not
 publish the global constructor,
-remaining 43 own keys, Context/C pointer embedding semantics, atom diagnostics belonging
+remaining 40 own keys, Context/C pointer embedding semantics, atom diagnostics belonging
 to unimplemented language/builtin surfaces, exact byte-sidecar construction
 for every parser/lexer diagnostic, or general recoverable allocator failures.
 Prefix/postfix update expressions
@@ -1584,7 +1591,7 @@ identifier and ordinary fixed/computed member References. Sloppy
 direct-identifier delete is implemented
 for the current static scope tree and defining-realm global object. Dynamic
 object-environment lookup/deletion introduced by `with` or direct `eval`, the
-global String constructor, the remaining 43 entries of its 53-key prototype
+global String constructor, the remaining 40 entries of its 53-key prototype
 surface, Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. The Object static table after
 `groupBy`, AggregateError, and uncatchable termination state are
@@ -1604,15 +1611,17 @@ and C embedding APIs.
 Code organization is also not final. The 151 runtime white-box tests live in
 `runtime/tests.rs`, while the Array constructor, prototype, iterator, species,
 and sorting implementation now lives in `runtime/intrinsics/array.rs`.
-`Object.groupBy` starts `runtime/intrinsics/object.rs`; the earlier Object
-handlers still await migration into that module. The two no-semantic-change
+`Object.groupBy` starts `runtime/intrinsics/object.rs`, while the String index
+search pair starts `runtime/intrinsics/string.rs`; the earlier Object and String
+handlers still await migration into those modules. The two no-semantic-change
 test/Array splits reduced `runtime.rs` from roughly thirty-two thousand lines
-to roughly fifteen thousand lines, and this Object feature added only table and
-dispatch wiring there. It still co-locates property machinery, execution
-support, and the remaining intrinsic families; `compiler.rs` similarly
-combines several compiler phases. Dedicated structural milestones must keep
-splitting those seams under the same differential and Rust-only gates, and
-future feature work must not resume extending either monolith indefinitely.
+to roughly fifteen thousand lines, and these newer intrinsic features added
+only table and dispatch wiring there. Property machinery, execution support,
+and the remaining intrinsic families still share the file; `compiler.rs`
+similarly combines several compiler phases. Dedicated structural milestones
+must keep splitting those seams under the same differential and Rust-only
+gates, and future feature work must not resume extending either monolith
+indefinitely.
 
 ## Reproduce current evidence
 
@@ -1629,6 +1638,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_conversion_core -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_utf16_prefix -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_string_index_search -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_rope -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

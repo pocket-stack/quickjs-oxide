@@ -937,6 +937,7 @@ pub enum NativeFunctionId {
     StringPrototypeConcat,
     StringPrototypeCodePointAt,
     StringPrototypeWellFormed(StringWellFormedKind),
+    StringPrototypeIndexOf(StringIndexOfKind),
     IteratorPrototypeIterator,
     IteratorPrototypeToStringTagGetter,
     IteratorPrototypeToStringTagSetter,
@@ -1011,6 +1012,15 @@ pub enum StringCharAtKind {
 pub enum StringWellFormedKind {
     IsWellFormed,
     ToWellFormed,
+}
+
+/// Direction selected by QuickJS's shared `js_string_indexOf` kernel.
+/// `indexOf` clamps a saturated Int32 position and scans forward, whereas
+/// `lastIndexOf` applies its distinct floating-point default and scans back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StringIndexOfKind {
+    IndexOf,
+    LastIndexOf,
 }
 
 /// Static selector shared by `%Symbol%.for` and `%Symbol%.keyFor`.
@@ -1189,6 +1199,7 @@ impl NativeFunctionId {
             | Self::ObjectPrototypeDefineAccessor(_)
             | Self::ObjectPrototypeLookupAccessor(_)
             | Self::StringPrototypeCharAt(_)
+            | Self::StringPrototypeIndexOf(_)
             | Self::ArrayPrototypeFind(_)
             | Self::ArrayPrototypeIteration(_)
             | Self::ArrayPrototypeReduce(_)
