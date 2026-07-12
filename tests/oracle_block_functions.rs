@@ -129,14 +129,6 @@ const SYNTAX_ERROR_CASES: &[(&str, &str)] = &[
 
 const UNSUPPORTED_BOUNDARY_CASES: &[(&str, &str)] = &[
     (
-        "sloppy if-arm function declaration",
-        "(function(){if(true)function single(){return 1}return single()})()",
-    ),
-    (
-        "sloppy labelled function declaration",
-        "(function(){{label:function labelled(){return 2}}return labelled()})()",
-    ),
-    (
         "async block function declaration",
         "(function(){{async function asyncBlock(){return 3}}return typeof asyncBlock})()",
     ),

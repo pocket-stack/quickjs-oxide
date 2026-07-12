@@ -1857,11 +1857,12 @@ impl Heap {
             {
                 match global_declaration_names.entry(atom) {
                     std::collections::hash_map::Entry::Vacant(entry) => {
-                        entry.insert(descriptor.is_lexical);
+                        entry.insert((descriptor.is_lexical, descriptor.is_lexical));
                     }
                     std::collections::hash_map::Entry::Occupied(mut entry) => {
-                        let already_lexical = *entry.get();
-                        if already_lexical
+                        let (first_is_lexical, seen_lexical) = *entry.get();
+                        if first_is_lexical
+                            && seen_lexical
                             && (descriptor.is_lexical
                                 || descriptor.kind != ClosureVariableKind::GlobalFunction)
                         {
@@ -1869,12 +1870,12 @@ impl Heap {
                                 "duplicate lexical global declaration descriptor name",
                             ));
                         }
-                        // A sloppy Annex B var registered before a later
-                        // Program lexical creates both global environments;
-                        // retain that source-ordered combination at the heap
-                        // publication trust boundary too.
+                        // A first sloppy Annex B normal record masks every
+                        // later same-name declaration in QuickJS's conflict
+                        // lookup, including repeated lexical and var records.
+                        // A first lexical remains stricter.
                         if descriptor.is_lexical {
-                            entry.insert(true);
+                            entry.get_mut().1 = true;
                         }
                     }
                 }

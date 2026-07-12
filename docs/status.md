@@ -167,7 +167,10 @@ claim full parity.
   fallback read/write the defining realm's global object. Preflight errors use
   the initiating realm; initializer errors use the bytecode realm. Duplicate
   ordinary global declarations are verifier-valid and share one runtime cell;
-  duplicate lexical declarations remain rejected as malformed publication.
+  duplicate lexical declarations remain rejected when the first same-name
+  descriptor is lexical. An earlier Annex normal descriptor instead masks
+  later repeated lexical records, whose descriptors reuse the first lexical
+  runtime cell.
 
   Direct Program ordinary named function declarations now use their distinct
   QuickJS `JS_VAR_GLOBAL_FUNCTION_DECL` path. Every syntax node keeps an ordered
@@ -200,9 +203,9 @@ claim full parity.
   property retains its cell identity. Compile-in-A/execute-in-B instantiates
   the property and reports preflight errors in B, while the hoisted function
   object and authored-body errors retain A's function realm. Direct Program
-  declarations are covered by a pinned differential matrix; single-statement,
-  labelled Annex B, async, and generator declarations remain explicit
-  boundaries.
+  declarations are covered by a pinned differential matrix; async and
+  generator declarations remain explicit boundaries, while the ordinary Annex
+  B statement forms are described below.
 
   Direct ordinary FunctionBody declarations now use QuickJS's separate local
   hoist path. Each named child is parsed immediately but emits no closure at its
@@ -228,10 +231,11 @@ claim full parity.
   remains an explicit unsupported implicit-arguments boundary unless an
   explicit parameter or direct same-name body function supplies the ordinary
   cell; in that supported combination both declaration orders and later `var`
-  initializers match QuickJS. QuickJS still allocates its implicit arguments
-  object before overwriting that cell, an allocation-only difference until
-  parameter expressions are implemented. Mapped `arguments`, parameter
-  expressions, single-statement/labelled Annex B, and async/generator
+  initializers match QuickJS. When there is no explicit same-name parameter and
+  a direct body function supplies that cell, QuickJS still allocates its
+  implicit arguments object before overwriting it, an allocation-only
+  difference until parameter expressions are implemented. Mapped `arguments`,
+  parameter expressions, direct/indirect eval environments, and async/generator
   declarations remain separate slices.
 
   Ordinary declarations in brace blocks and a switch CaseBlock use QuickJS's
@@ -248,14 +252,60 @@ claim full parity.
   second object into a function-root normal var (or a normal global var), then
   drops the remaining value. Consequently the block lexical and Annex B outer
   function have different identity; with duplicates, the block name uses the
-  last child while the outer name uses the first. A prior enclosing lexical,
-  a simple same-name parameter, or the `arguments` name suppresses the outer
-  update. Existing vars are reused. A newly synthesized root local records the
+  last child while the outer name uses the first. A prior effective enclosing
+  lexical, a simple same-name parameter, or the `arguments` name suppresses the
+  outer update. Existing vars are reused. A newly synthesized root local records the
   root as its declaration scope, preserving QuickJS's later-block and later
   body-lexical quirks. Program Annex writes resolve dynamically rather than
   through the declaration slot, so an Annex var registered before a later
   same-name Program lexical hits that lexical's TDZ at runtime exactly as in
   the pinned release.
+
+  The ordinary Annex B statement forms now follow QuickJS's declaration-mask
+  model rather than treating every single-statement position alike. Sloppy
+  `if` consequents and alternates allow an ordinary FunctionDeclaration; strict
+  arms reject it. The `if` enters one shared lexical scope before evaluating
+  its condition, so the condition sees the last same-name entry closure from
+  either arm. Only the first same-scope declaration is Annex-eligible: choosing
+  a duplicate `else` therefore evaluates its authored closure but leaves the
+  outer var undefined (or preserves its earlier value). Each loop re-entry
+  creates fresh lexical cells. Direct function bodies of `while`, `do`, and
+  classic `for` remain QuickJS syntax errors, while a nested `if` reopens its
+  own sloppy Annex B permission.
+
+  A sloppy label reached from ProgramBody, FunctionBody, a block, a switch, or
+  another eligible label may forward ordinary-function permission; strict
+  labels and labels directly under an `if` arm may not. Labels add break
+  control but no lexical scope, so chained labels and neighboring declarations
+  share the current environment. FunctionBody labelled functions use a body
+  lexical entry closure and may shadow a same-name parameter while suppressing
+  the Annex root write. The implemented global Script/`Context::eval`
+  ProgramBody path is QuickJS's special exception: a labelled function
+  allocates no lexical slot and evaluates one closure at its source position,
+  then performs both global writes. Direct and indirect JavaScript eval
+  environments remain a separate frontier and instead create an eval-local
+  lexical entry. The global-path duplicate write is observable
+  through an existing accessor setter. QuickJS spells the second operation
+  `OP_put_var_init`; the Rust VM lowers it to a declaration-bound `PutVar` because
+  a raw VarRef initialization in this runtime would bypass that accessor. This
+  is an internal representation choice preserving the two observable setter
+  calls. Repeated Program labels therefore each overwrite the global. A
+  same-name declaration first authored directly in ProgramBody causes the
+  pinned redefinition error, while a later lexical is accepted by the parser
+  and makes an earlier label write hit its TDZ. QuickJS always consults the
+  first same-name global record: if that record is an earlier Annex normal var,
+  it masks the later Program lexical for subsequent Annex eligibility and label
+  conflict checks. A later block/if/label function may consequently overwrite
+  an initialized `let` or throw on an initialized `const`. The same lookup also
+  permits repeated Program lexical and `var` records; every initializer runs,
+  while the first lexical record determines the binding's constness for later
+  ordinary writes. These ordered mixed descriptor sequences are retained by
+  both publication trust boundaries, and duplicate lexical descriptors reuse
+  the first lexical VarRef during global instantiation. Authored identifier
+  resolution also keeps the first normal descriptor: before the later lexical
+  initializer runs, reads fall back to the replacement global-object property
+  and observe `undefined`, while writes still consult the transformed VarRef's
+  TDZ and const metadata.
 
   Scope entry resets ordinary lexical lifetimes before allocating scoped
   function closures, then initializes function locals in QuickJS's newest-first
@@ -282,20 +332,23 @@ claim full parity.
   (`push_scope`/`pop_scope`/`close_scopes`), 24156-24173/24202-24307
   (ordered global-var records and scoped declaration conflicts), 24186 and 26096
   (`define_var`/`js_define_var`), 28225 (`emit_break`), 28378
-  (`js_parse_block`), 28398-28456 (var initializers), 29004-29147 (classic
+  (`js_parse_block`), 28398-28456 (var initializers), 28784-28831 (label mask
+  propagation), 28901-28932 (the shared `if` scope and sloppy Annex B mask),
+  29004-29147 (classic
   `for`, including initializer and
   normal-body closes plus the `continue` quirk), 29172-29268
   (SwitchStatement and its shared CaseBlock scope), 29460-29494
   (statement-list function declarations),
   31917-31940 (direct function source elements), 32577-32614 (closure append
-  and first-name lookup), 33888-33977
+  and first-name lookup), 33132-33161 (`OP_scope_put_var_init` resolution to
+  global `OP_put_var_init`), 33888-33977
   (hoisted definitions and raw global-function writes), 34281/34315
   (`OP_enter_scope`/`OP_leave_scope` expansion), and 35837-35902
   (`add_global_variables`), plus 36383-36942 (function declaration parsing,
   scoped lexical creation, Annex source writes, and argument/local hoist
   attachment)
-  in QuickJS 2026-06-04. Single-statement/labelled function declarations and
-  their Annex B paths, `for-in`/`for-of`/`for-await`, destructuring,
+  in QuickJS 2026-06-04. Direct/indirect eval declaration environments,
+  async/generator declarations, `for-in`/`for-of`/`for-await`, destructuring,
   single-statement lexical declarations, and catch/class scopes remain explicit
   boundaries rather than falling back to local or ordinary global storage.
 
@@ -1059,18 +1112,26 @@ claim full parity.
   suppression, mutation before the authored declaration, captured-cell loop
   re-entry, failed initializers, Program Annex/global-lexical ordering, normal
   `%Function%` bodies, exact full/StripDebug stacks, realm splitting, and the
-  remaining explicit single-statement/labelled/async/generator boundaries.
+  remaining explicit async/generator boundaries.
+  The `oracle_annex_b_statements` target separately locks declaration-mask
+  propagation, shared `if` scope entry, first-Annex/last-lexical duplicate
+  behavior, skipped and repeated control-flow paths, labelled scope identity,
+  ProgramBody's no-lexical double global write (including accessor effects),
+  parameter suppression, Program ordering and TDZ state, normal `%Function%`
+  bodies, compile/execute realm splitting, exact parser diagnostics and
+  full/StripDebug runtime stacks, plus the explicit `with` boundary and its
+  nested-`if` future behavior.
 - `Runtime` and `Context` are distinct; `qjs -e` and file execution use the
   Rust compiler/VM path and never delegate to an external engine.
 
 ## Not implemented yet
 
-The language slice is intentionally narrow. Labelled and single-statement
-Annex B declarations, async/generator declarations,
+The language slice is intentionally narrow. Async/generator declarations,
 `for-in`/`for-of`/`for-await`, destructuring, try/catch/finally, other general
 assignment targets, module
 resolution, computed property-definition naming, mapped `arguments`,
-arrow/async/generator functions and callable Proxy classes are not yet
+direct/indirect eval declaration environments, arrow/async/generator functions,
+`with`, and callable Proxy classes are not yet
 implemented. Unsupported declaration contexts are rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` is currently
 limited to simple identifier lists in direct Program code, authored
@@ -1078,8 +1139,9 @@ ordinary-function bodies, non-empty nested brace blocks, shared switch scopes,
 and classic `for (;;)` heads. Nested and classic-for forms also work in scripts,
 and ordinary bodies including classic heads are available through the normal
 `%Function%` constructor.
-Single-statement declarations, nonclassic lexical loop heads, destructuring,
-and catch/class lexical environments remain later compiler slices. Direct
+Single-statement lexical declarations, nonclassic lexical loop heads,
+destructuring, and catch/class lexical environments remain later compiler
+slices. Direct
 Program lexicals now use the production global VarRef path with two-phase
 instantiation; simple-name Program vars and direct ordinary function
 declarations use ordered, kind-specific global declaration records. One
@@ -1236,6 +1298,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_block_functions -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_annex_b_statements -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_for_lexicals -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_program_lexicals -- --nocapture
@@ -1251,10 +1315,11 @@ The direct commands above run the dedicated Boolean, Symbol,
 String-exotic substrate, String UTF-16 prefix, String-conversion core,
 String-rope/byte/native-Error kernels, Unicode identifier core, global
 BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials, and
-the Program-var/function and Program/body/block/switch/classic-for lexical-scope slices. The atom-Error target
-contains thirteen pinned-oracle inputs in addition to its Rust-side expectation
-test. The Unicode target checks every scalar, real compiler/runtime cases, and
-the parser-driven identifier diagnostic matrix. A
+the Program-var/function, Program/body/block/switch/classic-for lexical-scope,
+and single/labelled Annex B slices. The atom-Error target contains thirteen
+pinned-oracle inputs in addition to its Rust-side expectation test. The Unicode
+target checks every scalar, real compiler/runtime cases, and the parser-driven
+identifier diagnostic matrix. A
 separate statement-control-flow target locks block/`if`/loop completion,
 nearest-loop jumps, per-function isolation, ASI/directive boundaries and exact
 diagnostics; the switch target locks case/default search, fallthrough,

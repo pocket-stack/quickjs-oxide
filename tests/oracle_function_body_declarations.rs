@@ -123,14 +123,6 @@ const SYNTAX_ERROR_CASES: &[(&str, &str)] = &[
 
 const UNSUPPORTED_BOUNDARY_CASES: &[(&str, &str)] = &[
     (
-        "sloppy single-statement function declaration",
-        "(function(){ if(true) function unsupportedIf(){return 1} return unsupportedIf() })()",
-    ),
-    (
-        "labelled Annex B function declaration",
-        "(function(){ unsupportedLabel: function unsupportedLabelled(){return 1} return unsupportedLabelled() })()",
-    ),
-    (
         "async direct body function declaration",
         "(function(){ async function unsupportedAsync(){return 1} return typeof unsupportedAsync })()",
     ),

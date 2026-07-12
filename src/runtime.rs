@@ -1199,9 +1199,11 @@ impl VmHost for RuntimeVmHost {
             .clone();
         // QuickJS's hoisted-definition pass uses a raw VarRef write for both
         // lexical declarations and Program function declarations. The
-        // verifier limits `PutVarInit` on an ordinary descriptor to a name
-        // which also has a GlobalFunction declaration, so this bypass cannot
-        // be reached by an ordinary source assignment.
+        // verifier limits `PutVarInit` on an ordinary descriptor to either
+        // a GlobalFunction prologue or the first normal declaration slot for a
+        // same-name masked Program lexical. The latter slot has been promoted
+        // to the lexical VarRef during declaration instantiation, so this raw
+        // initialization cannot be reached by an ordinary source assignment.
         if initialize {
             self.runtime
                 .write_var_ref(root, value)
@@ -3852,6 +3854,7 @@ impl Runtime {
             }
         }
         let mut slots = Vec::with_capacity(descriptors.len());
+        let mut first_lexical_roots: HashMap<Atom, VarRefRoot> = HashMap::new();
         for descriptor in descriptors.iter().copied() {
             let ClosureVariableName::Atom(name) = descriptor.name else {
                 return Err(RuntimeError::Invariant(
@@ -3862,13 +3865,20 @@ impl Runtime {
                 ClosureSource::GlobalDeclaration => {
                     let key = PropertyKey::from_borrowed_atom(self.clone(), name)?;
                     match descriptor.kind {
-                        ClosureVariableKind::Normal if descriptor.is_lexical => self
-                            .create_global_lexical_binding(
-                                caller_realm,
-                                &key,
-                                descriptor.is_const,
-                                None,
-                            )?,
+                        ClosureVariableKind::Normal if descriptor.is_lexical => {
+                            if let Some(root) = first_lexical_roots.get(&name) {
+                                root.clone()
+                            } else {
+                                let root = self.create_global_lexical_binding(
+                                    caller_realm,
+                                    &key,
+                                    descriptor.is_const,
+                                    None,
+                                )?;
+                                first_lexical_roots.insert(name, root.clone());
+                                root
+                            }
+                        }
                         ClosureVariableKind::Normal => {
                             self.create_global_var_binding(caller_realm, &key)?
                         }
@@ -10986,11 +10996,12 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                 }
                 match global_declaration_names.entry(key) {
                     std::collections::hash_map::Entry::Vacant(entry) => {
-                        entry.insert(descriptor.is_lexical);
+                        entry.insert((descriptor.is_lexical, descriptor.is_lexical));
                     }
                     std::collections::hash_map::Entry::Occupied(mut entry) => {
-                        let already_lexical = *entry.get();
-                        if already_lexical
+                        let (first_is_lexical, seen_lexical) = *entry.get();
+                        if first_is_lexical
+                            && seen_lexical
                             && (descriptor.is_lexical
                                 || descriptor.kind != ClosureVariableKind::GlobalFunction)
                         {
@@ -10998,13 +11009,13 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                                 "duplicate lexical global declaration descriptor name",
                             )));
                         }
-                        // Sloppy Annex B can register a normal global var
-                        // before a later Program lexical of the same name.
-                        // QuickJS accepts that source order, creates both
-                        // environments, then lets the authored Annex write hit
-                        // the lexical TDZ dynamically.
+                        // A first sloppy Annex B normal record masks every
+                        // later same-name declaration in QuickJS's global
+                        // conflict lookup, including repeated lexical and var
+                        // records. A first lexical remains restricted to the
+                        // pinned direct Program-function exception.
                         if descriptor.is_lexical {
-                            entry.insert(true);
+                            entry.get_mut().1 = true;
                         }
                     }
                 }
@@ -11096,6 +11107,14 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
             }
             global_function_initializer_pcs.insert(initializer_pc, expected_target);
         }
+        let masked_lexical_initializer_targets = global_declaration_names
+            .iter()
+            .filter_map(|(name, &(first_is_lexical, seen_lexical))| {
+                (!first_is_lexical && seen_lexical)
+                    .then(|| first_global_declaration_indices.get(name).copied())
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
         verify_parts(
             function.code(),
             function.constants().len(),
@@ -11311,6 +11330,8 @@ fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError>
                         .is_some_and(|descriptor| {
                             !descriptor.is_lexical
                                 && global_function_initializer_pcs.get(&pc) != Some(index)
+                                && !masked_lexical_initializer_targets
+                                    .contains(&usize::from(*index))
                         }) =>
                 {
                     return Err(RuntimeError::Engine(Error::internal(
@@ -21762,6 +21783,52 @@ mod tests {
                 configurable: false,
             })
         );
+    }
+
+    #[test]
+    fn publication_accepts_annex_masked_mixed_global_declaration_descriptors() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let ordinary = ClosureVariable {
+            source: ClosureSource::GlobalDeclaration,
+            name: ClosureVariableName::Constant(0),
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+        };
+        let lexical_let = ClosureVariable {
+            is_lexical: true,
+            ..ordinary
+        };
+        let lexical_const = ClosureVariable {
+            is_const: true,
+            ..lexical_let
+        };
+        let function = UnlinkedFunction::new_with_closure_variables(
+            vec![
+                Instruction::PushI32(7),
+                Instruction::PutVarInit(0),
+                Instruction::GetVar(0),
+                Instruction::Return,
+            ],
+            vec![
+                UnlinkedConstant::primitive(Value::String(JsString::from_static(
+                    "annexMaskedMixed",
+                )))
+                .unwrap(),
+            ],
+            FunctionMetadata {
+                closure_count: 4,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ordinary, lexical_let, lexical_const, ordinary],
+        );
+        let function = runtime
+            .publish_unlinked_function(context.realm, function)
+            .unwrap();
+
+        assert_eq!(context.execute(&function).unwrap(), Value::Int(7));
     }
 
     #[test]

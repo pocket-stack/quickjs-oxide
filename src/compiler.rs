@@ -135,7 +135,30 @@ enum StatementPosition {
     ProgramBody,
     FunctionBody,
     NestedList,
+    /// Sloppy `if` consequent/alternate: ordinary functions are permitted,
+    /// but a label may not forward that permission to its body.
+    AnnexBIfArm,
+    /// Sloppy labelled statement reached from a declaration list. Ordinary
+    /// functions and further labels are permitted, but other declarations are
+    /// still single-statement syntax errors.
+    AnnexBLabelBody,
     Single,
+}
+
+impl StatementPosition {
+    const fn allows_other_declaration(self) -> bool {
+        matches!(
+            self,
+            Self::ProgramBody | Self::FunctionBody | Self::NestedList
+        )
+    }
+
+    const fn allows_labelled_annex_b(self) -> bool {
+        matches!(
+            self,
+            Self::ProgramBody | Self::FunctionBody | Self::NestedList | Self::AnnexBLabelBody
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -209,6 +232,17 @@ struct IrScopedFunction {
     binding: BindingId,
     constant: u32,
     annex_binding: Option<BindingId>,
+    authored_closure: usize,
+}
+
+/// A sloppy labelled FunctionDeclaration in ProgramBody. QuickJS deliberately
+/// skips the lexical declaration used by block/body Annex B forms, then writes
+/// the authored closure through both the synthetic root var and the current
+/// global environment at the declaration's source position.
+#[derive(Clone, Copy, Debug)]
+struct IrProgramAnnexFunction {
+    binding: BindingId,
+    constant: u32,
     authored_closure: usize,
 }
 
@@ -396,9 +430,12 @@ struct FunctionIr {
     /// function-scoped argument/local binding.
     hoisted_functions: Vec<IrHoistedFunction>,
     function_hoists_installed: bool,
-    /// Block/switch lexical function slots, including one slot per sloppy
-    /// same-scope duplicate as in QuickJS `JS_VAR_FUNCTION_DECL`.
+    /// Scoped lexical function slots, including one slot per sloppy same-scope
+    /// duplicate as in QuickJS `JS_VAR_FUNCTION_DECL`.
     scoped_functions: Vec<IrScopedFunction>,
+    /// ProgramBody's labelled-function exception has authored closure writes
+    /// but no lexical scope-entry slot.
+    program_annex_functions: Vec<IrProgramAnnexFunction>,
     /// A source `var arguments` cannot be classified until the complete
     /// ordinary body is known: QuickJS gives it the same local as a direct
     /// `function arguments(){}` declaration, but otherwise it denotes the
@@ -495,6 +532,7 @@ impl FunctionIr {
             hoisted_functions: Vec::new(),
             function_hoists_installed: false,
             scoped_functions: Vec::new(),
+            program_annex_functions: Vec::new(),
             deferred_implicit_arguments_var: None,
             current_scope,
             var_scope,
@@ -559,6 +597,26 @@ impl FunctionIr {
             .rev()
             .copied()
             .find(|binding| self.bindings[binding.0].name == name)
+    }
+
+    fn binding_id_from_scope(
+        &self,
+        mut scope: ScopeId,
+        name: &str,
+    ) -> Option<(ScopeId, BindingId)> {
+        loop {
+            if let Some(binding) = self.binding_id_in_scope(scope, name) {
+                return Some((scope, binding));
+            }
+            scope = self.scopes[scope.0].parent?;
+        }
+    }
+
+    fn first_global_declaration_is_normal(&self, name: &str) -> bool {
+        self.global_declarations
+            .iter()
+            .find(|declaration| declaration.name == name)
+            .is_some_and(|declaration| !declaration.is_lexical)
     }
 
     fn binding_from_scope(&self, mut scope: ScopeId, name: &str) -> Option<ResolvedBinding> {
@@ -734,18 +792,32 @@ impl<'source> Parser<'source> {
             return Ok(());
         }
 
-        if self.lexical_declaration_ahead(position != StatementPosition::Single)? {
+        if self.lexical_declaration_ahead(position.allows_other_declaration())? {
             return match position {
                 StatementPosition::FunctionBody => self.parse_lexical_statement(),
                 StatementPosition::ProgramBody => self.parse_lexical_statement(),
                 StatementPosition::NestedList => self.parse_lexical_statement(),
-                StatementPosition::Single => Err(self
+                StatementPosition::AnnexBIfArm
+                | StatementPosition::AnnexBLabelBody
+                | StatementPosition::Single => Err(self
                     .syntax_here("lexical declarations can't appear in single-statement context")),
             };
         }
 
+        let annex_b_function_allowed = matches!(
+            position,
+            StatementPosition::AnnexBIfArm | StatementPosition::AnnexBLabelBody
+        );
+        if !position.allows_other_declaration()
+            && self.restricted_function_declaration_ahead(annex_b_function_allowed)?
+        {
+            return Err(
+                self.syntax_here("function declarations can't appear in single-statement context")
+            );
+        }
+
         if let Some(label_name) = self.label_ahead() {
-            return self.parse_labeled_statement(completion, label_name);
+            return self.parse_labeled_statement(completion, label_name, position);
         }
 
         match self.current().kind {
@@ -755,6 +827,9 @@ impl<'source> Parser<'source> {
             TokenKind::Keyword(Keyword::Do) => self.parse_do_while_statement(completion, None),
             TokenKind::Keyword(Keyword::For) => self.parse_for_statement(completion, None),
             TokenKind::Keyword(Keyword::Switch) => self.parse_switch_statement(completion),
+            TokenKind::Keyword(Keyword::With) => {
+                Err(self.unsupported_here("with statements are not implemented yet"))
+            }
             TokenKind::Keyword(Keyword::Break) => self.parse_loop_jump_statement(false),
             TokenKind::Keyword(Keyword::Continue) => self.parse_loop_jump_statement(true),
             TokenKind::Keyword(Keyword::Function) => {
@@ -766,15 +841,16 @@ impl<'source> Parser<'source> {
                     && position == StatementPosition::FunctionBody
                 {
                     self.parse_function_body_declaration()
-                } else if position == StatementPosition::NestedList {
-                    self.parse_scoped_function_declaration()
-                } else if matches!(self.current_ir().kind, FunctionKind::Script) {
-                    Err(self.unsupported_here(
-                        "block and single-statement function declarations are not implemented yet",
-                    ))
+                } else if matches!(
+                    position,
+                    StatementPosition::NestedList
+                        | StatementPosition::AnnexBIfArm
+                        | StatementPosition::AnnexBLabelBody
+                ) {
+                    self.parse_annex_b_function_declaration()
                 } else {
-                    Err(self.unsupported_here(
-                        "function declarations are not implemented yet; use an anonymous function expression",
+                    Err(self.syntax_here(
+                        "function declarations can't appear in single-statement context",
                     ))
                 }
             }
@@ -795,6 +871,7 @@ impl<'source> Parser<'source> {
         &mut self,
         completion: StatementCompletion,
         label_name: String,
+        position: StatementPosition,
     ) -> Result<(), Error> {
         if self
             .current_ir()
@@ -829,7 +906,13 @@ impl<'source> Parser<'source> {
                     entry_depth,
                     0,
                 );
-                self.parse_statement_or_decl(completion, StatementPosition::Single)?;
+                let body_position =
+                    if !self.current_ir().strict && position.allows_labelled_annex_b() {
+                        StatementPosition::AnnexBLabelBody
+                    } else {
+                        StatementPosition::Single
+                    };
+                self.parse_statement_or_decl(completion, body_position)?;
                 self.require_stack_depth(entry_depth, "labeled statement")?;
 
                 let break_target = self.current_ir().ops.len();
@@ -873,7 +956,12 @@ impl<'source> Parser<'source> {
 
         let false_jump = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
         let branch_stack = self.current_ir().stack_depth;
-        self.parse_statement_or_decl(completion, StatementPosition::Single)?;
+        let branch_position = if self.current_ir().strict {
+            StatementPosition::Single
+        } else {
+            StatementPosition::AnnexBIfArm
+        };
+        self.parse_statement_or_decl(completion, branch_position)?;
         let joined_stack = self.current_ir().stack_depth;
 
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Else)) {
@@ -881,7 +969,7 @@ impl<'source> Parser<'source> {
             self.advance()?;
             self.patch_jump(false_jump, self.current_ir().ops.len())?;
             self.current_ir_mut().stack_depth = branch_stack;
-            self.parse_statement_or_decl(completion, StatementPosition::Single)?;
+            self.parse_statement_or_decl(completion, branch_position)?;
             if self.current_ir().stack_depth != joined_stack {
                 return Err(Error::internal("if branches have unequal stack depth"));
             }
@@ -1489,7 +1577,7 @@ impl<'source> Parser<'source> {
                     source_span(self.current().span),
                 ));
             }
-            self.register_lexical_binding(&name, token.span, self.current().span, is_const)?;
+            self.register_lexical_binding(&name, token.span, self.current().span, is_const, false)?;
 
             let initializer_site = if self.consume_punctuator(Punctuator::Equal)? {
                 let site = source_offset(self.tokens[self.cursor - 1].span)?;
@@ -1610,14 +1698,22 @@ impl<'source> Parser<'source> {
         conflict_span: Span,
     ) -> Result<(), Error> {
         let function = &mut self.functions[self.current_function];
-        if function
-            .binding_from_scope(function.current_scope, name)
-            .is_some_and(|binding| matches!(binding.kind, BindingKind::Lexical { .. }))
+        if let Some((binding_scope, binding)) =
+            function.binding_id_from_scope(function.current_scope, name)
+            && matches!(
+                function.bindings[binding.0].kind,
+                BindingKind::Lexical { .. }
+            )
         {
-            return Err(Error::syntax(
-                "invalid redefinition of lexical identifier",
-                source_span(conflict_span),
-            ));
+            let masked_program_lexical = matches!(function.kind, FunctionKind::Script)
+                && binding_scope == function.body_scope
+                && function.first_global_declaration_is_normal(name);
+            if !masked_program_lexical {
+                return Err(Error::syntax(
+                    "invalid redefinition of lexical identifier",
+                    source_span(conflict_span),
+                ));
+            }
         }
         if matches!(function.kind, FunctionKind::Script) {
             function.global_declarations.push(IrGlobalDeclaration {
@@ -1671,6 +1767,7 @@ impl<'source> Parser<'source> {
         declaration_span: Span,
         conflict_span: Span,
         is_const: bool,
+        allow_body_parameter_shadow: bool,
     ) -> Result<(), Error> {
         let function = &mut self.functions[self.current_function];
         let scope = function.current_scope;
@@ -1681,7 +1778,7 @@ impl<'source> Parser<'source> {
         let supported_scope = is_global
             || matches!(
                 scope_kind,
-                ScopeKind::Block | ScopeKind::For | ScopeKind::Switch
+                ScopeKind::Block | ScopeKind::If | ScopeKind::For | ScopeKind::Switch
             )
             || (matches!(scope_kind, ScopeKind::FunctionBody)
                 && matches!(function.kind, FunctionKind::Ordinary)
@@ -1691,7 +1788,23 @@ impl<'source> Parser<'source> {
                 "lexical declaration escaped its supported parser scope",
             ));
         }
-        if function.binding_in_scope(scope, name).is_some() {
+        if let Some(existing) = function.binding_id_in_scope(scope, name) {
+            let masked_program_duplicate = is_global
+                && function.first_global_declaration_is_normal(name)
+                && matches!(
+                    function.bindings[existing.0].kind,
+                    BindingKind::Lexical { .. }
+                );
+            if masked_program_duplicate {
+                function.global_declarations.push(IrGlobalDeclaration {
+                    name: name.to_owned(),
+                    is_lexical: true,
+                    is_const,
+                    function_constant: None,
+                    closure_index: None,
+                });
+                return Ok(());
+            }
             return Err(Error::syntax(
                 "invalid redefinition of lexical identifier",
                 source_span(conflict_span),
@@ -1699,6 +1812,11 @@ impl<'source> Parser<'source> {
         }
         if let Some(binding) = function.binding_in_scope(function.var_scope, name) {
             let message = match (binding.storage, binding.kind) {
+                (BindingStorage::Argument(_), _)
+                    if scope == function.body_scope && allow_body_parameter_shadow =>
+                {
+                    ""
+                }
                 (BindingStorage::Argument(_), _) if scope == function.body_scope => {
                     "invalid redefinition of parameter name"
                 }
@@ -3258,6 +3376,94 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
+    fn parse_annex_b_function_declaration(&mut self) -> Result<(), Error> {
+        let function = self.current_ir();
+        let program_body = matches!(function.kind, FunctionKind::Script)
+            && function.current_scope == function.body_scope
+            && matches!(
+                function.scopes[function.current_scope.0].kind,
+                ScopeKind::ProgramBody
+            );
+        if program_body {
+            self.parse_program_annex_b_function_declaration()
+        } else {
+            self.parse_scoped_function_declaration()
+        }
+    }
+
+    fn parse_program_annex_b_function_declaration(&mut self) -> Result<(), Error> {
+        let header = self.parse_function_definition_header(true)?;
+        let (name, declaration_span) = header
+            .name
+            .as_ref()
+            .map(|(identifier, span)| (identifier.value.clone(), *span))
+            .ok_or_else(|| Error::internal("required Program Annex B function lost its name"))?;
+        let conflict_span = self.current().span;
+
+        let (body_scope, var_scope) = {
+            let function = self.current_ir();
+            if !matches!(function.kind, FunctionKind::Script)
+                || function.current_scope != function.body_scope
+            {
+                return Err(Error::internal(
+                    "Program Annex B function escaped the Program body",
+                ));
+            }
+            (function.body_scope, function.var_scope)
+        };
+        let conflicts_with_authored_global = {
+            let function = self.current_ir();
+            if let Some(binding) = function.binding_id_in_scope(var_scope, &name) {
+                // The root binding retains the first ordinary declaration's
+                // scope. A prior nested/Annex declaration therefore masks a
+                // later Program lexical in QuickJS's first-global-record
+                // lookup, while an authored Program var/function still
+                // conflicts here.
+                function.bindings[binding.0].declaration_scope == body_scope
+            } else {
+                function.binding_id_in_scope(body_scope, &name).is_some()
+            }
+        };
+        if conflicts_with_authored_global {
+            return Err(Error::syntax(
+                "invalid redefinition of global identifier",
+                source_span(conflict_span),
+            ));
+        }
+
+        let parsed = self.parse_function_definition_tail(header, false)?;
+        if parsed.name.as_ref().map(|(parsed, _)| parsed.as_str()) != Some(name.as_str()) {
+            return Err(Error::internal(
+                "Program Annex B function header changed while parsing its child",
+            ));
+        }
+        // QuickJS publishes this synthetic global only after the child has
+        // parsed successfully. Deferred tree-wide identifier resolution still
+        // lets the child capture the resulting recursive binding.
+        let binding = self.ensure_annex_b_binding(&name, declaration_span)?;
+
+        let authored_closure = self.emit(IrOp::MakeClosure(parsed.constant))?;
+        self.emit_instruction(Instruction::Dup)?;
+        self.emit_identifier_inherited(
+            name.clone(),
+            declaration_span,
+            var_scope,
+            IdentifierAccess::AnnexBPut,
+        )?;
+        // `JS_PARSE_FUNC_VAR` performs a second source-position write when the
+        // Program-body lexical exception is active. It is observable through
+        // pre-existing global accessors, whose setter runs twice.
+        self.emit_identifier_inherited(name, declaration_span, body_scope, IdentifierAccess::Put)?;
+        self.current_ir_mut()
+            .program_annex_functions
+            .push(IrProgramAnnexFunction {
+                binding,
+                constant: parsed.constant,
+                authored_closure,
+            });
+        Ok(())
+    }
+
     fn parse_scoped_function_declaration(&mut self) -> Result<(), Error> {
         let header = self.parse_function_definition_header(true)?;
         let (name, declaration_span) = header
@@ -3307,9 +3513,12 @@ impl<'source> Parser<'source> {
         declaration_span: Span,
     ) -> Result<PreparedScopedFunction, Error> {
         let scope_kind = self.current_ir().scopes[self.current_ir().current_scope.0].kind;
-        if !matches!(scope_kind, ScopeKind::Block | ScopeKind::Switch) {
+        if !matches!(
+            scope_kind,
+            ScopeKind::Block | ScopeKind::If | ScopeKind::Switch | ScopeKind::FunctionBody
+        ) {
             return Err(Error::internal(
-                "scoped function escaped a block or switch declaration list",
+                "scoped function escaped an Annex B declaration scope",
             ));
         }
         let create_annex_binding = self.scoped_function_is_annex_b_eligible(name);
@@ -3343,7 +3552,13 @@ impl<'source> Parser<'source> {
                 .binding_in_scope(scope, name)
                 .is_some_and(|binding| matches!(binding.kind, BindingKind::Lexical { .. }))
             {
-                return false;
+                let masked_program_lexical = matches!(function.kind, FunctionKind::Script)
+                    && scope == function.body_scope
+                    && matches!(function.scopes[scope.0].kind, ScopeKind::ProgramBody)
+                    && function.first_global_declaration_is_normal(name);
+                if !masked_program_lexical {
+                    return false;
+                }
             }
             let Some(parent) = function.scopes[scope.0].parent else {
                 break;
@@ -3391,7 +3606,7 @@ impl<'source> Parser<'source> {
             return Ok(binding);
         }
 
-        self.register_lexical_binding(name, declaration_span, conflict_span, false)?;
+        self.register_lexical_binding(name, declaration_span, conflict_span, false, true)?;
         let binding = self
             .current_ir()
             .binding_id_in_scope(scope, name)
@@ -3797,6 +4012,36 @@ impl<'source> Parser<'source> {
             return None;
         };
         matches!(next.kind, TokenKind::Punctuator(Punctuator::Colon)).then_some(label_name)
+    }
+
+    /// QuickJS gates generator and pseudo-keyword `async function` declarations
+    /// before entering the ordinary-function parser when DECL_MASK_OTHER is
+    /// absent. Preserve that diagnostic priority without consuming lookahead.
+    fn restricted_function_declaration_ahead(
+        &self,
+        annex_b_function_allowed: bool,
+    ) -> Result<bool, Error> {
+        let generator = matches!(self.current().kind, TokenKind::Keyword(Keyword::Function));
+        let async_function = matches!(
+            &self.current().kind,
+            TokenKind::Identifier(identifier)
+                if identifier.value == "async" && !identifier.has_escape
+        );
+        if (!generator || !annex_b_function_allowed) && !async_function {
+            return Ok(false);
+        }
+        let mut lexer = self.lexer.clone();
+        lexer.seek(self.current().span.end);
+        let next = lexer.next_token().map_err(lex_error)?;
+        if generator {
+            Ok(matches!(
+                next.kind,
+                TokenKind::Punctuator(Punctuator::Multiply)
+            ))
+        } else {
+            Ok(!next.line_terminator_before
+                && matches!(next.kind, TokenKind::Keyword(Keyword::Function)))
+        }
     }
 
     fn at_eof(&self) -> bool {
@@ -4257,7 +4502,10 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 || binding.kind != (BindingKind::Lexical { is_const: false })
                 || !binding.is_scoped_function
                 || !matches!(binding.storage, BindingStorage::Local(_))
-                || !matches!(scope_kind, ScopeKind::Block | ScopeKind::Switch)
+                || !matches!(
+                    scope_kind,
+                    ScopeKind::Block | ScopeKind::If | ScopeKind::Switch | ScopeKind::FunctionBody
+                )
             {
                 return Err(Error::internal(
                     "scoped function has malformed lexical binding metadata",
@@ -4398,6 +4646,140 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 "scoped function binding has no child declaration record",
             ));
         }
+        for annex in &function.program_annex_functions {
+            if !matches!(function.kind, FunctionKind::Script) || function.strict {
+                return Err(Error::internal(
+                    "Program Annex B function escaped sloppy script code",
+                ));
+            }
+            let binding = function
+                .bindings
+                .get(annex.binding.0)
+                .ok_or_else(|| Error::internal("Program Annex B binding is out of bounds"))?;
+            if binding.storage_scope != function.var_scope
+                || binding.storage != BindingStorage::Global
+                || binding.kind != BindingKind::Normal
+            {
+                return Err(Error::internal(
+                    "Program Annex B function has malformed global binding metadata",
+                ));
+            }
+            let constant = usize::try_from(annex.constant).map_err(|_| {
+                Error::internal("Program Annex B function constant is out of bounds")
+            })?;
+            let Some(IrConstant::Child(child_id)) = function.constants.get(constant) else {
+                return Err(Error::internal(
+                    "Program Annex B function does not reference child bytecode",
+                ));
+            };
+            let child = tree.functions.get(*child_id).ok_or_else(|| {
+                Error::internal("Program Annex B child function is out of bounds")
+            })?;
+            if child.function_name.as_deref() != Some(binding.name.as_str())
+                || child.private_name_binding
+                || child.parent
+                    != Some(ParentLink {
+                        function: function_id,
+                        definition_scope: function.body_scope,
+                    })
+            {
+                return Err(Error::internal(
+                    "Program Annex B child metadata disagrees with its binding",
+                ));
+            }
+            if !matches!(
+                function.ops.get(annex.authored_closure),
+                Some(SpannedIrOp {
+                    op: IrOp::MakeClosure(found),
+                    pc_site: None,
+                }) if *found == annex.constant
+            ) || !matches!(
+                function.ops.get(annex.authored_closure + 1),
+                Some(SpannedIrOp {
+                    op: IrOp::Bytecode(Instruction::Dup),
+                    pc_site: None,
+                })
+            ) {
+                return Err(Error::internal(
+                    "Program Annex B function lost its authored closure allocation",
+                ));
+            }
+            let outer_write = function.ops.get(annex.authored_closure + 2);
+            let unresolved_outer = matches!(
+                outer_write,
+                Some(SpannedIrOp {
+                    op: IrOp::Identifier {
+                        name,
+                        scope,
+                        access: IdentifierAccess::AnnexBPut,
+                        ..
+                    },
+                    pc_site: None,
+                }) if name == &binding.name && *scope == function.var_scope
+            );
+            let resolved_outer = matches!(
+                outer_write,
+                Some(SpannedIrOp {
+                    op: IrOp::Bytecode(Instruction::PutVar(index)),
+                    pc_site: None,
+                }) if function.closure_variables.get(usize::from(*index)).is_some_and(
+                    |descriptor| {
+                        descriptor.source == ClosureSource::Global
+                            && match descriptor.name {
+                                ClosureVariableName::Constant(name) => matches!(
+                                    function.constants.get(name as usize),
+                                    Some(IrConstant::Primitive(Value::String(found)))
+                                        if found.to_utf8_lossy() == binding.name
+                                ),
+                                _ => false,
+                            }
+                    }
+                )
+            );
+            if !unresolved_outer && !resolved_outer {
+                return Err(Error::internal(
+                    "Program Annex B function targeted the wrong root binding",
+                ));
+            }
+
+            let current_write = function.ops.get(annex.authored_closure + 3);
+            let unresolved_current = matches!(
+                current_write,
+                Some(SpannedIrOp {
+                    op: IrOp::Identifier {
+                        name,
+                        scope,
+                        access: IdentifierAccess::Put,
+                        ..
+                    },
+                    pc_site: None,
+                }) if name == &binding.name && *scope == function.body_scope
+            );
+            let resolved_current = matches!(
+                current_write,
+                Some(SpannedIrOp {
+                    op: IrOp::Bytecode(Instruction::PutVar(index)),
+                    pc_site: None,
+                }) if function.closure_variables.get(usize::from(*index)).is_some_and(
+                    |descriptor| {
+                        descriptor.source == ClosureSource::GlobalDeclaration
+                            && match descriptor.name {
+                                ClosureVariableName::Constant(name) => matches!(
+                                    function.constants.get(name as usize),
+                                    Some(IrConstant::Primitive(Value::String(found)))
+                                        if found.to_utf8_lossy() == binding.name
+                                ),
+                                _ => false,
+                            }
+                    }
+                )
+            );
+            if !unresolved_current && !resolved_current {
+                return Err(Error::internal(
+                    "Program Annex B function lost its current-environment write",
+                ));
+            }
+        }
         match function.kind {
             FunctionKind::Script => {
                 for declaration in &function.global_declarations {
@@ -4418,8 +4800,15 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         }
                         BindingKind::Normal
                     };
+                    let masked_program_lexical = declaration.is_lexical
+                        && function.first_global_declaration_is_normal(&declaration.name);
                     if binding.is_none_or(|binding| {
-                        binding.storage != BindingStorage::Global || binding.kind != expected_kind
+                        binding.storage != BindingStorage::Global
+                            || if masked_program_lexical {
+                                !matches!(binding.kind, BindingKind::Lexical { .. })
+                            } else {
+                                binding.kind != expected_kind
+                            }
                     }) {
                         return Err(Error::internal(
                             "global declaration has no matching binding identity",
@@ -4558,7 +4947,10 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                             let supported_scope =
                                 matches!(
                                     scope_kind,
-                                    ScopeKind::Block | ScopeKind::For | ScopeKind::Switch
+                                    ScopeKind::Block
+                                        | ScopeKind::If
+                                        | ScopeKind::For
+                                        | ScopeKind::Switch
                                 ) || (matches!(scope_kind, ScopeKind::FunctionBody)
                                     && matches!(function.kind, FunctionKind::Ordinary)
                                     && binding.storage_scope == function.body_scope);
@@ -4913,6 +5305,12 @@ fn prepend_hoist_prefix(
         .map_err(|_| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
     for scoped in &mut function.scoped_functions {
         scoped.authored_closure = scoped
+            .authored_closure
+            .checked_add(prefix.len())
+            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+    }
+    for annex in &mut function.program_annex_functions {
+        annex.authored_closure = annex
             .authored_closure
             .checked_add(prefix.len())
             .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
@@ -5329,7 +5727,7 @@ fn global_declaration_operation(
     access: IdentifierAccess,
     name: &str,
 ) -> Result<IrOp, Error> {
-    let is_lexical = match kind {
+    let binding_is_lexical = match kind {
         BindingKind::Normal => false,
         BindingKind::Lexical { .. } => true,
         BindingKind::FunctionName { .. } => {
@@ -5338,13 +5736,23 @@ fn global_declaration_operation(
             ));
         }
     };
+    // `resolve_scope_var` scans QuickJS's ordered GLOBAL_DECL list by name and
+    // therefore resolves through the first matching descriptor, even when a
+    // preceding Annex B normal record has masked a later Program lexical. The
+    // two descriptors share the lexical VarRef after instantiation, but the
+    // first descriptor's non-lexical flag remains observable: an uninitialized
+    // read falls back to the replacement global-object property instead of
+    // throwing a lexical TDZ error. Writes still inspect the shared VarRef's
+    // lexical/const metadata in the VM.
+    let descriptor_is_lexical =
+        binding_is_lexical && !tree.functions[0].first_global_declaration_is_normal(name);
     let closure_index =
-        capture_global_declaration_path(tree, consuming_function, name, is_lexical)?;
+        capture_global_declaration_path(tree, consuming_function, name, descriptor_is_lexical)?;
     Ok(match access {
         IdentifierAccess::Get => IrOp::Bytecode(Instruction::GetVar(closure_index)),
         IdentifierAccess::GetOrUndefined => IrOp::Bytecode(Instruction::GetVarUndef(closure_index)),
         IdentifierAccess::Delete => IrOp::Bytecode(Instruction::DeleteVar(closure_index)),
-        IdentifierAccess::Initialize if is_lexical => {
+        IdentifierAccess::Initialize if binding_is_lexical => {
             IrOp::Bytecode(Instruction::PutVarInit(closure_index))
         }
         IdentifierAccess::Initialize => {
@@ -10296,6 +10704,98 @@ mod tests {
                 .unwrap(),
             Value::String(JsString::from_static("undefined|7"))
         );
+    }
+
+    #[test]
+    fn annex_b_single_and_labelled_declarations_preserve_scope_shape() {
+        let program = compile_unlinked_script(
+            "programLabel:function programLabel(){return programLabel};programLabel",
+        )
+        .unwrap();
+        assert_eq!(
+            program.local_definitions().len(),
+            1,
+            "Program labelled functions must not allocate a lexical local"
+        );
+        assert!(program.code().windows(4).any(|window| matches!(
+            window,
+            [
+                Instruction::FClosure(_),
+                Instruction::Dup,
+                Instruction::PutVar(_),
+                Instruction::PutVar(_),
+            ]
+        )));
+
+        let body = compile_unlinked_script(
+            "(function(){bodyLabel:function bodyLabel(){return 3};return bodyLabel})",
+        )
+        .unwrap();
+        let body = body.constants()[0].as_child().unwrap();
+        assert_eq!(body.local_definitions().len(), 2);
+        assert!(body.local_definitions()[0].is_lexical);
+        assert!(!body.local_definitions()[1].is_lexical);
+        assert!(body.code().windows(4).any(|window| matches!(
+            window,
+            [
+                Instruction::FClosure(_),
+                Instruction::Dup,
+                Instruction::PutLocal(_),
+                Instruction::Drop,
+            ]
+        )));
+
+        let parameter = compile_unlinked_script(
+            "(function(parameter){label:function parameter(){return 4};return parameter})",
+        )
+        .unwrap();
+        let parameter = parameter.constants()[0].as_child().unwrap();
+        assert_eq!(parameter.local_definitions().len(), 1);
+        assert!(parameter.local_definitions()[0].is_lexical);
+        assert!(
+            !parameter
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Dup)),
+            "same-name parameter incorrectly received an Annex root write"
+        );
+
+        let duplicate = compile_unlinked_script(
+            "(function(){if(true)function duplicate(){return 1}else function duplicate(){return 2};return duplicate})",
+        )
+        .unwrap();
+        let duplicate = duplicate.constants()[0].as_child().unwrap();
+        assert_eq!(
+            duplicate
+                .local_definitions()
+                .iter()
+                .filter(|definition| definition.is_lexical)
+                .count(),
+            2
+        );
+        assert_eq!(
+            duplicate
+                .code()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::Dup))
+                .count(),
+            1,
+            "only the first same-scope if declaration is Annex-eligible"
+        );
+
+        for source in [
+            "var prior;label:function prior(){}",
+            "function prior(){}label:function prior(){}",
+            "let prior;label:function prior(){}",
+        ] {
+            assert_eq!(
+                compile_unlinked_script(source).unwrap_err().message(),
+                "invalid redefinition of global identifier",
+                "{source}"
+            );
+        }
+        compile_unlinked_script("{var nested;}label:function nested(){}")
+            .expect("a nested first var must not block the Program label exception");
     }
 
     #[test]
