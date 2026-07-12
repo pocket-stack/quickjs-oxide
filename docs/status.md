@@ -764,8 +764,9 @@ claim full parity.
   `reduceRight`, `fill`, `find`, `findIndex`, `findLast`, `findLastIndex`,
   `indexOf`, `lastIndexOf`, `includes`, `join`, `toString`, `toLocaleString`,
   `pop`, `push`, `shift`, `unshift`, `reverse`, `toReversed`, `sort`,
-  `toSorted`, `slice`, `splice`, `toSpliced`, `copyWithin`, generic `values`,
-  `keys`, `entries`, and the `@@iterator` alias in their pinned filtered order.
+  `toSorted`, `slice`, `splice`, `toSpliced`, `copyWithin`, `flatMap`, `flat`,
+  generic `values`, `keys`, `entries`, and the `@@iterator` alias in their
+  pinned filtered order.
   `at` uses
   saturating Int64 index conversion and HasProperty-before-Get; the three
   searches snapshot ToLength, skip `fromIndex` conversion for zero length,
@@ -931,13 +932,36 @@ claim full parity.
   followed by a throwing target Set, or a throwing Delete for a source hole.
   Inherited source values, deletion failures, and partial mutation remain
   observable without allocating a result Array.
+  `flatMap` and `flat` share an iterative port of `JS_FlattenIntoArray`.
+  Both snapshot ToLength before mapper validation or saturating Int32 depth
+  conversion, then complete ArraySpeciesCreate with zero before any indexed
+  source access. Their depth-first frames use HasProperty followed by
+  conditional Get, compact holes at every visited level, include inherited
+  values, snapshot each nested Array length on entry, and flatten only genuine
+  Arrays rather than consulting `@@isConcatSpreadable`. `flatMap` invokes its
+  mapper only for present outer elements with value/index/boxed-source and the
+  exact `thisArg`; returned Arrays flatten once without remapping. Custom
+  species results receive throwing CreateDataProperty writes with no final
+  length Set, so aliases, rejected definitions and every completed prefix stay
+  observable. The MAX_SAFE failure is the exact `TypeError: Array too long`.
+  Explicit DFS storage avoids Rust host recursion, while a deterministic 3833
+  frame ceiling keeps cyclic or extremely deep flattening catchable as
+  `InternalError: stack overflow`; the pinned C-stack threshold remains
+  platform dependent, so the deepest failing case can expose a different
+  completed target prefix. Mapper/getter code that
+  recursively re-enters `flatMap` or `flat` also uses a separate 8-active-call
+  ceiling because native-to-bytecode calls still consume the Rust host stack;
+  pinned QuickJS permits hundreds on the current oracle, so the general
+  iterative call trampoline remains necessary for exact threshold and
+  side-effect parity.
   Array Iterators re-read Uint32 length on every `next`, observe holes and
   mutation through ordinary Get, allocate entry-pair Arrays in the defining
   realm, use the raw native-next ABI in for-of, and eagerly release their source
-  on exhaustion. The remaining Array flattening and other prototype methods and
-  `@@unscopables` remain later slices. The pinned runtime anchors are `quickjs.c`
+  on exhaustion. The pinned Array prototype algorithm table is now complete;
+  its `@@unscopables` object remains the next separate table-publication slice.
+  The pinned runtime anchors are `quickjs.c`
   212, 5628-5671, 9433-9524, 10369-10592, 13210-13663, 41472-42226,
-  42228-43013, 43122-43335, 43344-43454, 44519-44583, and 56220-56390.
+  42228-43118, 43122-43335, 43344-43454, 44519-44583, and 56220-56390.
 - Every realm now publishes `%Object%` as a constructor-or-function native
   linked to `%Object.prototype%`. Call and construction preserve existing
   objects, box every primitive family in the defining realm, allocate ordinary
@@ -1542,8 +1566,8 @@ global String constructor, the remaining 43 entries of its 53-key prototype
 surface, Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. The Object static table after
 `getOwnPropertySymbols`, AggregateError, and uncatchable termination state are
-also pending. The remaining Array prototype
-algorithms, Array destructuring consumers, other iterator classes and helpers,
+also pending. Array `@@unscopables`, Array destructuring consumers, other
+iterator classes and helpers,
 RegExp, Unicode-backed String methods, remaining object-literal forms and the
 rest of the builtin table build on those layers.
 

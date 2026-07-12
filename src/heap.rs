@@ -840,6 +840,15 @@ pub enum ArrayReduceKind {
     ReduceRight,
 }
 
+/// Mode selected by QuickJS's shared `js_array_flatten` kernel. `flatMap`
+/// validates and applies a mapper to the outer source before flattening one
+/// level, while `flat` converts its requested depth with `JS_ToInt32Sat`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ArrayFlattenKind {
+    FlatMap,
+    Flat,
+}
+
 /// Observable key category selected by `%Object%.getOwnPropertyNames` and
 /// `%Object%.getOwnPropertySymbols`. QuickJS uses two thin C wrappers around
 /// the same `JS_GetOwnPropertyNames2` kernel; retaining the distinction in the
@@ -889,6 +898,7 @@ pub enum NativeFunctionId {
     ArrayPrototypeSlice(ArraySliceKind),
     ArrayPrototypeToSpliced,
     ArrayPrototypeCopyWithin,
+    ArrayPrototypeFlatten(ArrayFlattenKind),
     ArrayIteratorNext,
     ThrowTypeError,
     FunctionPrototypeCall,
@@ -1177,6 +1187,7 @@ impl NativeFunctionId {
             | Self::ArrayPrototypeFind(_)
             | Self::ArrayPrototypeIteration(_)
             | Self::ArrayPrototypeReduce(_)
+            | Self::ArrayPrototypeFlatten(_)
             | Self::ArrayPrototypeJoin(_)
             | Self::ArrayPrototypePop(_)
             | Self::ArrayPrototypePush(_)
@@ -4175,6 +4186,15 @@ mod tests {
         let target = NativeFunctionId::ArrayPrototypeCopyWithin;
         assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
         assert!(!target.descriptor().cproto.default_is_constructor());
+    }
+
+    #[test]
+    fn array_flatten_native_selectors_use_pinned_cproto() {
+        for kind in [ArrayFlattenKind::FlatMap, ArrayFlattenKind::Flat] {
+            let target = NativeFunctionId::ArrayPrototypeFlatten(kind);
+            assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
     }
 
     #[test]

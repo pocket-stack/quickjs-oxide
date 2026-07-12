@@ -25,17 +25,17 @@ use crate::function::{
     UnlinkedVariableDefinition,
 };
 use crate::heap::{
-    ArrayFindKind, ArrayIterationKind, ArrayIteratorKind, ArrayJoinKind, ArrayPopKind,
-    ArrayPushKind, ArrayReduceKind, ArraySearchKind, ArraySliceKind, AutoInitProperty,
-    BigIntAsNKind, BytecodeConstant, ClosureSource, ClosureVariable, ClosureVariableKind,
-    ClosureVariableName, ConstructorKind, ContextData, ContextId, DynamicFunctionKind,
-    ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo,
-    FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind,
-    GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError, NativeCProto, NativeFunctionId,
-    NumberFormatKind, NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData,
-    ObjectId, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind,
-    PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCharAtKind, StringWellFormedKind,
-    SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
+    ArrayFindKind, ArrayFlattenKind, ArrayIterationKind, ArrayIteratorKind, ArrayJoinKind,
+    ArrayPopKind, ArrayPushKind, ArrayReduceKind, ArraySearchKind, ArraySliceKind,
+    AutoInitProperty, BigIntAsNKind, BytecodeConstant, ClosureSource, ClosureVariable,
+    ClosureVariableKind, ClosureVariableName, ConstructorKind, ContextData, ContextId,
+    DynamicFunctionKind, ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId,
+    FunctionDebugInfo, FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats,
+    GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError,
+    NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
+    ObjectAccessorKind, ObjectData, ObjectId, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload,
+    PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCharAtKind,
+    StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -10313,8 +10313,9 @@ impl Runtime {
         // QuickJS checks its platform C-stack pointer before every native
         // call. Rust frame sizes do not map to that byte threshold, so keep a
         // deterministic call-entry ceiling on the recursive Array
-        // stringification and sort-comparator paths. Preserve a catchable
-        // JavaScript stack-overflow completion without risking the host stack.
+        // stringification, flattening, and sort-comparator paths. Preserve a
+        // catchable JavaScript stack-overflow completion without risking the
+        // host stack.
         let limit = match target {
             NativeFunctionId::ArrayPrototypeJoin(_) | NativeFunctionId::ArrayPrototypeToString => {
                 64
@@ -10322,6 +10323,7 @@ impl Runtime {
             NativeFunctionId::ArrayPrototypeSort | NativeFunctionId::ArrayPrototypeToSorted => 16,
             NativeFunctionId::ArrayPrototypeSlice(_)
             | NativeFunctionId::ArrayPrototypeToSpliced => 4,
+            NativeFunctionId::ArrayPrototypeFlatten(_) => 8,
             _ => return false,
         };
 
@@ -10346,6 +10348,9 @@ impl Runtime {
                     NativeFunctionId::ArrayPrototypeSlice(_)
                         | NativeFunctionId::ArrayPrototypeToSpliced
                 )
+            }
+            NativeFunctionId::ArrayPrototypeFlatten(_) => {
+                matches!(candidate, NativeFunctionId::ArrayPrototypeFlatten(_))
             }
             _ => false,
         };
@@ -12645,6 +12650,9 @@ impl Runtime {
             }
             NativeFunctionId::ArrayPrototypeCopyWithin => {
                 self.call_array_prototype_copy_within(realm, invocation, arguments)
+            }
+            NativeFunctionId::ArrayPrototypeFlatten(kind) => {
+                self.call_array_prototype_flatten(realm, kind, invocation, arguments)
             }
             NativeFunctionId::ArrayPrototypeSearch(kind) => {
                 self.call_array_prototype_search(realm, kind, invocation, arguments)

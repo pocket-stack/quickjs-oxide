@@ -15,6 +15,19 @@ enum ArraySortAbort {
     Runtime(RuntimeError),
 }
 
+struct ArrayFlattenFrame {
+    source: ObjectRef,
+    length: u64,
+    next_index: u64,
+    depth: i32,
+    apply_mapper: bool,
+}
+
+// The pinned macOS oracle accepts roughly 3.8k nested flatten frames before
+// its C-stack guard fires. Keep the Rust traversal iterative and use the
+// nearest stable probe boundary so the completion stays catchable.
+const ARRAY_FLATTEN_FRAME_LIMIT: usize = 3_833;
+
 /// Port of QuickJS's `rqsort` index choreography. The comparator receives
 /// mutable access to the backing slice because Array's default comparison
 /// caches each element's ToString result inside its moving sort slot.
@@ -484,6 +497,19 @@ impl Runtime {
             2,
             2,
         )?;
+        for (kind, name, length, min_readable_args) in [
+            (ArrayFlattenKind::FlatMap, "flatMap", 1, 1),
+            (ArrayFlattenKind::Flat, "flat", 0, 0),
+        ] {
+            self.define_native_builtin_auto_init(
+                array_prototype,
+                realm,
+                NativeFunctionId::ArrayPrototypeFlatten(kind),
+                name,
+                length,
+                min_readable_args,
+            )?;
+        }
         for (kind, name) in [
             (ArrayIteratorKind::Value, "values"),
             (ArrayIteratorKind::Key, "keys"),
@@ -2056,6 +2082,219 @@ impl Runtime {
         Ok(Completion::Return(Value::Object(object)))
     }
 
+    pub(in crate::runtime) fn call_array_prototype_flatten(
+        &self,
+        realm: ContextId,
+        kind: ArrayFlattenKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Array.prototype flatten method did not receive a generic invocation",
+            ));
+        };
+        let (source, source_length) =
+            match self.native_array_like_object_and_length(realm, this_value)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+
+        let (depth, mapper, mapper_this) = match kind {
+            ArrayFlattenKind::FlatMap => {
+                let mapper = self.callable_from_value(
+                    arguments
+                        .readable
+                        .first()
+                        .ok_or(RuntimeError::Invariant(
+                            "Array.prototype.flatMap mapper argv was not padded",
+                        ))?
+                        .clone(),
+                )?;
+                let mapper_this = if arguments.actual_arg_count > 1 {
+                    arguments
+                        .readable
+                        .get(1)
+                        .ok_or(RuntimeError::Invariant(
+                            "Array.prototype.flatMap thisArg was missing",
+                        ))?
+                        .clone()
+                } else {
+                    Value::Undefined
+                };
+                (1, Some(mapper), mapper_this)
+            }
+            ArrayFlattenKind::Flat => {
+                let depth = if arguments.actual_arg_count > 0
+                    && !matches!(arguments.readable.first(), Some(Value::Undefined))
+                {
+                    let depth = arguments.readable.first().ok_or(RuntimeError::Invariant(
+                        "Array.prototype.flat depth argument was missing",
+                    ))?;
+                    match self.native_to_number(realm, depth)? {
+                        NativeConversion::Value(value) => crate::number::to_int32_sat(value),
+                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                } else {
+                    1
+                };
+                (depth, None, Value::Undefined)
+            }
+        };
+
+        let target = match self.array_species_create(realm, &source, 0)? {
+            Completion::Return(Value::Object(target)) => target,
+            Completion::Return(_) => {
+                return Err(RuntimeError::Invariant(
+                    "ArraySpeciesCreate returned a primitive for flatten",
+                ));
+            }
+            Completion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        const MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+        match self.flatten_into_array_with_limits(
+            realm,
+            &target,
+            source,
+            source_length,
+            depth,
+            mapper.as_ref(),
+            &mapper_this,
+            MAX_SAFE_INTEGER,
+            ARRAY_FLATTEN_FRAME_LIMIT,
+        )? {
+            NativeConversion::Value(_) => Ok(Completion::Return(Value::Object(target))),
+            NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn flatten_into_array_with_limits(
+        &self,
+        realm: ContextId,
+        target: &ObjectRef,
+        source: ObjectRef,
+        source_length: u64,
+        depth: i32,
+        mapper: Option<&CallableRef>,
+        mapper_this: &Value,
+        target_limit: u64,
+        frame_limit: usize,
+    ) -> Result<NativeConversion<u64>, RuntimeError> {
+        if frame_limit == 0 {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Internal,
+                "stack overflow",
+            )?));
+        }
+        let mut frames = vec![ArrayFlattenFrame {
+            source,
+            length: source_length,
+            next_index: 0,
+            depth,
+            apply_mapper: mapper.is_some(),
+        }];
+        let mut target_index = 0_u64;
+
+        while !frames.is_empty() {
+            let (source, source_index, depth, apply_mapper) = {
+                let frame = frames
+                    .last_mut()
+                    .expect("non-empty flatten frame stack has a last frame");
+                if frame.next_index >= frame.length {
+                    frames.pop();
+                    continue;
+                }
+                let source_index = frame.next_index;
+                frame.next_index += 1;
+                (
+                    frame.source.clone(),
+                    source_index,
+                    frame.depth,
+                    frame.apply_mapper,
+                )
+            };
+
+            let Some(mut element) =
+                (match self.try_get_array_like_index(realm, &source, source_index)? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => {
+                        return Ok(NativeConversion::Throw(value));
+                    }
+                })
+            else {
+                continue;
+            };
+
+            if apply_mapper {
+                let mapper = mapper.ok_or(RuntimeError::Invariant(
+                    "flatten frame requested a missing mapper",
+                ))?;
+                element = match self.call_internal(
+                    realm,
+                    mapper,
+                    mapper_this.clone(),
+                    &[
+                        element,
+                        Value::number(source_index as f64),
+                        Value::Object(source.clone()),
+                    ],
+                )? {
+                    Completion::Return(value) => value,
+                    Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+                };
+            }
+
+            if depth > 0
+                && let Value::Object(element_object) = &element
+                && self.is_array_object(element_object)?
+            {
+                let (nested_source, nested_length) = match self
+                    .native_array_like_object_and_length(
+                        realm,
+                        Value::Object(element_object.clone()),
+                    )? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => {
+                        return Ok(NativeConversion::Throw(value));
+                    }
+                };
+                if frames.len() >= frame_limit {
+                    return Ok(NativeConversion::Throw(self.new_native_error(
+                        realm,
+                        NativeErrorKind::Internal,
+                        "stack overflow",
+                    )?));
+                }
+                frames.push(ArrayFlattenFrame {
+                    source: nested_source,
+                    length: nested_length,
+                    next_index: 0,
+                    depth: depth - 1,
+                    apply_mapper: false,
+                });
+                continue;
+            }
+
+            if target_index >= target_limit {
+                return Ok(NativeConversion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "Array too long",
+                )?));
+            }
+            if let Some(value) =
+                self.create_indexed_data_property(realm, target, target_index, element)?
+            {
+                return Ok(NativeConversion::Throw(value));
+            }
+            target_index += 1;
+        }
+
+        Ok(NativeConversion::Value(target_index))
+    }
+
     pub(in crate::runtime) fn call_array_prototype_search(
         &self,
         realm: ContextId,
@@ -3450,3 +3689,6 @@ impl Runtime {
         Ok(NativeInvokeOutcome::IteratorNextRaw { value, done: false })
     }
 }
+
+#[cfg(test)]
+mod tests;
