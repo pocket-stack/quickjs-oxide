@@ -29,6 +29,7 @@ impl UriCodecError {
             Self::InvalidCharacter => "invalid character",
             Self::ExpectingSurrogatePair => "expecting surrogate pair",
             Self::String(JsStringError::TooLong) => "string too long",
+            Self::String(JsStringError::OutOfMemory) => "out of memory",
         }
     }
 }
@@ -259,6 +260,9 @@ fn encoded_uri_length(
             match JsString::checked_length_with_limit(output_len, encoded_len, limit) {
                 Ok(length) => output_len = length,
                 Err(JsStringError::TooLong) => too_long = true,
+                Err(JsStringError::OutOfMemory) => {
+                    return Err(UriCodecError::String(JsStringError::OutOfMemory));
+                }
             }
         }
     }

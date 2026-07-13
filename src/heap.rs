@@ -977,6 +977,7 @@ pub enum NativeFunctionId {
     StringPrototypeIndexOf(StringIndexOfKind),
     StringPrototypeIncludes(StringIncludesKind),
     StringPrototypeSubrange(StringSubrangeKind),
+    StringPrototypeRepeat,
     IteratorPrototypeIterator,
     IteratorPrototypeToStringTagGetter,
     IteratorPrototypeToStringTagSetter,
@@ -1245,6 +1246,7 @@ impl NativeFunctionId {
             | Self::StringPrototypeCodePointAt
             | Self::StringPrototypeWellFormed(_)
             | Self::StringPrototypeSubrange(_)
+            | Self::StringPrototypeRepeat
             | Self::IteratorPrototypeIterator
             | Self::StringPrototypeIterator
             | Self::ArrayIsArray
@@ -4120,6 +4122,7 @@ mod tests {
             NativeFunctionId::StringPrototypeSubrange(StringSubrangeKind::Substring),
             NativeFunctionId::StringPrototypeSubrange(StringSubrangeKind::Substr),
             NativeFunctionId::StringPrototypeSubrange(StringSubrangeKind::Slice),
+            NativeFunctionId::StringPrototypeRepeat,
         ];
 
         for target in targets {

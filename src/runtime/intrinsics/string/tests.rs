@@ -30,6 +30,10 @@ fn string_subrange_selectors_use_pinned_generic_cproto() {
         assert!(!descriptor.cproto.default_is_constructor());
     }
 
+    let descriptor = NativeFunctionId::StringPrototypeRepeat.descriptor();
+    assert_eq!(descriptor.cproto, NativeCProto::Generic);
+    assert!(!descriptor.cproto.default_is_constructor());
+
     assert_eq!(string_to_int32_clamp(f64::NAN, 6, 6), 0);
     assert_eq!(string_to_int32_clamp(f64::NEG_INFINITY, 6, 6), 0);
     assert_eq!(string_to_int32_clamp(-2.9, 6, 6), 4);
@@ -221,6 +225,187 @@ fn string_subrange_family_publishes_generic_autoinit_entries_and_identities() {
 }
 
 #[test]
+fn string_repeat_publishes_one_generic_autoinit_entry() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let prototype = context.string_prototype().unwrap();
+    let key = runtime.intern_property_key("repeat").unwrap();
+    let state = runtime.0.state.borrow();
+    let object = state.heap.object(prototype.object_id()).unwrap();
+    let shape = state.heap.shape(object.shape).unwrap();
+    let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+    assert_eq!(
+        shape.entries()[slot_index].flags,
+        PropertyFlags::data(true, false, true),
+    );
+    assert!(matches!(
+        object.slots.get(slot_index),
+        Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+            realm,
+            target: NativeFunctionId::StringPrototypeRepeat,
+            name,
+            length: 1,
+            min_readable_args: 1,
+        })) if *realm == context.realm && *name == "repeat"
+    ));
+    drop(state);
+
+    let Value::Object(first) = context.get_property(&prototype, &key).unwrap() else {
+        panic!("repeat did not materialize as a function object");
+    };
+    let Value::Object(second) = context.get_property(&prototype, &key).unwrap() else {
+        panic!("repeat did not remain a function object");
+    };
+    assert_eq!(first, second);
+    assert!(runtime.as_callable(&first).unwrap().is_some());
+    assert!(!runtime.is_constructor(&first).unwrap());
+}
+
+#[test]
+fn string_repeat_preserves_pinned_values_order_and_errors() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+
+    assert_eq!(
+        context
+            .eval(
+                r#"[
+                    "ab".repeat(),"ab".repeat(undefined),"ab".repeat(null),
+                    "ab".repeat(false),"ab".repeat(true),"ab".repeat(2.9),
+                    "ab".repeat(NaN),"ab".repeat(-0),"".repeat(2147483647),
+                    "A\ud83d\ude00\ud800".repeat(2)
+                ].join("|")"#,
+            )
+            .unwrap(),
+        Value::String(
+            JsString::try_from_utf16([
+                0x7c, 0x7c, 0x7c, 0x7c, 0x61, 0x62, 0x7c, 0x61, 0x62, 0x61, 0x62, 0x7c, 0x7c, 0x7c,
+                0x7c, 0x41, 0xd83d, 0xde00, 0xd800, 0x41, 0xd83d, 0xde00, 0xd800,
+            ])
+            .unwrap()
+        ),
+    );
+
+    assert_eq!(
+        context
+            .eval(
+                r#"(function(){
+                    var log="",receiver=Object(),count=Object(),extra=Object();
+                    receiver[Symbol.toPrimitive]=function(hint){log+="r:"+hint+";";return "ab"};
+                    count[Symbol.toPrimitive]=function(hint){log+="c:"+hint+";";return 2.9};
+                    extra[Symbol.toPrimitive]=function(){log+="extra;";throw "wrong"};
+                    return String.prototype.repeat.call(receiver,count,extra)+"|"+log;
+                })()"#,
+            )
+            .unwrap(),
+        Value::String(JsString::from_static("abab|r:string;c:number;")),
+    );
+
+    assert_eq!(
+        context
+            .eval(
+                r#"(function(){
+                    var values=[-1,-Infinity,Infinity,2147483648],output=[],index=0;
+                    while(index<values.length){
+                        try{"a".repeat(values[index]);output.push("return")}
+                        catch(error){output.push(error.name+":"+error.message)}
+                        index++;
+                    }
+                    try{"ab".repeat(536870912)}
+                    catch(error){output.push(error.name+":"+error.message)}
+                    try{new String.prototype.repeat()}
+                    catch(error){output.push(error.name+":"+error.message)}
+                    return output.join("|");
+                })()"#,
+            )
+            .unwrap(),
+        Value::String(JsString::from_static(
+            "RangeError:invalid repeat count|RangeError:invalid repeat count|\
+             RangeError:invalid repeat count|RangeError:invalid repeat count|\
+             RangeError:invalid string length|TypeError:repeat is not a constructor",
+        )),
+    );
+}
+
+#[test]
+fn string_repeat_reservation_oom_is_catchable_in_defining_realm_and_recovers() {
+    let runtime = Runtime::new();
+    let mut defining = runtime.new_context();
+    let mut caller = runtime.new_context();
+    let prototype = defining.string_prototype().unwrap();
+    let repeat_key = runtime.intern_property_key("repeat").unwrap();
+    let Value::Object(repeat_object) = defining.get_property(&prototype, &repeat_key).unwrap()
+    else {
+        panic!("String.prototype.repeat was not an object");
+    };
+    let repeat = runtime.as_callable(&repeat_object).unwrap().unwrap();
+    let Value::Object(defining_internal_error) = defining.eval("InternalError.prototype").unwrap()
+    else {
+        panic!("defining InternalError.prototype was not an object");
+    };
+    let Value::Object(caller_internal_error) = caller.eval("InternalError.prototype").unwrap()
+    else {
+        panic!("caller InternalError.prototype was not an object");
+    };
+    assert_ne!(defining_internal_error, caller_internal_error);
+
+    caller
+        .eval(
+            r#"globalThis.repeatReservationLog="";
+                globalThis.repeatReservationReceiver=Object();
+                repeatReservationReceiver[Symbol.toPrimitive]=function(hint){
+                    repeatReservationLog+="receiver:"+hint+";";return "xy"
+                };
+                globalThis.repeatReservationCount=Object();
+                repeatReservationCount[Symbol.toPrimitive]=function(hint){
+                    repeatReservationLog+="count:"+hint+";";return 2
+                };"#,
+        )
+        .unwrap();
+    let receiver = caller.eval("repeatReservationReceiver").unwrap();
+    let count = caller.eval("repeatReservationCount").unwrap();
+
+    crate::value::fail_next_repeat_reservation_for_test();
+    assert_eq!(
+        caller.call(&repeat, receiver, &[count]),
+        Err(RuntimeError::Exception),
+    );
+    let Some(Value::Object(error)) = caller.take_exception().unwrap() else {
+        panic!("repeat reservation failure did not publish an Error object");
+    };
+    assert_eq!(
+        runtime.get_prototype_of(&error).unwrap(),
+        Some(defining_internal_error),
+        "repeat reservation OOM did not use the native function's defining realm",
+    );
+    for (name, expected) in [("name", "InternalError"), ("message", "out of memory")] {
+        let Value::String(value) = caller
+            .get_property(&error, &runtime.intern_property_key(name).unwrap())
+            .unwrap()
+        else {
+            panic!("repeat reservation OOM {name} was not a String");
+        };
+        assert_eq!(value, JsString::from_static(expected));
+    }
+    assert_eq!(
+        caller.eval("repeatReservationLog").unwrap(),
+        Value::String(JsString::from_static("receiver:string;count:number;")),
+        "repeat buffer reservation happened before its observable conversions",
+    );
+    assert_eq!(
+        caller
+            .call(
+                &repeat,
+                Value::String(JsString::from_static("xy")),
+                &[Value::Int(2)],
+            )
+            .unwrap(),
+        Value::String(JsString::from_static("xyxy")),
+        "runtime did not recover after repeat reservation OOM",
+    );
+}
+
+#[test]
 fn string_subrange_preserves_pinned_clamps_utf16_and_rope_copying() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -364,9 +549,9 @@ fn string_subrange_preserves_conversion_order_throws_and_defining_realm() {
 }
 
 #[test]
-fn recursive_string_subrange_and_includes_family_is_guarded_on_libtest_stack_and_recovers() {
+fn recursive_string_conversion_family_is_guarded_on_libtest_stack_and_recovers() {
     std::thread::Builder::new()
-        .name("string-subrange-stack-proof".into())
+        .name("string-conversion-stack-proof".into())
         .stack_size(2 * 1024 * 1024)
         .spawn(|| {
             let runtime = Runtime::new();
@@ -452,17 +637,59 @@ fn recursive_string_subrange_and_includes_family_is_guarded_on_libtest_stack_and
                 Value::String(JsString::from_static("InternalError:stack overflow")),
                 "alternating includes/subrange calls bypassed the shared fifth-frame guard"
             );
+
+            context
+                .eval(
+                    r#"function mixedStringRepeatRecurse(kind,depth){
+                        if(kind===0){
+                            var count=Object();
+                            count[Symbol.toPrimitive]=function(){
+                                if(depth!==0)mixedStringRepeatRecurse(1,depth-1);
+                                return 1;
+                            };
+                            return "x".repeat(count);
+                        }
+                        var start=Object();
+                        start[Symbol.toPrimitive]=function(){
+                            if(depth!==0)mixedStringRepeatRecurse(0,depth-1);
+                            return 0;
+                        };
+                        return "x".slice(start);
+                    }"#,
+                )
+                .unwrap();
+            for kind in 0..2 {
+                assert_eq!(
+                    context
+                        .eval(&format!("mixedStringRepeatRecurse({kind},3)"))
+                        .unwrap(),
+                    Value::String(JsString::from_static("x")),
+                    "the proven-safe repeat/subrange chain was rejected for kind {kind}"
+                );
+                assert_eq!(
+                    context
+                        .eval(&format!(
+                            r#"(function(){{
+                                try{{mixedStringRepeatRecurse({kind},4);return "missing"}}
+                                catch(error){{return error.name+":"+error.message}}
+                            }})()"#,
+                        ))
+                        .unwrap(),
+                    Value::String(JsString::from_static("InternalError:stack overflow")),
+                    "alternating repeat/subrange calls bypassed the shared fifth-frame guard"
+                );
+            }
             assert_eq!(
                 context
-                    .eval(r#""abc".includes("b")+"|"+"abc".slice(1)"#)
+                    .eval(r#""abc".includes("b")+"|"+"abc".slice(1)+"|"+"ab".repeat(2)"#)
                     .unwrap(),
-                Value::String(JsString::from_static("true|bc")),
+                Value::String(JsString::from_static("true|bc|abab")),
                 "the runtime did not recover after mixed String-family overflow"
             );
         })
-        .expect("2 MiB String subrange stack-proof thread did not start")
+        .expect("2 MiB String conversion stack-proof thread did not start")
         .join()
-        .expect("2 MiB String subrange stack-proof thread panicked");
+        .expect("2 MiB String conversion stack-proof thread panicked");
 }
 
 #[test]

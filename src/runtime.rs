@@ -6968,7 +6968,8 @@ impl Runtime {
             // String receiver/argument conversion callbacks retain native and
             // property-call stacks while recursively entering these methods.
             NativeFunctionId::StringPrototypeIncludes(_)
-            | NativeFunctionId::StringPrototypeSubrange(_) => 16,
+            | NativeFunctionId::StringPrototypeSubrange(_)
+            | NativeFunctionId::StringPrototypeRepeat => 16,
             _ => 8,
         };
         let active_native_cost = self
@@ -7017,10 +7018,11 @@ impl Runtime {
             NativeFunctionId::ObjectAssign => 9,
             NativeFunctionId::ObjectFromEntries => 4,
             // Symbol.match, receiver and argument conversions can alternate
-            // between both String families. Reject their shared fifth frame
+            // between these String methods. Reject their shared fifth frame
             // while leaving weighted room for one callback leaf.
             NativeFunctionId::StringPrototypeIncludes(_)
-            | NativeFunctionId::StringPrototypeSubrange(_) => 4,
+            | NativeFunctionId::StringPrototypeSubrange(_)
+            | NativeFunctionId::StringPrototypeRepeat => 4,
             // ToString, ToNumber and String.raw's property/conversion path can
             // all re-enter any other member of this constructor family.
             NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
@@ -7072,10 +7074,12 @@ impl Runtime {
                 matches!(candidate, NativeFunctionId::ObjectFromEntries)
             }
             NativeFunctionId::StringPrototypeIncludes(_)
-            | NativeFunctionId::StringPrototypeSubrange(_) => matches!(
+            | NativeFunctionId::StringPrototypeSubrange(_)
+            | NativeFunctionId::StringPrototypeRepeat => matches!(
                 candidate,
                 NativeFunctionId::StringPrototypeIncludes(_)
                     | NativeFunctionId::StringPrototypeSubrange(_)
+                    | NativeFunctionId::StringPrototypeRepeat
             ),
             NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
             | NativeFunctionId::StringStatic(_) => matches!(

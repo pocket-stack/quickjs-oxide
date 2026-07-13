@@ -39,6 +39,10 @@ fn string_length_failure_maps_to_quickjs_internal_error() {
     let error = Error::from(JsStringError::TooLong);
     assert_eq!(error.kind(), ErrorKind::JsInternal);
     assert_eq!(error.message(), "string too long");
+
+    let error = Error::from(JsStringError::OutOfMemory);
+    assert_eq!(error.kind(), ErrorKind::JsInternal);
+    assert_eq!(error.message(), "out of memory");
 }
 
 #[test]

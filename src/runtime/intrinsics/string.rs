@@ -159,6 +159,14 @@ impl Runtime {
                 2,
             )?;
         }
+        self.define_native_builtin_auto_init(
+            string_prototype,
+            realm,
+            NativeFunctionId::StringPrototypeRepeat,
+            "repeat",
+            1,
+            1,
+        )?;
         Ok(())
     }
 
@@ -693,5 +701,76 @@ impl Runtime {
         Ok(Completion::Return(Value::String(
             source.sub_string(range_start, range_end),
         )))
+    }
+
+    /// Rust port of pinned QuickJS `js_string_repeat`, including its distinct
+    /// repeat-count and result-length RangeErrors. The native entry point uses
+    /// the release's 30-bit String cap; tests inject a smaller cap through the
+    /// helper to cover the boundary without allocating enormous buffers.
+    pub(in crate::runtime) fn call_string_prototype_repeat(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        self.call_string_prototype_repeat_with_limit(
+            realm,
+            invocation,
+            arguments,
+            JsString::MAX_LEN,
+        )
+    }
+
+    fn call_string_prototype_repeat_with_limit(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+        string_limit: usize,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String repeat did not receive a generic invocation",
+            ));
+        };
+
+        let source = match self.native_to_string_check_object(realm, &this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let count_value = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "String repeat count argv was not padded",
+        ))?;
+        let count = match self.native_to_int64_sat(realm, count_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        if !(0..=2_147_483_647).contains(&count) {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Range,
+                "invalid repeat count",
+            )?));
+        }
+        let count = usize::try_from(count)
+            .map_err(|_| RuntimeError::Invariant("validated repeat count did not fit usize"))?;
+        let repeated = match source.repeat_with_limit(count, string_limit) {
+            Ok(value) => value,
+            Err(JsStringError::TooLong) => {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Range,
+                    "invalid string length",
+                )?));
+            }
+            Err(JsStringError::OutOfMemory) => {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Internal,
+                    "out of memory",
+                )?));
+            }
+        };
+        Ok(Completion::Return(Value::String(repeated)))
     }
 }

@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::TryReserveError;
 use std::fmt;
@@ -44,12 +46,14 @@ impl fmt::Debug for WeakJsString {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum JsStringError {
     TooLong,
+    OutOfMemory,
 }
 
 impl fmt::Display for JsStringError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TooLong => formatter.write_str("string too long"),
+            Self::OutOfMemory => formatter.write_str("out of memory"),
         }
     }
 }
@@ -59,9 +63,26 @@ impl std::error::Error for JsStringError {}
 impl From<JsStringError> for Error {
     fn from(error: JsStringError) -> Self {
         match error {
-            JsStringError::TooLong => Error::new(ErrorKind::JsInternal, error.to_string()),
+            JsStringError::TooLong | JsStringError::OutOfMemory => {
+                Error::new(ErrorKind::JsInternal, error.to_string())
+            }
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_REPEAT_RESERVATION: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_repeat_reservation_for_test() {
+    FAIL_NEXT_REPEAT_RESERVATION.with(|armed| {
+        assert!(
+            !armed.replace(true),
+            "repeat reservation failure was already armed"
+        );
+    });
 }
 
 enum StringRepr {
@@ -831,6 +852,70 @@ impl JsString {
             }
             StringRepr::Rope(_) => unreachable!("linearized String remained a rope"),
         }
+    }
+
+    /// Repeat one linearized String into the single flat allocation produced by
+    /// QuickJS `js_string_repeat`. The checked product uses the caller-supplied
+    /// limit so native white-box tests can exercise the length failure without
+    /// attempting a near-gigabyte allocation.
+    pub(crate) fn repeat_with_limit(
+        &self,
+        count: usize,
+        max_len: usize,
+    ) -> Result<Self, JsStringError> {
+        let source = self.linearize();
+        // QuickJS returns the already-converted receiver before checking the
+        // product. Count conversion and validation happen outside this kernel.
+        if source.is_empty() || count == 1 {
+            return Ok(source);
+        }
+        let output_len = source
+            .len()
+            .checked_mul(count)
+            .filter(|length| *length <= max_len.min(Self::MAX_LEN))
+            .ok_or(JsStringError::TooLong)?;
+        if output_len == 0 {
+            // `string_buffer_end` releases the temporary zero-length buffer
+            // and returns QuickJS's canonical narrow empty String.
+            return Ok(Self::from_static(""));
+        }
+
+        fn grow_repetition<T: Copy>(
+            source: &[T],
+            output_len: usize,
+        ) -> Result<Box<[T]>, JsStringError> {
+            // `string_buffer_init2` performs one exact fallible allocation.
+            // Reserve the complete buffer up front so later doubling copies
+            // cannot allocate and allocator failure remains catchable.
+            #[cfg(test)]
+            if FAIL_NEXT_REPEAT_RESERVATION.with(|armed| armed.replace(false)) {
+                return Err(JsStringError::OutOfMemory);
+            }
+            let mut output = Vec::new();
+            output
+                .try_reserve_exact(output_len)
+                .map_err(|_| JsStringError::OutOfMemory)?;
+            if source.len() == 1 {
+                output.resize(output_len, source[0]);
+                return Ok(output.into_boxed_slice());
+            }
+            output.extend_from_slice(source);
+            while output.len() < output_len {
+                let copied = output.len().min(output_len - output.len());
+                output.extend_from_within(..copied);
+            }
+            Ok(output.into_boxed_slice())
+        }
+
+        Ok(match source.0.as_ref() {
+            StringRepr::Latin1(units) => Self(Rc::new(StringRepr::Latin1(grow_repetition(
+                units, output_len,
+            )?))),
+            StringRepr::Utf16(units) => Self(Rc::new(StringRepr::Utf16(grow_repetition(
+                units, output_len,
+            )?))),
+            StringRepr::Rope(_) => unreachable!("linearized String remained a rope"),
+        })
     }
 
     /// Concatenate with QuickJS's short-flat/rope thresholds, bounded depth,
@@ -1826,6 +1911,58 @@ mod tests {
         assert_eq!(
             crossed.utf16_units().collect::<Vec<_>>(),
             [0xd83d, 0xde00, u16::from(b'z')]
+        );
+    }
+
+    #[test]
+    fn repeat_builds_one_flat_string_with_quickjs_width_and_limit_rules() {
+        let latin1 = JsString::from_static("ab");
+        let repeated = latin1.repeat_with_limit(3, JsString::MAX_LEN).unwrap();
+        assert_eq!(repeated, JsString::from_static("ababab"));
+        assert!(repeated.is_flat());
+        assert!(matches!(repeated.0.as_ref(), StringRepr::Latin1(_)));
+        let once = latin1.repeat_with_limit(1, 1).unwrap();
+        assert!(once.same_representation(&latin1));
+
+        let wide = JsString(Rc::new(StringRepr::Utf16(
+            [u16::from(b'A'), 0xd800].into_iter().collect(),
+        )));
+        let repeated = wide.repeat_with_limit(3, JsString::MAX_LEN).unwrap();
+        assert_eq!(
+            repeated.utf16_units().collect::<Vec<_>>(),
+            [0x41, 0xd800, 0x41, 0xd800, 0x41, 0xd800],
+        );
+        assert!(matches!(repeated.0.as_ref(), StringRepr::Utf16(_)));
+        let zero = wide.repeat_with_limit(0, JsString::MAX_LEN).unwrap();
+        assert!(matches!(zero.0.as_ref(), StringRepr::Latin1(units) if units.is_empty()));
+
+        let left = JsString::try_from_utf8(&"x".repeat(8_193)).unwrap();
+        let rope = left.try_concat(&JsString::from_static("yz")).unwrap();
+        assert!(!rope.is_flat());
+        let once = rope.repeat_with_limit(1, JsString::MAX_LEN).unwrap();
+        assert!(once.is_flat());
+        assert!(once.same_representation(&rope.linearize()));
+        let twice = rope.repeat_with_limit(2, JsString::MAX_LEN).unwrap();
+        assert!(twice.is_flat());
+        assert_eq!(twice.len(), rope.len() * 2);
+        assert_eq!(twice.code_unit_at(rope.len()), Some(u16::from(b'x')));
+
+        let empty = JsString::from_static("");
+        let empty_repeat = empty.repeat_with_limit(2_147_483_647, 0).unwrap();
+        assert!(empty_repeat.same_representation(&empty));
+        assert_eq!(latin1.repeat_with_limit(3, 5), Err(JsStringError::TooLong));
+
+        super::fail_next_repeat_reservation_for_test();
+        let forced_fast = latin1.repeat_with_limit(1, 1).unwrap();
+        assert!(forced_fast.same_representation(&latin1));
+        assert_eq!(
+            latin1.repeat_with_limit(2, JsString::MAX_LEN),
+            Err(JsStringError::OutOfMemory),
+        );
+        assert_eq!(
+            latin1.repeat_with_limit(2, JsString::MAX_LEN).unwrap(),
+            JsString::from_static("abab"),
+            "the fail-next reservation hook was not consumed exactly once",
         );
     }
 
