@@ -39,8 +39,8 @@ use crate::heap::{
     ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind,
     ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind,
     PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCharAtKind, StringIncludesKind,
-    StringIndexOfKind, StringStaticKind, StringWellFormedKind, SymbolRegistryKind, VarRefData,
-    VarRefId, VariableDefinition,
+    StringIndexOfKind, StringStaticKind, StringSubrangeKind, StringWellFormedKind,
+    SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -851,8 +851,8 @@ impl Runtime {
             &global_object,
         )
         .expect("Boolean intrinsic initialization must succeed");
-        self.initialize_string_utf16_prefix(realm, &string_prototype)
-            .expect("String UTF-16 method-prefix initialization must succeed");
+        self.initialize_string_prototype_methods(realm, &string_prototype)
+            .expect("String prototype method initialization must succeed");
         self.initialize_string_conversion_core(realm, &string_prototype)
             .expect("String conversion-core initialization must succeed");
         self.initialize_string_iterator_intrinsics(
@@ -1858,9 +1858,9 @@ impl Runtime {
     /// relationship is published later in bootstrap. This is not the prefix of
     /// QuickJS's 53-key table: these two brand methods are also the observable
     /// ordinary-ToPrimitive dependency for every generic String prototype
-    /// method. The UTF-16 prefix is already installed first; remaining String
-    /// slices must continue to enter in pinned table order before this pair
-    /// when each fresh context is bootstrapped.
+    /// method. The implemented method slice is already installed first;
+    /// remaining String entries must continue to enter in pinned table order
+    /// before this pair when each fresh context is bootstrapped.
     fn initialize_string_conversion_core(
         &self,
         realm: ContextId,
@@ -1996,84 +1996,6 @@ impl Runtime {
             return Err(RuntimeError::Invariant(
                 "String Iterator toStringTag definition was rejected",
             ));
-        }
-        Ok(())
-    }
-
-    /// Install QuickJS's first twelve String prototype methods in exact table
-    /// order. They precede the conversion brand pair and the later published
-    /// constructor relationship on every fresh realm.
-    fn initialize_string_utf16_prefix(
-        &self,
-        realm: ContextId,
-        string_prototype: &ObjectRef,
-    ) -> Result<(), RuntimeError> {
-        for (target, name, min_readable_args) in [
-            (
-                NativeFunctionId::StringPrototypeCharAt(StringCharAtKind::At),
-                "at",
-                1,
-            ),
-            (NativeFunctionId::StringPrototypeCharCodeAt, "charCodeAt", 1),
-            (
-                NativeFunctionId::StringPrototypeCharAt(StringCharAtKind::CharAt),
-                "charAt",
-                1,
-            ),
-            (NativeFunctionId::StringPrototypeConcat, "concat", 0),
-            (
-                NativeFunctionId::StringPrototypeCodePointAt,
-                "codePointAt",
-                1,
-            ),
-        ] {
-            self.define_native_builtin_auto_init(
-                string_prototype,
-                realm,
-                target,
-                name,
-                1,
-                min_readable_args,
-            )?;
-        }
-        for (target, name) in [
-            (
-                NativeFunctionId::StringPrototypeWellFormed(StringWellFormedKind::IsWellFormed),
-                "isWellFormed",
-            ),
-            (
-                NativeFunctionId::StringPrototypeWellFormed(StringWellFormedKind::ToWellFormed),
-                "toWellFormed",
-            ),
-        ] {
-            self.define_native_builtin_auto_init(string_prototype, realm, target, name, 0, 0)?;
-        }
-        for (selector, name) in [
-            (StringIndexOfKind::IndexOf, "indexOf"),
-            (StringIndexOfKind::LastIndexOf, "lastIndexOf"),
-        ] {
-            self.define_native_builtin_auto_init(
-                string_prototype,
-                realm,
-                NativeFunctionId::StringPrototypeIndexOf(selector),
-                name,
-                1,
-                1,
-            )?;
-        }
-        for (selector, name) in [
-            (StringIncludesKind::Includes, "includes"),
-            (StringIncludesKind::EndsWith, "endsWith"),
-            (StringIncludesKind::StartsWith, "startsWith"),
-        ] {
-            self.define_native_builtin_auto_init(
-                string_prototype,
-                realm,
-                NativeFunctionId::StringPrototypeIncludes(selector),
-                name,
-                1,
-                1,
-            )?;
         }
         Ok(())
     }
@@ -7043,9 +6965,10 @@ impl Runtime {
             // conversion stacks at once, making this family comparable to the
             // heaviest slice/splice native paths on a 2 MiB libtest thread.
             NativeFunctionId::ObjectFromEntries => 16,
-            // A Symbol.match getter can retain the receiver, search and
-            // property-call stacks while recursively entering this family.
-            NativeFunctionId::StringPrototypeIncludes(_) => 16,
+            // String receiver/argument conversion callbacks retain native and
+            // property-call stacks while recursively entering these methods.
+            NativeFunctionId::StringPrototypeIncludes(_)
+            | NativeFunctionId::StringPrototypeSubrange(_) => 16,
             _ => 8,
         };
         let active_native_cost = self
@@ -7093,10 +7016,11 @@ impl Runtime {
             NativeFunctionId::ObjectHasOwn => 9,
             NativeFunctionId::ObjectAssign => 9,
             NativeFunctionId::ObjectFromEntries => 4,
-            // The default ten-frame budget overflows a 2 MiB libtest stack on
-            // measured Symbol.match getter reentry. Reject the fifth family
-            // frame while leaving weighted room for one callback leaf.
-            NativeFunctionId::StringPrototypeIncludes(_) => 4,
+            // Symbol.match, receiver and argument conversions can alternate
+            // between both String families. Reject their shared fifth frame
+            // while leaving weighted room for one callback leaf.
+            NativeFunctionId::StringPrototypeIncludes(_)
+            | NativeFunctionId::StringPrototypeSubrange(_) => 4,
             // ToString, ToNumber and String.raw's property/conversion path can
             // all re-enter any other member of this constructor family.
             NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
@@ -7147,9 +7071,12 @@ impl Runtime {
             NativeFunctionId::ObjectFromEntries => {
                 matches!(candidate, NativeFunctionId::ObjectFromEntries)
             }
-            NativeFunctionId::StringPrototypeIncludes(_) => {
-                matches!(candidate, NativeFunctionId::StringPrototypeIncludes(_))
-            }
+            NativeFunctionId::StringPrototypeIncludes(_)
+            | NativeFunctionId::StringPrototypeSubrange(_) => matches!(
+                candidate,
+                NativeFunctionId::StringPrototypeIncludes(_)
+                    | NativeFunctionId::StringPrototypeSubrange(_)
+            ),
             NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
             | NativeFunctionId::StringStatic(_) => matches!(
                 candidate,

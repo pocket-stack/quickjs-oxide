@@ -47,7 +47,121 @@ fn scan_string_region(
     }
 }
 
+/// Saturating/clamping integer conversion used by pinned QuickJS
+/// `JS_ToInt32Clamp` when `min` is zero. Negative relative indices receive
+/// `min_offset` once before the lower clamp; positive overflow clamps to max.
+fn string_to_int32_clamp(number: f64, max: i32, min_offset: i32) -> i32 {
+    debug_assert!(max >= 0);
+    debug_assert!(min_offset >= 0);
+    let mut result = crate::number::to_int32_sat(number);
+    if result < 0 {
+        result += min_offset;
+        if result < 0 {
+            result = 0;
+        }
+    } else if result > max {
+        result = max;
+    }
+    result
+}
+
 impl Runtime {
+    /// Install the currently implemented entries from QuickJS's String
+    /// prototype table in their exact relative order. Missing table entries
+    /// remain unpublished; later parity slices must be inserted at their
+    /// pinned position rather than appended after the conversion methods.
+    pub(in crate::runtime) fn initialize_string_prototype_methods(
+        &self,
+        realm: ContextId,
+        string_prototype: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        for (target, name, min_readable_args) in [
+            (
+                NativeFunctionId::StringPrototypeCharAt(StringCharAtKind::At),
+                "at",
+                1,
+            ),
+            (NativeFunctionId::StringPrototypeCharCodeAt, "charCodeAt", 1),
+            (
+                NativeFunctionId::StringPrototypeCharAt(StringCharAtKind::CharAt),
+                "charAt",
+                1,
+            ),
+            (NativeFunctionId::StringPrototypeConcat, "concat", 0),
+            (
+                NativeFunctionId::StringPrototypeCodePointAt,
+                "codePointAt",
+                1,
+            ),
+        ] {
+            self.define_native_builtin_auto_init(
+                string_prototype,
+                realm,
+                target,
+                name,
+                1,
+                min_readable_args,
+            )?;
+        }
+        for (target, name) in [
+            (
+                NativeFunctionId::StringPrototypeWellFormed(StringWellFormedKind::IsWellFormed),
+                "isWellFormed",
+            ),
+            (
+                NativeFunctionId::StringPrototypeWellFormed(StringWellFormedKind::ToWellFormed),
+                "toWellFormed",
+            ),
+        ] {
+            self.define_native_builtin_auto_init(string_prototype, realm, target, name, 0, 0)?;
+        }
+        for (selector, name) in [
+            (StringIndexOfKind::IndexOf, "indexOf"),
+            (StringIndexOfKind::LastIndexOf, "lastIndexOf"),
+        ] {
+            self.define_native_builtin_auto_init(
+                string_prototype,
+                realm,
+                NativeFunctionId::StringPrototypeIndexOf(selector),
+                name,
+                1,
+                1,
+            )?;
+        }
+        for (selector, name) in [
+            (StringIncludesKind::Includes, "includes"),
+            (StringIncludesKind::EndsWith, "endsWith"),
+            (StringIncludesKind::StartsWith, "startsWith"),
+        ] {
+            self.define_native_builtin_auto_init(
+                string_prototype,
+                realm,
+                NativeFunctionId::StringPrototypeIncludes(selector),
+                name,
+                1,
+                1,
+            )?;
+        }
+        // QuickJS has match/matchAll/search/split between startsWith and this
+        // group. They are not implemented yet, so preserve the implemented-
+        // key filtered order while keeping this trio adjacent and ordered.
+        for (selector, name) in [
+            (StringSubrangeKind::Substring, "substring"),
+            (StringSubrangeKind::Substr, "substr"),
+            (StringSubrangeKind::Slice, "slice"),
+        ] {
+            self.define_native_builtin_auto_init(
+                string_prototype,
+                realm,
+                NativeFunctionId::StringPrototypeSubrange(selector),
+                name,
+                2,
+                2,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Publish the complete own table of QuickJS's `%String%` constructor.
     ///
     /// The three static entries must precede the non-configurable `prototype`
@@ -489,5 +603,95 @@ impl Runtime {
             }
         };
         Ok(Completion::Return(Value::Bool(found)))
+    }
+
+    /// Rust port of pinned QuickJS `js_string_substring`, `js_string_substr`,
+    /// and `js_string_slice`. The native identities remain generic functions;
+    /// only their conversion and UTF-16 copying machinery is shared here.
+    pub(in crate::runtime) fn call_string_prototype_subrange(
+        &self,
+        realm: ContextId,
+        selector: StringSubrangeKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String subrange method did not receive a generic invocation",
+            ));
+        };
+
+        // Every pinned function converts the receiver before observing start,
+        // then converts end only when it is not undefined.
+        let source = match self.native_to_string_check_object(realm, &this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let source_len = i32::try_from(source.len()).map_err(|_| {
+            RuntimeError::Invariant("String length exceeded QuickJS's signed index range")
+        })?;
+        let start_value = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "String subrange start argv was not padded",
+        ))?;
+        let start_number = match self.native_to_number(realm, start_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let start_offset = match selector {
+            StringSubrangeKind::Substring => 0,
+            StringSubrangeKind::Substr | StringSubrangeKind::Slice => source_len,
+        };
+        let start = string_to_int32_clamp(start_number, source_len, start_offset);
+
+        let end_value = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
+            "String subrange end argv was not padded",
+        ))?;
+        let (range_start, range_end) = match selector {
+            StringSubrangeKind::Substring => {
+                let mut end = source_len;
+                if !matches!(end_value, Value::Undefined) {
+                    let number = match self.native_to_number(realm, end_value)? {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                    };
+                    end = string_to_int32_clamp(number, source_len, 0);
+                }
+                if start < end {
+                    (start, end)
+                } else {
+                    (end, start)
+                }
+            }
+            StringSubrangeKind::Substr => {
+                let remaining = source_len - start;
+                let mut count = remaining;
+                if !matches!(end_value, Value::Undefined) {
+                    let number = match self.native_to_number(realm, end_value)? {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                    };
+                    count = string_to_int32_clamp(number, remaining, 0);
+                }
+                (start, start + count)
+            }
+            StringSubrangeKind::Slice => {
+                let mut end = source_len;
+                if !matches!(end_value, Value::Undefined) {
+                    let number = match self.native_to_number(realm, end_value)? {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                    };
+                    end = string_to_int32_clamp(number, source_len, source_len);
+                }
+                (start, end.max(start))
+            }
+        };
+        let range_start = usize::try_from(range_start)
+            .map_err(|_| RuntimeError::Invariant("String subrange start became negative"))?;
+        let range_end = usize::try_from(range_end)
+            .map_err(|_| RuntimeError::Invariant("String subrange end became negative"))?;
+        Ok(Completion::Return(Value::String(
+            source.sub_string(range_start, range_end),
+        )))
     }
 }

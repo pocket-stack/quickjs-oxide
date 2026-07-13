@@ -976,6 +976,7 @@ pub enum NativeFunctionId {
     StringPrototypeWellFormed(StringWellFormedKind),
     StringPrototypeIndexOf(StringIndexOfKind),
     StringPrototypeIncludes(StringIncludesKind),
+    StringPrototypeSubrange(StringSubrangeKind),
     IteratorPrototypeIterator,
     IteratorPrototypeToStringTagGetter,
     IteratorPrototypeToStringTagSetter,
@@ -1079,6 +1080,17 @@ pub enum StringIncludesKind {
     Includes,
     EndsWith,
     StartsWith,
+}
+
+/// Operation selected by the adjacent `substring`, Annex-B `substr`, and
+/// `slice` generic String functions. QuickJS publishes three distinct generic
+/// C functions; the selector only shares their UTF-16 subrange machinery in
+/// Rust and does not change the native function protocol to generic-magic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StringSubrangeKind {
+    Substring,
+    Substr,
+    Slice,
 }
 
 /// Static selector shared by `%Symbol%.for` and `%Symbol%.keyFor`.
@@ -1232,6 +1244,7 @@ impl NativeFunctionId {
             | Self::StringPrototypeConcat
             | Self::StringPrototypeCodePointAt
             | Self::StringPrototypeWellFormed(_)
+            | Self::StringPrototypeSubrange(_)
             | Self::IteratorPrototypeIterator
             | Self::StringPrototypeIterator
             | Self::ArrayIsArray
@@ -4104,6 +4117,9 @@ mod tests {
             NativeFunctionId::StringPrototypeCodePointAt,
             NativeFunctionId::StringPrototypeWellFormed(StringWellFormedKind::IsWellFormed),
             NativeFunctionId::StringPrototypeWellFormed(StringWellFormedKind::ToWellFormed),
+            NativeFunctionId::StringPrototypeSubrange(StringSubrangeKind::Substring),
+            NativeFunctionId::StringPrototypeSubrange(StringSubrangeKind::Substr),
+            NativeFunctionId::StringPrototypeSubrange(StringSubrangeKind::Slice),
         ];
 
         for target in targets {

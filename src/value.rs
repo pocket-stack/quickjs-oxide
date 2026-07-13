@@ -794,6 +794,45 @@ impl JsString {
         flattened
     }
 
+    /// Copy one validated UTF-16 code-unit range with QuickJS
+    /// `js_sub_string` representation rules. Ropes are linearized once, a
+    /// full-range request reuses that flat handle, Latin-1 ranges copy their
+    /// bytes directly, and UTF-16 ranges scan only the selected units before
+    /// choosing a single Latin-1 or UTF-16 allocation.
+    #[must_use]
+    pub(crate) fn sub_string(&self, start: usize, end: usize) -> Self {
+        let source = self.linearize();
+        assert!(start <= end, "String subrange start exceeded end");
+        assert!(
+            end <= source.len(),
+            "String subrange exceeded source length"
+        );
+        if start == 0 && end == source.len() {
+            return source;
+        }
+        match source.0.as_ref() {
+            StringRepr::Latin1(units) => Self(Rc::new(StringRepr::Latin1(
+                units[start..end].to_vec().into_boxed_slice(),
+            ))),
+            StringRepr::Utf16(units) => {
+                let selected = &units[start..end];
+                if selected.iter().all(|unit| *unit <= u16::from(u8::MAX)) {
+                    let narrow = selected
+                        .iter()
+                        .map(|unit| *unit as u8)
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice();
+                    Self(Rc::new(StringRepr::Latin1(narrow)))
+                } else {
+                    Self(Rc::new(StringRepr::Utf16(
+                        selected.to_vec().into_boxed_slice(),
+                    )))
+                }
+            }
+            StringRepr::Rope(_) => unreachable!("linearized String remained a rope"),
+        }
+    }
+
     /// Concatenate with QuickJS's short-flat/rope thresholds, bounded depth,
     /// Fibonacci rebalance and 30-bit length cap.
     ///
@@ -1741,6 +1780,53 @@ mod tests {
         let well_formed = JsString::try_from_utf16([0xd83d, 0xde80]).unwrap();
         assert!(well_formed.is_well_formed());
         assert_eq!(well_formed.to_well_formed(), well_formed);
+    }
+
+    #[test]
+    fn sub_string_linearizes_ranges_and_preserves_quickjs_width_rules() {
+        let latin1 = JsString::from_static("abcdef");
+        let latin1_full = latin1.sub_string(0, latin1.len());
+        assert!(latin1_full.same_representation(&latin1));
+        let latin1_range = latin1.sub_string(1, 4);
+        assert_eq!(latin1_range, JsString::from_static("bcd"));
+        assert!(matches!(latin1_range.0.as_ref(), StringRepr::Latin1(_)));
+
+        let forced_wide = JsString(Rc::new(StringRepr::Utf16(
+            [u16::from(b'a'), u16::from(b'b'), 0xd800, u16::from(b'c')]
+                .into_iter()
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        )));
+        let narrowed = forced_wide.sub_string(0, 2);
+        assert!(matches!(narrowed.0.as_ref(), StringRepr::Latin1(_)));
+        assert_eq!(
+            narrowed.utf16_units().collect::<Vec<_>>(),
+            [u16::from(b'a'), u16::from(b'b')]
+        );
+        let still_wide = forced_wide.sub_string(1, 3);
+        assert!(matches!(still_wide.0.as_ref(), StringRepr::Utf16(_)));
+        assert_eq!(
+            still_wide.utf16_units().collect::<Vec<_>>(),
+            [u16::from(b'b'), 0xd800]
+        );
+        let empty = forced_wide.sub_string(2, 2);
+        assert!(matches!(empty.0.as_ref(), StringRepr::Latin1(units) if units.is_empty()));
+
+        let left = JsString::try_from_utf8(&"x".repeat(8_193)).unwrap();
+        let right = JsString::try_from_utf16([0xd83d, 0xde00, u16::from(b'z')]).unwrap();
+        let rope = left.try_concat(&right).unwrap();
+        assert!(!rope.is_flat());
+        let full = rope.sub_string(0, rope.len());
+        assert!(full.is_flat());
+        assert_eq!(full, rope);
+        let cached_flat = rope.linearize();
+        assert!(full.same_representation(&cached_flat));
+        let crossed = rope.sub_string(8_193, 8_196);
+        assert!(crossed.is_flat());
+        assert_eq!(
+            crossed.utf16_units().collect::<Vec<_>>(),
+            [0xd83d, 0xde00, u16::from(b'z')]
+        );
     }
 
     #[test]

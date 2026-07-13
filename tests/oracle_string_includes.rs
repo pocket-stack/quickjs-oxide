@@ -11,9 +11,9 @@ use quickjs_oxide::{
 // (46634-46636). The three methods deliberately share one magic-selected
 // kernel but retain distinct position defaults and search ranges.
 //
-// Rust-side vectors avoid RegExp, Proxy, object-literal syntax, and the still
-// unpublished String.prototype.slice. The oracle-only vectors below preserve
-// those exotic boundaries until their object kinds are available.
+// Rust-side vectors avoid RegExp, Proxy, and object-literal syntax. The
+// oracle-only vectors below preserve those exotic boundaries until their
+// object kinds are available.
 
 const CASE_PRELUDE: &str = r#"
 function __bits(object,key){

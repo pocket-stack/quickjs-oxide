@@ -374,6 +374,9 @@ impl Runtime {
             NativeFunctionId::StringPrototypeIncludes(selector) => {
                 self.call_string_prototype_includes(realm, selector, invocation, arguments)
             }
+            NativeFunctionId::StringPrototypeSubrange(selector) => {
+                self.call_string_prototype_subrange(realm, selector, invocation, arguments)
+            }
             NativeFunctionId::IteratorPrototypeIterator => {
                 self.call_iterator_prototype_iterator(invocation)
             }

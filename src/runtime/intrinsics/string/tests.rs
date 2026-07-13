@@ -19,6 +19,24 @@ fn string_index_selectors_use_pinned_generic_magic_cproto() {
 }
 
 #[test]
+fn string_subrange_selectors_use_pinned_generic_cproto() {
+    for selector in [
+        StringSubrangeKind::Substring,
+        StringSubrangeKind::Substr,
+        StringSubrangeKind::Slice,
+    ] {
+        let descriptor = NativeFunctionId::StringPrototypeSubrange(selector).descriptor();
+        assert_eq!(descriptor.cproto, NativeCProto::Generic);
+        assert!(!descriptor.cproto.default_is_constructor());
+    }
+
+    assert_eq!(string_to_int32_clamp(f64::NAN, 6, 6), 0);
+    assert_eq!(string_to_int32_clamp(f64::NEG_INFINITY, 6, 6), 0);
+    assert_eq!(string_to_int32_clamp(-2.9, 6, 6), 4);
+    assert_eq!(string_to_int32_clamp(f64::INFINITY, 6, 6), 6);
+}
+
+#[test]
 fn string_index_scan_is_utf16_exact_and_inclusive() {
     let source = JsString::try_from_utf16([0x61, 0xd83d, 0xde00, 0xd800, 0x61]).unwrap();
     let crossed = JsString::try_from_utf16([0xde00, 0xd800]).unwrap();
@@ -140,6 +158,311 @@ fn string_includes_family_publishes_typed_autoinit_entries_and_identities() {
     assert_ne!(identities[0], identities[1]);
     assert_ne!(identities[0], identities[2]);
     assert_ne!(identities[1], identities[2]);
+}
+
+#[test]
+fn string_subrange_family_publishes_generic_autoinit_entries_and_identities() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let prototype = context.string_prototype().unwrap();
+    let entries = [
+        ("substring", StringSubrangeKind::Substring),
+        ("substr", StringSubrangeKind::Substr),
+        ("slice", StringSubrangeKind::Slice),
+    ];
+    let keys = entries.map(|(name, selector)| {
+        (
+            name,
+            selector,
+            runtime
+                .intern_property_key(name)
+                .expect("String subrange-family key must intern"),
+        )
+    });
+    let state = runtime.0.state.borrow();
+    let object = state.heap.object(prototype.object_id()).unwrap();
+    let shape = state.heap.shape(object.shape).unwrap();
+    for (name, selector, key) in &keys {
+        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        assert_eq!(
+            shape.entries()[slot_index].flags,
+            PropertyFlags::data(true, false, true),
+        );
+        assert!(matches!(
+            object.slots.get(slot_index),
+            Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                realm,
+                target: NativeFunctionId::StringPrototypeSubrange(target_selector),
+                name: target_name,
+                length: 2,
+                min_readable_args: 2,
+            })) if *realm == context.realm
+                && *target_selector == *selector
+                && *target_name == *name
+        ));
+    }
+    drop(state);
+
+    let identities = keys.map(|(name, _, key)| {
+        let Value::Object(first) = context.get_property(&prototype, &key).unwrap() else {
+            panic!("{name} did not materialize as a function object");
+        };
+        let Value::Object(second) = context.get_property(&prototype, &key).unwrap() else {
+            panic!("{name} did not remain a function object");
+        };
+        assert_eq!(first, second, "{name} AutoInit identity was unstable");
+        assert!(runtime.as_callable(&first).unwrap().is_some());
+        assert!(!runtime.is_constructor(&first).unwrap());
+        first
+    });
+    assert_ne!(identities[0], identities[1]);
+    assert_ne!(identities[0], identities[2]);
+    assert_ne!(identities[1], identities[2]);
+}
+
+#[test]
+fn string_subrange_preserves_pinned_clamps_utf16_and_rope_copying() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+
+    for (source, expected) in [
+        (r#""abcdef".substring(4,1)"#, "bcd"),
+        (r#""abcdef".substring(-Infinity,Infinity)"#, "abcdef"),
+        (r#""abcdef".substring(NaN,2.9)"#, "ab"),
+        (r#""abcdef".substring(2147483648,1)"#, "bcdef"),
+        (r#""abcdef".substr(-2,1)"#, "e"),
+        (r#""abcdef".substr(-99,2)"#, "ab"),
+        (r#""abcdef".substr(2,-1)"#, ""),
+        (r#""abcdef".substr(2,Infinity)"#, "cdef"),
+        (r#""abcdef".substr()"#, "abcdef"),
+        (r#""abcdef".slice(-3,-1)"#, "de"),
+        (r#""abcdef".slice(4,1)"#, ""),
+        (r#""abcdef".slice(-Infinity,Infinity)"#, "abcdef"),
+        (r#""abcdef".slice()"#, "abcdef"),
+        (r#""abcdef".slice(NaN,2.9)"#, "ab"),
+    ] {
+        assert_eq!(
+            context.eval(source).unwrap(),
+            Value::String(JsString::try_from_utf8(expected).unwrap()),
+            "{source}"
+        );
+    }
+    assert_eq!(
+        context
+            .eval(r#""A\ud83d\ude00\ud800Z".substring(1,2)"#)
+            .unwrap(),
+        Value::String(JsString::try_from_utf16([0xd83d]).unwrap())
+    );
+    assert_eq!(
+        context
+            .eval(r#""A\ud83d\ude00\ud800Z".slice(2,4)"#)
+            .unwrap(),
+        Value::String(JsString::try_from_utf16([0xde00, 0xd800]).unwrap())
+    );
+
+    let left =
+        JsString::try_from_utf16(std::iter::repeat_n(u16::from(b'a'), 4_999).chain([0xd83d]))
+            .unwrap();
+    let right = JsString::try_from_utf16(
+        [0xde00]
+            .into_iter()
+            .chain(std::iter::repeat_n(u16::from(b'b'), 5_000)),
+    )
+    .unwrap();
+    let rope = left.try_concat(&right).unwrap();
+    assert!(!rope.is_flat());
+    let completion = runtime
+        .call_string_prototype_subrange(
+            context.realm,
+            StringSubrangeKind::Slice,
+            NativeInvocation::Call {
+                this_value: Value::String(rope),
+            },
+            &NativeArguments {
+                actual_arg_count: 2,
+                readable: vec![Value::Int(4_999), Value::Int(5_002)],
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        completion,
+        Completion::Return(Value::String(
+            JsString::try_from_utf16([0xd83d, 0xde00, u16::from(b'b')]).unwrap()
+        ))
+    );
+}
+
+#[test]
+fn string_subrange_preserves_conversion_order_throws_and_defining_realm() {
+    let runtime = Runtime::new();
+    let mut first = runtime.new_context();
+
+    for (method, expected) in [("substring", "bcd"), ("substr", "e"), ("slice", "")] {
+        let value = first
+            .eval(&format!(
+                r#"(function(){{
+                    var log="",receiver=Object(),start=Object(),end=Object();
+                    receiver[Symbol.toPrimitive]=function(hint){{log+="r:"+hint+",";return "abcdef"}};
+                    start[Symbol.toPrimitive]=function(hint){{log+="s:"+hint+",";return 4}};
+                    end[Symbol.toPrimitive]=function(hint){{log+="e:"+hint+",";return 1}};
+                    return "".{method}.call(receiver,start,end)+"|"+log;
+                }})()"#,
+            ))
+            .unwrap();
+        assert_eq!(
+            value,
+            Value::String(
+                JsString::try_from_utf8(&format!("{expected}|r:string,s:number,e:number,"))
+                    .unwrap()
+            ),
+            "{method} conversion order drifted"
+        );
+    }
+
+    let short_circuit = first
+        .eval(
+            r#"(function(){
+                var log="",receiver=Object(),start=Object(),end=Object();
+                receiver[Symbol.toPrimitive]=function(){log+="r,";return "abc"};
+                start[Symbol.toPrimitive]=function(){log+="s,";throw 71};
+                end[Symbol.toPrimitive]=function(){log+="e,";throw 72};
+                try{"".slice.call(receiver,start,end)}catch(error){return error+"|"+log}
+            })()"#,
+        )
+        .unwrap();
+    assert_eq!(
+        short_circuit,
+        Value::String(JsString::from_static("71|r,s,"))
+    );
+
+    let first_string = first.string_prototype().unwrap();
+    let slice_key = runtime.intern_property_key("slice").unwrap();
+    let Value::Object(slice_object) = first.get_property(&first_string, &slice_key).unwrap() else {
+        panic!("String.prototype.slice was not an object");
+    };
+    let slice = runtime.as_callable(&slice_object).unwrap().unwrap();
+    let Value::Object(first_type_error_prototype) = first.eval("TypeError.prototype").unwrap()
+    else {
+        panic!("first realm TypeError.prototype was not an object");
+    };
+    let mut second = runtime.new_context();
+    assert_eq!(
+        second.call(
+            &slice,
+            Value::String(JsString::from_static("abc")),
+            &[Value::Symbol(runtime.new_symbol(None).unwrap())],
+        ),
+        Err(RuntimeError::Exception)
+    );
+    let Some(Value::Object(error)) = second.take_exception().unwrap() else {
+        panic!("cross-realm slice conversion did not throw an Error object");
+    };
+    assert_eq!(
+        runtime.get_prototype_of(&error).unwrap(),
+        Some(first_type_error_prototype)
+    );
+}
+
+#[test]
+fn recursive_string_subrange_and_includes_family_is_guarded_on_libtest_stack_and_recovers() {
+    std::thread::Builder::new()
+        .name("string-subrange-stack-proof".into())
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = Runtime::new();
+            let mut context = runtime.new_context();
+            context
+                .eval(
+                    r#"function stringSubrangeRecurse(kind,depth){
+                var start=Object();
+                start[Symbol.toPrimitive]=function(){
+                    if(depth!==0)stringSubrangeRecurse((kind+1)%3,depth-1);
+                    return 0;
+                };
+                if(kind===0)return "x".substring(start);
+                if(kind===1)return "x".substr(start);
+                return "x".slice(start);
+            }"#,
+                )
+                .unwrap();
+
+            for kind in 0..3 {
+                assert_eq!(
+                    context
+                        .eval(&format!("stringSubrangeRecurse({kind},3)"))
+                        .unwrap(),
+                    Value::String(JsString::from_static("x")),
+                    "the proven-safe four-frame subrange chain was rejected for kind {kind}"
+                );
+                assert_eq!(
+                    context
+                        .eval(&format!(
+                            r#"(function(){{
+                        try{{stringSubrangeRecurse({kind},4);return "missing"}}
+                        catch(error){{return error.name+":"+error.message}}
+                    }})()"#,
+                        ))
+                        .unwrap(),
+                    Value::String(JsString::from_static("InternalError:stack overflow")),
+                    "the fifth subrange family frame was not rejected for kind {kind}"
+                );
+            }
+
+            context
+                .eval(
+                    r#"function mixedStringSearchRecurse(kind,depth){
+                        if(kind===0){
+                            var search=Object(),descriptor=Object();
+                            descriptor.get=function(){
+                                if(depth!==0)mixedStringSearchRecurse(1,depth-1);
+                                return false;
+                            };
+                            Object.defineProperty(search,Symbol.match,descriptor);
+                            search[Symbol.toPrimitive]=function(){return "x"};
+                            return "x".includes(search);
+                        }
+                        var start=Object();
+                        start[Symbol.toPrimitive]=function(){
+                            if(depth!==0)mixedStringSearchRecurse(0,depth-1);
+                            return 0;
+                        };
+                        return "x".slice(start);
+                    }"#,
+                )
+                .unwrap();
+            assert_eq!(
+                context.eval("mixedStringSearchRecurse(0,3)").unwrap(),
+                Value::Bool(true),
+                "the proven-safe four-frame includes/subrange chain was rejected"
+            );
+            assert_eq!(
+                context.eval("mixedStringSearchRecurse(1,3)").unwrap(),
+                Value::String(JsString::from_static("x")),
+                "the reverse four-frame includes/subrange chain was rejected"
+            );
+            assert_eq!(
+                context
+                    .eval(
+                        r#"(function(){
+                            try{mixedStringSearchRecurse(0,4);return "missing"}
+                            catch(error){return error.name+":"+error.message}
+                        })()"#,
+                    )
+                    .unwrap(),
+                Value::String(JsString::from_static("InternalError:stack overflow")),
+                "alternating includes/subrange calls bypassed the shared fifth-frame guard"
+            );
+            assert_eq!(
+                context
+                    .eval(r#""abc".includes("b")+"|"+"abc".slice(1)"#)
+                    .unwrap(),
+                Value::String(JsString::from_static("true|bc")),
+                "the runtime did not recover after mixed String-family overflow"
+            );
+        })
+        .expect("2 MiB String subrange stack-proof thread did not start")
+        .join()
+        .expect("2 MiB String subrange stack-proof thread panicked");
 }
 
 #[test]

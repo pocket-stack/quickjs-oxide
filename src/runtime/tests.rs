@@ -1463,6 +1463,9 @@ fn string_wrapper_exotic_indices_length_define_delete_and_order_match_quickjs() 
             "includes",
             "endsWith",
             "startsWith",
+            "substring",
+            "substr",
+            "slice",
             "toString",
             "valueOf",
             "constructor",
@@ -1646,7 +1649,7 @@ fn string_wrapper_exotic_indices_length_define_delete_and_order_match_quickjs() 
 }
 
 #[test]
-fn string_utf16_method_prefix_matches_quickjs_table_and_code_unit_rules() {
+fn string_method_slice_matches_quickjs_table_and_code_unit_rules() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     let prototype = context.string_prototype().unwrap();
@@ -1667,6 +1670,9 @@ fn string_utf16_method_prefix_matches_quickjs_table_and_code_unit_rules() {
             "includes",
             "endsWith",
             "startsWith",
+            "substring",
+            "substr",
+            "slice",
             "toString",
             "valueOf",
             "constructor",
@@ -1683,6 +1689,9 @@ fn string_utf16_method_prefix_matches_quickjs_table_and_code_unit_rules() {
         ("codePointAt", 1, NativeCProto::Generic, 1),
         ("isWellFormed", 0, NativeCProto::Generic, 0),
         ("toWellFormed", 0, NativeCProto::Generic, 0),
+        ("substring", 2, NativeCProto::Generic, 2),
+        ("substr", 2, NativeCProto::Generic, 2),
+        ("slice", 2, NativeCProto::Generic, 2),
     ];
     let length_key = runtime.intern_property_key("length").unwrap();
     let name_key = runtime.intern_property_key("name").unwrap();
@@ -1964,6 +1973,9 @@ fn string_conversion_core_brand_lookup_object_routes_and_overrides_match_quickjs
             "includes",
             "endsWith",
             "startsWith",
+            "substring",
+            "substr",
+            "slice",
             "toString",
             "valueOf",
             "constructor",
