@@ -496,7 +496,7 @@ fn rooted_string_wrapper_preserves_payload_and_final_release_collects_the_graph(
         ["0", "1", "2", "3", "length"]
     );
 
-    // The hidden String prototype now publishes the ten-key partial surface;
+    // The String prototype now publishes the seventeen-key partial surface;
     // its saved-method realm edge is tested by the UTF-16-prefix oracle. This
     // test isolates wrapper/payload survival and final cleanup.
     drop(wrapper);

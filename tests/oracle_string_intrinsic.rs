@@ -109,8 +109,8 @@ const GRAPH_CASES: &[(&str, &str)] = &[
         "implemented prototype keys keep pinned filtered order through constructor",
         r#"(function(){
             var selected=["length","at","charCodeAt","charAt","concat","codePointAt",
-                "isWellFormed","toWellFormed","indexOf","lastIndexOf","toString",
-                "valueOf","constructor"];
+                "isWellFormed","toWellFormed","indexOf","lastIndexOf","includes",
+                "endsWith","startsWith","toString","valueOf","constructor"];
             var keys=Object.getOwnPropertyNames(String.prototype),output=[];
             for(var index=0;index<keys.length;index++)
                 if(selected.indexOf(keys[index])>=0)output.push(keys[index]);
@@ -706,7 +706,7 @@ fn string_intrinsic_records_current_proxy_regexp_and_typed_array_boundaries() {
         context
             .eval("typeof Proxy+'|'+typeof RegExp+'|'+typeof Uint16Array+'|'+typeof String.prototype.includes")
             .unwrap(),
-        Value::String(JsString::try_from_utf8("undefined|undefined|undefined|undefined").unwrap()),
+        Value::String(JsString::try_from_utf8("undefined|undefined|undefined|function").unwrap()),
         "move the oracle-only vectors into the differential as these surfaces are published",
     );
     // Module namespace and mapped-arguments raw objects remain corresponding

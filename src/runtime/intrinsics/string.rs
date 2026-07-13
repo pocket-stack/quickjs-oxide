@@ -358,4 +358,136 @@ impl Runtime {
 
         Ok(Completion::Return(Value::Int(result)))
     }
+
+    /// Internal-class fallback of pinned QuickJS `js_is_regexp` after an
+    /// object has produced `undefined` for `Symbol.match`.
+    ///
+    /// No RegExp payload is constructible yet. Keep this match exhaustive so
+    /// adding that payload makes the missing `true` branch a compile-time
+    /// integration point instead of silently treating RegExp instances as
+    /// ordinary objects.
+    #[allow(clippy::match_single_binding)]
+    fn native_object_has_regexp_brand(&self, object: &ObjectRef) -> Result<bool, RuntimeError> {
+        let state = self.0.state.borrow();
+        let object = state.heap.object(object.object_id())?;
+        Ok(match &object.payload {
+            ObjectPayload::Ordinary
+            | ObjectPayload::Array
+            | ObjectPayload::ArrayIterator { .. }
+            | ObjectPayload::Primitive(_)
+            | ObjectPayload::GlobalObject { .. }
+            | ObjectPayload::Error
+            | ObjectPayload::StringIterator { .. }
+            | ObjectPayload::NativeFunction { .. }
+            | ObjectPayload::BoundFunction { .. }
+            | ObjectPayload::BytecodeFunction { .. } => false,
+        })
+    }
+
+    /// Rust port of pinned QuickJS `js_is_regexp`: primitives skip the
+    /// `Symbol.match` lookup, objects perform one ordinary Get, a present value
+    /// is converted only with ToBoolean, and `undefined` falls back to the
+    /// internal RegExp brand.
+    fn native_is_regexp(
+        &self,
+        realm: ContextId,
+        value: &Value,
+    ) -> Result<NativeConversion<bool>, RuntimeError> {
+        let Value::Object(object) = value else {
+            return Ok(NativeConversion::Value(false));
+        };
+        let match_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Match));
+        let matcher = match self.get_property_in_realm(realm, object, &match_key)? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        if !matches!(matcher, Value::Undefined) {
+            return Ok(NativeConversion::Value(matcher.to_boolean()));
+        }
+        Ok(NativeConversion::Value(
+            self.native_object_has_regexp_brand(object)?,
+        ))
+    }
+
+    /// Rust port of pinned QuickJS `js_string_includes`, shared by the
+    /// `includes`, `endsWith`, and `startsWith` magic variants.
+    pub(in crate::runtime) fn call_string_prototype_includes(
+        &self,
+        realm: ContextId,
+        selector: StringIncludesKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String includes family did not receive a generic invocation",
+            ));
+        };
+
+        // QuickJS converts the receiver before observing any search-value
+        // property, then performs IsRegExp before converting the search value.
+        let source = match self.native_to_string_check_object(realm, &this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let search_value = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "String includes search argv was not padded",
+        ))?;
+        let is_regexp = match self.native_is_regexp(realm, search_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        if is_regexp {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "regexp not supported",
+            )?));
+        }
+        let needle = match self.native_to_js_string(realm, search_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        let source_len = i32::try_from(source.len()).map_err(|_| {
+            RuntimeError::Invariant("String length exceeded QuickJS's signed index range")
+        })?;
+        let needle_len = i32::try_from(needle.len()).map_err(|_| {
+            RuntimeError::Invariant("String search length exceeded QuickJS's signed index range")
+        })?;
+        let mut position = if selector == StringIncludesKind::EndsWith {
+            source_len
+        } else {
+            0
+        };
+        if arguments.actual_arg_count > 1 {
+            let position_value = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
+                "String includes position argv was not readable",
+            ))?;
+            // Unlike indexOf, the shared QuickJS function explicitly skips an
+            // `undefined` position instead of sending it through ToNumber.
+            if !matches!(position_value, Value::Undefined) {
+                let number = match self.native_to_number(realm, position_value)? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+                position = crate::number::to_int32_sat(number).clamp(0, source_len);
+            }
+        }
+
+        let stop = source_len - needle_len;
+        let found = match selector {
+            StringIncludesKind::Includes => {
+                scan_string_region(&source, &needle, position, stop, 1) >= 0
+            }
+            StringIncludesKind::StartsWith => {
+                position <= stop && string_region_matches(&source, &needle, position)
+            }
+            StringIncludesKind::EndsWith => {
+                let start = position - needle_len;
+                start >= 0 && string_region_matches(&source, &needle, start)
+            }
+        };
+        Ok(Completion::Return(Value::Bool(found)))
+    }
 }

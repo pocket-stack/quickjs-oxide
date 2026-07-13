@@ -975,6 +975,7 @@ pub enum NativeFunctionId {
     StringPrototypeCodePointAt,
     StringPrototypeWellFormed(StringWellFormedKind),
     StringPrototypeIndexOf(StringIndexOfKind),
+    StringPrototypeIncludes(StringIncludesKind),
     IteratorPrototypeIterator,
     IteratorPrototypeToStringTagGetter,
     IteratorPrototypeToStringTagSetter,
@@ -1068,6 +1069,16 @@ pub enum StringWellFormedKind {
 pub enum StringIndexOfKind {
     IndexOf,
     LastIndexOf,
+}
+
+/// QuickJS magic selector shared by `String.prototype.includes`, `endsWith`,
+/// and `startsWith`. The release's table publishes them in that order with
+/// magic values 0, 2, and 1 respectively.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StringIncludesKind {
+    Includes,
+    EndsWith,
+    StartsWith,
 }
 
 /// Static selector shared by `%Symbol%.for` and `%Symbol%.keyFor`.
@@ -1257,6 +1268,7 @@ impl NativeFunctionId {
             | Self::ObjectPrototypeLookupAccessor(_)
             | Self::StringPrototypeCharAt(_)
             | Self::StringPrototypeIndexOf(_)
+            | Self::StringPrototypeIncludes(_)
             | Self::ArrayPrototypeFind(_)
             | Self::ArrayPrototypeIteration(_)
             | Self::ArrayPrototypeReduce(_)

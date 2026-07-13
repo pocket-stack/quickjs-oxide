@@ -571,7 +571,7 @@ claim full parity.
   Boolean, Symbol and BigInt primitives additionally traverse the current
   bytecode realm's implemented matching prototype, preserving the raw
   primitive receiver for strict inherited getters and method calls. String's
-  standard non-index surface is intentionally limited to the first nine
+  standard non-index surface is intentionally limited to the first twelve
   UTF-16/search methods, the conversion pair and `Symbol.iterator` until later
   table slices land.
 - Simple member assignment mirrors QuickJS's lvalue rewrite rather than
@@ -1126,17 +1126,24 @@ claim full parity.
   get-own-property, define-own-property, has-own-property, delete-property and
   own-property-keys; ownKeys merges them with stored numeric, string and symbol
   keys in QuickJS order. The UTF-16 prefix then installs `at`, `charCodeAt`,
-  `charAt`, `concat`, `codePointAt`, `isWellFormed`, `toWellFormed`, `indexOf`
-  and `lastIndexOf` in the pinned table order before the conversion core's
-  exact `toString`/`valueOf` brand methods. These generic methods preserve
+  `charAt`, `concat`, `codePointAt`, `isWellFormed`, `toWellFormed`, `indexOf`,
+  `lastIndexOf`, `includes`, `endsWith` and `startsWith` in the pinned table
+  order before the conversion core's exact `toString`/`valueOf` brand methods.
+  These generic methods preserve
   `JS_ToStringCheckObject`, `JS_ToInt32Sat`, raw UTF-16 code units and lone
   surrogates; concat converts actual arguments sequentially and enforces
   QuickJS's `(1 << 30) - 1` length cap. The index-search pair converts receiver,
   search value and only a present position in that order, scans exact code
   units, and retains QuickJS's distinct `indexOf` clamping and `lastIndexOf`
-  NaN/default-position behavior. Together with `length`, the conversion pair,
-  `Symbol.iterator` and the `constructor` back-reference, this
-  fourteen-key list is only the QuickJS-relative order filtered to implemented
+  NaN/default-position behavior. The regexp-aware `includes`/`endsWith`/
+  `startsWith` family additionally performs `IsRegExp` through `Symbol.match`
+  before search-value conversion, preserves every abrupt-completion boundary,
+  clamps position with `JS_ToInt32Clamp`, and scans UTF-16 code units. Until a
+  RegExp object class lands, the internal-brand fallback remains an exhaustive
+  false branch with pinned oracle-only vectors. Together with `length`, the
+  conversion pair, `Symbol.iterator` and the `constructor`
+  back-reference, this seventeen-key list is only the QuickJS-relative order
+  filtered to implemented
   keys, not a claim of full 53-key ownKeys parity. The callable/constructible
   global `%String%` owns `length`, `name`, lazy `fromCharCode`, `fromCodePoint`
   and `raw`, then the prototype relationship in the pinned order and
@@ -1186,7 +1193,7 @@ claim full parity.
   writes, fixed-name nullish reads, nullish writes, missing bindings, TDZ and
   VarRef descriptor reads, VM `ThrowReadOnly`, and reserved-identifier
   validation.
-  The remaining 39 String-prototype own keys, Context-level observable
+  The remaining 36 String-prototype own keys, Context-level observable
   `ToString`, borrowed C-pointer/refcount ownership, native atom
   diagnostics attached to not-yet-implemented private-field/module/
   global-var/function-declaration surfaces, exact byte-sidecar migration for the remaining
@@ -1678,7 +1685,7 @@ Symbol and BigInt primitive prototype slices; simple member assignment and
 property delete cover ordinary objects and the current primitive surface. The
 separate String exotic, UTF-16-prefix and conversion cores cover branded
 empty-prototype and sloppy-this wrappers, UTF-16 virtual own properties, the
-first nine generic code-unit/search methods, `toString`/`valueOf`,
+first twelve generic code-unit/search methods, `toString`/`valueOf`,
 `Symbol.iterator`, non-index prototype lookup and the implemented
 Object-prototype routes. The global `%String%` constructor, its three statics
 and the prototype relationship complete that constructor's own table. Their
@@ -1693,7 +1700,7 @@ owned WTF-8/CESU-8 payload export. Native Errors additionally share the
 retain exact raw bytes across compiler/VM Error transport. They also implement
 the not-constructor dynamic name plus the current `JS_AtomGetStr`-backed
 read-only/nullish/binding/TDZ/reserved-identifier diagnostics. It does not
-publish the remaining 39 prototype own keys, Context/C pointer embedding
+publish the remaining 36 prototype own keys, Context/C pointer embedding
 semantics, atom diagnostics belonging
 to unimplemented language/builtin surfaces, exact byte-sidecar construction
 for every parser/lexer diagnostic, or general recoverable allocator failures.
@@ -1703,8 +1710,9 @@ identifier and ordinary fixed/computed member References. Sloppy
 direct-identifier delete is implemented
 for the current static scope tree and defining-realm global object. Dynamic
 object-environment lookup/deletion introduced by `with` or direct `eval`, the
-remaining 39 entries of String's 53-key prototype surface, Proxy/exotic
-internal methods, and the full
+remaining 36 entries of String's 53-key prototype surface, the RegExp object
+class needed by `IsRegExp`'s internal-brand fallback, Proxy/exotic internal
+methods, and the full
 `function_accessors.js` fixture are still pending. AggregateError and
 uncatchable termination state are also pending. Array
 destructuring consumers, `with` object-environment
@@ -1725,7 +1733,7 @@ Code organization is also not final. Runtime white-box tests live in
 and sorting implementation now lives in `runtime/intrinsics/array.rs`.
 The Object constructor, implemented statics and implemented prototype handler
 surface now live with `groupBy` in `runtime/intrinsics/object.rs`; the String
-constructor/static table and index-search pair live in
+constructor/static table, index-search pair and regexp-aware includes family live in
 `runtime/intrinsics/string.rs`, while the remaining String initialization and
 handlers still await migration there. The complete VM-to-runtime trait
 adapter, per-frame argument/local/capture storage, iterator protocol bridge and
@@ -1741,7 +1749,7 @@ main runtime file merely to wire a selector. Bytecode draft validation and
 iterative flattening now live in `runtime/bytecode_publish.rs`. The test, Array,
 Object, VM-host, property, native-dispatch and bytecode-publication
 no-semantic-change splits reduced `runtime.rs` from roughly thirty-two thousand
-lines to 9,935 lines. Realm-aware property completion wrappers and storage
+lines to 9,959 lines. Realm-aware property completion wrappers and storage
 helpers, bytecode publication linking and call dispatch, runtime/root lifecycle,
 and the remaining intrinsic families still share the file; `compiler.rs`
 similarly combines several compiler phases.
@@ -1768,6 +1776,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_utf16_prefix -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_index_search -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_string_includes -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_rope -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -1872,7 +1882,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 
 The direct commands above run the dedicated Boolean, Symbol,
 String constructor/static table, String-exotic substrate, String UTF-16 prefix,
-String-conversion core, String-rope/byte/native-Error kernels, Unicode
+String index-search and regexp-aware includes, String-conversion core,
+String-rope/byte/native-Error kernels, Unicode
 identifier core, global
 BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials, and
 the Program-var/function, Program/body/block/switch/classic-for lexical-scope,

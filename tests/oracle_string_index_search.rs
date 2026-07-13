@@ -6,10 +6,10 @@ use quickjs_oxide::{
     OrdinaryPropertyDescriptor, PropertyKey, Runtime, RuntimeError, Value, WellKnownSymbol,
 };
 
-// Pins the first String.prototype slice after `toWellFormed` to QuickJS
-// 2026-06-04. The Rust runtime intentionally does not publish the incomplete
-// global String constructor yet, so executable Rust-side probes obtain these
-// generic methods through a primitive string value rather than `String.prototype`.
+// Pins the adjacent `indexOf`/`lastIndexOf` String.prototype slice to QuickJS
+// 2026-06-04. The complete constructor table is now published, while these
+// probes retain their direct prototype access to isolate the shared search
+// kernel from the later regexp-aware `includes` entry.
 
 const VALUE_CASES: &[(&str, &str)] = &[
     (
@@ -202,7 +202,8 @@ function callableMeta(owner,name) {
     Object.getOwnPropertyNames(value).join(',')+':'+bits(descriptor);
 }
 var selected=['length','at','charCodeAt','charAt','concat','codePointAt',
-  'isWellFormed','toWellFormed','indexOf','lastIndexOf','toString','valueOf'];
+  'isWellFormed','toWellFormed','indexOf','lastIndexOf','includes','endsWith',
+  'startsWith','toString','valueOf'];
 print('keys='+Reflect.ownKeys(String.prototype).filter(function(key){
   return selected.indexOf(key)>=0;
 }).map(String).join(','));
@@ -520,6 +521,9 @@ fn rust_graph_observations() -> Vec<String> {
         "toWellFormed",
         "indexOf",
         "lastIndexOf",
+        "includes",
+        "endsWith",
+        "startsWith",
         "toString",
         "valueOf",
     ];
