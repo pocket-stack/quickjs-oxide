@@ -979,8 +979,9 @@ claim full parity.
   `create`, `getPrototypeOf`, `setPrototypeOf`, `defineProperty`,
   `defineProperties`, `getOwnPropertyNames`, `getOwnPropertySymbols`,
   `groupBy`, `keys`, `values`, `entries`, `isExtensible`,
-  `preventExtensions`; the next entry, `getOwnPropertyDescriptor`, remains the
-  deliberate boundary.
+  `preventExtensions`, `getOwnPropertyDescriptor`,
+  `getOwnPropertyDescriptors`; the next entry, `is`, remains the deliberate
+  boundary.
   Prototype mutation keeps
   same-value success plus exact immutable, non-extensible and cycle failures.
   Descriptor conversion follows QuickJS's inherited field probes and
@@ -1015,8 +1016,8 @@ claim full parity.
   helper reentry path on the default 2 MiB libtest thread, converts deeper
   `values`/`entries` recursion into a catchable `InternalError: stack overflow`.
   Pinned QuickJS permits a much deeper platform-dependent chain, so exact
-  threshold parity and general interleaved-frame protection still require the
-  native-call trampoline. Proxy trap order and invariants remain part of the
+  threshold parity and byte-accurate interleaved-frame accounting still require
+  the native-call trampoline. Proxy trap order and invariants remain part of the
   explicit global Proxy boundary because the runtime does not yet publish
   Proxy objects.
   `isExtensible` and `preventExtensions` preserve QuickJS's deliberate
@@ -1028,8 +1029,26 @@ claim full parity.
   invariants, plus the resizable TypedArray rejection branch, remain explicit
   boundaries until those object kinds exist; the ordinary API is not presented
   as their completion-aware internal method.
-  Anchors: `quickjs.c` 8905-8950, 39796-40409, 40748-40927, 50378-50536,
-  52115-52230, and 56291-56313.
+  Descriptor reads preserve `ToObject` before property-key conversion, never
+  call a stored getter, and publish fresh defining-realm ordinary objects. Data
+  fields are created in `value`, `writable`, `enumerable`, `configurable` order;
+  accessor fields use `get`, `set`, `enumerable`, `configurable`, with every
+  field writable, enumerable and configurable. The plural operation snapshots
+  all own string and Symbol keys once, then re-reads each current descriptor,
+  skips a deleted key, ignores additions, and does not dynamically invoke a
+  monkey-patched singular method. A nine-active-call family guard plus a shared
+  weighted native re-entry budget converts both direct and interleaved
+  property-key coercion into catchable `InternalError: stack overflow` before
+  Rust exhausts the host stack. The weights preserve the previously measured
+  deeper join, sort, slice and flatten ceilings, but pinned QuickJS still
+  permits platform-dependent chains, so exact byte-threshold parity requires
+  the native-call trampoline. Proxy descriptor traps/invariants, integer-indexed
+  TypedArray details, arguments and module-namespace exotic descriptors remain
+  explicit object-model boundaries. Future Proxy work must preserve two pinned
+  deviations: incomplete identity checks for some frozen descriptors, and the
+  nested-Proxy undefined-trap path which bypasses target `[[IsExtensible]]`.
+  Anchors: `quickjs.c` 8905-8950, 39796-40409, 40142-40255, 40748-40927,
+  50728-50831, 50992-51107, 52115-52230, and 56291-56313.
 - Shape caches are weak and unlink by finalized generational Shape ID. Shape
   and Symbol atom ownership is paired through heap cleanup, including failure
   paths and runtime teardown.
@@ -1622,7 +1641,7 @@ object-environment lookup/deletion introduced by `with` or direct `eval`, the
 global String constructor, the remaining 40 entries of its 53-key prototype
 surface, Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. The Object static table after
-`preventExtensions`, AggregateError, and uncatchable termination state are
+`getOwnPropertyDescriptors`, AggregateError, and uncatchable termination state are
 also pending. Array destructuring consumers, `with` object-environment
 semantics, other
 iterator classes and helpers,
@@ -1727,6 +1746,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_enumeration -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_extensibility -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_object_descriptors -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_search -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

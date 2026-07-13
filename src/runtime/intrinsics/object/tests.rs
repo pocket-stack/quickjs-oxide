@@ -220,6 +220,200 @@ fn object_extensibility_preserves_primitives_and_updates_only_the_object_bit() {
 }
 
 #[test]
+fn object_descriptor_statics_autoinit_preserve_pinned_metadata() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let global = context.global_object().unwrap();
+    let object_key = runtime.intern_property_key("Object").unwrap();
+    let Value::Object(object_constructor) = context.get_property(&global, &object_key).unwrap()
+    else {
+        panic!("global Object was not an object");
+    };
+
+    for (name, target, length, min_readable_args) in [
+        (
+            "getOwnPropertyDescriptor",
+            NativeFunctionId::ObjectGetOwnPropertyDescriptor,
+            2,
+            2,
+        ),
+        (
+            "getOwnPropertyDescriptors",
+            NativeFunctionId::ObjectGetOwnPropertyDescriptors,
+            1,
+            1,
+        ),
+    ] {
+        let key = runtime.intern_property_key(name).unwrap();
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(object_constructor.object_id()).unwrap();
+        let shape = state.heap.shape(object.shape).unwrap();
+        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        assert_eq!(
+            shape.entries()[slot_index].flags,
+            PropertyFlags::data(true, false, true),
+        );
+        assert!(matches!(
+            object.slots.get(slot_index),
+            Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                realm,
+                target: actual_target,
+                name: target_name,
+                length: actual_length,
+                min_readable_args: actual_min_readable_args,
+            })) if *realm == context.realm
+                && *actual_target == target
+                && *target_name == name
+                && *actual_length == length
+                && *actual_min_readable_args == min_readable_args
+        ));
+    }
+}
+
+#[test]
+fn object_descriptor_statics_publish_complete_fields_without_calling_accessors() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let result = context
+        .eval(
+            r#"(function(){
+                var calls=0,target=Object();
+                var dataDescriptor=Object();
+                dataDescriptor.value=17;dataDescriptor.writable=false;
+                dataDescriptor.enumerable=false;dataDescriptor.configurable=true;
+                Object.defineProperty(target,"data",dataDescriptor);
+                function getter(){calls++;return 23}
+                var accessorDescriptor=Object();
+                accessorDescriptor.get=getter;accessorDescriptor.set=undefined;
+                accessorDescriptor.enumerable=true;accessorDescriptor.configurable=false;
+                Object.defineProperty(target,"accessor",accessorDescriptor);
+                var data=Object.getOwnPropertyDescriptor(target,"data");
+                var accessor=Object.getOwnPropertyDescriptor(target,"accessor");
+                var missing=Object.getOwnPropertyDescriptor(target,"missing");
+                var all=Object.getOwnPropertyDescriptors(target);
+                var valueField=Object.getOwnPropertyDescriptor(data,"value");
+                return Object.keys(data).join(",")+"|"+
+                    [data.value,data.writable,data.enumerable,data.configurable].join(",")+"|"+
+                    Object.keys(accessor).join(",")+"|"+
+                    [accessor.get===getter,accessor.set===undefined,
+                     accessor.enumerable,accessor.configurable,calls].join(",")+"|"+
+                    (missing===undefined)+"|"+Object.keys(all).join(",")+"|"+
+                    [valueField.writable,valueField.enumerable,valueField.configurable].join(",");
+            })()"#,
+        )
+        .unwrap();
+    assert_eq!(
+        result,
+        Value::String(JsString::from_static(
+            "value,writable,enumerable,configurable|17,false,false,true|get,set,enumerable,configurable|true,true,true,false,0|true|data,accessor|true,true,true",
+        )),
+    );
+}
+
+#[test]
+fn recursive_object_descriptor_key_coercion_is_catchable_before_host_stack_exhaustion() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    context
+        .eval(
+            r#"var descriptorTarget=Object();descriptorTarget.x=1;
+               function objectDescriptorRecurse(depth){
+                   var key=Object();
+                   key[Symbol.toPrimitive]=function(hint){
+                       if(hint!=="string")throw "bad hint";
+                       if(depth!==0)objectDescriptorRecurse(depth-1);
+                       return "x";
+                   };
+                   return Object.getOwnPropertyDescriptor(descriptorTarget,key).value;
+               }
+               function objectDescriptorMixedRecurse(depth){
+                   var key=Object();
+                   key[Symbol.toPrimitive]=function(){
+                       if(depth!==0){
+                           var holder=Object(),descriptor=Object();
+                           descriptor.enumerable=true;
+                           descriptor.get=function(){
+                               return objectDescriptorMixedRecurse(depth-1);
+                           };
+                           Object.defineProperty(holder,"value",descriptor);
+                           Object.values(holder);
+                       }
+                       return "x";
+                   };
+                   return Object.getOwnPropertyDescriptor(descriptorTarget,key).value;
+               }
+               function objectDescriptorGroupByRecurse(depth){
+                   var key=Object();
+                   key[Symbol.toPrimitive]=function(){
+                       if(depth!==0)Object.groupBy([1],function(){
+                           objectDescriptorGroupByRecurse(depth-1);
+                           return "group";
+                       });
+                       return "x";
+                   };
+                   return Object.getOwnPropertyDescriptor(descriptorTarget,key).value;
+               }
+               function objectDescriptorDefineRecurse(depth){
+                   var key=Object();
+                   key[Symbol.toPrimitive]=function(){
+                       if(depth!==0){
+                           var holder=Object(),descriptor=Object();
+                           descriptor.enumerable=true;
+                           descriptor.__defineGetter__("value",function(){
+                               return objectDescriptorDefineRecurse(depth-1);
+                           });
+                           Object.defineProperty(holder,"value",descriptor);
+                       }
+                       return "x";
+                   };
+                   return Object.getOwnPropertyDescriptor(descriptorTarget,key).value;
+               }"#,
+        )
+        .unwrap();
+    assert_eq!(
+        context.eval("objectDescriptorRecurse(8)").unwrap(),
+        Value::Int(1),
+    );
+    for depth in [9, 10, 11] {
+        let value = context
+            .eval(&format!(
+                r#"(function(){{
+                    try{{objectDescriptorRecurse({depth});return "missing"}}
+                    catch(error){{return error.name+":"+error.message}}
+                }})()"#,
+            ))
+            .unwrap();
+        assert_eq!(
+            value,
+            Value::String(JsString::from_static("InternalError:stack overflow")),
+        );
+    }
+    for name in [
+        "objectDescriptorMixedRecurse",
+        "objectDescriptorGroupByRecurse",
+        "objectDescriptorDefineRecurse",
+    ] {
+        assert_eq!(context.eval(&format!("{name}(4)")).unwrap(), Value::Int(1),);
+        for depth in [5, 6, 7] {
+            let value = context
+                .eval(&format!(
+                    r#"(function(){{
+                        try{{{name}({depth});return "missing"}}
+                        catch(error){{return error.name+":"+error.message}}
+                    }})()"#,
+                ))
+                .unwrap();
+            assert_eq!(
+                value,
+                Value::String(JsString::from_static("InternalError:stack overflow")),
+                "mixed native recursion path {name} at depth {depth}",
+            );
+        }
+    }
+    assert_eq!(context.eval("1+1").unwrap(), Value::Int(2));
+}
+
+#[test]
 fn object_keys_descriptor_recheck_materializes_non_enumerable_autoinits() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();

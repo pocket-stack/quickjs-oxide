@@ -10137,6 +10137,43 @@ impl Runtime {
         // deterministic call-entry ceiling on recursive native/callback paths.
         // Preserve a catchable JavaScript stack-overflow completion without
         // risking the host stack.
+        let native_stack_weight = |target| match target {
+            NativeFunctionId::ArrayPrototypeJoin(_) | NativeFunctionId::ArrayPrototypeToString => {
+                1_usize
+            }
+            NativeFunctionId::ArrayPrototypeSort | NativeFunctionId::ArrayPrototypeToSorted => 4,
+            NativeFunctionId::ArrayPrototypeSlice(_)
+            | NativeFunctionId::ArrayPrototypeToSpliced => 16,
+            NativeFunctionId::ArrayPrototypeFlatten(_) => 9,
+            NativeFunctionId::ObjectGroupBy
+            | NativeFunctionId::ObjectKeys(_)
+            | NativeFunctionId::ObjectGetOwnPropertyDescriptor => 8,
+            _ => 8,
+        };
+        let active_native_cost = self
+            .0
+            .state
+            .borrow()
+            .active_frames
+            .iter()
+            .filter_map(|frame| {
+                let ActiveFrameKind::Native { target, .. } = frame.kind else {
+                    return None;
+                };
+                Some(native_stack_weight(target))
+            })
+            .sum::<usize>();
+        // A family-only ceiling can be bypassed by alternating different
+        // callback-capable builtins. The weighted budget preserves the deeper
+        // proven-safe join/sort chains while charging unclassified native
+        // frames conservatively. It remains a deterministic approximation of
+        // QuickJS's real platform-stack check until native calls are
+        // trampolined.
+        // Leave room for one leaf native operation (for example an iterator
+        // `next`) at a family's proven-safe recursion ceiling.
+        if active_native_cost.saturating_add(native_stack_weight(target)) > 80 {
+            return true;
+        }
         let limit = match target {
             NativeFunctionId::ArrayPrototypeJoin(_) | NativeFunctionId::ArrayPrototypeToString => {
                 64
@@ -10149,6 +10186,8 @@ impl Runtime {
             // The heaviest measured getter-reentry path can exhaust a 2 MiB
             // host thread while entering the tenth family frame.
             NativeFunctionId::ObjectKeys(_) => 9,
+            // ToPropertyKey may recursively re-enter through @@toPrimitive.
+            NativeFunctionId::ObjectGetOwnPropertyDescriptor => 9,
             _ => return false,
         };
 
@@ -10182,6 +10221,9 @@ impl Runtime {
             }
             NativeFunctionId::ObjectKeys(_) => {
                 matches!(candidate, NativeFunctionId::ObjectKeys(_))
+            }
+            NativeFunctionId::ObjectGetOwnPropertyDescriptor => {
+                matches!(candidate, NativeFunctionId::ObjectGetOwnPropertyDescriptor)
             }
             _ => false,
         };
@@ -11712,6 +11754,12 @@ impl Runtime {
             }
             NativeFunctionId::ObjectExtensibility(kind) => {
                 self.call_object_extensibility(kind, invocation, arguments)
+            }
+            NativeFunctionId::ObjectGetOwnPropertyDescriptor => {
+                self.call_object_get_own_property_descriptor(realm, invocation, arguments)
+            }
+            NativeFunctionId::ObjectGetOwnPropertyDescriptors => {
+                self.call_object_get_own_property_descriptors(realm, invocation, arguments)
             }
             NativeFunctionId::ObjectPrototypeToString => {
                 self.call_object_prototype_to_string(realm, invocation)

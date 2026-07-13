@@ -509,6 +509,18 @@ impl Runtime {
                 1,
                 1,
             ),
+            (
+                NativeFunctionId::ObjectGetOwnPropertyDescriptor,
+                "getOwnPropertyDescriptor",
+                2,
+                2,
+            ),
+            (
+                NativeFunctionId::ObjectGetOwnPropertyDescriptors,
+                "getOwnPropertyDescriptors",
+                1,
+                1,
+            ),
         ] {
             self.define_native_builtin_auto_init(
                 constructor.as_object(),
@@ -1275,6 +1287,205 @@ impl Runtime {
                 Ok(Completion::Return(value))
             }
         }
+    }
+
+    fn new_object_descriptor_result(&self, realm: ContextId) -> Result<ObjectRef, RuntimeError> {
+        let prototype = self.0.state.borrow().heap.context(realm)?.object_prototype;
+        let prototype = ObjectRef::from_borrowed_handle(self.clone(), prototype)?;
+        self.new_object(Some(&prototype))
+    }
+
+    fn define_fresh_object_descriptor_property(
+        &self,
+        object: &ObjectRef,
+        key: &PropertyKey,
+        value: Value,
+        rejection: &'static str,
+    ) -> Result<(), RuntimeError> {
+        if !self.define_own_property(
+            object,
+            key,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(value),
+                writable: DescriptorField::Present(true),
+                enumerable: DescriptorField::Present(true),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )? {
+            return Err(RuntimeError::Invariant(rejection));
+        }
+        Ok(())
+    }
+
+    fn complete_descriptor_to_object(
+        &self,
+        realm: ContextId,
+        descriptor: CompleteOrdinaryPropertyDescriptor,
+    ) -> Result<ObjectRef, RuntimeError> {
+        let object = self.new_object_descriptor_result(realm)?;
+        let mut fields = Vec::with_capacity(4);
+        match descriptor {
+            CompleteOrdinaryPropertyDescriptor::Data {
+                value,
+                writable,
+                enumerable,
+                configurable,
+            } => {
+                fields.push(("value", value));
+                fields.push(("writable", Value::Bool(writable)));
+                fields.push(("enumerable", Value::Bool(enumerable)));
+                fields.push(("configurable", Value::Bool(configurable)));
+            }
+            CompleteOrdinaryPropertyDescriptor::Accessor {
+                get,
+                set,
+                enumerable,
+                configurable,
+            } => {
+                fields.push((
+                    "get",
+                    get.map_or(Value::Undefined, |value| Value::Object(value.into_object())),
+                ));
+                fields.push((
+                    "set",
+                    set.map_or(Value::Undefined, |value| Value::Object(value.into_object())),
+                ));
+                fields.push(("enumerable", Value::Bool(enumerable)));
+                fields.push(("configurable", Value::Bool(configurable)));
+            }
+        }
+        for (name, value) in fields {
+            let key = self.intern_property_key(name)?;
+            self.define_fresh_object_descriptor_property(
+                &object,
+                &key,
+                value,
+                "fresh property descriptor object rejected a field",
+            )?;
+        }
+        Ok(object)
+    }
+
+    fn object_get_own_property_descriptor_value(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+        key: &PropertyKey,
+    ) -> Result<Value, RuntimeError> {
+        let Some(descriptor) = self.get_own_property(object, key)? else {
+            return Ok(Value::Undefined);
+        };
+        Ok(Value::Object(
+            self.complete_descriptor_to_object(realm, descriptor)?,
+        ))
+    }
+
+    pub(in crate::runtime) fn call_object_get_own_property_descriptor(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Object.getOwnPropertyDescriptor did not receive a generic invocation",
+            ));
+        };
+        let target = arguments
+            .readable
+            .first()
+            .cloned()
+            .ok_or(RuntimeError::Invariant(
+                "Object.getOwnPropertyDescriptor target argv was not padded",
+            ))?;
+        let object = match self.native_to_object(realm, target)? {
+            NativeConversion::Value(object) => object,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let key = match self.native_to_property_key(
+            realm,
+            arguments
+                .readable
+                .get(1)
+                .cloned()
+                .ok_or(RuntimeError::Invariant(
+                    "Object.getOwnPropertyDescriptor key argv was not padded",
+                ))?,
+        )? {
+            NativeConversion::Value(key) => key,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        Ok(Completion::Return(
+            self.object_get_own_property_descriptor_value(realm, &object, &key)?,
+        ))
+    }
+
+    fn object_property_key_value(&self, key: &PropertyKey) -> Result<Value, RuntimeError> {
+        let kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
+        match kind {
+            PropertyKeyKind::String => Ok(Value::String(
+                self.0.state.borrow().atoms.to_js_string(key.atom())?,
+            )),
+            PropertyKeyKind::Symbol => Ok(Value::Symbol(SymbolRef::from_borrowed_atom(
+                self.clone(),
+                key.atom(),
+            )?)),
+            PropertyKeyKind::Private => Err(RuntimeError::Invariant(
+                "private key escaped into Object.getOwnPropertyDescriptors",
+            )),
+        }
+    }
+
+    pub(in crate::runtime) fn call_object_get_own_property_descriptors(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Object.getOwnPropertyDescriptors did not receive a generic invocation",
+            ));
+        };
+        let target = arguments
+            .readable
+            .first()
+            .cloned()
+            .ok_or(RuntimeError::Invariant(
+                "Object.getOwnPropertyDescriptors argv was not padded",
+            ))?;
+        let object = match self.native_to_object(realm, target)? {
+            NativeConversion::Value(object) => object,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let keys = self.own_property_keys(&object)?;
+        let result = self.new_object_descriptor_result(realm)?;
+        for key in keys {
+            // QuickJS routes every snapshotted atom back through the singular
+            // helper, so the current descriptor is re-read before publication.
+            let key_value = self.object_property_key_value(&key)?;
+            let descriptor_key = match self.native_to_property_key(realm, key_value)? {
+                NativeConversion::Value(key) => key,
+                NativeConversion::Throw(_) => {
+                    return Err(RuntimeError::Invariant(
+                        "snapshotted property key conversion threw",
+                    ));
+                }
+            };
+            let descriptor =
+                self.object_get_own_property_descriptor_value(realm, &object, &descriptor_key)?;
+            if matches!(descriptor, Value::Undefined) {
+                continue;
+            }
+            self.define_fresh_object_descriptor_property(
+                &result,
+                &key,
+                descriptor,
+                "fresh Object.getOwnPropertyDescriptors result rejected a property",
+            )?;
+        }
+        Ok(Completion::Return(Value::Object(result)))
     }
 
     pub(in crate::runtime) fn call_object_prototype_has_own_property(

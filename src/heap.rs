@@ -938,6 +938,8 @@ pub enum NativeFunctionId {
     ObjectGroupBy,
     ObjectKeys(ObjectKeysKind),
     ObjectExtensibility(ObjectExtensibilityKind),
+    ObjectGetOwnPropertyDescriptor,
+    ObjectGetOwnPropertyDescriptors,
     ObjectPrototypeToString,
     ObjectPrototypeToLocaleString,
     ObjectPrototypeValueOf,
@@ -1175,6 +1177,7 @@ impl NativeFunctionId {
             | Self::ObjectSetPrototypeOf
             | Self::ObjectDefineProperties
             | Self::ObjectGetOwnPropertyKeys(_)
+            | Self::ObjectGetOwnPropertyDescriptors
             | Self::ObjectPrototypeToString
             | Self::ObjectPrototypeToLocaleString
             | Self::ObjectPrototypeValueOf
@@ -1217,6 +1220,7 @@ impl NativeFunctionId {
             | Self::ObjectGroupBy
             | Self::ObjectKeys(_)
             | Self::ObjectExtensibility(_)
+            | Self::ObjectGetOwnPropertyDescriptor
             | Self::ObjectPrototypeDefineAccessor(_)
             | Self::ObjectPrototypeLookupAccessor(_)
             | Self::StringPrototypeCharAt(_)
@@ -4243,6 +4247,7 @@ mod tests {
             NativeFunctionId::ObjectDefineProperties,
             NativeFunctionId::ObjectGetOwnPropertyKeys(ObjectOwnPropertyKeysKind::Names),
             NativeFunctionId::ObjectGetOwnPropertyKeys(ObjectOwnPropertyKeysKind::Symbols),
+            NativeFunctionId::ObjectGetOwnPropertyDescriptors,
             NativeFunctionId::ObjectPrototypeHasOwnProperty,
             NativeFunctionId::ObjectPrototypeIsPrototypeOf,
             NativeFunctionId::ObjectPrototypePropertyIsEnumerable,
@@ -4260,6 +4265,7 @@ mod tests {
             NativeFunctionId::ObjectKeys(ObjectKeysKind::Entries),
             NativeFunctionId::ObjectExtensibility(ObjectExtensibilityKind::IsExtensible),
             NativeFunctionId::ObjectExtensibility(ObjectExtensibilityKind::PreventExtensions),
+            NativeFunctionId::ObjectGetOwnPropertyDescriptor,
             NativeFunctionId::ObjectPrototypeDefineAccessor(ObjectAccessorKind::Getter),
             NativeFunctionId::ObjectPrototypeDefineAccessor(ObjectAccessorKind::Setter),
             NativeFunctionId::ObjectPrototypeLookupAccessor(ObjectAccessorKind::Getter),
