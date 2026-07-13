@@ -966,6 +966,7 @@ pub enum NativeFunctionId {
     ObjectPrototypeDefineAccessor(ObjectAccessorKind),
     ObjectPrototypeLookupAccessor(ObjectAccessorKind),
     PrimitiveConstructor(PrimitiveKind),
+    StringStatic(StringStaticKind),
     PrimitivePrototypeToString(PrimitiveKind),
     PrimitivePrototypeValueOf(PrimitiveKind),
     StringPrototypeCharAt(StringCharAtKind),
@@ -1031,6 +1032,16 @@ pub enum PrimitiveKind {
 pub enum BigIntAsNKind {
     AsUintN,
     AsIntN,
+}
+
+/// Static operation selected by QuickJS's `%String%` constructor table.
+/// Each entry uses the generic C function protocol, while retaining a typed
+/// identity for runtime dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StringStaticKind {
+    FromCharCode,
+    FromCodePoint,
+    Raw,
 }
 
 /// QuickJS's magic selector shared by `String.prototype.at` and
@@ -1205,6 +1216,7 @@ impl NativeFunctionId {
             | Self::ObjectPrototypePropertyIsEnumerable
             | Self::PrimitivePrototypeToString(_)
             | Self::PrimitivePrototypeValueOf(_)
+            | Self::StringStatic(_)
             | Self::StringPrototypeCharCodeAt
             | Self::StringPrototypeConcat
             | Self::StringPrototypeCodePointAt
@@ -4110,6 +4122,18 @@ mod tests {
             NativeCProto::IteratorNext
         );
         assert!(!NativeCProto::IteratorNext.default_is_constructor());
+    }
+
+    #[test]
+    fn string_static_native_selectors_use_pinned_cproto() {
+        for target in [
+            NativeFunctionId::StringStatic(StringStaticKind::FromCharCode),
+            NativeFunctionId::StringStatic(StringStaticKind::FromCodePoint),
+            NativeFunctionId::StringStatic(StringStaticKind::Raw),
+        ] {
+            assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
     }
 
     #[test]

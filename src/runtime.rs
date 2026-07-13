@@ -39,7 +39,8 @@ use crate::heap::{
     ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind,
     ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind,
     PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCharAtKind, StringIndexOfKind,
-    StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
+    StringStaticKind, StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId,
+    VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -860,6 +861,13 @@ impl Runtime {
             &string_iterator_prototype,
         )
         .expect("String iterator intrinsic initialization must succeed");
+        self.initialize_string_constructor_intrinsic(
+            realm,
+            &function_prototype,
+            &string_prototype,
+            &global_object,
+        )
+        .expect("String constructor intrinsic initialization must succeed");
         self.initialize_symbol_intrinsic(
             realm,
             &function_prototype,
@@ -870,7 +878,8 @@ impl Runtime {
         // Upstream installs `globalThis` after String/Math/Reflect/Symbol and
         // generator setup, then installs BigInt. The remaining intervening
         // intrinsics are absent here, but this boundary preserves the
-        // implemented `Boolean, Symbol, globalThis, BigInt` relative order.
+        // implemented `Boolean, String, Symbol, globalThis, BigInt` relative
+        // order.
         self.initialize_global_this(&global_object)
             .expect("globalThis initialization must succeed");
         self.initialize_bigint_intrinsic(
@@ -1845,9 +1854,9 @@ impl Runtime {
         self.define_constructor_relationship(&constructor, boolean_prototype)
     }
 
-    /// Install the implemented String conversion pair without publishing the
-    /// incomplete global constructor. This is not the prefix of QuickJS's
-    /// 53-key table: these two brand methods are also the observable
+    /// Install the implemented String conversion pair before the constructor
+    /// relationship is published later in bootstrap. This is not the prefix of
+    /// QuickJS's 53-key table: these two brand methods are also the observable
     /// ordinary-ToPrimitive dependency for every generic String prototype
     /// method. The UTF-16 prefix is already installed first; remaining String
     /// slices must continue to enter in pinned table order before this pair
@@ -1992,8 +2001,8 @@ impl Runtime {
     }
 
     /// Install QuickJS's first nine String prototype methods in exact table
-    /// order. They precede the conversion brand pair on every fresh realm,
-    /// even though the still-incomplete global `%String%` is not published.
+    /// order. They precede the conversion brand pair and the later published
+    /// constructor relationship on every fresh realm.
     fn initialize_string_utf16_prefix(
         &self,
         realm: ContextId,
@@ -7013,7 +7022,9 @@ impl Runtime {
             | NativeFunctionId::ObjectKeys(_)
             | NativeFunctionId::ObjectGetOwnPropertyDescriptor
             | NativeFunctionId::ObjectHasOwn
-            | NativeFunctionId::ObjectAssign => 8,
+            | NativeFunctionId::ObjectAssign
+            | NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
+            | NativeFunctionId::StringStatic(_) => 8,
             // A key-coercion reentry retains the iterator, entry, result and
             // conversion stacks at once, making this family comparable to the
             // heaviest slice/splice native paths on a 2 MiB libtest thread.
@@ -7065,6 +7076,10 @@ impl Runtime {
             NativeFunctionId::ObjectHasOwn => 9,
             NativeFunctionId::ObjectAssign => 9,
             NativeFunctionId::ObjectFromEntries => 4,
+            // ToString, ToNumber and String.raw's property/conversion path can
+            // all re-enter any other member of this constructor family.
+            NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
+            | NativeFunctionId::StringStatic(_) => 9,
             _ => return false,
         };
 
@@ -7111,6 +7126,12 @@ impl Runtime {
             NativeFunctionId::ObjectFromEntries => {
                 matches!(candidate, NativeFunctionId::ObjectFromEntries)
             }
+            NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
+            | NativeFunctionId::StringStatic(_) => matches!(
+                candidate,
+                NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
+                    | NativeFunctionId::StringStatic(_)
+            ),
             _ => false,
         };
         self.0
@@ -7189,7 +7210,23 @@ impl Runtime {
                 };
                 Value::number(value)
             }
-            PrimitiveKind::String | PrimitiveKind::Symbol | PrimitiveKind::BigInt => {
+            PrimitiveKind::String if arguments.actual_arg_count == 0 => {
+                Value::String(JsString::from_static(""))
+            }
+            PrimitiveKind::String => {
+                let value = if matches!(new_target, Value::Undefined)
+                    && let Value::Symbol(symbol) = argument
+                {
+                    self.symbol_descriptive_string(symbol)?
+                } else {
+                    match self.native_to_js_string(realm, argument)? {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                };
+                Value::String(value)
+            }
+            PrimitiveKind::Symbol | PrimitiveKind::BigInt => {
                 return Err(RuntimeError::Invariant(
                     "unimplemented primitive constructor reached native dispatch",
                 ));
@@ -7865,16 +7902,9 @@ impl Runtime {
             (PrimitiveKind::Boolean, Value::Bool(value)) => Ok(Completion::Return(Value::String(
                 JsString::from_static(if value { "true" } else { "false" }),
             ))),
-            (PrimitiveKind::Symbol, Value::Symbol(value)) => {
-                let description = self
-                    .symbol_description(&value)?
-                    .unwrap_or_else(|| JsString::from_static(""));
-                Ok(Completion::Return(Value::String(
-                    JsString::from_static("Symbol(")
-                        .try_concat(&description)?
-                        .try_concat(&JsString::from_static(")"))?,
-                )))
-            }
+            (PrimitiveKind::Symbol, Value::Symbol(value)) => Ok(Completion::Return(Value::String(
+                self.symbol_descriptive_string(&value)?,
+            ))),
             (PrimitiveKind::BigInt, Value::BigInt(value)) => {
                 let radix_argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
                     "BigInt.prototype.toString argv was not padded",
