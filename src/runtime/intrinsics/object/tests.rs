@@ -427,6 +427,166 @@ fn object_assign_autoinit_and_ordinary_snapshot_semantics_match_pinned_quickjs()
 }
 
 #[test]
+fn object_from_entries_autoinit_preserves_pinned_metadata() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let global = context.global_object().unwrap();
+    let object_key = runtime.intern_property_key("Object").unwrap();
+    let Value::Object(object_constructor) = context.get_property(&global, &object_key).unwrap()
+    else {
+        panic!("global Object was not an object");
+    };
+
+    let key = runtime.intern_property_key("fromEntries").unwrap();
+    let state = runtime.0.state.borrow();
+    let object = state.heap.object(object_constructor.object_id()).unwrap();
+    let shape = state.heap.shape(object.shape).unwrap();
+    let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+    assert_eq!(
+        shape.entries()[slot_index].flags,
+        PropertyFlags::data(true, false, true),
+    );
+    assert!(matches!(
+        object.slots.get(slot_index),
+        Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+            realm,
+            target: NativeFunctionId::ObjectFromEntries,
+            name: "fromEntries",
+            length: 1,
+            min_readable_args: 1,
+        })) if *realm == context.realm
+    ));
+}
+
+#[test]
+fn object_from_entries_orders_entry_reads_and_closes_preserving_the_original_throw() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let result = context
+        .eval(
+            r#"(function(){
+                var log="",step=0,key=Object(),entry=Object(),iterator=Object(),iterable=Object();
+                key[Symbol.toPrimitive]=function(hint){log+="key:"+hint+";";return "x"};
+                entry.__defineGetter__("0",function(){log+="entry0;";return key});
+                entry.__defineGetter__("1",function(){log+="entry1;";return 42});
+                iterator.__defineGetter__("next",function(){
+                    log+="next-get;";
+                    return function(){
+                        var record=Object();
+                        log+="next-call;";
+                        if(step++){
+                            record.__defineGetter__("done",function(){log+="done2;";return true});
+                            record.__defineGetter__("value",function(){log+="value2;";return 99});
+                        }else{
+                            record.__defineGetter__("done",function(){log+="done1;";return false});
+                            record.__defineGetter__("value",function(){log+="value1;";return entry});
+                        }
+                        return record;
+                    };
+                });
+                iterable.__defineGetter__(Symbol.iterator,function(){
+                    log+="iterator-get;";
+                    return function(){log+="iterator-call;";return iterator};
+                });
+                var created=Object.fromEntries(iterable);
+                var ordered=log+"|"+created.x;
+
+                function fail(stage){
+                    var closeLog="",original=Object(),replacement=Object();
+                    var source=Object(),current=Object();
+                    source[Symbol.iterator]=function(){return current};
+                    current.__defineGetter__("return",function(){
+                        closeLog+="return-get;";
+                        return function(){closeLog+="return-call;";throw replacement};
+                    });
+                    if(stage==="next"){
+                        current.__defineGetter__("next",function(){
+                            closeLog+="next-get;";throw original;
+                        });
+                    }else{
+                        current.next=function(){
+                            var record=Object(),pair=Object();
+                            closeLog+="next-call;";
+                            pair.__defineGetter__("0",function(){closeLog+="entry0;";return "y"});
+                            pair.__defineGetter__("1",function(){closeLog+="entry1;";throw original});
+                            record.done=false;record.value=pair;return record;
+                        };
+                    }
+                    try{Object.fromEntries(source);return "missing"}
+                    catch(error){return closeLog+(error===original)}
+                }
+
+                return ordered+"|"+fail("next")+"|"+fail("entry");
+            })()"#,
+        )
+        .unwrap();
+    assert_eq!(
+        result,
+        Value::String(JsString::from_static(
+            "iterator-get;iterator-call;next-get;next-call;done1;value1;entry0;entry1;key:string;next-call;done2;|42|next-get;return-get;return-call;true|next-call;entry0;entry1;return-get;return-call;true",
+        )),
+    );
+}
+
+#[test]
+fn recursive_object_from_entries_ceiling_is_catchable_and_runtime_recovers() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    context
+        .eval(
+            r#"var objectFromEntriesCloseCount=0;
+                function objectFromEntriesRecurse(depth){
+                    var key=Object();
+                    key[Symbol.toPrimitive]=function(){
+                        if(depth!==0)objectFromEntriesRecurse(depth-1);
+                        return "x";
+                    };
+                    var done=false,pair=[key,depth],iterator=Object(),iterable=Object();
+                    iterator.next=function(){
+                        var record=Object();
+                        record.done=done;
+                        if(!done){done=true;record.value=pair}
+                        return record;
+                    };
+                    iterator.return=function(){
+                        objectFromEntriesCloseCount++;
+                        return Object();
+                    };
+                    iterable[Symbol.iterator]=function(){return iterator};
+                    return Object.fromEntries(iterable).x;
+                }"#,
+        )
+        .unwrap();
+
+    assert_eq!(
+        context
+            .eval("objectFromEntriesCloseCount=0;objectFromEntriesRecurse(3)")
+            .unwrap(),
+        Value::Int(3),
+    );
+    assert_eq!(eval_int(&mut context, "objectFromEntriesCloseCount"), 0);
+    for depth in [4, 5, 6] {
+        let value = context
+            .eval(&format!(
+                r#"(function(){{
+                    objectFromEntriesCloseCount=0;
+                    try{{objectFromEntriesRecurse({depth});return "missing"}}
+                    catch(error){{
+                        return error.name+":"+error.message+"|"+objectFromEntriesCloseCount;
+                    }}
+                }})()"#,
+            ))
+            .unwrap();
+        assert_eq!(
+            value,
+            Value::String(JsString::from_static("InternalError:stack overflow|4")),
+            "Object.fromEntries recursion depth {depth}",
+        );
+    }
+    assert_eq!(context.eval("1+1").unwrap(), Value::Int(2));
+}
+
+#[test]
 fn object_integrity_autoinit_materializes_and_tightens_in_pinned_order() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();

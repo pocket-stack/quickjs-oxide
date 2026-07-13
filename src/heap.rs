@@ -953,6 +953,7 @@ pub enum NativeFunctionId {
     ObjectIs,
     ObjectAssign,
     ObjectIntegrity(ObjectIntegrityKind),
+    ObjectFromEntries,
     ObjectPrototypeToString,
     ObjectPrototypeToLocaleString,
     ObjectPrototypeValueOf,
@@ -1193,6 +1194,7 @@ impl NativeFunctionId {
             | Self::ObjectGetOwnPropertyDescriptors
             | Self::ObjectIs
             | Self::ObjectAssign
+            | Self::ObjectFromEntries
             | Self::ObjectPrototypeToString
             | Self::ObjectPrototypeToLocaleString
             | Self::ObjectPrototypeValueOf
@@ -4266,6 +4268,7 @@ mod tests {
             NativeFunctionId::ObjectGetOwnPropertyDescriptors,
             NativeFunctionId::ObjectIs,
             NativeFunctionId::ObjectAssign,
+            NativeFunctionId::ObjectFromEntries,
             NativeFunctionId::ObjectPrototypeHasOwnProperty,
             NativeFunctionId::ObjectPrototypeIsPrototypeOf,
             NativeFunctionId::ObjectPrototypePropertyIsEnumerable,

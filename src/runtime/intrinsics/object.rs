@@ -5,7 +5,7 @@ use super::super::*;
 #[cfg(test)]
 mod tests;
 
-enum ObjectGroupByIteratorStep {
+enum ObjectIteratorStep {
     Yield(Value),
     Done,
     Throw(Value),
@@ -133,18 +133,17 @@ impl Runtime {
                 return Ok(Completion::Throw(exception));
             }
 
-            let value =
-                match self.object_group_by_iterator_next(realm, &iterator, next_method.clone())? {
-                    ObjectGroupByIteratorStep::Yield(value) => value,
-                    ObjectGroupByIteratorStep::Done => {
-                        return Ok(Completion::Return(Value::Object(groups)));
-                    }
-                    ObjectGroupByIteratorStep::Throw(value) => {
-                        // IteratorNext failures use QuickJS's plain exception exit
-                        // and therefore do not perform IteratorClose.
-                        return Ok(Completion::Throw(value));
-                    }
-                };
+            let value = match self.object_iterator_next(realm, &iterator, next_method.clone())? {
+                ObjectIteratorStep::Yield(value) => value,
+                ObjectIteratorStep::Done => {
+                    return Ok(Completion::Return(Value::Object(groups)));
+                }
+                ObjectIteratorStep::Throw(value) => {
+                    // IteratorNext failures use QuickJS's plain exception exit
+                    // and therefore do not perform IteratorClose.
+                    return Ok(Completion::Throw(value));
+                }
+            };
 
             let key_value = match self.call_internal(
                 realm,
@@ -230,21 +229,158 @@ impl Runtime {
         }
     }
 
-    fn object_group_by_iterator_next(
+    /// QuickJS `js_object_fromEntries`.
+    ///
+    /// Unlike `Object.groupBy`, the pinned implementation allocates its
+    /// defining-realm result before touching the iterable and closes an
+    /// acquired iterator after every subsequent abrupt completion, including
+    /// `next` lookup and iterator-step failures. `JS_IteratorClose(..., TRUE)`
+    /// always restores the original pending exception, so close failures are
+    /// deliberately ignored by `close_iterator_preserving_throw`.
+    pub(in crate::runtime) fn call_object_from_entries(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Object.fromEntries did not receive a generic invocation",
+            ));
+        };
+
+        let result = self.new_ordinary_object_in_realm(realm)?;
+        let iterable = arguments
+            .readable
+            .first()
+            .cloned()
+            .ok_or(RuntimeError::Invariant(
+                "Object.fromEntries iterable argv was not padded",
+            ))?;
+        let iterator_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Iterator));
+        let iterator_method = match &iterable {
+            Value::Null | Value::Undefined => {
+                let base = if matches!(iterable, Value::Null) {
+                    "null"
+                } else {
+                    "undefined"
+                };
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    &format!("cannot read property 'Symbol.iterator' of {base}"),
+                )?));
+            }
+            _ => match self.get_value_property_in_realm(realm, iterable.clone(), &iterator_key)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            },
+        };
+        let Value::Object(iterator_method) = iterator_method else {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "value is not iterable",
+            )?));
+        };
+        let Some(iterator_method) = self.as_callable(&iterator_method)? else {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "value is not iterable",
+            )?));
+        };
+        let iterator = match self.call_internal(realm, &iterator_method, iterable, &[])? {
+            Completion::Return(Value::Object(iterator)) => iterator,
+            Completion::Return(_) => {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "not an object",
+                )?));
+            }
+            Completion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        let next_key = self.intern_property_key("next")?;
+        let next_method = match self.get_property_in_realm(realm, &iterator, &next_key)? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => {
+                self.close_iterator_preserving_throw(realm, &iterator)?;
+                return Ok(Completion::Throw(value));
+            }
+        };
+        let zero_key = self.intern_property_key("0")?;
+        let one_key = self.intern_property_key("1")?;
+
+        loop {
+            let item = match self.object_iterator_next(realm, &iterator, next_method.clone())? {
+                ObjectIteratorStep::Yield(Value::Object(item)) => item,
+                ObjectIteratorStep::Yield(_) => {
+                    let exception =
+                        self.new_native_error(realm, NativeErrorKind::Type, "not an object")?;
+                    self.close_iterator_preserving_throw(realm, &iterator)?;
+                    return Ok(Completion::Throw(exception));
+                }
+                ObjectIteratorStep::Done => {
+                    return Ok(Completion::Return(Value::Object(result)));
+                }
+                ObjectIteratorStep::Throw(value) => {
+                    self.close_iterator_preserving_throw(realm, &iterator)?;
+                    return Ok(Completion::Throw(value));
+                }
+            };
+
+            let key_value = match self.get_property_in_realm(realm, &item, &zero_key)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => {
+                    self.close_iterator_preserving_throw(realm, &iterator)?;
+                    return Ok(Completion::Throw(value));
+                }
+            };
+            let value = match self.get_property_in_realm(realm, &item, &one_key)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => {
+                    self.close_iterator_preserving_throw(realm, &iterator)?;
+                    return Ok(Completion::Throw(value));
+                }
+            };
+            let key = match self.native_to_property_key(realm, key_value)? {
+                NativeConversion::Value(key) => key,
+                NativeConversion::Throw(value) => {
+                    self.close_iterator_preserving_throw(realm, &iterator)?;
+                    return Ok(Completion::Throw(value));
+                }
+            };
+            let descriptor = OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(value),
+                writable: DescriptorField::Present(true),
+                enumerable: DescriptorField::Present(true),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            };
+            if let Some(value) = self.define_property_or_throw(realm, &result, &key, &descriptor)? {
+                self.close_iterator_preserving_throw(realm, &iterator)?;
+                return Ok(Completion::Throw(value));
+            }
+        }
+    }
+
+    fn object_iterator_next(
         &self,
         realm: ContextId,
         iterator: &ObjectRef,
         next_method: Value,
-    ) -> Result<ObjectGroupByIteratorStep, RuntimeError> {
+    ) -> Result<ObjectIteratorStep, RuntimeError> {
         let Value::Object(next_method) = next_method else {
-            return Ok(ObjectGroupByIteratorStep::Throw(self.new_native_error(
+            return Ok(ObjectIteratorStep::Throw(self.new_native_error(
                 realm,
                 NativeErrorKind::Type,
                 "not a function",
             )?));
         };
         let Some(next_method) = self.as_callable(&next_method)? else {
-            return Ok(ObjectGroupByIteratorStep::Throw(self.new_native_error(
+            return Ok(ObjectIteratorStep::Throw(self.new_native_error(
                 realm,
                 NativeErrorKind::Type,
                 "not a function",
@@ -256,13 +392,13 @@ impl Runtime {
         {
             Some(NativeInvokeOutcome::IteratorNextRaw { value, done }) => {
                 return Ok(if done {
-                    ObjectGroupByIteratorStep::Done
+                    ObjectIteratorStep::Done
                 } else {
-                    ObjectGroupByIteratorStep::Yield(value)
+                    ObjectIteratorStep::Yield(value)
                 });
             }
             Some(NativeInvokeOutcome::Completion(Completion::Throw(value))) => {
-                return Ok(ObjectGroupByIteratorStep::Throw(value));
+                return Ok(ObjectIteratorStep::Throw(value));
             }
             Some(NativeInvokeOutcome::Completion(Completion::Return(result))) => result,
             None => match self.call_internal(
@@ -273,12 +409,12 @@ impl Runtime {
             )? {
                 Completion::Return(result) => result,
                 Completion::Throw(value) => {
-                    return Ok(ObjectGroupByIteratorStep::Throw(value));
+                    return Ok(ObjectIteratorStep::Throw(value));
                 }
             },
         };
         let Value::Object(result) = result else {
-            return Ok(ObjectGroupByIteratorStep::Throw(self.new_native_error(
+            return Ok(ObjectIteratorStep::Throw(self.new_native_error(
                 realm,
                 NativeErrorKind::Type,
                 "iterator must return an object",
@@ -288,16 +424,16 @@ impl Runtime {
         let done_key = self.intern_property_key("done")?;
         let done = match self.get_property_in_realm(realm, &result, &done_key)? {
             Completion::Return(value) => value.to_boolean(),
-            Completion::Throw(value) => return Ok(ObjectGroupByIteratorStep::Throw(value)),
+            Completion::Throw(value) => return Ok(ObjectIteratorStep::Throw(value)),
         };
         if done {
-            return Ok(ObjectGroupByIteratorStep::Done);
+            return Ok(ObjectIteratorStep::Done);
         }
 
         let value_key = self.intern_property_key("value")?;
         match self.get_property_in_realm(realm, &result, &value_key)? {
-            Completion::Return(value) => Ok(ObjectGroupByIteratorStep::Yield(value)),
-            Completion::Throw(value) => Ok(ObjectGroupByIteratorStep::Throw(value)),
+            Completion::Return(value) => Ok(ObjectIteratorStep::Yield(value)),
+            Completion::Throw(value) => Ok(ObjectIteratorStep::Throw(value)),
         }
     }
 }
@@ -547,6 +683,7 @@ impl Runtime {
                 1,
                 1,
             ),
+            (NativeFunctionId::ObjectFromEntries, "fromEntries", 1, 1),
         ] {
             self.define_native_builtin_auto_init(
                 constructor.as_object(),
@@ -1315,7 +1452,7 @@ impl Runtime {
         }
     }
 
-    fn new_object_descriptor_result(&self, realm: ContextId) -> Result<ObjectRef, RuntimeError> {
+    fn new_ordinary_object_in_realm(&self, realm: ContextId) -> Result<ObjectRef, RuntimeError> {
         let prototype = self.0.state.borrow().heap.context(realm)?.object_prototype;
         let prototype = ObjectRef::from_borrowed_handle(self.clone(), prototype)?;
         self.new_object(Some(&prototype))
@@ -1349,7 +1486,7 @@ impl Runtime {
         realm: ContextId,
         descriptor: CompleteOrdinaryPropertyDescriptor,
     ) -> Result<ObjectRef, RuntimeError> {
-        let object = self.new_object_descriptor_result(realm)?;
+        let object = self.new_ordinary_object_in_realm(realm)?;
         let mut fields = Vec::with_capacity(4);
         match descriptor {
             CompleteOrdinaryPropertyDescriptor::Data {
@@ -1486,7 +1623,7 @@ impl Runtime {
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
         let keys = self.own_property_keys(&object)?;
-        let result = self.new_object_descriptor_result(realm)?;
+        let result = self.new_ordinary_object_in_realm(realm)?;
         for key in keys {
             // QuickJS routes every snapshotted atom back through the singular
             // helper, so the current descriptor is re-read before publication.

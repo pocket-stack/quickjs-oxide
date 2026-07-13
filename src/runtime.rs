@@ -8291,6 +8291,10 @@ impl Runtime {
             | NativeFunctionId::ObjectKeys(_)
             | NativeFunctionId::ObjectGetOwnPropertyDescriptor
             | NativeFunctionId::ObjectAssign => 8,
+            // A key-coercion reentry retains the iterator, entry, result and
+            // conversion stacks at once, making this family comparable to the
+            // heaviest slice/splice native paths on a 2 MiB libtest thread.
+            NativeFunctionId::ObjectFromEntries => 16,
             _ => 8,
         };
         let active_native_cost = self
@@ -8332,6 +8336,7 @@ impl Runtime {
             // ToPropertyKey may recursively re-enter through @@toPrimitive.
             NativeFunctionId::ObjectGetOwnPropertyDescriptor => 9,
             NativeFunctionId::ObjectAssign => 9,
+            NativeFunctionId::ObjectFromEntries => 4,
             _ => return false,
         };
 
@@ -8371,6 +8376,9 @@ impl Runtime {
             }
             NativeFunctionId::ObjectAssign => {
                 matches!(candidate, NativeFunctionId::ObjectAssign)
+            }
+            NativeFunctionId::ObjectFromEntries => {
+                matches!(candidate, NativeFunctionId::ObjectFromEntries)
             }
             _ => false,
         };
@@ -9912,6 +9920,9 @@ impl Runtime {
             NativeFunctionId::ObjectAssign => self.call_object_assign(realm, invocation, arguments),
             NativeFunctionId::ObjectIntegrity(kind) => {
                 self.call_object_integrity(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::ObjectFromEntries => {
+                self.call_object_from_entries(realm, invocation, arguments)
             }
             NativeFunctionId::ObjectPrototypeToString => {
                 self.call_object_prototype_to_string(realm, invocation)

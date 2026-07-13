@@ -981,7 +981,8 @@ claim full parity.
   `groupBy`, `keys`, `values`, `entries`, `isExtensible`,
   `preventExtensions`, `getOwnPropertyDescriptor`,
   `getOwnPropertyDescriptors`, `is`, `assign`, `seal`, `freeze`, `isSealed`,
-  `isFrozen`; the next entry, `fromEntries`, remains the deliberate boundary.
+  `isFrozen`, `fromEntries`; the next entry, `hasOwn`, remains the deliberate
+  boundary.
   Prototype mutation keeps
   same-value success plus exact immutable, non-extensible and cycle failures.
   Descriptor conversion follows QuickJS's inherited field probes and
@@ -1076,8 +1077,22 @@ claim full parity.
   transitions are covered; Proxy trap order/partial failures, non-empty
   TypedArray rejection, mapped arguments and module namespace behavior remain
   explicit object-model boundaries until those exotic kinds exist.
-  Anchors: `quickjs.c` 8905-8950, 15840-15927, 16923-16996, 39796-40644,
-  40712-40716, 40748-40927,
+  `fromEntries` allocates a fresh ordinary result in the builtin's defining
+  realm before reading its input, obtains and caches a synchronous iterator's
+  `next`, and requires every yielded entry itself to be an object. It reads
+  entry properties `0` then `1`, converts the key only after both Gets, and
+  defines an own writable, enumerable, configurable data property, so duplicate
+  keys overwrite in place while Symbol and `__proto__` keys remain direct data
+  keys. Once an iterator object exists, every later abrupt completion—including
+  `next` lookup/call, iterator-result `done`/`value`, entry Gets and key
+  conversion—performs QuickJS's pending-exception `IteratorClose`; return
+  getter/call failures cannot replace the original throw. Normal exhaustion
+  does not close. A four-active-call guard plus the shared weighted budget keeps
+  direct and interleaved getter/key-coercion recursion catchable. Proxy entry
+  traps, Map/Set iterators, generators/finally, TypedArrays and module namespace
+  entries remain explicit boundaries until those object kinds exist.
+  Anchors: `quickjs.c` 8905-8950, 10680-10702, 15840-15927, 16639-16675,
+  16923-16996, 39796-40716, 40748-40927,
   50728-50831, 50992-51107, 52115-52230, and 56291-56313.
 - Shape caches are weak and unlink by finalized generational Shape ID. Shape
   and Symbol atom ownership is paired through heap cleanup, including failure
@@ -1671,7 +1686,7 @@ object-environment lookup/deletion introduced by `with` or direct `eval`, the
 global String constructor, the remaining 40 entries of its 53-key prototype
 surface, Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. The Object static table after
-`isFrozen`, AggregateError, and uncatchable termination state are also pending. Array
+`fromEntries`, AggregateError, and uncatchable termination state are also pending. Array
 destructuring consumers, `with` object-environment
 semantics, other
 iterator classes and helpers,
@@ -1787,6 +1802,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_assign -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_integrity -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_object_from_entries -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_search -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
