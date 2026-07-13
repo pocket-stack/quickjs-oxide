@@ -33,7 +33,7 @@ use crate::heap::{
     FunctionDebugInfo, FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats,
     GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError,
     NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
-    ObjectAccessorKind, ObjectData, ObjectId, ObjectKeysKind, ObjectKind,
+    ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId, ObjectKeysKind, ObjectKind,
     ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot,
     RawValue, ShapeId, StringCharAtKind, StringIndexOfKind, StringWellFormedKind,
     SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
@@ -11709,6 +11709,9 @@ impl Runtime {
             }
             NativeFunctionId::ObjectKeys(kind) => {
                 self.call_object_keys(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::ObjectExtensibility(kind) => {
+                self.call_object_extensibility(kind, invocation, arguments)
             }
             NativeFunctionId::ObjectPrototypeToString => {
                 self.call_object_prototype_to_string(realm, invocation)

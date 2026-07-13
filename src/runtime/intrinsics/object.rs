@@ -497,6 +497,18 @@ impl Runtime {
                 1,
                 1,
             ),
+            (
+                NativeFunctionId::ObjectExtensibility(ObjectExtensibilityKind::IsExtensible),
+                "isExtensible",
+                1,
+                1,
+            ),
+            (
+                NativeFunctionId::ObjectExtensibility(ObjectExtensibilityKind::PreventExtensions),
+                "preventExtensions",
+                1,
+                1,
+            ),
         ] {
             self.define_native_builtin_auto_init(
                 constructor.as_object(),
@@ -1224,6 +1236,45 @@ impl Runtime {
             return Err(RuntimeError::Invariant(rejection));
         }
         Ok(())
+    }
+
+    pub(in crate::runtime) fn call_object_extensibility(
+        &self,
+        kind: ObjectExtensibilityKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Object extensibility method did not receive a generic invocation",
+            ));
+        };
+        let value = arguments
+            .readable
+            .first()
+            .cloned()
+            .ok_or(RuntimeError::Invariant(
+                "Object extensibility argv was not padded",
+            ))?;
+
+        // Unlike most Object statics these routines deliberately do not box
+        // primitives. This matches QuickJS's initial tag test and preserves
+        // the exact primitive for Object.preventExtensions.
+        let Value::Object(object) = &value else {
+            return Ok(Completion::Return(match kind {
+                ObjectExtensibilityKind::IsExtensible => Value::Bool(false),
+                ObjectExtensibilityKind::PreventExtensions => value,
+            }));
+        };
+        match kind {
+            ObjectExtensibilityKind::IsExtensible => {
+                Ok(Completion::Return(Value::Bool(self.is_extensible(object)?)))
+            }
+            ObjectExtensibilityKind::PreventExtensions => {
+                self.prevent_extensions(object)?;
+                Ok(Completion::Return(value))
+            }
+        }
     }
 
     pub(in crate::runtime) fn call_object_prototype_has_own_property(

@@ -871,6 +871,14 @@ pub enum ObjectKeysKind {
     Entries,
 }
 
+/// Operation selected by QuickJS's adjacent `%Object%.isExtensible` and
+/// `%Object%.preventExtensions` generic-magic builtins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ObjectExtensibilityKind {
+    IsExtensible,
+    PreventExtensions,
+}
+
 /// Type-safe replacement for QuickJS's getter/setter magic values shared by
 /// the Annex-B `__define*__` and `__lookup*__` method families.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -929,6 +937,7 @@ pub enum NativeFunctionId {
     ObjectGetOwnPropertyKeys(ObjectOwnPropertyKeysKind),
     ObjectGroupBy,
     ObjectKeys(ObjectKeysKind),
+    ObjectExtensibility(ObjectExtensibilityKind),
     ObjectPrototypeToString,
     ObjectPrototypeToLocaleString,
     ObjectPrototypeValueOf,
@@ -1207,6 +1216,7 @@ impl NativeFunctionId {
             | Self::ObjectDefineProperty
             | Self::ObjectGroupBy
             | Self::ObjectKeys(_)
+            | Self::ObjectExtensibility(_)
             | Self::ObjectPrototypeDefineAccessor(_)
             | Self::ObjectPrototypeLookupAccessor(_)
             | Self::StringPrototypeCharAt(_)
@@ -4248,6 +4258,8 @@ mod tests {
             NativeFunctionId::ObjectKeys(ObjectKeysKind::Keys),
             NativeFunctionId::ObjectKeys(ObjectKeysKind::Values),
             NativeFunctionId::ObjectKeys(ObjectKeysKind::Entries),
+            NativeFunctionId::ObjectExtensibility(ObjectExtensibilityKind::IsExtensible),
+            NativeFunctionId::ObjectExtensibility(ObjectExtensibilityKind::PreventExtensions),
             NativeFunctionId::ObjectPrototypeDefineAccessor(ObjectAccessorKind::Getter),
             NativeFunctionId::ObjectPrototypeDefineAccessor(ObjectAccessorKind::Setter),
             NativeFunctionId::ObjectPrototypeLookupAccessor(ObjectAccessorKind::Getter),

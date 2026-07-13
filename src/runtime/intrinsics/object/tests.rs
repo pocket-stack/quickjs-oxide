@@ -129,6 +129,97 @@ fn object_keys_family_autoinit_preserves_pinned_metadata() {
 }
 
 #[test]
+fn object_extensibility_autoinit_preserves_pinned_metadata() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let global = context.global_object().unwrap();
+    let object_key = runtime.intern_property_key("Object").unwrap();
+    let Value::Object(object_constructor) = context.get_property(&global, &object_key).unwrap()
+    else {
+        panic!("global Object was not an object");
+    };
+
+    for (name, kind) in [
+        ("isExtensible", ObjectExtensibilityKind::IsExtensible),
+        (
+            "preventExtensions",
+            ObjectExtensibilityKind::PreventExtensions,
+        ),
+    ] {
+        let key = runtime.intern_property_key(name).unwrap();
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(object_constructor.object_id()).unwrap();
+        let shape = state.heap.shape(object.shape).unwrap();
+        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        assert_eq!(
+            shape.entries()[slot_index].flags,
+            PropertyFlags::data(true, false, true),
+        );
+        assert!(matches!(
+            object.slots.get(slot_index),
+            Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                realm,
+                target: NativeFunctionId::ObjectExtensibility(target_kind),
+                name: target_name,
+                length: 1,
+                min_readable_args: 1,
+            })) if *realm == context.realm && *target_kind == kind && *target_name == name
+        ));
+    }
+}
+
+#[test]
+fn object_extensibility_preserves_primitives_and_updates_only_the_object_bit() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let result = context
+        .eval(
+            r#"(function(){
+                var symbol=Symbol("marker");
+                var primitiveChecks=[
+                    Object.isExtensible(),Object.isExtensible(null),
+                    Object.isExtensible(false),Object.isExtensible(1),
+                    Object.isExtensible("x"),Object.isExtensible(1n),
+                    Object.isExtensible(symbol),
+                    Object.preventExtensions()===undefined,
+                    Object.preventExtensions(null)===null,
+                    Object.preventExtensions(false)===false,
+                    Object.preventExtensions("x")==="x",
+                    Object.preventExtensions(1n)===1n,
+                    Object.preventExtensions(symbol)===symbol,
+                    1/Object.preventExtensions(-0)===-Infinity,
+                    Object.preventExtensions(NaN)!==Object.preventExtensions(NaN)
+                ];
+                var object=Object();
+                object.existing=1;
+                var prototype=Object.getPrototypeOf(object);
+                var same=Object.preventExtensions(object)===object;
+                var idempotent=Object.preventExtensions(object)===object;
+                object.existing=2;
+                var existing=object.existing;
+                var rejected=false;
+                try{object.added=3}catch(_){rejected=true}
+                var absent=!("added" in object);
+                var samePrototype=Object.setPrototypeOf(object,prototype)===object;
+                var changedPrototypeThrows=false;
+                try{Object.setPrototypeOf(object,Object())}
+                catch(error){changedPrototypeThrows=error.name==="TypeError"}
+                var deleted=delete object.existing;
+                return primitiveChecks.join(",")+"|"+
+                    [same,idempotent,Object.isExtensible(object),existing,rejected,absent,
+                     samePrototype,changedPrototypeThrows,deleted,"existing" in object].join(",");
+            })()"#,
+        )
+        .unwrap();
+    assert_eq!(
+        result,
+        Value::String(JsString::from_static(
+            "false,false,false,false,false,false,false,true,true,true,true,true,true,true,true|true,true,false,2,false,true,true,true,true,false",
+        )),
+    );
+}
+
+#[test]
 fn object_keys_descriptor_recheck_materializes_non_enumerable_autoinits() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
