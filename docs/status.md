@@ -1737,13 +1737,14 @@ deletion, own-key, prototype and extensibility operations now live in
 internal ABI for VM, Context and intrinsic consumers. Native cproto adaptation,
 raw iterator-next selection and the exhaustive `NativeFunctionId` match now
 live in `runtime/native_dispatch.rs`; builtin additions no longer extend the
-main runtime file merely to wire a selector. The test, Array, Object, VM-host,
-property and native-dispatch no-semantic-change splits reduced `runtime.rs`
-from roughly thirty-two thousand lines to roughly 10.8 thousand lines.
-Realm-aware property completion wrappers and storage helpers, bytecode
-publication and call
-dispatch, runtime/root lifecycle, and the remaining intrinsic families still
-share the file; `compiler.rs` similarly combines several compiler phases.
+main runtime file merely to wire a selector. Bytecode draft validation and
+iterative flattening now live in `runtime/bytecode_publish.rs`. The test, Array,
+Object, VM-host, property, native-dispatch and bytecode-publication
+no-semantic-change splits reduced `runtime.rs` from roughly thirty-two thousand
+lines to 9,935 lines. Realm-aware property completion wrappers and storage
+helpers, bytecode publication linking and call dispatch, runtime/root lifecycle,
+and the remaining intrinsic families still share the file; `compiler.rs`
+similarly combines several compiler phases.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.
