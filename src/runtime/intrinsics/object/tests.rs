@@ -330,6 +330,183 @@ fn object_is_autoinit_and_same_value_semantics_match_pinned_quickjs() {
 }
 
 #[test]
+fn object_assign_autoinit_and_ordinary_snapshot_semantics_match_pinned_quickjs() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let global = context.global_object().unwrap();
+    let object_key = runtime.intern_property_key("Object").unwrap();
+    let Value::Object(object_constructor) = context.get_property(&global, &object_key).unwrap()
+    else {
+        panic!("global Object was not an object");
+    };
+
+    let key = runtime.intern_property_key("assign").unwrap();
+    {
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(object_constructor.object_id()).unwrap();
+        let shape = state.heap.shape(object.shape).unwrap();
+        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        assert_eq!(
+            shape.entries()[slot_index].flags,
+            PropertyFlags::data(true, false, true),
+        );
+        assert!(matches!(
+            object.slots.get(slot_index),
+            Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                realm,
+                target: NativeFunctionId::ObjectAssign,
+                name: "assign",
+                length: 2,
+                min_readable_args: 2,
+            })) if *realm == context.realm
+        ));
+    }
+
+    let result = context
+        .eval(
+            r#"(function(){
+                var log="",prototype=Object(),source=Object.create(prototype),target=Object();
+                prototype.second="prototype";
+                function data(name,value,enumerable){
+                    var descriptor=Object();
+                    descriptor.value=value;descriptor.writable=true;
+                    descriptor.enumerable=enumerable;descriptor.configurable=true;
+                    Object.defineProperty(source,name,descriptor);
+                }
+                var first=Object();first.enumerable=true;first.configurable=true;
+                first.get=function(){
+                    log+="gfirst,";
+                    delete source.second;
+                    var third=Object();third.enumerable=false;
+                    Object.defineProperty(source,"third",third);
+                    var hidden=Object();hidden.enumerable=true;
+                    Object.defineProperty(source,"hidden",hidden);
+                    return "first";
+                };
+                Object.defineProperty(source,"first",first);
+                data("second","own",true);data("third","third",true);
+                data("hidden","hidden",false);
+                function sink(name){
+                    var descriptor=Object();
+                    descriptor.enumerable=true;descriptor.configurable=true;
+                    descriptor.set=function(value){log+="s"+name+"="+value+","};
+                    Object.defineProperty(target,name,descriptor);
+                }
+                sink("first");sink("second");sink("third");sink("hidden");
+                var same=Object.assign(target,null,undefined,source)===target;
+                return same+"|"+log+"|"+Object.keys(source).join(",")+"|"+
+                    Object.keys(target).join(",");
+            })()"#,
+        )
+        .unwrap();
+    assert_eq!(
+        result,
+        Value::String(JsString::from_static(
+            "true|gfirst,sfirst=first,ssecond=prototype,sthird=third,|first,hidden|first,second,third,hidden",
+        )),
+    );
+
+    context.eval("Object.assign(Object(),Object)").unwrap();
+    for (name, kind) in [
+        ("values", ObjectKeysKind::Values),
+        ("entries", ObjectKeysKind::Entries),
+    ] {
+        let key = runtime.intern_property_key(name).unwrap();
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(object_constructor.object_id()).unwrap();
+        let shape = state.heap.shape(object.shape).unwrap();
+        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        assert!(matches!(
+            object.slots.get(slot_index),
+            Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                target: NativeFunctionId::ObjectKeys(target_kind),
+                ..
+            })) if *target_kind == kind
+        ));
+    }
+}
+
+#[test]
+fn recursive_object_assign_callbacks_are_catchable_before_host_stack_exhaustion() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    context
+        .eval(
+            r#"function objectAssignRecurse(depth){
+                   var source=Object(),descriptor=Object();
+                   descriptor.enumerable=true;
+                   descriptor.get=function(){
+                       if(depth!==0)objectAssignRecurse(depth-1);
+                       return 1;
+                   };
+                   Object.defineProperty(source,"value",descriptor);
+                   return Object.assign(Object(),source).value;
+               }
+               function objectAssignSetterRecurse(depth){
+                   var target=Object(),source=Object(),descriptor=Object();
+                   source.value=1;descriptor.enumerable=true;descriptor.configurable=true;
+                   descriptor.set=function(){
+                       if(depth!==0)objectAssignSetterRecurse(depth-1);
+                   };
+                   Object.defineProperty(target,"value",descriptor);
+                   Object.assign(target,source);
+                   return 1;
+               }
+               function objectAssignMixedRecurse(depth){
+                   var source=Object(),descriptor=Object();descriptor.enumerable=true;
+                   descriptor.get=function(){
+                       if(depth!==0){
+                           var holder=Object(),nested=Object();nested.enumerable=true;
+                           nested.get=function(){return objectAssignMixedRecurse(depth-1)};
+                           Object.defineProperty(holder,"value",nested);
+                           Object.values(holder);
+                       }
+                       return 1;
+                   };
+                   Object.defineProperty(source,"value",descriptor);
+                   return Object.assign(Object(),source).value;
+               }"#,
+        )
+        .unwrap();
+    for name in ["objectAssignRecurse", "objectAssignSetterRecurse"] {
+        assert_eq!(context.eval(&format!("{name}(8)")).unwrap(), Value::Int(1),);
+        for depth in [9, 10, 11] {
+            let value = context
+                .eval(&format!(
+                    r#"(function(){{
+                        try{{{name}({depth});return "missing"}}
+                        catch(error){{return error.name+":"+error.message}}
+                    }})()"#,
+                ))
+                .unwrap();
+            assert_eq!(
+                value,
+                Value::String(JsString::from_static("InternalError:stack overflow")),
+            );
+        }
+    }
+    assert_eq!(
+        context.eval("objectAssignMixedRecurse(4)").unwrap(),
+        Value::Int(1),
+    );
+    for depth in [5, 6, 7] {
+        let value = context
+            .eval(&format!(
+                r#"(function(){{
+                    try{{objectAssignMixedRecurse({depth});return "missing"}}
+                    catch(error){{return error.name+":"+error.message}}
+                }})()"#,
+            ))
+            .unwrap();
+        assert_eq!(
+            value,
+            Value::String(JsString::from_static("InternalError:stack overflow")),
+        );
+    }
+    assert_eq!(context.eval("1+1").unwrap(), Value::Int(2));
+}
+
+#[test]
 fn object_descriptor_statics_publish_complete_fields_without_calling_accessors() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();

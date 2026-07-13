@@ -522,6 +522,7 @@ impl Runtime {
                 1,
             ),
             (NativeFunctionId::ObjectIs, "is", 2, 2),
+            (NativeFunctionId::ObjectAssign, "assign", 2, 2),
         ] {
             self.define_native_builtin_auto_init(
                 constructor.as_object(),
@@ -1508,6 +1509,73 @@ impl Runtime {
             .get(1)
             .ok_or(RuntimeError::Invariant("Object.is rhs argv was not padded"))?;
         Ok(Completion::Return(Value::Bool(left.same_value(right))))
+    }
+
+    pub(in crate::runtime) fn call_object_assign(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Object.assign did not receive a generic invocation",
+            ));
+        };
+        let target = arguments
+            .readable
+            .first()
+            .cloned()
+            .ok_or(RuntimeError::Invariant(
+                "Object.assign target argv was not padded",
+            ))?;
+        let target = match self.native_to_object(realm, target)? {
+            NativeConversion::Value(object) => object,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        for source in arguments
+            .readable
+            .iter()
+            .skip(1)
+            .take(arguments.actual_arg_count.saturating_sub(1))
+        {
+            if matches!(source, Value::Null | Value::Undefined) {
+                continue;
+            }
+            let source = match self.native_to_object(realm, source.clone())? {
+                NativeConversion::Value(object) => object,
+                NativeConversion::Throw(_) => {
+                    return Err(RuntimeError::Invariant(
+                        "non-nullish Object.assign source failed ToObject",
+                    ));
+                }
+            };
+
+            // QuickJS's ordinary-object fast path applies ENUM_ONLY while it
+            // snapshots all string and Symbol keys. Later getters therefore
+            // cannot add initially hidden keys or remove an initially visible
+            // key from this source's copy list.
+            let mut keys = Vec::new();
+            for key in self.own_property_keys(&source)? {
+                let kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
+                if matches!(kind, PropertyKeyKind::String | PropertyKeyKind::Symbol)
+                    && self.own_property_is_enumerable(&source, &key)?
+                {
+                    keys.push(key);
+                }
+            }
+            for key in keys {
+                let value = match self.get_property_in_realm(realm, &source, &key)? {
+                    Completion::Return(value) => value,
+                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+                if let Some(value) = self.set_property_or_throw(realm, &target, &key, value)? {
+                    return Ok(Completion::Throw(value));
+                }
+            }
+        }
+        Ok(Completion::Return(Value::Object(target)))
     }
 
     pub(in crate::runtime) fn call_object_prototype_has_own_property(

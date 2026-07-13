@@ -980,7 +980,7 @@ claim full parity.
   `defineProperties`, `getOwnPropertyNames`, `getOwnPropertySymbols`,
   `groupBy`, `keys`, `values`, `entries`, `isExtensible`,
   `preventExtensions`, `getOwnPropertyDescriptor`,
-  `getOwnPropertyDescriptors`, `is`; the next entry, `assign`, remains the
+  `getOwnPropertyDescriptors`, `is`, `assign`; the next entry, `seal`, remains the
   deliberate boundary.
   Prototype mutation keeps
   same-value success plus exact immutable, non-extensible and cycle failures.
@@ -1050,7 +1050,20 @@ claim full parity.
   `Object.is` directly applies SameValue without coercion: all NaN payloads
   compare equal, positive and negative zero remain distinct, primitive values
   compare by value, and objects and Symbols compare by identity.
-  Anchors: `quickjs.c` 8905-8950, 15840-15927, 39796-40409, 40142-40255,
+  `Object.assign` boxes its target in the defining realm, skips nullish sources,
+  and handles every other source from left to right. Each supported source
+  snapshots its currently enumerable own string and Symbol keys before any
+  Get, then performs Get followed by throwing Set for every retained key. This
+  preserves inherited setters, getter/setter ordering, partial mutation on an
+  abrupt completion, String indices, and QuickJS's pinned ordinary-object
+  deviation: deletion or enumerable-bit changes after the snapshot do not
+  remove a retained key, while newly enumerable or newly added keys stay
+  absent. Shape-time filtering leaves non-enumerable AutoInit slots lazy.
+  Direct getter/setter recursion has a nine-call family guard and interleaved
+  recursion is covered by the shared weighted budget. Proxy descriptor recheck
+  and invariant quirks, stale TypedArray index snapshots, arguments and module
+  namespace sources remain explicit object-model boundaries.
+  Anchors: `quickjs.c` 8905-8950, 15840-15927, 16923-16996, 39796-40547,
   40712-40716, 40748-40927,
   50728-50831, 50992-51107, 52115-52230, and 56291-56313.
 - Shape caches are weak and unlink by finalized generational Shape ID. Shape
@@ -1645,7 +1658,7 @@ object-environment lookup/deletion introduced by `with` or direct `eval`, the
 global String constructor, the remaining 40 entries of its 53-key prototype
 surface, Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. The Object static table after
-`is`, AggregateError, and uncatchable termination state are also pending. Array
+`assign`, AggregateError, and uncatchable termination state are also pending. Array
 destructuring consumers, `with` object-environment
 semantics, other
 iterator classes and helpers,
@@ -1754,6 +1767,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_descriptors -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_is -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_object_assign -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_search -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

@@ -10147,7 +10147,8 @@ impl Runtime {
             NativeFunctionId::ArrayPrototypeFlatten(_) => 9,
             NativeFunctionId::ObjectGroupBy
             | NativeFunctionId::ObjectKeys(_)
-            | NativeFunctionId::ObjectGetOwnPropertyDescriptor => 8,
+            | NativeFunctionId::ObjectGetOwnPropertyDescriptor
+            | NativeFunctionId::ObjectAssign => 8,
             _ => 8,
         };
         let active_native_cost = self
@@ -10188,6 +10189,7 @@ impl Runtime {
             NativeFunctionId::ObjectKeys(_) => 9,
             // ToPropertyKey may recursively re-enter through @@toPrimitive.
             NativeFunctionId::ObjectGetOwnPropertyDescriptor => 9,
+            NativeFunctionId::ObjectAssign => 9,
             _ => return false,
         };
 
@@ -10224,6 +10226,9 @@ impl Runtime {
             }
             NativeFunctionId::ObjectGetOwnPropertyDescriptor => {
                 matches!(candidate, NativeFunctionId::ObjectGetOwnPropertyDescriptor)
+            }
+            NativeFunctionId::ObjectAssign => {
+                matches!(candidate, NativeFunctionId::ObjectAssign)
             }
             _ => false,
         };
@@ -11762,6 +11767,7 @@ impl Runtime {
                 self.call_object_get_own_property_descriptors(realm, invocation, arguments)
             }
             NativeFunctionId::ObjectIs => self.call_object_is(invocation, arguments),
+            NativeFunctionId::ObjectAssign => self.call_object_assign(realm, invocation, arguments),
             NativeFunctionId::ObjectPrototypeToString => {
                 self.call_object_prototype_to_string(realm, invocation)
             }
