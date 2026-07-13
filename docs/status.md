@@ -1691,15 +1691,18 @@ and sorting implementation now lives in `runtime/intrinsics/array.rs`.
 The Object constructor, implemented statics and implemented prototype handler
 surface now live with `groupBy` in `runtime/intrinsics/object.rs`; the String
 index-search pair starts `runtime/intrinsics/string.rs`, while the earlier
-String handlers still await migration there. The test, Array and Object
-no-semantic-change splits reduced `runtime.rs` from roughly thirty-two thousand
-lines to roughly 14.3k lines, and newer intrinsic features add only table and
-dispatch wiring there. Property machinery, execution support,
-and the remaining intrinsic families still share the file; `compiler.rs`
-similarly combines several compiler phases. Dedicated structural milestones
-must keep splitting those seams under the same differential and Rust-only
-gates, and future feature work must not resume extending either monolith
-indefinitely.
+String handlers still await migration there. The complete VM-to-runtime trait
+adapter, per-frame argument/local/capture storage, iterator protocol bridge and
+bytecode-host error conversion now live in `runtime/vm_host.rs`; host layout is
+private to that module, including bytecode frame initialization. The test,
+Array, Object and VM-host no-semantic-change splits reduced `runtime.rs` from
+roughly thirty-two thousand lines to roughly 12.5k lines, and newer intrinsic
+features add only table and dispatch wiring there. Property machinery,
+bytecode publication and call dispatch, runtime/root lifecycle, and the
+remaining intrinsic families still share the file; `compiler.rs` similarly
+combines several compiler phases. Dedicated structural milestones must keep
+splitting those seams under the same differential and Rust-only gates, and
+future feature work must not resume extending either monolith indefinitely.
 
 ## Reproduce current evidence
 

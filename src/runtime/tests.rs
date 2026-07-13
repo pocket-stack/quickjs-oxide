@@ -1,5 +1,3 @@
-use std::rc::Rc;
-
 use crate::JsBigInt;
 use crate::bytecode::{BytecodeFunction, Instruction};
 use crate::debug::{DebugInfoMode, LineColumn, Pc2LineEntry, Pc2LineTable};
@@ -17,12 +15,12 @@ use crate::object::{
     OrdinaryPropertyDescriptor, PropertyKey, WellKnownSymbol,
 };
 use crate::value::{JsString, JsStringError, Value};
-use crate::vm::{Completion, IteratorCloseOutcome, VmHost};
+use crate::vm::{Completion, IteratorCloseOutcome, Vm, VmHost};
 
+use super::vm_host::RuntimeVmHost;
 use super::{
-    ActiveFrameKind, ActiveFrameToken, CallableExecution, DeferredRefOp, DynamicSourceBuilder,
-    EvalOptions, PropertyGetAction, PropertySetAction, Runtime, RuntimeError, RuntimeVmHost,
-    ToPrimitiveHint, VarRefRoot,
+    ActiveFrameKind, CallableExecution, DeferredRefOp, DynamicSourceBuilder, EvalOptions,
+    PropertyGetAction, PropertySetAction, Runtime, RuntimeError, ToPrimitiveHint, VarRefRoot,
 };
 
 #[test]
@@ -4191,19 +4189,7 @@ fn iterator_close_skips_only_result_brand_check_for_pending_exception() {
             )
             .unwrap()
     );
-    let mut host = RuntimeVmHost {
-        runtime: runtime.clone(),
-        active_frame_token: ActiveFrameToken(0),
-        current_realm: context.realm,
-        constants: Rc::from([]),
-        argument_definitions: Rc::from([]),
-        local_definitions: Rc::from([]),
-        closure_variables: Rc::from([]),
-        closure_slots: Vec::new(),
-        arguments: Vec::new(),
-        locals: Vec::new(),
-        reusable_captured_locals: Vec::new(),
-    };
+    let mut host = RuntimeVmHost::empty_for_test(runtime.clone(), context.realm);
     assert!(matches!(
         VmHost::iterator_close(&mut host, Value::Object(iterator.clone()), true).unwrap(),
         IteratorCloseOutcome::Closed
@@ -12594,7 +12580,7 @@ fn exceptional_vm_exit_releases_local_frame_roots_immediately() {
         .heap
         .object_strong_count(object.object_id())
         .unwrap();
-    assert!(super::Vm::new().execute(&function).is_err());
+    assert!(Vm::new().execute(&function).is_err());
     let after = runtime
         .0
         .state
