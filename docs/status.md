@@ -1697,8 +1697,8 @@ for the current static scope tree and defining-realm global object. Dynamic
 object-environment lookup/deletion introduced by `with` or direct `eval`, the
 global String constructor, the remaining 40 entries of its 53-key prototype
 surface, Proxy/exotic internal methods, and the full
-`function_accessors.js` fixture are still pending. The Object static table after
-`fromEntries`, AggregateError, and uncatchable termination state are also pending. Array
+`function_accessors.js` fixture are still pending. AggregateError and
+uncatchable termination state are also pending. Array
 destructuring consumers, `with` object-environment
 semantics, other
 iterator classes and helpers,
@@ -1725,10 +1725,12 @@ private to that module, including bytecode frame initialization. Ordinary,
 String-exotic and Array property lookup/definition, AutoInit materialization,
 deletion, own-key, prototype and extensibility operations now live in
 `runtime/properties.rs`; their action records remain the parent module's
-internal ABI for VM, Context and intrinsic consumers. The test, Array, Object,
-VM-host and property no-semantic-change splits reduced `runtime.rs` from
-roughly thirty-two thousand lines to roughly 11.2k lines, and newer intrinsic
-features add only table and dispatch wiring there. Realm-aware property
+internal ABI for VM, Context and intrinsic consumers. Native cproto adaptation,
+raw iterator-next selection and the exhaustive `NativeFunctionId` match now
+live in `runtime/native_dispatch.rs`; builtin additions no longer extend the
+main runtime file merely to wire a selector. The test, Array, Object, VM-host,
+property and native-dispatch no-semantic-change splits reduced `runtime.rs`
+from roughly thirty-two thousand lines to 10,747 lines. Realm-aware property
 completion wrappers and storage helpers, bytecode publication and call
 dispatch, runtime/root lifecycle, and the remaining intrinsic families still
 share the file; `compiler.rs` similarly combines several compiler phases.
