@@ -7011,6 +7011,7 @@ impl Runtime {
             NativeFunctionId::ObjectGroupBy
             | NativeFunctionId::ObjectKeys(_)
             | NativeFunctionId::ObjectGetOwnPropertyDescriptor
+            | NativeFunctionId::ObjectHasOwn
             | NativeFunctionId::ObjectAssign => 8,
             // A key-coercion reentry retains the iterator, entry, result and
             // conversion stacks at once, making this family comparable to the
@@ -7056,6 +7057,11 @@ impl Runtime {
             NativeFunctionId::ObjectKeys(_) => 9,
             // ToPropertyKey may recursively re-enter through @@toPrimitive.
             NativeFunctionId::ObjectGetOwnPropertyDescriptor => 9,
+            // This has the same key-coercion reentry shape as the descriptor
+            // static; entering a tenth family frame can exhaust a 2 MiB
+            // libtest thread before the general weighted budget rejects the
+            // following call.
+            NativeFunctionId::ObjectHasOwn => 9,
             NativeFunctionId::ObjectAssign => 9,
             NativeFunctionId::ObjectFromEntries => 4,
             _ => return false,
@@ -7094,6 +7100,9 @@ impl Runtime {
             }
             NativeFunctionId::ObjectGetOwnPropertyDescriptor => {
                 matches!(candidate, NativeFunctionId::ObjectGetOwnPropertyDescriptor)
+            }
+            NativeFunctionId::ObjectHasOwn => {
+                matches!(candidate, NativeFunctionId::ObjectHasOwn)
             }
             NativeFunctionId::ObjectAssign => {
                 matches!(candidate, NativeFunctionId::ObjectAssign)
@@ -8644,6 +8653,9 @@ impl Runtime {
             }
             NativeFunctionId::ObjectFromEntries => {
                 self.call_object_from_entries(realm, invocation, arguments)
+            }
+            NativeFunctionId::ObjectHasOwn => {
+                self.call_object_has_own(realm, invocation, arguments)
             }
             NativeFunctionId::ObjectPrototypeToString => {
                 self.call_object_prototype_to_string(realm, invocation)

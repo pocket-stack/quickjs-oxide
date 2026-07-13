@@ -975,14 +975,14 @@ claim full parity.
   linked to `%Object.prototype%`. Call and construction preserve existing
   objects, box every primitive family in the defining realm, allocate ordinary
   objects for nullish values, and honor custom `newTarget.prototype` with the
-  new-target realm fallback. The implemented static-table prefix is exactly
+  new-target realm fallback. The pinned static table is now complete and is
+  exactly
   `create`, `getPrototypeOf`, `setPrototypeOf`, `defineProperty`,
   `defineProperties`, `getOwnPropertyNames`, `getOwnPropertySymbols`,
   `groupBy`, `keys`, `values`, `entries`, `isExtensible`,
   `preventExtensions`, `getOwnPropertyDescriptor`,
   `getOwnPropertyDescriptors`, `is`, `assign`, `seal`, `freeze`, `isSealed`,
-  `isFrozen`, `fromEntries`; the next entry, `hasOwn`, remains the deliberate
-  boundary.
+  `isFrozen`, `fromEntries`, `hasOwn`.
   Prototype mutation keeps
   same-value success plus exact immutable, non-extensible and cycle failures.
   Descriptor conversion follows QuickJS's inherited field probes and
@@ -1091,6 +1091,18 @@ claim full parity.
   direct and interleaved getter/key-coercion recursion catchable. Proxy entry
   traps, Map/Set iterators, generators/finally, TypedArrays and module namespace
   entries remain explicit boundaries until those object kinds exist.
+  `hasOwn` converts and boxes its target in the defining realm before converting
+  its property key, deliberately reversing the legacy prototype method's
+  observable conversion order. It probes only the resulting object's own
+  descriptor, so inherited properties are absent, stored accessors are not
+  called, String UTF-16 indices and `length` are present, Symbols retain
+  identity, and lazy AutoInit slots remain unmaterialized. A measured
+  nine-active-call family guard turns recursive `@@toPrimitive` reentry into a
+  catchable `InternalError` before the Rust host stack is exhausted; exact
+  QuickJS platform-stack depth still awaits the general native-call trampoline.
+  Proxy `getOwnPropertyDescriptor` traps and invariants, integer-indexed
+  TypedArrays, mapped arguments and module namespaces remain the corresponding
+  explicit object-model boundaries.
   Anchors: `quickjs.c` 8905-8950, 10680-10702, 15840-15927, 16639-16675,
   16923-16996, 39796-40716, 40748-40927,
   50728-50831, 50992-51107, 52115-52230, and 56291-56313.
@@ -1809,6 +1821,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_integrity -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_from_entries -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_object_has_own -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_search -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

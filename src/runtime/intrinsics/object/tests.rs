@@ -459,6 +459,97 @@ fn object_from_entries_autoinit_preserves_pinned_metadata() {
 }
 
 #[test]
+fn object_has_own_autoinit_preserves_pinned_metadata_and_presence_is_non_materializing() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let global = context.global_object().unwrap();
+    let object_key = runtime.intern_property_key("Object").unwrap();
+    let Value::Object(object_constructor) = context.get_property(&global, &object_key).unwrap()
+    else {
+        panic!("global Object was not an object");
+    };
+
+    let has_own_key = runtime.intern_property_key("hasOwn").unwrap();
+    {
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(object_constructor.object_id()).unwrap();
+        let shape = state.heap.shape(object.shape).unwrap();
+        let slot_index = usize::try_from(shape.find(has_own_key.atom()).unwrap()).unwrap();
+        assert_eq!(
+            shape.entries()[slot_index].flags,
+            PropertyFlags::data(true, false, true),
+        );
+        assert!(matches!(
+            object.slots.get(slot_index),
+            Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                realm,
+                target: NativeFunctionId::ObjectHasOwn,
+                name: "hasOwn",
+                length: 2,
+                min_readable_args: 2,
+            })) if *realm == context.realm
+        ));
+    }
+
+    assert_eq!(
+        context.eval("Object.hasOwn(Object,'keys')").unwrap(),
+        Value::Bool(true),
+    );
+    let keys_key = runtime.intern_property_key("keys").unwrap();
+    let state = runtime.0.state.borrow();
+    let object = state.heap.object(object_constructor.object_id()).unwrap();
+    let shape = state.heap.shape(object.shape).unwrap();
+    let slot_index = usize::try_from(shape.find(keys_key.atom()).unwrap()).unwrap();
+    assert!(matches!(
+        object.slots.get(slot_index),
+        Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+            target: NativeFunctionId::ObjectKeys(ObjectKeysKind::Keys),
+            ..
+        }))
+    ));
+}
+
+#[test]
+fn recursive_object_has_own_key_conversion_is_guarded_and_runtime_recovers() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    context
+        .eval(
+            r#"function objectHasOwnRecurse(depth){
+                    var key=Object();
+                    key[Symbol.toPrimitive]=function(){
+                        if(depth!==0)objectHasOwnRecurse(depth-1);
+                        return "x";
+                    };
+                    var target=Object();target.x=1;
+                    return Object.hasOwn(target,key);
+                }"#,
+        )
+        .unwrap();
+
+    assert_eq!(
+        context.eval("objectHasOwnRecurse(8)").unwrap(),
+        Value::Bool(true),
+    );
+    for depth in [9, 10, 11] {
+        let value = context
+            .eval(&format!(
+                r#"(function(){{
+                    try{{objectHasOwnRecurse({depth});return "missing"}}
+                    catch(error){{return error.name+":"+error.message}}
+                }})()"#,
+            ))
+            .unwrap();
+        assert_eq!(
+            value,
+            Value::String(JsString::from_static("InternalError:stack overflow")),
+            "Object.hasOwn recursion depth {depth}",
+        );
+    }
+    assert_eq!(context.eval("1+1").unwrap(), Value::Int(2));
+}
+
+#[test]
 fn object_from_entries_orders_entry_reads_and_closes_preserving_the_original_throw() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();

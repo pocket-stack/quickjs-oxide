@@ -366,6 +366,52 @@ impl Runtime {
         }
     }
 
+    /// QuickJS `js_object_hasOwn`.
+    ///
+    /// The static method converts its target before its key (the reverse of
+    /// `Object.prototype.hasOwnProperty`) and then performs the descriptor-free
+    /// `JS_GetOwnPropertyInternal` presence check. The local property kernel
+    /// preserves that check without materializing AutoInit payloads.
+    pub(in crate::runtime) fn call_object_has_own(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Object.hasOwn did not receive a generic invocation",
+            ));
+        };
+        let target = arguments
+            .readable
+            .first()
+            .cloned()
+            .ok_or(RuntimeError::Invariant(
+                "Object.hasOwn target argv was not padded",
+            ))?;
+        let object = match self.native_to_object(realm, target)? {
+            NativeConversion::Value(object) => object,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let key = match self.native_to_property_key(
+            realm,
+            arguments
+                .readable
+                .get(1)
+                .cloned()
+                .ok_or(RuntimeError::Invariant(
+                    "Object.hasOwn key argv was not padded",
+                ))?,
+        )? {
+            NativeConversion::Value(key) => key,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        Ok(Completion::Return(Value::Bool(
+            self.has_own_property(&object, &key)?,
+        )))
+    }
+
     fn object_iterator_next(
         &self,
         realm: ContextId,
@@ -684,6 +730,7 @@ impl Runtime {
                 1,
             ),
             (NativeFunctionId::ObjectFromEntries, "fromEntries", 1, 1),
+            (NativeFunctionId::ObjectHasOwn, "hasOwn", 2, 2),
         ] {
             self.define_native_builtin_auto_init(
                 constructor.as_object(),
