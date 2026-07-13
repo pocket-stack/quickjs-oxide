@@ -980,8 +980,8 @@ claim full parity.
   `defineProperties`, `getOwnPropertyNames`, `getOwnPropertySymbols`,
   `groupBy`, `keys`, `values`, `entries`, `isExtensible`,
   `preventExtensions`, `getOwnPropertyDescriptor`,
-  `getOwnPropertyDescriptors`, `is`, `assign`; the next entry, `seal`, remains the
-  deliberate boundary.
+  `getOwnPropertyDescriptors`, `is`, `assign`, `seal`, `freeze`, `isSealed`,
+  `isFrozen`; the next entry, `fromEntries`, remains the deliberate boundary.
   Prototype mutation keeps
   same-value success plus exact immutable, non-extensible and cycle failures.
   Descriptor conversion follows QuickJS's inherited field probes and
@@ -1063,7 +1063,20 @@ claim full parity.
   recursion is covered by the shared weighted budget. Proxy descriptor recheck
   and invariant quirks, stale TypedArray index snapshots, arguments and module
   namespace sources remain explicit object-model boundaries.
-  Anchors: `quickjs.c` 8905-8950, 15840-15927, 16923-16996, 39796-40547,
+  `seal` and `freeze` preserve every primitive without boxing. For objects they
+  first prevent extensions and then snapshot every own string and Symbol key.
+  `seal` clears configurability while preserving data writability;
+  `freeze` additionally clears writability only for a currently writable data
+  descriptor. Both preserve values, enumerability and accessor identity, never
+  execute stored accessors, materialize compatible AutoInit slots in key order,
+  and return the exact input object. `isSealed` and `isFrozen` return true for
+  primitives and preserve QuickJS's observable non-spec order: snapshot keys,
+  read and short-circuit on current descriptors, and query extensibility only
+  after every descriptor passes. Ordinary, Array and String-wrapper descriptor
+  transitions are covered; Proxy trap order/partial failures, non-empty
+  TypedArray rejection, mapped arguments and module namespace behavior remain
+  explicit object-model boundaries until those exotic kinds exist.
+  Anchors: `quickjs.c` 8905-8950, 15840-15927, 16923-16996, 39796-40644,
   40712-40716, 40748-40927,
   50728-50831, 50992-51107, 52115-52230, and 56291-56313.
 - Shape caches are weak and unlink by finalized generational Shape ID. Shape
@@ -1658,7 +1671,7 @@ object-environment lookup/deletion introduced by `with` or direct `eval`, the
 global String constructor, the remaining 40 entries of its 53-key prototype
 surface, Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. The Object static table after
-`assign`, AggregateError, and uncatchable termination state are also pending. Array
+`isFrozen`, AggregateError, and uncatchable termination state are also pending. Array
 destructuring consumers, `with` object-environment
 semantics, other
 iterator classes and helpers,
@@ -1769,6 +1782,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_is -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_assign -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_object_integrity -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_search -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

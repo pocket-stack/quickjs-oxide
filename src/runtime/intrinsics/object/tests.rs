@@ -427,6 +427,232 @@ fn object_assign_autoinit_and_ordinary_snapshot_semantics_match_pinned_quickjs()
 }
 
 #[test]
+fn object_integrity_autoinit_materializes_and_tightens_in_pinned_order() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let global = context.global_object().unwrap();
+    let object_key = runtime.intern_property_key("Object").unwrap();
+    let Value::Object(object_constructor) = context.get_property(&global, &object_key).unwrap()
+    else {
+        panic!("global Object was not an object");
+    };
+    let methods = [
+        ("seal", ObjectIntegrityKind::Seal),
+        ("freeze", ObjectIntegrityKind::Freeze),
+        ("isSealed", ObjectIntegrityKind::IsSealed),
+        ("isFrozen", ObjectIntegrityKind::IsFrozen),
+    ];
+
+    for (name, kind) in methods {
+        let key = runtime.intern_property_key(name).unwrap();
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(object_constructor.object_id()).unwrap();
+        let shape = state.heap.shape(object.shape).unwrap();
+        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        assert_eq!(
+            shape.entries()[slot_index].flags,
+            PropertyFlags::data(true, false, true),
+        );
+        assert!(matches!(
+            object.slots.get(slot_index),
+            Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                realm,
+                target: NativeFunctionId::ObjectIntegrity(target_kind),
+                name: target_name,
+                length: 1,
+                min_readable_args: 1,
+            })) if *realm == context.realm && *target_kind == kind && *target_name == name
+        ));
+    }
+
+    assert_eq!(
+        context.eval("Object.seal(Object)===Object").unwrap(),
+        Value::Bool(true),
+    );
+    for (name, kind) in methods {
+        let key = runtime.intern_property_key(name).unwrap();
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(object_constructor.object_id()).unwrap();
+        let shape = state.heap.shape(object.shape).unwrap();
+        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        assert_eq!(
+            shape.entries()[slot_index].flags,
+            PropertyFlags::data(true, false, false),
+        );
+        let Some(PropertySlot::Data(RawValue::Object(function))) = object.slots.get(slot_index)
+        else {
+            panic!("Object.{name} was not materialized by Object.seal");
+        };
+        let function = state.heap.object(*function).unwrap();
+        assert!(matches!(
+            &function.payload,
+            ObjectPayload::NativeFunction { data }
+                if data.target == NativeFunctionId::ObjectIntegrity(kind)
+                    && data.realm == Some(context.realm)
+                    && data.min_readable_args == 1
+        ));
+    }
+
+    assert_eq!(
+        context.eval("Object.freeze(Object)===Object").unwrap(),
+        Value::Bool(true),
+    );
+    for (name, _) in methods {
+        let key = runtime.intern_property_key(name).unwrap();
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(object_constructor.object_id()).unwrap();
+        let shape = state.heap.shape(object.shape).unwrap();
+        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        assert_eq!(
+            shape.entries()[slot_index].flags,
+            PropertyFlags::data(false, false, false),
+        );
+        assert!(matches!(
+            object.slots.get(slot_index),
+            Some(PropertySlot::Data(RawValue::Object(_)))
+        ));
+    }
+}
+
+#[test]
+fn object_is_sealed_scans_descriptors_before_extensibility_and_short_circuits_autoinit() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let object_constructor = eval_object(&mut context, "Object");
+    let is_sealed = eval_object(&mut context, "Object.isSealed");
+    let is_sealed = runtime.as_callable(&is_sealed).unwrap().unwrap();
+    let create = runtime.intern_property_key("create").unwrap();
+    let get_prototype_of = runtime.intern_property_key("getPrototypeOf").unwrap();
+
+    for key in [&create, &get_prototype_of] {
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(object_constructor.object_id()).unwrap();
+        let shape = state.heap.shape(object.shape).unwrap();
+        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        assert!(matches!(
+            object.slots.get(slot_index),
+            Some(PropertySlot::AutoInit(
+                AutoInitProperty::NativeBuiltin { .. }
+            ))
+        ));
+    }
+
+    // Removing the earlier configurable `length` and `name` properties makes
+    // the predicate pass the fixed `prototype`, materialize `create`, and
+    // return false there. Pinned QuickJS does this descriptor scan before its
+    // final IsExtensible query, so the next AutoInit property stays lazy.
+    for name in ["length", "name"] {
+        assert!(
+            runtime
+                .delete_property(
+                    &object_constructor,
+                    &runtime.intern_property_key(name).unwrap(),
+                )
+                .unwrap()
+        );
+    }
+    assert_eq!(
+        context
+            .call(
+                &is_sealed,
+                Value::Undefined,
+                &[Value::Object(object_constructor.clone())],
+            )
+            .unwrap(),
+        Value::Bool(false),
+    );
+
+    let state = runtime.0.state.borrow();
+    let object = state.heap.object(object_constructor.object_id()).unwrap();
+    let shape = state.heap.shape(object.shape).unwrap();
+    let create_slot = usize::try_from(shape.find(create.atom()).unwrap()).unwrap();
+    let get_prototype_slot = usize::try_from(shape.find(get_prototype_of.atom()).unwrap()).unwrap();
+    assert!(matches!(
+        object.slots.get(create_slot),
+        Some(PropertySlot::Data(RawValue::Object(_)))
+    ));
+    assert!(matches!(
+        object.slots.get(get_prototype_slot),
+        Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+            target: NativeFunctionId::ObjectGetPrototypeOf,
+            ..
+        }))
+    ));
+}
+
+#[test]
+fn object_integrity_preserves_descriptor_values_and_covers_array_string_and_symbol_keys() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let result = context
+        .eval(
+            r#"(function(){
+                var calls=0,target=Object(),data=Object(),accessor=Object();
+                function getter(){calls++;return 9}function setter(value){calls+=value}
+                data.value=7;data.writable=true;data.enumerable=false;data.configurable=true;
+                accessor.get=getter;accessor.set=setter;
+                accessor.enumerable=true;accessor.configurable=true;
+                Object.defineProperty(target,"data",data);
+                Object.defineProperty(target,"accessor",accessor);
+                var sealSame=Object.seal(target)===target;
+                var sealedData=Object.getOwnPropertyDescriptor(target,"data");
+                var sealedAccessor=Object.getOwnPropertyDescriptor(target,"accessor");
+                target.data=8;
+                var sealedValue=target.data===8;
+                var freezeSame=Object.freeze(target)===target;
+                var frozenData=Object.getOwnPropertyDescriptor(target,"data");
+                var frozenAccessor=Object.getOwnPropertyDescriptor(target,"accessor");
+                target.data=10;
+
+                var ownSymbol=Symbol("own"),symbolHolder=Object();
+                symbolHolder[ownSymbol]=11;Object.freeze(symbolHolder);
+                var symbolData=Object.getOwnPropertyDescriptor(symbolHolder,ownSymbol);
+
+                var array=[];array[2]="c";Object.seal(array);
+                var sealedIndex=Object.getOwnPropertyDescriptor(array,"2");
+                var sealedLength=Object.getOwnPropertyDescriptor(array,"length");
+                array[2]="d";array[1]="new";
+                var sealedArray=array[2]==="d"&&array[1]===undefined;
+                Object.freeze(array);array[2]="changed";
+                var frozenIndex=Object.getOwnPropertyDescriptor(array,"2");
+                var frozenLength=Object.getOwnPropertyDescriptor(array,"length");
+
+                var string=Object("A\uD800");string.extra=13;Object.freeze(string);
+                var stringZero=Object.getOwnPropertyDescriptor(string,"0");
+                var stringOne=Object.getOwnPropertyDescriptor(string,"1");
+                var stringLength=Object.getOwnPropertyDescriptor(string,"length");
+                var stringExtra=Object.getOwnPropertyDescriptor(string,"extra");
+
+                var marker=Symbol("primitive");
+                var checks=[
+                    sealSame,sealedData.writable,!sealedData.enumerable,!sealedData.configurable,
+                    sealedAccessor.get===getter,sealedAccessor.set===setter,
+                    sealedAccessor.enumerable,!sealedAccessor.configurable,sealedValue,
+                    Object.isSealed(target),freezeSame,!frozenData.writable,
+                    !frozenData.configurable,frozenData.value===8,
+                    frozenAccessor.get===getter,frozenAccessor.set===setter,
+                    !frozenAccessor.configurable,target.data===8,Object.isFrozen(target),calls===0,
+                    !symbolData.writable,symbolData.enumerable,!symbolData.configurable,
+                    sealedIndex.writable,!sealedIndex.configurable,
+                    sealedLength.writable,!sealedLength.configurable,sealedArray,
+                    !frozenIndex.writable,!frozenIndex.configurable,array[2]==="d",
+                    !frozenLength.writable,!frozenLength.configurable,Object.isFrozen(array),
+                    !stringZero.writable,stringZero.enumerable,!stringZero.configurable,
+                    !stringOne.writable,stringOne.enumerable,!stringOne.configurable,
+                    !stringLength.writable,!stringLength.enumerable,!stringLength.configurable,
+                    !stringExtra.writable,!stringExtra.configurable,Object.isFrozen(string),
+                    Object.is(Object.seal(-0),-0),Object.freeze(marker)===marker,
+                    Object.isSealed(),Object.isFrozen(null)
+                ];
+                for(var i=0;i<checks.length;i++)if(!checks[i])return i;
+                return true;
+            })()"#,
+        )
+        .unwrap();
+    assert_eq!(result, Value::Bool(true));
+}
+
+#[test]
 fn recursive_object_assign_callbacks_are_catchable_before_host_stack_exhaustion() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();

@@ -879,6 +879,16 @@ pub enum ObjectExtensibilityKind {
     PreventExtensions,
 }
 
+/// Operation selected by QuickJS's four generic-magic Object integrity
+/// builtins. The mutation and predicate pairs share the same freeze bit in C.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ObjectIntegrityKind {
+    Seal,
+    Freeze,
+    IsSealed,
+    IsFrozen,
+}
+
 /// Type-safe replacement for QuickJS's getter/setter magic values shared by
 /// the Annex-B `__define*__` and `__lookup*__` method families.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -942,6 +952,7 @@ pub enum NativeFunctionId {
     ObjectGetOwnPropertyDescriptors,
     ObjectIs,
     ObjectAssign,
+    ObjectIntegrity(ObjectIntegrityKind),
     ObjectPrototypeToString,
     ObjectPrototypeToLocaleString,
     ObjectPrototypeValueOf,
@@ -1225,6 +1236,7 @@ impl NativeFunctionId {
             | Self::ObjectKeys(_)
             | Self::ObjectExtensibility(_)
             | Self::ObjectGetOwnPropertyDescriptor
+            | Self::ObjectIntegrity(_)
             | Self::ObjectPrototypeDefineAccessor(_)
             | Self::ObjectPrototypeLookupAccessor(_)
             | Self::StringPrototypeCharAt(_)
@@ -4272,6 +4284,10 @@ mod tests {
             NativeFunctionId::ObjectExtensibility(ObjectExtensibilityKind::IsExtensible),
             NativeFunctionId::ObjectExtensibility(ObjectExtensibilityKind::PreventExtensions),
             NativeFunctionId::ObjectGetOwnPropertyDescriptor,
+            NativeFunctionId::ObjectIntegrity(ObjectIntegrityKind::Seal),
+            NativeFunctionId::ObjectIntegrity(ObjectIntegrityKind::Freeze),
+            NativeFunctionId::ObjectIntegrity(ObjectIntegrityKind::IsSealed),
+            NativeFunctionId::ObjectIntegrity(ObjectIntegrityKind::IsFrozen),
             NativeFunctionId::ObjectPrototypeDefineAccessor(ObjectAccessorKind::Getter),
             NativeFunctionId::ObjectPrototypeDefineAccessor(ObjectAccessorKind::Setter),
             NativeFunctionId::ObjectPrototypeLookupAccessor(ObjectAccessorKind::Getter),

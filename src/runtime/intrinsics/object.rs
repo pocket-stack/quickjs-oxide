@@ -523,6 +523,30 @@ impl Runtime {
             ),
             (NativeFunctionId::ObjectIs, "is", 2, 2),
             (NativeFunctionId::ObjectAssign, "assign", 2, 2),
+            (
+                NativeFunctionId::ObjectIntegrity(ObjectIntegrityKind::Seal),
+                "seal",
+                1,
+                1,
+            ),
+            (
+                NativeFunctionId::ObjectIntegrity(ObjectIntegrityKind::Freeze),
+                "freeze",
+                1,
+                1,
+            ),
+            (
+                NativeFunctionId::ObjectIntegrity(ObjectIntegrityKind::IsSealed),
+                "isSealed",
+                1,
+                1,
+            ),
+            (
+                NativeFunctionId::ObjectIntegrity(ObjectIntegrityKind::IsFrozen),
+                "isFrozen",
+                1,
+                1,
+            ),
         ] {
             self.define_native_builtin_auto_init(
                 constructor.as_object(),
@@ -1576,6 +1600,96 @@ impl Runtime {
             }
         }
         Ok(Completion::Return(Value::Object(target)))
+    }
+
+    pub(in crate::runtime) fn call_object_integrity(
+        &self,
+        realm: ContextId,
+        kind: ObjectIntegrityKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Object integrity method did not receive a generic invocation",
+            ));
+        };
+        let value = arguments
+            .readable
+            .first()
+            .cloned()
+            .ok_or(RuntimeError::Invariant(
+                "Object integrity argv was not padded",
+            ))?;
+        let Value::Object(object) = &value else {
+            return Ok(Completion::Return(match kind {
+                ObjectIntegrityKind::Seal | ObjectIntegrityKind::Freeze => value,
+                ObjectIntegrityKind::IsSealed | ObjectIntegrityKind::IsFrozen => Value::Bool(true),
+            }));
+        };
+
+        let mut keys = Vec::new();
+        match kind {
+            ObjectIntegrityKind::Seal | ObjectIntegrityKind::Freeze => {
+                // QuickJS prevents extensions before it snapshots any key.
+                self.prevent_extensions(object)?;
+                for key in self.own_property_keys(object)? {
+                    let key_kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
+                    if matches!(key_kind, PropertyKeyKind::String | PropertyKeyKind::Symbol) {
+                        keys.push(key);
+                    }
+                }
+                for key in keys {
+                    let mut descriptor = OrdinaryPropertyDescriptor {
+                        configurable: DescriptorField::Present(false),
+                        ..OrdinaryPropertyDescriptor::new()
+                    };
+                    if kind == ObjectIntegrityKind::Freeze
+                        && matches!(
+                            self.get_own_property(object, &key)?,
+                            Some(CompleteOrdinaryPropertyDescriptor::Data { writable: true, .. })
+                        )
+                    {
+                        descriptor.writable = DescriptorField::Present(false);
+                    }
+                    if let Some(value) =
+                        self.define_property_or_throw(realm, object, &key, &descriptor)?
+                    {
+                        return Ok(Completion::Throw(value));
+                    }
+                }
+                Ok(Completion::Return(value))
+            }
+            ObjectIntegrityKind::IsSealed | ObjectIntegrityKind::IsFrozen => {
+                for key in self.own_property_keys(object)? {
+                    let key_kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
+                    if matches!(key_kind, PropertyKeyKind::String | PropertyKeyKind::Symbol) {
+                        keys.push(key);
+                    }
+                }
+                for key in keys {
+                    let Some(descriptor) = self.get_own_property(object, &key)? else {
+                        continue;
+                    };
+                    let violates = match descriptor {
+                        CompleteOrdinaryPropertyDescriptor::Data {
+                            writable,
+                            configurable,
+                            ..
+                        } => configurable || (kind == ObjectIntegrityKind::IsFrozen && writable),
+                        CompleteOrdinaryPropertyDescriptor::Accessor { configurable, .. } => {
+                            configurable
+                        }
+                    };
+                    if violates {
+                        return Ok(Completion::Return(Value::Bool(false)));
+                    }
+                }
+                Ok(Completion::Return(Value::Bool(
+                    !self.is_extensible(object)?,
+                )))
+            }
+        }
     }
 
     pub(in crate::runtime) fn call_object_prototype_has_own_property(

@@ -33,10 +33,10 @@ use crate::heap::{
     FunctionDebugInfo, FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats,
     GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError,
     NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
-    ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId, ObjectKeysKind, ObjectKind,
-    ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot,
-    RawValue, ShapeId, StringCharAtKind, StringIndexOfKind, StringWellFormedKind,
-    SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
+    ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind,
+    ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind,
+    PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCharAtKind, StringIndexOfKind,
+    StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -11768,6 +11768,9 @@ impl Runtime {
             }
             NativeFunctionId::ObjectIs => self.call_object_is(invocation, arguments),
             NativeFunctionId::ObjectAssign => self.call_object_assign(realm, invocation, arguments),
+            NativeFunctionId::ObjectIntegrity(kind) => {
+                self.call_object_integrity(realm, kind, invocation, arguments)
+            }
             NativeFunctionId::ObjectPrototypeToString => {
                 self.call_object_prototype_to_string(realm, invocation)
             }
