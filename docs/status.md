@@ -1709,15 +1709,20 @@ index-search pair starts `runtime/intrinsics/string.rs`, while the earlier
 String handlers still await migration there. The complete VM-to-runtime trait
 adapter, per-frame argument/local/capture storage, iterator protocol bridge and
 bytecode-host error conversion now live in `runtime/vm_host.rs`; host layout is
-private to that module, including bytecode frame initialization. The test,
-Array, Object and VM-host no-semantic-change splits reduced `runtime.rs` from
-roughly thirty-two thousand lines to roughly 12.5k lines, and newer intrinsic
-features add only table and dispatch wiring there. Property machinery,
-bytecode publication and call dispatch, runtime/root lifecycle, and the
-remaining intrinsic families still share the file; `compiler.rs` similarly
-combines several compiler phases. Dedicated structural milestones must keep
-splitting those seams under the same differential and Rust-only gates, and
-future feature work must not resume extending either monolith indefinitely.
+private to that module, including bytecode frame initialization. Ordinary,
+String-exotic and Array property lookup/definition, AutoInit materialization,
+deletion, own-key, prototype and extensibility operations now live in
+`runtime/properties.rs`; their action records remain the parent module's
+internal ABI for VM, Context and intrinsic consumers. The test, Array, Object,
+VM-host and property no-semantic-change splits reduced `runtime.rs` from
+roughly thirty-two thousand lines to roughly 11.2k lines, and newer intrinsic
+features add only table and dispatch wiring there. Realm-aware property
+completion wrappers and storage helpers, bytecode publication and call
+dispatch, runtime/root lifecycle, and the remaining intrinsic families still
+share the file; `compiler.rs` similarly combines several compiler phases.
+Dedicated structural milestones must keep splitting those seams under the same
+differential and Rust-only gates, and future feature work must not resume
+extending either monolith indefinitely.
 
 ## Reproduce current evidence
 
