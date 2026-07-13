@@ -980,8 +980,8 @@ claim full parity.
   `defineProperties`, `getOwnPropertyNames`, `getOwnPropertySymbols`,
   `groupBy`, `keys`, `values`, `entries`, `isExtensible`,
   `preventExtensions`, `getOwnPropertyDescriptor`,
-  `getOwnPropertyDescriptors`; the next entry, `is`, remains the deliberate
-  boundary.
+  `getOwnPropertyDescriptors`, `is`; the next entry, `assign`, remains the
+  deliberate boundary.
   Prototype mutation keeps
   same-value success plus exact immutable, non-extensible and cycle failures.
   Descriptor conversion follows QuickJS's inherited field probes and
@@ -1047,7 +1047,11 @@ claim full parity.
   explicit object-model boundaries. Future Proxy work must preserve two pinned
   deviations: incomplete identity checks for some frozen descriptors, and the
   nested-Proxy undefined-trap path which bypasses target `[[IsExtensible]]`.
-  Anchors: `quickjs.c` 8905-8950, 39796-40409, 40142-40255, 40748-40927,
+  `Object.is` directly applies SameValue without coercion: all NaN payloads
+  compare equal, positive and negative zero remain distinct, primitive values
+  compare by value, and objects and Symbols compare by identity.
+  Anchors: `quickjs.c` 8905-8950, 15840-15927, 39796-40409, 40142-40255,
+  40712-40716, 40748-40927,
   50728-50831, 50992-51107, 52115-52230, and 56291-56313.
 - Shape caches are weak and unlink by finalized generational Shape ID. Shape
   and Symbol atom ownership is paired through heap cleanup, including failure
@@ -1641,8 +1645,8 @@ object-environment lookup/deletion introduced by `with` or direct `eval`, the
 global String constructor, the remaining 40 entries of its 53-key prototype
 surface, Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. The Object static table after
-`getOwnPropertyDescriptors`, AggregateError, and uncatchable termination state are
-also pending. Array destructuring consumers, `with` object-environment
+`is`, AggregateError, and uncatchable termination state are also pending. Array
+destructuring consumers, `with` object-environment
 semantics, other
 iterator classes and helpers,
 RegExp, Unicode-backed String methods, remaining object-literal forms and the
@@ -1748,6 +1752,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_extensibility -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_descriptors -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_object_is -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_search -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

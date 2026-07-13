@@ -271,6 +271,65 @@ fn object_descriptor_statics_autoinit_preserve_pinned_metadata() {
 }
 
 #[test]
+fn object_is_autoinit_and_same_value_semantics_match_pinned_quickjs() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let global = context.global_object().unwrap();
+    let object_key = runtime.intern_property_key("Object").unwrap();
+    let Value::Object(object_constructor) = context.get_property(&global, &object_key).unwrap()
+    else {
+        panic!("global Object was not an object");
+    };
+
+    let key = runtime.intern_property_key("is").unwrap();
+    {
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(object_constructor.object_id()).unwrap();
+        let shape = state.heap.shape(object.shape).unwrap();
+        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        assert_eq!(
+            shape.entries()[slot_index].flags,
+            PropertyFlags::data(true, false, true),
+        );
+        assert!(matches!(
+            object.slots.get(slot_index),
+            Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                realm,
+                target: NativeFunctionId::ObjectIs,
+                name: "is",
+                length: 2,
+                min_readable_args: 2,
+            })) if *realm == context.realm
+        ));
+    }
+
+    let result = context
+        .eval(
+            r#"(function(){
+                var calls=0,probe=Object();
+                probe.valueOf=function(){calls++;return 1};
+                probe.toString=function(){calls++;return "1"};
+                var object=Object(),other=Object(),symbol=Symbol("marker");
+                return [
+                    Object.is(),Object.is(undefined,undefined),Object.is(null,null),
+                    Object.is(true,true),Object.is("x","x"),Object.is(1,1.0),
+                    Object.is(1n,1n),Object.is(symbol,symbol),Object.is(object,object),
+                    Object.is(NaN,NaN),Object.is(0,-0),Object.is(-0,-0),
+                    Object.is(object,other),Object.is(1,"1"),
+                    Object.is.call(probe,probe,probe),calls
+                ].join(",");
+            })()"#,
+        )
+        .unwrap();
+    assert_eq!(
+        result,
+        Value::String(JsString::from_static(
+            "true,true,true,true,true,true,true,true,true,true,false,true,false,false,true,0",
+        )),
+    );
+}
+
+#[test]
 fn object_descriptor_statics_publish_complete_fields_without_calling_accessors() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();

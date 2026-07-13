@@ -11761,6 +11761,7 @@ impl Runtime {
             NativeFunctionId::ObjectGetOwnPropertyDescriptors => {
                 self.call_object_get_own_property_descriptors(realm, invocation, arguments)
             }
+            NativeFunctionId::ObjectIs => self.call_object_is(invocation, arguments),
             NativeFunctionId::ObjectPrototypeToString => {
                 self.call_object_prototype_to_string(realm, invocation)
             }

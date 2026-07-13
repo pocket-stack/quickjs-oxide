@@ -521,6 +521,7 @@ impl Runtime {
                 1,
                 1,
             ),
+            (NativeFunctionId::ObjectIs, "is", 2, 2),
         ] {
             self.define_native_builtin_auto_init(
                 constructor.as_object(),
@@ -1486,6 +1487,27 @@ impl Runtime {
             )?;
         }
         Ok(Completion::Return(Value::Object(result)))
+    }
+
+    pub(in crate::runtime) fn call_object_is(
+        &self,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Object.is did not receive a generic invocation",
+            ));
+        };
+        let left = arguments
+            .readable
+            .first()
+            .ok_or(RuntimeError::Invariant("Object.is lhs argv was not padded"))?;
+        let right = arguments
+            .readable
+            .get(1)
+            .ok_or(RuntimeError::Invariant("Object.is rhs argv was not padded"))?;
+        Ok(Completion::Return(Value::Bool(left.same_value(right))))
     }
 
     pub(in crate::runtime) fn call_object_prototype_has_own_property(
