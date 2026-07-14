@@ -199,7 +199,7 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/compat/test262-oxide.conf"
     ));
-    const EXPECTED_FEATURES: [&str; 9] = [
+    const EXPECTED_FEATURES: [&str; 10] = [
         "BigInt",
         "String.prototype.at",
         "String.prototype.endsWith",
@@ -208,6 +208,7 @@ mod tests {
         "__proto__",
         "change-array-by-copy",
         "exponentiation",
+        "for-in-order",
         "hashbang",
     ];
     const EXPECTED_AUDITED_NEGATIVES: [&str; 18] = [

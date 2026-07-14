@@ -72,18 +72,11 @@ struct BoundaryCase {
     rust_message: &'static str,
 }
 
-const BOUNDARY_CASES: &[BoundaryCase] = &[
-    BoundaryCase {
-        description: "Program var destructuring",
-        source: "var [value]=[1];value",
-        rust_message: "variable name expected",
-    },
-    BoundaryCase {
-        description: "Program var for-in head",
-        source: "for(var key in Function);typeof key",
-        rust_message: "for-in loops are not implemented yet",
-    },
-];
+const BOUNDARY_CASES: &[BoundaryCase] = &[BoundaryCase {
+    description: "Program var destructuring",
+    source: "var [value]=[1];value",
+    rust_message: "variable name expected",
+}];
 
 const ORACLE_PROPERTY_PROBE: &str = r#"
 (function () {

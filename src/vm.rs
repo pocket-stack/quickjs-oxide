@@ -55,6 +55,18 @@ pub(crate) enum ForOfNextOutcome {
     Throw(Value),
 }
 
+/// Result of creating the hidden object used by a for-in loop.
+pub(crate) enum ForInStartOutcome {
+    Iterator(Value),
+    Throw(Value),
+}
+
+/// Result of advancing a hidden for-in enumeration object.
+pub(crate) enum ForInNextOutcome {
+    Result { value: Value, done: bool },
+    Throw(Value),
+}
+
 /// Result of `IteratorClose`. Engine failures remain [`Error`]s; JavaScript
 /// throws are explicit so the VM can apply completion precedence itself.
 pub(crate) enum IteratorCloseOutcome {
@@ -117,6 +129,8 @@ pub(crate) trait VmHost {
         iterator: Value,
         next_method: Value,
     ) -> Result<ForOfNextOutcome, Error>;
+    fn for_in_start(&mut self, value: Value) -> Result<ForInStartOutcome, Error>;
+    fn for_in_next(&mut self, iterator: Value) -> Result<ForInNextOutcome, Error>;
     /// Close an iterator. With `exception_pending`, the VM retains the
     /// original thrown value even if this hook reports a JavaScript throw.
     fn iterator_close(
@@ -380,6 +394,14 @@ impl VmHost for DetachedHost<'_> {
             });
         }
         Err(Error::internal("detached VM has no iterator intrinsics"))
+    }
+
+    fn for_in_start(&mut self, _value: Value) -> Result<ForInStartOutcome, Error> {
+        Err(Error::internal("detached VM has no for-in intrinsics"))
+    }
+
+    fn for_in_next(&mut self, _iterator: Value) -> Result<ForInNextOutcome, Error> {
+        Err(Error::internal("detached VM has no for-in intrinsics"))
     }
 
     fn iterator_close(
@@ -915,12 +937,12 @@ impl CallFrame {
         }
     }
 
-    // Keep the literal-only host bridges behind one call site instead of
-    // adding four large Result temporaries to `execute_inner`'s interpreter
+    // Keep cold host bridges behind one call site instead of adding large
+    // Result temporaries to `execute_inner`'s interpreter
     // frame. This preserves the proven-safe recursive native/callback depth on
     // the 2 MiB libtest stack.
     #[inline(never)]
-    fn execute_object_literal_instruction(
+    fn execute_cold_instruction(
         &mut self,
         instruction: &Instruction,
         host: &mut impl VmHost,
@@ -962,10 +984,33 @@ impl CallFrame {
                     Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
                 }
             }
+            Instruction::ForInStart => {
+                let value = self.pop()?;
+                match host.for_in_start(value)? {
+                    ForInStartOutcome::Iterator(iterator) => self.stack.push(iterator),
+                    ForInStartOutcome::Throw(value) => {
+                        return Ok(Some(Completion::Throw(value)));
+                    }
+                }
+            }
+            Instruction::ForInNext => {
+                let iterator = self
+                    .stack
+                    .last()
+                    .cloned()
+                    .ok_or_else(|| Error::internal("for-in next without an iterator"))?;
+                match host.for_in_next(iterator)? {
+                    ForInNextOutcome::Result { value, done } => {
+                        self.stack.push(value);
+                        self.stack.push(Value::Bool(done));
+                    }
+                    ForInNextOutcome::Throw(value) => {
+                        return Ok(Some(Completion::Throw(value)));
+                    }
+                }
+            }
             _ => {
-                return Err(Error::internal(
-                    "non-object-literal instruction reached literal dispatch",
-                ));
+                return Err(Error::internal("hot instruction reached cold VM dispatch"));
             }
         }
         Ok(None)
@@ -992,10 +1037,10 @@ impl CallFrame {
                     | Instruction::SetNameComputed
                     | Instruction::SetProto
                     | Instruction::CopyDataProperties
+                    | Instruction::ForInStart
+                    | Instruction::ForInNext
             ) {
-                if let Some(completion) =
-                    self.execute_object_literal_instruction(instruction, host)?
-                {
+                if let Some(completion) = self.execute_cold_instruction(instruction, host)? {
                     return Ok(completion);
                 }
                 continue;
@@ -1699,6 +1744,9 @@ impl CallFrame {
                             return Ok(Completion::Throw(value));
                         }
                     }
+                }
+                Instruction::ForInStart | Instruction::ForInNext => {
+                    unreachable!("for-in dispatch was bypassed")
                 }
                 Instruction::IteratorClose => {
                     let (iterator, enabled) = self.take_iterator_region(false)?;

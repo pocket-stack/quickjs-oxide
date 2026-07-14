@@ -10,7 +10,7 @@ differentials still decide exact behavior inside each implemented slice.
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
 - quickjs-oxide capability profile SHA-256:
-  `52608c4417fa1ae66bfdea929f1d5848996a187adffb8e0d4a34794a6014c04f`
+  `f9bf8afb9a1147cac24da1b3cb8b65d473a8470b5f7ef0418ce4e0add8497560`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -48,25 +48,25 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 16,675 pass;
+- 17,365 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 59,134 are classified as unsupported feature, mode, host capability, parser
+- 58,322 are classified as unsupported feature, mode, host capability, parser
   frontier, harness frontier, or unaudited negative-test provenance;
-- 2,072 fail to parse, 5,471 fail at runtime, 208 fail in the harness, and two
+- 2,074 fail to parse, 5,591 fail at runtime, 208 fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 16.34% (`16,675 / 102,037`);
-- conservative target-scope lower bound: 19.96%
-  (`16,675 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 68.26%
-  (`16,675 / 24,428`).
+- raw suite pass rate: 17.02% (`17,365 / 102,037`);
+- conservative target-scope lower bound: 20.78%
+  (`17,365 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 68.80%
+  (`17,365 / 25,240`).
 
-The 19.96% figure is the useful whole-project progress floor, not a claim that
-the engine is 19.96% conformant. The 68.26% conditional rate measures quality
+The 20.78% figure is the useful whole-project progress floor, not a claim that
+the engine is 20.78% conformant. The 68.80% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
-completion. The capability profile currently admits nine reviewed Test262
+completion. The capability profile currently admits ten reviewed Test262
 feature tags and 18 reviewed negative-test paths; all
 other feature-tagged or negative-provenance cases fail closed. Expanding that
 profile as implementation lands can only make the measurement more
@@ -75,7 +75,8 @@ representative. Focused QuickJS differential tests remain the semantic judge.
 The complete TSV/JSONL reports are generated under `target/` rather than
 committed (together they are tens of megabytes). Their complete hashes and
 outcome summary are pinned in `tests/test262-full-baseline.txt`. Runs with five
-and eight workers produced byte-identical vectors.
+and eight workers have produced byte-identical vectors; the current baseline
+was reproduced with the default eight workers.
 
 ## Milestone policy
 
@@ -87,13 +88,17 @@ movement, regressions, newly exposed failures, and unsupported-frontier
 movement. Small implementation commits do not need an independent full-suite
 run.
 
-This object-literal/profile milestone moved 10,138 to 16,675 passes with no
-previous pass regression. The conservative target lower bound moved from
-12.13% to 19.96%. Profile expansion is reviewed independently: admitting a
-feature means its failures become visible, not that every tagged test is
-claimed to pass. Progress estimates should therefore quote the target lower
-bound together with the unsupported mass and major parse/runtime/harness
-frontiers; the conditional 68.26% rate is diagnostic, not an overall estimate.
+This simple-head `for-in` milestone moved 16,675 to 17,365 passes with no
+previous-pass regression. Of the 690 added passes, 668 came from the direct
+source frontier, eight from adjacent tests that had previously reached a real
+runtime `SyntaxError`, and 14 from admitting the `for-in-order` feature tag.
+The same expansion honestly exposed 124 direct runtime failures, two direct
+parse failures, and four `for-in-order` runtime failures. The target lower
+bound moved from 19.96% to 20.78%. Progress estimates should therefore quote
+that lower bound together with the unsupported mass and major
+parse/runtime/harness frontiers; the conditional 68.80% rate is diagnostic,
+not an overall estimate. A keyed old/new audit matched all 102,037 variants;
+the 97,403 variants outside the reviewed for-in buckets had no outcome drift.
 
 ## Runner contract
 
@@ -143,9 +148,12 @@ boundaries. The full command uses the release runner, defaults to eight workers,
 and compares the complete outcome vector and sidecar by SHA-256. Set
 `TEST262_WORKERS` to change concurrency without changing the expected bytes.
 
-The next high-leverage Test262 milestone is full `for-in`, which unlocks the
-shared `propertyHelper.js` harness as well as direct language tests. Object
-methods/accessors and native `$262` host plumbing remain separate slices.
-Normal implementation work should move the classified vector at feature
-milestones, while focused QuickJS differentials protect feature-parity
-semantics inside each admitted slice.
+All 3,770 variants that previously stopped at `propertyHelper.js`'s `for-in`
+frontier now reach its next shared blocker: the implicit ordinary-function
+`arguments` binding. Implementing that binding, followed by the missing Math
+surface, is the next high-leverage harness path. The direct `for-in` frontier
+now exposes 44 later unsupported boundaries: 22 implicit-arguments variants,
+ten `with`, ten destructuring, and two object-method variants. The four exposed
+`for-in-order` failures require JSON. Normal implementation work should move the
+classified vector at feature milestones, while focused QuickJS differentials
+protect feature-parity semantics inside each admitted slice.

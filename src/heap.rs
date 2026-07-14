@@ -19,7 +19,7 @@
 //! atoms in [`HeapCleanup::atoms`] so the caller can release them without
 //! making this low-level arena depend on `AtomTable` mutability or callbacks.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::rc::Rc;
@@ -701,7 +701,12 @@ pub enum ObjectPayload {
     /// mandatory length property remain in the ordinary shape/slot arrays;
     /// this class marker selects ArraySetLength and index-growth semantics at
     /// the runtime boundary without disguising an Array as an ordinary object.
-    Array,
+    Array {
+        /// QuickJS's observable dense `fast_array` representation. `Some`
+        /// stores `u.array.count`; `None` means the object was irreversibly
+        /// converted to ordinary indexed properties.
+        fast_len: Option<u32>,
+    },
     /// `JS_CLASS_ARRAY_ITERATOR`: the boxed source is released permanently at
     /// exhaustion, while `kind` selects keys, values, or entry pairs.
     ArrayIterator {
@@ -709,6 +714,10 @@ pub enum ObjectPayload {
         next_index: u32,
         kind: ArrayIteratorKind,
     },
+    /// QuickJS `JS_CLASS_FOR_IN_ITERATOR`. Property names and enumerable bits
+    /// are snapshotted one prototype level at a time; the current object is
+    /// the payload's only GC edge.
+    ForInIterator(ForInIteratorData),
     /// QuickJS `JSObject.u.object_data` for implemented primitive wrappers.
     Primitive(PrimitiveObjectData),
     /// Realm global object and its hidden table of unresolved global VarRefs.
@@ -750,6 +759,7 @@ pub enum ObjectKind {
     Ordinary,
     Array,
     ArrayIterator,
+    ForInIterator,
     Primitive,
     GlobalObject,
     Error,
@@ -757,6 +767,40 @@ pub enum ObjectKind {
     NativeFunction,
     BoundFunction,
     BytecodeFunction,
+}
+
+/// One string-key entry captured by QuickJS's `JS_GPN_SET_ENUM` enumeration.
+/// `JsString` avoids storing runtime-owning `PropertyKey` roots in the heap.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForInProperty {
+    pub name: JsString,
+    pub enumerable: bool,
+}
+
+/// Mutable state of one hidden for-in enumeration object.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForInIteratorData {
+    pub object: Option<ObjectId>,
+    pub index: usize,
+    pub properties: Vec<ForInProperty>,
+    /// The iterator, not the source object, remembers whether QuickJS selected
+    /// its count-only fast-Array path at loop entry.
+    pub fast_array: bool,
+    pub array_count: u32,
+    pub in_prototype_chain: bool,
+    pub visited: HashSet<JsString>,
+}
+
+/// One non-observable step selected from a hidden for-in iterator. The
+/// runtime performs live property/prototype operations only after the heap
+/// borrow used to advance the cursor has ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ForInCandidate {
+    Done,
+    BaseComplete { object: ObjectId, fast_array: bool },
+    LevelComplete(ObjectId),
+    ArrayIndex { object: ObjectId, index: u32 },
+    Property { object: ObjectId, name: JsString },
 }
 
 /// Observable mode selected by `Array.prototype.keys`, `values`, or
@@ -1479,7 +1523,7 @@ impl ObjectData {
             immutable_prototype: false,
             is_constructor: false,
             kind: ObjectKind::Array,
-            payload: ObjectPayload::Array,
+            payload: ObjectPayload::Array { fast_len: Some(0) },
         }
     }
 
@@ -1503,6 +1547,24 @@ impl ObjectData {
                 next_index: 0,
                 kind,
             },
+        }
+    }
+
+    /// Construct one hidden QuickJS-compatible for-in enumeration object.
+    #[must_use]
+    pub const fn for_in_iterator(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        data: ForInIteratorData,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::ForInIterator,
+            payload: ObjectPayload::ForInIterator(data),
         }
     }
 
@@ -2038,8 +2100,9 @@ impl Heap {
                 ));
             }
             ObjectPayload::Ordinary
-            | ObjectPayload::Array
+            | ObjectPayload::Array { .. }
             | ObjectPayload::ArrayIterator { .. }
+            | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
@@ -2750,6 +2813,145 @@ impl Heap {
         self.drain_zero_queue()
     }
 
+    /// Read the representation-sensitive dense prefix tracked for a genuine
+    /// QuickJS Array. `None` means the Array has converted to slow properties.
+    pub fn array_fast_len(&self, id: ObjectId) -> Result<Option<u32>, HeapError> {
+        match &self.object(id)?.payload {
+            ObjectPayload::Array { fast_len } => Ok(*fast_len),
+            _ => Err(HeapError::Invariant(
+                "Array fast state requested for an object with the wrong class",
+            )),
+        }
+    }
+
+    /// Update the logical QuickJS fast-Array representation after a property
+    /// operation. Converting to `None` is intentionally irreversible.
+    pub fn set_array_fast_len(
+        &mut self,
+        id: ObjectId,
+        fast_len: Option<u32>,
+    ) -> Result<(), HeapError> {
+        let ObjectPayload::Array { fast_len: current } = &mut self.object_mut(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "Array fast state update reached an object with the wrong class",
+            ));
+        };
+        *current = fast_len;
+        Ok(())
+    }
+
+    /// Advance within one snapshotted level without cloning the complete key
+    /// vector or visited set. Non-enumerable and duplicate prototype keys are
+    /// consumed internally because neither can be yielded.
+    pub fn next_for_in_candidate(&mut self, id: ObjectId) -> Result<ForInCandidate, HeapError> {
+        let ObjectPayload::ForInIterator(data) = &mut self.object_mut(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "for-in advance reached an object with the wrong class",
+            ));
+        };
+        loop {
+            let Some(object) = data.object else {
+                return Ok(ForInCandidate::Done);
+            };
+            if data.fast_array {
+                let index = u32::try_from(data.index)
+                    .map_err(|_| HeapError::Invariant("for-in fast Array index exceeded Uint32"))?;
+                if index < data.array_count {
+                    data.index += 1;
+                    return Ok(ForInCandidate::ArrayIndex { object, index });
+                }
+                return Ok(ForInCandidate::BaseComplete {
+                    object,
+                    fast_array: true,
+                });
+            }
+            if data.index >= data.properties.len() {
+                if !data.in_prototype_chain {
+                    return Ok(ForInCandidate::BaseComplete {
+                        object,
+                        fast_array: false,
+                    });
+                }
+                return Ok(ForInCandidate::LevelComplete(object));
+            }
+
+            let entry = data.properties[data.index].clone();
+            data.index += 1;
+            if data.in_prototype_chain && !data.visited.insert(entry.name.clone()) {
+                continue;
+            }
+            if !entry.enumerable {
+                continue;
+            }
+            let object = data.object.ok_or(HeapError::Invariant(
+                "for-in property snapshot lost its current object",
+            ))?;
+            return Ok(ForInCandidate::Property {
+                object,
+                name: entry.name,
+            });
+        }
+    }
+
+    /// Complete QuickJS's one-time prototype-chain preparation. A generic
+    /// iterator records its original base snapshot; a fast Array records a
+    /// fresh own-key snapshot supplied after the prototype pre-scan.
+    pub fn enter_for_in_prototype_chain(
+        &mut self,
+        id: ObjectId,
+        refreshed_fast_properties: Option<Vec<ForInProperty>>,
+    ) -> Result<(), HeapError> {
+        let ObjectPayload::ForInIterator(data) = &mut self.object_mut(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "for-in prototype preparation reached an object with the wrong class",
+            ));
+        };
+        if data.in_prototype_chain {
+            return Err(HeapError::Invariant(
+                "for-in prototype chain was prepared more than once",
+            ));
+        }
+        let properties = refreshed_fast_properties
+            .as_ref()
+            .unwrap_or(&data.properties);
+        data.visited
+            .extend(properties.iter().map(|entry| entry.name.clone()));
+        data.in_prototype_chain = true;
+        Ok(())
+    }
+
+    /// Install the next prototype level transactionally. The new current edge
+    /// is retained before the old level is detached; `None` marks exhaustion.
+    pub fn replace_for_in_level(
+        &mut self,
+        id: ObjectId,
+        next_object: Option<ObjectId>,
+        properties: Vec<ForInProperty>,
+    ) -> Result<HeapCleanup, HeapError> {
+        if !matches!(self.object(id)?.payload, ObjectPayload::ForInIterator(_)) {
+            return Err(HeapError::Invariant(
+                "for-in level update reached an object with the wrong class",
+            ));
+        }
+        if let Some(object) = next_object {
+            self.retain_raw(RawId::Object(object), 1)?;
+        }
+        let previous = {
+            let ObjectPayload::ForInIterator(data) = &mut self.object_mut(id)?.payload else {
+                unreachable!("for-in payload was validated before level replacement")
+            };
+            data.index = 0;
+            data.properties = properties;
+            data.fast_array = false;
+            data.array_count = 0;
+            std::mem::replace(&mut data.object, next_object)
+        };
+        if let Some(object) = previous {
+            self.release_raw_no_drain(RawId::Object(object))?;
+        }
+        self.drain_zero_queue()
+    }
+
     /// Update the ordinary object's extensibility bit without changing its
     /// shape or property payloads.
     pub fn set_object_extensible(
@@ -3125,11 +3327,12 @@ impl Heap {
         if !matches!(
             (object.kind, &object.payload),
             (ObjectKind::Ordinary, ObjectPayload::Ordinary)
-                | (ObjectKind::Array, ObjectPayload::Array)
+                | (ObjectKind::Array, ObjectPayload::Array { .. })
                 | (
                     ObjectKind::ArrayIterator,
                     ObjectPayload::ArrayIterator { .. }
                 )
+                | (ObjectKind::ForInIterator, ObjectPayload::ForInIterator(_))
                 | (ObjectKind::Primitive, ObjectPayload::Primitive(_))
                 | (ObjectKind::GlobalObject, ObjectPayload::GlobalObject { .. })
                 | (ObjectKind::Error, ObjectPayload::Error)
@@ -3583,8 +3786,9 @@ impl Heap {
 fn object_edges(object: &ObjectData) -> Vec<RawId> {
     let closure_count = match &object.payload {
         ObjectPayload::Ordinary
-        | ObjectPayload::Array
+        | ObjectPayload::Array { .. }
         | ObjectPayload::ArrayIterator { .. }
+        | ObjectPayload::ForInIterator(_)
         | ObjectPayload::Primitive(_)
         | ObjectPayload::GlobalObject { .. }
         | ObjectPayload::Error
@@ -3606,12 +3810,15 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
     edges.push(RawId::Shape(object.shape));
     match &object.payload {
         ObjectPayload::Ordinary
-        | ObjectPayload::Array
+        | ObjectPayload::Array { .. }
         | ObjectPayload::Primitive(_)
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. } => {}
         ObjectPayload::ArrayIterator { object, .. } => {
             edges.extend(object.map(RawId::Object));
+        }
+        ObjectPayload::ForInIterator(data) => {
+            edges.extend(data.object.map(RawId::Object));
         }
         ObjectPayload::GlobalObject { uninitialized_vars } => {
             edges.push(RawId::Object(*uninitialized_vars))
@@ -3787,8 +3994,9 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
             .chain(arguments.iter().filter_map(raw_value_atom))
             .collect::<Vec<_>>(),
         ObjectPayload::Ordinary
-        | ObjectPayload::Array
+        | ObjectPayload::Array { .. }
         | ObjectPayload::ArrayIterator { .. }
+        | ObjectPayload::ForInIterator(_)
         | ObjectPayload::GlobalObject { .. }
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
@@ -4147,6 +4355,87 @@ mod tests {
                 "completed Array Iterator was advanced"
             ))
         ));
+
+        heap.release_object(iterator).unwrap();
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn for_in_iterator_advances_snapshots_and_transfers_current_edges() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let source = leaf(&mut heap, shape);
+        let iterator = heap
+            .allocate_object(ObjectData::for_in_iterator(
+                shape,
+                Vec::new(),
+                ForInIteratorData {
+                    object: Some(source),
+                    index: 0,
+                    properties: vec![ForInProperty {
+                        name: JsString::from_static("a"),
+                        enumerable: true,
+                    }],
+                    fast_array: false,
+                    array_count: 0,
+                    in_prototype_chain: false,
+                    visited: HashSet::new(),
+                },
+            ))
+            .unwrap();
+
+        assert_eq!(heap.object_strong_count(source), Ok(2));
+        heap.release_object(source).unwrap();
+        assert_eq!(
+            heap.next_for_in_candidate(iterator),
+            Ok(ForInCandidate::Property {
+                object: source,
+                name: JsString::from_static("a"),
+            })
+        );
+        assert_eq!(
+            heap.next_for_in_candidate(iterator),
+            Ok(ForInCandidate::BaseComplete {
+                object: source,
+                fast_array: false,
+            })
+        );
+        heap.enter_for_in_prototype_chain(iterator, None).unwrap();
+
+        let prototype = leaf(&mut heap, shape);
+        let cleanup = heap
+            .replace_for_in_level(
+                iterator,
+                Some(prototype),
+                vec![ForInProperty {
+                    name: JsString::from_static("b"),
+                    enumerable: true,
+                }],
+            )
+            .unwrap();
+        assert_eq!(cleanup.finalized_objects, 1);
+        assert!(matches!(heap.object(source), Err(HeapError::Stale { .. })));
+        heap.release_object(prototype).unwrap();
+        assert_eq!(
+            heap.next_for_in_candidate(iterator),
+            Ok(ForInCandidate::Property {
+                object: prototype,
+                name: JsString::from_static("b"),
+            })
+        );
+        assert_eq!(
+            heap.next_for_in_candidate(iterator),
+            Ok(ForInCandidate::LevelComplete(prototype))
+        );
+        let cleanup = heap
+            .replace_for_in_level(iterator, None, Vec::new())
+            .unwrap();
+        assert_eq!(cleanup.finalized_objects, 1);
+        assert_eq!(
+            heap.next_for_in_candidate(iterator),
+            Ok(ForInCandidate::Done)
+        );
 
         heap.release_object(iterator).unwrap();
         heap.release_shape(shape).unwrap();

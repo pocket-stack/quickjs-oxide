@@ -28,8 +28,9 @@ impl Runtime {
         Ok(match &object.payload {
             ObjectPayload::Primitive(PrimitiveObjectData::String(value)) => Some(value.len()),
             ObjectPayload::Ordinary
-            | ObjectPayload::Array
+            | ObjectPayload::Array { .. }
             | ObjectPayload::ArrayIterator { .. }
+            | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
@@ -660,7 +661,7 @@ impl Runtime {
         let length = self.intern_property_key("length")?;
         let state = self.0.state.borrow();
         let object_data = state.heap.object(object.object_id())?;
-        if !matches!(object_data.payload, ObjectPayload::Array) {
+        if !matches!(object_data.payload, ObjectPayload::Array { .. }) {
             return Ok(ArrayOwnKey::Other);
         }
         if key == &length {
@@ -670,6 +671,66 @@ impl Runtime {
             .atoms
             .array_index(key.atom())?
             .map_or(ArrayOwnKey::Other, ArrayOwnKey::Index))
+    }
+
+    /// Return QuickJS's representation state for a genuine Array. `Some(n)`
+    /// is the dense `u.array.count`; `None` is the irreversible slow form.
+    pub(in crate::runtime) fn array_fast_len(
+        &self,
+        object: &ObjectRef,
+    ) -> Result<Option<u32>, RuntimeError> {
+        Ok(self
+            .0
+            .state
+            .borrow()
+            .heap
+            .array_fast_len(object.object_id())?)
+    }
+
+    fn set_array_fast_len(
+        &self,
+        object: &ObjectRef,
+        fast_len: Option<u32>,
+    ) -> Result<(), RuntimeError> {
+        self.0
+            .state
+            .borrow_mut()
+            .heap
+            .set_array_fast_len(object.object_id(), fast_len)?;
+        Ok(())
+    }
+
+    fn update_array_fast_state_after_index_define(
+        &self,
+        object: &ObjectRef,
+        key: &PropertyKey,
+        index: u32,
+        prior_fast_len: Option<u32>,
+    ) -> Result<(), RuntimeError> {
+        let Some(fast_len) = prior_fast_len else {
+            return Ok(());
+        };
+        let compatible = matches!(
+            self.get_own_property(object, key)?,
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                writable: true,
+                enumerable: true,
+                configurable: true,
+                ..
+            })
+        );
+        let next = if index < fast_len && compatible {
+            Some(fast_len)
+        } else if index == fast_len && compatible {
+            Some(
+                fast_len
+                    .checked_add(1)
+                    .ok_or(RuntimeError::Invariant("fast Array exceeded Uint32"))?,
+            )
+        } else {
+            None
+        };
+        self.set_array_fast_len(object, next)
     }
 
     /// Read and structurally validate a genuine Array's mandatory first
@@ -682,7 +743,7 @@ impl Runtime {
         let length = self.intern_property_key("length")?;
         let state = self.0.state.borrow();
         let object_data = state.heap.object(object.object_id())?;
-        if !matches!(object_data.payload, ObjectPayload::Array) {
+        if !matches!(object_data.payload, ObjectPayload::Array { .. }) {
             return Err(RuntimeError::Invariant(
                 "Array length state requested for a non-Array object",
             ));
@@ -747,6 +808,7 @@ impl Runtime {
         index: u32,
         descriptor: &OrdinaryPropertyDescriptor,
     ) -> Result<PropertyDefineOutcome, RuntimeError> {
+        let prior_fast_len = self.array_fast_len(object)?;
         let (old_length, length_writable) = self.array_length_state(object)?;
         if index >= old_length && !length_writable {
             return Ok(PropertyDefineOutcome::Defined(false));
@@ -754,6 +816,7 @@ impl Runtime {
         if !self.define_ordinary_own_property(object, key, descriptor)? {
             return Ok(PropertyDefineOutcome::Defined(false));
         }
+        self.update_array_fast_state_after_index_define(object, key, index, prior_fast_len)?;
         if index < old_length {
             return Ok(PropertyDefineOutcome::Defined(true));
         }
@@ -870,7 +933,7 @@ impl Runtime {
     ) -> Result<Vec<u32>, RuntimeError> {
         let state = self.0.state.borrow();
         let object_data = state.heap.object(object.object_id())?;
-        if !matches!(object_data.payload, ObjectPayload::Array) {
+        if !matches!(object_data.payload, ObjectPayload::Array { .. }) {
             return Err(RuntimeError::Invariant(
                 "Array index scan reached a non-Array object",
             ));
@@ -1058,6 +1121,10 @@ impl Runtime {
         if self.string_exotic_index_value(object, key)?.is_some() {
             return Ok(false);
         }
+        let array_index = match self.array_own_key(object, key)? {
+            ArrayOwnKey::Index(index) => Some(index),
+            ArrayOwnKey::Length | ArrayOwnKey::Other => None,
+        };
         let global_var_ref = {
             let state = self.0.state.borrow();
             let object_data = state.heap.object(object.object_id())?;
@@ -1086,8 +1153,9 @@ impl Runtime {
                     }
                 }
                 ObjectPayload::Ordinary
-                | ObjectPayload::Array
+                | ObjectPayload::Array { .. }
                 | ObjectPayload::ArrayIterator { .. }
+                | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }
@@ -1144,10 +1212,26 @@ impl Runtime {
             return Ok(false);
         }
 
+        let fast_update = if let Some(array_index) = array_index {
+            match state.heap.array_fast_len(object_id)? {
+                Some(fast_len) if array_index < fast_len => Some(if array_index + 1 == fast_len {
+                    Some(array_index)
+                } else {
+                    None
+                }),
+                Some(_) | None => None,
+            }
+        } else {
+            None
+        };
+
         let mut next_entries = entries;
         next_entries.remove(index);
         slots.remove(index);
         state.replace_layout(object_id, prototype, &next_entries, slots)?;
+        if let Some(next_fast_len) = fast_update {
+            state.heap.set_array_fast_len(object_id, next_fast_len)?;
+        }
         Ok(true)
     }
 

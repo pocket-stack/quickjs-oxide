@@ -5,6 +5,7 @@
 //! intrinsics extend this boundary; they are not hidden in the compiler or VM.
 
 mod bytecode_publish;
+mod for_in;
 mod intrinsics;
 mod native_dispatch;
 mod properties;
@@ -32,16 +33,16 @@ use crate::heap::{
     ArrayPopKind, ArrayPushKind, ArrayReduceKind, ArraySearchKind, ArraySliceKind,
     AutoInitProperty, BigIntAsNKind, BytecodeConstant, ClosureSource, ClosureVariable,
     ClosureVariableKind, ClosureVariableName, ConstructorKind, ContextData, ContextId,
-    DynamicFunctionKind, ErrorConstructorKind, FunctionBytecodeData, FunctionBytecodeId,
-    FunctionDebugInfo, FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats,
-    GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError,
-    NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
-    ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind,
-    ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind,
-    PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCaseKind, StringCharAtKind,
-    StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind, StringStaticKind,
-    StringSubrangeKind, StringTrimKind, StringWellFormedKind, SymbolRegistryKind, VarRefData,
-    VarRefId, VariableDefinition,
+    DynamicFunctionKind, ErrorConstructorKind, ForInCandidate, ForInIteratorData, ForInProperty,
+    FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo, FunctionDebugPosition,
+    FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap,
+    HeapCleanup, HeapCounts, HeapError, NativeCProto, NativeFunctionId, NumberFormatKind,
+    NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData, ObjectExtensibilityKind,
+    ObjectId, ObjectIntegrityKind, ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind,
+    ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue, ShapeId,
+    StringCaseKind, StringCharAtKind, StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind,
+    StringPadKind, StringStaticKind, StringSubrangeKind, StringTrimKind, StringWellFormedKind,
+    SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -54,8 +55,8 @@ use crate::property::{
 use crate::shape::{PropertyFlags, Shape, ShapeEntry, ShapeError};
 use crate::value::{CreateHtmlStringBuffer, JsString, JsStringBuilder, JsStringError, Value};
 use crate::vm::{
-    BytecodePc, Completion, ForOfNextOutcome, ForOfStartOutcome, IteratorCloseOutcome,
-    ToPrimitiveHint,
+    BytecodePc, Completion, ForInNextOutcome, ForInStartOutcome, ForOfNextOutcome,
+    ForOfStartOutcome, IteratorCloseOutcome, ToPrimitiveHint,
 };
 
 static NEXT_RUNTIME_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
@@ -2687,7 +2688,7 @@ impl Runtime {
                 .heap
                 .object(object.object_id())?
                 .payload,
-            ObjectPayload::Array
+            ObjectPayload::Array { .. }
         ))
     }
 
@@ -4646,8 +4647,9 @@ impl Runtime {
                     ..
                 } => (*bytecode, closure_slots.clone()),
                 ObjectPayload::Ordinary
-                | ObjectPayload::Array
+                | ObjectPayload::Array { .. }
                 | ObjectPayload::ArrayIterator { .. }
+                | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
@@ -4696,8 +4698,9 @@ impl Runtime {
                 Ok(None)
             }
             ObjectPayload::Ordinary
-            | ObjectPayload::Array
+            | ObjectPayload::Array { .. }
             | ObjectPayload::ArrayIterator { .. }
+            | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
@@ -5128,8 +5131,9 @@ impl Runtime {
                     ));
                 }
                 ObjectPayload::Ordinary
-                | ObjectPayload::Array
+                | ObjectPayload::Array { .. }
                 | ObjectPayload::ArrayIterator { .. }
+                | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
@@ -6199,8 +6203,9 @@ impl Runtime {
                             !metadata.strict && metadata.has_prototype
                         }
                         ObjectPayload::Ordinary
-                        | ObjectPayload::Array
+                        | ObjectPayload::Array { .. }
                         | ObjectPayload::ArrayIterator { .. }
+                        | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
                         | ObjectPayload::Error
@@ -6567,8 +6572,9 @@ impl Runtime {
                     (true, None, FunctionKind::Normal)
                 }
                 ObjectPayload::Ordinary
-                | ObjectPayload::Array
+                | ObjectPayload::Array { .. }
                 | ObjectPayload::ArrayIterator { .. }
+                | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
@@ -6774,8 +6780,9 @@ impl Runtime {
                         ObjectPayload::NativeFunction { .. }
                         | ObjectPayload::BytecodeFunction { .. } => None,
                         ObjectPayload::Ordinary
-                        | ObjectPayload::Array
+                        | ObjectPayload::Array { .. }
                         | ObjectPayload::ArrayIterator { .. }
+                        | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
                         | ObjectPayload::Error
@@ -6870,8 +6877,9 @@ impl Runtime {
                             ))
                         }
                         ObjectPayload::Ordinary
-                        | ObjectPayload::Array
+                        | ObjectPayload::Array { .. }
                         | ObjectPayload::ArrayIterator { .. }
+                        | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
                         | ObjectPayload::Error
@@ -7413,8 +7421,9 @@ impl Runtime {
                         Some(Ok(Value::BigInt(value.clone())))
                     }
                     ObjectPayload::Ordinary
-                    | ObjectPayload::Array
+                    | ObjectPayload::Array { .. }
                     | ObjectPayload::ArrayIterator { .. }
+                    | ObjectPayload::ForInIterator(_)
                     | ObjectPayload::Primitive(_)
                     | ObjectPayload::GlobalObject { .. }
                     | ObjectPayload::Error
@@ -8474,8 +8483,9 @@ impl Runtime {
             match state.heap.object(object.object_id())?.payload {
                 ObjectPayload::GlobalObject { uninitialized_vars } => Some(uninitialized_vars),
                 ObjectPayload::Ordinary
-                | ObjectPayload::Array
+                | ObjectPayload::Array { .. }
                 | ObjectPayload::ArrayIterator { .. }
+                | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }

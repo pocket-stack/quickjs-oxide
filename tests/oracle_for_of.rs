@@ -343,13 +343,13 @@ fn for_of_full_strip_source_and_strip_debug_stacks_match_pinned_quickjs() {
 }
 
 #[test]
-fn for_in_destructuring_and_for_await_boundaries_remain_explicit() {
+fn for_in_of_destructuring_and_for_await_boundaries_remain_explicit() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     for (source, expected) in [
         (
-            "for(var key in Function)key",
-            "for-in loops are not implemented yet",
+            "for(var [key] in Function)key",
+            "for-in destructuring bindings are not implemented yet",
         ),
         (
             "for(let [value] of 'a')value",

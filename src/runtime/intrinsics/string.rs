@@ -644,8 +644,9 @@ impl Runtime {
         let object = state.heap.object(object.object_id())?;
         Ok(match &object.payload {
             ObjectPayload::Ordinary
-            | ObjectPayload::Array
+            | ObjectPayload::Array { .. }
             | ObjectPayload::ArrayIterator { .. }
+            | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error

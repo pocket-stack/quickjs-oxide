@@ -199,18 +199,11 @@ struct BoundaryCase {
     rust_message: &'static str,
 }
 
-const BOUNDARY_CASES: &[BoundaryCase] = &[
-    BoundaryCase {
-        description: "lexical for-in",
-        source: "(function(){for(let key in Function){break;}return 1;})()",
-        rust_message: "for-in loops are not implemented yet",
-    },
-    BoundaryCase {
-        description: "classic for lexical destructuring",
-        source: "(function(){for(let [value]=[1];false;){}return 1;})()",
-        rust_message: "lexical destructuring bindings are not implemented yet",
-    },
-];
+const BOUNDARY_CASES: &[BoundaryCase] = &[BoundaryCase {
+    description: "classic for lexical destructuring",
+    source: "(function(){for(let [value]=[1];false;){}return 1;})()",
+    rust_message: "lexical destructuring bindings are not implemented yet",
+}];
 
 #[test]
 fn classic_for_lexical_values_match_pinned_quickjs() {

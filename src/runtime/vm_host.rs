@@ -617,6 +617,13 @@ impl RuntimeVmHost {
             .call_internal(self.current_realm, callable, receiver, &[])
             .map_err(runtime_error_to_vm_error)
     }
+
+    fn take_for_in_exception(&self) -> Result<Value, Error> {
+        self.runtime
+            .take_pending_exception()
+            .map_err(runtime_error_to_vm_error)?
+            .ok_or_else(|| Error::internal("for-in operation lost its JavaScript exception"))
+    }
 }
 
 impl Runtime {
@@ -726,6 +733,49 @@ impl VmHost for RuntimeVmHost {
             *reusable = matches!(binding, FrameBinding::Captured(_));
         }
         Ok(())
+    }
+
+    fn for_in_start(&mut self, value: Value) -> Result<ForInStartOutcome, Error> {
+        match self.runtime.start_for_in(self.current_realm, value) {
+            Ok(iterator) => Ok(ForInStartOutcome::Iterator(Value::Object(iterator))),
+            Err(RuntimeError::Exception) => {
+                Ok(ForInStartOutcome::Throw(self.take_for_in_exception()?))
+            }
+            Err(error) => Err(runtime_error_to_vm_error(error)),
+        }
+    }
+
+    fn for_in_next(&mut self, iterator: Value) -> Result<ForInNextOutcome, Error> {
+        let Value::Object(iterator) = iterator else {
+            return Ok(ForInNextOutcome::Result {
+                value: Value::Undefined,
+                done: true,
+            });
+        };
+        let is_for_in = matches!(
+            self.runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .object(iterator.object_id())
+                .map_err(|error| Error::internal(error.to_string()))?
+                .payload,
+            ObjectPayload::ForInIterator(_)
+        );
+        if !is_for_in {
+            return Ok(ForInNextOutcome::Result {
+                value: Value::Undefined,
+                done: true,
+            });
+        }
+        match self.runtime.next_for_in(&iterator) {
+            Ok((value, done)) => Ok(ForInNextOutcome::Result { value, done }),
+            Err(RuntimeError::Exception) => {
+                Ok(ForInNextOutcome::Throw(self.take_for_in_exception()?))
+            }
+            Err(error) => Err(runtime_error_to_vm_error(error)),
+        }
     }
 
     fn for_of_start(&mut self, iterable: Value) -> Result<ForOfStartOutcome, Error> {
@@ -952,8 +1002,9 @@ impl VmHost for RuntimeVmHost {
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. } => "function",
             ObjectPayload::Ordinary
-            | ObjectPayload::Array
+            | ObjectPayload::Array { .. }
             | ObjectPayload::ArrayIterator { .. }
+            | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error

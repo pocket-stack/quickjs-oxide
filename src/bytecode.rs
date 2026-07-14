@@ -209,6 +209,12 @@ pub enum Instruction {
     /// QuickJS `OP_for_of_next`: retain the three-slot iterator record below
     /// `offset` intermediate operands and append `value`, `done`.
     ForOfNext(u8),
+    /// QuickJS `OP_for_in_start`: replace one source value with a hidden
+    /// enumeration object.
+    ForInStart,
+    /// QuickJS `OP_for_in_next`: retain the enumeration object and append the
+    /// next string key plus its `done` flag.
+    ForInNext,
     /// QuickJS `OP_iterator_close`: remove the innermost iterator record and
     /// close it for a normal abrupt completion.
     IteratorClose,
@@ -239,6 +245,8 @@ impl Instruction {
             Self::Catch(_) => (0, 1),
             Self::ForOfStart => (1, 3),
             Self::ForOfNext(_) => (3, 5),
+            Self::ForInStart => (1, 1),
+            Self::ForInNext => (1, 3),
             Self::PushI32(_)
             | Self::PushConst(_)
             | Self::FClosure(_)
@@ -1293,6 +1301,38 @@ mod tests {
             max_stack: 4,
         };
         assert_eq!(preserve.verify().unwrap().max_stack, 4);
+    }
+
+    #[test]
+    fn verifier_tracks_for_in_as_one_ordinary_retained_operand() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::ForInStart,
+                Instruction::ForInNext,
+                Instruction::IfFalse(8),
+                Instruction::Drop,
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::Drop,
+                Instruction::Goto(2),
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 3,
+        };
+        assert_eq!(function.verify().unwrap().max_stack, 3);
+
+        let underflow = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::ForInStart, Instruction::Return],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        assert!(underflow.verify().is_err());
     }
 
     #[test]

@@ -13,8 +13,8 @@ claim full parity.
   capability profile, audited negative-test canaries, and source/metadata host
   requirements keep unsupported grammar, features, modes, and `$262` hooks from
   becoming false passes. Bounded workers preserve canonical byte-for-byte TSV
-  and JSONL ordering. The current vector has 16,675 passes: a 19.96% lower bound
-  after the 18,475 pinned QuickJS target exclusions, or 68.26% among the 24,428
+  and JSONL ordering. The current vector has 17,365 passes: a 20.78% lower bound
+  after the 18,475 pinned QuickJS target exclusions, or 68.80% among the 25,240
   variants with a non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim.
@@ -385,9 +385,10 @@ claim full parity.
   scoped lexical creation, Annex source writes, and argument/local hoist
   attachment)
   in QuickJS 2026-06-04. Direct/indirect eval declaration environments,
-  async/generator declarations, `for-in`/`for-await`, for-of destructuring,
-  single-statement lexical declarations, and catch/class scopes remain explicit
-  boundaries rather than falling back to local or ordinary global storage.
+  async/generator declarations, for-in destructuring, `for-await`, for-of
+  destructuring, single-statement lexical declarations, and catch/class scopes
+  remain explicit boundaries rather than falling back to local or ordinary
+  global storage.
 
   The immutable function format and VM provide the lexical-frame substrate for
   this compiler slice. Published bytecode owns
@@ -502,8 +503,8 @@ claim full parity.
   the pinned per-iteration boundary. Local and labelled continue retain the
   active iterator, while edges crossing an iterator control close it in
   inner-to-outer order and interleave correctly with switch cleanup and
-  try/finally subroutines. `for-in`, `for-await-of`, and for-of destructuring
-  remain explicit frontiers. The classic head continues to port QuickJS's
+  try/finally subroutines. `for-await-of` and for-of destructuring remain
+  explicit frontiers. The classic head continues to port QuickJS's
   sloppy `is_let(..., DECL_MASK_OTHER)` ambiguity; the shared statement parser
   applies the corresponding list-versus-single-statement mask.
 
@@ -536,6 +537,30 @@ claim full parity.
   (exception-time iterator closing), 28225-28335 (abrupt-control cleanup),
   28546-28769 (`js_parse_for_in_of`), 44182-44510 (Iterator prototype), and
   46508-46680 (String Iterator), plus `quickjs-opcode.h` 201-210.
+
+  Synchronous `for-in` now uses the same upstream parser path for simple
+  `var`/`let`/`const`, identifier, fixed-member and computed-member heads. Its
+  right operand is a full comma Expression, including QuickJS's sloppy-only
+  legacy `var` initializer. Typed `ForInStart` and `ForInNext` bytecode preserve
+  the hidden enumeration object with stack effects 1-to-1 and 1-to-3; local
+  continue retains it, while break and crossed control edges drop it without
+  IteratorClose. Nullish inputs enumerate nothing, other primitives box in the
+  executing realm, and only string keys can be yielded.
+
+  The hidden heap object snapshots each ordinary prototype level only when it
+  is reached. Enumerability is captured with that snapshot, own-property
+  presence is checked live before yield, non-enumerable or deleted nearer names
+  still enter the visited set, and prototype links are read live between
+  levels. QuickJS's representation-sensitive fast-Array path is tracked
+  explicitly: dense count-only iteration converts to a current own-key visited
+  set before prototype traversal, while descriptor or sparse-index conversion
+  remains irreversibly slow. Differential regressions lock both mutation modes,
+  ordinary shadowing, ordering, lexical cells, labels and finally cleanup.
+  Destructuring heads remain explicit parser frontiers. The VM host outcomes
+  already preserve arbitrary JavaScript throws; Proxy enumeration and its
+  duplicate prototype pre-scan/trap order still require Proxy internal methods.
+  Anchors are `quickjs.c` 16282-16509 and 28546-28769, plus
+  `quickjs-opcode.h` 201-204.
 
 - Array literals follow QuickJS's three-phase lowering rather than a generic
   builder rewrite: up to 32 leading dense elements use `ArrayFrom`, later
@@ -1660,7 +1685,7 @@ claim full parity.
   cross-eval captures, initializer/body/update cell identity, the pinned
   shared-head-cell continue quirk, labeled jumps through a nested switch,
   conflicts, exact full/StripDebug TDZ and read-only stacks, and explicit
-  `for-in`/destructuring boundaries.
+  destructuring boundaries.
   The `oracle_program_lexicals` target locks direct Program values, declaration
   source order, repeated eval persistence, globalThis separation and VarRef
   splitting, preflight atomicity, failed-initializer behavior, exact
@@ -1708,8 +1733,12 @@ claim full parity.
   abrupt close behavior, completion precedence, nested labels/switch/finally,
   raw native-next dispatch, realm splitting, exact diagnostics, and all three
   debug modes. Generic Array iteration is now covered by `oracle_array`;
-  `for-in`, `for-await-of`, for-of destructuring, and Iterator Helpers remain
-  separate milestones.
+  `for-await-of`, for-of destructuring, and Iterator Helpers remain separate
+  milestones.
+  The `oracle_for_in` target locks ordinary and representation-sensitive fast
+  Array enumeration, per-level snapshots, live presence/prototype changes,
+  shadowing, primitive boxing, simple assignment/declaration heads, lexical
+  cells, labels/finally cleanup, and exact initializer diagnostics.
 - `Runtime` and `Context` are distinct; `qjs -e` and file execution use the
   Rust compiler/VM path and never delegate to an external engine.
 
@@ -1724,21 +1753,19 @@ separate QuickJS-runner-quirk profile remain future milestones. Unsupported and
 host-missing outcomes are failures, not additional feature skips.
 
 The language slice is intentionally narrow. Async/generator declarations,
-`for-in`/`for-await`, for-of destructuring, other general
-assignment targets, module
-resolution, object method/accessor definitions and their home-object semantics,
-mapped `arguments`,
-direct/indirect eval declaration environments, arrow/async/generator functions,
-`with`, and callable Proxy classes are not yet
-implemented. Unsupported declaration contexts are rejected instead of being
+for-in destructuring, `for-await`, for-of destructuring, other general
+assignment targets, module resolution, object method/accessor definitions and
+their home-object semantics, mapped `arguments`, direct/indirect eval
+declaration environments, arrow/async/generator functions, `with`, and callable
+Proxy classes are not yet implemented. Unsupported declaration contexts are
+rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` is currently
 limited to simple identifier lists in direct Program code, authored
 ordinary-function bodies, non-empty nested brace blocks, shared switch scopes,
-classic `for (;;)` heads, and synchronous simple-binding `for-of` heads. These
-forms also work in scripts,
-and ordinary bodies including classic heads are available through the normal
-`%Function%` constructor.
-Single-statement lexical declarations, `for-in` and destructuring loop heads,
+classic `for (;;)` heads, and synchronous simple-binding `for-in`/`for-of`
+heads. These forms also work in scripts, and ordinary bodies including classic
+heads are available through the normal `%Function%` constructor.
+Single-statement lexical declarations and destructuring loop heads,
 destructuring (including catch binding patterns), and class lexical
 environments remain later compiler slices. Direct
 Program lexicals now use the production global VarRef path with two-phase
@@ -1781,10 +1808,10 @@ accessors and Error backtraces. Strip-debug compilation also removes ordinary
 lexical vardef and captured-relay names while retaining atoms needed by
 read-only execution; bytecode debug serialization remains pending. The normal
 `%Function%` graph is present, but dynamic formal parameters remain limited to
-simple identifiers and bodies to the current statement, expression, and
-simple body/block/switch/classic-for-head lexical-declaration grammar; implicit
-`arguments`, default/rest/destructuring parameters, generator/async kinds, and
-Proxy new-target realms remain pending.
+simple identifiers and bodies to the current statement, expression, and simple
+body/block/switch/classic-for and for-in/of-head lexical-declaration grammar;
+implicit `arguments`, default/rest/destructuring parameters, generator/async
+kinds, and Proxy new-target realms remain pending.
 Compiler input is still UTF-8,
 so dynamic source containing an unpaired UTF-16 surrogate throws an explicit
 implementation-gap `InternalError` instead of being silently rewritten. The
@@ -1894,7 +1921,9 @@ family live in `runtime/intrinsics/string.rs`, while the remaining String
 initialization and handlers still await migration there. The complete VM-to-runtime trait
 adapter, per-frame argument/local/capture storage, iterator protocol bridge and
 bytecode-host error conversion now live in `runtime/vm_host.rs`; host layout is
-private to that module, including bytecode frame initialization. Ordinary,
+private to that module, including bytecode frame initialization. The hidden
+for-in enumeration algorithm and prototype-level snapshots live in
+`runtime/for_in.rs`. Ordinary,
 String-exotic and Array property lookup/definition, AutoInit materialization,
 deletion, own-key, prototype and extensibility operations now live in
 `runtime/properties.rs`; their action records remain the parent module's
@@ -1905,7 +1934,7 @@ main runtime file merely to wire a selector. Bytecode draft validation and
 iterative flattening now live in `runtime/bytecode_publish.rs`. The test, Array,
 Object, VM-host, property, native-dispatch and bytecode-publication
 no-semantic-change splits reduced `runtime.rs` from roughly thirty-two thousand
-lines to 9,945 lines. Realm-aware property completion wrappers and storage
+lines to 9,955 lines. Realm-aware property completion wrappers and storage
 helpers, bytecode publication linking and call dispatch, runtime/root lifecycle,
 and the remaining intrinsic families still share the file; `compiler.rs`
 similarly combines several compiler phases.
@@ -1987,6 +2016,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_for_of -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_for_in -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_for_lexicals -- --nocapture
@@ -2058,8 +2089,9 @@ Unicode String case conversion, String-rope/byte/native-Error kernels, Unicode
 identifier core, global
 BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials, and
 the Program-var/function, Program/body/block/switch/classic-for lexical-scope,
-single/labelled Annex B, synchronous try/catch/finally, synchronous for-of,
-Array core/literal/iterator/search/callback/mutation/change-by-copy, Object
+single/labelled Annex B, synchronous try/catch/finally, synchronous
+for-in/for-of, Array core/literal/iterator/search/callback/mutation/change-by-copy,
+Object
 literal, and Object constructor/static-prefix/prototype slices. The atom-Error
 target contains thirteen
 pinned-oracle inputs in addition to its Rust-side expectation test. The Unicode

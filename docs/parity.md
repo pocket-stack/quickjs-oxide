@@ -71,7 +71,7 @@
 1. 本文各分区的门禁均有同一提交上的可复现报告，且没有未分类的失败、skip、timeout、crash 或差分；
 2. 产品依赖审计证明运行和发布产物不包含任何外部 JS 引擎；在移除 oracle 工具和网络后，产品仍可构建并运行；
 3. oracle 与 Rust 引擎的测试必须在独立进程、相同 fixture、固定环境下运行，测试不得根据被测引擎改变语义；
-4. 所有允许差异都进入版本化 deviation ledger，记录最小复现、上游输出、Rust 输出、理由、兼容影响和批准者。没有记录的“行为更合理”仍是失败；
+4. 所有允许差异都进入版本化 [deviation ledger](deviations.md)，记录最小复现、上游输出、Rust 输出、理由、兼容影响和批准者。没有记录的“行为更合理”仍是失败；
 5. 测试报告必须保存逐用例结果和命令，而不只保存 pass rate；任何过滤、重试、更新 golden 或扩大 timeout 都必须在 diff 中可见；
 6. 支持平台矩阵逐项通过同一套语义门禁。未验证平台可以标为 unsupported，但不能宣称该平台 parity；
 7. release 构建在 OOM、stack limit、interrupt、恶意深层对象图、复杂 RegExp 和循环模块等压力用例中不 panic、abort、死锁或越界。超时本身是失败，除非 oracle 在相同限制下也产生同类结果并已登记。

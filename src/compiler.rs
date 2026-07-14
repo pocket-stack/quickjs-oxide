@@ -355,6 +355,19 @@ enum ForIterationKind {
     Of,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForAssignmentDeclaration {
+    Assignment,
+    Var,
+    Lexical,
+}
+
+#[derive(Clone, Debug)]
+struct ForAssignmentTargetInfo {
+    declaration: ForAssignmentDeclaration,
+    var_initializer: Option<IdentifierReference>,
+}
+
 #[derive(Debug)]
 enum IrOp {
     Bytecode(Instruction),
@@ -407,6 +420,10 @@ enum BreakControlKind {
     /// same-loop continue keeps that record, a break reaches the shared close
     /// tail, and an edge crossing the loop closes it immediately.
     ForOf,
+    /// QuickJS for-in retains one hidden enumeration object. Same-loop
+    /// continue keeps it, the shared break tail drops it, and a jump crossing
+    /// the loop removes it without IteratorClose.
+    ForIn,
     Switch,
     /// QuickJS's catch-marker BlockEnv. It is not itself breakable, but every
     /// abrupt edge crossing it must discard the marker and call its finally
@@ -1306,9 +1323,9 @@ impl<'source> Parser<'source> {
 
     /// Lower the simple-binding synchronous half of QuickJS
     /// `js_parse_for_in_of`. The assignment fragment is emitted before the
-    /// iterable expression and skipped on first entry, just as upstream does;
-    /// each `done == false` edge jumps back to it with the yielded value above
-    /// the retained three-slot iterator record.
+    /// enumerated expression and skipped on first entry, just as upstream
+    /// does; each `done == false` edge jumps back with the yielded value above
+    /// the retained for-in object or for-of iterator record.
     fn parse_for_in_of_statement(
         &mut self,
         completion: StatementCompletion,
@@ -1317,19 +1334,24 @@ impl<'source> Parser<'source> {
         outer_scope: ScopeId,
         scope: ScopeId,
     ) -> Result<(), Error> {
-        if self.for_iteration_kind_ahead() == Some(ForIterationKind::In) {
-            return Err(self.unsupported_here("for-in loops are not implemented yet"));
-        }
+        let iteration_hint = self
+            .for_iteration_kind_ahead()
+            .ok_or_else(|| self.syntax_here("expected 'of' or 'in' in for control expression"))?;
+        let retained_slots = match iteration_hint {
+            ForIterationKind::In => 1,
+            ForIterationKind::Of => 3,
+        };
 
         let expression_jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
         let assignment_target = self.current_ir().ops.len();
 
-        // `ForOfNext` supplies `iterator, next, marker, value` on this edge.
+        // ForInNext supplies `enum, value`; ForOfNext supplies the retained
+        // three-slot iterator record plus `value` on this edge.
         self.current_ir_mut().stack_depth = entry_depth
-            .checked_add(4)
+            .checked_add(retained_slots + 1)
             .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
-        self.parse_for_of_assignment_target()?;
-        self.require_stack_depth(entry_depth + 3, "for-of assignment target")?;
+        let target = self.parse_for_iteration_assignment_target(iteration_hint)?;
+        self.require_stack_depth(entry_depth + retained_slots, "for-in/of assignment target")?;
         let body_jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
 
         let expression_target = self.current_ir().ops.len();
@@ -1337,8 +1359,29 @@ impl<'source> Parser<'source> {
         self.current_ir_mut().stack_depth = entry_depth;
 
         let has_initializer = if self.consume_punctuator(Punctuator::Equal)? {
-            self.parse_assignment_allow_in()?;
-            self.emit_instruction(Instruction::Drop)?;
+            match iteration_hint {
+                ForIterationKind::In => {
+                    self.with_in_mode(InMode::Disallow, Self::parse_assignment)?;
+                }
+                ForIterationKind::Of => self.parse_assignment_allow_in()?,
+            }
+            if iteration_hint == ForIterationKind::In
+                && target.declaration == ForAssignmentDeclaration::Var
+                && !self.current_ir().strict
+            {
+                let initializer = target
+                    .var_initializer
+                    .as_ref()
+                    .ok_or_else(|| Error::internal("for-in var initializer lost its binding"))?;
+                self.emit_identifier_inherited(
+                    initializer.name.clone(),
+                    initializer.span,
+                    initializer.scope,
+                    IdentifierAccess::Put,
+                )?;
+            } else {
+                self.emit_instruction(Instruction::Drop)?;
+            }
             true
         } else {
             false
@@ -1351,53 +1394,90 @@ impl<'source> Parser<'source> {
         } else {
             return Err(self.syntax_here("expected 'of' or 'in' in for control expression"));
         };
-        if iteration_kind == ForIterationKind::In {
-            return Err(self.unsupported_here("for-in loops are not implemented yet"));
+        if iteration_kind != iteration_hint {
+            return Err(Error::internal("for-in/of delimiter probe drifted"));
         }
-        if has_initializer {
-            return Err(self.syntax_here(
-                "a declaration in the head of a for-of loop can't have an initializer",
-            ));
+        if has_initializer
+            && (iteration_kind == ForIterationKind::Of
+                || target.declaration != ForAssignmentDeclaration::Var
+                || self.current_ir().strict)
+        {
+            return Err(self.syntax_here(format!(
+                "a declaration in the head of a for-{} loop can't have an initializer",
+                if iteration_kind == ForIterationKind::Of {
+                    "of"
+                } else {
+                    "in"
+                }
+            )));
         }
 
         // After contextual `of`, a slash starts the right-hand side's RegExp
         // lexical goal. The literal itself remains an explicit frontier, but
         // it must not drift into the division-token diagnostic.
         self.advance_expression_start()?;
-        // Unlike a classic-for initializer, the right side is exactly one
-        // AssignmentExpression and restores AllowIn for its complete subtree.
-        self.parse_assignment_allow_in()?;
+        if iteration_kind == ForIterationKind::Of {
+            // For-of consumes exactly one AssignmentExpression.
+            self.parse_assignment_allow_in()?;
+        } else {
+            // QuickJS deliberately accepts a full comma Expression for-in.
+            self.parse_expression()?;
+        }
         self.emit_scope_closures(scope, outer_scope)?;
-        self.emit_instruction(Instruction::ForOfStart)?;
-        self.require_stack_depth(entry_depth + 3, "for-of iterator start")?;
+        self.emit_instruction(match iteration_kind {
+            ForIterationKind::In => Instruction::ForInStart,
+            ForIterationKind::Of => Instruction::ForOfStart,
+        })?;
+        let record_depth = entry_depth + retained_slots;
+        self.require_stack_depth(record_depth, "for-in/of iterator start")?;
         let next_jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
         self.expect_punctuator(Punctuator::RightParen)?;
 
         let body_target = self.current_ir().ops.len();
         self.patch_jump(body_jump, body_target)?;
-        self.current_ir_mut().stack_depth = entry_depth + 3;
-        self.push_for_of_control(entry_depth, label_name, outer_scope)?;
+        self.current_ir_mut().stack_depth = record_depth;
+        match iteration_kind {
+            ForIterationKind::In => {
+                self.push_for_in_control(entry_depth, label_name, outer_scope)?;
+            }
+            ForIterationKind::Of => {
+                self.push_for_of_control(entry_depth, label_name, outer_scope)?;
+            }
+        }
         self.parse_statement_or_decl(completion, StatementPosition::Single)?;
-        self.require_stack_depth(entry_depth + 3, "for-of body")?;
+        self.require_stack_depth(record_depth, "for-in/of body")?;
         self.emit_scope_closures(scope, outer_scope)?;
 
         let next_target = self.current_ir().ops.len();
         self.patch_jump(next_jump, next_target)?;
-        self.emit_instruction(Instruction::ForOfNext(0))?;
+        self.emit_instruction(match iteration_kind {
+            ForIterationKind::In => Instruction::ForInNext,
+            ForIterationKind::Of => Instruction::ForOfNext(0),
+        })?;
         let assignment_jump = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
         self.patch_jump(assignment_jump, assignment_target)?;
 
-        // A completed iterator contributes an undefined value above its
-        // retained record. Natural exhaustion removes that value and uses the
-        // same close/drop tail as a local break (without invoking `return`).
+        // A completed enumeration contributes undefined above its retained
+        // record. Natural exhaustion removes it and shares the break tail.
         self.emit_instruction(Instruction::Drop)?;
         let break_target = self.current_ir().ops.len();
-        self.emit_instruction(Instruction::IteratorClose)?;
-        self.require_stack_depth(entry_depth, "for-of close")?;
+        match iteration_kind {
+            ForIterationKind::In => {
+                self.emit_instruction(Instruction::Drop)?;
+            }
+            ForIterationKind::Of => {
+                self.emit_instruction(Instruction::IteratorClose)?;
+            }
+        }
+        self.require_stack_depth(entry_depth, "for-in/of close")?;
 
         let control = self.pop_break_control()?;
-        if control.kind != BreakControlKind::ForOf || control.drop_count != 3 {
-            return Err(Error::internal("for-of control stack is unbalanced"));
+        let expected_control = match iteration_kind {
+            ForIterationKind::In => (BreakControlKind::ForIn, 1),
+            ForIterationKind::Of => (BreakControlKind::ForOf, 3),
+        };
+        if (control.kind, control.drop_count) != expected_control {
+            return Err(Error::internal("for-in/of control stack is unbalanced"));
         }
         for jump in control.continue_jumps {
             self.patch_jump(jump, next_target)?;
@@ -1410,17 +1490,25 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    /// Parse and consume the yielded value for one supported for-of head.
+    /// Parse and consume the yielded value for one supported for-in/of head.
     /// Declarations bind in the enumeration scope; ordinary references keep
     /// their base/key evaluation in the per-iteration assignment fragment.
-    fn parse_for_of_assignment_target(&mut self) -> Result<(), Error> {
+    fn parse_for_iteration_assignment_target(
+        &mut self,
+        iteration_kind: ForIterationKind,
+    ) -> Result<ForAssignmentTargetInfo, Error> {
+        let loop_name = if iteration_kind == ForIterationKind::In {
+            "for-in"
+        } else {
+            "for-of"
+        };
         if matches!(
             self.current().kind,
             TokenKind::Punctuator(Punctuator::LeftBrace | Punctuator::LeftBracket)
         ) {
-            return Err(
-                self.unsupported_here("for-of destructuring bindings are not implemented yet")
-            );
+            return Err(self.unsupported_here(format!(
+                "{loop_name} destructuring bindings are not implemented yet"
+            )));
         }
 
         if self.lexical_declaration_ahead(true)? {
@@ -1430,9 +1518,9 @@ impl<'source> Parser<'source> {
                 self.current().kind,
                 TokenKind::Punctuator(Punctuator::LeftBrace | Punctuator::LeftBracket)
             ) {
-                return Err(
-                    self.unsupported_here("for-of destructuring bindings are not implemented yet")
-                );
+                return Err(self.unsupported_here(format!(
+                    "{loop_name} destructuring bindings are not implemented yet"
+                )));
             }
             let token = self.current().clone();
             let TokenKind::Identifier(identifier) = token.kind else {
@@ -1466,7 +1554,10 @@ impl<'source> Parser<'source> {
                 IdentifierAccess::Initialize,
                 source_offset(token.span)?,
             )?;
-            return Ok(());
+            return Ok(ForAssignmentTargetInfo {
+                declaration: ForAssignmentDeclaration::Lexical,
+                var_initializer: None,
+            });
         }
 
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Var)) {
@@ -1475,9 +1566,9 @@ impl<'source> Parser<'source> {
                 self.current().kind,
                 TokenKind::Punctuator(Punctuator::LeftBrace | Punctuator::LeftBracket)
             ) {
-                return Err(
-                    self.unsupported_here("for-of destructuring bindings are not implemented yet")
-                );
+                return Err(self.unsupported_here(format!(
+                    "{loop_name} destructuring bindings are not implemented yet"
+                )));
             }
             let token = self.current().clone();
             let TokenKind::Identifier(identifier) = token.kind else {
@@ -1512,13 +1603,21 @@ impl<'source> Parser<'source> {
                     .get_or_insert(span);
             }
             self.register_var_binding(&name, token.span, self.current().span)?;
+            let initializer = IdentifierReference {
+                name: name.clone(),
+                span: token.span,
+                scope: self.current_ir().current_scope,
+            };
             self.emit_identifier_at(
                 name,
                 token.span,
                 IdentifierAccess::Put,
                 source_offset(token.span)?,
             )?;
-            return Ok(());
+            return Ok(ForAssignmentTargetInfo {
+                declaration: ForAssignmentDeclaration::Var,
+                var_initializer: Some(initializer),
+            });
         }
 
         let async_span = match &self.current().kind {
@@ -1531,6 +1630,7 @@ impl<'source> Parser<'source> {
         };
         self.parse_left_hand_side_expression()?;
         if let Some(async_span) = async_span
+            && iteration_kind == ForIterationKind::Of
             && self.is_for_of_keyword()
         {
             return Err(Error::syntax(
@@ -1546,12 +1646,19 @@ impl<'source> Parser<'source> {
                 target.scope,
                 IdentifierAccess::Put,
             )?;
-            return Ok(());
+            return Ok(ForAssignmentTargetInfo {
+                declaration: ForAssignmentDeclaration::Assignment,
+                var_initializer: None,
+            });
         }
         let Some(target) = self.take_tail_member_reference()? else {
             return Err(self.syntax_here("invalid assignment left-hand side"));
         };
-        self.emit_for_of_member_put(target)
+        self.emit_for_of_member_put(target)?;
+        Ok(ForAssignmentTargetInfo {
+            declaration: ForAssignmentDeclaration::Assignment,
+            var_initializer: None,
+        })
     }
 
     /// Reorder `value, base[, key]` into the ordinary property-write layout
@@ -1893,19 +2000,22 @@ impl<'source> Parser<'source> {
                 Some(label_name) if is_continue => {
                     matches!(
                         control.kind,
-                        BreakControlKind::Loop | BreakControlKind::ForOf
+                        BreakControlKind::Loop | BreakControlKind::ForIn | BreakControlKind::ForOf
                     ) && control.label_name.as_deref() == Some(label_name)
                 }
                 Some(label_name) => control.label_name.as_deref() == Some(label_name),
                 None if is_continue => {
                     matches!(
                         control.kind,
-                        BreakControlKind::Loop | BreakControlKind::ForOf
+                        BreakControlKind::Loop | BreakControlKind::ForIn | BreakControlKind::ForOf
                     )
                 }
                 None => matches!(
                     control.kind,
-                    BreakControlKind::Loop | BreakControlKind::ForOf | BreakControlKind::Switch
+                    BreakControlKind::Loop
+                        | BreakControlKind::ForIn
+                        | BreakControlKind::ForOf
+                        | BreakControlKind::Switch
                 ),
             });
         let Some(target) = target else {
@@ -1981,6 +2091,7 @@ impl<'source> Parser<'source> {
                 }
                 BreakControlKind::RegularStatement
                 | BreakControlKind::Loop
+                | BreakControlKind::ForIn
                 | BreakControlKind::Switch => {
                     for _ in 0..drop_count {
                         self.emit_instruction(Instruction::Drop)?;
@@ -2014,6 +2125,32 @@ impl<'source> Parser<'source> {
 
     fn push_loop_control(&mut self, entry_depth: usize, label_name: Option<String>) {
         self.push_break_control(BreakControlKind::Loop, label_name, entry_depth, 0);
+    }
+
+    /// QuickJS restores the outer scope level on the for-in break entry while
+    /// retaining its one hidden enumeration object across local continue.
+    fn push_for_in_control(
+        &mut self,
+        entry_depth: usize,
+        label_name: Option<String>,
+        outer_scope: ScopeId,
+    ) -> Result<(), Error> {
+        let record_depth = entry_depth
+            .checked_add(1)
+            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+        self.current_ir_mut()
+            .break_controls
+            .push(BreakControlContext {
+                kind: BreakControlKind::ForIn,
+                label_name,
+                scope: outer_scope,
+                entry_depth: record_depth,
+                drop_count: 1,
+                break_jumps: Vec::new(),
+                continue_jumps: Vec::new(),
+                finally_gosubs: Vec::new(),
+            });
+        Ok(())
     }
 
     /// QuickJS changes a for-of `BlockEnv`'s scope level back to the level
@@ -4891,10 +5028,10 @@ impl<'source> Parser<'source> {
         )
     }
 
-    /// Non-committing delimiter probe for a semicolon-free for head. It is
-    /// used only to keep the explicit for-in frontier ahead of the for-of
-    /// destructuring frontier; the real parser still validates the complete
-    /// LeftHandSideExpression and reports source-ordered syntax errors.
+    /// Non-committing delimiter probe for a semicolon-free for head. It selects
+    /// the retained record shape before the assignment fragment is lowered;
+    /// the real parser still validates the complete LeftHandSideExpression and
+    /// reports source-ordered syntax errors.
     fn for_iteration_kind_ahead(&self) -> Option<ForIterationKind> {
         let mut lexer = self.lexer.clone();
         lexer.seek(self.current().span.start);
@@ -10548,8 +10685,7 @@ mod tests {
             );
         }
 
-        let error = compile_unlinked_script("for(Function.item in Function);").unwrap_err();
-        assert_eq!(error.message(), "for-in loops are not implemented yet");
+        compile_unlinked_script("for(Function.item in Function);").unwrap();
         for source in [
             "for(Function.item of Function);",
             "for(Function.item of 'a;b');",
