@@ -41,6 +41,15 @@ fn string_subrange_selectors_use_pinned_generic_cproto() {
 }
 
 #[test]
+fn string_pad_selectors_use_pinned_generic_magic_cproto() {
+    for selector in [StringPadKind::End, StringPadKind::Start] {
+        let descriptor = NativeFunctionId::StringPrototypePad(selector).descriptor();
+        assert_eq!(descriptor.cproto, NativeCProto::GenericMagic);
+        assert!(!descriptor.cproto.default_is_constructor());
+    }
+}
+
+#[test]
 fn string_index_scan_is_utf16_exact_and_inclusive() {
     let source = JsString::try_from_utf16([0x61, 0xd83d, 0xde00, 0xd800, 0x61]).unwrap();
     let crossed = JsString::try_from_utf16([0xde00, 0xd800]).unwrap();
@@ -262,6 +271,69 @@ fn string_repeat_publishes_one_generic_autoinit_entry() {
 }
 
 #[test]
+fn string_pad_family_publishes_pinned_autoinit_entries_and_identities() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let prototype = context.string_prototype().unwrap();
+    let entries = [
+        ("padEnd", StringPadKind::End),
+        ("padStart", StringPadKind::Start),
+    ];
+    let keys = entries.map(|(name, selector)| {
+        (
+            name,
+            selector,
+            runtime
+                .intern_property_key(name)
+                .expect("String pad-family key must intern"),
+        )
+    });
+    let state = runtime.0.state.borrow();
+    let object = state.heap.object(prototype.object_id()).unwrap();
+    let shape = state.heap.shape(object.shape).unwrap();
+    let slot_indices = keys
+        .each_ref()
+        .map(|(_, _, key)| usize::try_from(shape.find(key.atom()).unwrap()).unwrap());
+    assert!(
+        slot_indices[0] < slot_indices[1],
+        "padEnd must precede padStart"
+    );
+    for ((name, selector, _), slot_index) in keys.iter().zip(slot_indices) {
+        assert_eq!(
+            shape.entries()[slot_index].flags,
+            PropertyFlags::data(true, false, true),
+        );
+        assert!(matches!(
+            object.slots.get(slot_index),
+            Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                realm,
+                target: NativeFunctionId::StringPrototypePad(target_selector),
+                name: target_name,
+                length: 1,
+                min_readable_args: 1,
+            })) if *realm == context.realm
+                && *target_selector == *selector
+                && *target_name == *name
+        ));
+    }
+    drop(state);
+
+    let identities = keys.map(|(name, _, key)| {
+        let Value::Object(first) = context.get_property(&prototype, &key).unwrap() else {
+            panic!("{name} did not materialize as a function object");
+        };
+        let Value::Object(second) = context.get_property(&prototype, &key).unwrap() else {
+            panic!("{name} did not remain a function object");
+        };
+        assert_eq!(first, second, "{name} AutoInit identity was unstable");
+        assert!(runtime.as_callable(&first).unwrap().is_some());
+        assert!(!runtime.is_constructor(&first).unwrap());
+        first
+    });
+    assert_ne!(identities[0], identities[1]);
+}
+
+#[test]
 fn string_repeat_preserves_pinned_values_order_and_errors() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -402,6 +474,255 @@ fn string_repeat_reservation_oom_is_catchable_in_defining_realm_and_recovers() {
             .unwrap(),
         Value::String(JsString::from_static("xyxy")),
         "runtime did not recover after repeat reservation OOM",
+    );
+}
+
+#[test]
+fn string_pad_preserves_pinned_values_conversion_order_and_early_returns() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+
+    assert_eq!(
+        context
+            .eval(
+                r#"[
+                    "abc".padEnd(5),"abc".padStart(5),
+                    "abc".padEnd(8,"xy"),"abc".padStart(8,"xy"),
+                    "ab".padEnd(),"ab".padStart(undefined),
+                    "ab".padEnd(4,undefined),"ab".padStart(4,1)
+                ].join("|")"#,
+            )
+            .unwrap(),
+        Value::String(JsString::from_static(
+            "abc  |  abc|abcxyxyx|xyxyxabc|ab|ab|ab  |11ab",
+        )),
+    );
+
+    assert_eq!(
+        context
+            .eval(
+                r#"(function(){
+                    var log="",receiver=Object(),target=Object(),filler=Object(),extra=Object();
+                    receiver[Symbol.toPrimitive]=function(hint){log+="r:"+hint+";";return "ab"};
+                    target[Symbol.toPrimitive]=function(hint){log+="t:"+hint+";";return 5.9};
+                    filler[Symbol.toPrimitive]=function(hint){log+="f:"+hint+";";return "xy"};
+                    extra[Symbol.toPrimitive]=function(){log+="extra;";throw "wrong"};
+                    return String.prototype.padEnd.call(receiver,target,filler,extra)+"|"+log;
+                })()"#,
+            )
+            .unwrap(),
+        Value::String(JsString::from_static("abxyx|r:string;t:number;f:string;",)),
+    );
+
+    assert_eq!(
+        context
+            .eval(
+                r#"(function(){
+                    var log="",receiver=Object(),target=Object(),filler=Object();
+                    receiver[Symbol.toPrimitive]=function(hint){log+="r:"+hint+";";return "ab"};
+                    target[Symbol.toPrimitive]=function(hint){log+="t:"+hint+";";return 2.9};
+                    filler[Symbol.toPrimitive]=function(){log+="f;";throw "wrong"};
+                    return String.prototype.padStart.call(receiver,target,filler)+"|"+log;
+                })()"#,
+            )
+            .unwrap(),
+        Value::String(JsString::from_static("ab|r:string;t:number;")),
+        "len >= target must return before observing the filler",
+    );
+
+    assert_eq!(
+        context
+            .eval(
+                r#"(function(){
+                    var log="",receiver=Object(),target=Object(),filler=Object();
+                    receiver[Symbol.toPrimitive]=function(hint){log+="r:"+hint+";";return "x"};
+                    target[Symbol.toPrimitive]=function(hint){log+="t:"+hint+";";return Infinity};
+                    filler[Symbol.toPrimitive]=function(hint){log+="f:"+hint+";";return ""};
+                    return String.prototype.padEnd.call(receiver,target,filler)+"|"+log;
+                })()"#,
+            )
+            .unwrap(),
+        Value::String(JsString::from_static("x|r:string;t:number;f:string;")),
+        "empty filler must return after conversion but before the length RangeError",
+    );
+
+    assert_eq!(
+        context.eval(r#""A\ud800".padEnd(4,"\ude00x")"#).unwrap(),
+        Value::String(JsString::try_from_utf16([0x41, 0xd800, 0xde00, 0x78]).unwrap()),
+    );
+    assert_eq!(
+        context.eval(r#""A\ud800".padStart(4,"\ude00x")"#).unwrap(),
+        Value::String(JsString::try_from_utf16([0xde00, 0x78, 0x41, 0xd800]).unwrap()),
+    );
+}
+
+#[test]
+fn string_pad_small_limit_preserves_filler_order_and_range_error_kind() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let filler = context
+        .eval(
+            r#"(function(){
+                globalThis.padLimitLog="";
+                var filler=Object();
+                filler[Symbol.toPrimitive]=function(hint){padLimitLog+="f:"+hint+";";return "x"};
+                return filler;
+            })()"#,
+        )
+        .unwrap();
+    let completion = runtime
+        .call_string_prototype_pad_with_limit(
+            context.realm,
+            StringPadKind::End,
+            NativeInvocation::Call {
+                this_value: Value::String(JsString::from_static("a")),
+            },
+            &NativeArguments {
+                actual_arg_count: 2,
+                readable: vec![Value::Int(4), filler],
+            },
+            3,
+        )
+        .unwrap();
+    let Completion::Throw(Value::Object(error)) = completion else {
+        panic!("small String pad limit did not throw an Error object");
+    };
+    for (name, expected) in [("name", "RangeError"), ("message", "invalid string length")] {
+        let Value::String(value) = context
+            .get_property(&error, &runtime.intern_property_key(name).unwrap())
+            .unwrap()
+        else {
+            panic!("small-limit pad {name} was not a String");
+        };
+        assert_eq!(value, JsString::from_static(expected));
+    }
+    assert_eq!(
+        context.eval("padLimitLog").unwrap(),
+        Value::String(JsString::from_static("f:string;")),
+        "pad checked its output bound before converting the filler",
+    );
+
+    assert_eq!(
+        runtime
+            .call_string_prototype_pad_with_limit(
+                context.realm,
+                StringPadKind::Start,
+                NativeInvocation::Call {
+                    this_value: Value::String(JsString::from_static("a")),
+                },
+                &NativeArguments {
+                    actual_arg_count: 2,
+                    readable: vec![Value::Int(4), Value::String(JsString::from_static(""))],
+                },
+                3,
+            )
+            .unwrap(),
+        Completion::Return(Value::String(JsString::from_static("a"))),
+        "empty filler must bypass even an otherwise invalid output length",
+    );
+
+    assert_eq!(
+        runtime
+            .call_string_prototype_pad_with_limit(
+                context.realm,
+                StringPadKind::End,
+                NativeInvocation::Call {
+                    this_value: Value::String(JsString::from_static("a")),
+                },
+                &NativeArguments {
+                    actual_arg_count: 1,
+                    readable: vec![Value::Int(3)],
+                },
+                3,
+            )
+            .unwrap(),
+        Completion::Return(Value::String(JsString::from_static("a  "))),
+        "the length-one native ABI read a nonexistent filler argument",
+    );
+}
+
+#[test]
+fn string_pad_reservation_oom_uses_defining_realm_and_runtime_recovers() {
+    let runtime = Runtime::new();
+    let mut defining = runtime.new_context();
+    let mut caller = runtime.new_context();
+    let prototype = defining.string_prototype().unwrap();
+    let pad_end_key = runtime.intern_property_key("padEnd").unwrap();
+    let Value::Object(pad_end_object) = defining.get_property(&prototype, &pad_end_key).unwrap()
+    else {
+        panic!("String.prototype.padEnd was not an object");
+    };
+    let pad_end = runtime.as_callable(&pad_end_object).unwrap().unwrap();
+    let Value::Object(defining_internal_error) = defining.eval("InternalError.prototype").unwrap()
+    else {
+        panic!("defining InternalError.prototype was not an object");
+    };
+    let Value::Object(caller_internal_error) = caller.eval("InternalError.prototype").unwrap()
+    else {
+        panic!("caller InternalError.prototype was not an object");
+    };
+    assert_ne!(defining_internal_error, caller_internal_error);
+
+    caller
+        .eval(
+            r#"globalThis.padReservationLog="";
+                globalThis.padReservationReceiver=Object();
+                padReservationReceiver[Symbol.toPrimitive]=function(hint){
+                    padReservationLog+="receiver:"+hint+";";return "xy"
+                };
+                globalThis.padReservationTarget=Object();
+                padReservationTarget[Symbol.toPrimitive]=function(hint){
+                    padReservationLog+="target:"+hint+";";return 4
+                };
+                globalThis.padReservationFiller=Object();
+                padReservationFiller[Symbol.toPrimitive]=function(hint){
+                    padReservationLog+="filler:"+hint+";";return "z"
+                };"#,
+        )
+        .unwrap();
+    let receiver = caller.eval("padReservationReceiver").unwrap();
+    let target = caller.eval("padReservationTarget").unwrap();
+    let filler = caller.eval("padReservationFiller").unwrap();
+
+    crate::value::fail_next_pad_reservation_for_test();
+    assert_eq!(
+        caller.call(&pad_end, receiver, &[target, filler]),
+        Err(RuntimeError::Exception),
+    );
+    let Some(Value::Object(error)) = caller.take_exception().unwrap() else {
+        panic!("pad reservation failure did not publish an Error object");
+    };
+    assert_eq!(
+        runtime.get_prototype_of(&error).unwrap(),
+        Some(defining_internal_error),
+        "pad reservation OOM did not use the native function's defining realm",
+    );
+    for (name, expected) in [("name", "InternalError"), ("message", "out of memory")] {
+        let Value::String(value) = caller
+            .get_property(&error, &runtime.intern_property_key(name).unwrap())
+            .unwrap()
+        else {
+            panic!("pad reservation OOM {name} was not a String");
+        };
+        assert_eq!(value, JsString::from_static(expected));
+    }
+    assert_eq!(
+        caller.eval("padReservationLog").unwrap(),
+        Value::String(JsString::from_static(
+            "receiver:string;target:number;filler:string;",
+        )),
+        "pad result reservation happened before its observable conversions",
+    );
+    assert_eq!(
+        caller
+            .call(
+                &pad_end,
+                Value::String(JsString::from_static("xy")),
+                &[Value::Int(5), Value::String(JsString::from_static("_"))],
+            )
+            .unwrap(),
+        Value::String(JsString::from_static("xy___")),
+        "runtime did not recover after pad reservation OOM",
     );
 }
 
@@ -679,11 +1000,72 @@ fn recursive_string_conversion_family_is_guarded_on_libtest_stack_and_recovers()
                     "alternating repeat/subrange calls bypassed the shared fifth-frame guard"
                 );
             }
+
+            context
+                .eval(
+                    r#"function mixedStringPadRecurse(kind,depth){
+                        if(kind===0){
+                            var target=Object();
+                            target[Symbol.toPrimitive]=function(){
+                                if(depth!==0)mixedStringPadRecurse(1,depth-1);
+                                return 2;
+                            };
+                            return "x".padEnd(target);
+                        }
+                        if(kind===1){
+                            var count=Object();
+                            count[Symbol.toPrimitive]=function(){
+                                if(depth!==0)mixedStringPadRecurse(2,depth-1);
+                                return 1;
+                            };
+                            return "x".repeat(count);
+                        }
+                        if(kind===2){
+                            var start=Object();
+                            start[Symbol.toPrimitive]=function(){
+                                if(depth!==0)mixedStringPadRecurse(3,depth-1);
+                                return 0;
+                            };
+                            return "x".slice(start);
+                        }
+                        var filler=Object();
+                        filler[Symbol.toPrimitive]=function(){
+                            if(depth!==0)mixedStringPadRecurse(0,depth-1);
+                            return "_";
+                        };
+                        return "x".padStart(2,filler);
+                    }"#,
+                )
+                .unwrap();
+            for (kind, expected) in [(0, "x "), (1, "x"), (2, "x"), (3, "_x")] {
+                assert_eq!(
+                    context
+                        .eval(&format!("mixedStringPadRecurse({kind},3)"))
+                        .unwrap(),
+                    Value::String(JsString::try_from_utf8(expected).unwrap()),
+                    "the proven-safe pad/repeat/slice chain was rejected for kind {kind}"
+                );
+                assert_eq!(
+                    context
+                        .eval(&format!(
+                            r#"(function(){{
+                                try{{mixedStringPadRecurse({kind},4);return "missing"}}
+                                catch(error){{return error.name+":"+error.message}}
+                            }})()"#,
+                        ))
+                        .unwrap(),
+                    Value::String(JsString::from_static("InternalError:stack overflow")),
+                    "alternating pad/repeat/slice calls bypassed the shared fifth-frame guard"
+                );
+            }
             assert_eq!(
                 context
-                    .eval(r#""abc".includes("b")+"|"+"abc".slice(1)+"|"+"ab".repeat(2)"#)
+                    .eval(
+                        r#""abc".includes("b")+"|"+"abc".slice(1)+"|"+
+                           "ab".repeat(2)+"|"+"a".padEnd(3,"x")+"|"+"a".padStart(3,"x")"#,
+                    )
                     .unwrap(),
-                Value::String(JsString::from_static("true|bc|abab")),
+                Value::String(JsString::from_static("true|bc|abab|axx|xxa")),
                 "the runtime did not recover after mixed String-family overflow"
             );
         })

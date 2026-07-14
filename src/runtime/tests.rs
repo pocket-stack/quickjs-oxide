@@ -1467,6 +1467,8 @@ fn string_wrapper_exotic_indices_length_define_delete_and_order_match_quickjs() 
             "substr",
             "slice",
             "repeat",
+            "padEnd",
+            "padStart",
             "toString",
             "valueOf",
             "constructor",
@@ -1675,6 +1677,8 @@ fn string_method_slice_matches_quickjs_table_and_code_unit_rules() {
             "substr",
             "slice",
             "repeat",
+            "padEnd",
+            "padStart",
             "toString",
             "valueOf",
             "constructor",
@@ -1694,6 +1698,8 @@ fn string_method_slice_matches_quickjs_table_and_code_unit_rules() {
         ("substring", 2, NativeCProto::Generic, 2),
         ("substr", 2, NativeCProto::Generic, 2),
         ("slice", 2, NativeCProto::Generic, 2),
+        ("padEnd", 1, NativeCProto::GenericMagic, 1),
+        ("padStart", 1, NativeCProto::GenericMagic, 1),
     ];
     let length_key = runtime.intern_property_key("length").unwrap();
     let name_key = runtime.intern_property_key("name").unwrap();
@@ -1979,6 +1985,8 @@ fn string_conversion_core_brand_lookup_object_routes_and_overrides_match_quickjs
             "substr",
             "slice",
             "repeat",
+            "padEnd",
+            "padStart",
             "toString",
             "valueOf",
             "constructor",

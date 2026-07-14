@@ -73,6 +73,7 @@ impl From<JsStringError> for Error {
 #[cfg(test)]
 thread_local! {
     static FAIL_NEXT_REPEAT_RESERVATION: Cell<bool> = const { Cell::new(false) };
+    static FAIL_NEXT_PAD_RESERVATION: Cell<bool> = const { Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -81,6 +82,16 @@ pub(crate) fn fail_next_repeat_reservation_for_test() {
         assert!(
             !armed.replace(true),
             "repeat reservation failure was already armed"
+        );
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_pad_reservation_for_test() {
+    FAIL_NEXT_PAD_RESERVATION.with(|armed| {
+        assert!(
+            !armed.replace(true),
+            "pad reservation failure was already armed"
         );
     });
 }
@@ -915,6 +926,124 @@ impl JsString {
                 units, output_len,
             )?))),
             StringRepr::Rope(_) => unreachable!("linearized String remained a rope"),
+        })
+    }
+
+    /// Build the one flat result of pinned QuickJS `js_string_pad` while
+    /// retaining its narrow-first `StringBuffer` behavior. A wide code unit
+    /// triggers one fallible widening reservation at the point it is copied;
+    /// unused wide units in a truncated filler therefore do not widen the
+    /// result.
+    pub(crate) fn pad_with_limit(
+        &self,
+        target_len: usize,
+        filler: Option<&Self>,
+        pad_at_end: bool,
+        max_len: usize,
+    ) -> Result<Self, JsStringError> {
+        let source = self.linearize();
+        if source.len() >= target_len {
+            return Ok(source);
+        }
+        let filler = filler.map(Self::linearize);
+        if filler.as_ref().is_some_and(Self::is_empty) {
+            return Ok(source);
+        }
+        if target_len > max_len.min(Self::MAX_LEN) {
+            return Err(JsStringError::TooLong);
+        }
+
+        fn reserve_pad_buffer<T>(capacity: usize) -> Result<Vec<T>, JsStringError> {
+            #[cfg(test)]
+            if FAIL_NEXT_PAD_RESERVATION.with(|armed| armed.replace(false)) {
+                return Err(JsStringError::OutOfMemory);
+            }
+            let mut output = Vec::new();
+            output
+                .try_reserve_exact(capacity)
+                .map_err(|_| JsStringError::OutOfMemory)?;
+            Ok(output)
+        }
+
+        enum PadBuffer {
+            Latin1(Vec<u8>),
+            Utf16(Vec<u16>),
+        }
+
+        fn push_pad_unit(
+            buffer: &mut PadBuffer,
+            unit: u16,
+            target_len: usize,
+        ) -> Result<(), JsStringError> {
+            match buffer {
+                PadBuffer::Latin1(units) if unit <= u16::from(u8::MAX) => {
+                    units.push(unit as u8);
+                }
+                PadBuffer::Latin1(units) => {
+                    // QuickJS first allocates a complete narrow buffer, then
+                    // fallibly widens it when the first copied unit needs 16
+                    // bits. Preserve both recoverable allocation points.
+                    let mut wide = reserve_pad_buffer(target_len)?;
+                    wide.extend(units.iter().map(|unit| u16::from(*unit)));
+                    wide.push(unit);
+                    *buffer = PadBuffer::Utf16(wide);
+                }
+                PadBuffer::Utf16(units) => units.push(unit),
+            }
+            Ok(())
+        }
+
+        fn append_source(
+            buffer: &mut PadBuffer,
+            source: &JsString,
+            target_len: usize,
+        ) -> Result<(), JsStringError> {
+            for unit in source.utf16_units() {
+                push_pad_unit(buffer, unit, target_len)?;
+            }
+            Ok(())
+        }
+
+        fn append_padding(
+            buffer: &mut PadBuffer,
+            filler: Option<&JsString>,
+            padding_len: usize,
+            target_len: usize,
+        ) -> Result<(), JsStringError> {
+            let filler_len = filler.map_or(1, JsString::len);
+            for index in 0..padding_len {
+                let unit = match filler {
+                    Some(filler) => filler
+                        .code_unit_at(index % filler_len)
+                        .expect("non-empty flat pad filler lost a code unit"),
+                    None => u16::from(b' '),
+                };
+                push_pad_unit(buffer, unit, target_len)?;
+            }
+            Ok(())
+        }
+
+        // string_buffer_init(ctx, b, n) always starts narrow, even if either
+        // input is wide. Subsequent writes widen only for copied code units.
+        let mut output = PadBuffer::Latin1(reserve_pad_buffer(target_len)?);
+        let padding_len = target_len - source.len();
+        if pad_at_end {
+            append_source(&mut output, &source, target_len)?;
+            append_padding(&mut output, filler.as_ref(), padding_len, target_len)?;
+        } else {
+            append_padding(&mut output, filler.as_ref(), padding_len, target_len)?;
+            append_source(&mut output, &source, target_len)?;
+        }
+
+        Ok(match output {
+            PadBuffer::Latin1(units) => {
+                debug_assert_eq!(units.len(), target_len);
+                Self(Rc::new(StringRepr::Latin1(units.into_boxed_slice())))
+            }
+            PadBuffer::Utf16(units) => {
+                debug_assert_eq!(units.len(), target_len);
+                Self(Rc::new(StringRepr::Utf16(units.into_boxed_slice())))
+            }
         })
     }
 
@@ -1963,6 +2092,83 @@ mod tests {
             latin1.repeat_with_limit(2, JsString::MAX_LEN).unwrap(),
             JsString::from_static("abab"),
             "the fail-next reservation hook was not consumed exactly once",
+        );
+    }
+
+    #[test]
+    fn pad_uses_quickjs_order_width_limit_and_recoverable_reservations() {
+        let source = JsString::from_static("ab");
+        let filler = JsString::from_static("xy");
+        assert_eq!(
+            source
+                .pad_with_limit(7, Some(&filler), true, JsString::MAX_LEN)
+                .unwrap(),
+            JsString::from_static("abxyxyx"),
+        );
+        assert_eq!(
+            source
+                .pad_with_limit(7, Some(&filler), false, JsString::MAX_LEN)
+                .unwrap(),
+            JsString::from_static("xyxyxab"),
+        );
+        assert_eq!(
+            source
+                .pad_with_limit(4, None, true, JsString::MAX_LEN)
+                .unwrap(),
+            JsString::from_static("ab  "),
+        );
+
+        let forced_wide_filler = JsString(Rc::new(StringRepr::Utf16(
+            [u16::from(b'z'), 0x100].into_iter().collect(),
+        )));
+        let narrow = source
+            .pad_with_limit(3, Some(&forced_wide_filler), false, JsString::MAX_LEN)
+            .unwrap();
+        assert_eq!(narrow, JsString::from_static("zab"));
+        assert!(matches!(narrow.0.as_ref(), StringRepr::Latin1(_)));
+        let wide = source
+            .pad_with_limit(4, Some(&forced_wide_filler), false, JsString::MAX_LEN)
+            .unwrap();
+        assert_eq!(
+            wide.utf16_units().collect::<Vec<_>>(),
+            [u16::from(b'z'), 0x100, u16::from(b'a'), u16::from(b'b')],
+        );
+        assert!(matches!(wide.0.as_ref(), StringRepr::Utf16(_)));
+
+        let early = source
+            .pad_with_limit(2, Some(&filler), true, 0)
+            .expect("source-length early return must precede the cap");
+        assert!(early.same_representation(&source));
+        let empty = JsString::from_static("");
+        let empty_filler = source
+            .pad_with_limit(100, Some(&empty), false, 0)
+            .expect("empty-filler early return must precede the cap");
+        assert!(empty_filler.same_representation(&source));
+        assert_eq!(
+            source.pad_with_limit(3, Some(&filler), true, 2),
+            Err(JsStringError::TooLong),
+        );
+
+        super::fail_next_pad_reservation_for_test();
+        let forced_fast = source.pad_with_limit(2, Some(&filler), true, 0).unwrap();
+        assert!(forced_fast.same_representation(&source));
+        let forced_empty = source.pad_with_limit(100, Some(&empty), false, 0).unwrap();
+        assert!(forced_empty.same_representation(&source));
+        assert_eq!(
+            source.pad_with_limit(3, Some(&filler), true, 2),
+            Err(JsStringError::TooLong),
+            "length rejection must precede and preserve the reservation hook",
+        );
+        assert_eq!(
+            source.pad_with_limit(3, Some(&filler), true, JsString::MAX_LEN),
+            Err(JsStringError::OutOfMemory),
+        );
+        assert_eq!(
+            source
+                .pad_with_limit(3, Some(&filler), true, JsString::MAX_LEN)
+                .unwrap(),
+            JsString::from_static("abx"),
+            "the fail-next pad reservation hook was not consumed exactly once",
         );
     }
 

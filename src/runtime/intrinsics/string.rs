@@ -167,6 +167,22 @@ impl Runtime {
             1,
             1,
         )?;
+        // QuickJS publishes replace/replaceAll between repeat and this pair.
+        // They remain absent until their own parity slice, so preserve the
+        // filtered table order and the release's padEnd-before-padStart order.
+        for (selector, name) in [
+            (StringPadKind::End, "padEnd"),
+            (StringPadKind::Start, "padStart"),
+        ] {
+            self.define_native_builtin_auto_init(
+                string_prototype,
+                realm,
+                NativeFunctionId::StringPrototypePad(selector),
+                name,
+                1,
+                1,
+            )?;
+        }
         Ok(())
     }
 
@@ -772,5 +788,105 @@ impl Runtime {
             }
         };
         Ok(Completion::Return(Value::String(repeated)))
+    }
+
+    /// Rust port of pinned QuickJS `js_string_pad`. The typed selector mirrors
+    /// its generic-magic `padEnd=1` / `padStart=0` argument without leaking a
+    /// raw integer through dispatch.
+    pub(in crate::runtime) fn call_string_prototype_pad(
+        &self,
+        realm: ContextId,
+        selector: StringPadKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        self.call_string_prototype_pad_with_limit(
+            realm,
+            selector,
+            invocation,
+            arguments,
+            JsString::MAX_LEN,
+        )
+    }
+
+    fn call_string_prototype_pad_with_limit(
+        &self,
+        realm: ContextId,
+        selector: StringPadKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+        string_limit: usize,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String pad did not receive a generic-magic invocation",
+            ));
+        };
+
+        // JS_ToStringCheckObject produces the flat JSString consumed by
+        // QuickJS's JS_VALUE_GET_STRING before any target-length coercion.
+        let source = match self.native_to_string_check_object(realm, &this_value)? {
+            NativeConversion::Value(value) => value.linearize(),
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let target_value = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "String pad target length argv was not padded",
+        ))?;
+        let target = match self.native_to_number(realm, target_value)? {
+            NativeConversion::Value(value) => crate::number::to_int32_sat(value),
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let source_len = i32::try_from(source.len())
+            .map_err(|_| RuntimeError::Invariant("String length exceeded signed Int32"))?;
+        if source_len >= target {
+            return Ok(Completion::Return(Value::String(source)));
+        }
+
+        // `argc > 1` is observable: an absent second argument and an explicit
+        // undefined both select U+0020, but only actual arguments may be read.
+        let filler = if arguments.actual_arg_count > 1 {
+            let filler_value = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
+                "String pad filler argv was not padded",
+            ))?;
+            if matches!(filler_value, Value::Undefined) {
+                None
+            } else {
+                match self.native_to_js_string(realm, filler_value)? {
+                    NativeConversion::Value(value) => Some(value.linearize()),
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                }
+            }
+        } else {
+            None
+        };
+        if filler.as_ref().is_some_and(JsString::is_empty) {
+            return Ok(Completion::Return(Value::String(source)));
+        }
+
+        let target = usize::try_from(target)
+            .map_err(|_| RuntimeError::Invariant("validated String pad target was negative"))?;
+        let padded = match source.pad_with_limit(
+            target,
+            filler.as_ref(),
+            matches!(selector, StringPadKind::End),
+            string_limit,
+        ) {
+            Ok(value) => value,
+            Err(JsStringError::TooLong) => {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Range,
+                    "invalid string length",
+                )?));
+            }
+            Err(JsStringError::OutOfMemory) => {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Internal,
+                    "out of memory",
+                )?));
+            }
+        };
+        Ok(Completion::Return(Value::String(padded)))
     }
 }

@@ -39,7 +39,7 @@ use crate::heap::{
     ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind,
     ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind,
     PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCharAtKind, StringIncludesKind,
-    StringIndexOfKind, StringStaticKind, StringSubrangeKind, StringWellFormedKind,
+    StringIndexOfKind, StringPadKind, StringStaticKind, StringSubrangeKind, StringWellFormedKind,
     SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
 };
 use crate::object::{
@@ -6969,7 +6969,8 @@ impl Runtime {
             // property-call stacks while recursively entering these methods.
             NativeFunctionId::StringPrototypeIncludes(_)
             | NativeFunctionId::StringPrototypeSubrange(_)
-            | NativeFunctionId::StringPrototypeRepeat => 16,
+            | NativeFunctionId::StringPrototypeRepeat
+            | NativeFunctionId::StringPrototypePad(_) => 16,
             _ => 8,
         };
         let active_native_cost = self
@@ -7022,7 +7023,8 @@ impl Runtime {
             // while leaving weighted room for one callback leaf.
             NativeFunctionId::StringPrototypeIncludes(_)
             | NativeFunctionId::StringPrototypeSubrange(_)
-            | NativeFunctionId::StringPrototypeRepeat => 4,
+            | NativeFunctionId::StringPrototypeRepeat
+            | NativeFunctionId::StringPrototypePad(_) => 4,
             // ToString, ToNumber and String.raw's property/conversion path can
             // all re-enter any other member of this constructor family.
             NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
@@ -7075,11 +7077,13 @@ impl Runtime {
             }
             NativeFunctionId::StringPrototypeIncludes(_)
             | NativeFunctionId::StringPrototypeSubrange(_)
-            | NativeFunctionId::StringPrototypeRepeat => matches!(
+            | NativeFunctionId::StringPrototypeRepeat
+            | NativeFunctionId::StringPrototypePad(_) => matches!(
                 candidate,
                 NativeFunctionId::StringPrototypeIncludes(_)
                     | NativeFunctionId::StringPrototypeSubrange(_)
                     | NativeFunctionId::StringPrototypeRepeat
+                    | NativeFunctionId::StringPrototypePad(_)
             ),
             NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
             | NativeFunctionId::StringStatic(_) => matches!(

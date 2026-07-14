@@ -978,6 +978,7 @@ pub enum NativeFunctionId {
     StringPrototypeIncludes(StringIncludesKind),
     StringPrototypeSubrange(StringSubrangeKind),
     StringPrototypeRepeat,
+    StringPrototypePad(StringPadKind),
     IteratorPrototypeIterator,
     IteratorPrototypeToStringTagGetter,
     IteratorPrototypeToStringTagSetter,
@@ -1092,6 +1093,15 @@ pub enum StringSubrangeKind {
     Substring,
     Substr,
     Slice,
+}
+
+/// Direction selected by QuickJS's shared `js_string_pad` generic-magic
+/// function. The pinned table passes magic one for `padEnd` and zero for
+/// `padStart`; typed variants keep that otherwise implicit contract visible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StringPadKind {
+    End,
+    Start,
 }
 
 /// Static selector shared by `%Symbol%.for` and `%Symbol%.keyFor`.
@@ -1284,6 +1294,7 @@ impl NativeFunctionId {
             | Self::StringPrototypeCharAt(_)
             | Self::StringPrototypeIndexOf(_)
             | Self::StringPrototypeIncludes(_)
+            | Self::StringPrototypePad(_)
             | Self::ArrayPrototypeFind(_)
             | Self::ArrayPrototypeIteration(_)
             | Self::ArrayPrototypeReduce(_)
@@ -4138,6 +4149,8 @@ mod tests {
             NativeFunctionId::BigIntAsN(BigIntAsNKind::AsIntN),
             NativeFunctionId::StringPrototypeCharAt(StringCharAtKind::At),
             NativeFunctionId::StringPrototypeCharAt(StringCharAtKind::CharAt),
+            NativeFunctionId::StringPrototypePad(StringPadKind::End),
+            NativeFunctionId::StringPrototypePad(StringPadKind::Start),
         ] {
             assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);
             assert!(!target.descriptor().cproto.default_is_constructor());
