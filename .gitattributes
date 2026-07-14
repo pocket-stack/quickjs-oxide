@@ -1,0 +1,2 @@
+# The fixed-width Test262 TSV keeps trailing tabs for empty final columns.
+tests/test262-smoke-baseline.tsv whitespace=-blank-at-eol

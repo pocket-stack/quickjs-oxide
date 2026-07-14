@@ -26,6 +26,7 @@ falling back to another engine. Detailed progress and maintenance records live
 outside this overview:
 
 - [Implementation status and milestone ledger](docs/status.md)
+- [Pinned Test262 progress baseline](docs/test262.md)
 - [Parity acceptance contract](docs/parity.md)
 - [Pinned upstream release](compat/upstream.toml)
 
@@ -34,6 +35,7 @@ outside this overview:
 ```sh
 cargo test --locked --workspace --all-targets
 ./scripts/test-parity-slice.sh
+./scripts/test-test262-smoke.sh
 ```
 
 ## License

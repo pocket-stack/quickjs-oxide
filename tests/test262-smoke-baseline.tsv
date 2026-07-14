@@ -1,0 +1,203 @@
+# quickjs-oxide Test262 outcome vector v1
+# quickjs=2026-06-04
+# test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+# test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
+# test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
+# test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
+# profile=test262-canonical-sync-script-v1
+# mode=both
+path	variant	flags	features	expected_phase	expected_type	outcome	actual_phase	actual_type	detail
+test/built-ins/Array/from/from-string.js	sloppy			normal		pass	normal		
+test/built-ins/Array/from/from-string.js	strict			normal		pass	normal		
+test/built-ins/Array/prototype/concat/Array.prototype.concat_spreadable-function.js	sloppy		Symbol.isConcatSpreadable	normal		pass	normal		
+test/built-ins/Array/prototype/concat/Array.prototype.concat_spreadable-function.js	strict		Symbol.isConcatSpreadable	normal		pass	normal		
+test/built-ins/Array/prototype/fill/fill-values.js	sloppy			normal		pass	normal		
+test/built-ins/Array/prototype/fill/fill-values.js	strict			normal		pass	normal		
+test/built-ins/Array/prototype/filter/15.4.4.20-4-4.js	sloppy			normal		pass	normal		
+test/built-ins/Array/prototype/filter/15.4.4.20-4-4.js	strict			normal		pass	normal		
+test/built-ins/Array/prototype/filter/15.4.4.20-9-c-iii-30.js	sloppy			normal		pass	normal		
+test/built-ins/Array/prototype/filter/15.4.4.20-9-c-iii-30.js	strict			normal		pass	normal		
+test/built-ins/Array/prototype/flat/call-with-boolean.js	sloppy			normal		pass	normal		
+test/built-ins/Array/prototype/flat/call-with-boolean.js	strict			normal		pass	normal		
+test/built-ins/Array/prototype/forEach/15.4.4.18-5-13.js	sloppy			normal		pass	normal		
+test/built-ins/Array/prototype/forEach/15.4.4.18-5-13.js	strict			normal		pass	normal		
+test/built-ins/Array/prototype/forEach/15.4.4.18-8-13.js	sloppy			normal		pass	normal		
+test/built-ins/Array/prototype/forEach/15.4.4.18-8-13.js	strict			normal		pass	normal		
+test/built-ins/Array/prototype/indexOf/15.4.4.14-9-b-ii-2.js	sloppy			normal		pass	normal		
+test/built-ins/Array/prototype/indexOf/15.4.4.14-9-b-ii-2.js	strict			normal		pass	normal		
+test/built-ins/Array/prototype/lastIndexOf/15.4.4.15-5-9.js	sloppy			normal		pass	normal		
+test/built-ins/Array/prototype/lastIndexOf/15.4.4.15-5-9.js	strict			normal		pass	normal		
+test/built-ins/Array/prototype/reduceRight/15.4.4.22-7-10.js	sloppy			normal		pass	normal		
+test/built-ins/Array/prototype/reduceRight/15.4.4.22-7-10.js	strict			normal		pass	normal		
+test/built-ins/Array/prototype/some/15.4.4.17-7-c-iii-7.js	sloppy			normal		pass	normal		
+test/built-ins/Array/prototype/some/15.4.4.17-7-c-iii-7.js	strict			normal		pass	normal		
+test/built-ins/Array/prototype/toReversed/holes-not-preserved.js	sloppy		change-array-by-copy	normal		pass	normal		
+test/built-ins/Array/prototype/toReversed/holes-not-preserved.js	strict		change-array-by-copy	normal		pass	normal		
+test/built-ins/Array/prototype/toSorted/immutable.js	sloppy		change-array-by-copy	normal		pass	normal		
+test/built-ins/Array/prototype/toSorted/immutable.js	strict		change-array-by-copy	normal		pass	normal		
+test/built-ins/Array/prototype/toSpliced/deleteCount-clamped-between-zero-and-remaining-count.js	sloppy		change-array-by-copy	normal		pass	normal		
+test/built-ins/Array/prototype/toSpliced/deleteCount-clamped-between-zero-and-remaining-count.js	strict		change-array-by-copy	normal		pass	normal		
+test/built-ins/BigInt/constructor-from-binary-string.js	sloppy		BigInt	normal		pass	normal		
+test/built-ins/BigInt/constructor-from-binary-string.js	strict		BigInt	normal		pass	normal		
+test/built-ins/BigInt/prototype/proto.js	sloppy		BigInt	normal		pass	normal		
+test/built-ins/BigInt/prototype/proto.js	strict		BigInt	normal		pass	normal		
+test/built-ins/Boolean/S15.6.2.1_A2.js	sloppy			normal		pass	normal		
+test/built-ins/Boolean/S15.6.2.1_A2.js	strict			normal		pass	normal		
+test/built-ins/Boolean/S15.6.3_A2.js	sloppy			normal		pass	normal		
+test/built-ins/Boolean/S15.6.3_A2.js	strict			normal		pass	normal		
+test/built-ins/Function/prototype/apply/S15.3.4.3_A8_T5.js	sloppy			normal		pass	normal		
+test/built-ins/Function/prototype/apply/S15.3.4.3_A8_T5.js	strict			normal		pass	normal		
+test/built-ins/Number/POSITIVE_INFINITY/S15.7.3.6_A1.js	sloppy			normal		pass	normal		
+test/built-ins/Number/POSITIVE_INFINITY/S15.7.3.6_A1.js	strict			normal		pass	normal		
+test/built-ins/Number/S9.3_A3_T1.js	sloppy			normal		pass	normal		
+test/built-ins/Number/S9.3_A3_T1.js	strict			normal		pass	normal		
+test/built-ins/Number/prototype/toExponential/this-is-0-fractiondigits-is-not-0.js	sloppy			normal		pass	normal		
+test/built-ins/Number/prototype/toExponential/this-is-0-fractiondigits-is-not-0.js	strict			normal		pass	normal		
+test/built-ins/Number/prototype/toFixed/S15.7.4.5_A1.3_T01.js	sloppy			normal		pass	normal		
+test/built-ins/Number/prototype/toFixed/S15.7.4.5_A1.3_T01.js	strict			normal		pass	normal		
+test/built-ins/Number/prototype/toFixed/exactness.js	sloppy			normal		pass	normal		
+test/built-ins/Number/prototype/toFixed/exactness.js	strict			normal		pass	normal		
+test/built-ins/Number/prototype/toString/S15.7.4.2_A2_T05.js	sloppy			normal		pass	normal		
+test/built-ins/Number/prototype/toString/S15.7.4.2_A2_T05.js	strict			normal		pass	normal		
+test/built-ins/Number/prototype/toString/S15.7.4.2_A2_T21.js	sloppy			normal		pass	normal		
+test/built-ins/Number/prototype/toString/S15.7.4.2_A2_T21.js	strict			normal		pass	normal		
+test/built-ins/Number/prototype/toString/S15.7.4.2_A2_T22.js	sloppy			normal		pass	normal		
+test/built-ins/Number/prototype/toString/S15.7.4.2_A2_T22.js	strict			normal		pass	normal		
+test/built-ins/Number/prototype/toString/numeric-literal-tostring-radix-11.js	sloppy			normal		pass	normal		
+test/built-ins/Number/prototype/toString/numeric-literal-tostring-radix-11.js	strict			normal		pass	normal		
+test/built-ins/Number/prototype/valueOf/S15.7.4.4_A2_T02.js	sloppy			normal		pass	normal		
+test/built-ins/Number/prototype/valueOf/S15.7.4.4_A2_T02.js	strict			normal		pass	normal		
+test/built-ins/Object/S15.2.1.1_A2_T13.js	sloppy			normal		pass	normal		
+test/built-ins/Object/S15.2.1.1_A2_T13.js	strict			normal		pass	normal		
+test/built-ins/Object/create/15.2.3.5-0-2.js	sloppy			normal		pass	normal		
+test/built-ins/Object/create/15.2.3.5-0-2.js	strict			normal		pass	normal		
+test/built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-86.js	sloppy			normal		pass	normal		
+test/built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-86.js	strict			normal		pass	normal		
+test/built-ins/Object/isExtensible/15.2.3.13-2-1.js	sloppy			normal		pass	normal		
+test/built-ins/Object/isExtensible/15.2.3.13-2-1.js	strict			normal		pass	normal		
+test/built-ins/Object/isFrozen/15.2.3.12-3-26.js	sloppy			normal		pass	normal		
+test/built-ins/Object/isFrozen/15.2.3.12-3-26.js	strict			normal		pass	normal		
+test/built-ins/String/prototype/at/returns-item.js	sloppy		String.prototype.at	normal		pass	normal		
+test/built-ins/String/prototype/at/returns-item.js	strict		String.prototype.at	normal		pass	normal		
+test/built-ins/String/prototype/charAt/S15.5.4.4_A1_T1.js	sloppy			normal		pass	normal		
+test/built-ins/String/prototype/charAt/S15.5.4.4_A1_T1.js	strict			normal		pass	normal		
+test/built-ins/String/prototype/concat/S15.5.4.6_A1_T6.js	sloppy			normal		pass	normal		
+test/built-ins/String/prototype/concat/S15.5.4.6_A1_T6.js	strict			normal		pass	normal		
+test/built-ins/String/prototype/endsWith/searchstring-not-found-with-position.js	sloppy		String.prototype.endsWith	normal		pass	normal		
+test/built-ins/String/prototype/endsWith/searchstring-not-found-with-position.js	strict		String.prototype.endsWith	normal		pass	normal		
+test/built-ins/String/prototype/endsWith/searchstring-not-found-without-position.js	sloppy		String.prototype.endsWith	normal		pass	normal		
+test/built-ins/String/prototype/endsWith/searchstring-not-found-without-position.js	strict		String.prototype.endsWith	normal		pass	normal		
+test/built-ins/String/prototype/indexOf/S15.5.4.7_A1_T12.js	sloppy			normal		pass	normal		
+test/built-ins/String/prototype/indexOf/S15.5.4.7_A1_T12.js	strict			normal		pass	normal		
+test/built-ins/String/prototype/lastIndexOf/S15.5.4.8_A1_T2.js	sloppy			normal		pass	normal		
+test/built-ins/String/prototype/lastIndexOf/S15.5.4.8_A1_T2.js	strict			normal		pass	normal		
+test/built-ins/String/prototype/lastIndexOf/S15.5.4.8_A1_T6.js	sloppy			normal		pass	normal		
+test/built-ins/String/prototype/lastIndexOf/S15.5.4.8_A1_T6.js	strict			normal		pass	normal		
+test/built-ins/String/prototype/lastIndexOf/not-a-substring.js	sloppy			normal		pass	normal		
+test/built-ins/String/prototype/lastIndexOf/not-a-substring.js	strict			normal		pass	normal		
+test/built-ins/String/prototype/repeat/empty-string-returns-empty.js	sloppy			normal		pass	normal		
+test/built-ins/String/prototype/repeat/empty-string-returns-empty.js	strict			normal		pass	normal		
+test/built-ins/String/prototype/slice/S15.5.4.13_A2_T4.js	sloppy			normal		pass	normal		
+test/built-ins/String/prototype/slice/S15.5.4.13_A2_T4.js	strict			normal		pass	normal		
+test/built-ins/String/prototype/toLocaleLowerCase/S15.5.4.17_A6.js	sloppy			normal		pass	normal		
+test/built-ins/String/prototype/toLocaleLowerCase/S15.5.4.17_A6.js	strict			normal		pass	normal		
+test/built-ins/String/prototype/toLocaleUpperCase/S15.5.4.19_A1_T6.js	sloppy			normal		pass	normal		
+test/built-ins/String/prototype/toLocaleUpperCase/S15.5.4.19_A1_T6.js	strict			normal		pass	normal		
+test/built-ins/String/prototype/toLowerCase/S15.5.4.16_A1_T1.js	sloppy			normal		pass	normal		
+test/built-ins/String/prototype/toLowerCase/S15.5.4.16_A1_T1.js	strict			normal		pass	normal		
+test/built-ins/String/prototype/toLowerCase/S15.5.4.16_A1_T6.js	sloppy			normal		pass	normal		
+test/built-ins/String/prototype/toLowerCase/S15.5.4.16_A1_T6.js	strict			normal		pass	normal		
+test/built-ins/String/prototype/toUpperCase/S15.5.4.18_A1_T6.js	sloppy			normal		pass	normal		
+test/built-ins/String/prototype/toUpperCase/S15.5.4.18_A1_T6.js	strict			normal		pass	normal		
+test/built-ins/String/prototype/trim/15.5.4.20-2-36.js	sloppy			normal		pass	normal		
+test/built-ins/String/prototype/trim/15.5.4.20-2-36.js	strict			normal		pass	normal		
+test/built-ins/String/prototype/trim/15.5.4.20-4-39.js	sloppy			normal		pass	normal		
+test/built-ins/String/prototype/trim/15.5.4.20-4-39.js	strict			normal		pass	normal		
+test/built-ins/String/prototype/trim/15.5.4.20-4-48.js	sloppy			normal		pass	normal		
+test/built-ins/String/prototype/trim/15.5.4.20-4-48.js	strict			normal		pass	normal		
+test/built-ins/String/prototype/trim/15.5.4.20-4-55.js	sloppy			normal		pass	normal		
+test/built-ins/String/prototype/trim/15.5.4.20-4-55.js	strict			normal		pass	normal		
+test/built-ins/Symbol/constructor.js	sloppy		Symbol	normal		pass	normal		
+test/built-ins/Symbol/constructor.js	strict		Symbol	normal		pass	normal		
+test/language/comments/hashbang/escaped-bang-041.js	sloppy	raw	hashbang	parse	SyntaxError	pass	parse	SyntaxError	invalid first character of private name
+test/language/comments/hashbang/line-terminator-carriage-return.js	sloppy	raw	hashbang	normal		pass	normal		
+test/language/expressions/bitwise-or/S11.10.3_A3_T1.3.js	sloppy			normal		pass	normal		
+test/language/expressions/bitwise-or/S11.10.3_A3_T1.3.js	strict			normal		pass	normal		
+test/language/expressions/conditional/S11.12_A3_T1.js	sloppy			normal		pass	normal		
+test/language/expressions/conditional/S11.12_A3_T1.js	strict			normal		pass	normal		
+test/language/expressions/division/S11.5.2_A2.4_T1.js	sloppy			normal		pass	normal		
+test/language/expressions/division/S11.5.2_A2.4_T1.js	strict			normal		pass	normal		
+test/language/expressions/does-not-equals/S11.9.2_A2.1_T2.js	sloppy			normal		pass	normal		
+test/language/expressions/does-not-equals/S11.9.2_A2.1_T2.js	strict			normal		pass	normal		
+test/language/expressions/exponentiation/applying-the-exp-operator_A19.js	sloppy		exponentiation	normal		pass	normal		
+test/language/expressions/exponentiation/applying-the-exp-operator_A19.js	strict		exponentiation	normal		pass	normal		
+test/language/expressions/greater-than-or-equal/S11.8.4_A3.1_T1.1.js	sloppy			normal		pass	normal		
+test/language/expressions/greater-than-or-equal/S11.8.4_A3.1_T1.1.js	strict			normal		pass	normal		
+test/language/expressions/greater-than-or-equal/S11.8.4_A4.12_T1.js	sloppy			normal		pass	normal		
+test/language/expressions/greater-than-or-equal/S11.8.4_A4.12_T1.js	strict			normal		pass	normal		
+test/language/expressions/less-than-or-equal/bigint-and-string.js	sloppy		BigInt	normal		pass	normal		
+test/language/expressions/less-than-or-equal/bigint-and-string.js	strict		BigInt	normal		pass	normal		
+test/language/expressions/less-than/S11.8.1_A4.12_T2.js	sloppy			normal		pass	normal		
+test/language/expressions/less-than/S11.8.1_A4.12_T2.js	strict			normal		pass	normal		
+test/language/expressions/logical-and/S11.11.1_A2.4_T1.js	sloppy			normal		pass	normal		
+test/language/expressions/logical-and/S11.11.1_A2.4_T1.js	strict			normal		pass	normal		
+test/language/expressions/logical-not/bigint.js	sloppy		BigInt	normal		pass	normal		
+test/language/expressions/logical-not/bigint.js	strict		BigInt	normal		pass	normal		
+test/language/expressions/logical-or/S11.11.2_A4_T4.js	sloppy			normal		pass	normal		
+test/language/expressions/logical-or/S11.11.2_A4_T4.js	strict			normal		pass	normal		
+test/language/expressions/modulus/S11.5.3_A3_T2.2.js	sloppy			normal		pass	normal		
+test/language/expressions/modulus/S11.5.3_A3_T2.2.js	strict			normal		pass	normal		
+test/language/expressions/multiplication/S11.5.1_A2.4_T1.js	sloppy			normal		pass	normal		
+test/language/expressions/multiplication/S11.5.1_A2.4_T1.js	strict			normal		pass	normal		
+test/language/expressions/multiplication/S11.5.1_A3_T2.8.js	sloppy			normal		pass	normal		
+test/language/expressions/multiplication/S11.5.1_A3_T2.8.js	strict			normal		pass	normal		
+test/language/expressions/strict-does-not-equals/bigint-and-boolean.js	sloppy		BigInt	normal		pass	normal		
+test/language/expressions/strict-does-not-equals/bigint-and-boolean.js	strict		BigInt	normal		pass	normal		
+test/language/expressions/unsigned-right-shift/S11.7.3_A3_T2.8.js	sloppy			normal		pass	normal		
+test/language/expressions/unsigned-right-shift/S11.7.3_A3_T2.8.js	strict			normal		pass	normal		
+test/language/expressions/void/S11.4.2_A4_T6.js	sloppy			normal		pass	normal		
+test/language/expressions/void/S11.4.2_A4_T6.js	strict			normal		pass	normal		
+test/language/global-code/decl-lex-restricted-global.js	sloppy			runtime	SyntaxError	pass	runtime	SyntaxError	redeclaration of 'undefined'
+test/language/global-code/decl-lex-restricted-global.js	strict			runtime	SyntaxError	pass	runtime	SyntaxError	redeclaration of 'undefined'
+test/language/statements/const/global-use-before-initialization-in-declaration-statement.js	sloppy			runtime	ReferenceError	pass	runtime	ReferenceError	x is not initialized
+test/language/statements/const/global-use-before-initialization-in-declaration-statement.js	strict			runtime	ReferenceError	pass	runtime	ReferenceError	x is not initialized
+test/language/statements/const/syntax/with-initializer-while-expression-statement.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	lexical declarations can't appear in single-statement context
+test/language/statements/const/syntax/with-initializer-while-expression-statement.js	strict			parse	SyntaxError	pass	parse	SyntaxError	lexical declarations can't appear in single-statement context
+test/language/statements/for-of/head-expr-primitive-iterator-method.js	sloppy			normal		pass	normal		
+test/language/statements/for-of/head-expr-primitive-iterator-method.js	strict			normal		pass	normal		
+test/language/statements/for-of/head-var-bound-names-let.js	sloppy	noStrict		normal		pass	normal		
+test/language/statements/for/S12.6.3_A7_T2.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	expecting ')'
+test/language/statements/for/S12.6.3_A7_T2.js	strict			parse	SyntaxError	pass	parse	SyntaxError	expecting ')'
+test/language/statements/for/head-init-var-check-empty-inc-empty-syntax.js	sloppy			normal		pass	normal		
+test/language/statements/for/head-init-var-check-empty-inc-empty-syntax.js	strict			normal		pass	normal		
+test/language/statements/function/S13_A17_T2.js	sloppy			normal		pass	normal		
+test/language/statements/function/S13_A17_T2.js	strict			normal		pass	normal		
+test/language/statements/function/S13_A4_T2.js	sloppy			normal		pass	normal		
+test/language/statements/function/S13_A4_T2.js	strict			normal		pass	normal		
+test/language/statements/function/early-body-super-prop.js	sloppy			parse	SyntaxError	unsupported-parser	parse	Unsupported	super syntax is not implemented yet
+test/language/statements/function/early-body-super-prop.js	strict			parse	SyntaxError	unsupported-parser	parse	Unsupported	super syntax is not implemented yet
+test/language/statements/if/S12.5_A10_T1.js	sloppy			normal		pass	normal		
+test/language/statements/if/S12.5_A10_T1.js	strict			normal		pass	normal		
+test/language/statements/if/S12.5_A8.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	unexpected token in expression: ')'
+test/language/statements/if/S12.5_A8.js	strict			parse	SyntaxError	pass	parse	SyntaxError	unexpected token in expression: ')'
+test/language/statements/if/if-cls-else-cls.js	sloppy			parse	SyntaxError	unsupported-parser	parse	Unsupported	class syntax is not implemented yet
+test/language/statements/if/if-cls-else-cls.js	strict			parse	SyntaxError	unsupported-parser	parse	Unsupported	class syntax is not implemented yet
+test/language/statements/labeled/continue.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	break/continue label not found
+test/language/statements/labeled/continue.js	strict			parse	SyntaxError	pass	parse	SyntaxError	break/continue label not found
+test/language/statements/labeled/let-identifier-with-newline.js	sloppy	noStrict		normal		pass	normal		
+test/language/statements/let/global-use-before-initialization-in-prior-statement.js	sloppy			runtime	ReferenceError	pass	runtime	ReferenceError	x is not initialized
+test/language/statements/let/global-use-before-initialization-in-prior-statement.js	strict			runtime	ReferenceError	pass	runtime	ReferenceError	x is not initialized
+test/language/statements/switch/scope-lex-const.js	sloppy			runtime	ReferenceError	pass	runtime	ReferenceError	'x' is not defined
+test/language/statements/switch/scope-lex-const.js	strict			runtime	ReferenceError	pass	runtime	ReferenceError	'x' is not defined
+test/language/statements/try/S12.14_A15.js	sloppy			normal		pass	normal		
+test/language/statements/try/S12.14_A15.js	strict			normal		pass	normal		
+test/language/statements/variable/S12.2_A8_T2.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	expecting ';'
+test/language/statements/variable/S12.2_A8_T2.js	strict			parse	SyntaxError	pass	parse	SyntaxError	expecting ';'
+test/language/statements/variable/S12.2_A8_T7.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	expecting ';'
+test/language/statements/variable/S12.2_A8_T7.js	strict			parse	SyntaxError	pass	parse	SyntaxError	expecting ';'
+test/language/statements/variable/arguments-strict-list-first-init.js	strict	onlyStrict		parse	SyntaxError	pass	parse	SyntaxError	invalid variable name in strict mode
+test/language/statements/variable/arguments-strict-list-middle-init.js	strict	onlyStrict		parse	SyntaxError	pass	parse	SyntaxError	invalid variable name in strict mode
+test/language/statements/variable/eval-strict-list-final-init.js	strict	onlyStrict		parse	SyntaxError	pass	parse	SyntaxError	invalid variable name in strict mode
+test/language/statements/while/decl-fun.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	function declarations can't appear in single-statement context
+test/language/statements/while/decl-fun.js	strict			parse	SyntaxError	pass	parse	SyntaxError	function declarations can't appear in single-statement context
+# summary pass=189 unsupported-parser=4

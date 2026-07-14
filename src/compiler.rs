@@ -60,12 +60,12 @@ impl Default for CompileOptions {
 /// Compile one ECMAScript script directly to stack bytecode.
 ///
 /// # Errors
-/// Returns a syntax error for invalid source and for grammar which has not yet
-/// reached the feature-parity implementation path.
+/// Returns a syntax error for invalid source and an unsupported diagnostic for
+/// grammar which has not yet reached the feature-parity implementation path.
 pub fn compile_script(source: &str) -> Result<BytecodeFunction, Error> {
     let mut tree = Parser::parse(source, JsString::from_static(DEFAULT_EVAL_FILENAME))?;
     if tree.functions.len() != 1 {
-        return Err(Error::syntax(
+        return Err(Error::unsupported(
             "nested function bytecode requires runtime publication; use Context::compile or Context::eval",
             source_span(tree.functions[1].source.span),
         ));
@@ -856,7 +856,7 @@ impl<'source> Parser<'source> {
         if supplied_by_body_declaration {
             return Ok(());
         }
-        Err(Error::syntax(
+        Err(Error::unsupported(
             "the implicit ordinary-function arguments binding is not implemented yet",
             source_span(span),
         ))
@@ -3760,7 +3760,7 @@ impl<'source> Parser<'source> {
                 )));
             }
             TokenKind::Keyword(keyword) => {
-                return Err(Error::syntax(
+                return Err(Error::unsupported(
                     format!("{} syntax is not implemented yet", keyword.as_str()),
                     source_span(token.span),
                 ));
@@ -4056,7 +4056,7 @@ impl<'source> Parser<'source> {
                     break;
                 }
                 if self.is_punctuator(Punctuator::RightParen) {
-                    return Err(self.syntax_here(
+                    return Err(self.unsupported_here(
                         "a trailing comma in this simple parameter list is not implemented yet",
                     ));
                 }
@@ -5123,7 +5123,7 @@ impl<'source> Parser<'source> {
     }
 
     fn unsupported_here(&self, message: impl Into<String>) -> Error {
-        self.syntax_here(message)
+        Error::unsupported(message, source_span(self.current().span))
     }
 
     fn current_ir(&self) -> &FunctionIr {
@@ -6940,7 +6940,7 @@ fn find_or_create_own_binding(
         return Ok(Some(binding));
     }
     if name == "arguments" && matches!(function.kind, FunctionKind::Ordinary) {
-        return Err(Error::syntax(
+        return Err(Error::unsupported(
             "the implicit ordinary-function arguments binding is not implemented yet",
             source_span(span),
         ));
@@ -13526,7 +13526,7 @@ mod tests {
             let error = compile_unlinked_script(source).unwrap_err();
             assert_eq!(
                 error.kind(),
-                ErrorKind::Syntax,
+                ErrorKind::Unsupported,
                 "unexpected kind for {source}"
             );
             assert_eq!(
@@ -13895,7 +13895,7 @@ mod tests {
 
         for source in ["try {} catch ({e}) {}", "try {} catch ([e]) {}"] {
             let error = compile_unlinked_script(source).unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+            assert_eq!(error.kind(), ErrorKind::Unsupported, "{source}");
             assert_eq!(
                 error.message(),
                 "catch destructuring bindings are not implemented yet",

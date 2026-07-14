@@ -8,6 +8,17 @@ claim full parity.
 
 - QuickJS 2026-06-04 release metadata, archive checksum, bytecode version,
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
+- A process-isolated Rust Test262 runner now provides the first canonical
+  synchronous-script progress baseline. It exhaustively parses all 53,125
+  non-fixture metadata blocks to an independently verified SHA-256 record,
+  preserves parse/runtime negative phases, treats explicitly marked compiler
+  implementation gaps as `Unsupported` rather than passing `SyntaxError`,
+  implements canonical raw/strict planning, enforces hard subprocess timeouts,
+  and writes deterministic TSV plus JSONL outcomes. The fixed 100-file smoke
+  manifest currently expands to 193 variants: 189 pass and four are explicitly
+  `unsupported-parser`, with no skip, timeout, crash or harness-error result.
+  See `docs/test262.md`; this selected smoke result is not a whole-suite pass
+  estimate.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -1682,6 +1693,16 @@ claim full parity.
 
 ## Not implemented yet
 
+The complete pinned Test262 outcome vector has not been recorded yet. Before
+that vector becomes an authoritative progress number, every remaining parser
+frontier which still reports a generic syntax diagnostic must either gain
+typed `Unsupported` provenance or be proven to be a genuine early error. The
+runner's trusted subset is synchronous Script; module parse/link/evaluate,
+Promises/jobs and async completion, complete `$262` host hooks, bounded worker
+parallelism, the ES5.1 suite, and a separate QuickJS-runner-quirk profile remain
+future milestones. Unsupported and host-missing outcomes are failures, not
+additional feature skips.
+
 The language slice is intentionally narrow. Async/generator declarations,
 `for-in`/`for-await`, for-of destructuring, other general
 assignment targets, module
@@ -1862,7 +1883,7 @@ main runtime file merely to wire a selector. Bytecode draft validation and
 iterative flattening now live in `runtime/bytecode_publish.rs`. The test, Array,
 Object, VM-host, property, native-dispatch and bytecode-publication
 no-semantic-change splits reduced `runtime.rs` from roughly thirty-two thousand
-lines to 9,912 lines. Realm-aware property completion wrappers and storage
+lines to 9,945 lines. Realm-aware property completion wrappers and storage
 helpers, bytecode publication linking and call dispatch, runtime/root lifecycle,
 and the remaining intrinsic families still share the file; `compiler.rs`
 similarly combines several compiler phases.
@@ -2003,6 +2024,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_reduce -- --nocapture
 
 ./scripts/test-parity-slice.sh
+./scripts/test-test262-smoke.sh
 ```
 
 The direct commands above run the dedicated Boolean, Symbol,
@@ -2019,7 +2041,8 @@ pinned-oracle inputs in addition to its Rust-side expectation test. The Unicode
 identifier target checks every scalar, real compiler/runtime cases, and the
 parser-driven identifier diagnostic matrix; the Unicode case target checks the
 full conversion/property fingerprint plus final-sigma, raw UTF-16, locale and
-runtime graph behavior. A
+runtime graph behavior. The gate also verifies the complete pinned Test262
+metadata fingerprint and the fixed 193-variant TSV/JSONL smoke vectors. A
 separate statement-control-flow target locks block/`if`/loop completion,
 nearest-loop jumps, per-function isolation, ASI/directive boundaries and exact
 diagnostics; the switch target locks case/default search, fallthrough,

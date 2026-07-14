@@ -45,6 +45,14 @@ pub enum ErrorKind {
     JsInternal,
     Internal,
     Io,
+    /// A conformance decision which cannot yet be made because compilation
+    /// reached the current implementation frontier.
+    ///
+    /// This is deliberately not a JavaScript-visible native error kind. Public
+    /// eval preserves the historical temporary `SyntaxError` boundary, while
+    /// diagnostic compiler clients can retain the provenance and avoid
+    /// mistaking an implementation gap for a conforming early error.
+    Unsupported,
 }
 
 /// QuickJS native Error subclasses, in the same stable order as
@@ -154,9 +162,9 @@ impl NativeErrorKind {
     }
 
     /// Classify an engine-facing error kind which has JavaScript throw
-    /// semantics. `Internal` and `Io` are deliberately excluded: current
-    /// internal errors include malformed bytecode and implementation gaps,
-    /// neither of which may become catchable JavaScript exceptions.
+    /// semantics. `Unsupported`, `Internal`, and `Io` are deliberately
+    /// excluded: implementation frontiers and engine faults must not become
+    /// catchable JavaScript exceptions through this conversion.
     #[must_use]
     pub const fn from_javascript_error(kind: ErrorKind) -> Option<Self> {
         match kind {
@@ -165,7 +173,7 @@ impl NativeErrorKind {
             ErrorKind::Reference => Some(Self::Reference),
             ErrorKind::Range => Some(Self::Range),
             ErrorKind::JsInternal => Some(Self::Internal),
-            ErrorKind::Internal | ErrorKind::Io => None,
+            ErrorKind::Unsupported | ErrorKind::Internal | ErrorKind::Io => None,
         }
     }
 }
@@ -206,6 +214,11 @@ impl Error {
     #[must_use]
     pub fn syntax(message: impl Into<String>, span: SourceSpan) -> Self {
         Self::new(ErrorKind::Syntax, message).with_span(span)
+    }
+
+    #[must_use]
+    pub fn unsupported(message: impl Into<String>, span: SourceSpan) -> Self {
+        Self::new(ErrorKind::Unsupported, message).with_span(span)
     }
 
     #[must_use]

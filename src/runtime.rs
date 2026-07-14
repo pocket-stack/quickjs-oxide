@@ -4117,12 +4117,20 @@ impl Runtime {
         realm: ContextId,
         source: &str,
         filename: &str,
+        preserve_unsupported_diagnostics: bool,
     ) -> Result<Compilation, RuntimeError> {
         self.0.state.borrow().heap.context(realm)?;
         let debug_info = self.debug_info_mode();
         let function = match compile_unlinked_script_with_filename(source, filename, debug_info) {
             Ok(function) => function,
-            Err(error) => {
+            Err(mut error) => {
+                if error.kind() == ErrorKind::Unsupported && !preserve_unsupported_diagnostics {
+                    let span = error.span();
+                    error = Error::new(ErrorKind::Syntax, error.message().to_owned());
+                    if let Some(span) = span {
+                        error = error.with_span(span);
+                    }
+                }
                 let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
                     return Err(RuntimeError::Engine(error));
                 };
@@ -6320,7 +6328,7 @@ impl Runtime {
         source.push_str("\n})")?;
         let source = source.finish()?;
 
-        let script = match self.compile_in_realm(realm, &source, DEFAULT_EVAL_FILENAME)? {
+        let script = match self.compile_in_realm(realm, &source, DEFAULT_EVAL_FILENAME, false)? {
             Compilation::Published(script) => script,
             Compilation::Throw(value) => return Ok(Completion::Throw(value)),
         };
@@ -9758,10 +9766,35 @@ impl Context {
         source: &str,
         options: &CompileOptions,
     ) -> Result<FunctionBytecodeRef, RuntimeError> {
-        match self
-            .runtime
-            .compile_in_realm(self.realm, source, &options.filename)?
-        {
+        self.compile_with_options_internal(source, options, false)
+    }
+
+    /// Compile while retaining implementation-frontier provenance as an
+    /// engine [`ErrorKind::Unsupported`] diagnostic instead of converting it
+    /// to the temporary public-eval `SyntaxError` compatibility boundary.
+    ///
+    /// Test harnesses can use this to avoid mistaking an unimplemented grammar
+    /// branch for a conforming early error.
+    pub fn compile_with_options_preserving_unsupported_diagnostics(
+        &mut self,
+        source: &str,
+        options: &CompileOptions,
+    ) -> Result<FunctionBytecodeRef, RuntimeError> {
+        self.compile_with_options_internal(source, options, true)
+    }
+
+    fn compile_with_options_internal(
+        &mut self,
+        source: &str,
+        options: &CompileOptions,
+        preserve_unsupported_diagnostics: bool,
+    ) -> Result<FunctionBytecodeRef, RuntimeError> {
+        match self.runtime.compile_in_realm(
+            self.realm,
+            source,
+            &options.filename,
+            preserve_unsupported_diagnostics,
+        )? {
             Compilation::Published(function) => Ok(function),
             Compilation::Throw(exception) => {
                 self.runtime.set_pending_exception(exception)?;
