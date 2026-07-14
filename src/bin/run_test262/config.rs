@@ -106,7 +106,7 @@ pub(super) fn validate_config(path: &Path) -> Result<(), String> {
     verify_sha256(path, TEST262_CONFIG_SHA256, "QuickJS Test262 config")
 }
 
-fn verify_sha256(path: &Path, expected: &str, label: &str) -> Result<(), String> {
+pub(super) fn verify_sha256(path: &Path, expected: &str, label: &str) -> Result<(), String> {
     if !path.is_file() {
         return Err(format!("{label} is missing: {}", path.display()));
     }
@@ -161,12 +161,6 @@ pub(super) fn skip_reason(
         return Some((
             "skipped-config-exclude".to_owned(),
             "QuickJS config excludes this test".to_owned(),
-        ));
-    }
-    if metadata.flags.contains("CanBlockIsFalse") {
-        return Some((
-            "unsupported-host-can-block".to_owned(),
-            "the runtime cannot set [[CanBlock]] to false yet".to_owned(),
         ));
     }
     for include in &metadata.includes {

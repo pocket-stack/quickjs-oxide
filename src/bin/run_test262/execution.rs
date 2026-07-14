@@ -30,26 +30,28 @@ pub(super) fn run_isolated_worker(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("spawn worker for {}: {error}", test.display()))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "worker stdout pipe was missing".to_owned())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "worker stderr pipe was missing".to_owned())?;
+    let Some(stdout) = child.stdout.take() else {
+        terminate_and_reap(&mut child);
+        return Err("worker stdout pipe was missing".to_owned());
+    };
+    let Some(stderr) = child.stderr.take() else {
+        terminate_and_reap(&mut child);
+        return Err("worker stderr pipe was missing".to_owned());
+    };
     let stdout_reader = spawn_pipe_reader(stdout, "stdout");
     let stderr_reader = spawn_pipe_reader(stderr, "stderr");
     let started = Instant::now();
     let status = loop {
-        match child
-            .try_wait()
-            .map_err(|error| format!("wait for {}: {error}", test.display()))?
-        {
-            Some(status) => break status,
-            None if started.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
+        match child.try_wait() {
+            Err(error) => {
+                terminate_and_reap(&mut child);
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(format!("wait for {}: {error}", test.display()));
+            }
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() >= timeout => {
+                terminate_and_reap(&mut child);
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
                 return Ok(WorkerResult::failure(
@@ -59,11 +61,13 @@ pub(super) fn run_isolated_worker(
                     format!("worker exceeded {} ms", timeout.as_millis()),
                 ));
             }
-            None => thread::sleep(Duration::from_millis(5)),
+            Ok(None) => thread::sleep(Duration::from_millis(5)),
         }
     };
-    let stdout = join_pipe_reader(stdout_reader, "stdout")?;
-    let stderr = join_pipe_reader(stderr_reader, "stderr")?;
+    let stdout = join_pipe_reader(stdout_reader, "stdout");
+    let stderr = join_pipe_reader(stderr_reader, "stderr");
+    let stdout = stdout?;
+    let stderr = stderr?;
     if !status.success() {
         return Ok(WorkerResult::failure(
             "crash",
@@ -79,6 +83,11 @@ pub(super) fn run_isolated_worker(
             stderr.trim()
         )
     })
+}
+
+fn terminate_and_reap(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn spawn_pipe_reader(
@@ -140,8 +149,9 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
                     format!("{include}: {}", error.message()),
                 ));
             }
-            Err(error) => {
-                let (error_type, detail) = take_error(&runtime, &mut context, error);
+            Err(RuntimeError::Exception) => {
+                let (error_type, detail) =
+                    take_error(&runtime, &mut context, RuntimeError::Exception);
                 return Ok(WorkerResult::failure(
                     "harness-error",
                     "harness",
@@ -149,15 +159,42 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
                     format!("{include}: {detail}"),
                 ));
             }
+            Err(error) => {
+                return Ok(engine_fault(
+                    "harness-engine-fault",
+                    "harness-compile",
+                    error,
+                    Some(&include),
+                ));
+            }
         };
         if let Err(error) = context.execute(&function) {
-            let (error_type, detail) = take_error(&runtime, &mut context, error);
-            return Ok(WorkerResult::failure(
-                "harness-error",
-                "harness",
-                error_type,
-                format!("{include}: {detail}"),
-            ));
+            return Ok(match error {
+                RuntimeError::Engine(error) if error.kind() == ErrorKind::Unsupported => {
+                    WorkerResult::failure(
+                        "unsupported-harness-runtime",
+                        "harness-runtime",
+                        "Unsupported",
+                        format!("{include}: {}", error.message()),
+                    )
+                }
+                RuntimeError::Exception => {
+                    let (error_type, detail) =
+                        take_error(&runtime, &mut context, RuntimeError::Exception);
+                    WorkerResult::failure(
+                        "harness-error",
+                        "harness-runtime",
+                        error_type,
+                        format!("{include}: {detail}"),
+                    )
+                }
+                error => engine_fault(
+                    "harness-engine-fault",
+                    "harness-runtime",
+                    error,
+                    Some(&include),
+                ),
+            });
         }
     }
 
@@ -180,8 +217,8 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
                 error.message(),
             ));
         }
-        Err(error) => {
-            let (error_type, detail) = take_error(&runtime, &mut context, error);
+        Err(RuntimeError::Exception) => {
+            let (error_type, detail) = take_error(&runtime, &mut context, RuntimeError::Exception);
             return Ok(classify_completion(
                 &metadata,
                 "parse",
@@ -189,11 +226,28 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
                 &detail,
             ));
         }
+        Err(error) => return Ok(engine_fault("engine-fault", "parse", error, None)),
     };
+    if metadata
+        .negative
+        .as_ref()
+        .and_then(|negative| negative.phase.as_deref())
+        .is_some_and(|phase| matches!(phase, "parse" | "early"))
+    {
+        return Ok(classify_normal(&metadata));
+    }
     match context.execute(&function) {
         Ok(_) => Ok(classify_normal(&metadata)),
-        Err(error) => {
-            let (error_type, detail) = take_error(&runtime, &mut context, error);
+        Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
+            Ok(WorkerResult::failure(
+                "unsupported-runtime",
+                "runtime",
+                "Unsupported",
+                error.message(),
+            ))
+        }
+        Err(RuntimeError::Exception) => {
+            let (error_type, detail) = take_error(&runtime, &mut context, RuntimeError::Exception);
             Ok(classify_completion(
                 &metadata,
                 "runtime",
@@ -201,7 +255,28 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
                 &detail,
             ))
         }
+        Err(error) => Ok(engine_fault("engine-fault", "runtime", error, None)),
     }
+}
+
+fn engine_fault(
+    outcome: &str,
+    phase: &str,
+    error: RuntimeError,
+    prefix: Option<&str>,
+) -> WorkerResult {
+    let actual_type = match &error {
+        RuntimeError::WrongRuntime(_) => "WrongRuntime",
+        RuntimeError::Invariant(_) => "Invariant",
+        RuntimeError::Exception => "MissingException",
+        RuntimeError::Engine(_) => "EngineError",
+        RuntimeError::Atom(_) => "AtomError",
+        RuntimeError::Heap(_) => "HeapError",
+        RuntimeError::Shape(_) => "ShapeError",
+        RuntimeError::Property(_) => "PropertyError",
+    };
+    let detail = prefix.map_or_else(|| error.to_string(), |prefix| format!("{prefix}: {error}"));
+    WorkerResult::failure(outcome, phase, actual_type, detail)
 }
 
 fn classify_normal(metadata: &Metadata) -> WorkerResult {
@@ -345,10 +420,15 @@ fn primitive_text(value: Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use quickjs_oxide::{CompileOptions, ErrorKind, Runtime, RuntimeError};
 
-    use super::classify_completion;
+    use super::{classify_completion, run_worker};
     use crate::metadata::{Metadata, NegativeExpectation};
+    use crate::{Variant, WorkerOptions};
 
     #[test]
     fn matching_negative_result_preserves_its_diagnostic_provenance() {
@@ -370,6 +450,37 @@ mod tests {
         assert_eq!(result.actual_phase, "parse");
         assert_eq!(result.actual_type, "SyntaxError");
         assert_eq!(result.detail, "unexpected token in expression: '}'");
+    }
+
+    #[test]
+    fn parse_negative_that_compiles_is_not_executed() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let suite = std::env::temp_dir().join(format!(
+            "quickjs-oxide-test262-{}-{unique}",
+            std::process::id()
+        ));
+        let relative = PathBuf::from("test/parse-negative.js");
+        fs::create_dir_all(suite.join("test")).unwrap();
+        fs::write(
+            suite.join(&relative),
+            "/*---\nflags: [raw]\nnegative:\n  phase: parse\n  type: SyntaxError\n---*/\nthrow 1;\n",
+        )
+        .unwrap();
+
+        let result = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: relative,
+            variant: Variant::Sloppy,
+        })
+        .unwrap();
+        fs::remove_dir_all(suite).unwrap();
+
+        assert_eq!(result.outcome, "fail-missing-throw");
+        assert_eq!(result.actual_phase, "normal");
+        assert!(result.detail.contains("expected SyntaxError during parse"));
     }
 
     #[test]

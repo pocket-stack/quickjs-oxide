@@ -1,0 +1,11 @@
+# Known wrong-reason parse-negative passes plus one audited reverse control.
+test/language/expressions/arrow-function/params-duplicate.js
+test/language/expressions/assignment/dstr/array-rest-before-element.js
+test/language/expressions/object/__proto__-duplicate.js
+test/language/expressions/optional-chaining/early-errors-tail-position-null-op-template-string.js
+test/language/rest-parameters/position-invalid.js
+test/language/statements/async-function/early-errors-declaration-duplicate-parameters.js
+test/language/statements/function/dflt-params-duplicates.js
+test/language/statements/generators/dflt-params-duplicates.js
+test/language/statements/variable/S12.2_A8_T2.js
+test/language/statements/variable/dstr/ary-ptrn-rest-not-final-id.js

@@ -6,7 +6,7 @@ use std::path::Path;
 use super::metadata::Metadata;
 use super::{
     CoordinatorOptions, QUICKJS_VERSION, TEST262_COMMIT, TEST262_CONFIG_SHA256,
-    TEST262_METADATA_SHA256, TEST262_PATCH_SHA256,
+    TEST262_METADATA_SHA256, TEST262_OXIDE_PROFILE_SHA256, TEST262_PATCH_SHA256,
 };
 
 #[derive(Clone, Debug)]
@@ -127,7 +127,7 @@ pub(super) fn write_report(
         );
     }
     let mut output = String::new();
-    output.push_str("# quickjs-oxide Test262 outcome vector v1\n");
+    output.push_str("# quickjs-oxide Test262 outcome vector v2\n");
     output.push_str(&format!("# quickjs={QUICKJS_VERSION}\n"));
     output.push_str(&format!("# test262={TEST262_COMMIT}\n"));
     output.push_str(&format!("# test262_patch_sha256={TEST262_PATCH_SHA256}\n"));
@@ -137,7 +137,10 @@ pub(super) fn write_report(
     output.push_str(&format!(
         "# test262_metadata_sha256={TEST262_METADATA_SHA256}\n"
     ));
-    output.push_str("# profile=test262-canonical-sync-script-v1\n");
+    output.push_str(&format!(
+        "# oxide_profile_sha256={TEST262_OXIDE_PROFILE_SHA256}\n"
+    ));
+    output.push_str("# profile=test262-canonical-classified-v2\n");
     output.push_str(&format!("# mode={}\n", options.mode.name()));
     output.push_str("path\tvariant\tflags\tfeatures\texpected_phase\texpected_type\toutcome\tactual_phase\tactual_type\tdetail\n");
     for row in rows {
@@ -167,12 +170,13 @@ pub(super) fn write_report(
 
     let mut json = String::new();
     json.push_str(&format!(
-        "{{\"kind\":\"metadata\",\"schema\":1,\"quickjs\":{},\"test262\":{},\"test262_patch_sha256\":{},\"test262_config_sha256\":{},\"test262_metadata_sha256\":{},\"profile\":\"test262-canonical-sync-script-v1\",\"mode\":{}}}\n",
+        "{{\"kind\":\"metadata\",\"schema\":2,\"quickjs\":{},\"test262\":{},\"test262_patch_sha256\":{},\"test262_config_sha256\":{},\"test262_metadata_sha256\":{},\"oxide_profile_sha256\":{},\"profile\":\"test262-canonical-classified-v2\",\"mode\":{}}}\n",
         json_string(QUICKJS_VERSION),
         json_string(TEST262_COMMIT),
         json_string(TEST262_PATCH_SHA256),
         json_string(TEST262_CONFIG_SHA256),
         json_string(TEST262_METADATA_SHA256),
+        json_string(TEST262_OXIDE_PROFILE_SHA256),
         json_string(options.mode.name()),
     ));
     for row in rows {
@@ -254,6 +258,9 @@ fn escape_field(value: &str) -> String {
             '\t' => output.push_str("\\t"),
             '\n' => output.push_str("\\n"),
             '\r' => output.push_str("\\r"),
+            character if character.is_control() => {
+                output.push_str(&format!("\\u{:04x}", u32::from(character)));
+            }
             _ => output.push(character),
         }
     }
@@ -273,6 +280,17 @@ fn unescape_field(value: &str) -> Result<String, String> {
             Some('t') => output.push('\t'),
             Some('n') => output.push('\n'),
             Some('r') => output.push('\r'),
+            Some('u') => {
+                let digits = characters.by_ref().take(4).collect::<String>();
+                if digits.len() != 4 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    return Err(format!("invalid worker Unicode escape: \\u{digits}"));
+                }
+                let value = u32::from_str_radix(&digits, 16)
+                    .map_err(|_| format!("invalid worker Unicode escape: \\u{digits}"))?;
+                let decoded = char::from_u32(value)
+                    .ok_or_else(|| format!("invalid worker Unicode escape: \\u{digits}"))?;
+                output.push(decoded);
+            }
             Some(other) => return Err(format!("invalid worker escape: \\{other}")),
             None => return Err("trailing worker escape".to_owned()),
         }
@@ -286,8 +304,10 @@ mod tests {
 
     #[test]
     fn report_field_codec_roundtrips_control_characters() {
-        let value = "a\\b\tc\nd\re";
-        assert_eq!(unescape_field(&escape_field(value)).unwrap(), value);
+        let value = "a\\b\\u0000\tc\nd\re\0\u{8}\u{c}\u{1f}\u{7f}\u{9f}";
+        let encoded = escape_field(value);
+        assert!(encoded.chars().all(|character| !character.is_control()));
+        assert_eq!(unescape_field(&encoded).unwrap(), value);
         let result = WorkerResult::failure("fail-runtime", "runtime", "TypeError", value);
         assert_eq!(
             WorkerResult::decode(&result.encode()).unwrap().detail,

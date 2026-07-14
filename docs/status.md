@@ -1,6 +1,6 @@
 # Implementation status
 
-Last audited: 2026-07-14. The completion definition remains
+Last audited: 2026-07-15. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
@@ -8,17 +8,16 @@ claim full parity.
 
 - QuickJS 2026-06-04 release metadata, archive checksum, bytecode version,
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
-- A process-isolated Rust Test262 runner now provides the first canonical
-  synchronous-script progress baseline. It exhaustively parses all 53,125
-  non-fixture metadata blocks to an independently verified SHA-256 record,
-  preserves parse/runtime negative phases, treats explicitly marked compiler
-  implementation gaps as `Unsupported` rather than passing `SyntaxError`,
-  implements canonical raw/strict planning, enforces hard subprocess timeouts,
-  and writes deterministic TSV plus JSONL outcomes. The fixed 100-file smoke
-  manifest currently expands to 193 variants: 189 pass and four are explicitly
-  `unsupported-parser`, with no skip, timeout, crash or harness-error result.
-  See `docs/test262.md`; this selected smoke result is not a whole-suite pass
-  estimate.
+- The process-isolated Rust Test262 runner now saves a complete conservative
+  outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
+  capability profile, audited negative-test canaries, and source/metadata host
+  requirements keep unsupported grammar, features, modes, and `$262` hooks from
+  becoming false passes. Bounded workers preserve canonical byte-for-byte TSV
+  and JSONL ordering. The current vector has 10,138 passes: a 12.13% lower bound
+  after the 18,475 pinned QuickJS target exclusions, or 38.34% among the 26,441
+  variants with a non-unsupported observed outcome. The fixed smoke remains 189
+  passes and four explicit parser-frontier results. See `docs/test262.md` for
+  the denominators and why none of these figures is a parity claim.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -1693,15 +1692,13 @@ claim full parity.
 
 ## Not implemented yet
 
-The complete pinned Test262 outcome vector has not been recorded yet. Before
-that vector becomes an authoritative progress number, every remaining parser
-frontier which still reports a generic syntax diagnostic must either gain
-typed `Unsupported` provenance or be proven to be a genuine early error. The
-runner's trusted subset is synchronous Script; module parse/link/evaluate,
-Promises/jobs and async completion, complete `$262` host hooks, bounded worker
-parallelism, the ES5.1 suite, and a separate QuickJS-runner-quirk profile remain
-future milestones. Unsupported and host-missing outcomes are failures, not
-additional feature skips.
+The complete pinned Test262 vector is now recorded conservatively. Remaining
+parser frontiers with generic syntax diagnostics cannot contribute negative
+test passes until they gain typed `Unsupported` provenance or are individually
+audited as genuine early errors. Native `$262` host hooks, module
+parse/link/evaluate, Promises/jobs and async completion, the ES5.1 suite, and a
+separate QuickJS-runner-quirk profile remain future milestones. Unsupported and
+host-missing outcomes are failures, not additional feature skips.
 
 The language slice is intentionally narrow. Async/generator declarations,
 `for-in`/`for-await`, for-of destructuring, other general
@@ -2025,6 +2022,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 
 ./scripts/test-parity-slice.sh
 ./scripts/test-test262-smoke.sh
+./scripts/test-test262-provenance.sh
+./scripts/test-test262-full.sh
 ```
 
 The direct commands above run the dedicated Boolean, Symbol,
@@ -2042,7 +2041,8 @@ identifier target checks every scalar, real compiler/runtime cases, and the
 parser-driven identifier diagnostic matrix; the Unicode case target checks the
 full conversion/property fingerprint plus final-sigma, raw UTF-16, locale and
 runtime graph behavior. The gate also verifies the complete pinned Test262
-metadata fingerprint and the fixed 193-variant TSV/JSONL smoke vectors. A
+metadata fingerprint, the fixed 193-variant smoke vectors, the negative-test
+provenance canaries, and the hashed 102,037-variant classified vector. A
 separate statement-control-flow target locks block/`if`/loop completion,
 nearest-loop jumps, per-function isolation, ASI/directive boundaries and exact
 diagnostics; the switch target locks case/default search, fallthrough,

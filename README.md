@@ -36,6 +36,7 @@ outside this overview:
 cargo test --locked --workspace --all-targets
 ./scripts/test-parity-slice.sh
 ./scripts/test-test262-smoke.sh
+./scripts/test-test262-full.sh
 ```
 
 ## License

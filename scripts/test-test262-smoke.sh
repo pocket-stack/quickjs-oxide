@@ -38,9 +38,11 @@ fi
 cargo run --locked --quiet --bin run-test262 -- \
     --suite "$suite" \
     --config "$source_dir/test262.conf" \
+    --oxide-profile compat/test262-oxide.conf \
     --manifest tests/test262-smoke.txt \
     --report "$report" \
     --mode both \
+    --workers 4 \
     --allow-failures
 
 if ! cmp -s "$baseline" "$report"; then

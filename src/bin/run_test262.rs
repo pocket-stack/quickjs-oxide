@@ -1,10 +1,12 @@
 //! Process-isolated Test262 runner for the pinned QuickJS compatibility suite.
 //!
 //! The metadata/configuration model follows QuickJS 2026-06-04
-//! `run-test262.c`. Each script variant runs in a fresh process so a future
-//! engine crash or an already-possible infinite loop is reported without
-//! taking down the coordinator.
+//! `run-test262.c`. Each runnable script variant runs in a fresh process so a
+//! future engine crash or an already-possible infinite loop is reported
+//! without taking down the coordinator.
 
+#[path = "run_test262/capabilities.rs"]
+mod capabilities;
 #[path = "run_test262/config.rs"]
 mod config;
 #[path = "run_test262/execution.rs"]
@@ -13,6 +15,10 @@ mod execution;
 mod metadata;
 #[path = "run_test262/report.rs"]
 mod report;
+#[path = "run_test262/requirements.rs"]
+mod requirements;
+#[path = "run_test262/scheduler.rs"]
+mod scheduler;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -20,12 +26,16 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
+use std::thread;
 use std::time::Duration;
 
-use config::{parse_config, skip_reason, validate_config, validate_suite};
+use capabilities::OxideProfile;
+use config::{parse_config, skip_reason, validate_config, validate_suite, verify_sha256};
 use execution::{run_isolated_worker, run_worker};
-use metadata::parse_metadata;
+use metadata::{Metadata, parse_metadata};
 use report::{WorkerResult, report_row, write_report};
+use requirements::missing_host_capability_hints;
+use scheduler::run_bounded;
 
 const TEST262_COMMIT: &str = "5c8206929d81b2d3d727ca6aac56c18358c8d790";
 const TEST262_PATCH_SHA256: &str =
@@ -34,6 +44,8 @@ const TEST262_CONFIG_SHA256: &str =
     "79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b";
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
+const TEST262_OXIDE_PROFILE_SHA256: &str =
+    "a93cb5655c2bb2254c2ed593a2aad760cc8c91610954b03a3a65c1703de5449b";
 const QUICKJS_VERSION: &str = "2026-06-04";
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
@@ -96,12 +108,14 @@ impl TestMode {
 struct CoordinatorOptions {
     suite: PathBuf,
     config: PathBuf,
+    oxide_profile: PathBuf,
     manifest: Option<PathBuf>,
     tests: Vec<PathBuf>,
     all: bool,
     report: PathBuf,
     mode: TestMode,
     timeout: Duration,
+    workers: usize,
     allow_failures: bool,
 }
 
@@ -188,11 +202,15 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
     let worker = arguments.iter().any(|argument| argument == "--worker-one");
     let mut suite = None;
     let mut config = None;
+    let mut oxide_profile = None;
     let mut manifest = None;
     let mut tests = Vec::new();
     let mut report = None;
     let mut mode = TestMode::Both;
+    let mut mode_explicit = false;
     let mut timeout_ms = DEFAULT_TIMEOUT_MS;
+    let mut timeout_explicit = false;
+    let mut workers = None;
     let mut all = false;
     let mut allow_failures = false;
     let mut variant = None;
@@ -213,18 +231,34 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             "--worker-one" => {}
             "--suite" => suite = Some(PathBuf::from(take_value("--suite")?)),
             "--config" => config = Some(PathBuf::from(take_value("--config")?)),
+            "--oxide-profile" => {
+                oxide_profile = Some(PathBuf::from(take_value("--oxide-profile")?));
+            }
             "--manifest" => manifest = Some(PathBuf::from(take_value("--manifest")?)),
             "--test" => tests.push(PathBuf::from(take_value("--test")?)),
             "--report" => report = Some(PathBuf::from(take_value("--report")?)),
-            "--mode" => mode = TestMode::parse(&take_value("--mode")?)?,
+            "--mode" => {
+                mode = TestMode::parse(&take_value("--mode")?)?;
+                mode_explicit = true;
+            }
             "--variant" => variant = Some(Variant::parse(&take_value("--variant")?)?),
             "--timeout-ms" => {
+                timeout_explicit = true;
                 timeout_ms = take_value("--timeout-ms")?
                     .parse::<u64>()
                     .map_err(|_| "--timeout-ms must be an unsigned integer".to_owned())?;
                 if timeout_ms == 0 {
                     return Err("--timeout-ms must be greater than zero".to_owned());
                 }
+            }
+            "--workers" => {
+                let value = take_value("--workers")?
+                    .parse::<usize>()
+                    .map_err(|_| "--workers must be a positive integer".to_owned())?;
+                if value == 0 {
+                    return Err("--workers must be greater than zero".to_owned());
+                }
+                workers = Some(value);
             }
             "--all" => all = true,
             "--allow-failures" => allow_failures = true,
@@ -243,8 +277,12 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             || !tests.is_empty()
             || report.is_some()
             || config.is_some()
+            || oxide_profile.is_some()
             || variant.is_some()
             || allow_failures
+            || mode_explicit
+            || timeout_explicit
+            || workers.is_some()
         {
             return Err("--validate-metadata cannot be combined with execution options".to_owned());
         }
@@ -254,7 +292,17 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
         }));
     }
     if worker {
-        if all || manifest.is_some() || tests.len() != 1 || report.is_some() || config.is_some() {
+        if all
+            || manifest.is_some()
+            || tests.len() != 1
+            || report.is_some()
+            || config.is_some()
+            || oxide_profile.is_some()
+            || allow_failures
+            || mode_explicit
+            || timeout_explicit
+            || workers.is_some()
+        {
             return Err("invalid coordinator option passed to --worker-one".to_owned());
         }
         return Ok(Invocation::Worker(WorkerOptions {
@@ -277,27 +325,32 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             .unwrap_or(Path::new("."))
             .join("test262.conf")
     });
+    let oxide_profile = oxide_profile.ok_or_else(|| "--oxide-profile is required".to_owned())?;
     let report = report.ok_or_else(|| "--report is required".to_owned())?;
     Ok(Invocation::Coordinator(CoordinatorOptions {
         suite,
         config,
+        oxide_profile,
         manifest,
         tests,
         all,
         report,
         mode,
         timeout: Duration::from_millis(timeout_ms),
+        workers: workers.unwrap_or_else(default_worker_count),
         allow_failures,
     }))
 }
 
 fn print_help() {
+    let default_workers = default_worker_count();
     println!(
         "run-test262 (quickjs-oxide)\n\
-usage: run-test262 --suite DIR --config FILE (--manifest FILE | --test FILE... | --all) --report FILE [options]\n\
+usage: run-test262 --suite DIR --config FILE --oxide-profile FILE (--manifest FILE | --test FILE... | --all) --report FILE [options]\n\
 \n\
   --mode MODE          both, strict, sloppy, default-strict, or default-sloppy\n\
   --timeout-ms N       hard per-variant worker timeout (default: {DEFAULT_TIMEOUT_MS})\n\
+  --workers N          maximum concurrent subprocesses (default: {default_workers})\n\
   --allow-failures     record a baseline without returning a failing status\n\
   --validate-metadata FILE\n\
                        serialize the complete pinned metadata inventory\n\
@@ -307,10 +360,47 @@ as unsupported until those runtime surfaces are implemented."
     );
 }
 
+fn default_worker_count() -> usize {
+    let available = thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+    let quickjs_style = if available >= 8 {
+        available - 1
+    } else {
+        available
+    };
+    quickjs_style.clamp(1, 16)
+}
+
+struct PlannedTest {
+    relative: PathBuf,
+    metadata: Metadata,
+}
+
+struct PlannedRow {
+    test_index: usize,
+    variant: Option<Variant>,
+    result: Option<WorkerResult>,
+}
+
+#[derive(Clone, Copy)]
+struct RunnableJob {
+    row_index: usize,
+    test_index: usize,
+    variant: Variant,
+}
+
 fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
     validate_suite(&options.suite)?;
     validate_config(&options.config)?;
+    verify_sha256(
+        &options.oxide_profile,
+        TEST262_OXIDE_PROFILE_SHA256,
+        "quickjs-oxide Test262 capability profile",
+    )?;
     let config = parse_config(&options.config)?;
+    let oxide_profile = OxideProfile::load(&options.oxide_profile)?;
+    validate_oxide_profile(&oxide_profile, &options.suite)?;
     let harness_dir = config
         .harness_dir
         .clone()
@@ -333,8 +423,9 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
     }
     let tests = collect_tests(options)?;
     let executable = env::current_exe().map_err(|error| format!("locate runner: {error}"))?;
-    let mut rows = Vec::new();
-    let mut summary = BTreeMap::<String, usize>::new();
+    let mut planned_tests = Vec::with_capacity(tests.len());
+    let mut planned_rows = Vec::new();
+    let mut runnable_jobs = Vec::new();
 
     for relative in tests {
         let path = options.suite.join(&relative);
@@ -343,47 +434,87 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
         let metadata = parse_metadata(&source)
             .map_err(|error| format!("parse metadata for {}: {error}", relative.display()))?;
         let variants = metadata.variants(options.mode);
+        let skip = skip_reason(&relative, &metadata, &config);
+        let missing_host = missing_host_capability_hints(&relative, &source, &metadata);
+        let capability =
+            oxide_profile.classify(&relative, &metadata.features, metadata.negative.is_some());
+        let selection_result = if let Some((outcome, detail)) = &skip {
+            Some(WorkerResult::failure(outcome, "selection", "", detail))
+        } else if let Some(result) = missing_host_result(&missing_host) {
+            Some(result)
+        } else {
+            capability.map(|classification| {
+                WorkerResult::failure(
+                    classification.outcome,
+                    "selection",
+                    "EngineCapability",
+                    classification.detail,
+                )
+            })
+        };
+        let test_index = planned_tests.len();
+        planned_tests.push(PlannedTest { relative, metadata });
+
         if variants.is_empty() {
-            rows.push(report_row(
-                &relative,
-                "none",
-                &metadata,
-                &WorkerResult::failure("skipped-mode", "", "", "variant excluded by mode"),
-            ));
-            *summary.entry("skipped-mode".to_owned()).or_default() += 1;
+            planned_rows.push(PlannedRow {
+                test_index,
+                variant: None,
+                result: Some(WorkerResult::failure(
+                    "skipped-mode",
+                    "selection",
+                    "",
+                    "variant excluded by mode",
+                )),
+            });
             continue;
         }
 
-        let skip = skip_reason(&relative, &metadata, &config);
         for variant in variants {
-            let result = if let Some((outcome, detail)) = &skip {
-                WorkerResult::failure(outcome, "", "", detail)
-            } else if metadata.is_module() {
-                WorkerResult::failure(
-                    "unsupported-module",
-                    "host",
-                    "",
-                    "module parse/link/evaluate is not implemented",
-                )
-            } else if metadata.is_async() {
-                WorkerResult::failure(
-                    "unsupported-async",
-                    "host",
-                    "",
-                    "Promise jobs and $DONE are not implemented",
-                )
-            } else {
-                run_isolated_worker(
-                    &executable,
-                    &options.suite,
-                    &relative,
+            let row_index = planned_rows.len();
+            planned_rows.push(PlannedRow {
+                test_index,
+                variant: Some(variant),
+                result: selection_result.clone(),
+            });
+            if selection_result.is_none() {
+                runnable_jobs.push(RunnableJob {
+                    row_index,
+                    test_index,
                     variant,
-                    options.timeout,
-                )?
-            };
-            *summary.entry(result.outcome.clone()).or_default() += 1;
-            rows.push(report_row(&relative, variant.name(), &metadata, &result));
+                });
+            }
         }
+    }
+
+    let worker_results = run_bounded(runnable_jobs.len(), options.workers, |job_index| {
+        let job = runnable_jobs[job_index];
+        let test = &planned_tests[job.test_index];
+        run_isolated_worker(
+            &executable,
+            &options.suite,
+            &test.relative,
+            job.variant,
+            options.timeout,
+        )
+    })?;
+    for (job, result) in runnable_jobs.iter().zip(worker_results) {
+        planned_rows[job.row_index].result = Some(result);
+    }
+
+    let mut rows = Vec::with_capacity(planned_rows.len());
+    let mut summary = BTreeMap::<String, usize>::new();
+    for row in planned_rows {
+        let test = &planned_tests[row.test_index];
+        let result = row
+            .result
+            .ok_or_else(|| format!("missing result for {}", test.relative.display()))?;
+        *summary.entry(result.outcome.clone()).or_default() += 1;
+        rows.push(report_row(
+            &test.relative,
+            row.variant.map_or("none", Variant::name),
+            &test.metadata,
+            &result,
+        ));
     }
 
     write_report(options, &rows, &summary)?;
@@ -403,8 +534,80 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
     println!(
         "Test262: total={total} pass={passed} fail={failed} unsupported={unsupported} skipped={skipped}"
     );
+    println!(
+        "execution: runnable={} workers={}",
+        runnable_jobs.len(),
+        options.workers.min(runnable_jobs.len())
+    );
     println!("report={}", options.report.display());
     Ok(options.allow_failures || failed == 0)
+}
+
+fn validate_oxide_profile(profile: &OxideProfile, suite: &Path) -> Result<(), String> {
+    for relative in profile.audited_negative_paths() {
+        let relative = Path::new(relative);
+        validate_relative_test_path(relative)?;
+        let path = suite.join(relative);
+        let source = fs::read_to_string(&path)
+            .map_err(|error| format!("read audited negative {}: {error}", path.display()))?;
+        let metadata = parse_metadata(&source).map_err(|error| {
+            format!(
+                "parse metadata for audited negative {}: {error}",
+                relative.display()
+            )
+        })?;
+        if metadata.negative.is_none() {
+            return Err(format!(
+                "oxide profile path is not a negative test: {}",
+                relative.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn missing_host_result(missing: &[String]) -> Option<WorkerResult> {
+    if missing.is_empty() {
+        return None;
+    }
+    let has_module = missing.iter().any(|capability| capability == "module");
+    let has_async = missing.iter().any(|capability| capability == "async");
+    let detail = format!("missing execution capabilities: {}", missing.join(", "));
+    if has_module || has_async {
+        let outcome = match (has_module, has_async) {
+            (true, true) => "unsupported-module-async",
+            (true, false) => "unsupported-module",
+            (false, true) => "unsupported-async",
+            (false, false) => unreachable!(),
+        };
+        return Some(WorkerResult::failure(
+            outcome,
+            "selection",
+            "ExecutionMode",
+            detail,
+        ));
+    }
+
+    let first = missing.first().expect("missing capabilities were checked");
+    let outcome = match first.as_str() {
+        "abstract-module-source" => "unsupported-host-abstract-module-source",
+        "agent" => "unsupported-host-agent",
+        "can-block:false" => "unsupported-host-can-block-false",
+        "create-realm" => "unsupported-host-create-realm",
+        "detach-array-buffer" => "unsupported-host-detach-array-buffer",
+        "eval-script" => "unsupported-host-eval-script",
+        "gc" => "unsupported-host-gc",
+        "global" => "unsupported-host-global",
+        "is-html-dda" => "unsupported-host-is-html-dda",
+        unknown if unknown.starts_with("unknown:") => "unsupported-host-unknown-hook",
+        _ => "unsupported-host",
+    };
+    Some(WorkerResult::failure(
+        outcome,
+        "selection",
+        "HostCapability",
+        detail,
+    ))
 }
 
 fn audit_metadata(options: &MetadataAuditOptions) -> Result<(), String> {
@@ -596,4 +799,93 @@ fn validate_relative_test_path(path: &Path) -> Result<(), String> {
         return Err(format!("invalid relative Test262 path: {}", path.display()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use std::ffi::OsString;
+
+    use super::{Invocation, default_worker_count, parse_args};
+
+    fn parse(values: &[&str]) -> Result<Invocation, String> {
+        parse_args(values.iter().map(OsString::from))
+    }
+
+    fn parse_error(values: &[&str]) -> String {
+        match parse(values) {
+            Ok(_) => panic!("arguments unexpectedly parsed"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn coordinator_accepts_an_explicit_positive_worker_bound() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "compat/test262-oxide.conf",
+            "--manifest",
+            "manifest",
+            "--report",
+            "report.tsv",
+            "--workers",
+            "3",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(options.workers, 3);
+    }
+
+    #[test]
+    fn zero_workers_and_missing_profile_are_rejected() {
+        let zero = parse_error(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "profile",
+            "--all",
+            "--report",
+            "report.tsv",
+            "--workers",
+            "0",
+        ]);
+        assert_eq!(zero, "--workers must be greater than zero");
+
+        let missing = parse_error(&["--suite", "suite", "--all", "--report", "report.tsv"]);
+        assert_eq!(missing, "--oxide-profile is required");
+    }
+
+    #[test]
+    fn internal_and_metadata_modes_reject_coordinator_tuning() {
+        let audit = parse_error(&[
+            "--suite",
+            "suite",
+            "--validate-metadata",
+            "records",
+            "--workers",
+            "2",
+        ]);
+        assert!(audit.contains("cannot be combined"));
+
+        let worker = parse_error(&[
+            "--worker-one",
+            "--suite",
+            "suite",
+            "--test",
+            "test/a.js",
+            "--variant",
+            "sloppy",
+            "--timeout-ms",
+            "10",
+        ]);
+        assert_eq!(worker, "invalid coordinator option passed to --worker-one");
+    }
+
+    #[test]
+    fn automatic_worker_bound_is_nonzero_and_capped() {
+        assert!((1..=16).contains(&default_worker_count()));
+    }
 }
