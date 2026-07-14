@@ -3,16 +3,17 @@ compatibility with QuickJS 2026-06-04. The QuickJS C implementation is neither
 compiled nor linked into product builds.
 
 The compatibility reference, algorithmic source map, and generated Unicode
-identifier table data derive from the QuickJS release. Its complete MIT notice
-is retained in LICENSES/QuickJS-MIT.txt.
+identifier and case-conversion table data derive from the QuickJS release. Its
+complete MIT notice is retained in LICENSES/QuickJS-MIT.txt.
 
-The identifier properties ultimately derive from Unicode 17.0.0 UCD data,
-including DerivedCoreProperties.txt. The complete Unicode License v3 copyright
-and permission notice is retained in LICENSES/Unicode-3.0.txt.
+The identifier, case-conversion, Cased, and Case_Ignorable data ultimately
+derive from Unicode 17.0.0 UCD data, including DerivedCoreProperties.txt. The
+complete Unicode License v3 copyright and permission notice is retained in
+LICENSES/Unicode-3.0.txt.
 
 See compat/upstream.toml for the pinned release archive and checksum. Rust
 dependency licenses remain those published by their respective packages.
 
-The generated Rust Unicode identifier tables retain the Unicode 17.0.0 data
-from QuickJS 2026-06-04 libunicode-table.h. The source table checksum and
-regeneration command are recorded beside the generated data.
+The generated Rust Unicode identifier and case-conversion tables retain the
+Unicode 17.0.0 data from QuickJS 2026-06-04 libunicode-table.h. The source table
+checksum and regeneration commands are recorded beside the generated data.

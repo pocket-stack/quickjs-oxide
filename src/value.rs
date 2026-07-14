@@ -714,6 +714,20 @@ impl JsString {
         }
     }
 
+    /// Adopt a checked narrow result buffer without collecting its contents a
+    /// second time. Callers must have enforced [`Self::MAX_LEN`].
+    pub(crate) fn from_owned_latin1(units: Vec<u8>) -> Self {
+        debug_assert!(units.len() <= Self::MAX_LEN);
+        Self(Rc::new(StringRepr::Latin1(units.into_boxed_slice())))
+    }
+
+    /// Adopt a checked wide result buffer without collecting its contents a
+    /// second time. Callers must have enforced [`Self::MAX_LEN`].
+    pub(crate) fn from_owned_utf16(units: Vec<u16>) -> Self {
+        debug_assert!(units.len() <= Self::MAX_LEN);
+        Self(Rc::new(StringRepr::Utf16(units.into_boxed_slice())))
+    }
+
     /// Build the compact one-code-unit form used by String exotic indices and
     /// character methods, equivalent to QuickJS's `js_new_string_char`.
     #[must_use]

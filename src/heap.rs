@@ -980,6 +980,7 @@ pub enum NativeFunctionId {
     StringPrototypeRepeat,
     StringPrototypePad(StringPadKind),
     StringPrototypeTrim(StringTrimKind),
+    StringPrototypeCase(StringCaseKind),
     StringPrototypeCreateHtml(StringCreateHtmlKind),
     IteratorPrototypeIterator,
     IteratorPrototypeToStringTagGetter,
@@ -1115,6 +1116,15 @@ pub enum StringTrimKind {
     Both,
     End,
     Start,
+}
+
+/// Direction selected by QuickJS's shared `js_string_toLowerCase`
+/// generic-magic function. The locale-named methods use the same two magic
+/// values and intentionally ignore their locale arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StringCaseKind {
+    Lower,
+    Upper,
 }
 
 /// Annex-B operation selected by QuickJS's shared `js_string_CreateHTML`
@@ -1330,6 +1340,7 @@ impl NativeFunctionId {
             | Self::StringPrototypeIncludes(_)
             | Self::StringPrototypePad(_)
             | Self::StringPrototypeTrim(_)
+            | Self::StringPrototypeCase(_)
             | Self::StringPrototypeCreateHtml(_)
             | Self::ArrayPrototypeFind(_)
             | Self::ArrayPrototypeIteration(_)

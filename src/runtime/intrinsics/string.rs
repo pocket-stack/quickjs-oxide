@@ -230,6 +230,33 @@ impl Runtime {
         Ok(())
     }
 
+    /// Install the four case-conversion entries between the String brand
+    /// methods and @@iterator, matching QuickJS's physical prototype table.
+    /// Locale variants deliberately share the same native operation while
+    /// retaining separate AutoInit properties and function identities.
+    pub(in crate::runtime) fn initialize_string_case_methods(
+        &self,
+        realm: ContextId,
+        string_prototype: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        for (selector, name) in [
+            (StringCaseKind::Lower, "toLowerCase"),
+            (StringCaseKind::Upper, "toUpperCase"),
+            (StringCaseKind::Lower, "toLocaleLowerCase"),
+            (StringCaseKind::Upper, "toLocaleUpperCase"),
+        ] {
+            self.define_native_builtin_auto_init(
+                string_prototype,
+                realm,
+                NativeFunctionId::StringPrototypeCase(selector),
+                name,
+                0,
+                0,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Install the legacy Annex-B CreateHTML table after @@iterator and before
     /// the `%String%` constructor becomes observable, matching the pinned
     /// QuickJS prototype-table order.
@@ -1037,6 +1064,56 @@ impl Runtime {
             }
         };
         Ok(Completion::Return(Value::String(trimmed)))
+    }
+
+    /// Rust port of pinned QuickJS `js_string_toLowerCase`. Its magic bit
+    /// selects upper/lower conversion; locale-named callers reach the exact
+    /// same kernel and no argument is inspected.
+    pub(in crate::runtime) fn call_string_prototype_case(
+        &self,
+        realm: ContextId,
+        selector: StringCaseKind,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        self.call_string_prototype_case_with_limit(realm, selector, invocation, JsString::MAX_LEN)
+    }
+
+    fn call_string_prototype_case_with_limit(
+        &self,
+        realm: ContextId,
+        selector: StringCaseKind,
+        invocation: NativeInvocation,
+        string_limit: usize,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String case conversion did not receive a generic-magic invocation",
+            ));
+        };
+
+        let source = match self.native_to_string_check_object(realm, &this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let converted = match crate::unicode_case::convert_case_with_limit(
+            &source,
+            matches!(selector, StringCaseKind::Upper),
+            string_limit,
+        ) {
+            Ok(value) => value,
+            Err(error @ (JsStringError::TooLong | JsStringError::OutOfMemory)) => {
+                let message = match error {
+                    JsStringError::TooLong => "string too long",
+                    JsStringError::OutOfMemory => "out of memory",
+                };
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Internal,
+                    message,
+                )?));
+            }
+        };
+        Ok(Completion::Return(Value::String(converted)))
     }
 
     /// Rust port of pinned QuickJS `js_string_CreateHTML`. Receiver coercion

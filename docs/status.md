@@ -574,8 +574,9 @@ claim full parity.
   standard non-index surface is intentionally limited to the first twelve
   UTF-16/search methods, the `substring`/`substr`/`slice` subrange trio,
   `repeat`, the `padEnd`/`padStart` pair, the five-property trim group, the
-  conversion pair, `Symbol.iterator` and the thirteen-property Annex-B
-  CreateHTML family until later table slices land.
+  conversion pair, the four Unicode case-conversion methods,
+  `Symbol.iterator` and the thirteen-property Annex-B CreateHTML family until
+  later table slices land.
 - Simple member assignment mirrors QuickJS's lvalue rewrite rather than
   evaluating the getter: fixed targets lower through `Insert2; PutField`, and
   computed targets through `Insert3; PutArrayEl`, preserving the RHS as the
@@ -1134,10 +1135,10 @@ claim full parity.
   `substr`, `slice` and `repeat`, skips the pending `replace`/`replaceAll`, and
   publishes `padEnd` then `padStart`, followed by `trim`, `trimEnd`,
   `trimRight`, `trimStart` and `trimLeft`, in pinned table-relative order ahead
-  of the conversion core's exact `toString`/`valueOf` brand methods. It skips
-  the pending four case-conversion entries, publishes `Symbol.iterator`, then
-  appends the thirteen Annex-B CreateHTML methods before the `constructor`
-  back-reference.
+  of the conversion core's exact `toString`/`valueOf` brand methods. It then
+  publishes `toLowerCase`, `toUpperCase`, `toLocaleLowerCase` and
+  `toLocaleUpperCase`, followed by `Symbol.iterator`, and appends the thirteen
+  Annex-B CreateHTML methods before the `constructor` back-reference.
   These generic methods preserve
   `JS_ToStringCheckObject`, `JS_ToInt32Sat`, raw UTF-16 code units and lone
   surrogates; concat converts actual arguments sequentially and enforces
@@ -1181,6 +1182,25 @@ claim full parity.
   the full-range and all-space paths do not enter that checked partial-result
   reservation path or consume its scoped failure hook. Allocations surrounding
   those paths remain within the general allocator gap described below.
+  The four case-conversion properties are distinct AutoInit GenericMagic
+  callables with `length=0`, even though each locale-named method selects the
+  same lower/upper kernel as its ordinary counterpart. Only the receiver is
+  converted, using `JS_ToStringCheckObject`; every locale and extra argument is
+  ignored without property access or coercion. Conversion ports QuickJS's
+  checksum-pinned Unicode 17 `case_conv_table1`, `case_conv_table2` and
+  `case_conv_ext` arrays together with its compressed `Cased` and
+  `Case_Ignorable` properties. Forward/backward UTF-16 code-point traversal
+  preserves unmatched surrogates, applies astral and multi-code-point
+  mappings, and implements the context-sensitive Greek final-sigma rule by
+  skipping Case_Ignorable code points on both sides. The fallible narrow-first
+  output builder widens only when mapped content requires UTF-16, checks the
+  30-bit String limit across expansions, and reports defining-realm
+  `InternalError:string too long` or `InternalError:out of memory`; its scoped
+  reservation failure is catchable and one-shot. Separate method identities,
+  deletion/replacement, cross-realm calls, GC, raw surrogate/rope boundaries,
+  shared String recursion and recovery are differential- and white-box-tested.
+  The pinned anchors are `quickjs.c` 46215-46304 and 46656-46659 plus
+  `libunicode.c` 51-190 and 347-376.
   The Annex-B CreateHTML slice publishes distinct AutoInit GenericMagic
   callables for `anchor`, `big`, `blink`, `bold`, `fixed`, `fontcolor`,
   `fontsize`, `italics`, `link`, `small`, `strike`, `sub` and `sup`. The four
@@ -1204,7 +1224,7 @@ claim full parity.
   (`js_string_CreateHTML`) and 46661-46674 (the thirteen prototype entries).
   Together with `length`, the conversion pair, `Symbol.iterator` and the
   `constructor` back-reference, the implemented String prototype now covers
-  41/53 own keys. This forty-one-key list is only the QuickJS-relative order
+  45/53 own keys. This forty-five-key list is only the QuickJS-relative order
   filtered to implemented keys, not a claim of full prototype parity. The
   callable/constructible
   global `%String%` owns `length`, `name`, lazy `fromCharCode`, `fromCodePoint`
@@ -1255,9 +1275,9 @@ claim full parity.
   writes, fixed-name nullish reads, nullish writes, missing bindings, TDZ and
   VarRef descriptor reads, VM `ThrowReadOnly`, and reserved-identifier
   validation.
-  The remaining 12 String-prototype own keys (`match`, `matchAll`, `search`,
-  `split`, `replace`, `replaceAll`, the four case-conversion methods,
-  `normalize` and `localeCompare`), Context-level observable
+  The remaining eight String-prototype own keys (`match`, `matchAll`, `search`,
+  `split`, `replace`, `replaceAll`, `normalize` and `localeCompare`),
+  Context-level observable
   `ToString`, borrowed C-pointer/refcount ownership, native atom
   diagnostics attached to not-yet-implemented private-field/module/
   global-var/function-declaration surfaces, exact byte-sidecar migration for the remaining
@@ -1511,9 +1531,9 @@ claim full parity.
   retain the callee realm's matching prototype, and strict functions continue
   to observe the raw primitive. The same cached path is used when a sloppy
   inherited Number/String/Boolean/Symbol/BigInt getter or setter receives a
-  primitive receiver. String lookup exposes only the implemented seven-method
-  UTF-16 prefix, conversion pair and user-defined prototype properties; the
-  remaining standard method table is absent.
+  primitive receiver. String lookup exposes the implemented 45-key prototype
+  surface described above together with user-defined prototype properties;
+  the remaining eight standard entries are absent.
 - The Error intrinsic graph now includes `Error` plus the seven non-Aggregate
   native Error constructors, their constructor/prototype/global relationships,
   lazy function-list properties, call-versus-construct active-function rule,
@@ -1751,8 +1771,9 @@ separate String exotic, UTF-16-prefix and conversion cores cover branded
 empty-prototype and sloppy-this wrappers, UTF-16 virtual own properties, the
 first twelve generic code-unit/search methods, the three generic subrange
 methods, `repeat`, `padEnd`/`padStart`, the five-property trim group,
-`toString`/`valueOf`, `Symbol.iterator`, the thirteen-property Annex-B
-CreateHTML family, non-index prototype lookup and the implemented
+`toString`/`valueOf`, the four Unicode case-conversion methods,
+`Symbol.iterator`, the thirteen-property Annex-B CreateHTML family, non-index
+prototype lookup and the implemented
 Object-prototype routes. The global `%String%` constructor, its three statics
 and the prototype relationship complete that constructor's own table. Their
 shared value kernel does publish the pinned flat/rope concat thresholds,
@@ -1768,6 +1789,11 @@ UTF-16 filler truncation and catchable result-buffer reservations.
 The trim group adds the exact 25-code-unit whitespace set, raw UTF-16
 one-sided scans, canonical alias identity with independent properties, and a
 catchable partial-result reservation.
+The case-conversion group adds the pinned Unicode 17 compressed mapping,
+extension, `Cased` and `Case_Ignorable` tables; astral and multi-code-point
+mappings; context-sensitive Greek final sigma; raw surrogate preservation; and
+a narrow-first fallible result buffer. The locale-named pair deliberately
+ignores every argument and remains distinct in identity from the ordinary pair.
 The CreateHTML family adds the pinned selector/tag table, receiver-before-
 attribute conversion, quote-only attribute escaping, raw UTF-16 output and a
 narrow-first latched-error builder with catchable length and reservation
@@ -1777,15 +1803,16 @@ Native Errors additionally share the
 retain exact raw bytes across compiler/VM Error transport. They also implement
 the not-constructor dynamic name plus the current `JS_AtomGetStr`-backed
 read-only/nullish/binding/TDZ/reserved-identifier diagnostics. It does not
-publish the remaining 12 prototype own keys, Context/C pointer embedding
+publish the remaining eight prototype own keys, Context/C pointer embedding
 semantics, atom diagnostics belonging
 to unimplemented language/builtin surfaces, exact byte-sidecar construction
 for every parser/lexer diagnostic, or general recoverable allocator failures
-outside the repeat/pad/trim/CreateHTML result-buffer reservations. Rope
+outside the repeat/pad/trim/case/CreateHTML result-buffer reservations. Rope
 linearization and final `Box`/`Rc` allocation, including those surrounding the
-checked trim and CreateHTML buffers, remain part of that general allocator
-gap. Pad and CreateHTML widening use a second fallible exact UTF-16 buffer and
-then release the narrow buffer, rather than preserving QuickJS allocator/
+checked trim, case and CreateHTML buffers, remain part of that general
+allocator gap. Pad, case and CreateHTML widening use a second fallible exact
+UTF-16 buffer and then release the narrow buffer, rather than preserving
+QuickJS allocator/
 realloc identity and peak-memory behavior.
 Prefix/postfix update expressions
 (including QuickJS's valid `++x ** 2` form) are implemented for the current
@@ -1793,7 +1820,7 @@ identifier and ordinary fixed/computed member References. Sloppy
 direct-identifier delete is implemented
 for the current static scope tree and defining-realm global object. Dynamic
 object-environment lookup/deletion introduced by `with` or direct `eval`, the
-remaining 12 entries of String's 53-key prototype surface, the RegExp object
+remaining eight entries of String's 53-key prototype surface, the RegExp object
 class needed by `IsRegExp`'s internal-brand fallback, Proxy/exotic internal
 methods, and the full
 `function_accessors.js` fixture are still pending. AggregateError and
@@ -1801,12 +1828,13 @@ uncatchable termination state are also pending. Array
 destructuring consumers, `with` object-environment
 semantics, other
 iterator classes and helpers,
-RegExp, Unicode-backed String methods, remaining object-literal forms and the
-rest of the builtin table build on those layers.
+RegExp, the remaining RegExp-/Unicode-backed String methods, remaining object-
+literal forms and the rest of the builtin table build on those layers.
 
 The remaining parity surface also includes the full grammar/opcode set, the
-Unicode 17 case/normalization/script/property tables beyond the implemented
-identifier properties, RegExp bytecode engine, modules, jobs/Promises/async,
+Unicode 17 normalization/script/property tables beyond the implemented
+identifier, case-conversion, `Cased` and `Case_Ignorable` data, RegExp bytecode
+engine, modules, jobs/Promises/async,
 generators, TypedArrays/Atomics, WeakRef/finalization, bytecode version 5 and
 BJSON interoperability, `std`/`os`, workers, REPL/qjsc, and the complete Rust
 and C embedding APIs.
@@ -1818,9 +1846,9 @@ The Object constructor, implemented statics and implemented prototype handler
 surface now live with `groupBy` in `runtime/intrinsics/object.rs`; the String
 constructor/static table, implemented prototype-table initialization,
 index-search pair, regexp-aware includes family, subrange trio, `repeat`, the
-pad pair, trim group and Annex-B CreateHTML family live in
-`runtime/intrinsics/string.rs`, while the remaining String initialization and
-handlers still await migration there. The complete VM-to-runtime trait
+pad pair, trim group, Unicode case-conversion group and Annex-B CreateHTML
+family live in `runtime/intrinsics/string.rs`, while the remaining String
+initialization and handlers still await migration there. The complete VM-to-runtime trait
 adapter, per-frame argument/local/capture storage, iterator protocol bridge and
 bytecode-host error conversion now live in `runtime/vm_host.rs`; host layout is
 private to that module, including bytecode frame initialization. Ordinary,
@@ -1834,7 +1862,7 @@ main runtime file merely to wire a selector. Bytecode draft validation and
 iterative flattening now live in `runtime/bytecode_publish.rs`. The test, Array,
 Object, VM-host, property, native-dispatch and bytecode-publication
 no-semantic-change splits reduced `runtime.rs` from roughly thirty-two thousand
-lines to 9,905 lines. Realm-aware property completion wrappers and storage
+lines to 9,912 lines. Realm-aware property completion wrappers and storage
 helpers, bytecode publication linking and call dispatch, runtime/root lifecycle,
 and the remaining intrinsic families still share the file; `compiler.rs`
 similarly combines several compiler phases.
@@ -1873,6 +1901,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_trim -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_create_html -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_string_case -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_rope -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -1978,7 +2008,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 The direct commands above run the dedicated Boolean, Symbol,
 String constructor/static table, String-exotic substrate, String UTF-16 prefix,
 String index-search, regexp-aware includes and String subranges, String-conversion core,
-String-rope/byte/native-Error kernels, Unicode
+Unicode String case conversion, String-rope/byte/native-Error kernels, Unicode
 identifier core, global
 BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials, and
 the Program-var/function, Program/body/block/switch/classic-for lexical-scope,
@@ -1986,8 +2016,10 @@ single/labelled Annex B, synchronous try/catch/finally, synchronous for-of,
 Array core/literal/iterator/search/callback/mutation/change-by-copy, and Object
 constructor/static-prefix/prototype slices. The atom-Error target contains thirteen
 pinned-oracle inputs in addition to its Rust-side expectation test. The Unicode
-target checks every scalar, real compiler/runtime cases, and the parser-driven
-identifier diagnostic matrix. A
+identifier target checks every scalar, real compiler/runtime cases, and the
+parser-driven identifier diagnostic matrix; the Unicode case target checks the
+full conversion/property fingerprint plus final-sigma, raw UTF-16, locale and
+runtime graph behavior. A
 separate statement-control-flow target locks block/`if`/loop completion,
 nearest-loop jumps, per-function isolation, ASI/directive boundaries and exact
 diagnostics; the switch target locks case/default search, fallthrough,
@@ -1997,6 +2029,6 @@ tagged-template boundaries, and folded control-flow reachability at the
 65,534-slot stack limit. The full gate discovers every `tests/oracle_*.rs`
 integration target, reuses an executable `QJS_ORACLE` or checksum-verifies and
 builds the pinned test-only oracle, obtains and checksum-verifies the matching
-Unicode table source, then runs the generated-table drift check, formatting,
+Unicode table source, then runs both generated-table drift checks, formatting,
 unit/integration/oracle tests, Clippy, and the Rust-only product gate. The oracle
 is never part of the product dependency graph or runtime.

@@ -21,6 +21,7 @@ pub mod property;
 pub mod runtime;
 pub mod shape;
 mod unicode;
+mod unicode_case;
 mod uri;
 pub mod value;
 pub mod vm;

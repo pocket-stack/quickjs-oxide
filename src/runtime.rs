@@ -38,10 +38,10 @@ use crate::heap::{
     NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
     ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind,
     ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind,
-    PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCharAtKind, StringCreateHtmlKind,
-    StringIncludesKind, StringIndexOfKind, StringPadKind, StringStaticKind, StringSubrangeKind,
-    StringTrimKind, StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId,
-    VariableDefinition,
+    PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCaseKind, StringCharAtKind,
+    StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind, StringStaticKind,
+    StringSubrangeKind, StringTrimKind, StringWellFormedKind, SymbolRegistryKind, VarRefData,
+    VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -856,6 +856,8 @@ impl Runtime {
             .expect("String prototype method initialization must succeed");
         self.initialize_string_conversion_core(realm, &string_prototype)
             .expect("String conversion-core initialization must succeed");
+        self.initialize_string_case_methods(realm, &string_prototype)
+            .expect("String case-method initialization must succeed");
         self.initialize_string_iterator_intrinsics(
             realm,
             &string_prototype,
@@ -1862,8 +1864,9 @@ impl Runtime {
     /// QuickJS's 53-key table: these two brand methods are also the observable
     /// ordinary-ToPrimitive dependency for every generic String prototype
     /// method. The implemented method slice is already installed first;
-    /// remaining String entries must continue to enter in pinned table order
-    /// before this pair when each fresh context is bootstrapped.
+    /// earlier missing String entries must continue to enter before this pair,
+    /// while case conversion and later entries remain after it in pinned table
+    /// order when each fresh context is bootstrapped.
     fn initialize_string_conversion_core(
         &self,
         realm: ContextId,
@@ -6975,6 +6978,7 @@ impl Runtime {
             | NativeFunctionId::StringPrototypeRepeat
             | NativeFunctionId::StringPrototypePad(_)
             | NativeFunctionId::StringPrototypeTrim(_)
+            | NativeFunctionId::StringPrototypeCase(_)
             | NativeFunctionId::StringPrototypeCreateHtml(_) => 16,
             _ => 8,
         };
@@ -7031,6 +7035,7 @@ impl Runtime {
             | NativeFunctionId::StringPrototypeRepeat
             | NativeFunctionId::StringPrototypePad(_)
             | NativeFunctionId::StringPrototypeTrim(_)
+            | NativeFunctionId::StringPrototypeCase(_)
             | NativeFunctionId::StringPrototypeCreateHtml(_) => 4,
             // ToString, ToNumber and String.raw's property/conversion path can
             // all re-enter any other member of this constructor family.
@@ -7087,6 +7092,7 @@ impl Runtime {
             | NativeFunctionId::StringPrototypeRepeat
             | NativeFunctionId::StringPrototypePad(_)
             | NativeFunctionId::StringPrototypeTrim(_)
+            | NativeFunctionId::StringPrototypeCase(_)
             | NativeFunctionId::StringPrototypeCreateHtml(_) => matches!(
                 candidate,
                 NativeFunctionId::StringPrototypeIncludes(_)
@@ -7094,6 +7100,7 @@ impl Runtime {
                     | NativeFunctionId::StringPrototypeRepeat
                     | NativeFunctionId::StringPrototypePad(_)
                     | NativeFunctionId::StringPrototypeTrim(_)
+                    | NativeFunctionId::StringPrototypeCase(_)
                     | NativeFunctionId::StringPrototypeCreateHtml(_)
             ),
             NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
