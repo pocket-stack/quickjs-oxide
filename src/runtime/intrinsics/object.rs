@@ -1499,7 +1499,13 @@ impl Runtime {
         }
     }
 
-    fn new_ordinary_object_in_realm(&self, realm: ContextId) -> Result<ObjectRef, RuntimeError> {
+    /// Allocate the ordinary Object produced by QuickJS `OP_object` in the
+    /// executing realm, without routing VM allocation through Context's public
+    /// convenience layer.
+    pub(in crate::runtime) fn new_ordinary_object_in_realm(
+        &self,
+        realm: ContextId,
+    ) -> Result<ObjectRef, RuntimeError> {
         let prototype = self.0.state.borrow().heap.context(realm)?.object_prototype;
         let prototype = ObjectRef::from_borrowed_handle(self.clone(), prototype)?;
         self.new_object(Some(&prototype))
@@ -1717,6 +1723,52 @@ impl Runtime {
             .get(1)
             .ok_or(RuntimeError::Invariant("Object.is rhs argv was not padded"))?;
         Ok(Completion::Return(Value::Bool(left.same_value(right))))
+    }
+
+    /// Pinned QuickJS `JS_CopyDataProperties(..., setprop = 0)` as used by an
+    /// Object literal spread. This intentionally preserves two upstream
+    /// details which differ from a naive spec helper reuse:
+    ///
+    /// - primitive sources are ignored instead of being boxed;
+    /// - ordinary sources snapshot their enumerable key set before any getter
+    ///   runs, while each value lookup remains live and may reach a prototype
+    ///   after an earlier getter deletes an own property.
+    pub(in crate::runtime) fn copy_object_literal_data_properties(
+        &self,
+        realm: ContextId,
+        target: &ObjectRef,
+        source: Value,
+    ) -> Result<Completion, RuntimeError> {
+        let Value::Object(source) = source else {
+            return Ok(Completion::Return(Value::Undefined));
+        };
+        if !target.belongs_to(self) || !source.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("object-literal spread object"));
+        }
+
+        let mut keys = Vec::new();
+        for key in self.own_property_keys(&source)? {
+            let kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
+            if matches!(kind, PropertyKeyKind::String | PropertyKeyKind::Symbol)
+                && self.own_property_is_enumerable(&source, &key)?
+            {
+                keys.push(key);
+            }
+        }
+
+        for key in keys {
+            let value = match self.get_property_in_realm(realm, &source, &key)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            self.define_fresh_object_descriptor_property(
+                target,
+                &key,
+                value,
+                "fresh Object literal rejected a spread data property",
+            )?;
+        }
+        Ok(Completion::Return(Value::Undefined))
     }
 
     pub(in crate::runtime) fn call_object_assign(

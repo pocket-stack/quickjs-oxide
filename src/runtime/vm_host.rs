@@ -1109,6 +1109,40 @@ impl VmHost for RuntimeVmHost {
             .map_err(runtime_error_to_vm_error)
     }
 
+    fn set_function_name_computed(&mut self, value: &Value, key: &Value) -> Result<(), Error> {
+        // `OP_to_propkey` has already canonicalized this operand. In
+        // particular, do not execute object conversion a second time here.
+        let name = match key {
+            Value::Int(_) => key.to_js_string()?,
+            Value::String(name) => name.clone(),
+            Value::Symbol(symbol) => match self
+                .runtime
+                .symbol_description(symbol)
+                .map_err(runtime_error_to_vm_error)?
+            {
+                None => JsString::from_static(""),
+                Some(description) => JsString::from_static("[")
+                    .try_concat(&description)?
+                    .try_concat(&JsString::from_static("]"))?,
+            },
+            _ => {
+                return Err(Error::internal(
+                    "computed function name was not a canonical property key",
+                ));
+            }
+        };
+        self.runtime
+            .define_object_name(value, &name)
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn object(&mut self) -> Result<Completion, Error> {
+        self.runtime
+            .new_ordinary_object_in_realm(self.current_realm)
+            .map(|object| Completion::Return(Value::Object(object)))
+            .map_err(runtime_error_to_vm_error)
+    }
+
     fn array_from(&mut self, elements: Vec<Value>) -> Result<Completion, Error> {
         self.runtime
             .new_array_from_values(self.current_realm, elements)
@@ -1167,6 +1201,44 @@ impl VmHost for RuntimeVmHost {
             },
         );
         self.finish_property_define(result)
+    }
+
+    fn set_object_prototype(
+        &mut self,
+        object: Value,
+        prototype: Value,
+    ) -> Result<Completion, Error> {
+        let Value::Object(object) = object else {
+            return Err(Error::internal(
+                "object-literal prototype target was not an Object",
+            ));
+        };
+        let prototype = match prototype {
+            Value::Object(prototype) => Some(prototype),
+            Value::Null => None,
+            // Pinned QuickJS `OP_set_proto` consumes every primitive without
+            // changing the fresh literal.
+            _ => return Ok(Completion::Return(Value::Undefined)),
+        };
+        let changed = self
+            .runtime
+            .set_prototype_of(&object, prototype.as_ref())
+            .map_err(runtime_error_to_vm_error)?;
+        if !changed {
+            return Err(Error::new(ErrorKind::Type, "prototype is immutable"));
+        }
+        Ok(Completion::Return(Value::Undefined))
+    }
+
+    fn copy_data_properties(&mut self, target: Value, source: Value) -> Result<Completion, Error> {
+        let Value::Object(target) = target else {
+            return Err(Error::internal(
+                "object-literal spread target was not an Object",
+            ));
+        };
+        self.runtime
+            .copy_object_literal_data_properties(self.current_realm, &target, source)
+            .map_err(runtime_error_to_vm_error)
     }
 
     fn get_global_var(&mut self, index: u16, throw_if_missing: bool) -> Result<Completion, Error> {

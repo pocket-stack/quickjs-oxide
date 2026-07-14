@@ -92,6 +92,9 @@ pub enum Instruction {
     /// QuickJS `OP_array_from`: consume `element_count` dense literal values
     /// and replace them with a fresh Array in the bytecode's realm.
     ArrayFrom(u16),
+    /// QuickJS `OP_object`: push a fresh ordinary Object rooted in the
+    /// executing bytecode's realm.
+    Object,
     /// QuickJS `OP_to_propkey`: observable `ToPropertyKey` while retaining a
     /// canonical Int/String/Symbol value on the VM stack.
     ToPropKey,
@@ -116,6 +119,19 @@ pub enum Instruction {
     /// while preserving the Array and its dynamic index
     /// (`array index value -> array index`).
     DefineArrayEl,
+    /// QuickJS `OP_set_name_computed`: infer an anonymous function's name
+    /// from an already-canonical computed property key while preserving both
+    /// operands (`key value -> key value`).
+    SetNameComputed,
+    /// QuickJS `OP_set_proto`: consume one object-literal prototype candidate
+    /// and preserve the fresh literal (`object value -> object`). Object and
+    /// null candidates replace [[Prototype]]; primitive candidates are ignored.
+    SetProto,
+    /// Object-literal specialization of QuickJS `OP_copy_data_properties`.
+    /// It snapshots enumerable own String/Symbol keys from an Object source,
+    /// defines C_W_E data properties, and preserves the fresh literal
+    /// (`target source -> target`).
+    CopyDataProperties,
     /// QuickJS `OP_append`: append every value from one iterable and replace
     /// the dynamic index with the first unused index
     /// (`array index iterable -> array index`).
@@ -247,6 +263,7 @@ impl Instruction {
             Self::GetArrayEl2 => (2, 2),
             Self::GetArrayEl3 => (2, 3),
             Self::ArrayFrom(element_count) => (*element_count as usize, 1),
+            Self::Object => (0, 1),
             Self::ToPropKey => (1, 1),
             Self::Insert2 => (2, 3),
             Self::Insert3 => (3, 4),
@@ -256,6 +273,8 @@ impl Instruction {
             Self::PutArrayEl => (3, 0),
             Self::DefineField(_) => (2, 1),
             Self::DefineArrayEl | Self::Append => (3, 2),
+            Self::SetNameComputed => (2, 2),
+            Self::SetProto | Self::CopyDataProperties => (2, 1),
             Self::Delete => (2, 1),
             Self::Call(argument_count) => (*argument_count as usize + 1, 1),
             Self::CallMethod(argument_count) => (*argument_count as usize + 2, 1),
@@ -1875,6 +1894,65 @@ mod tests {
             max_stack: 3,
         };
         assert_eq!(trailing_hole.verify().unwrap().max_stack, 3);
+    }
+
+    #[test]
+    fn verifier_models_object_literal_stack_contracts() {
+        let fixed_proto_spread = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Object,
+                Instruction::PushI32(1),
+                Instruction::DefineField(0),
+                Instruction::Null,
+                Instruction::SetProto,
+                Instruction::Undefined,
+                Instruction::CopyDataProperties,
+                Instruction::Return,
+            ],
+            constants: vec![Value::String(crate::value::JsString::from_static("field"))],
+            local_count: 0,
+            max_stack: 2,
+        };
+        assert_eq!(fixed_proto_spread.verify().unwrap().max_stack, 2);
+
+        let computed = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Object,
+                Instruction::PushI32(1),
+                Instruction::Undefined,
+                Instruction::SetNameComputed,
+                Instruction::DefineArrayEl,
+                Instruction::Drop,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 3,
+        };
+        assert_eq!(computed.verify().unwrap().max_stack, 3);
+    }
+
+    #[test]
+    fn verifier_rejects_object_literal_opcode_underflow() {
+        for instruction in [
+            Instruction::SetNameComputed,
+            Instruction::SetProto,
+            Instruction::CopyDataProperties,
+        ] {
+            let function = BytecodeFunction {
+                name: None,
+                code: vec![instruction, Instruction::Return],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 2,
+            };
+            assert_eq!(
+                function.verify().unwrap_err().message(),
+                "bytecode stack underflow"
+            );
+        }
     }
 
     #[test]

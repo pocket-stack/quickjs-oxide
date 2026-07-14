@@ -3723,6 +3723,9 @@ impl<'source> Parser<'source> {
                 self.parse_expression()?;
                 self.expect_punctuator(Punctuator::RightParen)?;
             }
+            TokenKind::Punctuator(Punctuator::LeftBrace) => {
+                self.parse_object_literal()?;
+            }
             TokenKind::Punctuator(Punctuator::LeftBracket) => {
                 self.parse_array_literal()?;
             }
@@ -3784,6 +3787,178 @@ impl<'source> Parser<'source> {
                 return Err(self.syntax_here("unexpected token in expression: ''"));
             }
         }
+        Ok(())
+    }
+
+    /// Lower the data-property portion of QuickJS
+    /// `js_parse_object_literal`. The fresh Object stays below every property
+    /// operation. Fixed names reuse `DefineField`; computed names are
+    /// canonicalized before their RHS and use `DefineArrayEl` followed by the
+    /// same key drop as upstream. Method/accessor syntax remains an explicit
+    /// parser frontier until its home-object and descriptor lowering lands.
+    fn parse_object_literal(&mut self) -> Result<(), Error> {
+        if !self.is_punctuator(Punctuator::LeftBrace) {
+            return Err(self.syntax_here("expecting '{'"));
+        }
+        self.advance()?;
+        self.emit_instruction(Instruction::Object)?;
+        let mut has_proto = false;
+
+        while !self.is_punctuator(Punctuator::RightBrace) {
+            if self.is_punctuator(Punctuator::Ellipsis) {
+                let spread_span = self.current().span;
+                self.advance_expression_start()?;
+                self.parse_assignment_allow_in()?;
+                self.emit_instruction_at(
+                    Instruction::CopyDataProperties,
+                    source_offset(spread_span)?,
+                )?;
+                self.anonymous_function_definition = None;
+            } else if self.is_punctuator(Punctuator::Multiply) {
+                return Err(self
+                    .unsupported_here("object literal generator methods are not implemented yet"));
+            } else if self.is_punctuator(Punctuator::LeftBracket) {
+                let property_span = self.current().span;
+                self.advance_expression_start()?;
+                self.parse_assignment_allow_in()?;
+                // QuickJS performs ToPropertyKey before evaluating the value.
+                self.emit_instruction(Instruction::ToPropKey)?;
+                self.expect_punctuator(Punctuator::RightBracket)?;
+                if self.is_punctuator(Punctuator::LeftParen) {
+                    return Err(Error::unsupported(
+                        "computed object literal methods are not implemented yet",
+                        source_span(property_span),
+                    ));
+                }
+                if !self.is_punctuator(Punctuator::Colon) {
+                    return Err(self.syntax_here("expecting ':'"));
+                }
+                self.advance_expression_start()?;
+                self.parse_assignment_allow_in()?;
+                if self.anonymous_function_definition.take().is_some() {
+                    self.emit_instruction(Instruction::SetNameComputed)?;
+                }
+                self.emit_instruction(Instruction::DefineArrayEl)?;
+                self.emit_instruction(Instruction::Drop)?;
+            } else {
+                let token = self.current().clone();
+                let mut shorthand = None;
+                let mut method_prefix = None;
+                let key = match token.kind {
+                    TokenKind::Identifier(identifier) => {
+                        let name = identifier.value.clone();
+                        shorthand = Some(identifier);
+                        if matches!(name.as_str(), "get" | "set" | "async") {
+                            method_prefix = Some(name.clone());
+                        }
+                        self.advance()?;
+                        JsString::try_from_utf8(&name)?
+                    }
+                    TokenKind::Keyword(keyword) => {
+                        self.advance()?;
+                        JsString::from_static(keyword.as_str())
+                    }
+                    TokenKind::String(string) => {
+                        if self.current_ir().strict && string.has_legacy_octal_escape {
+                            return Err(Error::syntax(
+                                "legacy octal escapes are forbidden in strict mode",
+                                source_span(token.span),
+                            ));
+                        }
+                        self.advance()?;
+                        JsString::try_from_utf16(string.value.utf16)?
+                    }
+                    TokenKind::Number(number) => {
+                        if self.current_ir().strict
+                            && matches!(
+                                number.kind,
+                                NumberKind::LegacyOctal | NumberKind::LegacyDecimal
+                            )
+                        {
+                            return Err(Error::syntax(
+                                "legacy leading-zero numeric literals are forbidden in strict mode",
+                                source_span(token.span),
+                            ));
+                        }
+                        self.advance()?;
+                        parse_number(&number)
+                            .map_err(|message| Error::syntax(message, source_span(token.span)))?
+                            .to_js_string()?
+                    }
+                    TokenKind::PrivateIdentifier(_) => {
+                        return Err(Error::syntax(
+                            "private identifiers are not valid in object literals",
+                            source_span(token.span),
+                        ));
+                    }
+                    _ => return Err(self.syntax_here("invalid property name")),
+                };
+
+                let next_starts_property_name = matches!(
+                    self.current().kind,
+                    TokenKind::Identifier(_)
+                        | TokenKind::Keyword(_)
+                        | TokenKind::String(_)
+                        | TokenKind::Number(_)
+                        | TokenKind::Punctuator(Punctuator::LeftBracket)
+                );
+                let is_method_prefix = method_prefix.as_deref().is_some_and(|prefix| {
+                    (next_starts_property_name
+                        || (prefix == "async" && self.is_punctuator(Punctuator::Multiply)))
+                        && (prefix != "async" || !self.current().line_terminator_before)
+                });
+                if self.is_punctuator(Punctuator::LeftParen) || is_method_prefix {
+                    return Err(Error::unsupported(
+                        "object literal methods and accessors are not implemented yet",
+                        source_span(token.span),
+                    ));
+                }
+
+                if self.is_punctuator(Punctuator::Colon) {
+                    self.advance_expression_start()?;
+                    self.parse_assignment_allow_in()?;
+                    if key == JsString::from_static("__proto__") {
+                        if has_proto {
+                            return Err(Error::syntax(
+                                "duplicate __proto__ property name",
+                                source_span(token.span),
+                            ));
+                        }
+                        has_proto = true;
+                        self.anonymous_function_definition = None;
+                        self.emit_instruction(Instruction::SetProto)?;
+                    } else {
+                        let key_constant =
+                            self.add_constant(IrConstant::Primitive(Value::String(key)))?;
+                        if self.anonymous_function_definition.take().is_some() {
+                            self.emit_instruction(Instruction::SetName(key_constant))?;
+                        }
+                        self.emit_instruction(Instruction::DefineField(key_constant))?;
+                    }
+                } else if let Some(identifier) = shorthand {
+                    validate_identifier(
+                        &identifier,
+                        token.span,
+                        self.current_ir().strict,
+                        IdentifierContext::Reference,
+                    )?;
+                    self.emit_identifier(identifier.value, token.span, IdentifierAccess::Get)?;
+                    let key_constant =
+                        self.add_constant(IrConstant::Primitive(Value::String(key)))?;
+                    self.emit_instruction(Instruction::DefineField(key_constant))?;
+                    self.anonymous_function_definition = None;
+                } else {
+                    return Err(self.syntax_here("expecting ':'"));
+                }
+            }
+
+            if !self.is_punctuator(Punctuator::Comma) {
+                break;
+            }
+            self.advance()?;
+        }
+        self.expect_punctuator(Punctuator::RightBrace)?;
+        self.anonymous_function_definition = None;
         Ok(())
     }
 
@@ -14110,6 +14285,136 @@ mod tests {
             panic!("second table-backed numeric literal was not a String");
         };
         assert!(first.same_representation(second));
+    }
+
+    #[test]
+    fn object_literals_lower_quickjs_data_proto_computed_and_spread_paths() {
+        let fixed = compile_unlinked_script("({a:1,if:2,'x':3,0x10:4,a:5})").unwrap();
+        assert!(
+            fixed
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Object))
+        );
+        assert_eq!(
+            fixed
+                .code()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::DefineField(_)))
+                .count(),
+            5
+        );
+
+        let shorthand = compile_unlinked_script("var value=1;({value})").unwrap();
+        assert!(
+            shorthand
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::DefineField(_)))
+        );
+
+        let computed = compile_unlinked_script("({[1]:function(){}})").unwrap();
+        assert!(computed.code().windows(4).any(|window| matches!(
+            window,
+            [
+                Instruction::FClosure(_),
+                Instruction::SetNameComputed,
+                Instruction::DefineArrayEl,
+                Instruction::Drop
+            ]
+        )));
+        assert!(
+            computed
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::ToPropKey))
+        );
+
+        let proto = compile_unlinked_script("({__proto__:null})").unwrap();
+        assert!(
+            proto
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::SetProto))
+        );
+        assert!(
+            !proto
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::DefineField(_)))
+        );
+
+        let spread = compile_unlinked_script("({a:1,...value,b:2})").unwrap();
+        assert!(
+            spread
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::CopyDataProperties))
+        );
+    }
+
+    #[test]
+    fn object_literal_grammar_is_fail_closed_at_method_and_pattern_frontiers() {
+        for source in [
+            "({})",
+            "({a:1,})",
+            "({a})",
+            "({let})",
+            "({['x']:2})",
+            "({...null})",
+            "({__proto__:null,a:1})",
+        ] {
+            compile_unlinked_script(source)
+                .unwrap_or_else(|error| panic!("valid Object literal {source:?}: {error}"));
+        }
+
+        for source in ["({a(){}})", "({get a(){}})", "({set a(v){}})", "({*a(){}})"] {
+            assert!(
+                compile_unlinked_script(source)
+                    .unwrap_err()
+                    .message()
+                    .contains("not implemented yet"),
+                "method frontier was not explicit for {source}"
+            );
+        }
+        assert_eq!(
+            compile_unlinked_script("({__proto__:null,__proto__:{}})")
+                .unwrap_err()
+                .message(),
+            "duplicate __proto__ property name"
+        );
+        assert_eq!(
+            compile_unlinked_script("({get=1})").unwrap_err().message(),
+            "expecting '}'"
+        );
+        assert_eq!(
+            compile_unlinked_script("({#private:1})")
+                .unwrap_err()
+                .message(),
+            "private identifiers are not valid in object literals"
+        );
+    }
+
+    #[test]
+    fn object_literal_runtime_preserves_descriptors_proto_names_and_pinned_spread() {
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){var x=3;var o={2:'two',a:1,x,a:4};var d=Object.getOwnPropertyDescriptor(o,'a');return o[2]+'|'+o.x+'|'+o.a+'|'+d.writable+'|'+d.enumerable+'|'+d.configurable})()"
+            ),
+            Value::String(JsString::from_static("two|3|4|true|true|true"))
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){var p={marker:7};var a={__proto__:p};var b={__proto__:1};var c={['__proto__']:9};return a.marker+'|'+Object.hasOwn(a,'__proto__')+'|'+(Object.getPrototypeOf(b)===Object.prototype)+'|'+c.__proto__})()"
+            ),
+            Value::String(JsString::from_static("7|false|true|9"))
+        );
+        assert_eq!(
+            evaluate_in_context(
+                "(function(){var s=Symbol('key');var a={[s]:function(){},plain:function(){}};return a[s].name+'|'+a.plain.name+'|'+Object.hasOwn({...\"ab\"},'0')})()"
+            ),
+            Value::String(JsString::from_static("[key]|plain|false"))
+        );
     }
 
     #[test]

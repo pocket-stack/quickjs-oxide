@@ -135,6 +135,11 @@ pub(crate) trait VmHost {
     fn materialize_error(&mut self, error: Error) -> Result<Value, Error>;
     fn instantiate_closure(&mut self, index: u32) -> Result<Value, Error>;
     fn set_function_name(&mut self, value: &Value, name_index: u32) -> Result<(), Error>;
+    /// QuickJS `OP_set_name_computed`. `key` has already passed through
+    /// `ToPropertyKey`, so this hook must not repeat observable conversion.
+    fn set_function_name_computed(&mut self, value: &Value, key: &Value) -> Result<(), Error>;
+    /// Create a fresh ordinary Object in the executing bytecode's realm.
+    fn object(&mut self) -> Result<Completion, Error>;
     /// Create a fresh Array in the executing bytecode's realm from one dense
     /// literal prefix. `Return` carries the Array; `Throw` carries allocation
     /// or Array-exotic failure.
@@ -156,6 +161,14 @@ pub(crate) trait VmHost {
         index: Value,
         value: Value,
     ) -> Result<Completion, Error>;
+    /// Apply object-literal `__proto__` semantics to a fresh ordinary Object.
+    fn set_object_prototype(
+        &mut self,
+        object: Value,
+        prototype: Value,
+    ) -> Result<Completion, Error>;
+    /// Copy QuickJS object-literal spread data properties into `target`.
+    fn copy_data_properties(&mut self, target: Value, source: Value) -> Result<Completion, Error>;
     fn get_global_var(&mut self, index: u16, throw_if_missing: bool) -> Result<Completion, Error>;
     fn delete_global_var(&mut self, index: u16) -> Result<Completion, Error>;
     fn put_global_var(
@@ -259,6 +272,16 @@ struct DetachedHost<'a> {
     define_array_element_results: VecDeque<Completion>,
     #[cfg(test)]
     defined_array_elements: Vec<(Value, Value, Value)>,
+    #[cfg(test)]
+    object_results: VecDeque<Completion>,
+    #[cfg(test)]
+    set_object_prototype_results: VecDeque<Completion>,
+    #[cfg(test)]
+    set_object_prototype_inputs: Vec<(Value, Value)>,
+    #[cfg(test)]
+    copy_data_properties_results: VecDeque<Completion>,
+    #[cfg(test)]
+    copy_data_properties_inputs: Vec<(Value, Value)>,
 }
 
 impl<'a> DetachedHost<'a> {
@@ -290,6 +313,16 @@ impl<'a> DetachedHost<'a> {
             define_array_element_results: VecDeque::new(),
             #[cfg(test)]
             defined_array_elements: Vec::new(),
+            #[cfg(test)]
+            object_results: VecDeque::new(),
+            #[cfg(test)]
+            set_object_prototype_results: VecDeque::new(),
+            #[cfg(test)]
+            set_object_prototype_inputs: Vec::new(),
+            #[cfg(test)]
+            copy_data_properties_results: VecDeque::new(),
+            #[cfg(test)]
+            copy_data_properties_inputs: Vec::new(),
         }
     }
 
@@ -422,6 +455,22 @@ impl VmHost for DetachedHost<'_> {
         ))
     }
 
+    fn set_function_name_computed(&mut self, _value: &Value, _key: &Value) -> Result<(), Error> {
+        Err(Error::internal(
+            "detached VM cannot name a runtime-owned function object",
+        ))
+    }
+
+    fn object(&mut self) -> Result<Completion, Error> {
+        #[cfg(test)]
+        if let Some(outcome) = self.object_results.pop_front() {
+            return Ok(outcome);
+        }
+        Err(Error::internal(
+            "detached VM cannot create runtime-owned Object values",
+        ))
+    }
+
     fn array_from(&mut self, elements: Vec<Value>) -> Result<Completion, Error> {
         #[cfg(test)]
         if let Some(outcome) = self.array_from_results.pop_front() {
@@ -465,6 +514,34 @@ impl VmHost for DetachedHost<'_> {
         let _ = (base, index, value);
         Err(Error::internal(
             "detached VM cannot define runtime-owned Array elements",
+        ))
+    }
+
+    fn set_object_prototype(
+        &mut self,
+        object: Value,
+        prototype: Value,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        if let Some(outcome) = self.set_object_prototype_results.pop_front() {
+            self.set_object_prototype_inputs.push((object, prototype));
+            return Ok(outcome);
+        }
+        let _ = (object, prototype);
+        Err(Error::internal(
+            "detached VM cannot mutate runtime-owned Object prototypes",
+        ))
+    }
+
+    fn copy_data_properties(&mut self, target: Value, source: Value) -> Result<Completion, Error> {
+        #[cfg(test)]
+        if let Some(outcome) = self.copy_data_properties_results.pop_front() {
+            self.copy_data_properties_inputs.push((target, source));
+            return Ok(outcome);
+        }
+        let _ = (target, source);
+        Err(Error::internal(
+            "detached VM cannot copy runtime-owned Object properties",
         ))
     }
 
@@ -838,6 +915,62 @@ impl CallFrame {
         }
     }
 
+    // Keep the literal-only host bridges behind one call site instead of
+    // adding four large Result temporaries to `execute_inner`'s interpreter
+    // frame. This preserves the proven-safe recursive native/callback depth on
+    // the 2 MiB libtest stack.
+    #[inline(never)]
+    fn execute_object_literal_instruction(
+        &mut self,
+        instruction: &Instruction,
+        host: &mut impl VmHost,
+    ) -> Result<Option<Completion>, Error> {
+        match instruction {
+            Instruction::Object => match host.object()? {
+                Completion::Return(object) => self.stack.push(object),
+                Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+            },
+            Instruction::SetNameComputed => {
+                let key_index = self
+                    .stack
+                    .len()
+                    .checked_sub(2)
+                    .ok_or_else(|| Error::internal("set computed name without a key"))?;
+                let value = self
+                    .stack
+                    .last()
+                    .ok_or_else(|| Error::internal("set computed name on an empty stack"))?;
+                let key = self
+                    .stack
+                    .get(key_index)
+                    .ok_or_else(|| Error::internal("set computed name without a key"))?;
+                host.set_function_name_computed(value, key)?;
+            }
+            Instruction::SetProto => {
+                let (object, prototype) = self.pop_pair()?;
+                let retained_object = object.clone();
+                match host.set_object_prototype(object, prototype)? {
+                    Completion::Return(_) => self.stack.push(retained_object),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::CopyDataProperties => {
+                let (target, source) = self.pop_pair()?;
+                let retained_target = target.clone();
+                match host.copy_data_properties(target, source)? {
+                    Completion::Return(_) => self.stack.push(retained_target),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            _ => {
+                return Err(Error::internal(
+                    "non-object-literal instruction reached literal dispatch",
+                ));
+            }
+        }
+        Ok(None)
+    }
+
     fn execute_inner(
         &mut self,
         code: &[Instruction],
@@ -852,6 +985,21 @@ impl CallFrame {
                 .pc
                 .checked_add(1)
                 .ok_or_else(|| Error::internal("program counter overflow"))?;
+
+            if matches!(
+                instruction,
+                Instruction::Object
+                    | Instruction::SetNameComputed
+                    | Instruction::SetProto
+                    | Instruction::CopyDataProperties
+            ) {
+                if let Some(completion) =
+                    self.execute_object_literal_instruction(instruction, host)?
+                {
+                    return Ok(completion);
+                }
+                continue;
+            }
 
             match instruction {
                 Instruction::Nop => {}
@@ -875,12 +1023,16 @@ impl CallFrame {
                         Completion::Throw(value) => return Ok(Completion::Throw(value)),
                     }
                 }
+                Instruction::Object => unreachable!("object literal dispatch was bypassed"),
                 Instruction::SetName(index) => {
                     let value = self
                         .stack
                         .last()
                         .ok_or_else(|| Error::internal("set name on an empty stack"))?;
                     host.set_function_name(value, *index)?;
+                }
+                Instruction::SetNameComputed => {
+                    unreachable!("computed-name literal dispatch was bypassed")
                 }
                 Instruction::ThrowReadOnly(index) => {
                     self.pop()?;
@@ -1131,6 +1283,10 @@ impl CallFrame {
                         }
                         Completion::Throw(value) => return Ok(Completion::Throw(value)),
                     }
+                }
+                Instruction::SetProto => unreachable!("prototype literal dispatch was bypassed"),
+                Instruction::CopyDataProperties => {
+                    unreachable!("spread literal dispatch was bypassed")
                 }
                 Instruction::Append => {
                     let iterable = self.pop()?;
@@ -2554,6 +2710,116 @@ mod tests {
             max_stack: 3,
         };
         assert_eq!(Vm::new().execute(&dup1).unwrap(), Value::Int(4));
+    }
+
+    #[test]
+    fn object_literal_opcodes_preserve_target_and_operand_order() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Object,
+                Instruction::Null,
+                Instruction::SetProto,
+                Instruction::PushI32(7),
+                Instruction::CopyDataProperties,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        function.verify().unwrap();
+        let object = Value::String(JsString::from_static("object"));
+        let mut host = DetachedHost::new(&function);
+        host.object_results
+            .push_back(Completion::Return(object.clone()));
+        host.set_object_prototype_results
+            .push_back(Completion::Return(Value::Undefined));
+        host.copy_data_properties_results
+            .push_back(Completion::Return(Value::Undefined));
+
+        assert_eq!(
+            CallFrame::new(2)
+                .execute(&function.code, &mut host)
+                .unwrap(),
+            Completion::Return(object.clone())
+        );
+        assert_eq!(
+            host.set_object_prototype_inputs,
+            [(object.clone(), Value::Null)]
+        );
+        assert_eq!(host.copy_data_properties_inputs, [(object, Value::Int(7))]);
+    }
+
+    #[test]
+    fn object_literal_opcodes_forward_host_throws() {
+        let thrown = Value::String(JsString::from_static("literal throw"));
+
+        let object = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::Object, Instruction::Return],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        object.verify().unwrap();
+        let mut host = DetachedHost::new(&object);
+        host.object_results
+            .push_back(Completion::Throw(thrown.clone()));
+        assert_eq!(
+            CallFrame::new(1).execute(&object.code, &mut host).unwrap(),
+            Completion::Throw(thrown.clone())
+        );
+
+        let proto = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::Null,
+                Instruction::SetProto,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        proto.verify().unwrap();
+        let mut host = DetachedHost::new(&proto);
+        host.set_object_prototype_results
+            .push_back(Completion::Throw(thrown.clone()));
+        assert_eq!(
+            CallFrame::new(2).execute(&proto.code, &mut host).unwrap(),
+            Completion::Throw(thrown.clone())
+        );
+        assert_eq!(
+            host.set_object_prototype_inputs,
+            [(Value::Int(1), Value::Null)]
+        );
+
+        let spread = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::PushI32(2),
+                Instruction::CopyDataProperties,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        spread.verify().unwrap();
+        let mut host = DetachedHost::new(&spread);
+        host.copy_data_properties_results
+            .push_back(Completion::Throw(thrown.clone()));
+        assert_eq!(
+            CallFrame::new(2).execute(&spread.code, &mut host).unwrap(),
+            Completion::Throw(thrown)
+        );
+        assert_eq!(
+            host.copy_data_properties_inputs,
+            [(Value::Int(1), Value::Int(2))]
+        );
     }
 
     #[test]

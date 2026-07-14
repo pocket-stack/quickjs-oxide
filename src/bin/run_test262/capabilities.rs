@@ -199,18 +199,20 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/compat/test262-oxide.conf"
     ));
-    const EXPECTED_FEATURES: [&str; 8] = [
+    const EXPECTED_FEATURES: [&str; 9] = [
         "BigInt",
         "String.prototype.at",
         "String.prototype.endsWith",
         "Symbol",
         "Symbol.isConcatSpreadable",
+        "__proto__",
         "change-array-by-copy",
         "exponentiation",
         "hashbang",
     ];
-    const EXPECTED_AUDITED_NEGATIVES: [&str; 17] = [
+    const EXPECTED_AUDITED_NEGATIVES: [&str; 18] = [
         "test/language/comments/hashbang/escaped-bang-041.js",
+        "test/language/expressions/object/__proto__-duplicate.js",
         "test/language/global-code/decl-lex-restricted-global.js",
         "test/language/statements/const/global-use-before-initialization-in-declaration-statement.js",
         "test/language/statements/const/syntax/with-initializer-while-expression-statement.js",

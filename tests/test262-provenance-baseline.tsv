@@ -4,7 +4,7 @@
 # test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
 # test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
 # test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
-# oxide_profile_sha256=a93cb5655c2bb2254c2ed593a2aad760cc8c91610954b03a3a65c1703de5449b
+# oxide_profile_sha256=52608c4417fa1ae66bfdea929f1d5848996a187adffb8e0d4a34794a6014c04f
 # profile=test262-canonical-classified-v2
 # mode=both
 path	variant	flags	features	expected_phase	expected_type	outcome	actual_phase	actual_type	detail
@@ -12,8 +12,8 @@ test/language/expressions/arrow-function/params-duplicate.js	sloppy			parse	Synt
 test/language/expressions/arrow-function/params-duplicate.js	strict			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/expressions/arrow-function/params-duplicate.js
 test/language/expressions/assignment/dstr/array-rest-before-element.js	sloppy	generated	destructuring-binding	parse	SyntaxError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: destructuring-binding
 test/language/expressions/assignment/dstr/array-rest-before-element.js	strict	generated	destructuring-binding	parse	SyntaxError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: destructuring-binding
-test/language/expressions/object/__proto__-duplicate.js	sloppy			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/expressions/object/__proto__-duplicate.js
-test/language/expressions/object/__proto__-duplicate.js	strict			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/expressions/object/__proto__-duplicate.js
+test/language/expressions/object/__proto__-duplicate.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	duplicate __proto__ property name
+test/language/expressions/object/__proto__-duplicate.js	strict			parse	SyntaxError	pass	parse	SyntaxError	duplicate __proto__ property name
 test/language/expressions/optional-chaining/early-errors-tail-position-null-op-template-string.js	sloppy		optional-chaining	parse	SyntaxError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: optional-chaining
 test/language/expressions/optional-chaining/early-errors-tail-position-null-op-template-string.js	strict		optional-chaining	parse	SyntaxError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: optional-chaining
 test/language/rest-parameters/position-invalid.js	sloppy			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/rest-parameters/position-invalid.js
@@ -27,4 +27,4 @@ test/language/statements/variable/S12.2_A8_T2.js	sloppy			parse	SyntaxError	pass
 test/language/statements/variable/S12.2_A8_T2.js	strict			parse	SyntaxError	pass	parse	SyntaxError	expecting ';'
 test/language/statements/variable/dstr/ary-ptrn-rest-not-final-id.js	sloppy	generated	destructuring-binding	parse	SyntaxError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: destructuring-binding
 test/language/statements/variable/dstr/ary-ptrn-rest-not-final-id.js	strict	generated	destructuring-binding	parse	SyntaxError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: destructuring-binding
-# summary pass=2 unsupported-feature=10 unsupported-negative-provenance=7
+# summary pass=4 unsupported-feature=10 unsupported-negative-provenance=5

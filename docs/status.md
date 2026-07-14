@@ -13,8 +13,8 @@ claim full parity.
   capability profile, audited negative-test canaries, and source/metadata host
   requirements keep unsupported grammar, features, modes, and `$262` hooks from
   becoming false passes. Bounded workers preserve canonical byte-for-byte TSV
-  and JSONL ordering. The current vector has 10,138 passes: a 12.13% lower bound
-  after the 18,475 pinned QuickJS target exclusions, or 38.34% among the 26,441
+  and JSONL ordering. The current vector has 16,675 passes: a 19.96% lower bound
+  after the 18,475 pinned QuickJS target exclusions, or 68.26% among the 24,428
   variants with a non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim.
@@ -551,6 +551,29 @@ claim full parity.
   19685-19710 (Array opcodes), and 25669-25795
   (`js_parse_array_literal`), plus the corresponding opcode definitions in
   `quickjs-opcode.h`.
+
+- Object literals now follow the data-property portion of QuickJS
+  `js_parse_object_literal`. A realm-correct ordinary Object stays below fixed
+  identifier/keyword/String/numeric/BigInt properties, shorthand properties,
+  and computed properties on the typed VM stack. Computed keys perform the
+  observable `ToPropertyKey` before the RHS and preserve anonymous-function
+  naming, while fixed names reuse `DefineField` and computed names reuse the
+  generic `DefineArrayEl` plus key drop. Static `__proto__` changes
+  `[[Prototype]]` only for Object/null candidates, primitives are ignored,
+  duplicate ProtoSetters are genuine early errors, and shorthand or computed
+  `__proto__` remains an ordinary data property. Object spread snapshots the
+  enumerable own String/Symbol keys of the currently reachable ordinary
+  source objects, performs live Get in key order, and defines C/W/E data
+  properties instead of invoking inherited setters; matching the pinned
+  release, primitive sources including String are ignored. The specialized
+  typed `CopyDataProperties` operation is deliberately object-literal-only and
+  has no destructuring exclude list. Methods, accessors, generator/async
+  methods, home-object wiring, and Proxy/exotic-source spread remain explicit
+  frontiers. The pinned anchors are `quickjs.c` 24485-24621 and 24850-24965
+  plus the matching object/define/name/proto/copy opcodes in
+  `quickjs-opcode.h`; `oracle_object_literals` locks descriptors, key and
+  evaluation order, names, ProtoSetter behavior, spread, errors, and defining
+  realms against QuickJS 2026-06-04.
 
 - Untagged template literals follow QuickJS `js_parse_template` rather than a
   generic string-interpolation rewrite. A no-substitution template pushes only
@@ -1703,7 +1726,8 @@ host-missing outcomes are failures, not additional feature skips.
 The language slice is intentionally narrow. Async/generator declarations,
 `for-in`/`for-await`, for-of destructuring, other general
 assignment targets, module
-resolution, computed property-definition naming, mapped `arguments`,
+resolution, object method/accessor definitions and their home-object semantics,
+mapped `arguments`,
 direct/indirect eval declaration environments, arrow/async/generator functions,
 `with`, and callable Proxy classes are not yet
 implemented. Unsupported declaration contexts are rejected instead of being
@@ -1846,8 +1870,9 @@ uncatchable termination state are also pending. Array
 destructuring consumers, `with` object-environment
 semantics, other
 iterator classes and helpers,
-RegExp, the remaining RegExp-/Unicode-backed String methods, remaining object-
-literal forms and the rest of the builtin table build on those layers.
+RegExp, the remaining RegExp-/Unicode-backed String methods, object-literal
+methods/accessors and exotic-source spread, and the rest of the builtin table
+build on those layers.
 
 The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
@@ -2034,8 +2059,9 @@ identifier core, global
 BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials, and
 the Program-var/function, Program/body/block/switch/classic-for lexical-scope,
 single/labelled Annex B, synchronous try/catch/finally, synchronous for-of,
-Array core/literal/iterator/search/callback/mutation/change-by-copy, and Object
-constructor/static-prefix/prototype slices. The atom-Error target contains thirteen
+Array core/literal/iterator/search/callback/mutation/change-by-copy, Object
+literal, and Object constructor/static-prefix/prototype slices. The atom-Error
+target contains thirteen
 pinned-oracle inputs in addition to its Rust-side expectation test. The Unicode
 identifier target checks every scalar, real compiler/runtime cases, and the
 parser-driven identifier diagnostic matrix; the Unicode case target checks the
