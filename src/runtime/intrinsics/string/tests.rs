@@ -50,6 +50,19 @@ fn string_pad_selectors_use_pinned_generic_magic_cproto() {
 }
 
 #[test]
+fn string_trim_selectors_use_pinned_generic_magic_cproto() {
+    for selector in [
+        StringTrimKind::Both,
+        StringTrimKind::End,
+        StringTrimKind::Start,
+    ] {
+        let descriptor = NativeFunctionId::StringPrototypeTrim(selector).descriptor();
+        assert_eq!(descriptor.cproto, NativeCProto::GenericMagic);
+        assert!(!descriptor.cproto.default_is_constructor());
+    }
+}
+
+#[test]
 fn string_index_scan_is_utf16_exact_and_inclusive() {
     let source = JsString::try_from_utf16([0x61, 0xd83d, 0xde00, 0xd800, 0x61]).unwrap();
     let crossed = JsString::try_from_utf16([0xde00, 0xd800]).unwrap();
@@ -331,6 +344,150 @@ fn string_pad_family_publishes_pinned_autoinit_entries_and_identities() {
         first
     });
     assert_ne!(identities[0], identities[1]);
+}
+
+#[test]
+fn string_trim_family_preserves_alias_materialization_order_and_independence() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let prototype = context.string_prototype().unwrap();
+    let entries = [
+        ("trim", StringTrimKind::Both),
+        ("trimEnd", StringTrimKind::End),
+        ("trimRight", StringTrimKind::End),
+        ("trimStart", StringTrimKind::Start),
+        ("trimLeft", StringTrimKind::Start),
+    ];
+    let keys = entries.map(|(name, selector)| {
+        (
+            name,
+            selector,
+            runtime
+                .intern_property_key(name)
+                .expect("String trim-family key must intern"),
+        )
+    });
+    let (trim_end_id, trim_start_id) = {
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(prototype.object_id()).unwrap();
+        let shape = state.heap.shape(object.shape).unwrap();
+        let slot_indices = keys
+            .each_ref()
+            .map(|(_, _, key)| usize::try_from(shape.find(key.atom()).unwrap()).unwrap());
+        assert!(
+            slot_indices.windows(2).all(|pair| pair[1] == pair[0] + 1),
+            "the five trim-family entries did not retain QuickJS table order",
+        );
+        for slot_index in slot_indices {
+            assert_eq!(
+                shape.entries()[slot_index].flags,
+                PropertyFlags::data(true, false, true),
+            );
+        }
+        assert!(matches!(
+            object.slots.get(slot_indices[0]),
+            Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                realm,
+                target: NativeFunctionId::StringPrototypeTrim(StringTrimKind::Both),
+                name: "trim",
+                length: 0,
+                min_readable_args: 0,
+            })) if *realm == context.realm
+        ));
+
+        let Some(PropertySlot::Data(RawValue::Object(trim_end_id))) =
+            object.slots.get(slot_indices[1])
+        else {
+            panic!("trimEnd was not eagerly materialized for trimRight");
+        };
+        assert!(matches!(
+            object.slots.get(slot_indices[2]),
+            Some(PropertySlot::Data(RawValue::Object(alias_id))) if alias_id == trim_end_id
+        ));
+        let Some(PropertySlot::Data(RawValue::Object(trim_start_id))) =
+            object.slots.get(slot_indices[3])
+        else {
+            panic!("trimStart was not eagerly materialized for trimLeft");
+        };
+        assert!(matches!(
+            object.slots.get(slot_indices[4]),
+            Some(PropertySlot::Data(RawValue::Object(alias_id))) if alias_id == trim_start_id
+        ));
+        for (id, selector) in [
+            (*trim_end_id, StringTrimKind::End),
+            (*trim_start_id, StringTrimKind::Start),
+        ] {
+            assert!(matches!(
+                &state.heap.object(id).unwrap().payload,
+                ObjectPayload::NativeFunction { data }
+                    if data.target == NativeFunctionId::StringPrototypeTrim(selector)
+                        && data.realm == Some(context.realm)
+                        && data.min_readable_args == 0
+            ));
+        }
+        (*trim_end_id, *trim_start_id)
+    };
+
+    let mut functions = Vec::new();
+    for (name, _, key) in &keys {
+        let Value::Object(first) = context.get_property(&prototype, key).unwrap() else {
+            panic!("{name} did not resolve to a function object");
+        };
+        let Value::Object(second) = context.get_property(&prototype, key).unwrap() else {
+            panic!("{name} did not remain a function object");
+        };
+        assert_eq!(first, second, "{name} identity was unstable");
+        assert!(runtime.as_callable(&first).unwrap().is_some());
+        assert!(!runtime.is_constructor(&first).unwrap());
+        functions.push(first);
+    }
+    assert_ne!(functions[0], functions[1]);
+    assert_ne!(functions[0], functions[3]);
+    assert_ne!(functions[1], functions[3]);
+    assert_eq!(functions[1], functions[2]);
+    assert_eq!(functions[3], functions[4]);
+    assert_eq!(functions[1].object_id(), trim_end_id);
+    assert_eq!(functions[3].object_id(), trim_start_id);
+
+    let length = runtime.intern_property_key("length").unwrap();
+    let name = runtime.intern_property_key("name").unwrap();
+    for (function, expected_name) in
+        functions
+            .iter()
+            .zip(["trim", "trimEnd", "trimEnd", "trimStart", "trimStart"])
+    {
+        assert_eq!(
+            context.get_property(function, &length).unwrap(),
+            Value::Int(0),
+        );
+        assert_eq!(
+            context.get_property(function, &name).unwrap(),
+            Value::String(JsString::try_from_utf8(expected_name).unwrap()),
+        );
+    }
+
+    assert_eq!(
+        context
+            .eval(
+                r#"(function(){
+                    var p=String.prototype,end=p.trimEnd,start=p.trimStart,rows=[];
+                    p.trimRight=91;
+                    rows.push(p.trimEnd===end,p.trimRight===91);
+                    delete p.trimEnd;
+                    rows.push(!("trimEnd" in p),p.trimRight===91);
+                    p.trimStart=92;
+                    rows.push(p.trimLeft===start,p.trimStart===92);
+                    delete p.trimLeft;
+                    rows.push(!("trimLeft" in p),p.trimStart===92);
+                    return rows.join("|");
+                })()"#,
+            )
+            .unwrap(),
+        Value::String(JsString::from_static(
+            "true|true|true|true|true|true|true|true",
+        )),
+        "overwriting or deleting one alias property changed its peer",
+    );
 }
 
 #[test]
@@ -727,6 +884,256 @@ fn string_pad_reservation_oom_uses_defining_realm_and_runtime_recovers() {
 }
 
 #[test]
+fn string_trim_preserves_whitespace_sides_utf16_rope_identity_and_argument_ignorance() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+
+    assert_eq!(
+        context
+            .eval(
+                r#""\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff".trim()"#,
+            )
+            .unwrap(),
+        Value::String(JsString::from_static("")),
+        "the pinned ECMAScript whitespace set did not trim to empty",
+    );
+    assert_eq!(
+        context
+            .eval(
+                r#"[
+                    " \tvalue \n".trim(),
+                    " \tvalue \n".trimEnd(),
+                    " \tvalue \n".trimRight(),
+                    " \tvalue \n".trimStart(),
+                    " \tvalue \n".trimLeft(),
+                    "\u180ex\u180e".trim()
+                ].join("|")"#,
+            )
+            .unwrap(),
+        Value::String(
+            JsString::try_from_utf16([
+                0x76, 0x61, 0x6c, 0x75, 0x65, 0x7c, 0x20, 0x09, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x7c,
+                0x20, 0x09, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x7c, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x20,
+                0x0a, 0x7c, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x20, 0x0a, 0x7c, 0x180e, 0x78, 0x180e,
+            ])
+            .unwrap()
+        ),
+        "one-sided trims, aliases, or non-whitespace U+180E drifted",
+    );
+    assert_eq!(
+        context
+            .eval(r#""\u3000\ud83d\ude00\ud800\u00a0".trim()"#)
+            .unwrap(),
+        Value::String(JsString::try_from_utf16([0xd83d, 0xde00, 0xd800]).unwrap()),
+        "trim decoded or repaired raw UTF-16 code units",
+    );
+
+    for (method, expected) in [
+        ("trim", "x|r:string;"),
+        ("trimEnd", "  x|r:string;"),
+        ("trimRight", "  x|r:string;"),
+        ("trimStart", "x  |r:string;"),
+        ("trimLeft", "x  |r:string;"),
+    ] {
+        assert_eq!(
+            context
+                .eval(&format!(
+                    r#"(function(){{
+                        var log="",receiver=Object(),extra=Object();
+                        receiver[Symbol.toPrimitive]=function(hint){{log+="r:"+hint+";";return "  x  "}};
+                        extra[Symbol.toPrimitive]=function(){{log+="extra;";throw "wrong"}};
+                        return String.prototype.{method}.call(receiver,extra)+"|"+log;
+                    }})()"#,
+                ))
+                .unwrap(),
+            Value::String(JsString::try_from_utf8(expected).unwrap()),
+            "{method} read an ignored argument or converted its receiver incorrectly",
+        );
+    }
+
+    let unchanged = JsString::try_from_utf16([0xd800, 0x20, 0x61, 0xdc00]).unwrap();
+    let Completion::Return(Value::String(identity)) = runtime
+        .call_string_prototype_trim(
+            context.realm,
+            StringTrimKind::Both,
+            NativeInvocation::Call {
+                this_value: Value::String(unchanged.clone()),
+            },
+        )
+        .unwrap()
+    else {
+        panic!("identity trim did not return a String");
+    };
+    assert!(
+        identity.same_representation(&unchanged),
+        "a full-range flat trim did not reuse the original String",
+    );
+
+    let left = JsString::try_from_utf16(
+        [0x3000]
+            .into_iter()
+            .chain(std::iter::repeat_n(u16::from(b'a'), 4_999))
+            .chain([0xd83d]),
+    )
+    .unwrap();
+    let right = JsString::try_from_utf16(
+        [0xde00]
+            .into_iter()
+            .chain(std::iter::repeat_n(u16::from(b'b'), 4_999))
+            .chain([0xfeff]),
+    )
+    .unwrap();
+    let rope = left.try_concat(&right).unwrap();
+    assert!(!rope.is_flat());
+    let Completion::Return(Value::String(trimmed)) = runtime
+        .call_string_prototype_trim(
+            context.realm,
+            StringTrimKind::Both,
+            NativeInvocation::Call {
+                this_value: Value::String(rope),
+            },
+        )
+        .unwrap()
+    else {
+        panic!("rope trim did not return a String");
+    };
+    assert!(trimmed.is_flat());
+    assert_eq!(trimmed.len(), 10_000);
+    assert_eq!(trimmed.code_unit_at(0), Some(u16::from(b'a')));
+    assert_eq!(trimmed.code_unit_at(4_998), Some(u16::from(b'a')));
+    assert_eq!(trimmed.code_unit_at(4_999), Some(0xd83d));
+    assert_eq!(trimmed.code_unit_at(5_000), Some(0xde00));
+    assert_eq!(trimmed.code_unit_at(5_001), Some(u16::from(b'b')));
+    assert_eq!(trimmed.code_unit_at(9_999), Some(u16::from(b'b')));
+}
+
+#[test]
+fn string_trim_throws_in_defining_realm_preserves_user_throw_and_recovers_from_oom() {
+    let runtime = Runtime::new();
+    let mut defining = runtime.new_context();
+    let mut caller = runtime.new_context();
+    let prototype = defining.string_prototype().unwrap();
+    let trim_key = runtime.intern_property_key("trim").unwrap();
+    let Value::Object(trim_object) = defining.get_property(&prototype, &trim_key).unwrap() else {
+        panic!("String.prototype.trim was not an object");
+    };
+    let trim = runtime.as_callable(&trim_object).unwrap().unwrap();
+    let Value::Object(defining_type_error) = defining.eval("TypeError.prototype").unwrap() else {
+        panic!("defining TypeError.prototype was not an object");
+    };
+    let Value::Object(caller_type_error) = caller.eval("TypeError.prototype").unwrap() else {
+        panic!("caller TypeError.prototype was not an object");
+    };
+    let Value::Object(defining_internal_error) = defining.eval("InternalError.prototype").unwrap()
+    else {
+        panic!("defining InternalError.prototype was not an object");
+    };
+    let Value::Object(caller_internal_error) = caller.eval("InternalError.prototype").unwrap()
+    else {
+        panic!("caller InternalError.prototype was not an object");
+    };
+    assert_ne!(defining_type_error, caller_type_error);
+    assert_ne!(defining_internal_error, caller_internal_error);
+
+    assert_eq!(
+        caller.call(&trim, Value::Symbol(runtime.new_symbol(None).unwrap()), &[],),
+        Err(RuntimeError::Exception),
+    );
+    let Some(Value::Object(type_error)) = caller.take_exception().unwrap() else {
+        panic!("cross-realm trim conversion did not throw an Error object");
+    };
+    assert_eq!(
+        runtime.get_prototype_of(&type_error).unwrap(),
+        Some(defining_type_error),
+        "trim receiver TypeError did not use the function's defining realm",
+    );
+
+    caller
+        .eval(
+            r#"globalThis.trimThrowReceiver=Object();
+                trimThrowReceiver[Symbol.toPrimitive]=function(hint){throw 73};
+                globalThis.trimReservationLog="";
+                globalThis.trimReservationReceiver=Object();
+                trimReservationReceiver[Symbol.toPrimitive]=function(hint){
+                    trimReservationLog+="receiver:"+hint+";";return "  xy  "
+                };"#,
+        )
+        .unwrap();
+    let throwing_receiver = caller.eval("trimThrowReceiver").unwrap();
+    assert_eq!(
+        caller.call(&trim, throwing_receiver, &[Value::Int(91)]),
+        Err(RuntimeError::Exception),
+    );
+    assert_eq!(
+        caller.take_exception().unwrap(),
+        Some(Value::Int(73)),
+        "trim replaced a user receiver-conversion throw",
+    );
+
+    crate::value::fail_next_trim_reservation_for_test();
+    assert_eq!(
+        caller
+            .call(
+                &trim,
+                Value::String(JsString::from_static("identity")),
+                &[Value::Int(1)],
+            )
+            .unwrap(),
+        Value::String(JsString::from_static("identity")),
+        "the full-range trim fast path failed while the OOM hook was armed",
+    );
+    assert_eq!(
+        caller
+            .call(
+                &trim,
+                Value::String(JsString::from_static("   ")),
+                &[Value::Int(2)],
+            )
+            .unwrap(),
+        Value::String(JsString::from_static("")),
+        "the empty trim fast path failed while the OOM hook was armed",
+    );
+    let reservation_receiver = caller.eval("trimReservationReceiver").unwrap();
+    assert_eq!(
+        caller.call(&trim, reservation_receiver, &[Value::Int(3)]),
+        Err(RuntimeError::Exception),
+    );
+    let Some(Value::Object(oom)) = caller.take_exception().unwrap() else {
+        panic!("trim reservation failure did not publish an Error object");
+    };
+    assert_eq!(
+        runtime.get_prototype_of(&oom).unwrap(),
+        Some(defining_internal_error),
+        "trim reservation OOM did not use the function's defining realm",
+    );
+    for (name, expected) in [("name", "InternalError"), ("message", "out of memory")] {
+        let Value::String(value) = caller
+            .get_property(&oom, &runtime.intern_property_key(name).unwrap())
+            .unwrap()
+        else {
+            panic!("trim reservation OOM {name} was not a String");
+        };
+        assert_eq!(value, JsString::from_static(expected));
+    }
+    assert_eq!(
+        caller.eval("trimReservationLog").unwrap(),
+        Value::String(JsString::from_static("receiver:string;")),
+        "trim allocated before its observable receiver conversion",
+    );
+    assert_eq!(
+        caller
+            .call(
+                &trim,
+                Value::String(JsString::from_static("  xy  ")),
+                &[Value::Int(4)],
+            )
+            .unwrap(),
+        Value::String(JsString::from_static("xy")),
+        "runtime did not recover after trim reservation OOM",
+    );
+}
+
+#[test]
 fn string_subrange_preserves_pinned_clamps_utf16_and_rope_copying() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -1058,14 +1465,83 @@ fn recursive_string_conversion_family_is_guarded_on_libtest_stack_and_recovers()
                     "alternating pad/repeat/slice calls bypassed the shared fifth-frame guard"
                 );
             }
+
+            context
+                .eval(
+                    r#"function mixedStringTrimRecurse(kind,depth){
+                        if(kind===0){
+                            var receiver=Object();
+                            receiver[Symbol.toPrimitive]=function(){
+                                if(depth!==0)mixedStringTrimRecurse(1,depth-1);
+                                return " x ";
+                            };
+                            return String.prototype.trim.call(receiver);
+                        }
+                        if(kind===1){
+                            var target=Object();
+                            target[Symbol.toPrimitive]=function(){
+                                if(depth!==0)mixedStringTrimRecurse(2,depth-1);
+                                return 1;
+                            };
+                            return "x".padEnd(target);
+                        }
+                        if(kind===2){
+                            var count=Object();
+                            count[Symbol.toPrimitive]=function(){
+                                if(depth!==0)mixedStringTrimRecurse(3,depth-1);
+                                return 1;
+                            };
+                            return "x".repeat(count);
+                        }
+                        if(kind===3){
+                            var start=Object();
+                            start[Symbol.toPrimitive]=function(){
+                                if(depth!==0)mixedStringTrimRecurse(4,depth-1);
+                                return 0;
+                            };
+                            return "x".slice(start);
+                        }
+                        var search=Object(),descriptor=Object();
+                        descriptor.get=function(){
+                            if(depth!==0)mixedStringTrimRecurse(0,depth-1);
+                            return false;
+                        };
+                        Object.defineProperty(search,Symbol.match,descriptor);
+                        search[Symbol.toPrimitive]=function(){return "x"};
+                        return "x".includes(search)?"x":"wrong";
+                    }"#,
+                )
+                .unwrap();
+            for kind in 0..5 {
+                assert_eq!(
+                    context
+                        .eval(&format!("mixedStringTrimRecurse({kind},3)"))
+                        .unwrap(),
+                    Value::String(JsString::from_static("x")),
+                    "the proven-safe trim/shared-String chain was rejected for kind {kind}",
+                );
+                assert_eq!(
+                    context
+                        .eval(&format!(
+                            r#"(function(){{
+                                try{{mixedStringTrimRecurse({kind},4);return "missing"}}
+                                catch(error){{return error.name+":"+error.message}}
+                            }})()"#,
+                        ))
+                        .unwrap(),
+                    Value::String(JsString::from_static("InternalError:stack overflow")),
+                    "trim alternation bypassed the shared fifth-frame guard for kind {kind}",
+                );
+            }
             assert_eq!(
                 context
                     .eval(
                         r#""abc".includes("b")+"|"+"abc".slice(1)+"|"+
-                           "ab".repeat(2)+"|"+"a".padEnd(3,"x")+"|"+"a".padStart(3,"x")"#,
+                           "ab".repeat(2)+"|"+"a".padEnd(3,"x")+"|"+"a".padStart(3,"x")+"|"+
+                           " z ".trim()"#,
                     )
                     .unwrap(),
-                Value::String(JsString::from_static("true|bc|abab|axx|xxa")),
+                Value::String(JsString::from_static("true|bc|abab|axx|xxa|z")),
                 "the runtime did not recover after mixed String-family overflow"
             );
         })

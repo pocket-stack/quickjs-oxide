@@ -1,6 +1,6 @@
 # Implementation status
 
-Last audited: 2026-07-13. The completion definition remains
+Last audited: 2026-07-14. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
@@ -573,8 +573,8 @@ claim full parity.
   primitive receiver for strict inherited getters and method calls. String's
   standard non-index surface is intentionally limited to the first twelve
   UTF-16/search methods, the `substring`/`substr`/`slice` subrange trio,
-  `repeat`, the `padEnd`/`padStart` pair, the conversion pair and
-  `Symbol.iterator` until later table slices land.
+  `repeat`, the `padEnd`/`padStart` pair, the five-property trim group, the
+  conversion pair and `Symbol.iterator` until later table slices land.
 - Simple member assignment mirrors QuickJS's lvalue rewrite rather than
   evaluating the getter: fixed targets lower through `Insert2; PutField`, and
   computed targets through `Insert3; PutArrayEl`, preserving the RHS as the
@@ -1131,8 +1131,9 @@ claim full parity.
   `lastIndexOf`, `includes`, `endsWith` and `startsWith`, then skips the pending
   `match`/`matchAll`/`search`/`split` entries before publishing `substring`,
   `substr`, `slice` and `repeat`, skips the pending `replace`/`replaceAll`, and
-  publishes `padEnd` then `padStart` in pinned table-relative order ahead of
-  the conversion core's exact `toString`/`valueOf` brand methods.
+  publishes `padEnd` then `padStart`, followed by `trim`, `trimEnd`,
+  `trimRight`, `trimStart` and `trimLeft`, in pinned table-relative order ahead
+  of the conversion core's exact `toString`/`valueOf` brand methods.
   These generic methods preserve
   `JS_ToStringCheckObject`, `JS_ToInt32Sat`, raw UTF-16 code units and lone
   surrogates; concat converts actual arguments sequentially and enforces
@@ -1159,8 +1160,25 @@ claim full parity.
   narrow-first fallible buffer repeats and truncates raw UTF-16 code units,
   chooses the final width from copied content, and maps both initial and
   widening reservation failure to defining-realm `InternalError:out of
-  memory`. Together with `length`, the conversion pair, `Symbol.iterator` and
-  the `constructor` back-reference, this twenty-three-key list is only the
+  memory`. The generic-magic trim callables all have `length=0`; `trim`,
+  `trimEnd` and `trimStart` retain QuickJS's magic masks 3, 2 and 1. The
+  writable, configurable `trimRight` and `trimLeft` properties initially copy
+  exactly the `trimEnd` and `trimStart` function objects, including their
+  canonical function names, while later alias/canonical property mutation is
+  independent in either direction. Only the receiver is converted, with a
+  String hint; every argument is ignored. The raw UTF-16 scans recognize the
+  exact 25 `lre_is_space` code units from U+0009..U+000D, U+0020, U+00A0,
+  U+1680, U+2000..U+200A, U+2028, U+2029, U+202F, U+205F, U+3000 and U+FEFF;
+  U+0085, U+180E and U+200B remain non-space boundaries. A full-range result
+  reuses the converted String, an all-space result uses the narrow empty
+  String, and a partial result preserves exact code units while compressing a
+  wide source when the retained range fits Latin-1. Partial-result reservation
+  failure is catchable as defining-realm `InternalError:out of memory`, while
+  the full-range and all-space paths do not enter that checked partial-result
+  reservation path or consume its scoped failure hook. Allocations surrounding
+  those paths remain within the general allocator gap described below.
+  Together with `length`, the conversion pair, `Symbol.iterator` and
+  the `constructor` back-reference, this twenty-eight-key list is only the
   QuickJS-relative order filtered to implemented keys, not a claim of full
   53-key ownKeys parity. The callable/constructible
   global `%String%` owns `length`, `name`, lazy `fromCharCode`, `fromCodePoint`
@@ -1211,7 +1229,7 @@ claim full parity.
   writes, fixed-name nullish reads, nullish writes, missing bindings, TDZ and
   VarRef descriptor reads, VM `ThrowReadOnly`, and reserved-identifier
   validation.
-  The remaining 30 String-prototype own keys, Context-level observable
+  The remaining 25 String-prototype own keys, Context-level observable
   `ToString`, borrowed C-pointer/refcount ownership, native atom
   diagnostics attached to not-yet-implemented private-field/module/
   global-var/function-declaration surfaces, exact byte-sidecar migration for the remaining
@@ -1704,7 +1722,8 @@ property delete cover ordinary objects and the current primitive surface. The
 separate String exotic, UTF-16-prefix and conversion cores cover branded
 empty-prototype and sloppy-this wrappers, UTF-16 virtual own properties, the
 first twelve generic code-unit/search methods, the three generic subrange
-methods, `repeat`, `padEnd`/`padStart`, `toString`/`valueOf`,
+methods, `repeat`, `padEnd`/`padStart`, the five-property trim group,
+`toString`/`valueOf`,
 `Symbol.iterator`, non-index prototype lookup and the implemented
 Object-prototype routes. The global `%String%` constructor, its three statics
 and the prototype relationship complete that constructor's own table. Their
@@ -1718,17 +1737,21 @@ owned WTF-8/CESU-8 payload export. Repeat adds its pinned flat,
 width-preserving, exact-reservation kernel and catchable result-buffer OOM.
 The pad pair adds QuickJS's narrow-first buffer, content-driven widening,
 UTF-16 filler truncation and catchable result-buffer reservations.
+The trim group adds the exact 25-code-unit whitespace set, raw UTF-16
+one-sided scans, canonical alias identity with independent properties, and a
+catchable partial-result reservation.
 Native Errors additionally share the
 255-byte visible payload of QuickJS's fixed formatter; sidecar-bearing messages
 retain exact raw bytes across compiler/VM Error transport. They also implement
 the not-constructor dynamic name plus the current `JS_AtomGetStr`-backed
 read-only/nullish/binding/TDZ/reserved-identifier diagnostics. It does not
-publish the remaining 30 prototype own keys, Context/C pointer embedding
+publish the remaining 25 prototype own keys, Context/C pointer embedding
 semantics, atom diagnostics belonging
 to unimplemented language/builtin surfaces, exact byte-sidecar construction
 for every parser/lexer diagnostic, or general recoverable allocator failures
-outside the repeat/pad result-buffer reservations. Rope linearization and final
-`Rc` allocation remain part of that general allocator gap. Pad widening uses a
+outside the repeat/pad/trim result-buffer reservations. Rope linearization and
+final `Rc` allocation, including those surrounding trim's checked partial
+buffer, remain part of that general allocator gap. Pad widening uses a
 second fallible exact UTF-16 buffer and then releases the narrow buffer, rather
 than preserving QuickJS allocator/realloc identity and peak-memory behavior.
 Prefix/postfix update expressions
@@ -1737,7 +1760,7 @@ identifier and ordinary fixed/computed member References. Sloppy
 direct-identifier delete is implemented
 for the current static scope tree and defining-realm global object. Dynamic
 object-environment lookup/deletion introduced by `with` or direct `eval`, the
-remaining 30 entries of String's 53-key prototype surface, the RegExp object
+remaining 25 entries of String's 53-key prototype surface, the RegExp object
 class needed by `IsRegExp`'s internal-brand fallback, Proxy/exotic internal
 methods, and the full
 `function_accessors.js` fixture are still pending. AggregateError and
@@ -1761,8 +1784,8 @@ and sorting implementation now lives in `runtime/intrinsics/array.rs`.
 The Object constructor, implemented statics and implemented prototype handler
 surface now live with `groupBy` in `runtime/intrinsics/object.rs`; the String
 constructor/static table, implemented prototype-table initialization,
-index-search pair, regexp-aware includes family, subrange trio, `repeat` and
-the pad pair live in
+index-search pair, regexp-aware includes family, subrange trio, `repeat`, the
+pad pair and trim group live in
 `runtime/intrinsics/string.rs`, while the remaining String initialization and
 handlers still await migration there. The complete VM-to-runtime trait
 adapter, per-frame argument/local/capture storage, iterator protocol bridge and
@@ -1778,7 +1801,7 @@ main runtime file merely to wire a selector. Bytecode draft validation and
 iterative flattening now live in `runtime/bytecode_publish.rs`. The test, Array,
 Object, VM-host, property, native-dispatch and bytecode-publication
 no-semantic-change splits reduced `runtime.rs` from roughly thirty-two thousand
-lines to 9,894 lines. Realm-aware property completion wrappers and storage
+lines to 9,898 lines. Realm-aware property completion wrappers and storage
 helpers, bytecode publication linking and call dispatch, runtime/root lifecycle,
 and the remaining intrinsic families still share the file; `compiler.rs`
 similarly combines several compiler phases.
@@ -1813,6 +1836,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_repeat -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_pad -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_string_trim -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_rope -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \

@@ -383,6 +383,9 @@ impl Runtime {
             NativeFunctionId::StringPrototypePad(selector) => {
                 self.call_string_prototype_pad(realm, selector, invocation, arguments)
             }
+            NativeFunctionId::StringPrototypeTrim(selector) => {
+                self.call_string_prototype_trim(realm, selector, invocation)
+            }
             NativeFunctionId::IteratorPrototypeIterator => {
                 self.call_iterator_prototype_iterator(invocation)
             }

@@ -39,8 +39,8 @@ use crate::heap::{
     ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind,
     ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind,
     PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCharAtKind, StringIncludesKind,
-    StringIndexOfKind, StringPadKind, StringStaticKind, StringSubrangeKind, StringWellFormedKind,
-    SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
+    StringIndexOfKind, StringPadKind, StringStaticKind, StringSubrangeKind, StringTrimKind,
+    StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -6970,7 +6970,8 @@ impl Runtime {
             NativeFunctionId::StringPrototypeIncludes(_)
             | NativeFunctionId::StringPrototypeSubrange(_)
             | NativeFunctionId::StringPrototypeRepeat
-            | NativeFunctionId::StringPrototypePad(_) => 16,
+            | NativeFunctionId::StringPrototypePad(_)
+            | NativeFunctionId::StringPrototypeTrim(_) => 16,
             _ => 8,
         };
         let active_native_cost = self
@@ -7024,7 +7025,8 @@ impl Runtime {
             NativeFunctionId::StringPrototypeIncludes(_)
             | NativeFunctionId::StringPrototypeSubrange(_)
             | NativeFunctionId::StringPrototypeRepeat
-            | NativeFunctionId::StringPrototypePad(_) => 4,
+            | NativeFunctionId::StringPrototypePad(_)
+            | NativeFunctionId::StringPrototypeTrim(_) => 4,
             // ToString, ToNumber and String.raw's property/conversion path can
             // all re-enter any other member of this constructor family.
             NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
@@ -7078,12 +7080,14 @@ impl Runtime {
             NativeFunctionId::StringPrototypeIncludes(_)
             | NativeFunctionId::StringPrototypeSubrange(_)
             | NativeFunctionId::StringPrototypeRepeat
-            | NativeFunctionId::StringPrototypePad(_) => matches!(
+            | NativeFunctionId::StringPrototypePad(_)
+            | NativeFunctionId::StringPrototypeTrim(_) => matches!(
                 candidate,
                 NativeFunctionId::StringPrototypeIncludes(_)
                     | NativeFunctionId::StringPrototypeSubrange(_)
                     | NativeFunctionId::StringPrototypeRepeat
                     | NativeFunctionId::StringPrototypePad(_)
+                    | NativeFunctionId::StringPrototypeTrim(_)
             ),
             NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
             | NativeFunctionId::StringStatic(_) => matches!(

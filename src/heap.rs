@@ -979,6 +979,7 @@ pub enum NativeFunctionId {
     StringPrototypeSubrange(StringSubrangeKind),
     StringPrototypeRepeat,
     StringPrototypePad(StringPadKind),
+    StringPrototypeTrim(StringTrimKind),
     IteratorPrototypeIterator,
     IteratorPrototypeToStringTagGetter,
     IteratorPrototypeToStringTagSetter,
@@ -1100,6 +1101,17 @@ pub enum StringSubrangeKind {
 /// `padStart`; typed variants keep that otherwise implicit contract visible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StringPadKind {
+    End,
+    Start,
+}
+
+/// Ends selected by QuickJS's shared `js_string_trim` generic-magic function.
+/// Its bitmask uses one for the leading end and two for the trailing end;
+/// typed variants preserve the exact table magic values without exposing raw
+/// integers to runtime dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StringTrimKind {
+    Both,
     End,
     Start,
 }
@@ -1295,6 +1307,7 @@ impl NativeFunctionId {
             | Self::StringPrototypeIndexOf(_)
             | Self::StringPrototypeIncludes(_)
             | Self::StringPrototypePad(_)
+            | Self::StringPrototypeTrim(_)
             | Self::ArrayPrototypeFind(_)
             | Self::ArrayPrototypeIteration(_)
             | Self::ArrayPrototypeReduce(_)
@@ -4151,6 +4164,9 @@ mod tests {
             NativeFunctionId::StringPrototypeCharAt(StringCharAtKind::CharAt),
             NativeFunctionId::StringPrototypePad(StringPadKind::End),
             NativeFunctionId::StringPrototypePad(StringPadKind::Start),
+            NativeFunctionId::StringPrototypeTrim(StringTrimKind::Both),
+            NativeFunctionId::StringPrototypeTrim(StringTrimKind::End),
+            NativeFunctionId::StringPrototypeTrim(StringTrimKind::Start),
         ] {
             assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);
             assert!(!target.descriptor().cproto.default_is_constructor());

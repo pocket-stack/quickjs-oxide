@@ -183,7 +183,61 @@ impl Runtime {
                 1,
             )?;
         }
+        self.define_native_builtin_auto_init(
+            string_prototype,
+            realm,
+            NativeFunctionId::StringPrototypeTrim(StringTrimKind::Both),
+            "trim",
+            0,
+            0,
+        )?;
+        self.define_native_builtin_auto_init(
+            string_prototype,
+            realm,
+            NativeFunctionId::StringPrototypeTrim(StringTrimKind::End),
+            "trimEnd",
+            0,
+            0,
+        )?;
+        self.define_string_prototype_alias(realm, string_prototype, "trimRight", "trimEnd")?;
+        self.define_native_builtin_auto_init(
+            string_prototype,
+            realm,
+            NativeFunctionId::StringPrototypeTrim(StringTrimKind::Start),
+            "trimStart",
+            0,
+            0,
+        )?;
+        self.define_string_prototype_alias(realm, string_prototype, "trimLeft", "trimStart")?;
         Ok(())
+    }
+
+    /// Materialize and copy one canonical String method for a pinned
+    /// `JS_ALIAS_DEF`. QuickJS explicitly forbids AutoInit for aliases: the
+    /// property read instantiates the canonical function immediately, then the
+    /// alias stores that exact object with the canonical function name.
+    fn define_string_prototype_alias(
+        &self,
+        realm: ContextId,
+        string_prototype: &ObjectRef,
+        alias: &'static str,
+        canonical: &'static str,
+    ) -> Result<(), RuntimeError> {
+        let canonical_key = self.intern_property_key(canonical)?;
+        let value = match self.get_property_in_realm(realm, string_prototype, &canonical_key)? {
+            Completion::Return(value @ Value::Object(_)) => value,
+            Completion::Return(_) => {
+                return Err(RuntimeError::Invariant(
+                    "String canonical alias target was not callable",
+                ));
+            }
+            Completion::Throw(_) => {
+                return Err(RuntimeError::Invariant(
+                    "String canonical alias initialization threw during bootstrap",
+                ));
+            }
+        };
+        self.define_function_data_property(string_prototype, alias, value, true, true)
     }
 
     /// Publish the complete own table of QuickJS's `%String%` constructor.
@@ -888,5 +942,47 @@ impl Runtime {
             }
         };
         Ok(Completion::Return(Value::String(padded)))
+    }
+
+    /// Rust port of pinned QuickJS `js_string_trim`. The selector retains its
+    /// `magic & 1` leading / `magic & 2` trailing contract, receiver conversion
+    /// precedes every code-unit read, and all arguments are ignored.
+    pub(in crate::runtime) fn call_string_prototype_trim(
+        &self,
+        realm: ContextId,
+        selector: StringTrimKind,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String trim did not receive a generic-magic invocation",
+            ));
+        };
+
+        let source = match self.native_to_string_check_object(realm, &this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let (trim_start, trim_end) = match selector {
+            StringTrimKind::Both => (true, true),
+            StringTrimKind::End => (false, true),
+            StringTrimKind::Start => (true, false),
+        };
+        let trimmed = match source.trim_whitespace(trim_start, trim_end) {
+            Ok(value) => value,
+            Err(JsStringError::OutOfMemory) => {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Internal,
+                    "out of memory",
+                )?));
+            }
+            Err(JsStringError::TooLong) => {
+                return Err(RuntimeError::Invariant(
+                    "String trim unexpectedly increased the source length",
+                ));
+            }
+        };
+        Ok(Completion::Return(Value::String(trimmed)))
     }
 }

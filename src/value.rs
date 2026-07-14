@@ -74,6 +74,7 @@ impl From<JsStringError> for Error {
 thread_local! {
     static FAIL_NEXT_REPEAT_RESERVATION: Cell<bool> = const { Cell::new(false) };
     static FAIL_NEXT_PAD_RESERVATION: Cell<bool> = const { Cell::new(false) };
+    static FAIL_NEXT_TRIM_RESERVATION: Cell<bool> = const { Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -92,6 +93,16 @@ pub(crate) fn fail_next_pad_reservation_for_test() {
         assert!(
             !armed.replace(true),
             "pad reservation failure was already armed"
+        );
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_trim_reservation_for_test() {
+    FAIL_NEXT_TRIM_RESERVATION.with(|armed| {
+        assert!(
+            !armed.replace(true),
+            "trim reservation failure was already armed"
         );
     });
 }
@@ -1045,6 +1056,86 @@ impl JsString {
                 Self(Rc::new(StringRepr::Utf16(units.into_boxed_slice())))
             }
         })
+    }
+
+    /// Trim the selected ends with pinned QuickJS `js_string_trim` and
+    /// `js_sub_string` representation rules. Full-range and empty results do
+    /// not enter or consume the partial-substring reservation path; a partial
+    /// wide range narrows when every retained UTF-16 code unit fits Latin-1.
+    pub(crate) fn trim_whitespace(
+        &self,
+        trim_start: bool,
+        trim_end: bool,
+    ) -> Result<Self, JsStringError> {
+        let source = self.linearize();
+        let mut start = 0;
+        let mut end = source.len();
+        if trim_start {
+            while start < end
+                && source
+                    .code_unit_at(start)
+                    .is_some_and(is_ecmascript_whitespace)
+            {
+                start += 1;
+            }
+        }
+        if trim_end {
+            while end > start
+                && source
+                    .code_unit_at(end - 1)
+                    .is_some_and(is_ecmascript_whitespace)
+            {
+                end -= 1;
+            }
+        }
+        if start == 0 && end == source.len() {
+            return Ok(source);
+        }
+        if start == end {
+            // `js_new_string8_len(..., 0)` returns the canonical narrow empty
+            // atom without performing the substring allocation.
+            return Ok(Self::from_static(""));
+        }
+
+        fn reserve_trim_buffer<T>(capacity: usize) -> Result<Vec<T>, JsStringError> {
+            #[cfg(test)]
+            if FAIL_NEXT_TRIM_RESERVATION.with(|armed| armed.replace(false)) {
+                return Err(JsStringError::OutOfMemory);
+            }
+            let mut selected = Vec::new();
+            selected
+                .try_reserve_exact(capacity)
+                .map_err(|_| JsStringError::OutOfMemory)?;
+            Ok(selected)
+        }
+
+        let selected_len = end - start;
+        match source.0.as_ref() {
+            StringRepr::Latin1(units) => {
+                let mut selected = reserve_trim_buffer(selected_len)?;
+                selected.extend_from_slice(&units[start..end]);
+                Ok(Self(Rc::new(StringRepr::Latin1(
+                    selected.into_boxed_slice(),
+                ))))
+            }
+            StringRepr::Utf16(units) => {
+                let range = &units[start..end];
+                if range.iter().all(|unit| *unit <= u16::from(u8::MAX)) {
+                    let mut selected = reserve_trim_buffer(selected_len)?;
+                    selected.extend(range.iter().map(|unit| *unit as u8));
+                    Ok(Self(Rc::new(StringRepr::Latin1(
+                        selected.into_boxed_slice(),
+                    ))))
+                } else {
+                    let mut selected = reserve_trim_buffer(selected_len)?;
+                    selected.extend_from_slice(range);
+                    Ok(Self(Rc::new(StringRepr::Utf16(
+                        selected.into_boxed_slice(),
+                    ))))
+                }
+            }
+            StringRepr::Rope(_) => unreachable!("linearized String remained a rope"),
+        }
     }
 
     /// Concatenate with QuickJS's short-flat/rope thresholds, bounded depth,
@@ -2169,6 +2260,96 @@ mod tests {
                 .unwrap(),
             JsString::from_static("abx"),
             "the fail-next pad reservation hook was not consumed exactly once",
+        );
+    }
+
+    #[test]
+    fn trim_uses_quickjs_whitespace_width_identity_and_reservation_rules() {
+        let whitespace = [
+            0x0009, 0x000a, 0x000b, 0x000c, 0x000d, 0x0020, 0x00a0, 0x1680, 0x2000, 0x2001, 0x2002,
+            0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f,
+            0x205f, 0x3000, 0xfeff,
+        ];
+        for unit in whitespace {
+            let source = JsString::try_from_utf16([unit, u16::from(b'x'), unit]).unwrap();
+            assert_eq!(
+                source.trim_whitespace(true, true).unwrap(),
+                JsString::from_static("x"),
+                "U+{unit:04X} was not trimmed",
+            );
+        }
+        for unit in [0x0000, 0x0085, 0x180e, 0x200b] {
+            let source = JsString::try_from_utf16([unit, u16::from(b'x'), unit]).unwrap();
+            assert!(
+                source
+                    .trim_whitespace(true, true)
+                    .unwrap()
+                    .same_representation(&source),
+                "U+{unit:04X} was incorrectly trimmed",
+            );
+        }
+
+        let source = JsString::from_static("  value  ");
+        assert_eq!(
+            source.trim_whitespace(true, false).unwrap(),
+            JsString::from_static("value  "),
+        );
+        assert_eq!(
+            source.trim_whitespace(false, true).unwrap(),
+            JsString::from_static("  value"),
+        );
+        assert_eq!(
+            source.trim_whitespace(true, true).unwrap(),
+            JsString::from_static("value"),
+        );
+
+        let forced_wide_latin1 = JsString(Rc::new(StringRepr::Utf16(
+            [0x20, u16::from(b'a'), u16::from(b'b'), 0x20]
+                .into_iter()
+                .collect(),
+        )));
+        let narrowed = forced_wide_latin1.trim_whitespace(true, true).unwrap();
+        assert_eq!(narrowed, JsString::from_static("ab"));
+        assert!(matches!(narrowed.0.as_ref(), StringRepr::Latin1(_)));
+        let forced_wide = JsString::try_from_utf16([0x20, 0x100, 0x20]).unwrap();
+        let still_wide = forced_wide.trim_whitespace(true, true).unwrap();
+        assert_eq!(still_wide.utf16_units().collect::<Vec<_>>(), [0x100]);
+        assert!(matches!(still_wide.0.as_ref(), StringRepr::Utf16(_)));
+
+        let empty = JsString::from_static(" \u{feff}\u{2029}")
+            .trim_whitespace(true, true)
+            .unwrap();
+        assert!(matches!(empty.0.as_ref(), StringRepr::Latin1(units) if units.is_empty()));
+
+        let rope = JsString::try_from_utf8(&" ".repeat(8_193))
+            .unwrap()
+            .try_concat(&JsString::from_static("x "))
+            .unwrap();
+        assert!(!rope.is_flat());
+        assert_eq!(
+            rope.trim_whitespace(true, true).unwrap(),
+            JsString::from_static("x"),
+        );
+
+        super::fail_next_trim_reservation_for_test();
+        let unchanged = JsString::from_static("value");
+        assert!(
+            unchanged
+                .trim_whitespace(true, true)
+                .unwrap()
+                .same_representation(&unchanged),
+            "full-range return must not consume the reservation hook",
+        );
+        let all_space = JsString::from_static("  ");
+        assert!(all_space.trim_whitespace(true, true).unwrap().is_empty());
+        assert_eq!(
+            source.trim_whitespace(true, true),
+            Err(JsStringError::OutOfMemory),
+        );
+        assert_eq!(
+            source.trim_whitespace(true, true).unwrap(),
+            JsString::from_static("value"),
+            "the fail-next trim reservation hook was not consumed exactly once",
         );
     }
 

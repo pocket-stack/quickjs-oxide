@@ -1469,6 +1469,11 @@ fn string_wrapper_exotic_indices_length_define_delete_and_order_match_quickjs() 
             "repeat",
             "padEnd",
             "padStart",
+            "trim",
+            "trimEnd",
+            "trimRight",
+            "trimStart",
+            "trimLeft",
             "toString",
             "valueOf",
             "constructor",
@@ -1679,6 +1684,11 @@ fn string_method_slice_matches_quickjs_table_and_code_unit_rules() {
             "repeat",
             "padEnd",
             "padStart",
+            "trim",
+            "trimEnd",
+            "trimRight",
+            "trimStart",
+            "trimLeft",
             "toString",
             "valueOf",
             "constructor",
@@ -1688,22 +1698,27 @@ fn string_method_slice_matches_quickjs_table_and_code_unit_rules() {
     );
 
     let methods = [
-        ("at", 1, NativeCProto::GenericMagic, 1),
-        ("charCodeAt", 1, NativeCProto::Generic, 1),
-        ("charAt", 1, NativeCProto::GenericMagic, 1),
-        ("concat", 1, NativeCProto::Generic, 0),
-        ("codePointAt", 1, NativeCProto::Generic, 1),
-        ("isWellFormed", 0, NativeCProto::Generic, 0),
-        ("toWellFormed", 0, NativeCProto::Generic, 0),
-        ("substring", 2, NativeCProto::Generic, 2),
-        ("substr", 2, NativeCProto::Generic, 2),
-        ("slice", 2, NativeCProto::Generic, 2),
-        ("padEnd", 1, NativeCProto::GenericMagic, 1),
-        ("padStart", 1, NativeCProto::GenericMagic, 1),
+        ("at", "at", 1, NativeCProto::GenericMagic, 1),
+        ("charCodeAt", "charCodeAt", 1, NativeCProto::Generic, 1),
+        ("charAt", "charAt", 1, NativeCProto::GenericMagic, 1),
+        ("concat", "concat", 1, NativeCProto::Generic, 0),
+        ("codePointAt", "codePointAt", 1, NativeCProto::Generic, 1),
+        ("isWellFormed", "isWellFormed", 0, NativeCProto::Generic, 0),
+        ("toWellFormed", "toWellFormed", 0, NativeCProto::Generic, 0),
+        ("substring", "substring", 2, NativeCProto::Generic, 2),
+        ("substr", "substr", 2, NativeCProto::Generic, 2),
+        ("slice", "slice", 2, NativeCProto::Generic, 2),
+        ("padEnd", "padEnd", 1, NativeCProto::GenericMagic, 1),
+        ("padStart", "padStart", 1, NativeCProto::GenericMagic, 1),
+        ("trim", "trim", 0, NativeCProto::GenericMagic, 0),
+        ("trimEnd", "trimEnd", 0, NativeCProto::GenericMagic, 0),
+        ("trimRight", "trimEnd", 0, NativeCProto::GenericMagic, 0),
+        ("trimStart", "trimStart", 0, NativeCProto::GenericMagic, 0),
+        ("trimLeft", "trimStart", 0, NativeCProto::GenericMagic, 0),
     ];
     let length_key = runtime.intern_property_key("length").unwrap();
     let name_key = runtime.intern_property_key("name").unwrap();
-    for (name, length, cproto, min_readable_args) in methods {
+    for (name, function_name, length, cproto, min_readable_args) in methods {
         let key = runtime.intern_property_key(name).unwrap();
         assert!(matches!(
             runtime.get_own_property(&prototype, &key).unwrap(),
@@ -1736,7 +1751,7 @@ fn string_method_slice_matches_quickjs_table_and_code_unit_rules() {
                 writable: false,
                 enumerable: false,
                 configurable: true,
-            }) if value == JsString::try_from_utf8(name).unwrap()
+            }) if value == JsString::try_from_utf8(function_name).unwrap()
         ));
         let state = runtime.0.state.borrow();
         let ObjectPayload::NativeFunction { data } = &state
@@ -1987,6 +2002,11 @@ fn string_conversion_core_brand_lookup_object_routes_and_overrides_match_quickjs
             "repeat",
             "padEnd",
             "padStart",
+            "trim",
+            "trimEnd",
+            "trimRight",
+            "trimStart",
+            "trimLeft",
             "toString",
             "valueOf",
             "constructor",
