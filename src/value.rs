@@ -75,6 +75,7 @@ thread_local! {
     static FAIL_NEXT_REPEAT_RESERVATION: Cell<bool> = const { Cell::new(false) };
     static FAIL_NEXT_PAD_RESERVATION: Cell<bool> = const { Cell::new(false) };
     static FAIL_NEXT_TRIM_RESERVATION: Cell<bool> = const { Cell::new(false) };
+    static FAIL_NEXT_CREATE_HTML_RESERVATION: Cell<bool> = const { Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -103,6 +104,16 @@ pub(crate) fn fail_next_trim_reservation_for_test() {
         assert!(
             !armed.replace(true),
             "trim reservation failure was already armed"
+        );
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_create_html_reservation_for_test() {
+    FAIL_NEXT_CREATE_HTML_RESERVATION.with(|armed| {
+        assert!(
+            !armed.replace(true),
+            "CreateHTML reservation failure was already armed"
         );
     });
 }
@@ -147,6 +158,197 @@ pub(crate) struct JsStringBuilder {
     units: Vec<u16>,
     limit: usize,
     failed: bool,
+}
+
+enum CreateHtmlStorage {
+    Latin1(Vec<u8>),
+    Utf16(Vec<u16>),
+}
+
+/// Fallible, narrow-first equivalent of QuickJS's `StringBuffer` for the
+/// Annex-B CreateHTML family. Errors are deliberately latched instead of
+/// returned from writes: the runtime must still perform the observable
+/// attribute conversion before surfacing an earlier prefix allocation or
+/// length failure.
+pub(crate) struct CreateHtmlStringBuffer {
+    storage: CreateHtmlStorage,
+    limit: usize,
+    error: Option<JsStringError>,
+}
+
+impl CreateHtmlStringBuffer {
+    pub(crate) fn new(tag: &'static str, attribute: Option<&'static str>, limit: usize) -> Self {
+        fn reserve_initial() -> Result<Vec<u8>, JsStringError> {
+            #[cfg(test)]
+            if FAIL_NEXT_CREATE_HTML_RESERVATION.with(|armed| armed.replace(false)) {
+                return Err(JsStringError::OutOfMemory);
+            }
+            let mut output = Vec::new();
+            output
+                .try_reserve_exact(7)
+                .map_err(|_| JsStringError::OutOfMemory)?;
+            Ok(output)
+        }
+
+        let (storage, error) = match reserve_initial() {
+            Ok(output) => (CreateHtmlStorage::Latin1(output), None),
+            Err(error) => (CreateHtmlStorage::Latin1(Vec::new()), Some(error)),
+        };
+        let mut buffer = Self {
+            storage,
+            limit: limit.min(JsString::MAX_LEN),
+            error,
+        };
+        buffer.append_ascii("<");
+        buffer.append_ascii(tag);
+        if let Some(attribute) = attribute {
+            buffer.append_ascii(" ");
+            buffer.append_ascii(attribute);
+            buffer.append_ascii("=\"");
+        }
+        buffer
+    }
+
+    fn len(&self) -> usize {
+        match &self.storage {
+            CreateHtmlStorage::Latin1(units) => units.len(),
+            CreateHtmlStorage::Utf16(units) => units.len(),
+        }
+    }
+
+    fn latch(&mut self, error: JsStringError) {
+        if self.error.is_none() {
+            self.error = Some(error);
+        }
+    }
+
+    fn checked_new_len(&mut self, additional: usize) -> Option<usize> {
+        if self.error.is_some() {
+            return None;
+        }
+        match JsString::checked_length_with_limit(self.len(), additional, self.limit) {
+            Ok(length) => Some(length),
+            Err(error) => {
+                self.latch(error);
+                None
+            }
+        }
+    }
+
+    fn reserve_additional<T>(units: &mut Vec<T>, additional: usize) -> Result<(), JsStringError> {
+        if units.capacity().saturating_sub(units.len()) < additional {
+            units
+                .try_reserve_exact(additional)
+                .map_err(|_| JsStringError::OutOfMemory)?;
+        }
+        Ok(())
+    }
+
+    fn append_ascii(&mut self, value: &str) {
+        debug_assert!(value.is_ascii());
+        let Some(_) = self.checked_new_len(value.len()) else {
+            return;
+        };
+        let result =
+            match &mut self.storage {
+                CreateHtmlStorage::Latin1(units) => Self::reserve_additional(units, value.len())
+                    .map(|()| {
+                        units.extend_from_slice(value.as_bytes());
+                    }),
+                CreateHtmlStorage::Utf16(units) => Self::reserve_additional(units, value.len())
+                    .map(|()| {
+                        units.extend(value.bytes().map(u16::from));
+                    }),
+            };
+        if let Err(error) = result {
+            self.latch(error);
+        }
+    }
+
+    fn append_code_unit(&mut self, unit: u16) {
+        let Some(new_len) = self.checked_new_len(1) else {
+            return;
+        };
+        if matches!(self.storage, CreateHtmlStorage::Latin1(_)) && unit > u16::from(u8::MAX) {
+            let CreateHtmlStorage::Latin1(units) =
+                std::mem::replace(&mut self.storage, CreateHtmlStorage::Latin1(Vec::new()))
+            else {
+                unreachable!("CreateHTML narrow storage changed before widening")
+            };
+            let mut wide = Vec::new();
+            if let Err(error) = wide
+                .try_reserve_exact(new_len.max(units.capacity()))
+                .map_err(|_| JsStringError::OutOfMemory)
+            {
+                self.storage = CreateHtmlStorage::Latin1(units);
+                self.latch(error);
+                return;
+            }
+            wide.extend(units.iter().copied().map(u16::from));
+            wide.push(unit);
+            self.storage = CreateHtmlStorage::Utf16(wide);
+            return;
+        }
+        let result = match &mut self.storage {
+            CreateHtmlStorage::Latin1(units) => {
+                Self::reserve_additional(units, 1).map(|()| units.push(unit as u8))
+            }
+            CreateHtmlStorage::Utf16(units) => {
+                Self::reserve_additional(units, 1).map(|()| units.push(unit))
+            }
+        };
+        if let Err(error) = result {
+            self.latch(error);
+        }
+    }
+
+    /// Append the attribute as raw UTF-16 code units. Only U+0022 is escaped;
+    /// ampersands, angle brackets, NUL and unpaired surrogates remain intact.
+    pub(crate) fn append_escaped_attribute(&mut self, value: &JsString) {
+        for unit in value.utf16_units() {
+            if unit == u16::from(b'"') {
+                self.append_ascii("&quot;");
+            } else {
+                self.append_code_unit(unit);
+            }
+        }
+        self.append_ascii("\"");
+    }
+
+    fn append_js_string(&mut self, value: &JsString) {
+        if self.checked_new_len(value.len()).is_none() {
+            return;
+        }
+        for unit in value.utf16_units() {
+            self.append_code_unit(unit);
+            if self.error.is_some() {
+                return;
+            }
+        }
+    }
+
+    pub(crate) fn finish(
+        mut self,
+        source: &JsString,
+        tag: &'static str,
+    ) -> Result<JsString, JsStringError> {
+        self.append_ascii(">");
+        self.append_js_string(source);
+        self.append_ascii("</");
+        self.append_ascii(tag);
+        self.append_ascii(">");
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        Ok(match self.storage {
+            CreateHtmlStorage::Latin1(units) => {
+                JsString(Rc::new(StringRepr::Latin1(units.into_boxed_slice())))
+            }
+            CreateHtmlStorage::Utf16(units) => {
+                JsString(Rc::new(StringRepr::Utf16(units.into_boxed_slice())))
+            }
+        })
+    }
 }
 
 impl JsStringBuilder {
@@ -641,7 +843,7 @@ impl JsString {
         None
     }
 
-    fn is_wide(&self) -> bool {
+    pub(crate) fn is_wide(&self) -> bool {
         match self.0.as_ref() {
             StringRepr::Latin1(_) => false,
             StringRepr::Utf16(_) => true,

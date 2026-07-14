@@ -65,6 +65,24 @@ fn string_to_int32_clamp(number: f64, max: i32, min_offset: i32) -> i32 {
     result
 }
 
+fn create_html_definition(selector: StringCreateHtmlKind) -> (&'static str, Option<&'static str>) {
+    match selector {
+        StringCreateHtmlKind::Anchor => ("a", Some("name")),
+        StringCreateHtmlKind::Big => ("big", None),
+        StringCreateHtmlKind::Blink => ("blink", None),
+        StringCreateHtmlKind::Bold => ("b", None),
+        StringCreateHtmlKind::Fixed => ("tt", None),
+        StringCreateHtmlKind::FontColor => ("font", Some("color")),
+        StringCreateHtmlKind::FontSize => ("font", Some("size")),
+        StringCreateHtmlKind::Italics => ("i", None),
+        StringCreateHtmlKind::Link => ("a", Some("href")),
+        StringCreateHtmlKind::Small => ("small", None),
+        StringCreateHtmlKind::Strike => ("strike", None),
+        StringCreateHtmlKind::Sub => ("sub", None),
+        StringCreateHtmlKind::Sup => ("sup", None),
+    }
+}
+
 impl Runtime {
     /// Install the currently implemented entries from QuickJS's String
     /// prototype table in their exact relative order. Missing table entries
@@ -209,6 +227,41 @@ impl Runtime {
             0,
         )?;
         self.define_string_prototype_alias(realm, string_prototype, "trimLeft", "trimStart")?;
+        Ok(())
+    }
+
+    /// Install the legacy Annex-B CreateHTML table after @@iterator and before
+    /// the `%String%` constructor becomes observable, matching the pinned
+    /// QuickJS prototype-table order.
+    pub(in crate::runtime) fn initialize_string_annex_b_html_methods(
+        &self,
+        realm: ContextId,
+        string_prototype: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        for (selector, name, length) in [
+            (StringCreateHtmlKind::Anchor, "anchor", 1),
+            (StringCreateHtmlKind::Big, "big", 0),
+            (StringCreateHtmlKind::Blink, "blink", 0),
+            (StringCreateHtmlKind::Bold, "bold", 0),
+            (StringCreateHtmlKind::Fixed, "fixed", 0),
+            (StringCreateHtmlKind::FontColor, "fontcolor", 1),
+            (StringCreateHtmlKind::FontSize, "fontsize", 1),
+            (StringCreateHtmlKind::Italics, "italics", 0),
+            (StringCreateHtmlKind::Link, "link", 1),
+            (StringCreateHtmlKind::Small, "small", 0),
+            (StringCreateHtmlKind::Strike, "strike", 0),
+            (StringCreateHtmlKind::Sub, "sub", 0),
+            (StringCreateHtmlKind::Sup, "sup", 0),
+        ] {
+            self.define_native_builtin_auto_init(
+                string_prototype,
+                realm,
+                NativeFunctionId::StringPrototypeCreateHtml(selector),
+                name,
+                length,
+                length,
+            )?;
+        }
         Ok(())
     }
 
@@ -984,5 +1037,75 @@ impl Runtime {
             }
         };
         Ok(Completion::Return(Value::String(trimmed)))
+    }
+
+    /// Rust port of pinned QuickJS `js_string_CreateHTML`. Receiver coercion
+    /// precedes buffer initialization; attribute variants then coerce exactly
+    /// argv[0] after the prefix writes, even when those writes already latched
+    /// a recoverable buffer error.
+    pub(in crate::runtime) fn call_string_prototype_create_html(
+        &self,
+        realm: ContextId,
+        selector: StringCreateHtmlKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        self.call_string_prototype_create_html_with_limit(
+            realm,
+            selector,
+            invocation,
+            arguments,
+            JsString::MAX_LEN,
+        )
+    }
+
+    fn call_string_prototype_create_html_with_limit(
+        &self,
+        realm: ContextId,
+        selector: StringCreateHtmlKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+        string_limit: usize,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String CreateHTML did not receive a generic-magic invocation",
+            ));
+        };
+
+        let source = match self.native_to_string_check_object(realm, &this_value)? {
+            NativeConversion::Value(value) => value.linearize(),
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let (tag, attribute) = create_html_definition(selector);
+        let mut buffer = CreateHtmlStringBuffer::new(tag, attribute, string_limit);
+
+        if attribute.is_some() {
+            let attribute_value = arguments.readable.first().ok_or(RuntimeError::Invariant(
+                "String CreateHTML attribute argv was not padded",
+            ))?;
+            let attribute_value =
+                match self.native_to_string_check_object(realm, attribute_value)? {
+                    NativeConversion::Value(value) => value.linearize(),
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+            buffer.append_escaped_attribute(&attribute_value);
+        }
+
+        let result = match buffer.finish(&source, tag) {
+            Ok(value) => value,
+            Err(error @ (JsStringError::TooLong | JsStringError::OutOfMemory)) => {
+                let message = match error {
+                    JsStringError::TooLong => "string too long",
+                    JsStringError::OutOfMemory => "out of memory",
+                };
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Internal,
+                    message,
+                )?));
+            }
+        };
+        Ok(Completion::Return(Value::String(result)))
     }
 }

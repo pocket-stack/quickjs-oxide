@@ -386,6 +386,9 @@ impl Runtime {
             NativeFunctionId::StringPrototypeTrim(selector) => {
                 self.call_string_prototype_trim(realm, selector, invocation)
             }
+            NativeFunctionId::StringPrototypeCreateHtml(selector) => {
+                self.call_string_prototype_create_html(realm, selector, invocation, arguments)
+            }
             NativeFunctionId::IteratorPrototypeIterator => {
                 self.call_iterator_prototype_iterator(invocation)
             }

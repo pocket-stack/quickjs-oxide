@@ -980,6 +980,7 @@ pub enum NativeFunctionId {
     StringPrototypeRepeat,
     StringPrototypePad(StringPadKind),
     StringPrototypeTrim(StringTrimKind),
+    StringPrototypeCreateHtml(StringCreateHtmlKind),
     IteratorPrototypeIterator,
     IteratorPrototypeToStringTagGetter,
     IteratorPrototypeToStringTagSetter,
@@ -1114,6 +1115,27 @@ pub enum StringTrimKind {
     Both,
     End,
     Start,
+}
+
+/// Annex-B operation selected by QuickJS's shared `js_string_CreateHTML`
+/// generic-magic function. Each variant preserves one table magic value and
+/// its corresponding tag/optional attribute pair without exposing raw
+/// integers to runtime dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StringCreateHtmlKind {
+    Anchor,
+    Big,
+    Blink,
+    Bold,
+    Fixed,
+    FontColor,
+    FontSize,
+    Italics,
+    Link,
+    Small,
+    Strike,
+    Sub,
+    Sup,
 }
 
 /// Static selector shared by `%Symbol%.for` and `%Symbol%.keyFor`.
@@ -1308,6 +1330,7 @@ impl NativeFunctionId {
             | Self::StringPrototypeIncludes(_)
             | Self::StringPrototypePad(_)
             | Self::StringPrototypeTrim(_)
+            | Self::StringPrototypeCreateHtml(_)
             | Self::ArrayPrototypeFind(_)
             | Self::ArrayPrototypeIteration(_)
             | Self::ArrayPrototypeReduce(_)
