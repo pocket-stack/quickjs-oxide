@@ -46,16 +46,25 @@ impl Runtime {
         // but keeping it rooted for the full dispatch is part of the ABI.
         let invocation = match (target.descriptor().cproto, invocation) {
             (
-                NativeCProto::Generic | NativeCProto::GenericMagic,
+                NativeCProto::Generic
+                | NativeCProto::GenericMagic
+                | NativeCProto::UnaryF64
+                | NativeCProto::BinaryF64,
                 NativeInvocation::Call { this_value },
             ) => NativeInvocation::Call { this_value },
             (
-                NativeCProto::Generic | NativeCProto::GenericMagic,
+                NativeCProto::Generic
+                | NativeCProto::GenericMagic
+                | NativeCProto::UnaryF64
+                | NativeCProto::BinaryF64,
                 NativeInvocation::Construct { new_target },
             ) => {
-                // QuickJS's generic ABI receives new.target in its `this`
-                // slot when an embedding independently enables the
-                // constructor bit on the native function object.
+                // QuickJS's generic and floating-point ABIs receive
+                // new.target in their receiver slot when an embedding
+                // independently enables the constructor bit on the native
+                // function object. Floating-point argument conversion stays
+                // in the handler so abrupt completions keep their defining
+                // realm and left-to-right order.
                 NativeInvocation::Call {
                     this_value: new_target,
                 }
@@ -118,11 +127,6 @@ impl Runtime {
             (_, NativeInvocation::Getter { .. } | NativeInvocation::Setter { .. }) => {
                 return Err(RuntimeError::Invariant(
                     "native invocation was adapted more than once",
-                ));
-            }
-            (NativeCProto::UnaryF64 | NativeCProto::BinaryF64, _) => {
-                return Err(RuntimeError::Invariant(
-                    "native cproto adapter is not implemented yet",
                 ));
             }
         };
@@ -373,6 +377,22 @@ impl Runtime {
             }
             NativeFunctionId::StringPrototypeIncludes(selector) => {
                 self.call_string_prototype_includes(realm, selector, invocation, arguments)
+            }
+            NativeFunctionId::MathMinMax(kind) => {
+                self.call_math_min_max(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::MathUnary(kind) => {
+                self.call_math_unary(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::MathBinary(kind) => {
+                self.call_math_binary(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::MathHypot => self.call_math_hypot(realm, invocation, arguments),
+            NativeFunctionId::MathRandom => self.call_math_random(realm, invocation),
+            NativeFunctionId::MathImul => self.call_math_imul(realm, invocation, arguments),
+            NativeFunctionId::MathClz32 => self.call_math_clz32(realm, invocation, arguments),
+            NativeFunctionId::MathSumPrecise => {
+                self.call_math_sum_precise(realm, invocation, arguments)
             }
             NativeFunctionId::StringPrototypeSubrange(selector) => {
                 self.call_string_prototype_subrange(realm, selector, invocation, arguments)

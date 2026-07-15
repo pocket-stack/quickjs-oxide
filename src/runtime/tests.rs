@@ -8980,6 +8980,42 @@ fn native_constructor_bit_is_independent_from_generic_cproto() {
 }
 
 #[test]
+fn native_float_cproto_construct_adapter_uses_the_call_kernel() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let global = context.global_object().unwrap();
+    let math_key = runtime.intern_property_key("Math").unwrap();
+    let Value::Object(math) = context.get_property(&global, &math_key).unwrap() else {
+        panic!("global Math was not an object");
+    };
+    let abs = property_callable(&runtime, &mut context, &math, "abs");
+    let pow = property_callable(&runtime, &mut context, &math, "pow");
+
+    for function in [&abs, &pow] {
+        assert!(!runtime.is_constructor(function.as_object()).unwrap());
+        runtime
+            .set_constructor_bit(function.as_object(), true)
+            .unwrap();
+    }
+    assert_eq!(
+        context.construct(&abs, &[Value::Int(-3)]).unwrap(),
+        Value::Int(3)
+    );
+    assert_eq!(
+        context
+            .construct(&pow, &[Value::Int(2), Value::Int(5)])
+            .unwrap(),
+        Value::Int(32)
+    );
+    for function in [&abs, &pow] {
+        runtime
+            .set_constructor_bit(function.as_object(), false)
+            .unwrap();
+        assert!(!runtime.is_constructor(function.as_object()).unwrap());
+    }
+}
+
+#[test]
 fn native_constructor_cproto_adapters_use_defining_realm_and_restore_frames() {
     let runtime = Runtime::new();
     let defining_context = runtime.new_context();

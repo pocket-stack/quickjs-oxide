@@ -37,13 +37,14 @@ use crate::heap::{
     DynamicFunctionKind, ErrorConstructorKind, ForInCandidate, ForInIteratorData, ForInProperty,
     FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo, FunctionDebugPosition,
     FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap,
-    HeapCleanup, HeapCounts, HeapError, NativeCProto, NativeFunctionId, NumberFormatKind,
-    NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData, ObjectExtensibilityKind,
-    ObjectId, ObjectIntegrityKind, ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind,
-    ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue, ShapeId,
-    StringCaseKind, StringCharAtKind, StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind,
-    StringPadKind, StringStaticKind, StringSubrangeKind, StringTrimKind, StringWellFormedKind,
-    SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
+    HeapCleanup, HeapCounts, HeapError, MathBinaryKind, MathMinMaxKind, MathUnaryKind,
+    NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
+    ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind,
+    ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind,
+    PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCaseKind, StringCharAtKind,
+    StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind, StringStaticKind,
+    StringSubrangeKind, StringTrimKind, StringWellFormedKind, SymbolRegistryKind, VarRefData,
+    VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -875,6 +876,8 @@ impl Runtime {
             &global_object,
         )
         .expect("String constructor intrinsic initialization must succeed");
+        self.initialize_math_intrinsic(realm, &global_object)
+            .expect("Math intrinsic initialization must succeed");
         self.initialize_symbol_intrinsic(
             realm,
             &function_prototype,
@@ -885,7 +888,7 @@ impl Runtime {
         // Upstream installs `globalThis` after String/Math/Reflect/Symbol and
         // generator setup, then installs BigInt. The remaining intervening
         // intrinsics are absent here, but this boundary preserves the
-        // implemented `Boolean, String, Symbol, globalThis, BigInt` relative
+        // implemented `Boolean, String, Math, Symbol, globalThis, BigInt` relative
         // order.
         self.initialize_global_this(&global_object)
             .expect("globalThis initialization must succeed");

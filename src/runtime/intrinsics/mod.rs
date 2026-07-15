@@ -1,6 +1,7 @@
 use super::*;
 
 mod array;
+mod math;
 mod object;
 mod string;
 

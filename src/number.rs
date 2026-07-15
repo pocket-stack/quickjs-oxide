@@ -16,6 +16,18 @@ const MIN_RADIX: u32 = 2;
 const MAX_RADIX: u32 = 36;
 const MAX_DIGITS: i32 = 100;
 
+/// Pinned QuickJS `js_pow` kernel shared by the `**` bytecode and
+/// `Math.pow`.  C's `pow` result for a unit-magnitude base and an infinite
+/// exponent is not the ECMAScript result, so QuickJS handles it explicitly.
+#[must_use]
+pub(crate) fn pow(base: f64, exponent: f64) -> f64 {
+    if !exponent.is_finite() && base.abs() == 1.0 {
+        f64::NAN
+    } else {
+        base.powf(exponent)
+    }
+}
+
 // QuickJS `dtoa_max_digits_table`. Each entry is a conservative count which
 // guarantees that rounding a binary64 value in the corresponding radix and
 // parsing it again can reproduce the original value.
@@ -683,6 +695,13 @@ mod tests {
         assert_eq!(to_int32(4_294_967_298.0), 2);
         assert_eq!(to_int32(-4_294_967_294.0), 2);
         assert_eq!(to_int32(2_147_483_648.0), i32::MIN);
+    }
+
+    #[test]
+    fn pow_matches_quickjs_unit_base_infinity_rule() {
+        assert!(pow(1.0, f64::INFINITY).is_nan());
+        assert!(pow(-1.0, f64::NEG_INFINITY).is_nan());
+        assert_eq!(pow(2.0, 10.0), 1024.0);
     }
 
     #[test]

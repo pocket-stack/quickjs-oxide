@@ -248,6 +248,9 @@ impl Runtime {
                 AutoInitProperty::ArrayUnscopables { realm } => {
                     Value::Object(self.instantiate_array_unscopables(realm)?)
                 }
+                AutoInitProperty::Math { realm } => {
+                    Value::Object(self.instantiate_math_intrinsic(realm)?)
+                }
                 #[cfg(test)]
                 AutoInitProperty::FailureProbe { .. } => {
                     return Err(RuntimeError::Invariant("autoinit failure probe"));

@@ -5,7 +5,7 @@ use super::super::*;
 #[cfg(test)]
 mod tests;
 
-enum ObjectIteratorStep {
+pub(in crate::runtime) enum ObjectIteratorStep {
     Yield(Value),
     Done,
     Throw(Value),
@@ -412,7 +412,7 @@ impl Runtime {
         )))
     }
 
-    fn object_iterator_next(
+    pub(in crate::runtime) fn object_iterator_next(
         &self,
         realm: ContextId,
         iterator: &ObjectRef,

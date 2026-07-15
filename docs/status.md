@@ -13,8 +13,8 @@ claim full parity.
   capability profile, audited negative-test canaries, and source/metadata host
   requirements keep unsupported grammar, features, modes, and `$262` hooks from
   becoming false passes. Bounded workers preserve canonical byte-for-byte TSV
-  and JSONL ordering. The current vector has 18,011 passes: a 21.55% lower bound
-  after the 18,475 pinned QuickJS target exclusions, or 60.54% among the 29,750
+  and JSONL ordering. The current vector has 21,429 passes: a 25.64% lower bound
+  after the 18,475 pinned QuickJS target exclusions, or 72.14% among the 29,704
   variants with a non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim.
@@ -775,9 +775,10 @@ claim full parity.
   Right-associative `**` is parsed
   at QuickJS's unary level above multiplication, accepts a unary RHS, and
   rejects an unparenthesized unary LHS with the pinned early error. Its Number
-  path uses Rust `f64::powf` plus QuickJS's `abs(base) == 1`/non-finite-exponent
-  NaN correction, with pinned-oracle matrices locking the observed libc-`pow`
-  results. Its BigInt path preserves negative-exponent errors, `0`/`1`/`-1`
+  path and `Math.pow` share Rust `f64::powf` plus QuickJS's
+  `abs(base) == 1`/non-finite-exponent NaN correction, with pinned-oracle
+  matrices locking the observed libc-`pow` results. Its BigInt path preserves
+  negative-exponent errors, `0`/`1`/`-1`
   shortcuts, the `INT32_MAX` exponent ceiling, power-of-two exact allocation,
   and generic high-to-low square-and-multiply preallocation behavior. Binary
   `<<`, `>>`, and `>>>` occupy the QuickJS shift precedence level between
@@ -1383,6 +1384,19 @@ claim full parity.
   identity. Typed context, wrapper, constructor, lazy-native and prototype
   edges, including cross-realm calls and boxing, participate in reference
   counting and trial-deletion GC.
+- Every realm publishes the complete pinned `%Math%` intrinsic as a writable,
+  non-enumerable, configurable global AutoInit property. Materialization
+  preserves the upstream 37-method order, eight frozen constants and
+  configurable `@@toStringTag = "Math"`; the methods themselves remain lazy
+  native properties. UnaryF64 and BinaryF64 cproto adapters perform
+  defining-realm `ToNumber` conversions in argument order, while custom
+  kernels preserve signed zero, NaN and integer coercion behavior for the
+  remaining selectors. `Math.random` advances a realm-local xorshift64-star
+  stream, and `Math.sumPrecise` ports the pinned signed wrapping-limb
+  accumulator, Number-only iterator contract and `IteratorClose`/no-close
+  split. Rust tests and a dedicated QuickJS differential lock the complete
+  graph, descriptors, key order, call-only behavior, algorithms, cross-realm
+  conversions and iterator failures.
 - The global object has QuickJS's dedicated payload and hidden
   `uninitialized_vars` object. Global data properties and the lexical-binding
   object can store `PropertySlot::VarRef` cells; define, descriptor lookup,
@@ -1408,8 +1422,8 @@ claim full parity.
   global string-key surface preserves upstream relative own-key order as the
   Error family, `Array`, `Object`, `Function`, `parseInt`, `parseFloat`, `isNaN`,
   `isFinite`, the six URI/escape functions, the three constants, `Number`,
-  `Boolean`, `String`, `Symbol`, `globalThis`, then `BigInt`. This is not a
-  claim that the wider global builtin table is complete.
+  `Boolean`, `String`, `Math`, `Symbol`, `globalThis`, then `BigInt`. This is
+  not a claim that the wider global builtin table is complete.
 - Every global object owns QuickJS's `[Symbol.toStringTag] = "global"` metadata
   as a non-writable, non-enumerable, configurable data property. The runtime's
   well-known identity is also exposed as the frozen public
@@ -1423,9 +1437,9 @@ claim full parity.
   accessor conversion, reconnection, defining-realm lookup and the self-cycle's
   trial-deletion GC behavior remain coherent. Upstream places this property
   after String/Math/Reflect, Symbol and the generator intrinsics; the current
-  bootstrap preserves the implemented Symbol-before-`globalThis` and
-  `globalThis`-before-BigInt order, and the binding must move later as the
-  remaining intervening intrinsics land.
+  bootstrap preserves the implemented Math-before-Symbol-before-`globalThis`
+  and `globalThis`-before-BigInt order. The binding must still move later as
+  Reflect and the remaining intervening intrinsics land.
 - Unresolved identifiers no longer use a string-key global opcode. Resolution
   installs one root `Global` closure descriptor and `ParentGlobal` relays on
   every nested function path; declared Program lexicals and vars instead start
@@ -1559,19 +1573,19 @@ claim full parity.
 - Native payloads carry a typed target, cproto descriptor, defining realm and
   minimum readable argument count; actual argc remains distinct from
   undefined-padded argv. Generic, constructor-only, constructor-or-function,
-  and Getter/GetterMagic adapters share active native
+  Getter/GetterMagic, and UnaryF64/BinaryF64 adapters share active native
   frame bookkeeping, restore it across return/throw/engine-error paths, and
   keep the mutable object constructor bit independent from cproto and own
   `length`. Native defining-realm edges participate in trial-deletion GC.
-- Typed autoinit also covers native methods and constant intrinsic strings.
-  The current Object/Function/Error function-list prefixes expose keys and
-  descriptors before allocating their values; ownKeys/has-own/delete remain
-  shape-only. Get/gOPD and a compatible define materialize once in the stored
-  realm; define first checks the lazy flags, so impossible changes to a
-  non-configurable slot are rejected without allocation while configurable
-  builtins can be replaced by data or accessor descriptors. Initializer
-  failure commits an ordinary `undefined` slot while releasing that realm
-  edge.
+- Typed autoinit also covers native methods, constant intrinsic strings and the
+  complete global Math object. The current Object/Function/Error function-list
+  prefixes and Math method table expose keys and descriptors before allocating
+  their values; ownKeys/has-own/delete remain shape-only. Get/gOPD and a
+  compatible define materialize once in the stored realm; define first checks
+  the lazy flags, so impossible changes to a non-configurable slot are rejected
+  without allocation while configurable builtins can be replaced by data or
+  accessor descriptors. Initializer failure commits an ordinary `undefined`
+  slot while releasing that realm edge.
 - `%Object.prototype%` installs the complete pinned table in order:
   `toString`, `toLocaleString`, `valueOf`, `hasOwnProperty`, `isPrototypeOf`,
   `propertyIsEnumerable`, the `__proto__` getter/setter, the four Annex-B
@@ -1934,8 +1948,10 @@ constructor/static table, implemented prototype-table initialization,
 index-search pair, regexp-aware includes family, subrange trio, `repeat`, the
 pad pair, trim group, Unicode case-conversion group and Annex-B CreateHTML
 family live in `runtime/intrinsics/string.rs`, while the remaining String
-initialization and handlers still await migration there. The complete VM-to-runtime trait
-adapter, per-frame argument/local/capture storage, iterator protocol bridge and
+initialization and handlers still await migration there. The complete Math
+object table, selectors, numerical kernels, random and precise-sum handlers live
+in `runtime/intrinsics/math.rs`. The complete VM-to-runtime trait adapter,
+per-frame argument/local/capture storage, iterator protocol bridge and
 bytecode-host error conversion now live in `runtime/vm_host.rs`; host layout is
 private to that module, including bytecode frame initialization. The hidden
 for-in enumeration algorithm and prototype-level snapshots live in
@@ -1953,7 +1969,7 @@ main runtime file merely to wire a selector. Bytecode draft validation and
 iterative flattening now live in `runtime/bytecode_publish.rs`. The test, Array,
 Object, VM-host, property, native-dispatch and bytecode-publication
 no-semantic-change splits reduced `runtime.rs` from roughly thirty-two thousand
-lines to 9,965 lines. Realm-aware property completion wrappers and storage
+lines to 9,968 lines. Realm-aware property completion wrappers and storage
 helpers, bytecode publication linking and call dispatch, runtime/root lifecycle,
 and the remaining intrinsic families still share the file; `compiler.rs`
 similarly combines several compiler phases.
@@ -2022,6 +2038,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_constructor_conversion -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_math_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_lexicals -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -2108,8 +2126,8 @@ String constructor/static table, String-exotic substrate, String UTF-16 prefix,
 String index-search, regexp-aware includes and String subranges, String-conversion core,
 Unicode String case conversion, String-rope/byte/native-Error kernels, Unicode
 identifier core, global
-BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials, and
-the Program-var/function, Program/body/block/switch/classic-for lexical-scope,
+BaseObjects, complete Number-, BigInt- and Math-intrinsic differentials, and the
+Program-var/function, Program/body/block/switch/classic-for lexical-scope,
 ordinary mapped/unmapped Arguments object,
 single/labelled Annex B, synchronous try/catch/finally, synchronous
 for-in/for-of, Array core/literal/iterator/search/callback/mutation/change-by-copy,

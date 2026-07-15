@@ -64,7 +64,7 @@ const GRAPH_CASES: &[(&str, &str)] = &[
     (
         "global String occupies its pinned relative bootstrap position",
         r#"(function(){
-            var selected=["Number","Boolean","String","Symbol","globalThis","BigInt"];
+            var selected=["Number","Boolean","String","Math","Symbol","globalThis","BigInt"];
             var keys=Object.getOwnPropertyNames(globalThis),output=[];
             for(var index=0;index<keys.length;index++)
                 if(selected.indexOf(keys[index])>=0)output.push(keys[index]);

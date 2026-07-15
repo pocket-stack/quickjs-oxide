@@ -334,6 +334,10 @@ pub enum AutoInitProperty {
     ArrayUnscopables {
         realm: ContextId,
     },
+    /// QuickJS `JS_OBJECT_DEF` payload for the realm's global `Math` object.
+    Math {
+        realm: ContextId,
+    },
     #[cfg(test)]
     FailureProbe {
         realm: ContextId,
@@ -387,6 +391,9 @@ pub struct ContextData {
     pub global_var_object: ObjectId,
     pub error_prototype: Option<ObjectId>,
     pub native_error_prototypes: [Option<ObjectId>; NativeErrorKind::COUNT],
+    /// QuickJS keeps Math.random's xorshift64* state on each JSContext.  Zero
+    /// is reserved for the not-yet-seeded bootstrap state.
+    math_random_state: u64,
     pub global_objects: Vec<ObjectId>,
     pub intrinsics: Vec<RawValue>,
     pub initial_shapes: Vec<ShapeId>,
@@ -427,6 +434,7 @@ impl ContextData {
             global_var_object,
             error_prototype: None,
             native_error_prototypes: [None; NativeErrorKind::COUNT],
+            math_random_state: 0,
             global_objects: Vec::new(),
             intrinsics: Vec::new(),
             initial_shapes: Vec::new(),
@@ -956,6 +964,54 @@ pub enum ObjectAccessorKind {
     Setter,
 }
 
+/// Operation selected by QuickJS's shared `js_math_min_max` generic-magic
+/// builtin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MathMinMaxKind {
+    Min,
+    Max,
+}
+
+/// QuickJS `JS_CFUNC_f_f` Math functions, in pinned table order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MathUnaryKind {
+    Abs,
+    Floor,
+    Ceil,
+    Round,
+    Sqrt,
+    Acos,
+    Asin,
+    Atan,
+    Cos,
+    Exp,
+    Log,
+    Sin,
+    Tan,
+    Trunc,
+    Sign,
+    Cosh,
+    Sinh,
+    Tanh,
+    Acosh,
+    Asinh,
+    Atanh,
+    Expm1,
+    Log1p,
+    Log2,
+    Log10,
+    Cbrt,
+    F16Round,
+    FRound,
+}
+
+/// QuickJS `JS_CFUNC_f_f_f` Math functions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MathBinaryKind {
+    Atan2,
+    Pow,
+}
+
 /// Runtime-provided callable identities. The enum is stored in heap payloads
 /// so native dispatch stays typed and does not rely on function pointers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1035,6 +1091,14 @@ pub enum NativeFunctionId {
     StringPrototypeWellFormed(StringWellFormedKind),
     StringPrototypeIndexOf(StringIndexOfKind),
     StringPrototypeIncludes(StringIncludesKind),
+    MathMinMax(MathMinMaxKind),
+    MathUnary(MathUnaryKind),
+    MathBinary(MathBinaryKind),
+    MathHypot,
+    MathRandom,
+    MathImul,
+    MathClz32,
+    MathSumPrecise,
     StringPrototypeSubrange(StringSubrangeKind),
     StringPrototypeRepeat,
     StringPrototypePad(StringPadKind),
@@ -1358,6 +1422,11 @@ impl NativeFunctionId {
             | Self::StringPrototypeConcat
             | Self::StringPrototypeCodePointAt
             | Self::StringPrototypeWellFormed(_)
+            | Self::MathHypot
+            | Self::MathRandom
+            | Self::MathImul
+            | Self::MathClz32
+            | Self::MathSumPrecise
             | Self::StringPrototypeSubrange(_)
             | Self::StringPrototypeRepeat
             | Self::IteratorPrototypeIterator
@@ -1394,6 +1463,7 @@ impl NativeFunctionId {
             | Self::ObjectIntegrity(_)
             | Self::ObjectPrototypeDefineAccessor(_)
             | Self::ObjectPrototypeLookupAccessor(_)
+            | Self::MathMinMax(_)
             | Self::StringPrototypeCharAt(_)
             | Self::StringPrototypeIndexOf(_)
             | Self::StringPrototypeIncludes(_)
@@ -1465,6 +1535,12 @@ impl NativeFunctionId {
             },
             Self::ErrorPrototypeToString | Self::ErrorIsError => NativeFunctionDescriptor {
                 cproto: NativeCProto::Generic,
+            },
+            Self::MathUnary(_) => NativeFunctionDescriptor {
+                cproto: NativeCProto::UnaryF64,
+            },
+            Self::MathBinary(_) => NativeFunctionDescriptor {
+                cproto: NativeCProto::BinaryF64,
             },
             #[cfg(test)]
             Self::ArgumentProbe => NativeFunctionDescriptor {
@@ -2725,6 +2801,48 @@ impl Heap {
                 "typed context lookup reached another node payload",
             )),
         }
+    }
+
+    /// Seed the realm-local xorshift64* stream used by `Math.random`.
+    /// QuickJS replaces an all-zero time seed with one because zero is the
+    /// generator's absorbing state.
+    pub(crate) fn initialize_math_random_state(
+        &mut self,
+        id: ContextId,
+        seed: u64,
+    ) -> Result<(), HeapError> {
+        let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(id))?.data else {
+            return Err(HeapError::Invariant(
+                "typed context lookup reached another node payload",
+            ));
+        };
+        if context.math_random_state != 0 {
+            return Err(HeapError::Invariant(
+                "Math.random state was initialized more than once",
+            ));
+        }
+        context.math_random_state = if seed == 0 { 1 } else { seed };
+        Ok(())
+    }
+
+    /// Advance the pinned QuickJS xorshift64* stream for one realm.
+    pub(crate) fn next_math_random_u64(&mut self, id: ContextId) -> Result<u64, HeapError> {
+        let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(id))?.data else {
+            return Err(HeapError::Invariant(
+                "typed context lookup reached another node payload",
+            ));
+        };
+        if context.math_random_state == 0 {
+            return Err(HeapError::Invariant(
+                "Math.random state was used before initialization",
+            ));
+        }
+        let mut state = context.math_random_state;
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        context.math_random_state = state;
+        Ok(state.wrapping_mul(0x2545_f491_4f6c_dd1d))
     }
 
     /// Read immutable executable data without promoting any raw cpool edges.
@@ -3988,7 +4106,8 @@ fn property_slot_edges(slot: &PropertySlot) -> Vec<RawId> {
             AutoInitProperty::FunctionPrototype { realm }
             | AutoInitProperty::NativeBuiltin { realm, .. }
             | AutoInitProperty::String { realm, .. }
-            | AutoInitProperty::ArrayUnscopables { realm },
+            | AutoInitProperty::ArrayUnscopables { realm }
+            | AutoInitProperty::Math { realm },
         ) => vec![RawId::Context(*realm)],
         #[cfg(test)]
         PropertySlot::AutoInit(AutoInitProperty::FailureProbe { realm }) => {
@@ -4256,6 +4375,53 @@ mod tests {
         heap.release_shape(native_shape).unwrap();
         heap.release_shape(shape).unwrap();
         heap.run_gc().unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn math_random_state_is_realm_local_seeded_and_pinned() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let prototype = heap
+            .allocate_object(ObjectData::ordinary(shape, Vec::new()))
+            .unwrap();
+        let first_realm = heap
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+                prototype,
+            ))
+            .unwrap();
+        let second_realm = heap
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+                prototype,
+            ))
+            .unwrap();
+
+        assert_eq!(
+            heap.next_math_random_u64(first_realm),
+            Err(HeapError::Invariant(
+                "Math.random state was used before initialization"
+            ))
+        );
+        heap.initialize_math_random_state(first_realm, 1).unwrap();
+        heap.initialize_math_random_state(second_realm, 1).unwrap();
+        assert_eq!(
+            heap.initialize_math_random_state(first_realm, 2),
+            Err(HeapError::Invariant(
+                "Math.random state was initialized more than once"
+            ))
+        );
+        let first = heap.next_math_random_u64(first_realm).unwrap();
+        assert_eq!(first, 0x47e4_ce4b_896c_dd1d);
+        assert_eq!(heap.next_math_random_u64(second_realm).unwrap(), first);
+        let second = heap.next_math_random_u64(first_realm).unwrap();
+        assert_eq!(heap.next_math_random_u64(second_realm).unwrap(), second);
+
+        heap.release_context(first_realm).unwrap();
+        heap.release_context(second_realm).unwrap();
+        heap.release_object(prototype).unwrap();
+        heap.release_shape(shape).unwrap();
         assert_eq!(heap.counts().live, 0);
     }
 
@@ -4583,6 +4749,11 @@ mod tests {
             NativeFunctionId::StringPrototypeSubrange(StringSubrangeKind::Substr),
             NativeFunctionId::StringPrototypeSubrange(StringSubrangeKind::Slice),
             NativeFunctionId::StringPrototypeRepeat,
+            NativeFunctionId::MathHypot,
+            NativeFunctionId::MathRandom,
+            NativeFunctionId::MathImul,
+            NativeFunctionId::MathClz32,
+            NativeFunctionId::MathSumPrecise,
         ];
 
         for target in targets {
@@ -4603,6 +4774,8 @@ mod tests {
             NativeFunctionId::StringPrototypeTrim(StringTrimKind::Both),
             NativeFunctionId::StringPrototypeTrim(StringTrimKind::End),
             NativeFunctionId::StringPrototypeTrim(StringTrimKind::Start),
+            NativeFunctionId::MathMinMax(MathMinMaxKind::Min),
+            NativeFunctionId::MathMinMax(MathMinMaxKind::Max),
         ] {
             assert_eq!(target.descriptor().cproto, NativeCProto::GenericMagic);
             assert!(!target.descriptor().cproto.default_is_constructor());
@@ -4618,6 +4791,20 @@ mod tests {
             NativeCProto::IteratorNext
         );
         assert!(!NativeCProto::IteratorNext.default_is_constructor());
+        assert_eq!(
+            NativeFunctionId::MathUnary(MathUnaryKind::Round)
+                .descriptor()
+                .cproto,
+            NativeCProto::UnaryF64
+        );
+        assert_eq!(
+            NativeFunctionId::MathBinary(MathBinaryKind::Pow)
+                .descriptor()
+                .cproto,
+            NativeCProto::BinaryF64
+        );
+        assert!(!NativeCProto::UnaryF64.default_is_constructor());
+        assert!(!NativeCProto::BinaryF64.default_is_constructor());
     }
 
     #[test]
