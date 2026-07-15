@@ -1,5 +1,5 @@
 use crate::bigint::{BigIntError, JsBigInt};
-use crate::bytecode::{BytecodeFunction, Instruction};
+use crate::bytecode::{ArgumentsKind, BytecodeFunction, Instruction};
 use crate::error::{Error, ErrorKind, NativeErrorKind};
 use crate::heap::{ContextId, FunctionMetadata};
 use crate::object::ObjectRef;
@@ -152,6 +152,9 @@ pub(crate) trait VmHost {
     /// QuickJS `OP_set_name_computed`. `key` has already passed through
     /// `ToPropertyKey`, so this hook must not repeat observable conversion.
     fn set_function_name_computed(&mut self, value: &Value, key: &Value) -> Result<(), Error>;
+    /// Create the current ordinary function's mapped or unmapped arguments
+    /// object in its defining realm.
+    fn create_arguments(&mut self, kind: ArgumentsKind) -> Result<Completion, Error>;
     /// Create a fresh ordinary Object in the executing bytecode's realm.
     fn object(&mut self) -> Result<Completion, Error>;
     /// Create a fresh Array in the executing bytecode's realm from one dense
@@ -289,6 +292,8 @@ struct DetachedHost<'a> {
     #[cfg(test)]
     object_results: VecDeque<Completion>,
     #[cfg(test)]
+    arguments_results: VecDeque<(ArgumentsKind, Completion)>,
+    #[cfg(test)]
     set_object_prototype_results: VecDeque<Completion>,
     #[cfg(test)]
     set_object_prototype_inputs: Vec<(Value, Value)>,
@@ -329,6 +334,8 @@ impl<'a> DetachedHost<'a> {
             defined_array_elements: Vec::new(),
             #[cfg(test)]
             object_results: VecDeque::new(),
+            #[cfg(test)]
+            arguments_results: VecDeque::new(),
             #[cfg(test)]
             set_object_prototype_results: VecDeque::new(),
             #[cfg(test)]
@@ -480,6 +487,20 @@ impl VmHost for DetachedHost<'_> {
     fn set_function_name_computed(&mut self, _value: &Value, _key: &Value) -> Result<(), Error> {
         Err(Error::internal(
             "detached VM cannot name a runtime-owned function object",
+        ))
+    }
+
+    fn create_arguments(&mut self, kind: ArgumentsKind) -> Result<Completion, Error> {
+        #[cfg(test)]
+        if let Some((expected, outcome)) = self.arguments_results.pop_front() {
+            if expected != kind {
+                return Err(Error::internal("unexpected detached arguments kind"));
+            }
+            return Ok(outcome);
+        }
+        let _ = kind;
+        Err(Error::internal(
+            "detached VM cannot create runtime-owned arguments objects",
         ))
     }
 
@@ -948,6 +969,10 @@ impl CallFrame {
         host: &mut impl VmHost,
     ) -> Result<Option<Completion>, Error> {
         match instruction {
+            Instruction::Arguments(kind) => match host.create_arguments(*kind)? {
+                Completion::Return(arguments) => self.stack.push(arguments),
+                Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+            },
             Instruction::Object => match host.object()? {
                 Completion::Return(object) => self.stack.push(object),
                 Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
@@ -1033,7 +1058,8 @@ impl CallFrame {
 
             if matches!(
                 instruction,
-                Instruction::Object
+                Instruction::Arguments(_)
+                    | Instruction::Object
                     | Instruction::SetNameComputed
                     | Instruction::SetProto
                     | Instruction::CopyDataProperties
@@ -1067,6 +1093,9 @@ impl CallFrame {
                         Completion::Return(array) => self.stack.push(array),
                         Completion::Throw(value) => return Ok(Completion::Throw(value)),
                     }
+                }
+                Instruction::Arguments(_) => {
+                    unreachable!("arguments-object dispatch was bypassed")
                 }
                 Instruction::Object => unreachable!("object literal dispatch was bypassed"),
                 Instruction::SetName(index) => {
@@ -2451,7 +2480,7 @@ fn bigint_error(error: BigIntError) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use crate::bytecode::{BytecodeFunction, Instruction};
+    use crate::bytecode::{ArgumentsKind, BytecodeFunction, Instruction};
     use crate::error::ErrorKind;
     use crate::value::{JsString, Value};
 
@@ -2475,6 +2504,50 @@ mod tests {
         };
 
         assert_eq!(Vm::new().execute(&function).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn arguments_opcode_forwards_kind_and_host_completion() {
+        for kind in [ArgumentsKind::Mapped, ArgumentsKind::Unmapped] {
+            let function = BytecodeFunction {
+                name: None,
+                code: vec![Instruction::Arguments(kind), Instruction::Return],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 1,
+            };
+            function.verify().unwrap();
+            let mut host = DetachedHost::new(&function);
+            host.arguments_results
+                .push_back((kind, Completion::Return(Value::Int(42))));
+            assert_eq!(
+                CallFrame::new(1)
+                    .execute(&function.code, &mut host)
+                    .unwrap(),
+                Completion::Return(Value::Int(42))
+            );
+        }
+
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Arguments(ArgumentsKind::Unmapped),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        let thrown = Value::String(JsString::from_static("arguments throw"));
+        let mut host = DetachedHost::new(&function);
+        host.arguments_results
+            .push_back((ArgumentsKind::Unmapped, Completion::Throw(thrown.clone())));
+        assert_eq!(
+            CallFrame::new(1)
+                .execute(&function.code, &mut host)
+                .unwrap(),
+            Completion::Throw(thrown)
+        );
     }
 
     #[test]

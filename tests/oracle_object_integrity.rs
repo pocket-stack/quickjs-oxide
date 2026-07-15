@@ -8,9 +8,9 @@ use quickjs_oxide::{
 
 // Pins QuickJS 2026-06-04 `js_object_seal` and `js_object_isSealed` for
 // Object.seal/freeze/isSealed/isFrozen. Proxy trap invariants, non-empty
-// TypedArray freeze failures, arguments objects and module namespace objects
-// are recorded as oracle-only or explicit boundaries until those object
-// families exist in the Rust runtime.
+// TypedArray freeze failures and module namespace objects are recorded as
+// oracle-only or explicit boundaries; mapped and unmapped Arguments integrity
+// semantics are locked by their dedicated differential.
 
 const PRIMITIVE_CASES: &[(&str, &str)] = &[
     (
@@ -493,8 +493,8 @@ fn object_integrity_records_current_exotic_object_gap() {
         Value::String(JsString::try_from_utf8("undefined|undefined|undefined").unwrap()),
         "activate the exotic integrity vectors when these object families are published",
     );
-    // Arguments objects and module namespace objects remain additional
-    // ownKeys/DefineOwnProperty integration points for the integrity surface.
+    // Module namespace objects remain an additional ownKeys/DefineOwnProperty
+    // integration point for the integrity surface.
 }
 
 fn compare_cases(group: &str, cases: &[(&str, &str)]) {

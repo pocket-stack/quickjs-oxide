@@ -780,6 +780,7 @@ impl Runtime {
                     PrimitiveObjectData::Symbol(_) | PrimitiveObjectData::BigInt(_),
                 ) => JsString::from_static("Object"),
                 ObjectPayload::Array { .. } => JsString::from_static("Array"),
+                ObjectPayload::Arguments { .. } => JsString::from_static("Arguments"),
                 ObjectPayload::Ordinary
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::GlobalObject { .. } => JsString::from_static("Object"),

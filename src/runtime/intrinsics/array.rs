@@ -625,6 +625,14 @@ impl Runtime {
                 ));
             }
         };
+        let Value::Object(values_object) = &values else {
+            unreachable!("Array.prototype.values bootstrap validated an object value")
+        };
+        self.0
+            .state
+            .borrow_mut()
+            .heap
+            .attach_array_prototype_values(realm, values_object.object_id())?;
         let iterator = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Iterator));
         if !self.define_own_property(
             array_prototype,

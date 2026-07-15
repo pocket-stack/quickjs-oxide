@@ -7,6 +7,18 @@ pub const MAX_STACK_SIZE: u16 = 65_534;
 /// QuickJS `JS_MAX_LOCAL_VARS` for one bytecode function.
 pub const MAX_LOCAL_SLOTS: u16 = 65_534;
 
+/// Ordinary-function arguments object selected by QuickJS's
+/// `OP_special_object` lowering.
+///
+/// Simple sloppy parameter lists share their argument cells with indexed
+/// properties; strict (and, once supported, non-simple) functions receive an
+/// independent snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ArgumentsKind {
+    Mapped,
+    Unmapped,
+}
+
 /// Stack-machine operations deliberately use the names and stack behavior of
 /// their `QuickJS` counterparts. This typed form is the current compiler IR and
 /// verified execution format; a future compact encoder must share this opcode
@@ -29,6 +41,10 @@ pub enum Instruction {
     PushTrue,
     PushThis,
     PushNewTarget,
+    /// QuickJS `OP_special_object` for an ordinary function's lazily selected
+    /// arguments binding. Runtime creation still occurs in the entry prologue,
+    /// before body function hoists.
+    Arguments(ArgumentsKind),
     GetLocal(u16),
     PutLocal(u16),
     SetLocal(u16),
@@ -256,6 +272,7 @@ impl Instruction {
             | Self::PushTrue
             | Self::PushThis
             | Self::PushNewTarget
+            | Self::Arguments(_)
             | Self::GetLocal(_)
             | Self::GetLocalCheck(_)
             | Self::GetArg(_)
@@ -915,7 +932,7 @@ fn enqueue_fallthrough(
 
 #[cfg(test)]
 mod tests {
-    use super::{BytecodeFunction, Instruction, MAX_LOCAL_SLOTS};
+    use super::{ArgumentsKind, BytecodeFunction, Instruction, MAX_LOCAL_SLOTS};
     use crate::{JsString, Value};
 
     #[test]
@@ -935,6 +952,35 @@ mod tests {
             max_stack: 1,
         };
         assert_eq!(function.verify().unwrap().max_stack, 1);
+    }
+
+    #[test]
+    fn verifier_models_arguments_creation_as_one_fresh_value() {
+        for kind in [ArgumentsKind::Mapped, ArgumentsKind::Unmapped] {
+            let function = BytecodeFunction {
+                name: None,
+                code: vec![Instruction::Arguments(kind), Instruction::Return],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 1,
+            };
+            assert_eq!(function.verify().unwrap().max_stack, 1);
+        }
+
+        let undersized = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Arguments(ArgumentsKind::Mapped),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 0,
+        };
+        assert_eq!(
+            undersized.verify().unwrap_err().message(),
+            "declared maximum stack is smaller than required"
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! each context is a separate realm and execution surface. The heap and
 //! intrinsics extend this boundary; they are not hidden in the compiler or VM.
 
+mod arguments;
 mod bytecode_publish;
 mod for_in;
 mod intrinsics;
@@ -4648,6 +4649,7 @@ impl Runtime {
                 } => (*bytecode, closure_slots.clone()),
                 ObjectPayload::Ordinary
                 | ObjectPayload::Array { .. }
+                | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
@@ -4699,6 +4701,7 @@ impl Runtime {
             }
             ObjectPayload::Ordinary
             | ObjectPayload::Array { .. }
+            | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }
             | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)
@@ -5132,6 +5135,7 @@ impl Runtime {
                 }
                 ObjectPayload::Ordinary
                 | ObjectPayload::Array { .. }
+                | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
@@ -6204,6 +6208,7 @@ impl Runtime {
                         }
                         ObjectPayload::Ordinary
                         | ObjectPayload::Array { .. }
+                        | ObjectPayload::Arguments { .. }
                         | ObjectPayload::ArrayIterator { .. }
                         | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
@@ -6573,6 +6578,7 @@ impl Runtime {
                 }
                 ObjectPayload::Ordinary
                 | ObjectPayload::Array { .. }
+                | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
@@ -6781,6 +6787,7 @@ impl Runtime {
                         | ObjectPayload::BytecodeFunction { .. } => None,
                         ObjectPayload::Ordinary
                         | ObjectPayload::Array { .. }
+                        | ObjectPayload::Arguments { .. }
                         | ObjectPayload::ArrayIterator { .. }
                         | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
@@ -6878,6 +6885,7 @@ impl Runtime {
                         }
                         ObjectPayload::Ordinary
                         | ObjectPayload::Array { .. }
+                        | ObjectPayload::Arguments { .. }
                         | ObjectPayload::ArrayIterator { .. }
                         | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
@@ -7422,6 +7430,7 @@ impl Runtime {
                     }
                     ObjectPayload::Ordinary
                     | ObjectPayload::Array { .. }
+                    | ObjectPayload::Arguments { .. }
                     | ObjectPayload::ArrayIterator { .. }
                     | ObjectPayload::ForInIterator(_)
                     | ObjectPayload::Primitive(_)
@@ -8484,6 +8493,7 @@ impl Runtime {
                 ObjectPayload::GlobalObject { uninitialized_vars } => Some(uninitialized_vars),
                 ObjectPayload::Ordinary
                 | ObjectPayload::Array { .. }
+                | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)

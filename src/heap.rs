@@ -364,6 +364,11 @@ pub struct ContextData {
     /// Realm-local `%Array%` constructor, attached after the cyclic Context
     /// has been published.
     pub array_constructor: Option<ObjectId>,
+    /// Original realm-local `Array.prototype.values` identity. QuickJS caches
+    /// this callable in `JSContext.array_proto_values` and installs that
+    /// cached value on every later arguments object even if user code mutates
+    /// or deletes `Array.prototype.values`.
+    pub array_prototype_values: Option<ObjectId>,
     /// Realm-local `%StringIteratorPrototype%`, whose prototype is the realm's
     /// `%IteratorPrototype%`.
     pub string_iterator_prototype: ObjectId,
@@ -375,7 +380,7 @@ pub struct ContextData {
     /// `%Function.prototype%` and the global object.
     pub function_constructor: Option<ObjectId>,
     /// Shared frozen poison callable used by legacy restricted function
-    /// accessors and future restricted arguments objects.
+    /// accessors and strict arguments objects.
     pub throw_type_error: Option<ObjectId>,
     pub global_object: ObjectId,
     /// Null-prototype storage for global lexical bindings (`let`/`const`).
@@ -413,6 +418,7 @@ impl ContextData {
             iterator_prototype,
             array_iterator_prototype,
             array_constructor: None,
+            array_prototype_values: None,
             string_iterator_prototype,
             primitive_prototypes: [None; PrimitiveKind::COUNT],
             function_constructor: None,
@@ -707,6 +713,14 @@ pub enum ObjectPayload {
         /// converted to ordinary indexed properties.
         fast_len: Option<u32>,
     },
+    /// QuickJS's two arguments classes share the same fast indexed storage
+    /// protocol. Mapped entries use `PropertySlot::VarRef`; unmapped entries
+    /// use ordinary data slots. `None` records the irreversible fast-to-slow
+    /// transition caused by redefining or deleting a non-tail index.
+    Arguments {
+        mapped: bool,
+        fast_len: Option<u32>,
+    },
     /// `JS_CLASS_ARRAY_ITERATOR`: the boxed source is released permanently at
     /// exhaustion, while `kind` selects keys, values, or entry pairs.
     ArrayIterator {
@@ -758,6 +772,7 @@ pub enum ObjectPayload {
 pub enum ObjectKind {
     Ordinary,
     Array,
+    Arguments,
     ArrayIterator,
     ForInIterator,
     Primitive,
@@ -1527,6 +1542,30 @@ impl ObjectData {
         }
     }
 
+    /// Construct one mapped or unmapped Arguments exotic object. The caller
+    /// installs the exact actual-argument prefix and the class-specific
+    /// `length`, `callee`, and `@@iterator` properties after allocation.
+    #[must_use]
+    pub const fn arguments(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        mapped: bool,
+        fast_len: u32,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::Arguments,
+            payload: ObjectPayload::Arguments {
+                mapped,
+                fast_len: Some(fast_len),
+            },
+        }
+    }
+
     /// Construct a branded Array Iterator at index zero.
     #[must_use]
     pub const fn array_iterator(
@@ -2101,6 +2140,7 @@ impl Heap {
             }
             ObjectPayload::Ordinary
             | ObjectPayload::Array { .. }
+            | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }
             | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)
@@ -2158,6 +2198,45 @@ impl Heap {
             unreachable!("context identity was validated before retaining the thrower")
         };
         context.throw_type_error = Some(thrower);
+        Ok(())
+    }
+
+    /// Cache the original realm-local `Array.prototype.values` callable.
+    /// This is a distinct Context root because the public prototype property
+    /// is writable and configurable while arguments creation must keep using
+    /// the bootstrap identity.
+    pub(crate) fn attach_array_prototype_values(
+        &mut self,
+        realm: ContextId,
+        values: ObjectId,
+    ) -> Result<(), HeapError> {
+        let context = self.context(realm)?;
+        if context.array_prototype_values.is_some() {
+            return Err(HeapError::Invariant(
+                "context already has an Array.prototype.values cache root",
+            ));
+        }
+        if !matches!(
+            self.object(values)?.payload,
+            ObjectPayload::NativeFunction {
+                data: NativeFunctionData {
+                    target: NativeFunctionId::ArrayPrototypeIterator(ArrayIteratorKind::Value),
+                    realm: Some(target_realm),
+                    ..
+                }
+            } if target_realm == realm
+        ) {
+            return Err(HeapError::Invariant(
+                "Array.prototype.values cache is not the realm's values native",
+            ));
+        }
+
+        self.retain_raw(RawId::Object(values), 1)?;
+        let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(realm))?.data
+        else {
+            unreachable!("context identity was validated before retaining Array values")
+        };
+        context.array_prototype_values = Some(values);
         Ok(())
     }
 
@@ -2840,6 +2919,35 @@ impl Heap {
         Ok(())
     }
 
+    /// Read one Arguments object's representation-sensitive indexed prefix.
+    pub fn arguments_state(&self, id: ObjectId) -> Result<(bool, Option<u32>), HeapError> {
+        match &self.object(id)?.payload {
+            ObjectPayload::Arguments { mapped, fast_len } => Ok((*mapped, *fast_len)),
+            _ => Err(HeapError::Invariant(
+                "Arguments state requested for an object with the wrong class",
+            )),
+        }
+    }
+
+    /// Update one Arguments object's fast indexed representation. Conversion
+    /// to `None` is irreversible at the runtime semantic boundary.
+    pub fn set_arguments_fast_len(
+        &mut self,
+        id: ObjectId,
+        fast_len: Option<u32>,
+    ) -> Result<(), HeapError> {
+        let ObjectPayload::Arguments {
+            fast_len: current, ..
+        } = &mut self.object_mut(id)?.payload
+        else {
+            return Err(HeapError::Invariant(
+                "Arguments fast state update reached an object with the wrong class",
+            ));
+        };
+        *current = fast_len;
+        Ok(())
+    }
+
     /// Advance within one snapshotted level without cloning the complete key
     /// vector or visited set. Non-enumerable and duplicate prototype keys are
     /// consumed internally because neither can be yielded.
@@ -3328,6 +3436,7 @@ impl Heap {
             (object.kind, &object.payload),
             (ObjectKind::Ordinary, ObjectPayload::Ordinary)
                 | (ObjectKind::Array, ObjectPayload::Array { .. })
+                | (ObjectKind::Arguments, ObjectPayload::Arguments { .. })
                 | (
                     ObjectKind::ArrayIterator,
                     ObjectPayload::ArrayIterator { .. }
@@ -3787,6 +3896,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
     let closure_count = match &object.payload {
         ObjectPayload::Ordinary
         | ObjectPayload::Array { .. }
+        | ObjectPayload::Arguments { .. }
         | ObjectPayload::ArrayIterator { .. }
         | ObjectPayload::ForInIterator(_)
         | ObjectPayload::Primitive(_)
@@ -3811,6 +3921,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
     match &object.payload {
         ObjectPayload::Ordinary
         | ObjectPayload::Array { .. }
+        | ObjectPayload::Arguments { .. }
         | ObjectPayload::Primitive(_)
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. } => {}
@@ -3904,7 +4015,7 @@ fn raw_value_edges(value: &RawValue) -> Vec<RawId> {
 
 fn context_edges(context: &ContextData) -> Vec<RawId> {
     let mut edges = Vec::with_capacity(
-        10usize
+        11usize
             .saturating_add(PrimitiveKind::COUNT)
             .saturating_add(NativeErrorKind::COUNT)
             .saturating_add(context.global_objects.len())
@@ -3927,6 +4038,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     );
     edges.extend(context.function_constructor.map(RawId::Object));
     edges.extend(context.array_constructor.map(RawId::Object));
+    edges.extend(context.array_prototype_values.map(RawId::Object));
     edges.extend(context.throw_type_error.map(RawId::Object));
     edges.push(RawId::Object(context.global_object));
     edges.push(RawId::Object(context.global_var_object));
@@ -3995,6 +4107,7 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
             .collect::<Vec<_>>(),
         ObjectPayload::Ordinary
         | ObjectPayload::Array { .. }
+        | ObjectPayload::Arguments { .. }
         | ObjectPayload::ArrayIterator { .. }
         | ObjectPayload::ForInIterator(_)
         | ObjectPayload::GlobalObject { .. }
@@ -4772,6 +4885,36 @@ mod tests {
         assert!(matches!(heap.object(object), Err(HeapError::Stale { .. })));
         assert_eq!(heap.shape_strong_count(shape), Ok(1));
         assert_eq!(heap.release_shape(shape).unwrap().finalized_shapes, 1);
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn mapped_arguments_payload_roots_varrefs_and_tracks_fast_state() {
+        let mut heap = Heap::new();
+        let shape = one_slot_shape(&mut heap);
+        let cell = heap
+            .allocate_var_ref(VarRefData::local(RawValue::Int(7)))
+            .unwrap();
+        let arguments = heap
+            .allocate_object(ObjectData::arguments(
+                shape,
+                vec![PropertySlot::VarRef(cell)],
+                true,
+                1,
+            ))
+            .unwrap();
+        assert_eq!(heap.arguments_state(arguments), Ok((true, Some(1))));
+        assert_eq!(heap.var_ref_strong_count(cell), Ok(2));
+
+        heap.set_arguments_fast_len(arguments, None).unwrap();
+        assert_eq!(heap.arguments_state(arguments), Ok((true, None)));
+        heap.release_var_ref(cell).unwrap();
+        assert_eq!(heap.var_ref_strong_count(cell), Ok(1));
+
+        let cleanup = heap.release_object(arguments).unwrap();
+        assert_eq!(cleanup.finalized_objects, 1);
+        assert_eq!(cleanup.finalized_var_refs, 1);
+        heap.release_shape(shape).unwrap();
         assert_eq!(heap.counts().live, 0);
     }
 

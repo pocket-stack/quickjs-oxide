@@ -29,6 +29,7 @@ impl Runtime {
             ObjectPayload::Primitive(PrimitiveObjectData::String(value)) => Some(value.len()),
             ObjectPayload::Ordinary
             | ObjectPayload::Array { .. }
+            | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }
             | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)
@@ -461,10 +462,15 @@ impl Runtime {
             Some(CompleteOrdinaryPropertyDescriptor::Accessor { set: Some(_), .. }) => {
                 return Ok(PropertySetAction::Rejected(PropertySetRejection::ReadOnly));
             }
-            Some(CompleteOrdinaryPropertyDescriptor::Data { .. }) => OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(value),
-                ..OrdinaryPropertyDescriptor::new()
-            },
+            Some(CompleteOrdinaryPropertyDescriptor::Data { .. }) => {
+                if self.set_arguments_index_value(&receiver, key, &value)? {
+                    return Ok(PropertySetAction::Complete);
+                }
+                OrdinaryPropertyDescriptor {
+                    value: DescriptorField::Present(value),
+                    ..OrdinaryPropertyDescriptor::new()
+                }
+            }
             None => {
                 if !self.is_extensible(&receiver)? {
                     return Ok(PropertySetAction::Rejected(
@@ -566,6 +572,9 @@ impl Runtime {
         if descriptor.is_mixed_descriptor() {
             return Err(PropertyDefinitionError::InvalidDescriptor.into());
         }
+        if let Some(defined) = self.define_arguments_index(object, key, descriptor)? {
+            return Ok(PropertyDefineOutcome::Defined(defined));
+        }
         match self.array_own_key(object, key)? {
             ArrayOwnKey::Length => {
                 return self.define_array_length(realm, object, key, descriptor);
@@ -581,7 +590,7 @@ impl Runtime {
 
     /// Apply the shared ordinary descriptor algorithm after any class exotic
     /// preconditions and side effects have been handled by the caller.
-    fn define_ordinary_own_property(
+    pub(super) fn define_ordinary_own_property(
         &self,
         object: &ObjectRef,
         key: &PropertyKey,
@@ -1125,6 +1134,9 @@ impl Runtime {
             ArrayOwnKey::Index(index) => Some(index),
             ArrayOwnKey::Length | ArrayOwnKey::Other => None,
         };
+        let arguments_index = self
+            .arguments_index_state(object, key)?
+            .map(|(index, _, _)| index);
         let global_var_ref = {
             let state = self.0.state.borrow();
             let object_data = state.heap.object(object.object_id())?;
@@ -1154,6 +1166,7 @@ impl Runtime {
                 }
                 ObjectPayload::Ordinary
                 | ObjectPayload::Array { .. }
+                | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
@@ -1224,6 +1237,20 @@ impl Runtime {
         } else {
             None
         };
+        let arguments_fast_update = if let Some(arguments_index) = arguments_index {
+            match state.heap.arguments_state(object_id)?.1 {
+                Some(fast_len) if arguments_index < fast_len => {
+                    Some(if arguments_index + 1 == fast_len {
+                        Some(arguments_index)
+                    } else {
+                        None
+                    })
+                }
+                Some(_) | None => None,
+            }
+        } else {
+            None
+        };
 
         let mut next_entries = entries;
         next_entries.remove(index);
@@ -1231,6 +1258,11 @@ impl Runtime {
         state.replace_layout(object_id, prototype, &next_entries, slots)?;
         if let Some(next_fast_len) = fast_update {
             state.heap.set_array_fast_len(object_id, next_fast_len)?;
+        }
+        if let Some(next_fast_len) = arguments_fast_update {
+            state
+                .heap
+                .set_arguments_fast_len(object_id, next_fast_len)?;
         }
         Ok(true)
     }

@@ -4,6 +4,7 @@
 //! runtime's object, call, iterator, realm and captured-variable machinery.
 
 use super::*;
+use crate::bytecode::ArgumentsKind;
 use crate::vm::{CallInput, Vm, VmHost};
 
 enum FrameBinding {
@@ -112,6 +113,12 @@ pub(super) struct RuntimeVmHost {
     runtime: Runtime,
     active_frame_token: ActiveFrameToken,
     current_realm: ContextId,
+    /// Current callee retained for sloppy mapped `arguments.callee`.
+    /// Detached host-only tests do not execute the arguments opcode.
+    current_function: Option<ObjectRef>,
+    /// Authored call arity before the argument frame was padded to formal
+    /// width. `arguments.length` and its dense prefix use this exact count.
+    actual_argument_count: usize,
     constants: Rc<[BytecodeConstant]>,
     argument_definitions: Rc<[VariableDefinition]>,
     local_definitions: Rc<[VariableDefinition]>,
@@ -138,6 +145,8 @@ impl RuntimeVmHost {
             runtime,
             active_frame_token: ActiveFrameToken(0),
             current_realm,
+            current_function: None,
+            actual_argument_count: 0,
             constants: Rc::from([]),
             argument_definitions: Rc::from([]),
             local_definitions: Rc::from([]),
@@ -683,6 +692,8 @@ impl Runtime {
             runtime: self.clone(),
             active_frame_token: active_frame.token(),
             current_realm: realm,
+            current_function: Some(callable.as_object().clone()),
+            actual_argument_count: arguments.len(),
             constants,
             argument_definitions,
             local_definitions,
@@ -1003,6 +1014,7 @@ impl VmHost for RuntimeVmHost {
             | ObjectPayload::BytecodeFunction { .. } => "function",
             ObjectPayload::Ordinary
             | ObjectPayload::Array { .. }
+            | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }
             | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)
@@ -1185,6 +1197,56 @@ impl VmHost for RuntimeVmHost {
         self.runtime
             .define_object_name(value, &name)
             .map_err(runtime_error_to_vm_error)
+    }
+
+    fn create_arguments(&mut self, kind: ArgumentsKind) -> Result<Completion, Error> {
+        if self.actual_argument_count > self.arguments.len() {
+            return Err(Error::internal(
+                "actual argument count exceeds the padded argument frame",
+            ));
+        }
+        let object = match kind {
+            ArgumentsKind::Mapped => {
+                let current_function = self
+                    .current_function
+                    .clone()
+                    .ok_or_else(|| Error::internal("arguments creation has no current function"))?;
+                let mut roots = Vec::with_capacity(self.arguments.len());
+                for (index, binding) in self.arguments.iter_mut().enumerate() {
+                    let index = u16::try_from(index)
+                        .map_err(|_| Error::internal("argument index exceeds u16::MAX"))?;
+                    roots.push(capture_frame_binding(
+                        &self.runtime,
+                        binding,
+                        ClosureVariable {
+                            source: ClosureSource::ParentArgument(index),
+                            name: ClosureVariableName::None,
+                            is_lexical: false,
+                            is_const: false,
+                            kind: ClosureVariableKind::Normal,
+                        },
+                    )?);
+                }
+                roots.truncate(self.actual_argument_count);
+                self.runtime.new_mapped_arguments_object(
+                    self.current_realm,
+                    &current_function,
+                    roots,
+                )
+            }
+            ArgumentsKind::Unmapped => {
+                let values = self
+                    .arguments
+                    .iter()
+                    .take(self.actual_argument_count)
+                    .map(|binding| read_frame_binding(&self.runtime, binding))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.runtime
+                    .new_unmapped_arguments_object(self.current_realm, values)
+            }
+        }
+        .map_err(runtime_error_to_vm_error)?;
+        Ok(Completion::Return(Value::Object(object)))
     }
 
     fn object(&mut self) -> Result<Completion, Error> {

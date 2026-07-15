@@ -13,8 +13,8 @@ claim full parity.
   capability profile, audited negative-test canaries, and source/metadata host
   requirements keep unsupported grammar, features, modes, and `$262` hooks from
   becoming false passes. Bounded workers preserve canonical byte-for-byte TSV
-  and JSONL ordering. The current vector has 17,365 passes: a 20.78% lower bound
-  after the 18,475 pinned QuickJS target exclusions, or 68.80% among the 25,240
+  and JSONL ordering. The current vector has 18,011 passes: a 21.55% lower bound
+  after the 18,475 pinned QuickJS target exclusions, or 60.54% among the 29,750
   variants with a non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim.
@@ -237,16 +237,28 @@ claim full parity.
   no-op while still rejecting an initialized captured lifetime that skipped
   `CloseLocal`. Function/lexical same-name conflicts are symmetric in ordinary
   bodies, unlike the pinned Program lexical-first quirk. The normal
-  `%Function%` constructor body follows this path too. A source `var arguments`
-  remains an explicit unsupported implicit-arguments boundary unless an
-  explicit parameter or direct same-name body function supplies the ordinary
-  cell; in that supported combination both declaration orders and later `var`
-  initializers match QuickJS. When there is no explicit same-name parameter and
-  a direct body function supplies that cell, QuickJS still allocates its
-  implicit arguments object before overwriting it, an allocation-only
-  difference until parameter expressions are implemented. Mapped `arguments`,
-  parameter expressions, direct/indirect eval environments, and async/generator
-  declarations remain separate slices.
+  `%Function%` constructor body follows this path too. Ordinary functions with
+  the current simple-identifier parameter grammar now select their implicit
+  `arguments` binding lazily during resolution. Direct `delete arguments`
+  remains `false` without allocation; an explicit parameter or body lexical of
+  that name suppresses the implicit object. Otherwise an entry prologue creates
+  it before direct body-function hoists, so `var arguments` shares the object
+  local and a same-name body function overwrites that initialized local in the
+  pinned order. The implicit binding also precedes a sloppy named-expression
+  private self name.
+
+  Sloppy simple parameters use mapped Arguments VarRef cells and strict
+  functions use an unmapped snapshot. `length` and indexed properties use the
+  authored actual argc rather than padded formal slots; duplicate formals,
+  extra and missing actuals, escaped mappings and nested calls follow QuickJS.
+  The object has `%Object.prototype%`, the `Arguments` brand, cached original
+  `Array.prototype.values` iterator, mapped data or strict poison `callee`, and
+  exact descriptors/key order. Existing-index Set stays fast; explicit define,
+  delete, accessor conversion and `writable: false` reproduce QuickJS's
+  fast/slow and mapping-detach transitions, including representation-sensitive
+  `for-in`. Default/rest/destructuring parameter lists and their forced-unmapped
+  arguments semantics, direct/indirect eval environments, arrows, and
+  async/generator functions remain separate slices.
 
   Ordinary declarations in brace blocks and a switch CaseBlock use QuickJS's
   distinct scoped-function path. The binding is registered immediately after
@@ -1105,7 +1117,7 @@ claim full parity.
   deeper join, sort, slice and flatten ceilings, but pinned QuickJS still
   permits platform-dependent chains, so exact byte-threshold parity requires
   the native-call trampoline. Proxy descriptor traps/invariants, integer-indexed
-  TypedArray details, arguments and module-namespace exotic descriptors remain
+  TypedArray details and module-namespace exotic descriptors remain
   explicit object-model boundaries. Future Proxy work must preserve two pinned
   deviations: incomplete identity checks for some frozen descriptors, and the
   nested-Proxy undefined-trap path which bypasses target `[[IsExtensible]]`.
@@ -1123,8 +1135,8 @@ claim full parity.
   absent. Shape-time filtering leaves non-enumerable AutoInit slots lazy.
   Direct getter/setter recursion has a nine-call family guard and interleaved
   recursion is covered by the shared weighted budget. Proxy descriptor recheck
-  and invariant quirks, stale TypedArray index snapshots, arguments and module
-  namespace sources remain explicit object-model boundaries.
+  and invariant quirks, stale TypedArray index snapshots, and module namespace
+  sources remain explicit object-model boundaries.
   `seal` and `freeze` preserve every primitive without boxing. For objects they
   first prevent extensions and then snapshot every own string and Symbol key.
   `seal` clears configurability while preserving data writability;
@@ -1135,9 +1147,10 @@ claim full parity.
   primitives and preserve QuickJS's observable non-spec order: snapshot keys,
   read and short-circuit on current descriptors, and query extensibility only
   after every descriptor passes. Ordinary, Array and String-wrapper descriptor
-  transitions are covered; Proxy trap order/partial failures, non-empty
-  TypedArray rejection, mapped arguments and module namespace behavior remain
-  explicit object-model boundaries until those exotic kinds exist.
+  transitions are covered, including mapped and unmapped Arguments objects;
+  Proxy trap order/partial failures, non-empty TypedArray rejection, and module
+  namespace behavior remain explicit object-model boundaries until those
+  exotic kinds exist.
   `fromEntries` allocates a fresh ordinary result in the builtin's defining
   realm before reading its input, obtains and caches a synchronous iterator's
   `next`, and requires every yielded entry itself to be an object. It reads
@@ -1162,8 +1175,8 @@ claim full parity.
   catchable `InternalError` before the Rust host stack is exhausted; exact
   QuickJS platform-stack depth still awaits the general native-call trampoline.
   Proxy `getOwnPropertyDescriptor` traps and invariants, integer-indexed
-  TypedArrays, mapped arguments and module namespaces remain the corresponding
-  explicit object-model boundaries.
+  TypedArrays, and module namespaces remain the corresponding explicit
+  object-model boundaries.
   Anchors: `quickjs.c` 8905-8950, 10680-10702, 15840-15927, 16639-16675,
   16923-16996, 39796-40716, 40748-40927,
   50728-50831, 50992-51107, 52115-52230, and 56291-56313.
@@ -1708,6 +1721,15 @@ claim full parity.
   captured later lexicals and failed initializers, normal `%Function%` bodies,
   exact full/StripDebug stacks and parser errors, explicit unsupported
   declaration boundaries, and the pinned cross-realm regression.
+  The `oracle_arguments` target locks 33 pinned QuickJS value observations over
+  lazy binding selection, actual argc, mapped/unmapped aliases, duplicate and
+  shadowing rules, body hoists, escaped cells, descriptor and integrity
+  transitions, cached realm intrinsics, callee poisoning, construction,
+  call/apply/bind forwarding, and fast/slow `for-in`. Rust-only tests separately
+  pin realm-local iterator/poison identities, heap VarRef edges and fast-state
+  transitions. The Annex B block-function probe deliberately retains the
+  pinned QuickJS behavior even though one Test262 staging test expects the
+  outer implicit object to be overwritten.
   The `oracle_block_functions` target locks block/switch entry visibility,
   separate lexical/Annex closure identity, sloppy duplicate first-versus-last
   behavior, strict and source-ordered conflicts, parameter/`arguments` Annex
@@ -1755,7 +1777,7 @@ host-missing outcomes are failures, not additional feature skips.
 The language slice is intentionally narrow. Async/generator declarations,
 for-in destructuring, `for-await`, for-of destructuring, other general
 assignment targets, module resolution, object method/accessor definitions and
-their home-object semantics, mapped `arguments`, direct/indirect eval
+their home-object semantics, non-simple parameter lists, direct/indirect eval
 declaration environments, arrow/async/generator functions, `with`, and callable
 Proxy classes are not yet implemented. Unsupported declaration contexts are
 rejected instead of being
@@ -1779,12 +1801,6 @@ failure today; matching the allocation order safely requires a provisional
 two-phase bytecode-function reservation plus failure-injection coverage, rather
 than attempting to roll back migrated VarRefs after the fact.
 
-Ordinary reads and calls of the valid implicit `arguments` binding are
-likewise rejected where materializing it as an ordinary local would be
-observably wrong. Direct `delete arguments` is the narrow exception: it resolves
-to `false` without materializing or reading the arguments object, including
-inside `function arguments(){...}`, where QuickJS resolves the implicit
-arguments binding before the private function name.
 Derived/class/super construction, dynamic Generator/Async/AsyncGenerator
 Function constructors, `AggregateError`, other native builtin constructor
 families, Proxy construct dispatch, and Reflect APIs remain. Typed
@@ -1810,8 +1826,8 @@ read-only execution; bytecode debug serialization remains pending. The normal
 `%Function%` graph is present, but dynamic formal parameters remain limited to
 simple identifiers and bodies to the current statement, expression, and simple
 body/block/switch/classic-for and for-in/of-head lexical-declaration grammar;
-implicit `arguments`, default/rest/destructuring parameters, generator/async
-kinds, and Proxy new-target realms remain pending.
+default/rest/destructuring parameters and their non-simple Arguments semantics,
+generator/async kinds, and Proxy new-target realms remain pending.
 Compiler input is still UTF-8,
 so dynamic source containing an unpaired UTF-16 surrogate throws an explicit
 implementation-gap `InternalError` instead of being silently rewritten. The
@@ -1923,7 +1939,10 @@ adapter, per-frame argument/local/capture storage, iterator protocol bridge and
 bytecode-host error conversion now live in `runtime/vm_host.rs`; host layout is
 private to that module, including bytecode frame initialization. The hidden
 for-in enumeration algorithm and prototype-level snapshots live in
-`runtime/for_in.rs`. Ordinary,
+`runtime/for_in.rs`. Arguments construction, cached realm intrinsic roots,
+mapped VarRef transitions and representation state live in the 621-line
+`runtime/arguments.rs`, so this feature adds only module wiring and exhaustive
+class matches to the parent. Ordinary,
 String-exotic and Array property lookup/definition, AutoInit materialization,
 deletion, own-key, prototype and extensibility operations now live in
 `runtime/properties.rs`; their action records remain the parent module's
@@ -1934,7 +1953,7 @@ main runtime file merely to wire a selector. Bytecode draft validation and
 iterative flattening now live in `runtime/bytecode_publish.rs`. The test, Array,
 Object, VM-host, property, native-dispatch and bytecode-publication
 no-semantic-change splits reduced `runtime.rs` from roughly thirty-two thousand
-lines to 9,955 lines. Realm-aware property completion wrappers and storage
+lines to 9,965 lines. Realm-aware property completion wrappers and storage
 helpers, bytecode publication linking and call dispatch, runtime/root lifecycle,
 and the remaining intrinsic families still share the file; `compiler.rs`
 similarly combines several compiler phases.
@@ -2007,6 +2026,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_lexicals -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_declarations -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_arguments -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_block_functions -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -2089,6 +2110,7 @@ Unicode String case conversion, String-rope/byte/native-Error kernels, Unicode
 identifier core, global
 BaseObjects, complete Number-intrinsic and BigInt-intrinsic differentials, and
 the Program-var/function, Program/body/block/switch/classic-for lexical-scope,
+ordinary mapped/unmapped Arguments object,
 single/labelled Annex B, synchronous try/catch/finally, synchronous
 for-in/for-of, Array core/literal/iterator/search/callback/mutation/change-by-copy,
 Object

@@ -48,23 +48,23 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 17,365 pass;
+- 18,011 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 58,322 are classified as unsupported feature, mode, host capability, parser
+- 53,812 are classified as unsupported feature, mode, host capability, parser
   frontier, harness frontier, or unaudited negative-test provenance;
-- 2,074 fail to parse, 5,591 fail at runtime, 208 fail in the harness, and two
+- 2,074 fail to parse, 5,685 fail at runtime, 3,978 fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 17.02% (`17,365 / 102,037`);
-- conservative target-scope lower bound: 20.78%
-  (`17,365 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 68.80%
-  (`17,365 / 25,240`).
+- raw suite pass rate: 17.65% (`18,011 / 102,037`);
+- conservative target-scope lower bound: 21.55%
+  (`18,011 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 60.54%
+  (`18,011 / 29,750`).
 
-The 20.78% figure is the useful whole-project progress floor, not a claim that
-the engine is 20.78% conformant. The 68.80% conditional rate measures quality
+The 21.55% figure is the useful whole-project progress floor, not a claim that
+the engine is 21.55% conformant. The 60.54% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. The capability profile currently admits ten reviewed Test262
 feature tags and 18 reviewed negative-test paths; all
@@ -88,17 +88,22 @@ movement, regressions, newly exposed failures, and unsupported-frontier
 movement. Small implementation commits do not need an independent full-suite
 run.
 
-This simple-head `for-in` milestone moved 16,675 to 17,365 passes with no
-previous-pass regression. Of the 690 added passes, 668 came from the direct
-source frontier, eight from adjacent tests that had previously reached a real
-runtime `SyntaxError`, and 14 from admitting the `for-in-order` feature tag.
-The same expansion honestly exposed 124 direct runtime failures, two direct
-parse failures, and four `for-in-order` runtime failures. The target lower
-bound moved from 19.96% to 20.78%. Progress estimates should therefore quote
-that lower bound together with the unsupported mass and major
-parse/runtime/harness frontiers; the conditional 68.80% rate is diagnostic,
-not an overall estimate. A keyed old/new audit matched all 102,037 variants;
-the 97,403 variants outside the reviewed for-in buckets had no outcome drift.
+This simple-parameter `arguments` milestone moved 17,365 to 18,011 passes with
+no previous-pass regression. The final reviewed set contains 4,873 variants:
+4,519 that had stopped directly or in `propertyHelper.js` at the implicit
+binding, 340 unchanged variants completing the `language/arguments-object`
+directory, and 14 adjacent strict-mode staging variants whose caught dynamic
+`Function` probes now parse lenient `arguments` references successfully.
+
+The keyed transition audit records 625 `unsupported-parser -> pass`, 115
+`unsupported-parser -> fail-runtime`, 21 `fail-runtime -> pass`, and all 3,770
+`unsupported-harness-parser -> harness-error`. Those harness transitions are
+intentional exposure of the next real `Math` blocker, not regressions or
+passes. The target lower bound moved from 20.78% to 21.55%; the conditional
+rate fell from 68.80% to 60.54% because 3,770 previously unsupported variants
+now execute far enough to report an observed harness failure. A complete
+old/new join matched all 102,037 keys, found no old-pass regression, and found
+zero outcome drift among the 97,164 variants outside the reviewed set.
 
 ## Runner contract
 
@@ -148,12 +153,16 @@ boundaries. The full command uses the release runner, defaults to eight workers,
 and compares the complete outcome vector and sidecar by SHA-256. Set
 `TEST262_WORKERS` to change concurrency without changing the expected bytes.
 
-All 3,770 variants that previously stopped at `propertyHelper.js`'s `for-in`
-frontier now reach its next shared blocker: the implicit ordinary-function
-`arguments` binding. Implementing that binding, followed by the missing Math
-surface, is the next high-leverage harness path. The direct `for-in` frontier
-now exposes 44 later unsupported boundaries: 22 implicit-arguments variants,
-ten `with`, ten destructuring, and two object-method variants. The four exposed
-`for-in-order` failures require JSON. Normal implementation work should move the
-classified vector at feature milestones, while focused QuickJS differentials
-protect feature-parity semantics inside each admitted slice.
+All 3,770 `propertyHelper.js` variants now compile past its `arguments.length`
+references and reach the same next blocker: `ReferenceError: 'Math' is not
+defined` at the harness's `Math.pow` constant. Replacing that one expression
+with its constant value in an audit copy lets the complete harness load, making
+the Math intrinsic the next high-leverage shared surface.
+
+Of the 749 variants that had stopped directly at implicit `arguments`, 632 now
+pass. The remaining 117 expose later work: 114 require Date, Promise, JSON,
+Math, RegExp or eval; two retain an existing String replacement failure; and
+one staging Annex B expectation intentionally remains different because the
+pinned QuickJS 2026-06-04 oracle also leaves the implicit arguments object in
+place. Test262 remains the project scoreboard, while focused QuickJS
+differentials decide such target semantics.

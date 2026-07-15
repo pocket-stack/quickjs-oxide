@@ -13,7 +13,9 @@
 
 use crate::atom::AtomTable;
 use crate::bigint::JsBigInt;
-use crate::bytecode::{BytecodeFunction, Instruction, MAX_LOCAL_SLOTS, verify_parts};
+use crate::bytecode::{
+    ArgumentsKind, BytecodeFunction, Instruction, MAX_LOCAL_SLOTS, verify_parts,
+};
 use crate::debug::{DebugInfoMode, Pc2LineEntry, Pc2LineTable, QuickJsSourceLocator, SourceOffset};
 use crate::error::{Error, ErrorKind, NativeErrorMessage, SourceLocation, SourceSpan};
 use crate::function::{
@@ -495,6 +497,12 @@ struct FunctionIr {
     private_name_binding: bool,
     /// Lazily allocated private self-binding local.
     function_name_local: Option<u16>,
+    /// Root local initialized by the typed arguments-object entry prologue.
+    ///
+    /// Like QuickJS's `arguments_var_idx`, this is selected only when source
+    /// resolution (or a function-scoped `var`/function declaration) needs the
+    /// implicit binding. An explicit `arguments` parameter suppresses it.
+    arguments_local: Option<u16>,
     parameters: Vec<String>,
     locals: Vec<String>,
     scopes: Vec<IrScope>,
@@ -510,11 +518,6 @@ struct FunctionIr {
     /// ProgramBody's labelled-function exception has authored closure writes
     /// but no lexical scope-entry slot.
     program_annex_functions: Vec<IrProgramAnnexFunction>,
-    /// A source `var arguments` cannot be classified until the complete
-    /// ordinary body is known: QuickJS gives it the same local as a direct
-    /// `function arguments(){}` declaration, but otherwise it denotes the
-    /// still-unsupported implicit arguments object.
-    deferred_implicit_arguments_var: Option<Span>,
     current_scope: ScopeId,
     var_scope: ScopeId,
     body_scope: ScopeId,
@@ -608,6 +611,7 @@ impl FunctionIr {
             function_name,
             private_name_binding,
             function_name_local: None,
+            arguments_local: None,
             parameters,
             locals,
             scopes,
@@ -617,7 +621,6 @@ impl FunctionIr {
             function_hoists_installed: false,
             scoped_functions: Vec::new(),
             program_annex_functions: Vec::new(),
-            deferred_implicit_arguments_var: None,
             current_scope,
             var_scope,
             body_scope: body,
@@ -849,34 +852,12 @@ impl<'source> Parser<'source> {
             )?;
         }
 
-        self.finish_deferred_implicit_arguments_var()?;
-
         // QuickJS ends ordinary function bytecode with `return_undef`. It may
         // be unreachable after an explicit return, but keeps fallthrough
         // behavior structural and gives every function a terminal opcode.
         self.emit_instruction(Instruction::Undefined)?;
         self.emit_instruction(Instruction::Return)?;
         Ok(())
-    }
-
-    fn finish_deferred_implicit_arguments_var(&mut self) -> Result<(), Error> {
-        let function = self.current_ir_mut();
-        let Some(span) = function.deferred_implicit_arguments_var.take() else {
-            return Ok(());
-        };
-        let supplied_by_body_declaration = function.hoisted_functions.iter().any(|hoist| {
-            function
-                .bindings
-                .get(hoist.binding.0)
-                .is_some_and(|binding| binding.name == "arguments")
-        });
-        if supplied_by_body_declaration {
-            return Ok(());
-        }
-        Err(Error::unsupported(
-            "the implicit ordinary-function arguments binding is not implemented yet",
-            source_span(span),
-        ))
     }
 
     /// QuickJS funnels program elements, function bodies, block bodies and
@@ -1588,19 +1569,6 @@ impl<'source> Parser<'source> {
                     "invalid variable name in strict mode",
                     source_span(self.current().span),
                 ));
-            }
-            if matches!(self.current_ir().kind, FunctionKind::Ordinary)
-                && name == "arguments"
-                && !self
-                    .current_ir()
-                    .parameters
-                    .iter()
-                    .any(|parameter| parameter == "arguments")
-            {
-                let span = self.current().span;
-                self.current_ir_mut()
-                    .deferred_implicit_arguments_var
-                    .get_or_insert(span);
             }
             self.register_var_binding(&name, token.span, self.current().span)?;
             let initializer = IdentifierReference {
@@ -2479,23 +2447,6 @@ impl<'source> Parser<'source> {
                     source_span(self.current().span),
                 ));
             }
-            if matches!(self.current_ir().kind, FunctionKind::Ordinary)
-                && name == "arguments"
-                && !self
-                    .current_ir()
-                    .parameters
-                    .iter()
-                    .any(|parameter| parameter == "arguments")
-            {
-                // A later (or earlier) direct `function arguments(){}` changes
-                // this from the implicit arguments object into an ordinary
-                // hoisted body local. Defer the unsupported boundary until the
-                // complete body has been parsed so both source orders agree.
-                let span = self.current().span;
-                self.current_ir_mut()
-                    .deferred_implicit_arguments_var
-                    .get_or_insert(span);
-            }
             self.register_var_binding(&name, token.span, self.current().span)?;
 
             let initializer_span = self.current().span;
@@ -2533,6 +2484,12 @@ impl<'source> Parser<'source> {
         conflict_span: Span,
     ) -> Result<(), Error> {
         let function = &mut self.functions[self.current_function];
+        let selects_arguments_object = matches!(function.kind, FunctionKind::Ordinary)
+            && name == "arguments"
+            && !function
+                .parameters
+                .iter()
+                .any(|parameter| parameter == "arguments");
         if let Some((binding_scope, binding)) =
             function.binding_id_from_scope(function.current_scope, name)
             && matches!(
@@ -2560,10 +2517,23 @@ impl<'source> Parser<'source> {
                 closure_index: None,
             });
         }
-        if function
-            .binding_in_scope(function.var_scope, name)
-            .is_some()
-        {
+        if let Some(binding) = function.binding_in_scope(function.var_scope, name) {
+            if selects_arguments_object {
+                let BindingStorage::Local(index) = binding.storage else {
+                    return Err(Error::internal(
+                        "implicit arguments declaration did not select a root local",
+                    ));
+                };
+                if function
+                    .arguments_local
+                    .replace(index)
+                    .is_some_and(|old| old != index)
+                {
+                    return Err(Error::internal(
+                        "ordinary function selected more than one arguments local",
+                    ));
+                }
+            }
             return Ok(());
         }
         if matches!(function.kind, FunctionKind::Script) {
@@ -2594,6 +2564,16 @@ impl<'source> Parser<'source> {
             BindingKind::Normal,
             Some(declaration_span),
         );
+        if selects_arguments_object
+            && function
+                .arguments_local
+                .replace(index)
+                .is_some_and(|old| old != index)
+        {
+            return Err(Error::internal(
+                "ordinary function selected more than one arguments local",
+            ));
+        }
         Ok(())
     }
 
@@ -5708,10 +5688,26 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 "root script contains ordinary function-body hoists",
             ));
         }
-        if function.deferred_implicit_arguments_var.is_some() {
-            return Err(Error::internal(
-                "ordinary function retained a deferred arguments var classification",
-            ));
+        if let Some(index) = function.arguments_local {
+            let matches_binding = function.bindings.iter().any(|binding| {
+                binding.name == "arguments"
+                    && binding.storage_scope == function.var_scope
+                    && binding.kind == BindingKind::Normal
+                    && binding.storage == BindingStorage::Local(index)
+            });
+            if !matches!(function.kind, FunctionKind::Ordinary)
+                || usize::from(index) >= function.locals.len()
+                || function.locals[usize::from(index)] != "arguments"
+                || function
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter == "arguments")
+                || !matches_binding
+            {
+                return Err(Error::internal(
+                    "implicit arguments local metadata is malformed",
+                ));
+            }
         }
         let mut seen_hoisted_bindings = vec![false; function.bindings.len()];
         for hoist in &function.hoisted_functions {
@@ -5751,9 +5747,37 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             }
         }
         if function.function_hoists_installed {
+            let hoist_start = if let Some(local) = function.arguments_local {
+                let expected_kind = if function.strict {
+                    ArgumentsKind::Unmapped
+                } else {
+                    ArgumentsKind::Mapped
+                };
+                if !matches!(
+                    function.ops.first(),
+                    Some(SpannedIrOp {
+                        op: IrOp::Bytecode(Instruction::Arguments(kind)),
+                        pc_site: None,
+                    }) if *kind == expected_kind
+                ) || !matches!(
+                    function.ops.get(1),
+                    Some(SpannedIrOp {
+                        op: IrOp::Bytecode(Instruction::PutLocal(target)),
+                        pc_site: None,
+                    }) if *target == local
+                ) {
+                    return Err(Error::internal(
+                        "installed arguments-object prologue is malformed",
+                    ));
+                }
+                2
+            } else {
+                0
+            };
             for (ordinal, hoist) in ordered_hoisted_functions(function)?.into_iter().enumerate() {
                 let closure_pc = ordinal
                     .checked_mul(2)
+                    .and_then(|pc| pc.checked_add(hoist_start))
                     .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
                 if !matches!(
                     function.ops.get(closure_pc),
@@ -6411,7 +6435,11 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 }
             } else if scope_index == function.body_scope.0 {
                 let body_entry = if function.function_hoists_installed {
-                    function.hoisted_functions.len().saturating_mul(2)
+                    function
+                        .hoisted_functions
+                        .len()
+                        .saturating_mul(2)
+                        .saturating_add(usize::from(function.arguments_local.is_some()) * 2)
                 } else {
                     0
                 };
@@ -6589,13 +6617,33 @@ fn install_global_function_hoists(tree: &mut FunctionTree) -> Result<(), Error> 
     prepend_hoist_prefix(&mut tree.functions[0], prefix)
 }
 
-/// QuickJS stores the last direct body declaration on its argument/local
-/// binding, then initializes arguments in slot order followed by root locals
-/// in slot order when entering the function body.
+/// QuickJS initializes the lazily selected arguments binding before storing
+/// direct body function declarations into argument/root-local slots.
 fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
     for function_id in 1..tree.functions.len() {
         let hoists = ordered_hoisted_functions(&tree.functions[function_id])?;
-        let mut prefix = Vec::with_capacity(hoists.len().saturating_mul(2));
+        let arguments_local = tree.functions[function_id].arguments_local;
+        let mut prefix = Vec::with_capacity(
+            hoists
+                .len()
+                .saturating_mul(2)
+                .saturating_add(usize::from(arguments_local.is_some()) * 2),
+        );
+        if let Some(local) = arguments_local {
+            let kind = if tree.functions[function_id].strict {
+                ArgumentsKind::Unmapped
+            } else {
+                ArgumentsKind::Mapped
+            };
+            prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::Arguments(kind)),
+                pc_site: None,
+            });
+            prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::PutLocal(local)),
+                pc_site: None,
+            });
+        }
         for hoist in hoists {
             let binding = &tree.functions[function_id].bindings[hoist.binding.0];
             prefix.push(SpannedIrOp {
@@ -7024,10 +7072,9 @@ fn resolve_identifier(
         && name == "arguments"
         && matches!(tree.functions[function_id].kind, FunctionKind::Ordinary)
     {
-        // Every ordinary function has an own arguments binding even though
-        // the wider arguments-object slice is not materialized yet. Sloppy
-        // direct delete is statically false and must not force that object to
-        // exist merely to reject deletion.
+        // Every ordinary function has an own arguments binding. Sloppy direct
+        // delete is statically false and must not force the lazily selected
+        // object to exist merely to reject deletion.
         return Ok(IrOp::Bytecode(Instruction::PushFalse));
     }
     if let Some(binding) = find_or_create_own_binding(tree, function_id, use_scope, name, span)? {
@@ -7252,10 +7299,34 @@ fn find_or_create_own_binding(
         return Ok(Some(binding));
     }
     if name == "arguments" && matches!(function.kind, FunctionKind::Ordinary) {
-        return Err(Error::unsupported(
-            "the implicit ordinary-function arguments binding is not implemented yet",
-            source_span(span),
-        ));
+        let function = &mut tree.functions[function_id];
+        if function.arguments_local.is_some() {
+            return Err(Error::internal(
+                "implicit arguments local is missing its root binding",
+            ));
+        }
+        if function.locals.len() >= MAX_LOCAL_VARIABLES {
+            return Err(
+                Error::new(ErrorKind::JsInternal, "too many local variables")
+                    .with_span(source_span(span)),
+            );
+        }
+        let index = u16::try_from(function.locals.len())
+            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+        function.locals.push(name.to_owned());
+        function.arguments_local = Some(index);
+        function.add_binding(
+            function.var_scope,
+            function.var_scope,
+            name.to_owned(),
+            BindingStorage::Local(index),
+            BindingKind::Normal,
+            None,
+        );
+        return Ok(Some(ResolvedBinding {
+            storage: BindingStorage::Local(index),
+            kind: BindingKind::Normal,
+        }));
     }
     if !function.private_name_binding || function.function_name.as_deref() != Some(name) {
         return Ok(None);
@@ -8284,7 +8355,7 @@ const fn source_span(span: Span) -> SourceSpan {
 #[cfg(test)]
 mod tests {
     use crate::bigint::JsBigInt;
-    use crate::bytecode::Instruction;
+    use crate::bytecode::{ArgumentsKind, Instruction};
     use crate::debug::DebugInfoMode;
     use crate::error::ErrorKind;
     use crate::heap::{
@@ -13824,27 +13895,82 @@ mod tests {
     }
 
     #[test]
-    fn implicit_arguments_binding_is_not_faked_as_an_undefined_local() {
-        assert!(
-            compile_unlinked_script("(function() { var arguments; return typeof arguments; })()")
-                .is_err()
-        );
+    fn implicit_arguments_binding_is_lazy_and_precedes_body_hoists() {
         for source in [
-            "(function() { return arguments; })()",
-            "(function arguments() { return arguments; })()",
-            "(function named() { return function() { return arguments; }; })",
+            "(function() { return 1; })",
+            "(function() { return delete arguments; })",
+            "(function(arguments) { return arguments; })",
         ] {
-            let error = compile_unlinked_script(source).unwrap_err();
-            assert_eq!(
-                error.kind(),
-                ErrorKind::Unsupported,
-                "unexpected kind for {source}"
-            );
-            assert_eq!(
-                error.message(),
-                "the implicit ordinary-function arguments binding is not implemented yet"
+            let script = compile_unlinked_script(source).unwrap();
+            let function = script.constants()[0].as_child().unwrap();
+            assert!(
+                !function
+                    .code()
+                    .iter()
+                    .any(|op| matches!(op, Instruction::Arguments(_))),
+                "unexpected arguments object for {source}"
             );
         }
+
+        for (source, kind) in [
+            ("(function() { return arguments; })", ArgumentsKind::Mapped),
+            (
+                "(function() { 'use strict'; return arguments; })",
+                ArgumentsKind::Unmapped,
+            ),
+            (
+                "(function() { var arguments; return typeof arguments; })",
+                ArgumentsKind::Mapped,
+            ),
+        ] {
+            let script = compile_unlinked_script(source).unwrap();
+            let function = script.constants()[0].as_child().unwrap();
+            assert!(matches!(
+                function.code(),
+                [Instruction::Arguments(actual), Instruction::PutLocal(0), ..]
+                    if *actual == kind
+            ));
+            assert_eq!(function.local_definitions().len(), 1, "{source}");
+        }
+
+        let script = compile_unlinked_script(
+            "(function arguments() { function arguments() {} return arguments; })",
+        )
+        .unwrap();
+        let function = script.constants()[0].as_child().unwrap();
+        assert_eq!(function.metadata().function_name_local, None);
+        assert!(matches!(
+            function.code(),
+            [
+                Instruction::Arguments(ArgumentsKind::Mapped),
+                Instruction::PutLocal(0),
+                Instruction::FClosure(0),
+                Instruction::PutLocal(0),
+                ..
+            ]
+        ));
+
+        let script = compile_unlinked_script(
+            "(function outer() { return function inner() { return arguments; }; })",
+        )
+        .unwrap();
+        let outer = script.constants()[0].as_child().unwrap();
+        let inner = outer.constants()[0].as_child().unwrap();
+        assert!(
+            !outer
+                .code()
+                .iter()
+                .any(|op| matches!(op, Instruction::Arguments(_)))
+        );
+        assert!(matches!(
+            inner.code(),
+            [
+                Instruction::Arguments(ArgumentsKind::Mapped),
+                Instruction::PutLocal(0),
+                ..
+            ]
+        ));
+
         assert_eq!(
             evaluate_in_context("(function(arguments) { var arguments; return arguments; })(7)"),
             Value::Int(7)

@@ -10,8 +10,9 @@ use quickjs_oxide::{
 // `Object.prototype.hasOwnProperty`, the static first performs ToObject on its
 // first argument and only then ToPropertyKey on its second argument. The final
 // query is an own-property descriptor probe and must not Get the property.
-// Proxy, TypedArray, arguments and module-namespace exotic own-property paths
-// are recorded below without requiring their unpublished Rust intrinsics.
+// Proxy, TypedArray and module-namespace exotic own-property paths are recorded
+// below without requiring their unpublished Rust intrinsics; Arguments is
+// locked by this target and its dedicated differential.
 
 const OWN_CASES: &[(&str, &str)] = &[
     (
@@ -470,9 +471,9 @@ fn object_has_own_records_current_exotic_object_gap() {
         Value::String(JsString::try_from_utf8("undefined|undefined|undefined").unwrap()),
         "activate the exotic Object.hasOwn oracle vectors as these intrinsics are published",
     );
-    // Implicit arguments objects and module namespace objects are separate
-    // current language/module boundaries. Their oracle vectors should join the
-    // differential once those object kinds exist in the Rust heap.
+    // Module namespace objects remain a separate module boundary. Their oracle
+    // vectors should join the differential once that object kind exists in the
+    // Rust heap.
 }
 
 fn compare_cases(group: &str, cases: &[(&str, &str)]) {

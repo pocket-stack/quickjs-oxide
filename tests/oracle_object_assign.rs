@@ -8,9 +8,10 @@ use quickjs_oxide::{
 
 // Pins QuickJS 2026-06-04 `js_object_assign` and `JS_CopyDataProperties`.
 // Ordinary sources use QuickJS's enumerable-at-snapshot optimization; Proxy
-// sources instead recheck each descriptor. Proxy, TypedArray, arguments and
+// sources instead recheck each descriptor. Proxy, TypedArray and
 // module-namespace exotic paths are recorded below but deliberately do not
-// require support from the current Rust object model.
+// require support from the current Rust object model; Arguments is locked by
+// its dedicated differential.
 
 const CONVERSION_CASES: &[(&str, &str)] = &[
     (
@@ -622,8 +623,8 @@ fn object_assign_records_current_proxy_typed_array_and_namespace_gap() {
         Value::String(JsString::try_from_utf8("undefined|undefined|undefined").unwrap()),
         "activate the exotic oracle vectors when these Object.assign sources are published",
     );
-    // Arguments objects and module namespace objects also need their own-key
-    // exotic integration before the full CopyDataProperties surface is done.
+    // Module namespace objects still need their own-key exotic integration
+    // before the full CopyDataProperties surface is done.
 }
 
 fn compare_cases(group: &str, cases: &[(&str, &str)]) {

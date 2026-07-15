@@ -645,6 +645,7 @@ impl Runtime {
         Ok(match &object.payload {
             ObjectPayload::Ordinary
             | ObjectPayload::Array { .. }
+            | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }
             | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)

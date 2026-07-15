@@ -709,8 +709,8 @@ fn string_intrinsic_records_current_proxy_regexp_and_typed_array_boundaries() {
         Value::String(JsString::try_from_utf8("undefined|undefined|undefined|function").unwrap()),
         "move the oracle-only vectors into the differential as these surfaces are published",
     );
-    // Module namespace and mapped-arguments raw objects remain corresponding
-    // language/object-model boundaries.
+    // Module namespace raw objects remain a corresponding language/object-model
+    // boundary.
 }
 
 fn compare_cases(group: &str, cases: &[(&str, &str)]) {

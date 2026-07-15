@@ -131,17 +131,33 @@ impl Runtime {
     }
 
     /// Mirror the representation-sensitive branch in
-    /// `build_for_in_iterator`: a QuickJS fast Array stays count-only only when
-    /// its ordinary shape has no enumerable field. Rust stores dense elements
-    /// in that shape too, so the tracked prefix is excluded from this check.
+    /// `build_for_in_iterator`: a QuickJS fast Array or Arguments object stays
+    /// count-only only when its ordinary shape has no other enumerable field.
+    /// Rust stores dense elements in that shape too, so the tracked prefix is
+    /// excluded from this check.
     fn for_in_fast_array_count(&self, object: &ObjectRef) -> Result<Option<u32>, RuntimeError> {
         let state = self.0.state.borrow();
         let object_data = state.heap.object(object.object_id())?;
-        let ObjectPayload::Array {
-            fast_len: Some(fast_len),
-        } = &object_data.payload
-        else {
-            return Ok(None);
+        let fast_len = match &object_data.payload {
+            ObjectPayload::Array {
+                fast_len: Some(fast_len),
+            }
+            | ObjectPayload::Arguments {
+                fast_len: Some(fast_len),
+                ..
+            } => *fast_len,
+            ObjectPayload::Ordinary
+            | ObjectPayload::Array { fast_len: None }
+            | ObjectPayload::Arguments { fast_len: None, .. }
+            | ObjectPayload::ArrayIterator { .. }
+            | ObjectPayload::ForInIterator(_)
+            | ObjectPayload::Primitive(_)
+            | ObjectPayload::GlobalObject { .. }
+            | ObjectPayload::Error
+            | ObjectPayload::StringIterator { .. }
+            | ObjectPayload::NativeFunction { .. }
+            | ObjectPayload::BoundFunction { .. }
+            | ObjectPayload::BytecodeFunction { .. } => return Ok(None),
         };
         let shape = state.heap.shape(object_data.shape)?;
         for entry in shape.entries() {
@@ -151,13 +167,13 @@ impl Runtime {
             if state
                 .atoms
                 .array_index(entry.atom)?
-                .is_some_and(|index| index < *fast_len)
+                .is_some_and(|index| index < fast_len)
             {
                 continue;
             }
             return Ok(None);
         }
-        Ok(Some(*fast_len))
+        Ok(Some(fast_len))
     }
 
     /// QuickJS pre-scans the complete live prototype chain before it creates
