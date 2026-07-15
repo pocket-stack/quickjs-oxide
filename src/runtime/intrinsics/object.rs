@@ -1584,7 +1584,7 @@ impl Runtime {
         Ok(object)
     }
 
-    fn object_get_own_property_descriptor_value(
+    pub(super) fn object_get_own_property_descriptor_value(
         &self,
         realm: ContextId,
         object: &ObjectRef,
@@ -1638,7 +1638,10 @@ impl Runtime {
         ))
     }
 
-    fn object_property_key_value(&self, key: &PropertyKey) -> Result<Value, RuntimeError> {
+    pub(super) fn object_property_key_value(
+        &self,
+        key: &PropertyKey,
+    ) -> Result<Value, RuntimeError> {
         let kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
         match kind {
             PropertyKeyKind::String => Ok(Value::String(

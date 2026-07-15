@@ -3,6 +3,7 @@ use super::*;
 mod array;
 mod math;
 mod object;
+mod reflect;
 mod string;
 
 impl Runtime {

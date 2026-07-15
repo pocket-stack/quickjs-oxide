@@ -35,7 +35,7 @@ var implementedGlobals = [
     "parseInt", "parseFloat", "isNaN", "isFinite",
     "decodeURI", "decodeURIComponent", "encodeURI", "encodeURIComponent",
     "escape", "unescape", "Infinity", "NaN", "undefined", "Number",
-    "Boolean", "String", "Math", "Symbol", "globalThis", "BigInt"
+    "Boolean", "String", "Math", "Reflect", "Symbol", "globalThis", "BigInt"
 ];
 print("global-order=" + Reflect.ownKeys(globalThis).filter(function (key) {
     return typeof key === "string" && implementedGlobals.indexOf(key) >= 0;
@@ -353,6 +353,7 @@ fn rust_observations() -> Vec<String> {
         "Boolean",
         "String",
         "Math",
+        "Reflect",
         "Symbol",
         "globalThis",
         "BigInt",

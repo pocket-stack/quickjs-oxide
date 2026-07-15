@@ -10,7 +10,7 @@ differentials still decide exact behavior inside each implemented slice.
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
 - quickjs-oxide capability profile SHA-256:
-  `1f7ddf1c56b74c8011350c0f488e56562f2c63cf8aa132e4f051d0a8574d786b`
+  `24e10f7a2010452799c1a9ba99b6da74d5c45ece098cfe3ef4ddbb13105c35f7`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -48,29 +48,29 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 21,429 pass;
+- 21,740 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 53,858 are classified as unsupported feature, mode, host capability, parser
+- 53,510 are classified as unsupported feature, mode, host capability, parser
   frontier, harness frontier, or unaudited negative-test provenance;
-- 2,130 fail to parse, 5,941 fail at runtime, 200 fail in the harness, and four
+- 2,140 fail to parse, 5,962 fail at runtime, 206 fail in the harness, and four
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 31,873 variants to execution. That count includes variants
+The runner admitted 32,227 variants to execution. That count includes variants
 which then report a typed parser or harness frontier rather than an observed
 non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 21.00% (`21,429 / 102,037`);
-- conservative target-scope lower bound: 25.64%
-  (`21,429 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 72.14%
-  (`21,429 / 29,704`).
+- raw suite pass rate: 21.31% (`21,740 / 102,037`);
+- conservative target-scope lower bound: 26.02%
+  (`21,740 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 72.34%
+  (`21,740 / 30,052`).
 
-The 25.64% figure is the useful whole-project progress floor, not a claim that
-the engine is 25.64% conformant. The 72.14% conditional rate measures quality
+The 26.02% figure is the useful whole-project progress floor, not a claim that
+the engine is 26.02% conformant. The 72.34% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
-completion. The capability profile currently admits eleven reviewed Test262
+completion. The capability profile currently admits 15 reviewed Test262
 feature tags and 18 reviewed negative-test paths; all
 other feature-tagged or negative-provenance cases fail closed. Expanding that
 profile as implementation lands can only make the measurement more
@@ -93,9 +93,9 @@ movement. Small implementation commits do not need an independent full-suite
 run.
 
 The preceding simple-parameter `arguments` milestone moved 17,365 to 18,011
-passes and exposed `Math.pow` as a common harness blocker. This Math milestone
-moves the complete vector from 18,011 to 21,429 passes with no previous-pass
-regression. An exact old/new join matched all 102,037 keys: all 4,435 outcome
+passes and exposed `Math.pow` as a common harness blocker. The Math milestone
+moved the complete vector from 18,011 to 21,429 passes with no previous-pass
+regression. Its exact old/new join matched all 102,037 keys: all 4,435 outcome
 changes are inside the 4,589-variant reviewed set, with zero outcome drift
 among the other 97,448 variants.
 
@@ -114,6 +114,24 @@ timeouts are the sloppy and strict variants of
 `staging/sm/String/fromCodePoint.js`: implementing `Math.pow` lets them reach
 their 49,152-argument `apply` stress path, so they record a performance
 frontier rather than a Math semantic regression.
+
+The Reflect milestone moves the complete vector from 21,429 to 21,740 passes
+and from 31,873 to 32,227 runnable variants. An exact keyed join again matched
+all 102,037 variants: precisely 371 outcomes changed, every one inside the
+427-variant reviewed Reflect manifest, with no previous-pass regression and no
+outside-manifest drift. The transitions are 294 `unsupported-feature -> pass`,
+38 `unsupported-feature -> fail-runtime`, ten `unsupported-feature ->
+fail-parse`, six `unsupported-feature -> harness-error`, six
+`unsupported-feature -> unsupported-parser`, and 17 `fail-runtime -> pass`.
+
+The focused Reflect vector now has 311 passes, 40 runtime failures, ten parse
+failures, six harness failures, six explicit parser frontiers, and 54 variants
+still gated by honest adjacent feature requirements. All 153
+`built-ins/Reflect` files are represented: 248 variants pass, 54 stay gated by
+Proxy, arrow/computed-property grammar or `Symbol.toStringTag`, and the
+remaining four reach the still-missing `Date.now`. The non-pass results thus
+record adjacent implementation frontiers rather than being hidden from the
+scoreboard.
 
 ## Runner contract
 
@@ -154,6 +172,7 @@ canonical progress report.
 ```sh
 ./scripts/test-test262-smoke.sh
 ./scripts/test-test262-provenance.sh
+./scripts/test-test262-reflect.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -163,8 +182,12 @@ boundaries. The full command uses the release runner, defaults to eight workers,
 and compares the complete outcome vector and sidecar by SHA-256. Set
 `TEST262_WORKERS` to change concurrency without changing the expected bytes.
 
-Math is no longer the common harness blocker in the reviewed set. Its leading
-named next dependencies are Date (308 variants), DataView (86), Map (72),
-RegExp (70), eval (69), Promise (60), and Set (58). Test262 remains the project
-scoreboard, while focused QuickJS differentials decide the exact target
-semantics for each of those slices.
+Math and Reflect are no longer common blockers in their reviewed sets. Within
+the earlier 4,589-variant Math reviewed set, the leading named dependencies are
+Date (308 variants), DataView (86), Map (72), RegExp (70), eval (69), Promise
+(60), and Set (58); the 308 count is not the size of the full Date suite. The
+pinned `built-ins/Date` tree itself contains 594 files and 1,188 sloppy/strict
+variants, while four otherwise-ready Reflect variants also stop at `Date.now`.
+Date is therefore the next selected intrinsic milestone. Test262 remains the
+project scoreboard, while focused QuickJS differentials decide exact target
+semantics for each slice.

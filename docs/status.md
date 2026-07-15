@@ -13,8 +13,8 @@ claim full parity.
   capability profile, audited negative-test canaries, and source/metadata host
   requirements keep unsupported grammar, features, modes, and `$262` hooks from
   becoming false passes. Bounded workers preserve canonical byte-for-byte TSV
-  and JSONL ordering. The current vector has 21,429 passes: a 25.64% lower bound
-  after the 18,475 pinned QuickJS target exclusions, or 72.14% among the 29,704
+  and JSONL ordering. The current vector has 21,740 passes: a 26.02% lower bound
+  after the 18,475 pinned QuickJS target exclusions, or 72.34% among the 30,052
   variants with a non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim.
@@ -1397,6 +1397,19 @@ claim full parity.
   split. Rust tests and a dedicated QuickJS differential lock the complete
   graph, descriptors, key order, call-only behavior, algorithms, cross-realm
   conversions and iterator failures.
+- Every realm publishes the complete pinned `%Reflect%` intrinsic as a
+  writable, non-enumerable, configurable global AutoInit property. The
+  non-constructable namespace has the exact 13-method table, names, lengths,
+  Generic/GenericMagic cproto split, key order and configurable
+  `@@toStringTag = "Reflect"`. Its `apply` and `construct` reuse the shared
+  QuickJS-sized array-like argument-list kernel while preserving the pinned
+  validation and observable conversion order. The remaining methods delegate
+  to the ordinary property/descriptor/prototype/extensibility kernels with the
+  exact target checks, receiver behavior, boolean failure results and ordered
+  string/symbol key arrays. Dedicated Rust and QuickJS differential tests lock
+  mutation/deletion of the lazy global, cross-realm result/error ownership,
+  callback recursion recovery, detached-method lifetime, final realm GC and
+  the complete graph and semantic vector.
 - The global object has QuickJS's dedicated payload and hidden
   `uninitialized_vars` object. Global data properties and the lexical-binding
   object can store `PropertySlot::VarRef` cells; define, descriptor lookup,
@@ -1422,7 +1435,7 @@ claim full parity.
   global string-key surface preserves upstream relative own-key order as the
   Error family, `Array`, `Object`, `Function`, `parseInt`, `parseFloat`, `isNaN`,
   `isFinite`, the six URI/escape functions, the three constants, `Number`,
-  `Boolean`, `String`, `Math`, `Symbol`, `globalThis`, then `BigInt`. This is
+  `Boolean`, `String`, `Math`, `Reflect`, `Symbol`, `globalThis`, then `BigInt`. This is
   not a claim that the wider global builtin table is complete.
 - Every global object owns QuickJS's `[Symbol.toStringTag] = "global"` metadata
   as a non-writable, non-enumerable, configurable data property. The runtime's
@@ -1437,9 +1450,9 @@ claim full parity.
   accessor conversion, reconnection, defining-realm lookup and the self-cycle's
   trial-deletion GC behavior remain coherent. Upstream places this property
   after String/Math/Reflect, Symbol and the generator intrinsics; the current
-  bootstrap preserves the implemented Math-before-Symbol-before-`globalThis`
-  and `globalThis`-before-BigInt order. The binding must still move later as
-  Reflect and the remaining intervening intrinsics land.
+  bootstrap preserves the exact relative order of all implemented entries:
+  Math, Reflect, Symbol, `globalThis`, then BigInt. The remaining intervening
+  generator intrinsics must be inserted before `globalThis` when they land.
 - Unresolved identifiers no longer use a string-key global opcode. Resolution
   installs one root `Global` closure descriptor and `ParentGlobal` relays on
   every nested function path; declared Program lexicals and vars instead start
@@ -1817,11 +1830,18 @@ than attempting to roll back migrated VarRefs after the fact.
 
 Derived/class/super construction, dynamic Generator/Async/AsyncGenerator
 Function constructors, `AggregateError`, other native builtin constructor
-families, Proxy construct dispatch, and Reflect APIs remain. Typed
+families, and Proxy construct dispatch remain. Typed
 target/cproto, data-bearing Error selector, realm, arity padding, production
 BoundFunction allocation and frame foundations exist. Generic setter and raw
 iterator-next cproto adapters are active; specialized F64 adapters and the
 wider builtin table remain.
+
+One host-only Reflect parity edge remains explicit. QuickJS's C API can set a
+constructor bit on an otherwise non-callable ordinary object, after which
+`Reflect.construct` accepts it as `newTarget`; the Rust embedding helper still
+requires a callable payload as well as the bit. Ordinary JavaScript cannot
+manufacture that state, so it does not affect the current Test262 or language
+surface, but complete embedding-API parity must eventually reproduce it.
 
 Explicit `throw`, nested propagation, VM-generated native errors, eager Error
 backtraces, synchronous catch/finally regions, and synchronous iterator cleanup
@@ -1950,7 +1970,8 @@ pad pair, trim group, Unicode case-conversion group and Annex-B CreateHTML
 family live in `runtime/intrinsics/string.rs`, while the remaining String
 initialization and handlers still await migration there. The complete Math
 object table, selectors, numerical kernels, random and precise-sum handlers live
-in `runtime/intrinsics/math.rs`. The complete VM-to-runtime trait adapter,
+in `runtime/intrinsics/math.rs`; the complete Reflect table and handlers live in
+`runtime/intrinsics/reflect.rs`. The complete VM-to-runtime trait adapter,
 per-frame argument/local/capture storage, iterator protocol bridge and
 bytecode-host error conversion now live in `runtime/vm_host.rs`; host layout is
 private to that module, including bytecode frame initialization. The hidden
@@ -1969,7 +1990,7 @@ main runtime file merely to wire a selector. Bytecode draft validation and
 iterative flattening now live in `runtime/bytecode_publish.rs`. The test, Array,
 Object, VM-host, property, native-dispatch and bytecode-publication
 no-semantic-change splits reduced `runtime.rs` from roughly thirty-two thousand
-lines to 9,968 lines. Realm-aware property completion wrappers and storage
+lines to 9,937 lines. Realm-aware property completion wrappers and storage
 helpers, bytecode publication linking and call dispatch, runtime/root lifecycle,
 and the remaining intrinsic families still share the file; `compiler.rs`
 similarly combines several compiler phases.
@@ -2040,6 +2061,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_number_constructor_conversion -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_math_intrinsic -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_reflect_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_lexicals -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -2118,6 +2141,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-parity-slice.sh
 ./scripts/test-test262-smoke.sh
 ./scripts/test-test262-provenance.sh
+./scripts/test-test262-reflect.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -2126,7 +2150,8 @@ String constructor/static table, String-exotic substrate, String UTF-16 prefix,
 String index-search, regexp-aware includes and String subranges, String-conversion core,
 Unicode String case conversion, String-rope/byte/native-Error kernels, Unicode
 identifier core, global
-BaseObjects, complete Number-, BigInt- and Math-intrinsic differentials, and the
+BaseObjects, complete Number-, BigInt-, Math- and Reflect-intrinsic
+differentials, and the
 Program-var/function, Program/body/block/switch/classic-for lexical-scope,
 ordinary mapped/unmapped Arguments object,
 single/labelled Annex B, synchronous try/catch/finally, synchronous

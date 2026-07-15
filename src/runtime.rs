@@ -41,10 +41,10 @@ use crate::heap::{
     NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
     ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind,
     ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind,
-    PrimitiveObjectData, PropertySlot, RawValue, ShapeId, StringCaseKind, StringCharAtKind,
-    StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind, StringStaticKind,
-    StringSubrangeKind, StringTrimKind, StringWellFormedKind, SymbolRegistryKind, VarRefData,
-    VarRefId, VariableDefinition,
+    PrimitiveObjectData, PropertySlot, RawValue, ReflectKind, ShapeId, StringCaseKind,
+    StringCharAtKind, StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind,
+    StringStaticKind, StringSubrangeKind, StringTrimKind, StringWellFormedKind, SymbolRegistryKind,
+    VarRefData, VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -878,6 +878,8 @@ impl Runtime {
         .expect("String constructor intrinsic initialization must succeed");
         self.initialize_math_intrinsic(realm, &global_object)
             .expect("Math intrinsic initialization must succeed");
+        self.initialize_reflect_intrinsic(realm, &global_object)
+            .expect("Reflect intrinsic initialization must succeed");
         self.initialize_symbol_intrinsic(
             realm,
             &function_prototype,
@@ -888,7 +890,7 @@ impl Runtime {
         // Upstream installs `globalThis` after String/Math/Reflect/Symbol and
         // generator setup, then installs BigInt. The remaining intervening
         // intrinsics are absent here, but this boundary preserves the
-        // implemented `Boolean, String, Math, Symbol, globalThis, BigInt` relative
+        // implemented `Boolean, String, Math, Reflect, Symbol, globalThis, BigInt` relative
         // order.
         self.initialize_global_this(&global_object)
             .expect("globalThis initialization must succeed");
@@ -6414,8 +6416,6 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        const MAX_APPLY_ARGUMENTS: u64 = 65_534;
-
         let NativeInvocation::Call { this_value } = invocation else {
             return Err(RuntimeError::Invariant(
                 "Function.prototype.apply did not receive a generic invocation",
@@ -6441,41 +6441,10 @@ impl Runtime {
         if matches!(array_argument, Value::Undefined | Value::Null) {
             return self.call_internal(realm, &target, this_argument, &[]);
         }
-        let Value::Object(array_like) = array_argument else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a object",
-            )?));
-        };
-
-        let length_key = self.intern_property_key("length")?;
-        let length_value = match self.get_property_in_realm(realm, array_like, &length_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let length = match self.native_to_length(realm, &length_value)? {
-            NativeConversion::Value(length) => length,
+        let forwarded = match self.build_array_like_argument_list(realm, array_argument)? {
+            NativeConversion::Value(values) => values,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        if length > MAX_APPLY_ARGUMENTS {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Range,
-                "too many arguments in function call (only 65534 allowed)",
-            )?));
-        }
-
-        let length = usize::try_from(length)
-            .map_err(|_| RuntimeError::Invariant("apply length does not fit usize"))?;
-        let mut forwarded = Vec::with_capacity(length);
-        for index in 0..length {
-            let key = self.intern_property_key(&index.to_string())?;
-            match self.get_property_in_realm(realm, array_like, &key)? {
-                Completion::Return(value) => forwarded.push(value),
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
-        }
         self.call_internal(realm, &target, this_argument, &forwarded)
     }
 

@@ -338,6 +338,10 @@ pub enum AutoInitProperty {
     Math {
         realm: ContextId,
     },
+    /// QuickJS `JS_OBJECT_DEF` payload for the realm's global `Reflect` object.
+    Reflect {
+        realm: ContextId,
+    },
     #[cfg(test)]
     FailureProbe {
         realm: ContextId,
@@ -964,6 +968,28 @@ pub enum ObjectAccessorKind {
     Setter,
 }
 
+/// Operation selected by pinned QuickJS's complete `js_reflect_funcs` table.
+///
+/// Keeping the thirteen entries typed preserves both upstream table order and
+/// the Generic versus GenericMagic ABI distinction without dispatching on a
+/// mutable JavaScript function name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ReflectKind {
+    Apply,
+    Construct,
+    DefineProperty,
+    DeleteProperty,
+    Get,
+    GetOwnPropertyDescriptor,
+    GetPrototypeOf,
+    Has,
+    IsExtensible,
+    OwnKeys,
+    PreventExtensions,
+    Set,
+    SetPrototypeOf,
+}
+
 /// Operation selected by QuickJS's shared `js_math_min_max` generic-magic
 /// builtin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1080,6 +1106,7 @@ pub enum NativeFunctionId {
     ObjectPrototypeProtoSetter,
     ObjectPrototypeDefineAccessor(ObjectAccessorKind),
     ObjectPrototypeLookupAccessor(ObjectAccessorKind),
+    Reflect(ReflectKind),
     PrimitiveConstructor(PrimitiveKind),
     StringStatic(StringStaticKind),
     PrimitivePrototypeToString(PrimitiveKind),
@@ -1415,6 +1442,16 @@ impl NativeFunctionId {
             | Self::ObjectPrototypeHasOwnProperty
             | Self::ObjectPrototypeIsPrototypeOf
             | Self::ObjectPrototypePropertyIsEnumerable
+            | Self::Reflect(
+                ReflectKind::Apply
+                | ReflectKind::Construct
+                | ReflectKind::DeleteProperty
+                | ReflectKind::Get
+                | ReflectKind::Has
+                | ReflectKind::OwnKeys
+                | ReflectKind::Set
+                | ReflectKind::SetPrototypeOf,
+            )
             | Self::PrimitivePrototypeToString(_)
             | Self::PrimitivePrototypeValueOf(_)
             | Self::StringStatic(_)
@@ -1463,6 +1500,13 @@ impl NativeFunctionId {
             | Self::ObjectIntegrity(_)
             | Self::ObjectPrototypeDefineAccessor(_)
             | Self::ObjectPrototypeLookupAccessor(_)
+            | Self::Reflect(
+                ReflectKind::DefineProperty
+                | ReflectKind::GetOwnPropertyDescriptor
+                | ReflectKind::GetPrototypeOf
+                | ReflectKind::IsExtensible
+                | ReflectKind::PreventExtensions,
+            )
             | Self::MathMinMax(_)
             | Self::StringPrototypeCharAt(_)
             | Self::StringPrototypeIndexOf(_)
@@ -4107,7 +4151,8 @@ fn property_slot_edges(slot: &PropertySlot) -> Vec<RawId> {
             | AutoInitProperty::NativeBuiltin { realm, .. }
             | AutoInitProperty::String { realm, .. }
             | AutoInitProperty::ArrayUnscopables { realm }
-            | AutoInitProperty::Math { realm },
+            | AutoInitProperty::Math { realm }
+            | AutoInitProperty::Reflect { realm },
         ) => vec![RawId::Context(*realm)],
         #[cfg(test)]
         PropertySlot::AutoInit(AutoInitProperty::FailureProbe { realm }) => {

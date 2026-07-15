@@ -251,6 +251,9 @@ impl Runtime {
                 AutoInitProperty::Math { realm } => {
                     Value::Object(self.instantiate_math_intrinsic(realm)?)
                 }
+                AutoInitProperty::Reflect { realm } => {
+                    Value::Object(self.instantiate_reflect_intrinsic(realm)?)
+                }
                 #[cfg(test)]
                 AutoInitProperty::FailureProbe { .. } => {
                     return Err(RuntimeError::Invariant("autoinit failure probe"));
