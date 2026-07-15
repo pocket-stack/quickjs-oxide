@@ -10,6 +10,7 @@ repository = "https://github.com/pocket-stack/quickjs-oxide"
 [dependencies]
 num-bigint = "=0.5.1"
 num-traits = "=0.2.19"
+tz-rs = "=0.7.3"
 
 [lib]
 name = "quickjs_oxide"

@@ -1013,6 +1013,7 @@ impl VmHost for RuntimeVmHost {
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. } => "function",
             ObjectPayload::Ordinary
+            | ObjectPayload::Date(_)
             | ObjectPayload::Array { .. }
             | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }

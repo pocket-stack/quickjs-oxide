@@ -12,6 +12,8 @@ mod native_dispatch;
 mod properties;
 mod vm_host;
 
+use self::intrinsics::date::{DateHost, SystemDateHost};
+
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::error::Error as StdError;
@@ -66,6 +68,7 @@ static NEXT_RUNTIME_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
 struct RuntimeInner {
     state: RefCell<RuntimeState>,
     deferred_references: RefCell<VecDeque<DeferredRefOp>>,
+    date_host: Rc<dyn DateHost>,
     next_context_id: Cell<u64>,
     domain_id: u64,
 }
@@ -608,6 +611,10 @@ impl Default for Runtime {
 impl Runtime {
     #[must_use]
     pub fn new() -> Self {
+        Self::new_with_date_host(Rc::new(SystemDateHost::default()))
+    }
+
+    fn new_with_date_host(date_host: Rc<dyn DateHost>) -> Self {
         let domain_id = NEXT_RUNTIME_DOMAIN_ID.fetch_add(1, Ordering::Relaxed);
         assert_ne!(domain_id, 0, "runtime domain ID space exhausted");
         let mut atoms = AtomTable::new();
@@ -635,6 +642,7 @@ impl Runtime {
                 iterator_result_allocations: 0,
             }),
             deferred_references: RefCell::new(VecDeque::new()),
+            date_host,
             next_context_id: Cell::new(0),
             domain_id,
         }))
@@ -4653,6 +4661,7 @@ impl Runtime {
                     ..
                 } => (*bytecode, closure_slots.clone()),
                 ObjectPayload::Ordinary
+                | ObjectPayload::Date(_)
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
@@ -4705,6 +4714,7 @@ impl Runtime {
                 Ok(None)
             }
             ObjectPayload::Ordinary
+            | ObjectPayload::Date(_)
             | ObjectPayload::Array { .. }
             | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }
@@ -5139,6 +5149,7 @@ impl Runtime {
                     ));
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::Date(_)
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
@@ -6157,32 +6168,7 @@ impl Runtime {
             };
         }
 
-        let ordinary_methods = match hint {
-            ToPrimitiveHint::String => ["toString", "valueOf"],
-            ToPrimitiveHint::Number | ToPrimitiveHint::Default => ["valueOf", "toString"],
-        };
-        for name in ordinary_methods {
-            let key = self.intern_property_key(name)?;
-            let method = match self.get_property_in_realm(realm, &object, &key)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            let Value::Object(method_object) = method else {
-                continue;
-            };
-            let Some(method) = self.as_callable(&method_object)? else {
-                continue;
-            };
-            match self.call_internal(realm, &method, Value::Object(object.clone()), &[])? {
-                Completion::Return(Value::Object(_)) => {}
-                completion => return Ok(completion),
-            }
-        }
-        Ok(Completion::Throw(self.new_native_error(
-            realm,
-            NativeErrorKind::Type,
-            "toPrimitive",
-        )?))
+        self.ordinary_to_primitive(realm, &object, hint)
     }
 
     fn call_throw_type_error(
@@ -6212,6 +6198,7 @@ impl Runtime {
                             !metadata.strict && metadata.has_prototype
                         }
                         ObjectPayload::Ordinary
+                        | ObjectPayload::Date(_)
                         | ObjectPayload::Array { .. }
                         | ObjectPayload::Arguments { .. }
                         | ObjectPayload::ArrayIterator { .. }
@@ -6549,6 +6536,7 @@ impl Runtime {
                     (true, None, FunctionKind::Normal)
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::Date(_)
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
@@ -6758,6 +6746,7 @@ impl Runtime {
                         ObjectPayload::NativeFunction { .. }
                         | ObjectPayload::BytecodeFunction { .. } => None,
                         ObjectPayload::Ordinary
+                        | ObjectPayload::Date(_)
                         | ObjectPayload::Array { .. }
                         | ObjectPayload::Arguments { .. }
                         | ObjectPayload::ArrayIterator { .. }
@@ -6856,6 +6845,7 @@ impl Runtime {
                             ))
                         }
                         ObjectPayload::Ordinary
+                        | ObjectPayload::Date(_)
                         | ObjectPayload::Array { .. }
                         | ObjectPayload::Arguments { .. }
                         | ObjectPayload::ArrayIterator { .. }
@@ -7401,6 +7391,7 @@ impl Runtime {
                         Some(Ok(Value::BigInt(value.clone())))
                     }
                     ObjectPayload::Ordinary
+                    | ObjectPayload::Date(_)
                     | ObjectPayload::Array { .. }
                     | ObjectPayload::Arguments { .. }
                     | ObjectPayload::ArrayIterator { .. }
@@ -8464,6 +8455,7 @@ impl Runtime {
             match state.heap.object(object.object_id())?.payload {
                 ObjectPayload::GlobalObject { uninitialized_vars } => Some(uninitialized_vars),
                 ObjectPayload::Ordinary
+                | ObjectPayload::Date(_)
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }

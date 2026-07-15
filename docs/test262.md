@@ -133,6 +133,25 @@ remaining four reach the still-missing `Date.now`. The non-pass results thus
 record adjacent implementation frontiers rather than being hidden from the
 scoreboard.
 
+Date begins with a deliberately non-observable foundation milestone. The
+branded heap payload and realm-root slot, pure calendar/parser/formatter
+kernels, injectable clock/timezone boundary, and shared ordinary-to-primitive
+seam are present, but the global `Date` constructor and its static/prototype
+native table are not published. Consequently this foundation admits no
+additional Test262 case and must not change any complete-vector count, outcome,
+or hash above.
+
+The frozen Date-focused review corpus contains 798 paths and 1,596
+sloppy/strict variants. Its Date-owned subset contains 646 paths and 1,292
+variants. These are inventory denominators, not passing results: they become an
+outcome-transition claim only after the observable intrinsic lands, focused
+QuickJS differentials pass, and an exact old/new full-vector join is recorded.
+The pre-observable classified vector is pinned in
+`tests/test262-date-baseline.txt`: 1,320 variants are runnable, zero pass, and
+the remaining 276 are conservatively excluded or unsupported. Reproduce that
+exact TSV/JSONL vector with `scripts/test-test262-date.sh`; the script fixes
+`TZ=America/Los_Angeles` to match the pinned QuickJS Test262 runner.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -188,6 +207,7 @@ Date (308 variants), DataView (86), Map (72), RegExp (70), eval (69), Promise
 (60), and Set (58); the 308 count is not the size of the full Date suite. The
 pinned `built-ins/Date` tree itself contains 594 files and 1,188 sloppy/strict
 variants, while four otherwise-ready Reflect variants also stop at `Date.now`.
-Date is therefore the next selected intrinsic milestone. Test262 remains the
+Date's non-observable foundation is now present; publishing and measuring the
+observable intrinsic remains the next selected milestone. Test262 remains the
 project scoreboard, while focused QuickJS differentials decide exact target
 semantics for each slice.

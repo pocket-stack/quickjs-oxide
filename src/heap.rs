@@ -384,6 +384,10 @@ pub struct ContextData {
     /// five primitive wrapper classes. An absent entry remains an explicit
     /// implementation gap rather than inheriting from the wrong prototype.
     pub primitive_prototypes: [Option<ObjectId>; PrimitiveKind::COUNT],
+    /// Realm-local `%Date.prototype%`. Pinned QuickJS creates this as an
+    /// ordinary object without a Date time-value slot, then uses it as the
+    /// default prototype for genuine Date instances.
+    pub date_prototype: Option<ObjectId>,
     /// `%Function%`, published after the cyclic realm bootstrap has created
     /// `%Function.prototype%` and the global object.
     pub function_constructor: Option<ObjectId>,
@@ -432,6 +436,7 @@ impl ContextData {
             array_prototype_values: None,
             string_iterator_prototype,
             primitive_prototypes: [None; PrimitiveKind::COUNT],
+            date_prototype: None,
             function_constructor: None,
             throw_type_error: None,
             global_object,
@@ -453,6 +458,13 @@ impl ContextData {
         prototype: ObjectId,
     ) -> Self {
         self.primitive_prototypes[kind.index()] = Some(prototype);
+        self
+    }
+
+    /// Attach the ordinary Date prototype to this realm before publish.
+    #[must_use]
+    pub const fn with_date_prototype(mut self, prototype: ObjectId) -> Self {
+        self.date_prototype = Some(prototype);
         self
     }
 
@@ -746,6 +758,9 @@ pub enum ObjectPayload {
     ForInIterator(ForInIteratorData),
     /// QuickJS `JSObject.u.object_data` for implemented primitive wrappers.
     Primitive(PrimitiveObjectData),
+    /// QuickJS `JS_CLASS_DATE`'s internal millisecond time value. NaN is the
+    /// required invalid-Date sentinel for genuine Date instances.
+    Date(f64),
     /// Realm global object and its hidden table of unresolved global VarRefs.
     GlobalObject {
         uninitialized_vars: ObjectId,
@@ -788,6 +803,7 @@ pub enum ObjectKind {
     ArrayIterator,
     ForInIterator,
     Primitive,
+    Date,
     GlobalObject,
     Error,
     StringIterator,
@@ -1746,6 +1762,22 @@ impl ObjectData {
         }
     }
 
+    /// Construct one genuine Date object with an internal millisecond value.
+    /// The runtime is responsible for applying TimeClip before publication;
+    /// NaN remains valid because it represents an invalid Date.
+    #[must_use]
+    pub const fn date(shape: ShapeId, slots: Vec<PropertySlot>, value: f64) -> Self {
+        Self {
+            shape,
+            slots,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::Date,
+            payload: ObjectPayload::Date(value),
+        }
+    }
+
     /// Construct a realm global object with QuickJS's hidden unresolved-name
     /// VarRef table.
     #[must_use]
@@ -2264,6 +2296,7 @@ impl Heap {
             | ObjectPayload::ArrayIterator { .. }
             | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)
+            | ObjectPayload::Date(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }
@@ -2990,6 +3023,29 @@ impl Heap {
         Ok(Some(result))
     }
 
+    /// Read the internal millisecond time value of one genuine Date object.
+    pub fn date_value(&self, id: ObjectId) -> Result<f64, HeapError> {
+        match &self.object(id)?.payload {
+            ObjectPayload::Date(value) => Ok(*value),
+            _ => Err(HeapError::Invariant(
+                "Date value requested for an object with the wrong class",
+            )),
+        }
+    }
+
+    /// Replace the internal millisecond time value of one genuine Date.
+    /// This payload owns no arena or atom edges, so mutation is infallible
+    /// after the branded object identity has been validated.
+    pub fn set_date_value(&mut self, id: ObjectId, value: f64) -> Result<(), HeapError> {
+        let ObjectPayload::Date(current) = &mut self.object_mut(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "Date value update reached an object with the wrong class",
+            ));
+        };
+        *current = value;
+        Ok(())
+    }
+
     /// Snapshot one branded Array Iterator's live target, cursor, and mode.
     pub fn array_iterator_state(
         &self,
@@ -3605,6 +3661,7 @@ impl Heap {
                 )
                 | (ObjectKind::ForInIterator, ObjectPayload::ForInIterator(_))
                 | (ObjectKind::Primitive, ObjectPayload::Primitive(_))
+                | (ObjectKind::Date, ObjectPayload::Date(_))
                 | (ObjectKind::GlobalObject, ObjectPayload::GlobalObject { .. })
                 | (ObjectKind::Error, ObjectPayload::Error)
                 | (
@@ -4062,6 +4119,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::ArrayIterator { .. }
         | ObjectPayload::ForInIterator(_)
         | ObjectPayload::Primitive(_)
+        | ObjectPayload::Date(_)
         | ObjectPayload::GlobalObject { .. }
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
@@ -4085,6 +4143,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::Array { .. }
         | ObjectPayload::Arguments { .. }
         | ObjectPayload::Primitive(_)
+        | ObjectPayload::Date(_)
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. } => {}
         ObjectPayload::ArrayIterator { object, .. } => {
@@ -4179,7 +4238,7 @@ fn raw_value_edges(value: &RawValue) -> Vec<RawId> {
 
 fn context_edges(context: &ContextData) -> Vec<RawId> {
     let mut edges = Vec::with_capacity(
-        11usize
+        12usize
             .saturating_add(PrimitiveKind::COUNT)
             .saturating_add(NativeErrorKind::COUNT)
             .saturating_add(context.global_objects.len())
@@ -4200,6 +4259,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
             .copied()
             .map(RawId::Object),
     );
+    edges.extend(context.date_prototype.map(RawId::Object));
     edges.extend(context.function_constructor.map(RawId::Object));
     edges.extend(context.array_constructor.map(RawId::Object));
     edges.extend(context.array_prototype_values.map(RawId::Object));
@@ -4274,6 +4334,7 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
         | ObjectPayload::Arguments { .. }
         | ObjectPayload::ArrayIterator { .. }
         | ObjectPayload::ForInIterator(_)
+        | ObjectPayload::Date(_)
         | ObjectPayload::GlobalObject { .. }
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
@@ -4583,6 +4644,58 @@ mod tests {
         assert!(string_cleanup.atoms.is_empty());
         heap.release_object(number).unwrap();
         heap.release_object(boolean).unwrap();
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn date_payload_is_branded_edge_free_and_mutable() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+
+        let mut invalid = ObjectData::date(shape, Vec::new(), f64::NAN);
+        invalid.kind = ObjectKind::Ordinary;
+        assert_eq!(
+            heap.allocate_object(invalid),
+            Err(HeapError::Invariant(
+                "object kind does not match its class payload"
+            ))
+        );
+        assert_eq!(heap.counts().object_nodes, 0);
+
+        let date = heap
+            .allocate_object(ObjectData::date(shape, Vec::new(), f64::NAN))
+            .unwrap();
+        assert!(heap.date_value(date).unwrap().is_nan());
+        let date_data = heap.object(date).unwrap();
+        assert!(matches!(date_data.payload, ObjectPayload::Date(value) if value.is_nan()));
+        assert_eq!(object_edges(date_data), vec![RawId::Shape(shape)]);
+        assert_eq!(object_atoms(date_data).count(), 0);
+
+        heap.set_date_value(date, -0.0).unwrap();
+        assert_eq!(
+            heap.date_value(date).unwrap().to_bits(),
+            (-0.0f64).to_bits()
+        );
+
+        let ordinary = heap
+            .allocate_object(ObjectData::ordinary(shape, Vec::new()))
+            .unwrap();
+        assert_eq!(
+            heap.date_value(ordinary),
+            Err(HeapError::Invariant(
+                "Date value requested for an object with the wrong class"
+            ))
+        );
+        assert_eq!(
+            heap.set_date_value(ordinary, 1.0),
+            Err(HeapError::Invariant(
+                "Date value update reached an object with the wrong class"
+            ))
+        );
+
+        heap.release_object(ordinary).unwrap();
+        heap.release_object(date).unwrap();
         heap.release_shape(shape).unwrap();
         assert_eq!(heap.counts().live, 0);
     }
@@ -5151,7 +5264,7 @@ mod tests {
     }
 
     #[test]
-    fn context_roots_iterator_prototypes_until_realm_finalization() {
+    fn context_roots_intrinsic_prototypes_until_realm_finalization() {
         let mut heap = Heap::new();
         let shape = empty_shape(&mut heap);
         let object_prototype = leaf(&mut heap, shape);
@@ -5160,19 +5273,23 @@ mod tests {
         let iterator_prototype = leaf(&mut heap, shape);
         let array_iterator_prototype = leaf(&mut heap, shape);
         let string_iterator_prototype = leaf(&mut heap, shape);
+        let date_prototype = leaf(&mut heap, shape);
         let global_object = leaf(&mut heap, shape);
         let global_var_object = leaf(&mut heap, shape);
         let context = heap
-            .allocate_context(ContextData::new(
-                object_prototype,
-                function_prototype,
-                array_prototype,
-                iterator_prototype,
-                array_iterator_prototype,
-                string_iterator_prototype,
-                global_object,
-                global_var_object,
-            ))
+            .allocate_context(
+                ContextData::new(
+                    object_prototype,
+                    function_prototype,
+                    array_prototype,
+                    iterator_prototype,
+                    array_iterator_prototype,
+                    string_iterator_prototype,
+                    global_object,
+                    global_var_object,
+                )
+                .with_date_prototype(date_prototype),
+            )
             .unwrap();
         assert_eq!(
             heap.context(context).unwrap().array_prototype,
@@ -5190,6 +5307,14 @@ mod tests {
             heap.context(context).unwrap().string_iterator_prototype,
             string_iterator_prototype
         );
+        assert_eq!(
+            heap.context(context).unwrap().date_prototype,
+            Some(date_prototype)
+        );
+        assert!(matches!(
+            heap.object(date_prototype).unwrap().payload,
+            ObjectPayload::Ordinary
+        ));
 
         for object in [
             object_prototype,
@@ -5198,6 +5323,7 @@ mod tests {
             iterator_prototype,
             array_iterator_prototype,
             string_iterator_prototype,
+            date_prototype,
             global_object,
             global_var_object,
         ] {
@@ -5206,7 +5332,7 @@ mod tests {
         }
         let cleanup = heap.release_context(context).unwrap();
         assert_eq!(cleanup.finalized_contexts, 1);
-        assert_eq!(cleanup.finalized_objects, 8);
+        assert_eq!(cleanup.finalized_objects, 9);
         assert_eq!(heap.release_shape(shape).unwrap().finalized_shapes, 1);
         assert_eq!(heap.counts().live, 0);
     }

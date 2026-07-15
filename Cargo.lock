@@ -42,4 +42,11 @@ version = "0.0.1"
 dependencies = [
  "num-bigint",
  "num-traits",
+ "tz-rs",
 ]
+
+[[package]]
+name = "tz-rs"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fc6c929ffa10fb34f4a3c7e9a73620a83ef2e85e47f9ec3381b8289e6762f42"
