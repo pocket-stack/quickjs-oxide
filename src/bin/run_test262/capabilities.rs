@@ -199,7 +199,7 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/compat/test262-oxide.conf"
     ));
-    const EXPECTED_FEATURES: [&str; 15] = [
+    const EXPECTED_FEATURES: [&str; 16] = [
         "BigInt",
         "Math.sumPrecise",
         "Reflect",
@@ -210,6 +210,7 @@ mod tests {
         "String.prototype.endsWith",
         "Symbol",
         "Symbol.isConcatSpreadable",
+        "Symbol.split",
         "__proto__",
         "change-array-by-copy",
         "exponentiation",

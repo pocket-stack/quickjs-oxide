@@ -833,7 +833,7 @@ impl Runtime {
         }
     }
 
-    fn create_array_data_property(
+    pub(in crate::runtime) fn create_array_data_property(
         &self,
         realm: ContextId,
         object: &ObjectRef,

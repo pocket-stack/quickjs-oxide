@@ -13,8 +13,8 @@ claim full parity.
   capability profile, audited negative-test canaries, and source/metadata host
   requirements keep unsupported grammar, features, modes, and `$262` hooks from
   becoming false passes. Bounded workers preserve canonical byte-for-byte TSV
-  and JSONL ordering. The current vector has 23,016 passes: a 27.54% lower bound
-  after the 18,475 pinned QuickJS target exclusions, or 76.59% among the 30,052
+  and JSONL ordering. The current vector has 23,190 passes: a 27.75% lower bound
+  after the 18,475 pinned QuickJS target exclusions, or 77.02% among the 30,110
   variants with a non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim.
@@ -1202,9 +1202,10 @@ claim full parity.
   own-property-keys; ownKeys merges them with stored numeric, string and symbol
   keys in QuickJS order. The UTF-16 prefix then installs `at`, `charCodeAt`,
   `charAt`, `concat`, `codePointAt`, `isWellFormed`, `toWellFormed`, `indexOf`,
-  `lastIndexOf`, `includes`, `endsWith` and `startsWith`, then skips the pending
-  `match`/`matchAll`/`search`/`split` entries before publishing `substring`,
-  `substr`, `slice` and `repeat`, skips the pending `replace`/`replaceAll`, and
+  `lastIndexOf`, `includes`, `endsWith` and `startsWith`, skips the pending
+  `match`/`matchAll`/`search` entries, publishes `split`, then publishes
+  `substring`, `substr`, `slice` and `repeat`, skips the pending
+  `replace`/`replaceAll`, and
   publishes `padEnd` then `padStart`, followed by `trim`, `trimEnd`,
   `trimRight`, `trimStart` and `trimLeft`, in pinned table-relative order ahead
   of the conversion core's exact `toString`/`valueOf` brand methods. It then
@@ -1222,7 +1223,35 @@ claim full parity.
   before search-value conversion, preserves every abrupt-completion boundary,
   clamps position with `JS_ToInt32Clamp`, and scans UTF-16 code units. Until a
   RegExp object class lands, the internal-brand fallback remains an exhaustive
-  false branch with pinned oracle-only vectors. The three distinct generic
+  false branch with pinned oracle-only vectors. The generic `split` callable
+  has `length=2` and ports pinned QuickJS `js_string_split` without pretending
+  that the still-absent RegExp engine exists. Nullish receivers are rejected
+  before any separator access. Only object separators perform the ordinary
+  `Symbol.split` Get; a present non-nullish method is called with the separator
+  as `this`, the original unconverted receiver and limit, and exactly two
+  arguments. Primitive separators never consult their boxed prototypes. The
+  fallback path converts the receiver, allocates its result Array in the
+  method's defining realm, converts a present limit with ToUint32, and converts
+  the separator even when the resulting limit is zero. Undefined separators,
+  empty sources and separators, repeated matches, tails, astral pairs and lone
+  surrogates follow the pinned raw UTF-16 code-unit loop; indexed results use
+  CreateDataProperty and update Array length. Native errors use the defining
+  realm while getter, custom-splitter and conversion throws retain their
+  original identity and realm. The AutoInit graph, deletion/replacement,
+  coercion and abrupt order, limit boundaries, cross-realm results/errors,
+  recursion recovery, detached-callable lifetime and final GC are locked by
+  nine passing oracle/differential/white-box integration tests plus five
+  intrinsic unit tests. The pinned anchors are
+  `quickjs.c` 45894-45980 and 46640. Its 127-path focused Test262 vector has
+  174 passes out of 254 variants; 81 of the 120 core split paths pass in both
+  modes, and the remaining outcomes expose RegExp literal/global, eval,
+  object-literal parser, adjacent-feature and IsHTMLDDA host frontiers. The
+  exact full-vector join moves 23,016 to 23,190 passes with no previous-pass
+  regression. Declaring `Symbol.split` in the conservative capability profile
+  means only that the well-known symbol and generic/custom delegation have been
+  audited: it intentionally exposes 46 `RegExp.prototype[Symbol.split]`
+  variants as explicit RegExp failures/frontiers rather than claiming that
+  protocol is implemented. The three distinct generic
   subrange callables have `length=2`, convert receiver, start and a non-undefined
   end in that order, use QuickJS's saturated Int32 clamps rather than generic
   `ToIntegerOrInfinity`, and copy exact UTF-16 ranges with full-range handle
@@ -1296,7 +1325,7 @@ claim full parity.
   (`js_string_CreateHTML`) and 46661-46674 (the thirteen prototype entries).
   Together with `length`, the conversion pair, `Symbol.iterator` and the
   `constructor` back-reference, the implemented String prototype now covers
-  45/53 own keys. This forty-five-key list is only the QuickJS-relative order
+  46/53 own keys. This forty-six-key list is only the QuickJS-relative order
   filtered to implemented keys, not a claim of full prototype parity. The
   callable/constructible
   global `%String%` owns `length`, `name`, lazy `fromCharCode`, `fromCodePoint`
@@ -1347,8 +1376,8 @@ claim full parity.
   writes, fixed-name nullish reads, nullish writes, missing bindings, TDZ and
   VarRef descriptor reads, VM `ThrowReadOnly`, and reserved-identifier
   validation.
-  The remaining eight String-prototype own keys (`match`, `matchAll`, `search`,
-  `split`, `replace`, `replaceAll`, `normalize` and `localeCompare`),
+  The remaining seven String-prototype own keys (`match`, `matchAll`, `search`,
+  `replace`, `replaceAll`, `normalize` and `localeCompare`),
   Context-level observable
   `ToString`, borrowed C-pointer/refcount ownership, native atom
   diagnostics attached to not-yet-implemented private-field/module/
@@ -1432,11 +1461,12 @@ claim full parity.
   through one typed handler family.
 
   Forty-four Date unit tests, six grouped QuickJS differentials, one oracle
-  vector self-check, and two cross-realm/GC integration tests pass. The
-  799-path focused Test262 vector has 1,276 passes out of 1,598 variants; the
-  exact complete-vector join moves 21,740 to 23,016 passes through 1,276
-  `fail-runtime -> pass` transitions with no previous-pass regression and no
-  change outside the manifest. Five- and eight-worker focused and full reports
+  vector self-check, and two cross-realm/GC integration tests pass. With
+  generic split linked, the 799-path focused Test262 vector has 1,282 passes
+  out of 1,598 variants. At the Date landing, the exact complete-vector join
+  moved 21,740 to 23,016 passes through 1,276 `fail-runtime -> pass`
+  transitions with no previous-pass regression and no change outside the
+  manifest. The Date-landing five- and eight-worker focused and full reports
   are byte-identical. One host parity limitation remains explicit: on Windows,
   both an unset `TZ` and an IANA-zone `TZ` currently fall back to UTC because
   `tz-rs` has no native local-zone/zoneinfo backend there. A real
@@ -1661,9 +1691,9 @@ claim full parity.
   retain the callee realm's matching prototype, and strict functions continue
   to observe the raw primitive. The same cached path is used when a sloppy
   inherited Number/String/Boolean/Symbol/BigInt getter or setter receives a
-  primitive receiver. String lookup exposes the implemented 45-key prototype
+  primitive receiver. String lookup exposes the implemented 46-key prototype
   surface described above together with user-defined prototype properties;
-  the remaining eight standard entries are absent.
+  the remaining seven standard entries are absent.
 - The Error intrinsic graph now includes `Error` plus the seven non-Aggregate
   native Error constructors, their constructor/prototype/global relationships,
   lazy function-list properties, call-versus-construct active-function rule,
@@ -1920,8 +1950,9 @@ Symbol and BigInt primitive prototype slices; simple member assignment and
 property delete cover ordinary objects and the current primitive surface. The
 separate String exotic, UTF-16-prefix and conversion cores cover branded
 empty-prototype and sloppy-this wrappers, UTF-16 virtual own properties, the
-first twelve generic code-unit/search methods, the three generic subrange
-methods, `repeat`, `padEnd`/`padStart`, the five-property trim group,
+first twelve generic code-unit/search methods, generic `split`, the three
+generic subrange methods, `repeat`, `padEnd`/`padStart`, the five-property trim
+group,
 `toString`/`valueOf`, the four Unicode case-conversion methods,
 `Symbol.iterator`, the thirteen-property Annex-B CreateHTML family, non-index
 prototype lookup and the implemented
@@ -1940,6 +1971,9 @@ UTF-16 filler truncation and catchable result-buffer reservations.
 The trim group adds the exact 25-code-unit whitespace set, raw UTF-16
 one-sided scans, canonical alias identity with independent properties, and a
 catchable partial-result reservation.
+Generic split adds object-only `Symbol.split` delegation, raw receiver/limit
+forwarding, ordered ordinary conversion and exact UTF-16 separator/tail output
+in a defining-realm Array without claiming RegExp protocol support.
 The case-conversion group adds the pinned Unicode 17 compressed mapping,
 extension, `Cased` and `Case_Ignorable` tables; astral and multi-code-point
 mappings; context-sensitive Greek final sigma; raw surrogate preservation; and
@@ -1954,7 +1988,7 @@ Native Errors additionally share the
 retain exact raw bytes across compiler/VM Error transport. They also implement
 the not-constructor dynamic name plus the current `JS_AtomGetStr`-backed
 read-only/nullish/binding/TDZ/reserved-identifier diagnostics. It does not
-publish the remaining eight prototype own keys, Context/C pointer embedding
+publish the remaining seven prototype own keys, Context/C pointer embedding
 semantics, atom diagnostics belonging
 to unimplemented language/builtin surfaces, exact byte-sidecar construction
 for every parser/lexer diagnostic, or general recoverable allocator failures
@@ -1971,7 +2005,7 @@ identifier and ordinary fixed/computed member References. Sloppy
 direct-identifier delete is implemented
 for the current static scope tree and defining-realm global object. Dynamic
 object-environment lookup/deletion introduced by `with` or direct `eval`, the
-remaining eight entries of String's 53-key prototype surface, the RegExp object
+remaining seven entries of String's 53-key prototype surface, the RegExp object
 class needed by `IsRegExp`'s internal-brand fallback, Proxy/exotic internal
 methods, and the full
 `function_accessors.js` fixture are still pending. AggregateError and
@@ -2057,6 +2091,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_includes -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_string_split -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_subrange -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_repeat -- --nocapture
@@ -2100,6 +2136,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_math_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_reflect_intrinsic -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_date_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_lexicals -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -2179,15 +2217,18 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-smoke.sh
 ./scripts/test-test262-provenance.sh
 ./scripts/test-test262-reflect.sh
+./scripts/test-test262-date.sh
+./scripts/test-test262-string-split.sh
 ./scripts/test-test262-full.sh
 ```
 
 The direct commands above run the dedicated Boolean, Symbol,
 String constructor/static table, String-exotic substrate, String UTF-16 prefix,
-String index-search, regexp-aware includes and String subranges, String-conversion core,
+String index-search, regexp-aware includes, generic String split and String
+subranges, String-conversion core,
 Unicode String case conversion, String-rope/byte/native-Error kernels, Unicode
 identifier core, global
-BaseObjects, complete Number-, BigInt-, Math- and Reflect-intrinsic
+BaseObjects, complete Number-, BigInt-, Math-, Reflect- and Date-intrinsic
 differentials, and the
 Program-var/function, Program/body/block/switch/classic-for lexical-scope,
 ordinary mapped/unmapped Arguments object,

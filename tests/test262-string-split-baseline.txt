@@ -1,0 +1,8 @@
+schema=test262-canonical-classified-v2
+timeout_ms=30000
+variants=254
+runnable=244
+passes=174
+tsv_sha256=bb3b6afb89b76dd566579030b7b7fd26e7e4ad35318fc4eb8ddaff6293f82d0c
+jsonl_sha256=ed1beca8d48130af79799c5940d7e7204fb079a36a3edef4505aa94f8d10f055
+summary=fail-parse=38 fail-runtime=28 pass=174 unsupported-feature=8 unsupported-host-is-html-dda=2 unsupported-parser=4

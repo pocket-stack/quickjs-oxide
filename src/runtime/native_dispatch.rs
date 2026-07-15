@@ -384,6 +384,9 @@ impl Runtime {
             NativeFunctionId::StringPrototypeIncludes(selector) => {
                 self.call_string_prototype_includes(realm, selector, invocation, arguments)
             }
+            NativeFunctionId::StringPrototypeSplit => {
+                self.call_string_prototype_split(realm, invocation, arguments)
+            }
             NativeFunctionId::MathMinMax(kind) => {
                 self.call_math_min_max(realm, kind, invocation, arguments)
             }

@@ -160,9 +160,17 @@ impl Runtime {
                 1,
             )?;
         }
-        // QuickJS has match/matchAll/search/split between startsWith and this
-        // group. They are not implemented yet, so preserve the implemented-
-        // key filtered order while keeping this trio adjacent and ordered.
+        // QuickJS has match/matchAll/search between startsWith and split. They
+        // remain unpublished until their RegExp-backed milestone; split keeps
+        // its pinned position immediately before the subrange trio.
+        self.define_native_builtin_auto_init(
+            string_prototype,
+            realm,
+            NativeFunctionId::StringPrototypeSplit,
+            "split",
+            2,
+            2,
+        )?;
         for (selector, name) in [
             (StringSubrangeKind::Substring, "substring"),
             (StringSubrangeKind::Substr, "substr"),
@@ -764,6 +772,209 @@ impl Runtime {
             }
         };
         Ok(Completion::Return(Value::Bool(found)))
+    }
+
+    /// Rust port of pinned QuickJS `js_string_split` for the generic
+    /// non-RegExp path. An object separator may still supply its own
+    /// `@@split`; this method delegates to that callable without coercing the
+    /// original receiver or limit. Falling through preserves QuickJS's exact
+    /// conversion order and splits flat UTF-16 code-unit ranges directly.
+    pub(in crate::runtime) fn call_string_prototype_split(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String split did not receive a generic invocation",
+            ));
+        };
+        if matches!(this_value, Value::Undefined | Value::Null) {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "cannot convert to object",
+            )?));
+        }
+
+        let separator = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "String split separator argv was not padded",
+        ))?;
+        let limit_value = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
+            "String split limit argv was not padded",
+        ))?;
+
+        // QuickJS's pinned implementation performs the well-known-symbol Get
+        // only for object separators. A present value is called as-is; null and
+        // undefined alone select the generic string path.
+        if let Value::Object(separator_object) = separator {
+            let split_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Split));
+            let splitter = match self.get_property_in_realm(realm, separator_object, &split_key)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            if !matches!(splitter, Value::Undefined | Value::Null) {
+                let callable = match splitter {
+                    Value::Object(object) => self.as_callable(&object)?,
+                    Value::Undefined
+                    | Value::Null
+                    | Value::Bool(_)
+                    | Value::Int(_)
+                    | Value::Float(_)
+                    | Value::BigInt(_)
+                    | Value::String(_)
+                    | Value::Symbol(_) => None,
+                };
+                let Some(callable) = callable else {
+                    return Ok(Completion::Throw(self.new_native_error(
+                        realm,
+                        NativeErrorKind::Type,
+                        "not a function",
+                    )?));
+                };
+                return self.call_internal(
+                    realm,
+                    &callable,
+                    Value::Object(separator_object.clone()),
+                    &[this_value, limit_value.clone()],
+                );
+            }
+        }
+
+        // The source conversion precedes Array creation. The Array itself must
+        // exist before limit and separator coercion, and belongs to split's
+        // defining realm rather than the caller's realm.
+        let source = match self.native_to_js_string(realm, &this_value)? {
+            NativeConversion::Value(value) => value.linearize(),
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let result = self.new_array(realm)?;
+        let limit = if matches!(limit_value, Value::Undefined) {
+            u32::MAX
+        } else {
+            let number = match self.native_to_number(realm, limit_value)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            Self::to_uint32_number(number)
+        };
+        let separator_string = match self.native_to_js_string(realm, separator)? {
+            NativeConversion::Value(value) => value.linearize(),
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        let mut length = 0_u32;
+        if limit == 0 {
+            return Ok(Completion::Return(Value::Object(result)));
+        }
+        if matches!(separator, Value::Undefined) {
+            if let Some(value) = self.define_string_split_element(
+                realm,
+                &result,
+                &mut length,
+                Value::String(source.clone()),
+            )? {
+                return Ok(Completion::Throw(value));
+            }
+            return Ok(Completion::Return(Value::Object(result)));
+        }
+
+        let source_len = source.len();
+        let separator_len = separator_string.len();
+        if source_len == 0 {
+            if separator_len != 0 {
+                if let Some(value) = self.define_string_split_element(
+                    realm,
+                    &result,
+                    &mut length,
+                    Value::String(source),
+                )? {
+                    return Ok(Completion::Throw(value));
+                }
+            }
+            return Ok(Completion::Return(Value::Object(result)));
+        }
+
+        if separator_len == 0 {
+            for index in 0..source_len {
+                if let Some(value) = self.define_string_split_element(
+                    realm,
+                    &result,
+                    &mut length,
+                    Value::String(source.sub_string(index, index + 1)),
+                )? {
+                    return Ok(Completion::Throw(value));
+                }
+                if length == limit {
+                    break;
+                }
+            }
+            return Ok(Completion::Return(Value::Object(result)));
+        }
+
+        let source_len_i32 = i32::try_from(source_len).map_err(|_| {
+            RuntimeError::Invariant("String split source exceeded QuickJS's signed length range")
+        })?;
+        let separator_len_i32 = i32::try_from(separator_len).map_err(|_| {
+            RuntimeError::Invariant("String split separator exceeded QuickJS's signed length range")
+        })?;
+        let stop = source_len_i32 - separator_len_i32;
+        let mut start = 0_i32;
+        while start <= stop {
+            let end = scan_string_region(&source, &separator_string, start, stop, 1);
+            if end < 0 {
+                break;
+            }
+            if let Some(value) = self.define_string_split_element(
+                realm,
+                &result,
+                &mut length,
+                Value::String(source.sub_string(
+                    usize::try_from(start).expect("non-negative split start fits usize"),
+                    usize::try_from(end).expect("non-negative split end fits usize"),
+                )),
+            )? {
+                return Ok(Completion::Throw(value));
+            }
+            if length == limit {
+                return Ok(Completion::Return(Value::Object(result)));
+            }
+            start = end + separator_len_i32;
+        }
+        if let Some(value) = self.define_string_split_element(
+            realm,
+            &result,
+            &mut length,
+            Value::String(source.sub_string(
+                usize::try_from(start).expect("non-negative split tail start fits usize"),
+                source_len,
+            )),
+        )? {
+            return Ok(Completion::Throw(value));
+        }
+        Ok(Completion::Return(Value::Object(result)))
+    }
+
+    /// CreateDataProperty on the fresh result Array. `JsString::MAX_LEN` keeps
+    /// the algorithm below the Uint32 ceiling, but retain checked bookkeeping
+    /// so a future string-limit expansion cannot silently wrap the output key.
+    fn define_string_split_element(
+        &self,
+        realm: ContextId,
+        result: &ObjectRef,
+        length: &mut u32,
+        value: Value,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let index = *length;
+        let next = index.checked_add(1).ok_or(RuntimeError::Invariant(
+            "String split output index exceeded Uint32",
+        ))?;
+        if let Some(value) = self.create_array_data_property(realm, result, index, value)? {
+            return Ok(Some(value));
+        }
+        *length = next;
+        Ok(None)
     }
 
     /// Rust port of pinned QuickJS `js_string_substring`, `js_string_substr`,

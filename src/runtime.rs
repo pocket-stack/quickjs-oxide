@@ -6971,6 +6971,7 @@ impl Runtime {
             // String receiver/argument conversion callbacks retain native and
             // property-call stacks while recursively entering these methods.
             NativeFunctionId::StringPrototypeIncludes(_)
+            | NativeFunctionId::StringPrototypeSplit
             | NativeFunctionId::StringPrototypeSubrange(_)
             | NativeFunctionId::StringPrototypeRepeat
             | NativeFunctionId::StringPrototypePad(_)
@@ -7028,6 +7029,7 @@ impl Runtime {
             // between these String methods. Reject their shared fifth frame
             // while leaving weighted room for one callback leaf.
             NativeFunctionId::StringPrototypeIncludes(_)
+            | NativeFunctionId::StringPrototypeSplit
             | NativeFunctionId::StringPrototypeSubrange(_)
             | NativeFunctionId::StringPrototypeRepeat
             | NativeFunctionId::StringPrototypePad(_)
@@ -7085,6 +7087,7 @@ impl Runtime {
                 matches!(candidate, NativeFunctionId::ObjectFromEntries)
             }
             NativeFunctionId::StringPrototypeIncludes(_)
+            | NativeFunctionId::StringPrototypeSplit
             | NativeFunctionId::StringPrototypeSubrange(_)
             | NativeFunctionId::StringPrototypeRepeat
             | NativeFunctionId::StringPrototypePad(_)
@@ -7093,6 +7096,7 @@ impl Runtime {
             | NativeFunctionId::StringPrototypeCreateHtml(_) => matches!(
                 candidate,
                 NativeFunctionId::StringPrototypeIncludes(_)
+                    | NativeFunctionId::StringPrototypeSplit
                     | NativeFunctionId::StringPrototypeSubrange(_)
                     | NativeFunctionId::StringPrototypeRepeat
                     | NativeFunctionId::StringPrototypePad(_)

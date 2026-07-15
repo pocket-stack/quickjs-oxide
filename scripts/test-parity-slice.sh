@@ -41,6 +41,9 @@ cargo fmt --all -- --check
 QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/test-test262-smoke.sh
 ./scripts/test-test262-provenance.sh
+./scripts/test-test262-reflect.sh
+./scripts/test-test262-date.sh
+./scripts/test-test262-string-split.sh
 ./scripts/test-test262-full.sh
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ./scripts/check-rust-only.sh

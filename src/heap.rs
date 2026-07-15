@@ -1496,6 +1496,7 @@ pub enum NativeFunctionId {
     StringPrototypeWellFormed(StringWellFormedKind),
     StringPrototypeIndexOf(StringIndexOfKind),
     StringPrototypeIncludes(StringIncludesKind),
+    StringPrototypeSplit,
     MathMinMax(MathMinMaxKind),
     MathUnary(MathUnaryKind),
     MathBinary(MathBinaryKind),
@@ -1848,6 +1849,7 @@ impl NativeFunctionId {
             | Self::StringPrototypeConcat
             | Self::StringPrototypeCodePointAt
             | Self::StringPrototypeWellFormed(_)
+            | Self::StringPrototypeSplit
             | Self::MathHypot
             | Self::MathRandom
             | Self::MathImul
@@ -5283,6 +5285,7 @@ mod tests {
             NativeFunctionId::StringPrototypeCodePointAt,
             NativeFunctionId::StringPrototypeWellFormed(StringWellFormedKind::IsWellFormed),
             NativeFunctionId::StringPrototypeWellFormed(StringWellFormedKind::ToWellFormed),
+            NativeFunctionId::StringPrototypeSplit,
             NativeFunctionId::StringPrototypeSubrange(StringSubrangeKind::Substring),
             NativeFunctionId::StringPrototypeSubrange(StringSubrangeKind::Substr),
             NativeFunctionId::StringPrototypeSubrange(StringSubrangeKind::Slice),

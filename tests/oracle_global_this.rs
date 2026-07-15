@@ -40,6 +40,7 @@ const IMPLEMENTED_GLOBALS: &[&str] = &[
     "Symbol",
     "globalThis",
     "BigInt",
+    "Date",
 ];
 
 const ORACLE_PROBE: &str = r#"
@@ -57,7 +58,7 @@ var implemented = [
     "TypeError", "URIError", "InternalError", "Array", "Object", "Function", "parseInt",
     "parseFloat", "isNaN", "isFinite", "decodeURI", "decodeURIComponent",
     "encodeURI", "encodeURIComponent", "escape", "unescape", "Infinity",
-    "NaN", "undefined", "Number", "Boolean", "String", "Math", "Reflect", "Symbol", "globalThis", "BigInt"
+    "NaN", "undefined", "Number", "Boolean", "String", "Math", "Reflect", "Symbol", "globalThis", "BigInt", "Date"
 ];
 var keys = Reflect.ownKeys(root);
 var firstSymbol = keys.findIndex(function(key) { return typeof key === "symbol"; });
@@ -166,7 +167,7 @@ print("reconnect=" + [
 
 const EXPECTED_OBSERVATIONS: &[&str] = &[
     "initial=true|101|true|true",
-    "keys=Error,EvalError,RangeError,ReferenceError,SyntaxError,TypeError,URIError,InternalError,Array,Object,Function,parseInt,parseFloat,isNaN,isFinite,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,unescape,Infinity,NaN,undefined,Number,Boolean,String,Math,Reflect,Symbol,globalThis,BigInt|true|true",
+    "keys=Error,EvalError,RangeError,ReferenceError,SyntaxError,TypeError,URIError,InternalError,Array,Object,Function,parseInt,parseFloat,isNaN,isFinite,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,unescape,Infinity,NaN,undefined,Number,Boolean,String,Math,Reflect,Symbol,globalThis,BigInt,Date|true|true",
     "assignment=17|101",
     "delete=true|true|undefined",
     "strict-missing=ReferenceError:'globalThis' is not defined:true|true",
