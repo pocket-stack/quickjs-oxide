@@ -2,10 +2,11 @@
 # Reproduce the complete conservative Test262 classified outcome vector.
 
 set -euo pipefail
+export TZ=America/Los_Angeles
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$script_dir/.." && pwd)
-suite=$($script_dir/prepare-test262.sh)
+suite=$("$script_dir/prepare-test262.sh")
 source_dir=$(dirname -- "$suite")
 baseline=tests/test262-full-baseline.txt
 report=target/test262-full.tsv

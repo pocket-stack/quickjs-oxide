@@ -48,11 +48,11 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 21,740 pass;
+- 23,016 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
 - 53,510 are classified as unsupported feature, mode, host capability, parser
   frontier, harness frontier, or unaudited negative-test provenance;
-- 2,140 fail to parse, 5,962 fail at runtime, 206 fail in the harness, and four
+- 2,140 fail to parse, 4,686 fail at runtime, 206 fail in the harness, and four
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 32,227 variants to execution. That count includes variants
@@ -61,26 +61,28 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 21.31% (`21,740 / 102,037`);
-- conservative target-scope lower bound: 26.02%
-  (`21,740 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 72.34%
-  (`21,740 / 30,052`).
+- raw suite pass rate: 22.56% (`23,016 / 102,037`);
+- conservative target-scope lower bound: 27.54%
+  (`23,016 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 76.59%
+  (`23,016 / 30,052`).
 
-The 26.02% figure is the useful whole-project progress floor, not a claim that
-the engine is 26.02% conformant. The 72.34% conditional rate measures quality
+The 27.54% figure is the useful whole-project progress floor, not a claim that
+the engine is 27.54% conformant. The 76.59% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. The capability profile currently admits 15 reviewed Test262
-feature tags and 18 reviewed negative-test paths; all
-other feature-tagged or negative-provenance cases fail closed. Expanding that
-profile as implementation lands can only make the measurement more
-representative. Focused QuickJS differential tests remain the semantic judge.
+feature tags and 18 reviewed negative-test paths; all other feature-tagged or
+negative-provenance cases fail closed. Expanding that profile as implementation
+lands can only make the measurement more representative. Focused QuickJS
+differential tests remain the semantic judge.
 
 The complete TSV/JSONL reports are generated under `target/` rather than
 committed (together they are tens of megabytes). Their complete hashes and
 outcome summary are pinned in `tests/test262-full-baseline.txt`. Runner ordering
-has previously been cross-checked at five and eight workers; the current byte
-expectations use the default eight workers.
+has been cross-checked at five and eight workers for the current Date
+milestone; the byte expectations use the default eight workers and a fixed
+`TZ=America/Los_Angeles`. The current hash gate therefore requires a Unix-like
+zoneinfo installation; Windows still lacks the corresponding IANA-zone backend.
 
 ## Milestone policy
 
@@ -124,33 +126,40 @@ outside-manifest drift. The transitions are 294 `unsupported-feature -> pass`,
 fail-parse`, six `unsupported-feature -> harness-error`, six
 `unsupported-feature -> unsupported-parser`, and 17 `fail-runtime -> pass`.
 
-The focused Reflect vector now has 311 passes, 40 runtime failures, ten parse
-failures, six harness failures, six explicit parser frontiers, and 54 variants
-still gated by honest adjacent feature requirements. All 153
-`built-ins/Reflect` files are represented: 248 variants pass, 54 stay gated by
-Proxy, arrow/computed-property grammar or `Symbol.toStringTag`, and the
+At that milestone, the focused Reflect vector had 311 passes, 40 runtime
+failures, ten parse failures, six harness failures, six explicit parser
+frontiers, and 54 variants still gated by honest adjacent feature requirements.
+All 153 `built-ins/Reflect` files are represented: 248 variants pass, 54 stay
+gated by Proxy, arrow/computed-property grammar or `Symbol.toStringTag`, and the
 remaining four reach the still-missing `Date.now`. The non-pass results thus
 record adjacent implementation frontiers rather than being hidden from the
 scoreboard.
 
-Date begins with a deliberately non-observable foundation milestone. The
-branded heap payload and realm-root slot, pure calendar/parser/formatter
-kernels, injectable clock/timezone boundary, and shared ordinary-to-primitive
-seam are present, but the global `Date` constructor and its static/prototype
-native table are not published. Consequently this foundation admits no
-additional Test262 case and must not change any complete-vector count, outcome,
-or hash above.
+The observable Date milestone moves the complete vector from 21,740 to 23,016
+passes without changing its 32,227 admitted jobs. An exact keyed join across
+all 102,037 variants records exactly 1,276 `fail-runtime -> pass` transitions,
+no previous-pass regression, and no outcome change outside the reviewed Date
+manifest. Five- and eight-worker full reports are byte-identical.
 
-The frozen Date-focused review corpus contains 798 paths and 1,596
-sloppy/strict variants. Its Date-owned subset contains 646 paths and 1,292
-variants. These are inventory denominators, not passing results: they become an
-outcome-transition claim only after the observable intrinsic lands, focused
-QuickJS differentials pass, and an exact old/new full-vector join is recorded.
-The pre-observable classified vector is pinned in
-`tests/test262-date-baseline.txt`: 1,320 variants are runnable, zero pass, and
-the remaining 276 are conservatively excluded or unsupported. Reproduce that
-exact TSV/JSONL vector with `scripts/test-test262-date.sh`; the script fixes
-`TZ=America/Los_Angeles` to match the pinned QuickJS Test262 runner.
+The Date-focused review corpus contains 799 paths and 1,598 sloppy/strict
+variants. Its Date-owned subset contains all 646 paths and 1,292 variants from
+`built-ins/Date`, `annexB/built-ins/Date`, and `staging/sm/Date`; 153 adjacent
+paths expose Date through globals, reflection, constructors, or indirect
+dependencies. The focused outcome vector has 1,276 passes, 28 parse failures,
+18 runtime failures, 34 configured/feature skips, and 242 explicitly
+unsupported outcomes. The runner admits 1,394 jobs; 72 of those terminate at
+the typed parser frontier, leaving 1,322 non-unsupported observed outcomes and
+a 96.52% pass rate on that frontier (79.85% of the complete focused vector).
+
+The 46 parse/runtime non-passes are explained adjacent frontiers rather than
+Date algorithm drift: arrow syntax or RegExp literals account for all 28 parse
+failures; the runtime failures require the still-missing
+`String.prototype.split`, `RegExp`, or older complete-global inventory. The
+six grouped QuickJS differentials, one oracle vector self-check, two
+cross-realm/GC integration tests, and 44 Date unit tests pass. Reproduce the
+hash-pinned focused vector with `scripts/test-test262-date.sh`; both it and the
+full-vector command fix `TZ=America/Los_Angeles`, and their five/eight-worker
+outputs are byte-identical on the required Unix-like zoneinfo host.
 
 ## Runner contract
 
@@ -192,6 +201,7 @@ canonical progress report.
 ./scripts/test-test262-smoke.sh
 ./scripts/test-test262-provenance.sh
 ./scripts/test-test262-reflect.sh
+./scripts/test-test262-date.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -201,13 +211,10 @@ boundaries. The full command uses the release runner, defaults to eight workers,
 and compares the complete outcome vector and sidecar by SHA-256. Set
 `TEST262_WORKERS` to change concurrency without changing the expected bytes.
 
-Math and Reflect are no longer common blockers in their reviewed sets. Within
-the earlier 4,589-variant Math reviewed set, the leading named dependencies are
-Date (308 variants), DataView (86), Map (72), RegExp (70), eval (69), Promise
-(60), and Set (58); the 308 count is not the size of the full Date suite. The
-pinned `built-ins/Date` tree itself contains 594 files and 1,188 sloppy/strict
-variants, while four otherwise-ready Reflect variants also stop at `Date.now`.
-Date's non-observable foundation is now present; publishing and measuring the
-observable intrinsic remains the next selected milestone. Test262 remains the
-project scoreboard, while focused QuickJS differentials decide exact target
-semantics for each slice.
+Math, Reflect, and Date are no longer common blockers in their reviewed sets.
+The Date transition also resolves the four otherwise-ready Reflect variants
+which had stopped at `Date.now`. RegExp syntax/runtime and
+`String.prototype.split` are now the named adjacent blockers visible inside
+the Date vector; broader project priorities remain driven by the complete
+classified report. Test262 remains the project scoreboard, while focused
+QuickJS differentials decide exact target semantics for each slice.

@@ -2,9 +2,9 @@
 #
 # Includes every built-ins/Date, annexB/built-ins/Date, and staging/sm/Date
 # test; every pre-Date full-vector path whose exact failure detail was
-# `'Date' is not defined`; and six direct constructor/reflection coverage
-# paths not selected by that failure signature. Paths are bytewise sorted,
-# unique, and expand to exactly 1,596 sloppy/strict variants.
+# `'Date' is not defined`; and seven direct constructor/reflection or
+# indirect-dependency paths not selected by that failure signature. Paths are
+# bytewise sorted, unique, and expand to exactly 1,598 sloppy/strict variants.
 test/annexB/built-ins/Date/prototype/getYear/B.2.4.js
 test/annexB/built-ins/Date/prototype/getYear/length.js
 test/annexB/built-ins/Date/prototype/getYear/name.js
@@ -695,6 +695,7 @@ test/built-ins/Object/defineProperty/15.2.3.6-4-413.js
 test/built-ins/Object/defineProperty/15.2.3.6-4-415.js
 test/built-ins/Object/defineProperty/15.2.3.6-4-584.js
 test/built-ins/Object/defineProperty/15.2.3.6-4-589.js
+test/built-ins/Object/defineProperty/15.2.3.6-4-591.js
 test/built-ins/Object/defineProperty/15.2.3.6-4-622.js
 test/built-ins/Object/defineProperty/15.2.3.6-4-623.js
 test/built-ins/Object/defineProperty/15.2.3.6-4-624.js

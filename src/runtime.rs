@@ -36,17 +36,18 @@ use crate::heap::{
     ArrayPopKind, ArrayPushKind, ArrayReduceKind, ArraySearchKind, ArraySliceKind,
     AutoInitProperty, BigIntAsNKind, BytecodeConstant, ClosureSource, ClosureVariable,
     ClosureVariableKind, ClosureVariableName, ConstructorKind, ContextData, ContextId,
-    DynamicFunctionKind, ErrorConstructorKind, ForInCandidate, ForInIteratorData, ForInProperty,
-    FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo, FunctionDebugPosition,
-    FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap,
-    HeapCleanup, HeapCounts, HeapError, MathBinaryKind, MathMinMaxKind, MathUnaryKind,
-    NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
-    ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind,
-    ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind,
-    PrimitiveObjectData, PropertySlot, RawValue, ReflectKind, ShapeId, StringCaseKind,
-    StringCharAtKind, StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind,
-    StringStaticKind, StringSubrangeKind, StringTrimKind, StringWellFormedKind, SymbolRegistryKind,
-    VarRefData, VarRefId, VariableDefinition,
+    DateGetFieldKind, DateNativeKind, DateSetFieldKind, DateStringMethod, DynamicFunctionKind,
+    ErrorConstructorKind, ForInCandidate, ForInIteratorData, ForInProperty, FunctionBytecodeData,
+    FunctionBytecodeId, FunctionDebugInfo, FunctionDebugPosition, FunctionKind, FunctionMetadata,
+    GcStats, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts,
+    HeapError, MathBinaryKind, MathMinMaxKind, MathUnaryKind, NativeCProto, NativeFunctionId,
+    NumberFormatKind, NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData,
+    ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind, ObjectKeysKind, ObjectKind,
+    ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot,
+    RawValue, ReflectKind, ShapeId, StringCaseKind, StringCharAtKind, StringCreateHtmlKind,
+    StringIncludesKind, StringIndexOfKind, StringPadKind, StringStaticKind, StringSubrangeKind,
+    StringTrimKind, StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId,
+    VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -751,6 +752,12 @@ impl Runtime {
         let bigint_prototype = self
             .new_object(Some(&object_prototype))
             .expect("initial BigInt.prototype allocation must succeed");
+        // Pinned QuickJS deliberately gives `%Date.prototype%` no Date
+        // payload of its own. Genuine Date instances still use this ordinary
+        // realm-local object as their default prototype.
+        let date_prototype = self
+            .new_object(Some(&object_prototype))
+            .expect("initial Date.prototype allocation must succeed");
         let native_error_ids =
             std::array::from_fn(|index| native_error_prototypes[index].object_id());
         let uninitialized_vars = self
@@ -788,6 +795,7 @@ impl Runtime {
                     .with_primitive_prototype(PrimitiveKind::String, string_prototype.object_id())
                     .with_primitive_prototype(PrimitiveKind::Symbol, symbol_prototype.object_id())
                     .with_primitive_prototype(PrimitiveKind::BigInt, bigint_prototype.object_id())
+                    .with_date_prototype(date_prototype.object_id())
                     .with_error_prototypes(error_prototype.object_id(), native_error_ids),
                 )
                 .expect("initial realm allocation must succeed")
@@ -909,9 +917,12 @@ impl Runtime {
             &global_object,
         )
         .expect("BigInt intrinsic initialization must succeed");
+        self.initialize_date_intrinsic(realm, &function_prototype, &date_prototype, &global_object)
+            .expect("Date intrinsic initialization must succeed");
         drop(global_var_object);
         drop(global_object);
         drop(uninitialized_vars);
+        drop(date_prototype);
         drop(bigint_prototype);
         drop(symbol_prototype);
         drop(string_iterator_prototype);

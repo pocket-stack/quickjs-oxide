@@ -43,6 +43,18 @@ impl DateHost for SystemDateHost {
     fn timezone_offset_minutes(&self, epoch_millis: i64) -> i32 {
         let unix_seconds = epoch_millis / 1_000;
         let environment = env::var_os("TZ");
+
+        // With no explicit TZ, libc's localtime path consults the host's
+        // current local-zone configuration. Reload `/etc/localtime` instead
+        // of freezing its first snapshot for the Runtime's whole lifetime, so
+        // replacing the host configuration remains observable like QuickJS.
+        if environment.is_none() {
+            return timezone_offset_at(
+                &load_host_time_zone(None).unwrap_or_else(|_| TimeZone::utc()),
+                unix_seconds,
+            );
+        }
+
         let mut cached = self.cached_time_zone.borrow_mut();
         if cached
             .as_ref()
@@ -57,17 +69,24 @@ impl DateHost for SystemDateHost {
                 time_zone,
             });
         }
-        cached
-            .as_ref()
-            .expect("Date timezone cache was initialized above")
-            .time_zone
-            .find_local_time_type(unix_seconds)
-            .ok()
-            .map(|local| -local.ut_offset() / 60)
-            // Retain the host-conversion failure fallback at the typed
-            // boundary; ordinary TZif/POSIX lookups do not take this path.
-            .unwrap_or(0)
+        timezone_offset_at(
+            &cached
+                .as_ref()
+                .expect("Date timezone cache was initialized above")
+                .time_zone,
+            unix_seconds,
+        )
     }
+}
+
+fn timezone_offset_at(time_zone: &TimeZone, unix_seconds: i64) -> i32 {
+    time_zone
+        .find_local_time_type(unix_seconds)
+        .ok()
+        .map(|local| -local.ut_offset() / 60)
+        // Retain the host-conversion failure fallback at the typed boundary;
+        // ordinary TZif/POSIX lookups do not take this path.
+        .unwrap_or(0)
 }
 
 fn load_host_time_zone(environment: Option<&OsStr>) -> Result<TimeZone, tz::Error> {

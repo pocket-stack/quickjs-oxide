@@ -1054,6 +1054,367 @@ pub enum MathBinaryKind {
     Pow,
 }
 
+/// The eight pinned QuickJS `get_date_string` formatter modes.
+///
+/// The typed selector is the Rust equivalent of the C callback's magic value:
+/// callers can route on the semantic mode while [`Self::quickjs_magic`] keeps
+/// the exact upstream table encoding available for differential assertions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DateStringMethod {
+    ToString,
+    ToDateString,
+    ToTimeString,
+    ToUtcString,
+    ToIsoString,
+    ToLocaleString,
+    ToLocaleDateString,
+    ToLocaleTimeString,
+}
+
+impl DateStringMethod {
+    pub const ALL: [Self; 8] = [
+        Self::ToString,
+        Self::ToUtcString,
+        Self::ToIsoString,
+        Self::ToDateString,
+        Self::ToTimeString,
+        Self::ToLocaleString,
+        Self::ToLocaleDateString,
+        Self::ToLocaleTimeString,
+    ];
+
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ToString => "toString",
+            Self::ToDateString => "toDateString",
+            Self::ToTimeString => "toTimeString",
+            Self::ToUtcString => "toUTCString",
+            Self::ToIsoString => "toISOString",
+            Self::ToLocaleString => "toLocaleString",
+            Self::ToLocaleDateString => "toLocaleDateString",
+            Self::ToLocaleTimeString => "toLocaleTimeString",
+        }
+    }
+
+    #[must_use]
+    pub const fn uses_local_time(self) -> bool {
+        matches!(
+            self,
+            Self::ToString
+                | Self::ToDateString
+                | Self::ToTimeString
+                | Self::ToLocaleString
+                | Self::ToLocaleDateString
+                | Self::ToLocaleTimeString
+        )
+    }
+
+    /// Pinned `JS_CFUNC_MAGIC_DEF` value from `js_date_proto_funcs`.
+    #[must_use]
+    pub const fn quickjs_magic(self) -> u16 {
+        match self {
+            Self::ToString => 0x13,
+            Self::ToDateString => 0x11,
+            Self::ToTimeString => 0x12,
+            Self::ToUtcString => 0x03,
+            Self::ToIsoString => 0x23,
+            Self::ToLocaleString => 0x33,
+            Self::ToLocaleDateString => 0x31,
+            Self::ToLocaleTimeString => 0x32,
+        }
+    }
+}
+
+/// Field selected by QuickJS's shared `get_date_field` callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DateGetFieldKind {
+    Year,
+    FullYear,
+    UtcFullYear,
+    Month,
+    UtcMonth,
+    Date,
+    UtcDate,
+    Hours,
+    UtcHours,
+    Minutes,
+    UtcMinutes,
+    Seconds,
+    UtcSeconds,
+    Milliseconds,
+    UtcMilliseconds,
+    Day,
+    UtcDay,
+}
+
+impl DateGetFieldKind {
+    pub const ALL: [Self; 17] = [
+        Self::Year,
+        Self::FullYear,
+        Self::UtcFullYear,
+        Self::Month,
+        Self::UtcMonth,
+        Self::Date,
+        Self::UtcDate,
+        Self::Hours,
+        Self::UtcHours,
+        Self::Minutes,
+        Self::UtcMinutes,
+        Self::Seconds,
+        Self::UtcSeconds,
+        Self::Milliseconds,
+        Self::UtcMilliseconds,
+        Self::Day,
+        Self::UtcDay,
+    ];
+
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Year => "getYear",
+            Self::FullYear => "getFullYear",
+            Self::UtcFullYear => "getUTCFullYear",
+            Self::Month => "getMonth",
+            Self::UtcMonth => "getUTCMonth",
+            Self::Date => "getDate",
+            Self::UtcDate => "getUTCDate",
+            Self::Hours => "getHours",
+            Self::UtcHours => "getUTCHours",
+            Self::Minutes => "getMinutes",
+            Self::UtcMinutes => "getUTCMinutes",
+            Self::Seconds => "getSeconds",
+            Self::UtcSeconds => "getUTCSeconds",
+            Self::Milliseconds => "getMilliseconds",
+            Self::UtcMilliseconds => "getUTCMilliseconds",
+            Self::Day => "getDay",
+            Self::UtcDay => "getUTCDay",
+        }
+    }
+
+    /// Index in QuickJS's nine-element decomposed Date field array.
+    #[must_use]
+    pub const fn field_index(self) -> u8 {
+        match self {
+            Self::Year | Self::FullYear | Self::UtcFullYear => 0,
+            Self::Month | Self::UtcMonth => 1,
+            Self::Date | Self::UtcDate => 2,
+            Self::Hours | Self::UtcHours => 3,
+            Self::Minutes | Self::UtcMinutes => 4,
+            Self::Seconds | Self::UtcSeconds => 5,
+            Self::Milliseconds | Self::UtcMilliseconds => 6,
+            Self::Day | Self::UtcDay => 7,
+        }
+    }
+
+    #[must_use]
+    pub const fn uses_local_time(self) -> bool {
+        matches!(
+            self,
+            Self::Year
+                | Self::FullYear
+                | Self::Month
+                | Self::Date
+                | Self::Hours
+                | Self::Minutes
+                | Self::Seconds
+                | Self::Milliseconds
+                | Self::Day
+        )
+    }
+
+    #[must_use]
+    pub const fn is_legacy_year(self) -> bool {
+        matches!(self, Self::Year)
+    }
+
+    /// Pinned `JS_CFUNC_MAGIC_DEF` value from `js_date_proto_funcs`.
+    #[must_use]
+    pub const fn quickjs_magic(self) -> u16 {
+        ((self.is_legacy_year() as u16) << 8)
+            | (self.field_index() as u16) << 4
+            | self.uses_local_time() as u16
+    }
+}
+
+/// Field range and UTC/local mode selected by QuickJS's shared
+/// `set_date_field` callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DateSetFieldKind {
+    Milliseconds,
+    UtcMilliseconds,
+    Seconds,
+    UtcSeconds,
+    Minutes,
+    UtcMinutes,
+    Hours,
+    UtcHours,
+    Date,
+    UtcDate,
+    Month,
+    UtcMonth,
+    FullYear,
+    UtcFullYear,
+}
+
+impl DateSetFieldKind {
+    pub const ALL: [Self; 14] = [
+        Self::Milliseconds,
+        Self::UtcMilliseconds,
+        Self::Seconds,
+        Self::UtcSeconds,
+        Self::Minutes,
+        Self::UtcMinutes,
+        Self::Hours,
+        Self::UtcHours,
+        Self::Date,
+        Self::UtcDate,
+        Self::Month,
+        Self::UtcMonth,
+        Self::FullYear,
+        Self::UtcFullYear,
+    ];
+
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Milliseconds => "setMilliseconds",
+            Self::UtcMilliseconds => "setUTCMilliseconds",
+            Self::Seconds => "setSeconds",
+            Self::UtcSeconds => "setUTCSeconds",
+            Self::Minutes => "setMinutes",
+            Self::UtcMinutes => "setUTCMinutes",
+            Self::Hours => "setHours",
+            Self::UtcHours => "setUTCHours",
+            Self::Date => "setDate",
+            Self::UtcDate => "setUTCDate",
+            Self::Month => "setMonth",
+            Self::UtcMonth => "setUTCMonth",
+            Self::FullYear => "setFullYear",
+            Self::UtcFullYear => "setUTCFullYear",
+        }
+    }
+
+    /// First Date field replaced by the first supplied argument.
+    #[must_use]
+    pub const fn first_field(self) -> u8 {
+        match self {
+            Self::FullYear | Self::UtcFullYear => 0,
+            Self::Month | Self::UtcMonth => 1,
+            Self::Date | Self::UtcDate => 2,
+            Self::Hours | Self::UtcHours => 3,
+            Self::Minutes | Self::UtcMinutes => 4,
+            Self::Seconds | Self::UtcSeconds => 5,
+            Self::Milliseconds | Self::UtcMilliseconds => 6,
+        }
+    }
+
+    /// Exclusive end of the consecutive Date field range accepted by this
+    /// setter. The published function length is `end_field - first_field`.
+    #[must_use]
+    pub const fn end_field(self) -> u8 {
+        match self {
+            Self::Date | Self::UtcDate => 3,
+            Self::Month | Self::UtcMonth => 3,
+            Self::FullYear | Self::UtcFullYear => 3,
+            Self::Hours | Self::UtcHours => 7,
+            Self::Minutes | Self::UtcMinutes => 7,
+            Self::Seconds | Self::UtcSeconds => 7,
+            Self::Milliseconds | Self::UtcMilliseconds => 7,
+        }
+    }
+
+    #[must_use]
+    pub const fn uses_local_time(self) -> bool {
+        matches!(
+            self,
+            Self::Milliseconds
+                | Self::Seconds
+                | Self::Minutes
+                | Self::Hours
+                | Self::Date
+                | Self::Month
+                | Self::FullYear
+        )
+    }
+
+    #[must_use]
+    pub const fn length(self) -> u8 {
+        self.end_field() - self.first_field()
+    }
+
+    /// Pinned `JS_CFUNC_MAGIC_DEF` value from `js_date_proto_funcs`.
+    #[must_use]
+    pub const fn quickjs_magic(self) -> u16 {
+        (self.first_field() as u16) << 8
+            | (self.end_field() as u16) << 4
+            | self.uses_local_time() as u16
+    }
+}
+
+/// Typed handler family for every callable in pinned QuickJS's Date tables.
+///
+/// `TimeValue` deliberately backs both `valueOf` and `getTime`, matching their
+/// shared C callback. The per-property name and length remain ordinary
+/// function-object metadata rather than part of [`NativeFunctionDescriptor`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DateNativeKind {
+    Constructor,
+    Now,
+    Parse,
+    Utc,
+    TimeValue,
+    String(DateStringMethod),
+    ToPrimitive,
+    TimezoneOffset,
+    GetField(DateGetFieldKind),
+    SetTime,
+    SetField(DateSetFieldKind),
+    SetYear,
+    ToJson,
+}
+
+impl DateNativeKind {
+    /// The unique published function name for this target. `TimeValue` is the
+    /// sole shared target: QuickJS publishes distinct `valueOf` and `getTime`
+    /// function objects backed by that same callback, so their names remain
+    /// per-object intrinsic-table metadata.
+    #[must_use]
+    pub const fn unique_name(self) -> Option<&'static str> {
+        match self {
+            Self::Constructor => Some("Date"),
+            Self::Now => Some("now"),
+            Self::Parse => Some("parse"),
+            Self::Utc => Some("UTC"),
+            Self::TimeValue => None,
+            Self::String(kind) => Some(kind.name()),
+            Self::ToPrimitive => Some("[Symbol.toPrimitive]"),
+            Self::TimezoneOffset => Some("getTimezoneOffset"),
+            Self::GetField(kind) => Some(kind.name()),
+            Self::SetTime => Some("setTime"),
+            Self::SetField(kind) => Some(kind.name()),
+            Self::SetYear => Some("setYear"),
+            Self::ToJson => Some("toJSON"),
+        }
+    }
+
+    /// Published `length` for this handler. Both properties using
+    /// `TimeValue` have length zero.
+    #[must_use]
+    pub const fn length(self) -> u8 {
+        match self {
+            Self::Constructor | Self::Utc => 7,
+            Self::Now
+            | Self::TimeValue
+            | Self::String(_)
+            | Self::TimezoneOffset
+            | Self::GetField(_) => 0,
+            Self::Parse | Self::ToPrimitive | Self::SetTime | Self::SetYear | Self::ToJson => 1,
+            Self::SetField(kind) => kind.length(),
+        }
+    }
+}
+
 /// Runtime-provided callable identities. The enum is stored in heap payloads
 /// so native dispatch stays typed and does not rely on function pointers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1123,6 +1484,7 @@ pub enum NativeFunctionId {
     ObjectPrototypeDefineAccessor(ObjectAccessorKind),
     ObjectPrototypeLookupAccessor(ObjectAccessorKind),
     Reflect(ReflectKind),
+    Date(DateNativeKind),
     PrimitiveConstructor(PrimitiveKind),
     StringStatic(StringStaticKind),
     PrimitivePrototypeToString(PrimitiveKind),
@@ -1458,6 +1820,17 @@ impl NativeFunctionId {
             | Self::ObjectPrototypeHasOwnProperty
             | Self::ObjectPrototypeIsPrototypeOf
             | Self::ObjectPrototypePropertyIsEnumerable
+            | Self::Date(
+                DateNativeKind::Now
+                | DateNativeKind::Parse
+                | DateNativeKind::Utc
+                | DateNativeKind::TimeValue
+                | DateNativeKind::ToPrimitive
+                | DateNativeKind::TimezoneOffset
+                | DateNativeKind::SetTime
+                | DateNativeKind::SetYear
+                | DateNativeKind::ToJson,
+            )
             | Self::Reflect(
                 ReflectKind::Apply
                 | ReflectKind::Construct
@@ -1516,6 +1889,11 @@ impl NativeFunctionId {
             | Self::ObjectIntegrity(_)
             | Self::ObjectPrototypeDefineAccessor(_)
             | Self::ObjectPrototypeLookupAccessor(_)
+            | Self::Date(
+                DateNativeKind::String(_)
+                | DateNativeKind::GetField(_)
+                | DateNativeKind::SetField(_),
+            )
             | Self::Reflect(
                 ReflectKind::DefineProperty
                 | ReflectKind::GetOwnPropertyDescriptor
@@ -1562,7 +1940,9 @@ impl NativeFunctionId {
                     cproto: NativeCProto::ConstructorOrFunctionMagic,
                 }
             }
-            Self::ArrayConstructor | Self::ObjectConstructor => NativeFunctionDescriptor {
+            Self::ArrayConstructor
+            | Self::ObjectConstructor
+            | Self::Date(DateNativeKind::Constructor) => NativeFunctionDescriptor {
                 cproto: NativeCProto::ConstructorOrFunction,
             },
             Self::FunctionPrototypeFileName | Self::ObjectPrototypeProtoGetter => {
@@ -4963,6 +5343,224 @@ mod tests {
         );
         assert!(!NativeCProto::UnaryF64.default_is_constructor());
         assert!(!NativeCProto::BinaryF64.default_is_constructor());
+    }
+
+    #[test]
+    fn date_native_selectors_preserve_pinned_descriptors_and_magic() {
+        let constructor = NativeFunctionId::Date(DateNativeKind::Constructor);
+        assert_eq!(
+            constructor.descriptor().cproto,
+            NativeCProto::ConstructorOrFunction
+        );
+        assert!(constructor.descriptor().cproto.default_is_constructor());
+        assert_eq!(DateNativeKind::Constructor.unique_name(), Some("Date"));
+        assert_eq!(DateNativeKind::Constructor.length(), 7);
+
+        for kind in [
+            DateNativeKind::Now,
+            DateNativeKind::Parse,
+            DateNativeKind::Utc,
+            DateNativeKind::TimeValue,
+            DateNativeKind::ToPrimitive,
+            DateNativeKind::TimezoneOffset,
+            DateNativeKind::SetTime,
+            DateNativeKind::SetYear,
+            DateNativeKind::ToJson,
+        ] {
+            let target = NativeFunctionId::Date(kind);
+            assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
+        assert_eq!(DateNativeKind::Now.unique_name(), Some("now"));
+        assert_eq!(DateNativeKind::Now.length(), 0);
+        assert_eq!(DateNativeKind::Parse.unique_name(), Some("parse"));
+        assert_eq!(DateNativeKind::Parse.length(), 1);
+        assert_eq!(DateNativeKind::Utc.unique_name(), Some("UTC"));
+        assert_eq!(DateNativeKind::Utc.length(), 7);
+        assert_eq!(DateNativeKind::TimeValue.unique_name(), None);
+        assert_eq!(DateNativeKind::TimeValue.length(), 0);
+        assert_eq!(
+            DateNativeKind::ToPrimitive.unique_name(),
+            Some("[Symbol.toPrimitive]")
+        );
+        assert_eq!(DateNativeKind::ToPrimitive.length(), 1);
+        assert_eq!(
+            DateNativeKind::TimezoneOffset.unique_name(),
+            Some("getTimezoneOffset")
+        );
+        assert_eq!(DateNativeKind::TimezoneOffset.length(), 0);
+        assert_eq!(DateNativeKind::SetTime.unique_name(), Some("setTime"));
+        assert_eq!(DateNativeKind::SetTime.length(), 1);
+        assert_eq!(DateNativeKind::SetYear.unique_name(), Some("setYear"));
+        assert_eq!(DateNativeKind::SetYear.length(), 1);
+        assert_eq!(DateNativeKind::ToJson.unique_name(), Some("toJSON"));
+        assert_eq!(DateNativeKind::ToJson.length(), 1);
+
+        let string_metadata = [
+            (DateStringMethod::ToString, "toString", 0x13, true),
+            (DateStringMethod::ToUtcString, "toUTCString", 0x03, false),
+            (DateStringMethod::ToIsoString, "toISOString", 0x23, false),
+            (DateStringMethod::ToDateString, "toDateString", 0x11, true),
+            (DateStringMethod::ToTimeString, "toTimeString", 0x12, true),
+            (
+                DateStringMethod::ToLocaleString,
+                "toLocaleString",
+                0x33,
+                true,
+            ),
+            (
+                DateStringMethod::ToLocaleDateString,
+                "toLocaleDateString",
+                0x31,
+                true,
+            ),
+            (
+                DateStringMethod::ToLocaleTimeString,
+                "toLocaleTimeString",
+                0x32,
+                true,
+            ),
+        ];
+        assert_eq!(
+            string_metadata.map(|(kind, ..)| kind),
+            DateStringMethod::ALL
+        );
+        for (kind, name, magic, uses_local_time) in string_metadata {
+            let native = DateNativeKind::String(kind);
+            assert_eq!(native.unique_name(), Some(name));
+            assert_eq!(native.length(), 0);
+            assert_eq!(kind.quickjs_magic(), magic);
+            assert_eq!(kind.uses_local_time(), uses_local_time);
+            assert_eq!(
+                NativeFunctionId::Date(native).descriptor().cproto,
+                NativeCProto::GenericMagic
+            );
+        }
+
+        let get_metadata = [
+            (DateGetFieldKind::Year, "getYear", 0x101),
+            (DateGetFieldKind::FullYear, "getFullYear", 0x01),
+            (DateGetFieldKind::UtcFullYear, "getUTCFullYear", 0x00),
+            (DateGetFieldKind::Month, "getMonth", 0x11),
+            (DateGetFieldKind::UtcMonth, "getUTCMonth", 0x10),
+            (DateGetFieldKind::Date, "getDate", 0x21),
+            (DateGetFieldKind::UtcDate, "getUTCDate", 0x20),
+            (DateGetFieldKind::Hours, "getHours", 0x31),
+            (DateGetFieldKind::UtcHours, "getUTCHours", 0x30),
+            (DateGetFieldKind::Minutes, "getMinutes", 0x41),
+            (DateGetFieldKind::UtcMinutes, "getUTCMinutes", 0x40),
+            (DateGetFieldKind::Seconds, "getSeconds", 0x51),
+            (DateGetFieldKind::UtcSeconds, "getUTCSeconds", 0x50),
+            (DateGetFieldKind::Milliseconds, "getMilliseconds", 0x61),
+            (
+                DateGetFieldKind::UtcMilliseconds,
+                "getUTCMilliseconds",
+                0x60,
+            ),
+            (DateGetFieldKind::Day, "getDay", 0x71),
+            (DateGetFieldKind::UtcDay, "getUTCDay", 0x70),
+        ];
+        assert_eq!(get_metadata.map(|(kind, ..)| kind), DateGetFieldKind::ALL);
+        for (kind, name, magic) in get_metadata {
+            let native = DateNativeKind::GetField(kind);
+            assert_eq!(native.unique_name(), Some(name));
+            assert_eq!(native.length(), 0);
+            assert_eq!(kind.quickjs_magic(), magic);
+            assert_eq!(
+                NativeFunctionId::Date(native).descriptor().cproto,
+                NativeCProto::GenericMagic
+            );
+        }
+
+        let set_metadata = [
+            (DateSetFieldKind::Milliseconds, "setMilliseconds", 1, 0x671),
+            (
+                DateSetFieldKind::UtcMilliseconds,
+                "setUTCMilliseconds",
+                1,
+                0x670,
+            ),
+            (DateSetFieldKind::Seconds, "setSeconds", 2, 0x571),
+            (DateSetFieldKind::UtcSeconds, "setUTCSeconds", 2, 0x570),
+            (DateSetFieldKind::Minutes, "setMinutes", 3, 0x471),
+            (DateSetFieldKind::UtcMinutes, "setUTCMinutes", 3, 0x470),
+            (DateSetFieldKind::Hours, "setHours", 4, 0x371),
+            (DateSetFieldKind::UtcHours, "setUTCHours", 4, 0x370),
+            (DateSetFieldKind::Date, "setDate", 1, 0x231),
+            (DateSetFieldKind::UtcDate, "setUTCDate", 1, 0x230),
+            (DateSetFieldKind::Month, "setMonth", 2, 0x131),
+            (DateSetFieldKind::UtcMonth, "setUTCMonth", 2, 0x130),
+            (DateSetFieldKind::FullYear, "setFullYear", 3, 0x031),
+            (DateSetFieldKind::UtcFullYear, "setUTCFullYear", 3, 0x030),
+        ];
+        assert_eq!(set_metadata.map(|(kind, ..)| kind), DateSetFieldKind::ALL);
+        for (kind, name, length, magic) in set_metadata {
+            let native = DateNativeKind::SetField(kind);
+            assert_eq!(native.unique_name(), Some(name));
+            assert_eq!(native.length(), length);
+            assert_eq!(kind.length(), length);
+            assert_eq!(kind.quickjs_magic(), magic);
+            assert_eq!(
+                NativeFunctionId::Date(native).descriptor().cproto,
+                NativeCProto::GenericMagic
+            );
+        }
+    }
+
+    #[test]
+    fn date_native_payload_owns_only_its_shape_and_defining_realm_edges() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let prototype = heap
+            .allocate_object(ObjectData::ordinary(shape, Vec::new()))
+            .unwrap();
+        let realm = heap
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+                prototype,
+            ))
+            .unwrap();
+        let function_shape = heap
+            .allocate_shape(Shape::new(Some(prototype), []).unwrap())
+            .unwrap();
+        let target = NativeFunctionId::Date(DateNativeKind::Constructor);
+        let function = heap
+            .allocate_object(ObjectData::bound_native_function(
+                function_shape,
+                Vec::new(),
+                target,
+                realm,
+                1,
+            ))
+            .unwrap();
+
+        let function_data = heap.object(function).unwrap();
+        assert!(function_data.is_constructor);
+        assert!(matches!(
+            function_data.payload,
+            ObjectPayload::NativeFunction {
+                data: NativeFunctionData {
+                    target: stored_target,
+                    realm: Some(stored_realm),
+                    min_readable_args: 1,
+                },
+            } if stored_target == target && stored_realm == realm
+        ));
+        assert_eq!(
+            object_edges(function_data),
+            vec![RawId::Shape(function_shape), RawId::Context(realm)]
+        );
+        assert_eq!(heap.context_strong_count(realm), Ok(2));
+
+        heap.release_context(realm).unwrap();
+        assert_eq!(heap.context_strong_count(realm), Ok(1));
+        let cleanup = heap.release_object(function).unwrap();
+        assert_eq!(cleanup.finalized_objects, 1);
+        assert_eq!(cleanup.finalized_contexts, 1);
+        heap.release_shape(function_shape).unwrap();
+        heap.release_object(prototype).unwrap();
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
     }
 
     #[test]

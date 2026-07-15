@@ -1,6 +1,6 @@
 # Implementation status
 
-Last audited: 2026-07-15. The completion definition remains
+Last audited: 2026-07-16. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
@@ -13,8 +13,8 @@ claim full parity.
   capability profile, audited negative-test canaries, and source/metadata host
   requirements keep unsupported grammar, features, modes, and `$262` hooks from
   becoming false passes. Bounded workers preserve canonical byte-for-byte TSV
-  and JSONL ordering. The current vector has 21,740 passes: a 26.02% lower bound
-  after the 18,475 pinned QuickJS target exclusions, or 72.34% among the 30,052
+  and JSONL ordering. The current vector has 23,016 passes: a 27.54% lower bound
+  after the 18,475 pinned QuickJS target exclusions, or 76.59% among the 30,052
   variants with a non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim.
@@ -1410,7 +1410,7 @@ claim full parity.
   mutation/deletion of the lazy global, cross-realm result/error ownership,
   callback recursion recovery, detached-method lifetime, final realm GC and
   the complete graph and semantic vector.
-- The non-observable `%Date%` foundation now follows the pinned QuickJS
+- The observable `%Date%` intrinsic now follows the pinned QuickJS
   2026-06-04 implementation at `quickjs.c` 47223-47279 and 54786-55939. The
   heap has a genuine edge-free Date payload with mutable binary64 milliseconds,
   exact invalid-Date NaN branding, exhaustive class/payload validation and a
@@ -1419,17 +1419,28 @@ claim full parity.
   Pure modules port the proleptic Gregorian calendar and TimeClip/MakeDate
   evaluation order, the ISO-first and legacy 127-code-unit parser, and all
   eight UTC/local/fixed-locale formatter modes including extended years, GMT
-  offsets and Invalid Date behavior. A
-  runtime-owned injectable host boundary supplies `SystemTime` and
-  JavaScript-sign timezone offsets through `tz-rs`; extracting
-  `ordinary_to_primitive` from the runtime facade also prepares Date's distinct
-  default/string-hint path without duplicating Object conversion semantics.
-  This foundation deliberately does **not** publish the global `Date`
-  constructor or its static/prototype native table yet, so it exposes no new
-  JavaScript behavior and must not move the Test262 baseline. One host parity
-  limitation remains explicit: on Windows with no `TZ` environment variable,
-  the current `tz-rs` local-zone lookup fails into the UTC fallback. A real
-  cross-platform local-time backend is required before Date or full QuickJS
+  offsets and Invalid Date behavior. A runtime-owned injectable host boundary
+  supplies `SystemTime` and
+  JavaScript-sign timezone offsets through `tz-rs`; an unset `TZ` reloads the
+  host local-zone configuration instead of freezing the first `/etc/localtime`
+  snapshot. The exact constructor/static table, ordinary unbranded prototype,
+  47-entry source table, `toGMTString` callable alias, getters, setters,
+  generic `toJSON`, and forced-ordinary `@@toPrimitive` are now published with
+  their pinned names, lengths, descriptor flags, key order, coercion order,
+  TimeClip boundaries, new-target realm fallback, and error behavior. The Date
+  implementation lives outside the runtime facade and enters native dispatch
+  through one typed handler family.
+
+  Forty-four Date unit tests, six grouped QuickJS differentials, one oracle
+  vector self-check, and two cross-realm/GC integration tests pass. The
+  799-path focused Test262 vector has 1,276 passes out of 1,598 variants; the
+  exact complete-vector join moves 21,740 to 23,016 passes through 1,276
+  `fail-runtime -> pass` transitions with no previous-pass regression and no
+  change outside the manifest. Five- and eight-worker focused and full reports
+  are byte-identical. One host parity limitation remains explicit: on Windows,
+  both an unset `TZ` and an IANA-zone `TZ` currently fall back to UTC because
+  `tz-rs` has no native local-zone/zoneinfo backend there. A real
+  cross-platform local-time backend is still required before full QuickJS
   feature parity can be claimed.
 - The global object has QuickJS's dedicated payload and hidden
   `uninitialized_vars` object. Global data properties and the lexical-binding
@@ -1992,11 +2003,12 @@ family live in `runtime/intrinsics/string.rs`, while the remaining String
 initialization and handlers still await migration there. The complete Math
 object table, selectors, numerical kernels, random and precise-sum handlers live
 in `runtime/intrinsics/math.rs`; the complete Reflect table and handlers live in
-`runtime/intrinsics/reflect.rs`. The unpublished Date foundation is isolated in
+`runtime/intrinsics/reflect.rs`. The observable Date intrinsic is isolated in
 `runtime/intrinsics/date/`: `calendar.rs`, `parse.rs`, `format.rs`, and
-`host.rs` own the pure calendar, parser, formatter, and injectable host seams,
-while the branded payload and realm-root edge remain in the heap. The complete
-VM-to-runtime trait adapter,
+`host.rs` own the pure calendar, parser, formatter, and injectable host seams;
+`constructor.rs` and `prototype.rs` own the observable native handlers, while
+the branded payload, typed selectors, and realm-root edge remain in the heap.
+The complete VM-to-runtime trait adapter,
 per-frame argument/local/capture storage, iterator protocol bridge and
 bytecode-host error conversion now live in `runtime/vm_host.rs`; host layout is
 private to that module, including bytecode frame initialization. The hidden
