@@ -1481,6 +1481,7 @@ pub enum RegExpNativeKind {
     Constructor,
     Species,
     Exec,
+    Compile,
     Test,
     ToString,
     Match,
@@ -1913,6 +1914,7 @@ impl NativeFunctionId {
             )
             | Self::RegExp(
                 RegExpNativeKind::Exec
+                | RegExpNativeKind::Compile
                 | RegExpNativeKind::Test
                 | RegExpNativeKind::ToString
                 | RegExpNativeKind::Match
@@ -6187,6 +6189,7 @@ mod tests {
 
         for target in [
             NativeFunctionId::RegExp(RegExpNativeKind::Exec),
+            NativeFunctionId::RegExp(RegExpNativeKind::Compile),
             NativeFunctionId::RegExp(RegExpNativeKind::Test),
             NativeFunctionId::RegExp(RegExpNativeKind::ToString),
             NativeFunctionId::RegExp(RegExpNativeKind::Match),

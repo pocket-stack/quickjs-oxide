@@ -24,6 +24,7 @@ impl Runtime {
             RegExpNativeKind::Constructor
             | RegExpNativeKind::Species
             | RegExpNativeKind::Exec
+            | RegExpNativeKind::Compile
             | RegExpNativeKind::Test
             | RegExpNativeKind::ToString
             | RegExpNativeKind::Match

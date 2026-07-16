@@ -443,7 +443,7 @@ impl<'a> Parser<'a> {
                 }
             }
         } else {
-            if self.next_capture > u16::from(u8::MAX) {
+            if self.next_capture >= u16::from(u8::MAX) {
                 return Err(CompileError::too_many_captures(position));
             }
             let capture = u8::try_from(self.next_capture)
@@ -487,10 +487,27 @@ impl<'a> Parser<'a> {
                 escape_position,
                 UnsupportedFeature::Backreference,
             )),
-            0x31..=0x39 => Err(CompileError::unsupported(
-                escape_position,
-                UnsupportedFeature::Backreference,
-            )),
+            0x31..=0x39 => {
+                if self.flags.is_unicode() {
+                    if in_class {
+                        return Err(CompileError::syntax(
+                            escape_position,
+                            "invalid identity escape",
+                        ));
+                    }
+                    let reference = self.decimal_escape_value(unit);
+                    if reference >= count_captures(self.units) {
+                        return Err(CompileError::syntax(
+                            escape_position,
+                            "back reference out of range in regular expression",
+                        ));
+                    }
+                }
+                Err(CompileError::unsupported(
+                    escape_position,
+                    UnsupportedFeature::Backreference,
+                ))
+            }
             0x30 => {
                 if self.flags.is_unicode() && self.peek().is_some_and(is_ascii_digit) {
                     Err(CompileError::syntax(
@@ -909,6 +926,23 @@ impl<'a> Parser<'a> {
         value
     }
 
+    fn decimal_escape_value(&self, first: u16) -> u32 {
+        let mut value = u32::from(first - u16::from(b'0'));
+        let mut position = self.position;
+        while let Some(unit) = self
+            .units
+            .get(position)
+            .copied()
+            .filter(|unit| is_ascii_digit(*unit))
+        {
+            value = value
+                .saturating_mul(10)
+                .saturating_add(u32::from(unit - u16::from(b'0')));
+            position += 1;
+        }
+        value
+    }
+
     fn finish_code_point(&mut self, first: u16) -> u32 {
         if self.flags.is_unicode()
             && is_high_surrogate(u32::from(first))
@@ -985,6 +1019,45 @@ impl<'a> Parser<'a> {
         self.position += 1;
         Some(unit)
     }
+}
+
+/// QuickJS `re_count_captures`-style lexical prepass. Used here to distinguish
+/// a potentially in-range Unicode decimal backreference from an immediately
+/// out-of-range decimal escape. It does not validate the pattern remainder.
+fn count_captures(units: &[u16]) -> u32 {
+    let mut count = 1_u32;
+    let mut position = 0;
+    while position < units.len() {
+        match units[position] {
+            0x28 => {
+                let is_plain = units.get(position + 1) != Some(&u16::from(b'?'));
+                let is_named = units.get(position + 1) == Some(&u16::from(b'?'))
+                    && units.get(position + 2) == Some(&u16::from(b'<'))
+                    && !matches!(units.get(position + 3).copied(), Some(0x3d | 0x21));
+                if is_plain || is_named {
+                    count = count.saturating_add(1);
+                    if count >= u32::from(u8::MAX) {
+                        break;
+                    }
+                }
+            }
+            0x5c => {
+                position = position.saturating_add(1);
+            }
+            0x5b => {
+                position += 1;
+                while position < units.len() && units[position] != u16::from(b']') {
+                    if units[position] == u16::from(b'\\') {
+                        position = position.saturating_add(1);
+                    }
+                    position = position.saturating_add(1);
+                }
+            }
+            _ => {}
+        }
+        position = position.saturating_add(1);
+    }
+    count
 }
 
 struct CodeBuilder {
@@ -1748,6 +1821,51 @@ mod tests {
                 "{pattern}",
             );
         }
+    }
+
+    #[test]
+    fn unicode_decimal_escapes_distinguish_invalid_and_unsupported_backreferences() {
+        for pattern in [r"\1", r"\2", r"(a)\2", r"(?:a)\1", r"\10"] {
+            let error = compile_ascii(pattern, "u").unwrap_err();
+            assert_eq!(error.kind(), &CompileErrorKind::Syntax, "{pattern}");
+            assert_eq!(
+                error.message(),
+                "back reference out of range in regular expression",
+                "{pattern}",
+            );
+        }
+        for pattern in [r"[\1]", r"[\2]"] {
+            let error = compile_ascii(pattern, "u").unwrap_err();
+            assert_eq!(error.kind(), &CompileErrorKind::Syntax, "{pattern}");
+            assert_eq!(error.message(), "invalid identity escape", "{pattern}");
+        }
+        for pattern in [r"(a)\1", r"\1(a)", r"\2(a)(b)", r"\1(?<x>a)"] {
+            let error = compile_ascii(pattern, "u").unwrap_err();
+            assert_eq!(
+                error.kind(),
+                &CompileErrorKind::Unsupported(UnsupportedFeature::Backreference),
+                "{pattern}",
+            );
+        }
+
+        let empty_class_then_capture = compile_ascii(r"[](a)\1", "u").unwrap_err();
+        assert_eq!(
+            empty_class_then_capture.kind(),
+            &CompileErrorKind::Unsupported(UnsupportedFeature::Backreference),
+        );
+
+        let capture_limit = format!(r"\255{}", "(a)".repeat(255));
+        let error = compile_ascii(&capture_limit, "u").unwrap_err();
+        assert_eq!(error.kind(), &CompileErrorKind::Syntax);
+        assert_eq!(
+            error.message(),
+            "back reference out of range in regular expression",
+        );
+
+        let too_many_capture_priority = format!("{}((?=a))", "(a)".repeat(254));
+        let error = compile_ascii(&too_many_capture_priority, "u").unwrap_err();
+        assert_eq!(error.kind(), &CompileErrorKind::TooManyCaptures);
+        assert_eq!(error.message(), "too many captures");
     }
 
     #[test]

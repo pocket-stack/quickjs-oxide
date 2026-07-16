@@ -1,0 +1,21 @@
+# The 35-path slice freezes the complete Annex-B compile directory plus every
+# pinned-suite source that directly invokes RegExp.prototype.compile. With
+# R1f, 44 variants pass: the linked RegExp @@split consumers and every core
+# compile variant that reaches execution. Two staging replace variants first
+# stop at missing @@replace. Independent feature, host, arrow, and
+# object-method parser frontiers remain explicit in the same static vector.
+schema=test262-canonical-classified-v2
+test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+timeout_ms=30000
+paths=35
+variants=70
+runnable=60
+passes=44
+manifest_sha256=87a9d837697333e2416718a22b7e420cf7eed46ba60d422034bf313160396651
+r1e_full_tsv_sha256=5673ac15896bab5b1665bf8930db517447012c3d63d69bfbb1da9b8e7f9574c1
+r1e_selected_sha256=5b21cbcefdb504453a661d60ab50f7b3a2750e98b247084af4837f952c325581
+r1e_variants=70
+r1e_summary=fail-parse=6 fail-runtime=46 skipped-feature=4 unsupported-feature=4 unsupported-host-create-realm=2 unsupported-parser=8
+tsv_sha256=1f1fb2ff6dfe5cd5dde0445e60daa310fa5b8056dfeeddac83bf3a81f0d74874
+jsonl_sha256=60fbf6017a8302242f5d8fa9de929e7fe39d59d7a7993631d69cc05030c56f43
+summary=fail-parse=6 fail-runtime=2 pass=44 skipped-feature=4 unsupported-feature=4 unsupported-host-create-realm=2 unsupported-parser=8

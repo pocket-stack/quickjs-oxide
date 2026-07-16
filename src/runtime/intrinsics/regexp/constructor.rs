@@ -13,9 +13,9 @@ use crate::regexp::CompiledRegExp;
 use super::super::super::*;
 
 #[derive(Clone)]
-struct GenuineRegExp {
-    pattern: JsString,
-    program: Rc<CompiledRegExp>,
+pub(super) struct GenuineRegExp {
+    pub(super) pattern: JsString,
+    pub(super) program: Rc<CompiledRegExp>,
 }
 
 impl Runtime {
@@ -174,8 +174,17 @@ impl Runtime {
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
             }
         };
-        let program = match crate::regexp::compile(&pattern, &flags) {
-            Ok(program) => Rc::new(program),
+        let program = Self::compile_regexp_program(&pattern, &flags)?;
+        self.publish_regexp(&object, pattern, program)?;
+        Ok(Completion::Return(Value::Object(object)))
+    }
+
+    pub(super) fn compile_regexp_program(
+        pattern: &JsString,
+        flags: &JsString,
+    ) -> Result<Rc<CompiledRegExp>, RuntimeError> {
+        match crate::regexp::compile(pattern, flags) {
+            Ok(program) => Ok(Rc::new(program)),
             Err(error) => {
                 let kind = crate::regexp::javascript_compile_error_kind(&error);
                 let message = if kind == ErrorKind::Unsupported {
@@ -183,11 +192,9 @@ impl Runtime {
                 } else {
                     crate::regexp::javascript_compile_error_message(&error).to_owned()
                 };
-                return Err(RuntimeError::Engine(Error::new(kind, message)));
+                Err(RuntimeError::Engine(Error::new(kind, message)))
             }
-        };
-        self.publish_regexp(&object, pattern, program)?;
-        Ok(Completion::Return(Value::Object(object)))
+        }
     }
 
     pub(super) fn call_regexp_species(
@@ -202,7 +209,10 @@ impl Runtime {
         Ok(Completion::Return(this_value))
     }
 
-    fn genuine_regexp(&self, value: &Value) -> Result<Option<GenuineRegExp>, RuntimeError> {
+    pub(super) fn genuine_regexp(
+        &self,
+        value: &Value,
+    ) -> Result<Option<GenuineRegExp>, RuntimeError> {
         let Value::Object(object) = value else {
             return Ok(None);
         };

@@ -49,6 +49,7 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/run-test262-regexp-search.sh
 ./scripts/run-test262-regexp-match.sh
 ./scripts/run-test262-regexp-split.sh
+./scripts/run-test262-regexp-compile.sh
 ./scripts/test-test262-full.sh
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ./scripts/check-rust-only.sh

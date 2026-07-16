@@ -1,5 +1,5 @@
-# The two RegExp @@split Annex B paths remain on the separate legacy
-# RegExp.prototype.compile frontier and account for all four runtime failures.
+# Two core String split paths still require the missing global eval callable
+# and account for all four runtime failures.
 # The existing independent feature, HTMLDDA-host, and parser classifications
 # remain unchanged from the frozen R1d projection.
 schema=test262-canonical-classified-v2

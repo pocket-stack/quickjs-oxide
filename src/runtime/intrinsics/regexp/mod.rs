@@ -3,10 +3,11 @@
 //! The pure matcher lives in [`crate::regexp`].  This module owns the
 //! observable ECMAScript shell around it: realm-local constructor/prototype
 //! identities, derived allocation, accessors, `lastIndex`, and match result
-//! objects. RegExp literals, `@@match`, `@@search`, and `@@split` are linked;
-//! the legacy `compile` method, `RegExp.escape`, and the remaining Symbol
-//! protocols stay separate parity slices.
+//! objects. RegExp literals, the legacy `compile` method, `@@match`,
+//! `@@search`, and `@@split` are linked; `RegExp.escape` and the remaining
+//! Symbol protocols stay separate parity slices.
 
+mod compile;
 mod constructor;
 mod exec;
 mod match_protocol;
@@ -69,6 +70,7 @@ impl Runtime {
         }
         for (kind, name, length, min_readable_args) in [
             (RegExpNativeKind::Exec, "exec", 1, 1),
+            (RegExpNativeKind::Compile, "compile", 2, 2),
             (RegExpNativeKind::Test, "test", 1, 1),
             (RegExpNativeKind::ToString, "toString", 0, 0),
         ] {
@@ -213,6 +215,7 @@ impl Runtime {
             RegExpNativeKind::Exec | RegExpNativeKind::Test => {
                 self.call_regexp_exec_native(realm, kind, invocation, arguments)
             }
+            RegExpNativeKind::Compile => self.call_regexp_compile(realm, invocation, arguments),
             RegExpNativeKind::ToString => self.call_regexp_to_string(realm, invocation),
             RegExpNativeKind::Match => self.call_regexp_symbol_match(realm, invocation, arguments),
             RegExpNativeKind::Search => {

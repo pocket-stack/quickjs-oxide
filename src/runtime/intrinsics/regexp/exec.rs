@@ -36,6 +36,7 @@ impl Runtime {
             }
             RegExpNativeKind::Constructor
             | RegExpNativeKind::Species
+            | RegExpNativeKind::Compile
             | RegExpNativeKind::Source
             | RegExpNativeKind::Flags
             | RegExpNativeKind::Flag(_)

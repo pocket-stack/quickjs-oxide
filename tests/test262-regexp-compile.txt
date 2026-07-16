@@ -1,0 +1,53 @@
+# Frozen RegExp.prototype.compile measurement slice for the pinned Test262
+# checkout.
+#
+# This is the static, bytewise-sorted union of every path whose source directly
+# references RegExp.prototype.compile or invokes a `.compile(...)` method in
+# the R1e full keyed report (commit 176a6c6, TSV SHA-256
+# 5673ac15896bab5b1665bf8930db517447012c3d63d69bfbb1da9b8e7f9574c1).
+# It includes the complete 23-path Annex-B compile directory, the two linked
+# RegExp @@split consumers, and adjacent flags, staging replace/matchAll, host,
+# and parser frontiers. Its path/variant/outcome/detail projection has SHA-256
+# 5b21cbcefdb504453a661d60ab50f7b3a2750e98b247084af4837f952c325581.
+# At R1e the 70 variants classified as fail-parse=6, fail-runtime=46,
+# skipped-feature=4, unsupported-feature=4, unsupported-host-create-realm=2,
+# and unsupported-parser=8. The gate must never select paths dynamically from
+# current outcomes.
+#
+# Exactly 35 unique paths expand to 70 sloppy/strict variants.
+#
+test/annexB/built-ins/RegExp/prototype/Symbol.split/Symbol.match-getter-recompiles-source.js
+test/annexB/built-ins/RegExp/prototype/Symbol.split/toint32-limit-recompiles-source.js
+test/annexB/built-ins/RegExp/prototype/compile/B.RegExp.prototype.compile.js
+test/annexB/built-ins/RegExp/prototype/compile/duplicate-named-capturing-groups-syntax.js
+test/annexB/built-ins/RegExp/prototype/compile/flags-string-invalid.js
+test/annexB/built-ins/RegExp/prototype/compile/flags-to-string-err.js
+test/annexB/built-ins/RegExp/prototype/compile/flags-to-string.js
+test/annexB/built-ins/RegExp/prototype/compile/flags-undefined.js
+test/annexB/built-ins/RegExp/prototype/compile/length.js
+test/annexB/built-ins/RegExp/prototype/compile/name.js
+test/annexB/built-ins/RegExp/prototype/compile/pattern-regexp-distinct.js
+test/annexB/built-ins/RegExp/prototype/compile/pattern-regexp-flags-defined.js
+test/annexB/built-ins/RegExp/prototype/compile/pattern-regexp-immutable-lastindex.js
+test/annexB/built-ins/RegExp/prototype/compile/pattern-regexp-props.js
+test/annexB/built-ins/RegExp/prototype/compile/pattern-regexp-same.js
+test/annexB/built-ins/RegExp/prototype/compile/pattern-string-invalid-u.js
+test/annexB/built-ins/RegExp/prototype/compile/pattern-string-invalid.js
+test/annexB/built-ins/RegExp/prototype/compile/pattern-string-u.js
+test/annexB/built-ins/RegExp/prototype/compile/pattern-string.js
+test/annexB/built-ins/RegExp/prototype/compile/pattern-to-string-err.js
+test/annexB/built-ins/RegExp/prototype/compile/pattern-undefined.js
+test/annexB/built-ins/RegExp/prototype/compile/this-cross-realm-instance.js
+test/annexB/built-ins/RegExp/prototype/compile/this-not-object.js
+test/annexB/built-ins/RegExp/prototype/compile/this-obj-not-regexp.js
+test/annexB/built-ins/RegExp/prototype/compile/this-subclass-instance.js
+test/annexB/built-ins/RegExp/prototype/flags/order-after-compile.js
+test/staging/sm/RegExp/compile-lastIndex.js
+test/staging/sm/RegExp/constructor-ordering.js
+test/staging/sm/RegExp/flags-param-handling.js
+test/staging/sm/RegExp/match-local-tolength-recompilation.js
+test/staging/sm/RegExp/prototype.js
+test/staging/sm/RegExp/replace-compile-elembase.js
+test/staging/sm/RegExp/replace-compile.js
+test/staging/sm/RegExp/replace-local-tolength-recompilation.js
+test/staging/sm/String/matchAll.js

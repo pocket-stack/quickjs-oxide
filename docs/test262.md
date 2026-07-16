@@ -50,11 +50,11 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 25,119 pass;
+- 25,165 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 53,401 are classified as unsupported feature, mode, host capability, parser
+- 53,399 are classified as unsupported feature, mode, host capability, parser
   frontier, harness frontier, or unaudited negative-test provenance;
-- 985 fail to parse, 3,847 fail at runtime, 206 fail in the harness, and four
+- 985 fail to parse, 3,803 fail at runtime, 206 fail in the harness, and four
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 32,497 variants to execution. That count includes variants
@@ -63,14 +63,14 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 24.62% (`25,119 / 102,037`);
-- conservative target-scope lower bound: 30.06%
-  (`25,119 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 83.28%
-  (`25,119 / 30,161`).
+- raw suite pass rate: 24.66% (`25,165 / 102,037`);
+- conservative target-scope lower bound: 30.12%
+  (`25,165 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 83.43%
+  (`25,165 / 30,163`).
 
-The 30.06% figure is the useful whole-project progress floor, not a claim that
-the engine is 30.06% conformant. The 83.28% conditional rate measures quality
+The 30.12% figure is the useful whole-project progress floor, not a claim that
+the engine is 30.12% conformant. The 83.43% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. The capability profile currently admits 18 reviewed Test262
 feature tags and 18 reviewed negative-test paths; all other feature-tagged or
@@ -81,14 +81,14 @@ differential tests remain the semantic judge.
 The complete TSV/JSONL reports are generated under `target/` rather than
 committed (together they are tens of megabytes). Their complete hashes and
 outcome summary are pinned in `tests/test262-full-baseline.txt`. Runner ordering
-was cross-checked at five and eight workers through the RegExp split
+was cross-checked at five and eight workers through the RegExp compile
 milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
-The R1e TSV and JSONL SHA-256 values are
-`5673ac15896bab5b1665bf8930db517447012c3d63d69bfbb1da9b8e7f9574c1`
+The current TSV and JSONL SHA-256 values are
+`57caefa97b579fafeb6b56ba45da7daf9cbe5e168849e4ab0459b87452d4745e`
 and
-`fe98f9fdb5f4c21c25cd045d8b1824fe34e3481e26c8661376d7afe78596fa64`.
+`613a396d850698fff9472991e547946eac6bc9bc4f3b95cf90ce57d85953dee0`.
 
 ## Milestone policy
 
@@ -201,9 +201,9 @@ frontier visible.
 R1e activates that existing delegation through
 `RegExp.prototype[Symbol.split]`. The same frozen vector now admits 244
 variants and records 234 passes, four runtime failures at the independent
-Annex-B legacy-`compile` frontier, eight adjacent feature outcomes, two
-IsHTMLDDA host outcomes, and six typed parser frontiers. Its TSV and JSONL
-SHA-256 values are
+missing-global-`eval` frontier, eight adjacent feature outcomes, two IsHTMLDDA
+host outcomes, and six typed parser frontiers. Its TSV and JSONL SHA-256 values
+are
 `ad66315d9b6d285240d9f0628a899ab71b64496ea451f153bcf4916d7ffeccdb`
 and
 `c0182c6f56c9df1cb4b1e991f60aa94aa5c8173e01f7882e7fa4031e966eaebc`.
@@ -231,13 +231,16 @@ passes and 32,289 admitted jobs.
 The RegExp R1a observable shell publishes the constructor, ordinary prototype,
 species, source/flag accessors, `exec`, abstract RegExpExec/`test`, `toString`,
 `lastIndex`, captures and `d` indices while continuing to reject advanced
-grammar explicitly. The same 450-variant core vector now records 430 passes,
-ten `fail-runtime` outcomes caused only by the separate missing-`eval`
-frontier, and ten `unsupported-runtime` outcomes for backreferences,
-lookaround, Unicode properties, or legacy octal/control escapes. The full
-vector moves from 23,190 to 23,859 passes, reduces `fail-runtime` from 4,540 to 3,861,
-and adds ten typed `unsupported-runtime` outcomes. RegExp literals, legacy
-`compile`, `RegExp.escape`, and Symbol protocols are not claimed by this slice.
+grammar explicitly. At the R1a landing, the 450-variant core vector recorded
+430 passes, ten `fail-runtime` outcomes caused only by the separate
+missing-`eval` frontier, and ten `unsupported-runtime` outcomes. The later R1f
+Unicode decimal-escape classification refinement moves both variants of
+`unicode_restricted_octal_escape.js` to pass, so the current core vector has
+432 passes and eight typed advanced-pattern outcomes. The R1a full vector moves
+from 23,190 to 23,859 passes, reduces `fail-runtime` from 4,540 to 3,861, and
+adds ten typed `unsupported-runtime` outcomes. RegExp literals, legacy
+`compile`, `RegExp.escape`, and Symbol protocols were not claimed by that
+slice.
 An exact join matches all 102,037 `(path, variant)` keys with no duplicates or
 missing rows and zero previous-pass regressions. Its only 679 transitions are
 669 `fail-runtime -> pass` and ten
@@ -346,16 +349,16 @@ cover 19 QuickJS differential vectors.
 sloppy/strict variants from the R1d report;
 `tests/test262-regexp-split-baseline.txt` pins the R1d selection provenance and
 current outcome hashes, and `scripts/run-test262-regexp-split.sh` reproduces the
-gate. It admits 48 variants and records 40 passes, four runtime failures at the
-independent Annex-B legacy-`compile` frontier, 40 core variants conservatively
-gated by the undeclared `Symbol.species` profile tag, two variants gated by
-`arrow-function`, two create-realm host outcomes, and four typed parser
-frontiers. The QuickJS differential suite separately locks SpeciesConstructor
-semantics without widening the full-suite capability profile. Its TSV and
-JSONL SHA-256 values are
-`f8e4f9fa74f3f2843e9d3c101438a26ada2dde7d69d9a387114d834cf3447566`
+gate. It admits 48 variants and records 44 passes after R1f links both Annex-B
+recompilation paths. Forty core variants remain conservatively gated by the
+undeclared `Symbol.species` profile tag, two variants by `arrow-function`, two
+require the create-realm host hook, and four retain typed parser frontiers. The
+QuickJS differential suite separately locks SpeciesConstructor semantics
+without widening the full-suite capability profile. Its current TSV and JSONL
+SHA-256 values are
+`bb59e09c45394a222930ca329857164fbb9ec77829673fd05d54127d2ce64d63`
 and
-`5e860397dcda991548347474ca13106b4289db5149f215227f7c0fb40fa349b7`.
+`1d9fcf172acf86d689cd358073df2563c994592c6f31561b1ff3c1a5d0a06d26`.
 The independent 127-path String split gate now records the 234 passes and
 hashes above.
 
@@ -374,6 +377,39 @@ reach the independent missing-JSON-global frontier, so that detail change is
 not an outcome transition. The capability profile remains at 18 tags with
 SHA-256
 `cc10293aa847f5a449ac2b039709dff98d264b672dddc8828b8e17d8b7e12d9a`.
+
+The RegExp R1f slice publishes the pinned legacy
+`RegExp.prototype.compile` mutation. A dedicated 35-path/70-variant vector
+freezes the complete Annex-B compile directory and every pinned-suite source
+which directly invokes the method. It records 44 passes: all executable core
+compile variants plus the four linked RegExp split variants. The sloppy/strict
+variants of one staging replace path still stop first at the independent
+missing `@@replace` protocol; feature, host, arrow and object-method parser
+frontiers remain explicitly classified.
+The focused TSV/JSONL SHA-256 values are
+`1f1fb2ff6dfe5cd5dde0445e60daa310fa5b8056dfeeddac83bf3a81f0d74874`
+and
+`60fbf6017a8302242f5d8fa9de929e7fe39d59d7a7993631d69cc05030c56f43`.
+
+R1f also refines Unicode decimal-escape classification at the pure RegExp
+compiler boundary. The two variants of
+`unicode_restricted_octal_escape.js` move from typed Unsupported to pass, so
+the 450-variant RegExp-core gate now records 432 passes, ten missing-`eval`
+runtime failures and eight advanced-pattern frontiers. Its TSV/JSONL SHA-256
+values are
+`a650f0855a4585f81c3b4c3d8df2da8ab2b9f4771ad1f94f90be0390db5c6b2b`
+and
+`123eae124abc4ff59475df4a028f1aafef5bb16b10c12e88d0b2a5bb2ce10e90`.
+
+The exact R1e/R1f full join covers all 102,037 keys with no missing, extra, or
+duplicate rows and zero previous-pass regressions. Its only transitions are 44
+`fail-runtime -> pass` and two `unsupported-runtime -> pass`. The full vector
+therefore moves to 25,165 passes while admitted jobs remain 32,497;
+`fail-runtime` falls to 3,803 and `unsupported-runtime` to eight. Five- and
+eight-worker reports are byte-identical. The full TSV/JSONL hashes are
+`57caefa97b579fafeb6b56ba45da7daf9cbe5e168849e4ab0459b87452d4745e`
+and
+`613a396d850698fff9472991e547946eac6bc9bc4f3b95cf90ce57d85953dee0`.
 
 ## Runner contract
 
@@ -422,6 +458,7 @@ canonical progress report.
 ./scripts/run-test262-regexp-search.sh
 ./scripts/run-test262-regexp-match.sh
 ./scripts/run-test262-regexp-split.sh
+./scripts/run-test262-regexp-compile.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -435,8 +472,9 @@ Math, Reflect, Date, and generic `String.prototype.split` are no longer common
 blockers in their reviewed sets.
 The Date transition also resolves the four otherwise-ready Reflect variants
 which had stopped at `Date.now`; generic split resolves six more linked Reflect
-variants. Basic RegExp literal execution and the search/match/split protocols
-are now measured separately in R1b/R1c/R1d/R1e. MatchAll/replace protocol work
+variants. Basic RegExp literal execution, the search/match/split protocols, and
+legacy compile are now measured separately in R1b/R1c/R1d/R1e/R1f.
+MatchAll/replace protocol work
 and advanced RegExp grammar are the next conservative candidates; the complete
 classified report will decide their ordering. The remaining RegExp-backed
 String methods stay named frontiers. Test262 remains the project scoreboard,
