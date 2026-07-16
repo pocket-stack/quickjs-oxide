@@ -35,7 +35,8 @@ tests. They are intentionally not counted as passes now.
 This 189/193 result is a runner smoke baseline, not a project-wide 97.9%
 estimate. The sample was selected from already implemented synchronous
 surfaces. Module, async/jobs, most `$262` host hooks, RegExp's remaining
-well-known-Symbol protocols and advanced pattern grammar, classes, generators,
+matchAll/replace well-known-Symbol protocols and advanced pattern grammar,
+classes, generators,
 TypedArrays and many other broad layers remain absent.
 
 Nineteen additional provenance variants guard the result: four audited negative
@@ -49,11 +50,11 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 25,029 pass;
+- 25,119 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
 - 53,401 are classified as unsupported feature, mode, host capability, parser
   frontier, harness frontier, or unaudited negative-test provenance;
-- 985 fail to parse, 3,937 fail at runtime, 206 fail in the harness, and four
+- 985 fail to parse, 3,847 fail at runtime, 206 fail in the harness, and four
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 32,497 variants to execution. That count includes variants
@@ -62,14 +63,14 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 24.53% (`25,029 / 102,037`);
-- conservative target-scope lower bound: 29.95%
-  (`25,029 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 82.98%
-  (`25,029 / 30,161`).
+- raw suite pass rate: 24.62% (`25,119 / 102,037`);
+- conservative target-scope lower bound: 30.06%
+  (`25,119 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 83.28%
+  (`25,119 / 30,161`).
 
-The 29.95% figure is the useful whole-project progress floor, not a claim that
-the engine is 29.95% conformant. The 82.98% conditional rate measures quality
+The 30.06% figure is the useful whole-project progress floor, not a claim that
+the engine is 30.06% conformant. The 83.28% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. The capability profile currently admits 18 reviewed Test262
 feature tags and 18 reviewed negative-test paths; all other feature-tagged or
@@ -80,14 +81,14 @@ differential tests remain the semantic judge.
 The complete TSV/JSONL reports are generated under `target/` rather than
 committed (together they are tens of megabytes). Their complete hashes and
 outcome summary are pinned in `tests/test262-full-baseline.txt`. Runner ordering
-was cross-checked at five and eight workers through the RegExp match
+was cross-checked at five and eight workers through the RegExp split
 milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
-The R1d eight-worker TSV and JSONL SHA-256 values are
-`a695d6299b44e4298b553c28c12983b6b12fc9d8522f1216e18e16a6bad28012`
+The R1e TSV and JSONL SHA-256 values are
+`5673ac15896bab5b1665bf8930db517447012c3d63d69bfbb1da9b8e7f9574c1`
 and
-`fb305cd709b2af1bf28de5fc82b440f836a0567ff8ed3e36af967723e3beb64b`.
+`fe98f9fdb5f4c21c25cd045d8b1824fe34e3481e26c8661376d7afe78596fa64`.
 
 ## Milestone policy
 
@@ -189,29 +190,24 @@ RegExp parser/runtime/parser-frontier outcomes.
 
 The focused split corpus contains 127 paths and 254 sloppy/strict variants:
 all 120 `built-ins/String/prototype/split` paths, one Annex-B IsHTMLDDA path,
-and six direct consumers selected from the previous full vector. It has 186
-passes, 52 runtime failures, eight feature-gated outcomes, six typed parser
-frontiers, and two host-capability outcomes. Eighty-seven of
-the 120 core paths pass in both modes, as do all six direct consumers. Of the 33
-remaining core paths, 14 literal-separator paths reach the missing
-RegExp split protocol and fail their assertions, one advanced backreference
-literal remains a typed parser frontier, 11 other
-missing-`RegExp.prototype[Symbol.split]` paths include one that first stops at
-`eval`, one additional path requires `eval`, two require object-literal-method
-grammar, and four have adjacent feature requirements. R1b advances 36 outcomes
-from the old literal frontier: eight pass and 28 become honest runtime
-failures; the two variants of the backreference path retain an unsupported
-outcome with a more precise advanced-grammar diagnostic. The Annex-B path
-separately requires IsHTMLDDA.
+and six direct consumers selected from the previous full vector. At the
+generic-split landing it had 186 passes, 52 runtime failures, eight
+feature-gated outcomes, six typed parser frontiers, and two host-capability
+outcomes. Declaring `Symbol.split` meant that the well-known symbol and
+generic/custom-splitter delegation were audited, not that the then-unpublished
+RegExp protocol was complete; exposing those outcomes made the next semantic
+frontier visible.
 
-Declaring the `Symbol.split` Test262 feature means that the well-known symbol
-and generic/custom-splitter delegation have been audited. It does not claim
-`RegExp.prototype[Symbol.split]`; at the generic-split landing the RegExp engine
-was also still unpublished. Admitting the tag globally was intentional: the 46
-newly exposed RegExp outcomes made that next semantic frontier visible instead
-of hiding it behind selection. All nine split
-oracle/differential/white-box integration tests and five intrinsic unit tests
-pass; the differential groups match the pinned QuickJS behavior.
+R1e activates that existing delegation through
+`RegExp.prototype[Symbol.split]`. The same frozen vector now admits 244
+variants and records 234 passes, four runtime failures at the independent
+Annex-B legacy-`compile` frontier, eight adjacent feature outcomes, two
+IsHTMLDDA host outcomes, and six typed parser frontiers. Its TSV and JSONL
+SHA-256 values are
+`ad66315d9b6d285240d9f0628a899ab71b64496ea451f153bcf4916d7ffeccdb`
+and
+`c0182c6f56c9df1cb4b1e991f60aa94aa5c8173e01f7882e7fa4031e966eaebc`.
+The capability profile remains unchanged at 18 reviewed tags.
 
 The RegExp R0 foundation deliberately did not increase the pass count. It
 added the internal UTF-16 compiler/executor and heap brand while `%RegExp%`
@@ -329,13 +325,55 @@ missing, extra or duplicate rows and zero previous-pass regressions. The only
 230 transitions are 86 `fail-runtime -> pass`, 126 `unsupported-feature ->
 pass`, 16 `unsupported-feature -> unsupported-parser`, and two
 `unsupported-feature -> fail-runtime`. Those two are the sloppy/strict variants
-of one Annex-B path that now reaches the separately unimplemented
+of one Annex-B path that at R1d reaches the then-unimplemented
 `RegExp.prototype[Symbol.split]`. The two literal-focused variants noted at R1b
 now pass, independently moving that gate from 88 to 90 passes. The full
 eight-worker TSV/JSONL hashes are
 `a695d6299b44e4298b553c28c12983b6b12fc9d8522f1216e18e16a6bad28012`
 and
 `fb305cd709b2af1bf28de5fc82b440f836a0567ff8ed3e36af967723e3beb64b`.
+
+The RegExp R1e split slice publishes
+`RegExp.prototype[Symbol.split]` and activates the existing generic
+`String.prototype.split` delegation for RegExp separators. Its dedicated
+237-line algorithm and reusable SpeciesConstructor helper follow QuickJS
+2026-06-04 construction, flags/sticky handling, abstract RegExpExec, UTF-16
+advance, capture insertion, limit, mutation, abrupt-completion and realm
+boundaries. Only four facade lines are added to `runtime.rs`. Eight Rust tests
+cover 19 QuickJS differential vectors.
+
+`tests/test262-regexp-split.txt` freezes 46 direct paths and their 92
+sloppy/strict variants from the R1d report;
+`tests/test262-regexp-split-baseline.txt` pins the R1d selection provenance and
+current outcome hashes, and `scripts/run-test262-regexp-split.sh` reproduces the
+gate. It admits 48 variants and records 40 passes, four runtime failures at the
+independent Annex-B legacy-`compile` frontier, 40 core variants conservatively
+gated by the undeclared `Symbol.species` profile tag, two variants gated by
+`arrow-function`, two create-realm host outcomes, and four typed parser
+frontiers. The QuickJS differential suite separately locks SpeciesConstructor
+semantics without widening the full-suite capability profile. Its TSV and
+JSONL SHA-256 values are
+`f8e4f9fa74f3f2843e9d3c101438a26ada2dde7d69d9a387114d834cf3447566`
+and
+`5e860397dcda991548347474ca13106b4289db5149f215227f7c0fb40fa349b7`.
+The independent 127-path String split gate now records the 234 passes and
+hashes above.
+
+The complete R1e vector moves from 25,029 to 25,119 passes while admitted jobs
+remain at 32,497. Its exact R1d/R1e join matches all 102,037 keys with no
+missing, extra or duplicate rows and zero previous-pass regressions. The only
+outcome transitions are 90 `fail-runtime -> pass`; five- and eight-worker TSV
+and JSONL reports are byte-identical. The full hashes are
+`5673ac15896bab5b1665bf8930db517447012c3d63d69bfbb1da9b8e7f9574c1`
+and
+`fe98f9fdb5f4c21c25cd045d8b1824fe34e3481e26c8661376d7afe78596fa64`.
+The summary now has 3,847 runtime failures, four timeouts and 2,251 typed parser
+frontiers; all other outcome counts are unchanged. The two variants of
+`staging/sm/RegExp/split.js` retain their `fail-runtime` classification but now
+reach the independent missing-JSON-global frontier, so that detail change is
+not an outcome transition. The capability profile remains at 18 tags with
+SHA-256
+`cc10293aa847f5a449ac2b039709dff98d264b672dddc8828b8e17d8b7e12d9a`.
 
 ## Runner contract
 
@@ -383,6 +421,7 @@ canonical progress report.
 ./scripts/run-test262-regexp-literals.sh
 ./scripts/run-test262-regexp-search.sh
 ./scripts/run-test262-regexp-match.sh
+./scripts/run-test262-regexp-split.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -396,10 +435,10 @@ Math, Reflect, Date, and generic `String.prototype.split` are no longer common
 blockers in their reviewed sets.
 The Date transition also resolves the four otherwise-ready Reflect variants
 which had stopped at `Date.now`; generic split resolves six more linked Reflect
-variants. Basic RegExp literal execution and the search/match protocols are now
-measured separately in R1b/R1c/R1d.
-`RegExp.prototype[Symbol.split]` is the next protocol priority; replace
-protocols, the remaining RegExp-backed String methods and advanced pattern
-grammar stay named frontiers. Broader project priorities remain driven by the
-complete classified report. Test262 remains the project scoreboard, while
-focused QuickJS differentials decide exact target semantics for each slice.
+variants. Basic RegExp literal execution and the search/match/split protocols
+are now measured separately in R1b/R1c/R1d/R1e. MatchAll/replace protocol work
+and advanced RegExp grammar are the next conservative candidates; the complete
+classified report will decide their ordering. The remaining RegExp-backed
+String methods stay named frontiers. Test262 remains the project scoreboard,
+while focused QuickJS differentials decide exact target semantics for each
+slice. None of these progress figures is a feature-parity completion claim.

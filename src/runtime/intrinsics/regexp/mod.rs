@@ -3,15 +3,16 @@
 //! The pure matcher lives in [`crate::regexp`].  This module owns the
 //! observable ECMAScript shell around it: realm-local constructor/prototype
 //! identities, derived allocation, accessors, `lastIndex`, and match result
-//! objects. RegExp literals, `@@match`, and `@@search` are linked; the legacy
-//! `compile` method, `RegExp.escape`, and the remaining Symbol protocols stay
-//! separate parity slices.
+//! objects. RegExp literals, `@@match`, `@@search`, and `@@split` are linked;
+//! the legacy `compile` method, `RegExp.escape`, and the remaining Symbol
+//! protocols stay separate parity slices.
 
 mod constructor;
 mod exec;
 mod match_protocol;
 mod prototype;
 mod search;
+mod split;
 
 use crate::heap::{RegExpFlagKind, RegExpNativeKind, RegExpRealmData};
 
@@ -100,6 +101,17 @@ impl Runtime {
             "[Symbol.search]",
             1,
             1,
+            PropertyFlags::data(true, false, true),
+        )?;
+        let split = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Split));
+        self.define_native_builtin_auto_init_with_key(
+            &regexp_prototype,
+            realm,
+            &split,
+            NativeFunctionId::RegExp(RegExpNativeKind::Split),
+            "[Symbol.split]",
+            2,
+            2,
             PropertyFlags::data(true, false, true),
         )?;
 
@@ -206,6 +218,7 @@ impl Runtime {
             RegExpNativeKind::Search => {
                 self.call_regexp_symbol_search(realm, invocation, arguments)
             }
+            RegExpNativeKind::Split => self.call_regexp_symbol_split(realm, invocation, arguments),
         }
     }
 }

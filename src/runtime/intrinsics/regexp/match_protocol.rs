@@ -139,7 +139,7 @@ impl Runtime {
     }
 }
 
-fn advance_string_index(input: &JsString, index: u64, unicode: bool) -> u64 {
+pub(super) fn advance_string_index(input: &JsString, index: u64, unicode: bool) -> u64 {
     let width = if unicode
         && usize::try_from(index)
             .ok()

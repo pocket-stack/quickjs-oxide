@@ -19,6 +19,51 @@ struct GenuineRegExp {
 }
 
 impl Runtime {
+    /// Pinned QuickJS `JS_SpeciesConstructor` specialized with this native
+    /// method's defining-realm retained `%RegExp%` constructor as the default.
+    pub(super) fn regexp_species_constructor(
+        &self,
+        realm: ContextId,
+        regexp: &ObjectRef,
+    ) -> Result<NativeConversion<CallableRef>, RuntimeError> {
+        let default_id = self.regexp_realm_data(realm)?.constructor;
+        let default = ObjectRef::from_borrowed_handle(self.clone(), default_id)?;
+        let default = self.as_callable(&default)?.ok_or(RuntimeError::Invariant(
+            "realm RegExp constructor root was not callable",
+        ))?;
+
+        let constructor_key = self.intern_property_key("constructor")?;
+        let constructor = match self.get_property_in_realm(realm, regexp, &constructor_key)? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        if matches!(constructor, Value::Undefined) {
+            return Ok(NativeConversion::Value(default));
+        }
+        let Value::Object(constructor) = constructor else {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "not an object",
+            )?));
+        };
+
+        let species_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Species));
+        let species = match self.get_property_in_realm(realm, &constructor, &species_key)? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        if matches!(species, Value::Undefined | Value::Null) {
+            return Ok(NativeConversion::Value(default));
+        }
+        if !matches!(species, Value::Object(_)) {
+            return Ok(NativeConversion::Throw(
+                self.new_not_constructor_error(realm, &species)?,
+            ));
+        }
+        self.constructor_from_value(realm, species)
+    }
+
     pub(super) fn call_regexp_constructor(
         &self,
         realm: ContextId,

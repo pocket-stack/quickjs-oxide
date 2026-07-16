@@ -1485,6 +1485,7 @@ pub enum RegExpNativeKind {
     ToString,
     Match,
     Search,
+    Split,
     Source,
     Flags,
     Flag(RegExpFlagKind),
@@ -1915,7 +1916,8 @@ impl NativeFunctionId {
                 | RegExpNativeKind::Test
                 | RegExpNativeKind::ToString
                 | RegExpNativeKind::Match
-                | RegExpNativeKind::Search,
+                | RegExpNativeKind::Search
+                | RegExpNativeKind::Split,
             )
             | Self::Reflect(
                 ReflectKind::Apply
@@ -6189,6 +6191,7 @@ mod tests {
             NativeFunctionId::RegExp(RegExpNativeKind::ToString),
             NativeFunctionId::RegExp(RegExpNativeKind::Match),
             NativeFunctionId::RegExp(RegExpNativeKind::Search),
+            NativeFunctionId::RegExp(RegExpNativeKind::Split),
         ] {
             assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
             assert!(!target.descriptor().cproto.default_is_constructor());

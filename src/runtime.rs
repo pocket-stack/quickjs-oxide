@@ -7006,7 +7006,8 @@ impl Runtime {
             | NativeFunctionId::StringPrototypeCase(_)
             | NativeFunctionId::StringPrototypeCreateHtml(_)
             | NativeFunctionId::RegExp(RegExpNativeKind::Match)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Search) => 16,
+            | NativeFunctionId::RegExp(RegExpNativeKind::Search)
+            | NativeFunctionId::RegExp(RegExpNativeKind::Split) => 16,
             _ => 8,
         };
         let active_native_cost = self
@@ -7071,7 +7072,8 @@ impl Runtime {
             | NativeFunctionId::StringPrototypeCase(_)
             | NativeFunctionId::StringPrototypeCreateHtml(_)
             | NativeFunctionId::RegExp(RegExpNativeKind::Match)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Search) => 4,
+            | NativeFunctionId::RegExp(RegExpNativeKind::Search)
+            | NativeFunctionId::RegExp(RegExpNativeKind::Split) => 4,
             // ToString, ToNumber and String.raw's property/conversion path can
             // all re-enter any other member of this constructor family.
             NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
@@ -7133,7 +7135,8 @@ impl Runtime {
             | NativeFunctionId::StringPrototypeCase(_)
             | NativeFunctionId::StringPrototypeCreateHtml(_)
             | NativeFunctionId::RegExp(RegExpNativeKind::Match)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Search) => matches!(
+            | NativeFunctionId::RegExp(RegExpNativeKind::Search)
+            | NativeFunctionId::RegExp(RegExpNativeKind::Split) => matches!(
                 candidate,
                 NativeFunctionId::StringPrototypeIncludes(_)
                     | NativeFunctionId::StringPrototypeMatch
@@ -7147,6 +7150,7 @@ impl Runtime {
                     | NativeFunctionId::StringPrototypeCreateHtml(_)
                     | NativeFunctionId::RegExp(RegExpNativeKind::Match)
                     | NativeFunctionId::RegExp(RegExpNativeKind::Search)
+                    | NativeFunctionId::RegExp(RegExpNativeKind::Split)
             ),
             NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
             | NativeFunctionId::StringStatic(_) => matches!(

@@ -27,7 +27,8 @@ impl Runtime {
             | RegExpNativeKind::Test
             | RegExpNativeKind::ToString
             | RegExpNativeKind::Match
-            | RegExpNativeKind::Search => Err(RuntimeError::Invariant(
+            | RegExpNativeKind::Search
+            | RegExpNativeKind::Split => Err(RuntimeError::Invariant(
                 "non-accessor RegExp selector reached accessor dispatch",
             )),
         }

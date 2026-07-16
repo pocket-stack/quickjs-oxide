@@ -228,7 +228,7 @@ fn string_includes_family_publishes_typed_autoinit_entries_and_identities() {
 }
 
 #[test]
-fn match_and_search_protocol_entries_preserve_pinned_cproto_autoinit_and_filtered_order() {
+fn match_search_and_split_protocol_entries_preserve_pinned_cproto_autoinit_and_filtered_order() {
     let string_match_descriptor = NativeFunctionId::StringPrototypeMatch.descriptor();
     assert_eq!(string_match_descriptor.cproto, NativeCProto::GenericMagic);
     assert!(!string_match_descriptor.cproto.default_is_constructor());
@@ -241,6 +241,9 @@ fn match_and_search_protocol_entries_preserve_pinned_cproto_autoinit_and_filtere
     let regexp_descriptor = NativeFunctionId::RegExp(RegExpNativeKind::Search).descriptor();
     assert_eq!(regexp_descriptor.cproto, NativeCProto::Generic);
     assert!(!regexp_descriptor.cproto.default_is_constructor());
+    let regexp_split_descriptor = NativeFunctionId::RegExp(RegExpNativeKind::Split).descriptor();
+    assert_eq!(regexp_split_descriptor.cproto, NativeCProto::Generic);
+    assert!(!regexp_split_descriptor.cproto.default_is_constructor());
 
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -254,6 +257,7 @@ fn match_and_search_protocol_entries_preserve_pinned_cproto_autoinit_and_filtere
     let split = runtime.intern_property_key("split").unwrap();
     let symbol_match = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::Match));
     let symbol_search = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::Search));
+    let symbol_split = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::Split));
     {
         let state = runtime.0.state.borrow();
         let string_object = state.heap.object(string_prototype.object_id()).unwrap();
@@ -300,7 +304,9 @@ fn match_and_search_protocol_entries_preserve_pinned_cproto_autoinit_and_filtere
         let match_position =
             usize::try_from(regexp_shape.find(symbol_match.atom()).unwrap()).unwrap();
         let search = usize::try_from(regexp_shape.find(symbol_search.atom()).unwrap()).unwrap();
+        let split = usize::try_from(regexp_shape.find(symbol_split.atom()).unwrap()).unwrap();
         assert_eq!(search, match_position + 1);
+        assert_eq!(split, search + 1);
         assert_eq!(
             regexp_shape.entries()[match_position].flags,
             PropertyFlags::data(true, false, true)
@@ -327,6 +333,20 @@ fn match_and_search_protocol_entries_preserve_pinned_cproto_autoinit_and_filtere
                 name: "[Symbol.search]",
                 length: 1,
                 min_readable_args: 1,
+            })) if *realm == context.realm
+        ));
+        assert_eq!(
+            regexp_shape.entries()[split].flags,
+            PropertyFlags::data(true, false, true)
+        );
+        assert!(matches!(
+            regexp_object.slots.get(split),
+            Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                realm,
+                target: NativeFunctionId::RegExp(RegExpNativeKind::Split),
+                name: "[Symbol.split]",
+                length: 2,
+                min_readable_args: 2,
             })) if *realm == context.realm
         ));
     }
@@ -394,8 +414,25 @@ fn match_and_search_protocol_entries_preserve_pinned_cproto_autoinit_and_filtere
     assert_eq!(regexp_first, regexp_second);
     assert!(runtime.as_callable(&regexp_first).unwrap().is_some());
     assert!(!runtime.is_constructor(&regexp_first).unwrap());
+    let Value::Object(regexp_split_first) = context
+        .get_property(&regexp_prototype, &symbol_split)
+        .unwrap()
+    else {
+        panic!("RegExp.prototype[Symbol.split] did not materialize as a function");
+    };
+    let Value::Object(regexp_split_second) = context
+        .get_property(&regexp_prototype, &symbol_split)
+        .unwrap()
+    else {
+        panic!("RegExp.prototype[Symbol.split] did not retain its function identity");
+    };
+    assert_eq!(regexp_split_first, regexp_split_second);
+    assert!(runtime.as_callable(&regexp_split_first).unwrap().is_some());
+    assert!(!runtime.is_constructor(&regexp_split_first).unwrap());
     assert_ne!(string_match_first, string_first);
     assert_ne!(regexp_match_first, regexp_first);
+    assert_ne!(regexp_split_first, regexp_first);
+    assert_ne!(regexp_split_first, regexp_match_first);
     assert_ne!(string_match_first, regexp_match_first);
     assert_ne!(string_first, regexp_first);
     assert_eq!(
@@ -406,11 +443,13 @@ fn match_and_search_protocol_entries_preserve_pinned_cproto_autoinit_and_filtere
                  RegExp.prototype[Symbol.match].name+'|'+\
                  RegExp.prototype[Symbol.match].length+'|'+\
                  RegExp.prototype[Symbol.search].name+'|'+\
-                 RegExp.prototype[Symbol.search].length",
+                 RegExp.prototype[Symbol.search].length+'|'+\
+                 RegExp.prototype[Symbol.split].name+'|'+\
+                 RegExp.prototype[Symbol.split].length",
             )
             .unwrap(),
         Value::String(JsString::from_static(
-            "match|1|search|1|[Symbol.match]|1|[Symbol.search]|1",
+            "match|1|search|1|[Symbol.match]|1|[Symbol.search]|1|[Symbol.split]|2",
         )),
     );
 }
