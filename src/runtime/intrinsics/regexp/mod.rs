@@ -14,6 +14,7 @@ mod match_all;
 mod match_protocol;
 mod prototype;
 mod replace;
+mod result;
 mod search;
 mod split;
 #[cfg(test)]

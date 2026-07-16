@@ -7,6 +7,7 @@
 mod compiler;
 mod executor;
 mod flags;
+mod group_name;
 mod opcode;
 
 pub use compiler::{

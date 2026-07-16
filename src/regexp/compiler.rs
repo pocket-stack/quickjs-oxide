@@ -9,7 +9,9 @@
 
 use super::RegExpFlags;
 use super::flags::{FlagParseErrorKind, parse_flags};
+use super::group_name::{self, CaptureSummary};
 use super::opcode::{CharacterRange, Instruction};
+use crate::value::JsString;
 
 const INFINITE_REPETITION: u32 = i32::MAX as u32;
 const MAX_CODE_POINT: u32 = 0x10_ffff;
@@ -22,9 +24,14 @@ pub struct CompiledRegExp {
     capture_count: u8,
     register_count: u8,
     instructions: Box<[Instruction]>,
+    /// Capture names aligned to captures 1..N. Capture zero is deliberately
+    /// absent. `None` for the whole field means the pattern has no named
+    /// captures and matches QuickJS's absent group-name trailer.
+    group_names: Option<Box<[Option<JsString>]>>,
 }
 
 impl CompiledRegExp {
+    #[cfg(test)]
     pub(super) fn from_parts(
         flags: RegExpFlags,
         capture_count: u8,
@@ -36,6 +43,27 @@ impl CompiledRegExp {
             capture_count,
             register_count,
             instructions: instructions.into_boxed_slice(),
+            group_names: None,
+        }
+    }
+
+    fn from_compiled_parts(
+        flags: RegExpFlags,
+        capture_count: u8,
+        register_count: u8,
+        instructions: Vec<Instruction>,
+        group_names: Option<Box<[Option<JsString>]>>,
+    ) -> Self {
+        debug_assert!(group_names.as_ref().is_none_or(|names| {
+            names.len() == usize::from(capture_count).saturating_sub(1)
+                && names.iter().any(Option::is_some)
+        }));
+        Self {
+            flags,
+            capture_count,
+            register_count,
+            instructions: instructions.into_boxed_slice(),
+            group_names,
         }
     }
 
@@ -58,6 +86,18 @@ impl CompiledRegExp {
     #[must_use]
     pub fn instructions(&self) -> &[Instruction] {
         &self.instructions
+    }
+
+    /// Names aligned to captures 1..N, or `None` when this program has no
+    /// named captures. Capture `i` corresponds to `names[i - 1]`.
+    #[must_use]
+    pub fn group_names(&self) -> Option<&[Option<JsString>]> {
+        self.group_names.as_deref()
+    }
+
+    #[must_use]
+    pub const fn has_named_captures(&self) -> bool {
+        self.group_names.is_some()
     }
 }
 
@@ -254,7 +294,7 @@ enum Atom {
     },
     Class(CharacterClass),
     BackReference {
-        capture: u8,
+        captures: Box<[u8]>,
     },
     LookAround {
         negative: bool,
@@ -374,23 +414,41 @@ struct Parser<'a> {
     modifiers: ModifierState,
     next_capture: u16,
     total_capture_count: u32,
+    has_named_captures: bool,
+    capture_names: Vec<Option<JsString>>,
+    parsed_group_names: Vec<(JsString, u8, u8)>,
+    group_name_scope: u8,
     group_depth: usize,
+}
+
+struct ParsedPattern {
+    expression: Expression,
+    capture_count: u8,
+    group_names: Option<Box<[Option<JsString>]>>,
 }
 
 impl<'a> Parser<'a> {
     fn new(units: &'a [u16], flags: RegExpFlags) -> Self {
+        let CaptureSummary {
+            capture_count,
+            has_named_captures,
+        } = group_name::capture_summary(units);
         Self {
             units,
             position: 0,
             flags,
             modifiers: ModifierState::from_flags(flags),
             next_capture: 1,
-            total_capture_count: count_captures(units),
+            total_capture_count: capture_count,
+            has_named_captures,
+            capture_names: Vec::new(),
+            parsed_group_names: Vec::new(),
+            group_name_scope: 0,
             group_depth: 0,
         }
     }
 
-    fn parse(mut self) -> Result<(Expression, u8), CompileError> {
+    fn parse(mut self) -> Result<ParsedPattern, CompileError> {
         let expression = self.parse_disjunction(false)?;
         if self.position != self.units.len() {
             return Err(CompileError::syntax(
@@ -400,7 +458,20 @@ impl<'a> Parser<'a> {
         }
         let capture_count = u8::try_from(self.next_capture)
             .map_err(|_| CompileError::too_many_captures(self.position))?;
-        Ok((expression, capture_count))
+        debug_assert_eq!(
+            self.capture_names.len(),
+            usize::from(capture_count).saturating_sub(1)
+        );
+        let group_names = self
+            .capture_names
+            .iter()
+            .any(Option::is_some)
+            .then(|| self.capture_names.into_boxed_slice());
+        Ok(ParsedPattern {
+            expression,
+            capture_count,
+            group_names,
+        })
     }
 
     fn parse_disjunction(&mut self, in_group: bool) -> Result<Expression, CompileError> {
@@ -409,6 +480,7 @@ impl<'a> Parser<'a> {
             alternatives.push(self.parse_sequence(in_group)?);
             if self.peek() == Some(u16::from(b'|')) {
                 self.position += 1;
+                self.group_name_scope = self.group_name_scope.wrapping_add(1);
                 continue;
             }
             break;
@@ -527,10 +599,21 @@ impl<'a> Parser<'a> {
                             expression,
                         });
                     }
-                    return Err(CompileError::unsupported(
-                        position,
-                        UnsupportedFeature::NamedCapture,
-                    ));
+                    self.position += 1;
+                    let Some((name, after_name)) = group_name::parse(self.units, self.position)
+                    else {
+                        return Err(CompileError::syntax(position, "invalid group name"));
+                    };
+                    if self.parsed_group_names.iter().any(|(existing, scope, _)| {
+                        *scope == self.group_name_scope && *existing == name
+                    }) {
+                        return Err(CompileError::syntax(position, "duplicate group name"));
+                    }
+                    self.position = after_name;
+                    let capture = self.allocate_capture(position, Some(name.clone()))?;
+                    self.parsed_group_names
+                        .push((name, self.group_name_scope, capture));
+                    (Some(capture), None)
                 }
                 Some(0x69 | 0x6d | 0x73 | 0x2d) => {
                     let add_mask = self.parse_modifiers()?;
@@ -554,12 +637,7 @@ impl<'a> Parser<'a> {
                 }
             }
         } else {
-            if self.next_capture >= u16::from(u8::MAX) {
-                return Err(CompileError::too_many_captures(position));
-            }
-            let capture = u8::try_from(self.next_capture)
-                .map_err(|_| CompileError::too_many_captures(position))?;
-            self.next_capture += 1;
+            let capture = self.allocate_capture(position, None)?;
             (Some(capture), None)
         };
 
@@ -580,6 +658,22 @@ impl<'a> Parser<'a> {
         })();
         self.modifiers = saved_modifiers;
         result
+    }
+
+    fn allocate_capture(
+        &mut self,
+        position: usize,
+        name: Option<JsString>,
+    ) -> Result<u8, CompileError> {
+        if self.next_capture >= u16::from(u8::MAX) {
+            return Err(CompileError::too_many_captures(position));
+        }
+        let capture = u8::try_from(self.next_capture)
+            .map_err(|_| CompileError::too_many_captures(position))?;
+        debug_assert_eq!(self.capture_names.len(), usize::from(capture) - 1);
+        self.next_capture += 1;
+        self.capture_names.push(name);
+        Ok(capture)
     }
 
     fn parse_modifiers(&mut self) -> Result<u8, CompileError> {
@@ -632,10 +726,7 @@ impl<'a> Parser<'a> {
                     })
                 }),
             property @ (0x70 | 0x50) => Ok(Atom::Literal(self.finish_code_point(property))),
-            0x6b => Err(CompileError::unsupported(
-                escape_position,
-                UnsupportedFeature::Backreference,
-            )),
+            0x6b if !in_class => self.parse_named_backreference(escape_position),
             0x31..=0x39 if in_class => Err(CompileError::syntax(
                 escape_position,
                 "invalid identity escape",
@@ -679,6 +770,46 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_named_backreference(&mut self, position: usize) -> Result<Atom, CompileError> {
+        let syntax_required = self.flags.is_unicode() || self.has_named_captures;
+        if self.peek() != Some(u16::from(b'<')) {
+            return if syntax_required {
+                Err(CompileError::syntax(position, "expecting group name"))
+            } else {
+                Ok(Atom::Literal(u32::from(b'k')))
+            };
+        }
+
+        let Some((name, after_name)) = group_name::parse(self.units, self.position + 1) else {
+            return if syntax_required {
+                Err(CompileError::syntax(position, "invalid group name"))
+            } else {
+                Ok(Atom::Literal(u32::from(b'k')))
+            };
+        };
+
+        let mut captures = self
+            .parsed_group_names
+            .iter()
+            .filter_map(|(existing, _, capture)| (existing == &name).then_some(*capture))
+            .collect::<Vec<_>>();
+        if captures.is_empty() {
+            captures = group_name::matching_capture_indices(self.units, &name);
+        }
+        if captures.is_empty() {
+            return if syntax_required {
+                Err(CompileError::syntax(position, "group name not defined"))
+            } else {
+                Ok(Atom::Literal(u32::from(b'k')))
+            };
+        }
+
+        self.position = after_name;
+        Ok(Atom::BackReference {
+            captures: captures.into_boxed_slice(),
+        })
+    }
+
     fn parse_decimal_escape(&mut self, position: usize, first: u16) -> Result<Atom, CompileError> {
         let (reference, digit_end) = self.scan_decimal_escape(first);
         if reference
@@ -688,7 +819,9 @@ impl<'a> Parser<'a> {
             self.position = digit_end;
             let capture = u8::try_from(reference.expect("checked decimal reference range"))
                 .expect("capture prepass caps valid decimal references below u8::MAX");
-            return Ok(Atom::BackReference { capture });
+            return Ok(Atom::BackReference {
+                captures: Box::new([capture]),
+            });
         }
         if self.flags.is_unicode() {
             return Err(CompileError::syntax(
@@ -1265,45 +1398,6 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// QuickJS `re_count_captures`-style lexical prepass. Used here to distinguish
-/// a potentially in-range Unicode decimal backreference from an immediately
-/// out-of-range decimal escape. It does not validate the pattern remainder.
-fn count_captures(units: &[u16]) -> u32 {
-    let mut count = 1_u32;
-    let mut position = 0;
-    while position < units.len() {
-        match units[position] {
-            0x28 => {
-                let is_plain = units.get(position + 1) != Some(&u16::from(b'?'));
-                let is_named = units.get(position + 1) == Some(&u16::from(b'?'))
-                    && units.get(position + 2) == Some(&u16::from(b'<'))
-                    && !matches!(units.get(position + 3).copied(), Some(0x3d | 0x21));
-                if is_plain || is_named {
-                    count = count.saturating_add(1);
-                    if count >= u32::from(u8::MAX) {
-                        break;
-                    }
-                }
-            }
-            0x5c => {
-                position = position.saturating_add(1);
-            }
-            0x5b => {
-                position += 1;
-                while position < units.len() && units[position] != u16::from(b']') {
-                    if units[position] == u16::from(b'\\') {
-                        position = position.saturating_add(1);
-                    }
-                    position = position.saturating_add(1);
-                }
-            }
-            _ => {}
-        }
-        position = position.saturating_add(1);
-    }
-    count
-}
-
 struct CodeBuilder {
     instructions: Vec<Instruction>,
     register_depth: u16,
@@ -1449,16 +1543,15 @@ impl CodeBuilder {
                 });
                 self.emit_backward_character_guard(backward);
             }
-            Atom::BackReference { capture } => {
-                let captures = vec![*capture].into_boxed_slice();
+            Atom::BackReference { captures } => {
                 if backward {
                     self.emit(Instruction::BackwardBackReference {
-                        captures,
+                        captures: captures.clone(),
                         ignore_case: self.ignore_case,
                     });
                 } else {
                     self.emit(Instruction::BackReference {
-                        captures,
+                        captures: captures.clone(),
                         ignore_case: self.ignore_case,
                     });
                 }
@@ -1750,7 +1843,7 @@ pub(super) fn compile_units(
     pattern: &[u16],
     flag_units: &[u16],
 ) -> Result<CompiledRegExp, CompileError> {
-    let flags = parse_flags(flag_units)
+    let mut flags = parse_flags(flag_units)
         .map_err(|error| CompileError::invalid_flags(error.position, error.kind))?;
     if flags.contains(RegExpFlags::UNICODE_SETS) {
         return Err(CompileError::unsupported(
@@ -1758,13 +1851,21 @@ pub(super) fn compile_units(
             UnsupportedFeature::UnicodeSetOperation,
         ));
     }
-    let (expression, capture_count) = Parser::new(pattern, flags).parse()?;
+    let ParsedPattern {
+        expression,
+        capture_count,
+        group_names,
+    } = Parser::new(pattern, flags).parse()?;
+    if group_names.is_some() {
+        flags.insert(RegExpFlags::NAMED_GROUPS);
+    }
     let (instructions, register_count) = CodeBuilder::new(flags).compile(&expression)?;
-    Ok(CompiledRegExp::from_parts(
+    Ok(CompiledRegExp::from_compiled_parts(
         flags,
         capture_count,
         register_count,
         instructions,
+        group_names,
     ))
 }
 
@@ -2420,17 +2521,6 @@ mod tests {
 
     #[test]
     fn advanced_syntax_is_typed_unsupported_instead_of_miscompiled() {
-        for (pattern, feature) in [
-            (r"(?<name>a)", UnsupportedFeature::NamedCapture),
-            (r"\k<name>", UnsupportedFeature::Backreference),
-        ] {
-            let error = compile_ascii(pattern, "u").unwrap_err();
-            assert_eq!(
-                error.kind(),
-                &CompileErrorKind::Unsupported(feature),
-                "{pattern}",
-            );
-        }
         let error = compile_ascii("[a&&b]", "v").unwrap_err();
         assert_eq!(
             error.kind(),
@@ -2444,6 +2534,197 @@ mod tests {
                 &CompileErrorKind::Unsupported(UnsupportedFeature::LegacyControlEscape),
                 "{pattern}",
             );
+        }
+    }
+
+    #[test]
+    fn named_capture_metadata_is_normalized_aligned_and_runtime_independent() {
+        let compiled = compile_ascii(r"(?<plain>a)(b)(?<π>c)(?<$\u{104A4}>d)", "u").unwrap();
+        assert_eq!(compiled.capture_count(), 5);
+        assert!(compiled.has_named_captures());
+        assert!(compiled.flags().contains(RegExpFlags::NAMED_GROUPS));
+        assert_eq!(compiled.flags().bits(), (1 << 4) | (1 << 7));
+        assert_eq!(compiled.flags().canonical_string(), "u");
+
+        let names = compiled.group_names().unwrap();
+        assert_eq!(names.len(), usize::from(compiled.capture_count()) - 1);
+        assert_eq!(
+            names
+                .iter()
+                .map(|name| name.as_ref().map(JsString::to_utf8_lossy))
+                .collect::<Vec<_>>(),
+            vec![
+                Some("plain".to_owned()),
+                None,
+                Some("π".to_owned()),
+                Some("$𐒤".to_owned()),
+            ],
+        );
+
+        let unnamed = compile_ascii("(a)(b)", "u").unwrap();
+        assert!(!unnamed.has_named_captures());
+        assert_eq!(unnamed.group_names(), None);
+        assert!(!unnamed.flags().contains(RegExpFlags::NAMED_GROUPS));
+    }
+
+    #[test]
+    fn named_group_parser_matches_quickjs_identifier_and_buffer_boundaries() {
+        for pattern in [
+            r"(?<$>a)",
+            r"(?<_\u200C\u200D>a)",
+            r"(?<\u0061>a)",
+            r"(?<a\uD801\uDCA4>a)",
+            r"(?<a\u{104A4}>a)",
+            "(?<ಠ_ಠ>a)",
+        ] {
+            assert!(compile_ascii(pattern, "").is_ok(), "{pattern}");
+            assert!(compile_ascii(pattern, "u").is_ok(), "{pattern}/u");
+        }
+
+        for pattern in [
+            r"(?<>a)",
+            r"(?<0>a)",
+            r"(?<🦊>a)",
+            r"(?<\x61>a)",
+            r"(?<\u{}>a)",
+            r"(?<\u{110000}>a)",
+            r"(?<\uD800>a)",
+            r"(?<a->a)",
+        ] {
+            let error = compile_ascii(pattern, "u").unwrap_err();
+            assert_eq!(error.kind(), &CompileErrorKind::Syntax, "{pattern}");
+            assert_eq!(error.message(), "invalid group name", "{pattern}");
+        }
+
+        let accepted = format!("(?<{}>a)", "x".repeat(122));
+        assert!(compile_ascii(&accepted, "u").is_ok());
+        let rejected = format!("(?<{}>a)", "x".repeat(123));
+        assert_eq!(
+            compile_ascii(&rejected, "u").unwrap_err().message(),
+            "invalid group name",
+        );
+
+        let lone_surrogate = [
+            u16::from(b'('),
+            u16::from(b'?'),
+            u16::from(b'<'),
+            0xd800,
+            u16::from(b'>'),
+            u16::from(b'a'),
+            u16::from(b')'),
+        ];
+        assert_eq!(
+            compile_units(&lone_surrogate, &[u16::from(b'u')])
+                .unwrap_err()
+                .message(),
+            "invalid group name",
+        );
+    }
+
+    #[test]
+    fn named_backreferences_cover_forward_self_reverse_and_annex_b_paths() {
+        for pattern in [r"\k<a>(?<a>x)", r"(?<a>\k<a>x)"] {
+            let compiled = compile_ascii(pattern, "u").unwrap();
+            assert!(compiled.instructions().iter().any(|instruction| {
+                matches!(instruction, Instruction::BackReference { captures, .. }
+                    if captures.as_ref() == [1])
+            }));
+        }
+
+        let reverse = compile_ascii(r"(?<=(?<a>x)\k<a>)y", "u").unwrap();
+        assert!(reverse.instructions().iter().any(|instruction| {
+            matches!(instruction, Instruction::BackwardBackReference { captures, .. }
+                if captures.as_ref() == [1])
+        }));
+
+        for pattern in [r"\k<x>(?<x>a)|(?<x>b)", r"(?<x>a)|(?<x>b)\k<x>"] {
+            let compiled = compile_ascii(pattern, "u").unwrap();
+            assert!(compiled.instructions().iter().any(|instruction| {
+                matches!(instruction, Instruction::BackReference { captures, .. }
+                    if captures.as_ref() == [1, 2])
+            }));
+        }
+
+        let annex_b = compile_ascii(r"\k<x>", "").unwrap();
+        assert!(!annex_b.has_named_captures());
+        let characters = annex_b
+            .instructions()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::Char { value, .. } => Some(*value),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            characters,
+            b"k<x>".iter().copied().map(u32::from).collect::<Vec<_>>()
+        );
+        assert!(compile_ascii(r"\k<->", "").is_ok());
+        assert!(compile_ascii(r"[\k]", "").is_ok());
+        assert_eq!(
+            compile_ascii(r"[\k]", "u").unwrap_err().message(),
+            "invalid identity escape",
+        );
+        assert_eq!(
+            compile_ascii(r"\k", "u").unwrap_err().message(),
+            "expecting group name",
+        );
+        assert_eq!(
+            compile_ascii(r"\k<y>(?<x>a)", "").unwrap_err().message(),
+            "group name not defined",
+        );
+        assert_eq!(
+            compile_ascii(r"\k<->(?<x>a)", "").unwrap_err().message(),
+            "invalid group name",
+        );
+    }
+
+    #[test]
+    fn forward_named_reference_scan_preserves_quickjs_cursor_quirk() {
+        assert_eq!(
+            compile_ascii(r"\k<y>(?<x>(?<y>a))", "u")
+                .unwrap_err()
+                .message(),
+            "group name not defined",
+        );
+        for pattern in [r"\k<y>((?<y>a))", r"\k<y>(?<x>a(?<y>b))"] {
+            assert!(compile_ascii(pattern, "u").is_ok(), "{pattern}");
+        }
+    }
+
+    #[test]
+    fn duplicate_group_names_use_quickjs_wrapping_alternative_scope() {
+        for pattern in [r"(?<x>a)(?<x>b)", r"(?<x>a)(?<\u0078>b)"] {
+            assert_eq!(
+                compile_ascii(pattern, "u").unwrap_err().message(),
+                "duplicate group name",
+                "{pattern}",
+            );
+        }
+
+        for pattern in [r"(?<x>a)|(?<x>b)", r"(?<x>a)(?:b|c)(?<x>d)"] {
+            let compiled = compile_ascii(pattern, "u").unwrap();
+            assert_eq!(
+                compiled
+                    .group_names()
+                    .unwrap()
+                    .iter()
+                    .filter(|name| name
+                        .as_ref()
+                        .is_some_and(|name| name.to_utf8_lossy() == "x"))
+                    .count(),
+                2,
+                "{pattern}",
+            );
+        }
+
+        for (bars, accepted) in [(255, true), (256, false), (257, true)] {
+            let pattern = format!("(?<x>a){}(?<x>b)", "|".repeat(bars));
+            let result = compile_ascii(&pattern, "u");
+            assert_eq!(result.is_ok(), accepted, "{bars} alternatives");
+            if !accepted {
+                assert_eq!(result.unwrap_err().message(), "duplicate group name");
+            }
         }
     }
 
@@ -2670,10 +2951,14 @@ mod tests {
             }));
         }
 
-        let named = compile_ascii(r"\1(?<x>a)", "u").unwrap_err();
+        let named = compile_ascii(r"\1(?<x>a)", "u").unwrap();
+        assert_eq!(named.capture_count(), 2);
         assert_eq!(
-            named.kind(),
-            &CompileErrorKind::Unsupported(UnsupportedFeature::NamedCapture),
+            named.group_names().unwrap()[0]
+                .as_ref()
+                .unwrap()
+                .to_utf8_lossy(),
+            "x",
         );
         assert!(compile_ascii(r"[](a)\1", "u").is_ok());
 

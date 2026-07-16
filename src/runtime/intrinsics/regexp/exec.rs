@@ -1,9 +1,7 @@
 //! Builtin and abstract RegExp execution.
 
-use std::rc::Rc;
-
 use crate::heap::{RegExpNativeKind, RegExpObjectData};
-use crate::regexp::{CompiledRegExp, ExecError, RegExpFlags, RegExpMatch, execute_with_interrupt};
+use crate::regexp::{ExecError, RegExpFlags, execute_with_interrupt};
 
 use super::super::super::*;
 
@@ -256,91 +254,6 @@ impl Runtime {
     ) -> Result<Option<Value>, RuntimeError> {
         let key = self.intern_property_key("lastIndex")?;
         self.set_property_or_throw(realm, object, &key, Value::Int(value))
-    }
-
-    fn build_regexp_result(
-        &self,
-        realm: ContextId,
-        input: JsString,
-        program: Rc<CompiledRegExp>,
-        matched: RegExpMatch,
-    ) -> Result<Value, RuntimeError> {
-        let mut captures = Vec::with_capacity(matched.captures().len());
-        for range in matched.captures() {
-            captures.push(match range {
-                Some(range) => Value::String(input.sub_string(range.start, range.end)),
-                None => Value::Undefined,
-            });
-        }
-        let result = self.new_array_from_values(realm, captures)?;
-        let complete = matched.capture(0).ok_or(RuntimeError::Invariant(
-            "successful RegExp result omitted capture zero",
-        ))?;
-        self.define_regexp_result_property(
-            &result,
-            "index",
-            Value::Int(i32::try_from(complete.start).map_err(|_| {
-                RuntimeError::Invariant("RegExp match start exceeded signed String range")
-            })?),
-        )?;
-        self.define_regexp_result_property(&result, "input", Value::String(input.clone()))?;
-        // Named captures remain outside R1a, but QuickJS always publishes the
-        // property even when its value is undefined.
-        self.define_regexp_result_property(&result, "groups", Value::Undefined)?;
-
-        if program.flags().contains(RegExpFlags::HAS_INDICES) {
-            let mut values = Vec::with_capacity(matched.captures().len());
-            for range in matched.captures() {
-                values.push(match range {
-                    Some(range) => {
-                        let start = i32::try_from(range.start).map_err(|_| {
-                            RuntimeError::Invariant(
-                                "RegExp capture start exceeded signed String range",
-                            )
-                        })?;
-                        let end = i32::try_from(range.end).map_err(|_| {
-                            RuntimeError::Invariant(
-                                "RegExp capture end exceeded signed String range",
-                            )
-                        })?;
-                        Value::Object(self.new_array_from_values(
-                            realm,
-                            vec![Value::Int(start), Value::Int(end)],
-                        )?)
-                    }
-                    None => Value::Undefined,
-                });
-            }
-            let indices = self.new_array_from_values(realm, values)?;
-            self.define_regexp_result_property(&indices, "groups", Value::Undefined)?;
-            self.define_regexp_result_property(&result, "indices", Value::Object(indices))?;
-        }
-        Ok(Value::Object(result))
-    }
-
-    fn define_regexp_result_property(
-        &self,
-        object: &ObjectRef,
-        name: &str,
-        value: Value,
-    ) -> Result<(), RuntimeError> {
-        let key = self.intern_property_key(name)?;
-        if !self.define_own_property(
-            object,
-            &key,
-            &OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(value),
-                writable: DescriptorField::Present(true),
-                enumerable: DescriptorField::Present(true),
-                configurable: DescriptorField::Present(true),
-                ..OrdinaryPropertyDescriptor::new()
-            },
-        )? {
-            return Err(RuntimeError::Invariant(
-                "fresh RegExp result property definition was rejected",
-            ));
-        }
-        Ok(())
     }
 
     fn regexp_value_is_callable(&self, value: &Value) -> Result<bool, RuntimeError> {

@@ -378,6 +378,12 @@ impl Runtime {
         else {
             return Ok(None);
         };
+        // Pinned QuickJS's direct replacement helper cannot publish named
+        // captures to GetSubstitution. Returning to the generic path makes
+        // builtin exec create `groups` and preserves `$<name>` semantics.
+        if program.has_named_captures() {
+            return Ok(None);
+        }
         let shape = state.heap.shape(object.shape)?;
         let Some(last_index_slot) = shape.find(last_index.atom()) else {
             return Ok(None);

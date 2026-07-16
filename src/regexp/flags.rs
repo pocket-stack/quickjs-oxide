@@ -15,6 +15,9 @@ impl RegExpFlags {
     pub const UNICODE: Self = Self(1 << 4);
     pub const STICKY: Self = Self(1 << 5);
     pub const HAS_INDICES: Self = Self(1 << 6);
+    /// Internal compiled-program marker. It matches QuickJS's bytecode-header
+    /// bit and is intentionally absent from the observable flags string.
+    pub const NAMED_GROUPS: Self = Self(1 << 7);
     pub const UNICODE_SETS: Self = Self(1 << 8);
 
     pub const EMPTY: Self = Self(0);
