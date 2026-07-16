@@ -1472,8 +1472,8 @@ pub enum RegExpFlagKind {
     Sticky,
 }
 
-/// Typed handler family for the RegExp constructor and the R1a prototype
-/// surface.  `Flag` corresponds to QuickJS's getter-magic callback; all other
+/// Typed handler family for the published RegExp constructor/prototype
+/// surface. `Flag` corresponds to QuickJS's getter-magic callback; all other
 /// variants preserve their table's concrete C protocol through
 /// [`NativeFunctionId::descriptor`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1483,6 +1483,7 @@ pub enum RegExpNativeKind {
     Exec,
     Test,
     ToString,
+    Search,
     Source,
     Flags,
     Flag(RegExpFlagKind),
@@ -1570,6 +1571,7 @@ pub enum NativeFunctionId {
     StringPrototypeWellFormed(StringWellFormedKind),
     StringPrototypeIndexOf(StringIndexOfKind),
     StringPrototypeIncludes(StringIncludesKind),
+    StringPrototypeSearch,
     StringPrototypeSplit,
     MathMinMax(MathMinMaxKind),
     MathUnary(MathUnaryKind),
@@ -1907,7 +1909,10 @@ impl NativeFunctionId {
                 | DateNativeKind::ToJson,
             )
             | Self::RegExp(
-                RegExpNativeKind::Exec | RegExpNativeKind::Test | RegExpNativeKind::ToString,
+                RegExpNativeKind::Exec
+                | RegExpNativeKind::Test
+                | RegExpNativeKind::ToString
+                | RegExpNativeKind::Search,
             )
             | Self::Reflect(
                 ReflectKind::Apply
@@ -1984,6 +1989,7 @@ impl NativeFunctionId {
             | Self::StringPrototypeCharAt(_)
             | Self::StringPrototypeIndexOf(_)
             | Self::StringPrototypeIncludes(_)
+            | Self::StringPrototypeSearch
             | Self::StringPrototypePad(_)
             | Self::StringPrototypeTrim(_)
             | Self::StringPrototypeCase(_)
@@ -5681,6 +5687,7 @@ mod tests {
             NativeFunctionId::StringPrototypeCharAt(StringCharAtKind::CharAt),
             NativeFunctionId::StringPrototypePad(StringPadKind::End),
             NativeFunctionId::StringPrototypePad(StringPadKind::Start),
+            NativeFunctionId::StringPrototypeSearch,
             NativeFunctionId::StringPrototypeTrim(StringTrimKind::Both),
             NativeFunctionId::StringPrototypeTrim(StringTrimKind::End),
             NativeFunctionId::StringPrototypeTrim(StringTrimKind::Start),
@@ -6175,6 +6182,7 @@ mod tests {
             NativeFunctionId::RegExp(RegExpNativeKind::Exec),
             NativeFunctionId::RegExp(RegExpNativeKind::Test),
             NativeFunctionId::RegExp(RegExpNativeKind::ToString),
+            NativeFunctionId::RegExp(RegExpNativeKind::Search),
         ] {
             assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
             assert!(!target.descriptor().cproto.default_is_constructor());

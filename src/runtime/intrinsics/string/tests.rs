@@ -228,7 +228,113 @@ fn string_includes_family_publishes_typed_autoinit_entries_and_identities() {
 }
 
 #[test]
-fn string_split_is_a_pinned_generic_autoinit_between_starts_with_and_substring() {
+fn search_protocol_entries_preserve_pinned_cproto_autoinit_and_filtered_order() {
+    let string_descriptor = NativeFunctionId::StringPrototypeSearch.descriptor();
+    assert_eq!(string_descriptor.cproto, NativeCProto::GenericMagic);
+    assert!(!string_descriptor.cproto.default_is_constructor());
+    let regexp_descriptor = NativeFunctionId::RegExp(RegExpNativeKind::Search).descriptor();
+    assert_eq!(regexp_descriptor.cproto, NativeCProto::Generic);
+    assert!(!regexp_descriptor.cproto.default_is_constructor());
+
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let string_prototype = context.string_prototype().unwrap();
+    let Value::Object(regexp_prototype) = context.eval("RegExp.prototype").unwrap() else {
+        panic!("RegExp.prototype was not an object");
+    };
+    let starts_with = runtime.intern_property_key("startsWith").unwrap();
+    let string_search = runtime.intern_property_key("search").unwrap();
+    let split = runtime.intern_property_key("split").unwrap();
+    let symbol_search = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::Search));
+    {
+        let state = runtime.0.state.borrow();
+        let string_object = state.heap.object(string_prototype.object_id()).unwrap();
+        let string_shape = state.heap.shape(string_object.shape).unwrap();
+        let starts_with = usize::try_from(string_shape.find(starts_with.atom()).unwrap()).unwrap();
+        let search = usize::try_from(string_shape.find(string_search.atom()).unwrap()).unwrap();
+        let split = usize::try_from(string_shape.find(split.atom()).unwrap()).unwrap();
+        assert_eq!(search, starts_with + 1);
+        assert_eq!(split, search + 1);
+        assert_eq!(
+            string_shape.entries()[search].flags,
+            PropertyFlags::data(true, false, true)
+        );
+        assert!(matches!(
+            string_object.slots.get(search),
+            Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                realm,
+                target: NativeFunctionId::StringPrototypeSearch,
+                name: "search",
+                length: 1,
+                min_readable_args: 1,
+            })) if *realm == context.realm
+        ));
+
+        let regexp_object = state.heap.object(regexp_prototype.object_id()).unwrap();
+        let regexp_shape = state.heap.shape(regexp_object.shape).unwrap();
+        let search = usize::try_from(regexp_shape.find(symbol_search.atom()).unwrap()).unwrap();
+        assert_eq!(
+            regexp_shape.entries()[search].flags,
+            PropertyFlags::data(true, false, true)
+        );
+        assert!(matches!(
+            regexp_object.slots.get(search),
+            Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                realm,
+                target: NativeFunctionId::RegExp(RegExpNativeKind::Search),
+                name: "[Symbol.search]",
+                length: 1,
+                min_readable_args: 1,
+            })) if *realm == context.realm
+        ));
+    }
+
+    let Value::Object(string_first) = context
+        .get_property(&string_prototype, &string_search)
+        .unwrap()
+    else {
+        panic!("String.prototype.search did not materialize as a function");
+    };
+    let Value::Object(string_second) = context
+        .get_property(&string_prototype, &string_search)
+        .unwrap()
+    else {
+        panic!("String.prototype.search did not retain its function identity");
+    };
+    assert_eq!(string_first, string_second);
+    assert!(runtime.as_callable(&string_first).unwrap().is_some());
+    assert!(!runtime.is_constructor(&string_first).unwrap());
+
+    let Value::Object(regexp_first) = context
+        .get_property(&regexp_prototype, &symbol_search)
+        .unwrap()
+    else {
+        panic!("RegExp.prototype[Symbol.search] did not materialize as a function");
+    };
+    let Value::Object(regexp_second) = context
+        .get_property(&regexp_prototype, &symbol_search)
+        .unwrap()
+    else {
+        panic!("RegExp.prototype[Symbol.search] did not retain its function identity");
+    };
+    assert_eq!(regexp_first, regexp_second);
+    assert!(runtime.as_callable(&regexp_first).unwrap().is_some());
+    assert!(!runtime.is_constructor(&regexp_first).unwrap());
+    assert_ne!(string_first, regexp_first);
+    assert_eq!(
+        context
+            .eval(
+                "String.prototype.search.name+'|'+String.prototype.search.length+'|'+\
+                 RegExp.prototype[Symbol.search].name+'|'+\
+                 RegExp.prototype[Symbol.search].length",
+            )
+            .unwrap(),
+        Value::String(JsString::from_static("search|1|[Symbol.search]|1")),
+    );
+}
+
+#[test]
+fn string_split_is_a_pinned_generic_autoinit_between_search_and_substring() {
     let descriptor = NativeFunctionId::StringPrototypeSplit.descriptor();
     assert_eq!(descriptor.cproto, NativeCProto::Generic);
     assert!(!descriptor.cproto.default_is_constructor());
@@ -236,17 +342,17 @@ fn string_split_is_a_pinned_generic_autoinit_between_starts_with_and_substring()
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     let prototype = context.string_prototype().unwrap();
-    let starts_with = runtime.intern_property_key("startsWith").unwrap();
+    let search_key = runtime.intern_property_key("search").unwrap();
     let split_key = runtime.intern_property_key("split").unwrap();
     let substring = runtime.intern_property_key("substring").unwrap();
     {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(prototype.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let starts_with = usize::try_from(shape.find(starts_with.atom()).unwrap()).unwrap();
+        let search = usize::try_from(shape.find(search_key.atom()).unwrap()).unwrap();
         let split = usize::try_from(shape.find(split_key.atom()).unwrap()).unwrap();
         let substring = usize::try_from(shape.find(substring.atom()).unwrap()).unwrap();
-        assert_eq!(split, starts_with + 1);
+        assert_eq!(split, search + 1);
         assert_eq!(substring, split + 1);
         assert_eq!(
             shape.entries()[split].flags,
@@ -3193,4 +3299,73 @@ fn recursive_string_includes_family_match_getter_is_guarded_and_runtime_recovers
         );
     }
     assert_eq!(context.eval("1+1").unwrap(), Value::Int(2));
+}
+
+#[test]
+fn mixed_string_and_regexp_search_recursion_is_guarded_and_runtime_recovers() {
+    std::thread::Builder::new()
+        .name("string-regexp-search-stack-proof".into())
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = Runtime::new();
+            let mut context = runtime.new_context();
+            context
+                .eval(
+                    r#"function mixedSearchRecurse(kind,depth){
+                        if(kind===0){
+                            var pattern=Object();
+                            pattern[Symbol.search]=function(){
+                                if(depth!==0)return mixedSearchRecurse(1,depth-1);
+                                return 0;
+                            };
+                            return "x".search(pattern);
+                        }
+                        var regexp=Object();
+                        regexp.lastIndex=0;
+                        regexp.exec=function(){
+                            if(depth!==0)mixedSearchRecurse(0,depth-1);
+                            return {index:0};
+                        };
+                        return RegExp.prototype[Symbol.search].call(regexp,"x");
+                    }"#,
+                )
+                .unwrap();
+
+            for (entry, kind) in [("String.prototype.search", 0), ("RegExp @@search", 1)] {
+                assert_eq!(
+                    context
+                        .eval(&format!("mixedSearchRecurse({kind},3)"))
+                        .unwrap(),
+                    Value::Int(0),
+                    "the proven-safe four-frame {entry} chain was rejected",
+                );
+                assert_eq!(
+                    context
+                        .eval(&format!(
+                            r#"(function(){{
+                                try{{mixedSearchRecurse({kind},4);return "missing"}}
+                                catch(error){{return error.name+":"+error.message}}
+                            }})()"#,
+                        ))
+                        .unwrap(),
+                    Value::String(JsString::from_static("InternalError:stack overflow")),
+                    "the fifth mixed search frame was not rejected from {entry}",
+                );
+            }
+            assert_eq!(
+                context
+                    .eval(
+                        r#""abc".search("b")+"|"+
+                           RegExp.prototype[Symbol.search].call({
+                               lastIndex:0,exec:function(){return null}
+                           },"x")"#,
+                    )
+                    .unwrap(),
+                Value::String(JsString::from_static("1|-1")),
+                "the runtime did not recover after mixed search overflow",
+            );
+        })
+        .expect("2 MiB String/RegExp search stack-proof thread did not start")
+        .join()
+        .expect("2 MiB String/RegExp search stack-proof thread panicked");
 }

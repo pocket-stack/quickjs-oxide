@@ -44,10 +44,10 @@ use crate::heap::{
     NumberFormatKind, NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData,
     ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind, ObjectKeysKind, ObjectKind,
     ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot,
-    RawValue, ReflectKind, ShapeId, StringCaseKind, StringCharAtKind, StringCreateHtmlKind,
-    StringIncludesKind, StringIndexOfKind, StringPadKind, StringStaticKind, StringSubrangeKind,
-    StringTrimKind, StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId,
-    VariableDefinition,
+    RawValue, ReflectKind, RegExpNativeKind, ShapeId, StringCaseKind, StringCharAtKind,
+    StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind, StringStaticKind,
+    StringSubrangeKind, StringTrimKind, StringWellFormedKind, SymbolRegistryKind, VarRefData,
+    VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -6992,16 +6992,19 @@ impl Runtime {
             // conversion stacks at once, making this family comparable to the
             // heaviest slice/splice native paths on a 2 MiB libtest thread.
             NativeFunctionId::ObjectFromEntries => 16,
-            // String receiver/argument conversion callbacks retain native and
-            // property-call stacks while recursively entering these methods.
+            // String receiver/argument conversion and RegExp protocol
+            // callbacks retain native and property-call stacks while
+            // recursively entering these methods.
             NativeFunctionId::StringPrototypeIncludes(_)
+            | NativeFunctionId::StringPrototypeSearch
             | NativeFunctionId::StringPrototypeSplit
             | NativeFunctionId::StringPrototypeSubrange(_)
             | NativeFunctionId::StringPrototypeRepeat
             | NativeFunctionId::StringPrototypePad(_)
             | NativeFunctionId::StringPrototypeTrim(_)
             | NativeFunctionId::StringPrototypeCase(_)
-            | NativeFunctionId::StringPrototypeCreateHtml(_) => 16,
+            | NativeFunctionId::StringPrototypeCreateHtml(_)
+            | NativeFunctionId::RegExp(RegExpNativeKind::Search) => 16,
             _ => 8,
         };
         let active_native_cost = self
@@ -7052,17 +7055,19 @@ impl Runtime {
             NativeFunctionId::ObjectHasOwn => 9,
             NativeFunctionId::ObjectAssign => 9,
             NativeFunctionId::ObjectFromEntries => 4,
-            // Symbol.match, receiver and argument conversions can alternate
+            // Symbol protocols, receiver and argument conversions can alternate
             // between these String methods. Reject their shared fifth frame
             // while leaving weighted room for one callback leaf.
             NativeFunctionId::StringPrototypeIncludes(_)
+            | NativeFunctionId::StringPrototypeSearch
             | NativeFunctionId::StringPrototypeSplit
             | NativeFunctionId::StringPrototypeSubrange(_)
             | NativeFunctionId::StringPrototypeRepeat
             | NativeFunctionId::StringPrototypePad(_)
             | NativeFunctionId::StringPrototypeTrim(_)
             | NativeFunctionId::StringPrototypeCase(_)
-            | NativeFunctionId::StringPrototypeCreateHtml(_) => 4,
+            | NativeFunctionId::StringPrototypeCreateHtml(_)
+            | NativeFunctionId::RegExp(RegExpNativeKind::Search) => 4,
             // ToString, ToNumber and String.raw's property/conversion path can
             // all re-enter any other member of this constructor family.
             NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
@@ -7114,15 +7119,18 @@ impl Runtime {
                 matches!(candidate, NativeFunctionId::ObjectFromEntries)
             }
             NativeFunctionId::StringPrototypeIncludes(_)
+            | NativeFunctionId::StringPrototypeSearch
             | NativeFunctionId::StringPrototypeSplit
             | NativeFunctionId::StringPrototypeSubrange(_)
             | NativeFunctionId::StringPrototypeRepeat
             | NativeFunctionId::StringPrototypePad(_)
             | NativeFunctionId::StringPrototypeTrim(_)
             | NativeFunctionId::StringPrototypeCase(_)
-            | NativeFunctionId::StringPrototypeCreateHtml(_) => matches!(
+            | NativeFunctionId::StringPrototypeCreateHtml(_)
+            | NativeFunctionId::RegExp(RegExpNativeKind::Search) => matches!(
                 candidate,
                 NativeFunctionId::StringPrototypeIncludes(_)
+                    | NativeFunctionId::StringPrototypeSearch
                     | NativeFunctionId::StringPrototypeSplit
                     | NativeFunctionId::StringPrototypeSubrange(_)
                     | NativeFunctionId::StringPrototypeRepeat
@@ -7130,6 +7138,7 @@ impl Runtime {
                     | NativeFunctionId::StringPrototypeTrim(_)
                     | NativeFunctionId::StringPrototypeCase(_)
                     | NativeFunctionId::StringPrototypeCreateHtml(_)
+                    | NativeFunctionId::RegExp(RegExpNativeKind::Search)
             ),
             NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
             | NativeFunctionId::StringStatic(_) => matches!(

@@ -2,6 +2,8 @@
 
 use super::super::*;
 
+mod regexp;
+
 #[cfg(test)]
 mod tests;
 
@@ -160,9 +162,16 @@ impl Runtime {
                 1,
             )?;
         }
-        // QuickJS has match/matchAll/search between startsWith and split. They
-        // remain unpublished until their RegExp-backed milestone; split keeps
-        // its pinned position immediately before the subrange trio.
+        // QuickJS has match/matchAll before search. Those two methods remain
+        // unpublished, while search keeps its pinned position before split.
+        self.define_native_builtin_auto_init(
+            string_prototype,
+            realm,
+            NativeFunctionId::StringPrototypeSearch,
+            "search",
+            1,
+            1,
+        )?;
         self.define_native_builtin_auto_init(
             string_prototype,
             realm,

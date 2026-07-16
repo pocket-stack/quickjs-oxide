@@ -1,0 +1,89 @@
+# Frozen RegExp @@search / String.prototype.search measurement slice for the
+# pinned Test262 checkout.
+#
+# This is the static, bytewise-sorted union of all paths under
+# test/built-ins/RegExp/prototype/Symbol.search and
+# test/built-ins/String/prototype/search in the R1b full keyed report (commit
+# 6eaab5b, TSV SHA-256
+# 6f0dd699a008fcef8cb8d96d044c30bfcceda1ed0f613d177ea08143e30dd458).
+# Its bytewise-sorted path/variant/outcome/detail projection has SHA-256
+# 7b9acef1ace0b02221e3b812fd025457b5dbaed58da11546a06cab3d74e8e3a1.
+# At R1b the 132 variants classified as fail-runtime=60, pass=2, and
+# unsupported-feature=70. The gate must never select paths dynamically from
+# current outcomes.
+#
+# After the search implementation, six RegExp @@search paths remain at the
+# independent object-literal method/accessor parser frontier in both modes:
+# get-lastindex-err, lastindex-no-restore, set-lastindex-init-err,
+# set-lastindex-restore-err, set-lastindex-restore, and success-get-index-err.
+# Those 12 variants are intentionally classified as unsupported-parser rather
+# than broadening this search-only milestone into object-literal grammar.
+#
+# Exactly 66 unique paths expand to 132 sloppy/strict variants.
+
+test/built-ins/RegExp/prototype/Symbol.search/coerce-string-err.js
+test/built-ins/RegExp/prototype/Symbol.search/coerce-string.js
+test/built-ins/RegExp/prototype/Symbol.search/cstm-exec-return-index.js
+test/built-ins/RegExp/prototype/Symbol.search/cstm-exec-return-invalid.js
+test/built-ins/RegExp/prototype/Symbol.search/failure-return-val.js
+test/built-ins/RegExp/prototype/Symbol.search/get-lastindex-err.js
+test/built-ins/RegExp/prototype/Symbol.search/lastindex-no-restore.js
+test/built-ins/RegExp/prototype/Symbol.search/length.js
+test/built-ins/RegExp/prototype/Symbol.search/match-err.js
+test/built-ins/RegExp/prototype/Symbol.search/name.js
+test/built-ins/RegExp/prototype/Symbol.search/not-a-constructor.js
+test/built-ins/RegExp/prototype/Symbol.search/prop-desc.js
+test/built-ins/RegExp/prototype/Symbol.search/set-lastindex-init-err.js
+test/built-ins/RegExp/prototype/Symbol.search/set-lastindex-init-samevalue.js
+test/built-ins/RegExp/prototype/Symbol.search/set-lastindex-init.js
+test/built-ins/RegExp/prototype/Symbol.search/set-lastindex-restore-err.js
+test/built-ins/RegExp/prototype/Symbol.search/set-lastindex-restore-samevalue.js
+test/built-ins/RegExp/prototype/Symbol.search/set-lastindex-restore.js
+test/built-ins/RegExp/prototype/Symbol.search/success-get-index-err.js
+test/built-ins/RegExp/prototype/Symbol.search/success-return-val.js
+test/built-ins/RegExp/prototype/Symbol.search/this-val-non-obj.js
+test/built-ins/RegExp/prototype/Symbol.search/u-lastindex-advance.js
+test/built-ins/RegExp/prototype/Symbol.search/y-fail-return.js
+test/built-ins/String/prototype/search/S15.5.4.12_A1.1_T1.js
+test/built-ins/String/prototype/search/S15.5.4.12_A10.js
+test/built-ins/String/prototype/search/S15.5.4.12_A11.js
+test/built-ins/String/prototype/search/S15.5.4.12_A1_T1.js
+test/built-ins/String/prototype/search/S15.5.4.12_A1_T10.js
+test/built-ins/String/prototype/search/S15.5.4.12_A1_T11.js
+test/built-ins/String/prototype/search/S15.5.4.12_A1_T12.js
+test/built-ins/String/prototype/search/S15.5.4.12_A1_T13.js
+test/built-ins/String/prototype/search/S15.5.4.12_A1_T14.js
+test/built-ins/String/prototype/search/S15.5.4.12_A1_T2.js
+test/built-ins/String/prototype/search/S15.5.4.12_A1_T4.js
+test/built-ins/String/prototype/search/S15.5.4.12_A1_T5.js
+test/built-ins/String/prototype/search/S15.5.4.12_A1_T6.js
+test/built-ins/String/prototype/search/S15.5.4.12_A1_T7.js
+test/built-ins/String/prototype/search/S15.5.4.12_A1_T8.js
+test/built-ins/String/prototype/search/S15.5.4.12_A1_T9.js
+test/built-ins/String/prototype/search/S15.5.4.12_A2_T1.js
+test/built-ins/String/prototype/search/S15.5.4.12_A2_T2.js
+test/built-ins/String/prototype/search/S15.5.4.12_A2_T3.js
+test/built-ins/String/prototype/search/S15.5.4.12_A2_T4.js
+test/built-ins/String/prototype/search/S15.5.4.12_A2_T5.js
+test/built-ins/String/prototype/search/S15.5.4.12_A2_T6.js
+test/built-ins/String/prototype/search/S15.5.4.12_A2_T7.js
+test/built-ins/String/prototype/search/S15.5.4.12_A3_T1.js
+test/built-ins/String/prototype/search/S15.5.4.12_A3_T2.js
+test/built-ins/String/prototype/search/S15.5.4.12_A6.js
+test/built-ins/String/prototype/search/S15.5.4.12_A7.js
+test/built-ins/String/prototype/search/S15.5.4.12_A8.js
+test/built-ins/String/prototype/search/S15.5.4.12_A9.js
+test/built-ins/String/prototype/search/cstm-search-get-err.js
+test/built-ins/String/prototype/search/cstm-search-invocation.js
+test/built-ins/String/prototype/search/cstm-search-is-null.js
+test/built-ins/String/prototype/search/cstm-search-on-bigint-primitive.js
+test/built-ins/String/prototype/search/cstm-search-on-boolean-primitive.js
+test/built-ins/String/prototype/search/cstm-search-on-number-primitive.js
+test/built-ins/String/prototype/search/cstm-search-on-string-primitive.js
+test/built-ins/String/prototype/search/invoke-builtin-search-searcher-undef.js
+test/built-ins/String/prototype/search/invoke-builtin-search.js
+test/built-ins/String/prototype/search/name.js
+test/built-ins/String/prototype/search/not-a-constructor.js
+test/built-ins/String/prototype/search/regexp-prototype-search-v-flag.js
+test/built-ins/String/prototype/search/regexp-prototype-search-v-u-flag.js
+test/built-ins/String/prototype/search/this-value-not-obj-coercible.js

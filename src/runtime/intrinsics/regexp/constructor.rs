@@ -284,6 +284,26 @@ impl Runtime {
             .ok_or(RuntimeError::Invariant("realm has no RegExp intrinsic"))
     }
 
+    /// Call the realm's retained intrinsic RegExp constructor as a constructor.
+    /// String protocol fallbacks use this root directly, so replacing the
+    /// global `RegExp` binding is unobservable while mutations on the retained
+    /// constructor (notably its `prototype` value) remain visible to ordinary
+    /// construction.
+    pub(in crate::runtime) fn construct_intrinsic_regexp(
+        &self,
+        realm: ContextId,
+        pattern: Value,
+    ) -> Result<Completion, RuntimeError> {
+        let constructor_id = self.regexp_realm_data(realm)?.constructor;
+        let constructor = ObjectRef::from_borrowed_handle(self.clone(), constructor_id)?;
+        let callable = self
+            .as_callable(&constructor)?
+            .ok_or(RuntimeError::Invariant(
+                "realm RegExp constructor root was not callable",
+            ))?;
+        self.construct_internal(realm, &callable, &callable, &[pattern])
+    }
+
     /// QuickJS `OP_regexp`: instantiate one already-compiled literal using
     /// the bytecode realm's canonical RegExp shape. This path intentionally
     /// performs no `Get` on the global constructor or its mutable `prototype`

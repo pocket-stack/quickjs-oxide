@@ -39,13 +39,14 @@ impl Runtime {
             | RegExpNativeKind::Source
             | RegExpNativeKind::Flags
             | RegExpNativeKind::Flag(_)
-            | RegExpNativeKind::ToString => Err(RuntimeError::Invariant(
+            | RegExpNativeKind::ToString
+            | RegExpNativeKind::Search => Err(RuntimeError::Invariant(
                 "non-exec RegExp selector reached exec dispatch",
             )),
         }
     }
 
-    fn regexp_exec_abstract(
+    pub(super) fn regexp_exec_abstract(
         &self,
         realm: ContextId,
         regexp: Value,

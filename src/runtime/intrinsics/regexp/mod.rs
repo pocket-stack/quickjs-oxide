@@ -3,19 +3,21 @@
 //! The pure matcher lives in [`crate::regexp`].  This module owns the
 //! observable ECMAScript shell around it: realm-local constructor/prototype
 //! identities, derived allocation, accessors, `lastIndex`, and match result
-//! objects.  RegExp literals, the legacy `compile` method, `RegExp.escape`,
-//! and the Symbol protocol methods intentionally remain later slices.
+//! objects. RegExp literals and `@@search` are linked; the legacy `compile`
+//! method, `RegExp.escape`, and the remaining Symbol protocols stay separate
+//! parity slices.
 
 mod constructor;
 mod exec;
 mod prototype;
+mod search;
 
 use crate::heap::{RegExpFlagKind, RegExpNativeKind, RegExpRealmData};
 
 use super::*;
 
 impl Runtime {
-    /// Install the R1a subset of pinned `js_regexp_funcs` and
+    /// Install the linked subset of pinned `js_regexp_funcs` and
     /// `js_regexp_proto_funcs`.
     ///
     /// This routine creates `%RegExp.prototype%` as an ordinary object, then
@@ -77,6 +79,17 @@ impl Runtime {
                 min_readable_args,
             )?;
         }
+        let search = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Search));
+        self.define_native_builtin_auto_init_with_key(
+            &regexp_prototype,
+            realm,
+            &search,
+            NativeFunctionId::RegExp(RegExpNativeKind::Search),
+            "[Symbol.search]",
+            1,
+            1,
+            PropertyFlags::data(true, false, true),
+        )?;
 
         let constructor_kind = RegExpNativeKind::Constructor;
         let constructor = self.new_native_builtin(
@@ -177,6 +190,9 @@ impl Runtime {
                 self.call_regexp_exec_native(realm, kind, invocation, arguments)
             }
             RegExpNativeKind::ToString => self.call_regexp_to_string(realm, invocation),
+            RegExpNativeKind::Search => {
+                self.call_regexp_symbol_search(realm, invocation, arguments)
+            }
         }
     }
 }
