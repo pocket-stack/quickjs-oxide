@@ -361,6 +361,7 @@ enum ClassAtom {
     Single(u32),
     Set(Vec<CharacterRange>),
     ComplementSet(Vec<CharacterRange>),
+    PreparedSet(Vec<CharacterRange>),
 }
 
 struct Parser<'a> {
@@ -611,10 +612,15 @@ impl<'a> Parser<'a> {
             0x53 => Ok(Atom::Space { inverted: true }),
             0x77 => Ok(Atom::Class(self.make_character_class(word_ranges(), false))),
             0x57 => Ok(Atom::Class(self.make_character_class(word_ranges(), true))),
-            0x70 | 0x50 => Err(CompileError::unsupported(
-                escape_position,
-                UnsupportedFeature::UnicodePropertyEscape,
-            )),
+            property @ (0x70 | 0x50) if self.flags.is_unicode() => self
+                .parse_unicode_property_escape(escape_position, property == u16::from(b'P'))
+                .map(|ranges| {
+                    Atom::Class(CharacterClass {
+                        ranges,
+                        inverted: false,
+                    })
+                }),
+            property @ (0x70 | 0x50) => Ok(Atom::Literal(self.finish_code_point(property))),
             0x6b => Err(CompileError::unsupported(
                 escape_position,
                 UnsupportedFeature::Backreference,
@@ -684,6 +690,78 @@ impl<'a> Parser<'a> {
         } else {
             Ok(Atom::Literal(u32::from(first)))
         }
+    }
+
+    fn parse_unicode_property_escape(
+        &mut self,
+        position: usize,
+        inverted: bool,
+    ) -> Result<Vec<CharacterRange>, CompileError> {
+        if self.take() != Some(u16::from(b'{')) {
+            return Err(CompileError::syntax(position, "expecting '{' after \\p"));
+        }
+        let name = self.parse_unicode_property_word(position, "unknown unicode property name")?;
+        let value = if self.peek() == Some(u16::from(b'=')) {
+            self.position += 1;
+            self.parse_unicode_property_word(position, "unknown unicode property value")?
+        } else {
+            String::new()
+        };
+        if self.take() != Some(u16::from(b'}')) {
+            return Err(CompileError::syntax(position, "expecting '}'"));
+        }
+
+        let endpoints = match name.as_str() {
+            "Script" | "sc" => crate::unicode_property::script(&value, false)
+                .ok_or_else(|| CompileError::syntax(position, "unknown unicode script"))?,
+            "Script_Extensions" | "scx" => crate::unicode_property::script(&value, true)
+                .ok_or_else(|| CompileError::syntax(position, "unknown unicode script"))?,
+            "General_Category" | "gc" => crate::unicode_property::general_category(&value)
+                .ok_or_else(|| {
+                    CompileError::syntax(position, "unknown unicode general category")
+                })?,
+            _ if value.is_empty() => crate::unicode_property::general_category(&name)
+                .or_else(|| crate::unicode_property::binary_property(&name))
+                .ok_or_else(|| CompileError::syntax(position, "unknown unicode property name"))?,
+            _ => {
+                return Err(CompileError::syntax(
+                    position,
+                    "unknown unicode property name",
+                ));
+            }
+        };
+
+        let mut ranges = endpoints
+            .chunks_exact(2)
+            .map(|pair| CharacterRange::new(pair[0], pair[1] - 1))
+            .collect::<Vec<_>>();
+        if inverted {
+            ranges = complement_ranges(&ranges, MAX_CODE_POINT);
+        }
+        if self.modifiers.ignore_case {
+            ranges = canonicalize_ranges(&ranges, true);
+        } else {
+            ranges = normalize_ranges(ranges);
+        }
+        Ok(ranges)
+    }
+
+    fn parse_unicode_property_word(
+        &mut self,
+        position: usize,
+        overflow_message: &'static str,
+    ) -> Result<String, CompileError> {
+        let start = self.position;
+        while self.peek().is_some_and(is_unicode_property_character) {
+            if self.position - start >= 63 {
+                return Err(CompileError::syntax(position, overflow_message));
+            }
+            self.position += 1;
+        }
+        Ok(self.units[start..self.position]
+            .iter()
+            .map(|unit| char::from_u32(u32::from(*unit)).expect("property names are ASCII"))
+            .collect())
     }
 
     /// Scan all decimal digits without committing the parser cursor. QuickJS
@@ -876,10 +954,10 @@ impl<'a> Parser<'a> {
             }
             let first_position = self.position;
             let first = self.parse_class_atom()?;
-            if self.peek() == Some(u16::from(b'-'))
-                && self.peek_n(1).is_some()
-                && self.peek_n(1) != Some(u16::from(b']'))
-            {
+            if self.peek() == Some(u16::from(b'-')) && self.peek_n(1) != Some(u16::from(b']')) {
+                if self.flags.is_unicode() && !matches!(&first, ClassAtom::Single(_)) {
+                    return Err(CompileError::syntax(first_position, "invalid class range"));
+                }
                 self.position += 1;
                 let second = self.parse_class_atom()?;
                 match (first, second) {
@@ -958,10 +1036,10 @@ impl<'a> Parser<'a> {
             0x53 => Ok(ClassAtom::ComplementSet(space_ranges())),
             0x77 => Ok(ClassAtom::Set(word_ranges())),
             0x57 => Ok(ClassAtom::ComplementSet(word_ranges())),
-            0x70 | 0x50 => Err(CompileError::unsupported(
-                escaped_position,
-                UnsupportedFeature::UnicodePropertyEscape,
-            )),
+            property @ (0x70 | 0x50) if self.flags.is_unicode() => self
+                .parse_unicode_property_escape(escaped_position, property == u16::from(b'P'))
+                .map(ClassAtom::PreparedSet),
+            property @ (0x70 | 0x50) => Ok(ClassAtom::Single(self.finish_code_point(property))),
             0x71 if self.flags.contains(RegExpFlags::UNICODE_SETS) => {
                 Err(CompileError::unsupported(
                     escaped_position,
@@ -1652,17 +1730,20 @@ fn add_class_atom(
     ignore_case: bool,
     unicode: bool,
 ) {
-    let (mut atom_ranges, complement) = match atom {
-        ClassAtom::Single(value) => (vec![CharacterRange::new(value, value)], false),
-        ClassAtom::Set(set) => (set, false),
-        ClassAtom::ComplementSet(set) => (set, true),
+    let (mut atom_ranges, complement, prepared) = match atom {
+        ClassAtom::Single(value) => (vec![CharacterRange::new(value, value)], false, false),
+        ClassAtom::Set(set) => (set, false, false),
+        ClassAtom::ComplementSet(set) => (set, true, false),
+        ClassAtom::PreparedSet(set) => (set, false, true),
     };
     atom_ranges = atom_ranges
         .into_iter()
         .filter(|range| range.start <= max)
         .map(|range| CharacterRange::new(range.start, range.end.min(max)))
         .collect();
-    if ignore_case {
+    if prepared {
+        atom_ranges = normalize_ranges(atom_ranges);
+    } else if ignore_case {
         atom_ranges = canonicalize_ranges(&atom_ranges, unicode);
     } else {
         atom_ranges = normalize_ranges(atom_ranges);
@@ -1674,14 +1755,16 @@ fn add_class_atom(
 }
 
 fn canonicalize_ranges(ranges: &[CharacterRange], unicode: bool) -> Vec<CharacterRange> {
-    let mut canonicalized = Vec::new();
-    for range in ranges {
-        canonicalized.extend((range.start..=range.end).map(|value| {
-            let value = crate::unicode_case::regexp_canonicalize(value, unicode);
-            CharacterRange::new(value, value)
-        }));
-    }
-    normalize_ranges(canonicalized)
+    crate::unicode_case::regexp_canonicalize_range_pairs(
+        &ranges
+            .iter()
+            .map(|range| (range.start, range.end))
+            .collect::<Vec<_>>(),
+        unicode,
+    )
+    .into_iter()
+    .map(|(start, end)| CharacterRange::new(start, end))
+    .collect()
 }
 
 fn normalize_ranges(mut ranges: Vec<CharacterRange>) -> Vec<CharacterRange> {
@@ -1729,6 +1812,10 @@ fn is_ascii_octal_digit(unit: u16) -> bool {
 fn is_ascii_letter(unit: u16) -> bool {
     (u16::from(b'a')..=u16::from(b'z')).contains(&unit)
         || (u16::from(b'A')..=u16::from(b'Z')).contains(&unit)
+}
+
+fn is_unicode_property_character(unit: u16) -> bool {
+    is_ascii_digit(unit) || is_ascii_letter(unit) || unit == u16::from(b'_')
 }
 
 fn is_syntax_character(unit: u16) -> bool {
@@ -1944,6 +2031,79 @@ mod tests {
             matches!(instruction, Instruction::Range { ranges, inverted: false, ignore_case: true }
                 if ranges.as_ref() == [CharacterRange::new(u32::from(b'a'), u32::from(b'z'))])
         }));
+    }
+
+    #[test]
+    fn unicode_property_escapes_compile_to_quickjs_range_sets() {
+        for pattern in [
+            r"\p{General_Category=Uppercase_Letter}",
+            r"\p{gc=Lu}",
+            r"\p{Letter}",
+            r"\p{Script=Latin}",
+            r"\p{scx=Hira}",
+            r"\p{ASCII}",
+            r"\p{EPres}",
+            r"\p{ASCII=}",
+            r"\p{Letter=}",
+        ] {
+            assert!(compile_ascii(pattern, "u").is_ok(), "{pattern}");
+        }
+
+        let inverted = compile_ascii(r"\P{Lowercase_Letter}", "iu").unwrap();
+        assert!(inverted.instructions().iter().any(|instruction| {
+            matches!(instruction, Instruction::Range { ranges, inverted: false, ignore_case: true }
+                if ranges.iter().any(|range| range.start <= u32::from(b'a')
+                    && range.end >= u32::from(b'a')))
+        }));
+
+        let no_character = compile_ascii(r"\P{Any}", "u").unwrap();
+        assert!(no_character.instructions().iter().any(|instruction| {
+            matches!(instruction, Instruction::Range { ranges, inverted: false, .. }
+                if ranges.is_empty())
+        }));
+
+        let legacy = compile_ascii(r"\p{ASCII}", "").unwrap();
+        assert!(legacy.instructions().contains(&Instruction::Char {
+            value: u32::from(b'p'),
+            ignore_case: false,
+        }));
+    }
+
+    #[test]
+    fn unicode_property_errors_and_class_range_priority_match_quickjs() {
+        for (pattern, message) in [
+            (r"\p", "expecting '{' after \\p"),
+            (r"\p{}", "unknown unicode property name"),
+            (r"\p{letter}", "unknown unicode property name"),
+            (r"\p{General-Category=Letter}", "expecting '}'"),
+            (r"\p{General_Category=}", "unknown unicode general category"),
+            (r"\p{Script=}", "unknown unicode script"),
+            (r"\p{ASCII=Yes}", "unknown unicode property name"),
+            (r"\p{Unknown=}", "unknown unicode property name"),
+            (r"\p{ASCII", "expecting '}'"),
+            (r"\p{Script=Nope!}", "expecting '}'"),
+            (r"[\p{ASCII}-z]", "invalid class range"),
+            (r"[a-\p{ASCII}]", "invalid class range"),
+            (r"[\p{ASCII}-\p{Unknown}]", "invalid class range"),
+            (r"[\p{ASCII}-\xZZ]", "invalid class range"),
+            (r"[\p{ASCII}-", "invalid class range"),
+            (r"[a-\p{Unknown}]", "unknown unicode property name"),
+        ] {
+            let error = compile_ascii(pattern, "u").unwrap_err();
+            assert_eq!(error.kind(), &CompileErrorKind::Syntax, "{pattern}");
+            assert_eq!(error.message(), message, "{pattern}");
+        }
+
+        let long_name = format!(r"\p{{{}}}", "A".repeat(64));
+        assert_eq!(
+            compile_ascii(&long_name, "u").unwrap_err().message(),
+            "unknown unicode property name",
+        );
+        let long_value = format!(r"\p{{Script={}}}", "A".repeat(64));
+        assert_eq!(
+            compile_ascii(&long_value, "u").unwrap_err().message(),
+            "unknown unicode property value",
+        );
     }
 
     #[test]
@@ -2188,7 +2348,6 @@ mod tests {
     #[test]
     fn advanced_syntax_is_typed_unsupported_instead_of_miscompiled() {
         for (pattern, feature) in [
-            (r"\p{Letter}", UnsupportedFeature::UnicodePropertyEscape),
             (r"(?<name>a)", UnsupportedFeature::NamedCapture),
             (r"\k<name>", UnsupportedFeature::Backreference),
             (r"(?<=a)", UnsupportedFeature::Lookaround),

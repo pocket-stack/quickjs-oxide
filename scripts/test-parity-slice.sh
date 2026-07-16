@@ -21,9 +21,19 @@ if [[ ! -f "$unicode_source" ]]; then
     pinned_oracle=$($script_dir/build-quickjs-oracle.sh)
     unicode_source=$(dirname -- "$pinned_oracle")/libunicode-table.h
 fi
+unicode_root=$(dirname -- "$unicode_source")
+for unicode_file in libunicode.c libunicode.h cutils.c cutils.h; do
+    if [[ ! -f "$unicode_root/$unicode_file" ]]; then
+        pinned_oracle=$($script_dir/build-quickjs-oracle.sh)
+        unicode_root=$(dirname -- "$pinned_oracle")
+        unicode_source=$unicode_root/libunicode-table.h
+        break
+    fi
+done
 generated_ident=$(mktemp "${TMPDIR:-/tmp}/quickjs-oxide-unicode-ident.XXXXXX")
 generated_case=$(mktemp "${TMPDIR:-/tmp}/quickjs-oxide-unicode-case.XXXXXX")
-trap 'rm -f -- "$generated_ident" "$generated_case"' EXIT HUP INT TERM
+generated_property=$(mktemp "${TMPDIR:-/tmp}/quickjs-oxide-unicode-property.XXXXXX")
+trap 'rm -f -- "$generated_ident" "$generated_case" "$generated_property"' EXIT HUP INT TERM
 ./scripts/generate-unicode-ident-tables.sh "$unicode_source" "$generated_ident"
 if ! cmp -s "$generated_ident" src/unicode_ident_tables.rs; then
     echo "error: checked-in Unicode identifier tables do not match the pinned source" >&2
@@ -34,7 +44,12 @@ if ! cmp -s "$generated_case" src/unicode_case_tables.rs; then
     echo "error: checked-in Unicode case tables do not match the pinned source" >&2
     exit 1
 fi
-rm -f -- "$generated_ident" "$generated_case"
+./scripts/generate-unicode-property-tables.sh "$unicode_root" "$generated_property"
+if ! cmp -s "$generated_property" src/unicode_property_tables.rs; then
+    echo "error: checked-in Unicode property tables do not match the pinned source" >&2
+    exit 1
+fi
+rm -f -- "$generated_ident" "$generated_case" "$generated_property"
 trap - EXIT HUP INT TERM
 
 cargo fmt --all -- --check

@@ -391,6 +391,166 @@ pub(crate) fn regexp_canonicalize(code_point: u32, unicode: bool) -> u32 {
     code_point
 }
 
+const CASE_U_RUN_MASK: u16 = (1_u16 << RUN_TYPE_U)
+    | (1_u16 << RUN_TYPE_UF)
+    | (1_u16 << RUN_TYPE_UL)
+    | (1_u16 << RUN_TYPE_LSU)
+    | (1_u16 << RUN_TYPE_U2L_399_EXT2)
+    | (1_u16 << RUN_TYPE_UF_D20)
+    | (1_u16 << RUN_TYPE_UF_D1_EXT)
+    | (1_u16 << RUN_TYPE_U_EXT)
+    | (1_u16 << RUN_TYPE_UF_EXT2)
+    | (1_u16 << RUN_TYPE_UF_EXT3);
+
+const CASE_F_RUN_MASK: u16 = (1_u16 << RUN_TYPE_UF)
+    | (1_u16 << RUN_TYPE_LF)
+    | (1_u16 << RUN_TYPE_UL)
+    | (1_u16 << RUN_TYPE_LSU)
+    | (1_u16 << RUN_TYPE_U2L_399_EXT2)
+    | (1_u16 << RUN_TYPE_LF_EXT)
+    | (1_u16 << RUN_TYPE_LF_EXT2)
+    | (1_u16 << RUN_TYPE_UF_D20)
+    | (1_u16 << RUN_TYPE_UF_D1_EXT)
+    | (1_u16 << RUN_TYPE_UF_EXT2)
+    | (1_u16 << RUN_TYPE_UF_EXT3);
+
+/// Canonicalize inclusive ranges with QuickJS's RegExp case-folding
+/// algorithm. Unlike a full-domain expansion, this visits only code points in
+/// the case-conversion mask (1,585 points for Unicode 17).
+pub(crate) fn regexp_canonicalize_range_pairs(
+    ranges: &[(u32, u32)],
+    unicode: bool,
+) -> Vec<(u32, u32)> {
+    let ranges = normalize_half_open_ranges(
+        ranges
+            .iter()
+            .filter(|(start, end)| start <= end)
+            .map(|(start, end)| (*start, end.saturating_add(1)))
+            .collect(),
+    );
+    let mask = regexp_case_change_mask(unicode);
+    let affected = intersect_half_open_ranges(&ranges, &mask);
+    let unaffected = subtract_half_open_ranges(&ranges, &mask);
+
+    let mut canonicalized = Vec::new();
+    canonicalized.reserve(affected.iter().fold(0_usize, |count, (start, end)| {
+        count.saturating_add((*end - *start) as usize)
+    }));
+    for (start, end) in affected {
+        canonicalized.extend((start..end).map(|code_point| {
+            let mapped = regexp_canonicalize(code_point, unicode);
+            (mapped, mapped + 1)
+        }));
+    }
+    canonicalized.extend(unaffected);
+    normalize_half_open_ranges(canonicalized)
+        .into_iter()
+        .map(|(start, end)| (start, end - 1))
+        .collect()
+}
+
+fn regexp_case_change_mask(unicode: bool) -> Vec<(u32, u32)> {
+    let run_mask = if unicode {
+        CASE_F_RUN_MASK
+    } else {
+        CASE_U_RUN_MASK
+    };
+    let mut ranges = Vec::new();
+    for entry in tables::CASE_CONV_TABLE1 {
+        let run_type = (entry >> 4) & 0xf;
+        if run_mask & (1_u16 << run_type) == 0 {
+            continue;
+        }
+        let mut start = entry >> 15;
+        let len = (entry >> 8) & 0x7f;
+        match run_type {
+            RUN_TYPE_UL => {
+                if !unicode {
+                    start += 1;
+                }
+                for offset in (0..len).step_by(2) {
+                    ranges.push((start + offset, start + offset + 1));
+                }
+            }
+            RUN_TYPE_LSU => {
+                if unicode {
+                    ranges.push((start, start + 1));
+                }
+                ranges.push((start + 1, start + 2));
+                if !unicode {
+                    ranges.push((start + 2, start + 3));
+                }
+            }
+            _ => ranges.push((start, start + len)),
+        }
+    }
+    normalize_half_open_ranges(ranges)
+}
+
+fn intersect_half_open_ranges(left: &[(u32, u32)], right: &[(u32, u32)]) -> Vec<(u32, u32)> {
+    let mut intersection = Vec::new();
+    let mut left_index = 0;
+    let mut right_index = 0;
+    while left_index < left.len() && right_index < right.len() {
+        let (left_start, left_end) = left[left_index];
+        let (right_start, right_end) = right[right_index];
+        let start = left_start.max(right_start);
+        let end = left_end.min(right_end);
+        if start < end {
+            intersection.push((start, end));
+        }
+        if left_end <= right_end {
+            left_index += 1;
+        } else {
+            right_index += 1;
+        }
+    }
+    intersection
+}
+
+fn subtract_half_open_ranges(ranges: &[(u32, u32)], excluded: &[(u32, u32)]) -> Vec<(u32, u32)> {
+    let mut result = Vec::new();
+    let mut excluded_index = 0;
+    for &(start, end) in ranges {
+        while excluded_index < excluded.len() && excluded[excluded_index].1 <= start {
+            excluded_index += 1;
+        }
+        let mut cursor = start;
+        let mut index = excluded_index;
+        while index < excluded.len() && excluded[index].0 < end {
+            let (excluded_start, excluded_end) = excluded[index];
+            if cursor < excluded_start {
+                result.push((cursor, excluded_start.min(end)));
+            }
+            cursor = cursor.max(excluded_end);
+            if cursor >= end {
+                break;
+            }
+            index += 1;
+        }
+        if cursor < end {
+            result.push((cursor, end));
+        }
+    }
+    result
+}
+
+fn normalize_half_open_ranges(mut ranges: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
+    ranges.retain(|(start, end)| start < end);
+    ranges.sort_unstable();
+    let mut normalized: Vec<(u32, u32)> = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        if let Some((_, previous_end)) = normalized.last_mut()
+            && start <= *previous_end
+        {
+            *previous_end = (*previous_end).max(end);
+        } else {
+            normalized.push((start, end));
+        }
+    }
+    normalized
+}
+
 fn index_position(code_point: u32, index: &[u8]) -> Option<(u32, usize)> {
     debug_assert!(!index.is_empty() && index.len() % 3 == 0);
     let entry_count = index.len() / 3;
@@ -590,8 +750,9 @@ pub(crate) fn convert_case_with_limit(
 mod tests {
     use super::{
         case_conversion, convert_case_with_limit, fail_case_reservation_after_for_test,
-        fail_next_case_reservation_for_test, is_case_ignorable, is_cased, regexp_canonicalize,
-        tables,
+        fail_next_case_reservation_for_test, is_case_ignorable, is_cased,
+        normalize_half_open_ranges, regexp_canonicalize, regexp_canonicalize_range_pairs,
+        regexp_case_change_mask, tables,
     };
     use crate::value::{JsString, JsStringError};
 
@@ -635,6 +796,98 @@ mod tests {
         assert_eq!(regexp_canonicalize(0xfb06, true), 0xfb05);
         assert_eq!(regexp_canonicalize(0x1fd3, true), 0x0390);
         assert_eq!(regexp_canonicalize(0x1fe3, true), 0x03b0);
+    }
+
+    #[test]
+    fn regexp_case_change_masks_match_quickjs_unicode_17_shape() {
+        for (unicode, expected_ranges, expected_points) in
+            [(false, 634, 1_580_u32), (true, 637, 1_585_u32)]
+        {
+            let mask = regexp_case_change_mask(unicode);
+            assert_eq!(mask.len(), expected_ranges);
+            assert_eq!(
+                mask.iter().map(|(start, end)| end - start).sum::<u32>(),
+                expected_points,
+            );
+        }
+    }
+
+    #[test]
+    fn range_canonicalization_matches_pointwise_quickjs_mapping() {
+        fn naive(ranges: &[(u32, u32)], unicode: bool) -> Vec<(u32, u32)> {
+            let mapped = ranges
+                .iter()
+                .flat_map(|(start, end)| *start..=*end)
+                .map(|code_point| {
+                    let mapped = regexp_canonicalize(code_point, unicode);
+                    (mapped, mapped + 1)
+                })
+                .collect();
+            normalize_half_open_ranges(mapped)
+                .into_iter()
+                .map(|(start, end)| (start, end - 1))
+                .collect()
+        }
+
+        let probes = [
+            (0x0041, 0x007a),
+            (0x017e, 0x0181),
+            (0x0390, 0x03b0),
+            (0x1fd3, 0x1fe3),
+            (0xfb05, 0xfb06),
+            (0x10400, 0x1044f),
+        ];
+        for unicode in [false, true] {
+            assert_eq!(
+                regexp_canonicalize_range_pairs(&probes, unicode),
+                naive(&probes, unicode),
+            );
+            let complete_mask = regexp_case_change_mask(unicode)
+                .into_iter()
+                .map(|(start, end)| (start, end - 1))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                regexp_canonicalize_range_pairs(&complete_mask, unicode),
+                naive(&complete_mask, unicode),
+            );
+        }
+
+        assert_eq!(
+            regexp_canonicalize_range_pairs(&[(0xfb06, 0xfb06)], true),
+            [(0xfb05, 0xfb05)],
+        );
+        assert_eq!(
+            regexp_canonicalize_range_pairs(&[(0x1fd3, 0x1fd3)], true),
+            [(0x0390, 0x0390)],
+        );
+        assert_eq!(
+            regexp_canonicalize_range_pairs(&[(0x1fe3, 0x1fe3)], true),
+            [(0x03b0, 0x03b0)],
+        );
+    }
+
+    #[test]
+    fn full_unicode_range_canonicalization_stays_compact() {
+        let ranges = regexp_canonicalize_range_pairs(&[(0, 0x10_ffff)], true);
+        assert!(ranges.len() <= 700);
+        for code_point in [
+            0,
+            u32::from(b'A'),
+            u32::from(b'a'),
+            0x017f,
+            0x212a,
+            0x1fd3,
+            0xfb06,
+            0x10_ffff,
+        ] {
+            let mapped = regexp_canonicalize(code_point, true);
+            assert!(
+                ranges
+                    .iter()
+                    .any(|(start, end)| mapped >= *start && mapped <= *end),
+                "missing canonical representative {mapped:#x}",
+            );
+        }
     }
 
     #[test]
