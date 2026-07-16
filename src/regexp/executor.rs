@@ -1012,9 +1012,11 @@ fn is_word(character: u32, ignore_case: bool) -> bool {
 }
 
 fn range_contains(ranges: &[CharacterRange], character: u32) -> bool {
-    ranges
-        .iter()
-        .any(|range| character >= range.start && character <= range.end)
+    let candidate = ranges.partition_point(|range| range.start <= character);
+    candidate
+        .checked_sub(1)
+        .and_then(|index| ranges.get(index))
+        .is_some_and(|range| character <= range.end)
 }
 
 #[cfg(test)]
@@ -1041,6 +1043,31 @@ mod tests {
 
     fn units(value: &str) -> Vec<u16> {
         value.encode_utf16().collect()
+    }
+
+    #[test]
+    fn normalized_range_lookup_uses_the_preceding_interval() {
+        let ranges = [
+            CharacterRange::new(0x0010, 0x001f),
+            CharacterRange::new(0x0100, 0x01ff),
+            CharacterRange::new(0x1_0000, 0x10_ffff),
+        ];
+        for (character, expected) in [
+            (0x000f, false),
+            (0x0010, true),
+            (0x001f, true),
+            (0x0020, false),
+            (0x00ff, false),
+            (0x0100, true),
+            (0x01ff, true),
+            (0x0200, false),
+            (0xffff, false),
+            (0x1_0000, true),
+            (0x10_ffff, true),
+        ] {
+            assert_eq!(range_contains(&ranges, character), expected);
+        }
+        assert!(!range_contains(&[], 0));
     }
 
     fn compile(pattern: &str, flags: &str) -> CompiledRegExp {

@@ -566,6 +566,9 @@ impl Runtime {
             NativeFunctionId::StringStatic(selector) => {
                 self.call_string_static(realm, selector, invocation, arguments)
             }
+            NativeFunctionId::StringCodePointRange => {
+                self.call_string_code_point_range(realm, invocation, arguments)
+            }
             NativeFunctionId::PrimitivePrototypeToString(kind) => {
                 self.call_primitive_prototype_to_string(realm, kind, invocation, arguments)
             }

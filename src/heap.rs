@@ -1583,6 +1583,8 @@ pub enum NativeFunctionId {
     RegExp(RegExpNativeKind),
     PrimitiveConstructor(PrimitiveKind),
     StringStatic(StringStaticKind),
+    /// QuickJS's test262-only `js_string_codePointRange` helper.
+    StringCodePointRange,
     PrimitivePrototypeToString(PrimitiveKind),
     PrimitivePrototypeValueOf(PrimitiveKind),
     StringPrototypeCharAt(StringCharAtKind),
@@ -1965,6 +1967,7 @@ impl NativeFunctionId {
             | Self::PrimitivePrototypeToString(_)
             | Self::PrimitivePrototypeValueOf(_)
             | Self::StringStatic(_)
+            | Self::StringCodePointRange
             | Self::StringPrototypeCharCodeAt
             | Self::StringPrototypeConcat
             | Self::StringPrototypeCodePointAt
@@ -5864,6 +5867,7 @@ mod tests {
             NativeFunctionId::StringPrototypeSubrange(StringSubrangeKind::Substr),
             NativeFunctionId::StringPrototypeSubrange(StringSubrangeKind::Slice),
             NativeFunctionId::StringPrototypeRepeat,
+            NativeFunctionId::StringCodePointRange,
             NativeFunctionId::MathHypot,
             NativeFunctionId::MathRandom,
             NativeFunctionId::MathImul,

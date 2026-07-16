@@ -376,6 +376,7 @@ enum ForAssignmentDeclaration {
 struct ForAssignmentTargetInfo {
     declaration: ForAssignmentDeclaration,
     var_initializer: Option<IdentifierReference>,
+    is_destructuring: bool,
 }
 
 #[derive(Debug)]
@@ -1357,6 +1358,7 @@ impl<'source> Parser<'source> {
             if iteration_hint == ForIterationKind::In
                 && target.declaration == ForAssignmentDeclaration::Var
                 && !self.current_ir().strict
+                && !target.is_destructuring
             {
                 let initializer = target
                     .var_initializer
@@ -1389,7 +1391,8 @@ impl<'source> Parser<'source> {
         if has_initializer
             && (iteration_kind == ForIterationKind::Of
                 || target.declaration != ForAssignmentDeclaration::Var
-                || self.current_ir().strict)
+                || self.current_ir().strict
+                || target.is_destructuring)
         {
             return Err(self.syntax_here(format!(
                 "a declaration in the head of a for-{} loop can't have an initializer",
@@ -1496,16 +1499,23 @@ impl<'source> Parser<'source> {
             TokenKind::Punctuator(Punctuator::LeftBrace | Punctuator::LeftBracket)
         ) {
             return Err(self.unsupported_here(format!(
-                "{loop_name} destructuring bindings are not implemented yet"
+                "{loop_name} destructuring assignment patterns are not implemented yet"
             )));
         }
 
         if self.lexical_declaration_ahead(true)? {
             let is_const = matches!(self.current().kind, TokenKind::Keyword(Keyword::Const));
             self.advance()?;
+            if self.is_punctuator(Punctuator::LeftBracket) {
+                return self.parse_for_array_binding_pattern(
+                    iteration_kind,
+                    ForAssignmentDeclaration::Lexical,
+                    is_const,
+                );
+            }
             if matches!(
                 self.current().kind,
-                TokenKind::Punctuator(Punctuator::LeftBrace | Punctuator::LeftBracket)
+                TokenKind::Punctuator(Punctuator::LeftBrace)
             ) {
                 return Err(self.unsupported_here(format!(
                     "{loop_name} destructuring bindings are not implemented yet"
@@ -1546,14 +1556,22 @@ impl<'source> Parser<'source> {
             return Ok(ForAssignmentTargetInfo {
                 declaration: ForAssignmentDeclaration::Lexical,
                 var_initializer: None,
+                is_destructuring: false,
             });
         }
 
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Var)) {
             self.advance()?;
+            if self.is_punctuator(Punctuator::LeftBracket) {
+                return self.parse_for_array_binding_pattern(
+                    iteration_kind,
+                    ForAssignmentDeclaration::Var,
+                    false,
+                );
+            }
             if matches!(
                 self.current().kind,
-                TokenKind::Punctuator(Punctuator::LeftBrace | Punctuator::LeftBracket)
+                TokenKind::Punctuator(Punctuator::LeftBrace)
             ) {
                 return Err(self.unsupported_here(format!(
                     "{loop_name} destructuring bindings are not implemented yet"
@@ -1593,6 +1611,7 @@ impl<'source> Parser<'source> {
             return Ok(ForAssignmentTargetInfo {
                 declaration: ForAssignmentDeclaration::Var,
                 var_initializer: Some(initializer),
+                is_destructuring: false,
             });
         }
 
@@ -1625,6 +1644,7 @@ impl<'source> Parser<'source> {
             return Ok(ForAssignmentTargetInfo {
                 declaration: ForAssignmentDeclaration::Assignment,
                 var_initializer: None,
+                is_destructuring: false,
             });
         }
         let Some(target) = self.take_tail_member_reference()? else {
@@ -1634,6 +1654,137 @@ impl<'source> Parser<'source> {
         Ok(ForAssignmentTargetInfo {
             declaration: ForAssignmentDeclaration::Assignment,
             var_initializer: None,
+            is_destructuring: false,
+        })
+    }
+
+    /// Lower the identifier-only declaration slice of QuickJS
+    /// `js_parse_destructuring_element` for a for-in/of head. The value yielded
+    /// by the outer enumeration becomes a second, nested iterator record. Each
+    /// element consumes `value, done` from that innermost record, and the
+    /// explicit close preserves QuickJS's early-close and exception ordering.
+    fn parse_for_array_binding_pattern(
+        &mut self,
+        iteration_kind: ForIterationKind,
+        declaration: ForAssignmentDeclaration,
+        is_const: bool,
+    ) -> Result<ForAssignmentTargetInfo, Error> {
+        let loop_name = if iteration_kind == ForIterationKind::In {
+            "for-in"
+        } else {
+            "for-of"
+        };
+        if !matches!(
+            declaration,
+            ForAssignmentDeclaration::Var | ForAssignmentDeclaration::Lexical
+        ) {
+            return Err(Error::internal(
+                "array binding pattern received a non-declaration target",
+            ));
+        }
+
+        self.expect_punctuator(Punctuator::LeftBracket)?;
+        self.emit_instruction(Instruction::ForOfStart)?;
+
+        while !self.is_punctuator(Punctuator::RightBracket) {
+            if self.is_punctuator(Punctuator::Ellipsis) {
+                return Err(self.unsupported_here(format!(
+                    "{loop_name} array binding rest elements are not implemented yet"
+                )));
+            }
+            if matches!(
+                self.current().kind,
+                TokenKind::Punctuator(Punctuator::LeftBrace | Punctuator::LeftBracket)
+            ) {
+                return Err(self.unsupported_here(format!(
+                    "{loop_name} nested destructuring bindings are not implemented yet"
+                )));
+            }
+
+            if self.consume_punctuator(Punctuator::Comma)? {
+                self.emit_instruction(Instruction::ForOfNext(0))?;
+                self.emit_instruction(Instruction::Drop)?;
+                self.emit_instruction(Instruction::Drop)?;
+                continue;
+            }
+
+            let token = self.current().clone();
+            let TokenKind::Identifier(identifier) = token.kind else {
+                return Err(Error::syntax(
+                    "invalid destructuring target",
+                    source_span(token.span),
+                ));
+            };
+            validate_identifier_reservation(
+                &identifier,
+                token.span,
+                self.current_ir().strict,
+                IdentifierContext::Variable,
+            )?;
+            if declaration == ForAssignmentDeclaration::Lexical && identifier.value == "let" {
+                return Err(Error::syntax(
+                    "'let' is not a valid lexical identifier",
+                    source_span(token.span),
+                ));
+            }
+            let name = identifier.value;
+            let strict = self.current_ir().strict;
+            self.advance()?;
+            if strict && matches!(name.as_str(), "eval" | "arguments") {
+                return Err(Error::syntax(
+                    "invalid destructuring target",
+                    source_span(token.span),
+                ));
+            }
+            if self.is_punctuator(Punctuator::Equal) {
+                return Err(self.unsupported_here(format!(
+                    "{loop_name} array binding defaults are not implemented yet"
+                )));
+            }
+
+            match declaration {
+                ForAssignmentDeclaration::Lexical => {
+                    self.register_lexical_binding(
+                        &name,
+                        token.span,
+                        self.current().span,
+                        is_const,
+                        false,
+                    )?;
+                }
+                ForAssignmentDeclaration::Var => {
+                    self.register_var_binding(&name, token.span, self.current().span)?;
+                }
+                ForAssignmentDeclaration::Assignment => {
+                    unreachable!("array binding declaration was validated before parsing elements")
+                }
+            }
+
+            self.emit_instruction(Instruction::ForOfNext(0))?;
+            self.emit_instruction(Instruction::Drop)?;
+            self.emit_identifier_at(
+                name,
+                token.span,
+                if declaration == ForAssignmentDeclaration::Lexical {
+                    IdentifierAccess::Initialize
+                } else {
+                    IdentifierAccess::Put
+                },
+                source_offset(token.span)?,
+            )?;
+
+            if self.is_punctuator(Punctuator::RightBracket) {
+                break;
+            }
+            self.expect_punctuator(Punctuator::Comma)?;
+        }
+
+        self.expect_punctuator(Punctuator::RightBracket)?;
+        self.emit_instruction(Instruction::IteratorClose)?;
+        Ok(ForAssignmentTargetInfo {
+            declaration,
+            var_initializer: None,
+            is_destructuring: true,
         })
     }
 
@@ -14492,6 +14643,86 @@ mod tests {
             strict_error.span().unwrap().start.column,
             u32::try_from(strict_source.find(')').unwrap() + 1).unwrap()
         );
+    }
+
+    #[test]
+    fn for_in_of_array_bindings_use_nested_iterator_records() {
+        let for_of = compile_unlinked_script("for(const [a,,b,] of [[1,2,3]])a+b").unwrap();
+        assert_eq!(
+            for_of
+                .code()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::ForOfStart))
+                .count(),
+            2
+        );
+        assert_eq!(
+            for_of
+                .code()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::ForOfNext(0)))
+                .count(),
+            4
+        );
+        assert_eq!(
+            for_of
+                .code()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::IteratorClose))
+                .count(),
+            2
+        );
+        assert_eq!(
+            for_of
+                .code()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::InitializeLocal(_)))
+                .count(),
+            2
+        );
+
+        let for_in = compile_unlinked_script("for(var [a,b] in {ab:1})a+b").unwrap();
+        assert_eq!(
+            for_in
+                .code()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::ForInStart))
+                .count(),
+            1
+        );
+        assert_eq!(
+            for_in
+                .code()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::ForOfStart))
+                .count(),
+            1
+        );
+        assert_eq!(
+            for_in
+                .code()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::ForOfNext(0)))
+                .count(),
+            2
+        );
+
+        for source in [
+            "for(var [a]=[1] in {a:1})a",
+            "for(let [a]=[1] in {a:1})a",
+            "for(const [a]=[1] of [[1]])a",
+        ] {
+            let error = compile_unlinked_script(source).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+            assert_eq!(
+                error.message(),
+                format!(
+                    "a declaration in the head of a for-{} loop can't have an initializer",
+                    if source.contains(" of ") { "of" } else { "in" }
+                ),
+                "{source}"
+            );
+        }
     }
 
     #[test]

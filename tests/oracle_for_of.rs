@@ -52,6 +52,22 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "(function(){var s='';for(const value of 'ab')s+=value;return s})()",
     ),
     (
+        "const array binding fills exhausted elements with undefined",
+        "(function(){var s='';for(const [a,b] of [[1,2],[3]])s+=a+':'+b+'|';return s})()",
+    ),
+    (
+        "let array bindings receive fresh captured cells",
+        "(function(){var f,g,i=0;for(let [a,b] of [[1,2],[3,4]]){i++;if(i===1)f=function(){return a+':'+b};else g=function(){return a+':'+b}}return f()+'|'+g()})()",
+    ),
+    (
+        "var array binding accepts holes and a trailing comma",
+        "(function(){var s='';for(var [a,,b,] of [[1,2,3],[4,5,6]])s+=a+':'+b+'|';return s+'last:'+a+':'+b})()",
+    ),
+    (
+        "for-in declaration array binding iterates the yielded string key",
+        "(function(){var s='';for(const [a,b,] in {ab:1,cd:2})s+=a+b;return s})()",
+    ),
+    (
         "nested for-of values",
         "(function(){var s='';for(var a of 'ab')for(var b of '12')s+=a+b;return s})()",
     ),
@@ -113,6 +129,22 @@ const CLOSE_CASES: &[(&str, &str)] = &[
     (
         "next throw does not call return",
         "(function(){function R(v,d){this.value=v;this.done=d};function L(){this.s=''};function I(l){this.l=l};I.prototype.next=function(){throw 8};I.prototype.return=function(){this.l.s+='r';return new R(0,true)};function X(l){this.l=l};X.prototype[Symbol.iterator]=function(){return new I(this.l)};var l=new L;try{for(var v of new X(l))v}catch(e){return e+'|'+l.s}})()",
+    ),
+    (
+        "array binding closes a non-exhausted inner iterator before the body",
+        "(function(){function R(v,d){this.value=v;this.done=d};function L(){this.s=''};function I(l){this.i=0;this.l=l};I.prototype.next=function(){this.l.s+='n';return new R(++this.i,false)};I.prototype.return=function(){this.l.s+='i';return new R(0,true)};function X(l){this.l=l};X.prototype[Symbol.iterator]=function(){return new I(this.l)};var l=new L,r='';for(const [a,b] of [new X(l)])r=a+':'+b+'|'+l.s;return r})()",
+    ),
+    (
+        "array binding stops stepping and skips return after early done",
+        "(function(){function R(v,d){this.value=v;this.done=d};function L(){this.s=''};function I(l){this.i=0;this.l=l};I.prototype.next=function(){this.l.s+='n';this.i++;return new R(this.i,this.i>1)};I.prototype.return=function(){this.l.s+='i';return new R(0,true)};function X(l){this.l=l};X.prototype[Symbol.iterator]=function(){return new I(this.l)};var l=new L,r='';for(const [a,b,c] of [new X(l)])r=a+':'+b+':'+c+'|'+l.s;return r})()",
+    ),
+    (
+        "inner close throw closes the outer iterator and keeps its error",
+        "(function(){function R(v,d){this.value=v;this.done=d};function L(){this.s=''};function I(l){this.i=0;this.l=l};I.prototype.next=function(){this.l.s+='n';return new R(++this.i,false)};I.prototype.return=function(){this.l.s+='i';throw 7};function Inner(l){this.l=l};Inner.prototype[Symbol.iterator]=function(){return new I(this.l)};function OI(l){this.i=0;this.l=l};OI.prototype.next=function(){return this.i++?new R(0,true):new R(new Inner(this.l),false)};OI.prototype.return=function(){this.l.s+='o';throw 9};function Outer(l){this.l=l};Outer.prototype[Symbol.iterator]=function(){return new OI(this.l)};var l=new L;try{for(const [a,b] of new Outer(l))0}catch(e){return e+'|'+l.s}})()",
+    ),
+    (
+        "inner next throw disables inner close but closes the outer iterator",
+        "(function(){function R(v,d){this.value=v;this.done=d};function L(){this.s=''};function I(l){this.i=0;this.l=l};I.prototype.next=function(){this.l.s+='n';if(this.i++)throw 7;return new R(1,false)};I.prototype.return=function(){this.l.s+='i';throw 8};function Inner(l){this.l=l};Inner.prototype[Symbol.iterator]=function(){return new I(this.l)};function OI(l){this.i=0;this.l=l};OI.prototype.next=function(){return this.i++?new R(0,true):new R(new Inner(this.l),false)};OI.prototype.return=function(){this.l.s+='o';throw 9};function Outer(l){this.l=l};Outer.prototype[Symbol.iterator]=function(){return new OI(this.l)};var l=new L;try{for(const [a,b] of new Outer(l))0}catch(e){return e+'|'+l.s}})()",
     ),
     (
         "assignment-target throw closes the iterator",
@@ -347,17 +379,29 @@ fn for_of_full_strip_source_and_strip_debug_stacks_match_pinned_quickjs() {
 }
 
 #[test]
-fn for_in_of_destructuring_and_for_await_boundaries_remain_explicit() {
+fn remaining_for_in_of_destructuring_and_for_await_boundaries_remain_explicit() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     for (source, expected) in [
         (
-            "for(var [key] in Function)key",
-            "for-in destructuring bindings are not implemented yet",
+            "for([value] of [[1]])value",
+            "for-of destructuring assignment patterns are not implemented yet",
         ),
         (
-            "for(let [value] of 'a')value",
+            "for(const {value} of [{value:1}])value",
             "for-of destructuring bindings are not implemented yet",
+        ),
+        (
+            "for(const [value=1] of [[]])value",
+            "for-of array binding defaults are not implemented yet",
+        ),
+        (
+            "for(const [...value] of [[1]])value",
+            "for-of array binding rest elements are not implemented yet",
+        ),
+        (
+            "for(const [[value]] of [[[1]]])value",
+            "for-of nested destructuring bindings are not implemented yet",
         ),
         (
             "for await(var value of 'a')value",

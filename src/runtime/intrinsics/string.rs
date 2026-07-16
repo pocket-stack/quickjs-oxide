@@ -445,6 +445,52 @@ impl Runtime {
         }
     }
 
+    /// Rust port of QuickJS's test262-only `js_string_codePointRange`.
+    ///
+    /// Both bounds use `ToUint32`; the converted end is then capped at one
+    /// past the Unicode limit. The result contains every code point in the
+    /// ascending half-open range encoded as UTF-16, including lone surrogate
+    /// values when the requested range crosses the surrogate interval.
+    pub(in crate::runtime) fn call_string_code_point_range(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String codePointRange did not receive a generic invocation",
+            ));
+        };
+        let start_argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "String codePointRange start argv was not padded",
+        ))?;
+        let end_argument = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
+            "String codePointRange end argv was not padded",
+        ))?;
+
+        let start = match self.native_to_number(realm, start_argument)? {
+            NativeConversion::Value(value) => Self::to_uint32_number(value),
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let end = match self.native_to_number(realm, end_argument)? {
+            NativeConversion::Value(value) => Self::to_uint32_number(value),
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        }
+        .min(0x11_0000);
+        let start = start.min(end);
+
+        let code_point_count = end - start;
+        let supplementary_count = end.saturating_sub(start.max(0x1_0000));
+        let utf16_len = usize::try_from(code_point_count + supplementary_count)
+            .map_err(|_| RuntimeError::Invariant("codePointRange length did not fit usize"))?;
+        let mut builder = JsStringBuilder::try_with_exact_capacity(utf16_len)?;
+        for code_point in start..end {
+            builder.push_code_point(code_point)?;
+        }
+        Ok(Completion::Return(Value::String(builder.finish()?)))
+    }
+
     /// Rust port of pinned QuickJS `js_string_fromCharCode`.
     fn call_string_from_char_code(
         &self,

@@ -9309,6 +9309,23 @@ impl Context {
         self.runtime.new_object(Some(&prototype))
     }
 
+    /// Create QuickJS's test262-only native `codePointRange` helper in this
+    /// context's realm.
+    ///
+    /// The helper is intentionally not installed as an ECMAScript intrinsic;
+    /// embedders such as the Test262 runner decide where to publish it.
+    pub fn new_code_point_range_function(&mut self) -> Result<CallableRef, RuntimeError> {
+        let function_prototype = self.function_prototype()?;
+        self.runtime.new_native_builtin(
+            &function_prototype,
+            self.realm,
+            NativeFunctionId::StringCodePointRange,
+            2,
+            "codePointRange",
+            2,
+        )
+    }
+
     /// Allocate one genuine empty Array in this realm.
     pub fn new_array(&mut self) -> Result<ObjectRef, RuntimeError> {
         self.runtime.new_array(self.realm)

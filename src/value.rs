@@ -565,6 +565,25 @@ impl JsStringBuilder {
         Self::with_limit(capacity, JsString::MAX_LEN)
     }
 
+    /// Allocate the complete backing buffer up front without exposing an
+    /// infallible `Vec` growth path. Callers which can compute their exact
+    /// UTF-16 result length use this to mirror QuickJS's `StringBuffer`
+    /// preallocation and surface allocator failure as `JsStringError`.
+    pub(crate) fn try_with_exact_capacity(capacity: usize) -> Result<Self, JsStringError> {
+        if capacity > JsString::MAX_LEN {
+            return Err(JsStringError::TooLong);
+        }
+        let mut units = Vec::new();
+        units
+            .try_reserve_exact(capacity)
+            .map_err(|_| JsStringError::OutOfMemory)?;
+        Ok(Self {
+            units,
+            limit: capacity,
+            failed: false,
+        })
+    }
+
     pub(crate) fn with_limit(capacity: usize, limit: usize) -> Self {
         let limit = limit.min(JsString::MAX_LEN);
         Self {

@@ -5,7 +5,10 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use quickjs_oxide::{CompileOptions, Context, ErrorKind, Runtime, RuntimeError, Value};
+use quickjs_oxide::{
+    CompileOptions, Context, DescriptorField, ErrorKind, OrdinaryPropertyDescriptor, Runtime,
+    RuntimeError, Value,
+};
 
 use super::metadata::{Metadata, parse_metadata};
 use super::report::WorkerResult;
@@ -273,8 +276,91 @@ fn install_worker_host(runtime: &Runtime, context: &mut Context) -> Result<(), S
         .map_err(|error| worker_host_error(runtime, context, "compile", error))?;
     context
         .execute(&function)
-        .map(|_| ())
-        .map_err(|error| worker_host_error(runtime, context, "execute", error))
+        .map_err(|error| worker_host_error(runtime, context, "execute", error))?;
+    install_code_point_range_host(runtime, context)
+}
+
+fn install_code_point_range_host(runtime: &Runtime, context: &mut Context) -> Result<(), String> {
+    let object_262 = match context.new_object() {
+        Ok(object) => object,
+        Err(error) => return Err(worker_host_error(runtime, context, "create $262", error)),
+    };
+    let code_point_range = match context.new_code_point_range_function() {
+        Ok(function) => function,
+        Err(error) => {
+            return Err(worker_host_error(
+                runtime,
+                context,
+                "create $262.codePointRange",
+                error,
+            ));
+        }
+    };
+    let code_point_range_key = runtime
+        .intern_property_key("codePointRange")
+        .map_err(|error| format!("intern Test262 host codePointRange key: {error}"))?;
+    let defined = match context.define_own_property(
+        &object_262,
+        &code_point_range_key,
+        &worker_host_data_property(Value::Object(code_point_range.as_object().clone())),
+    ) {
+        Ok(defined) => defined,
+        Err(error) => {
+            return Err(worker_host_error(
+                runtime,
+                context,
+                "define $262.codePointRange",
+                error,
+            ));
+        }
+    };
+    if !defined {
+        return Err("Test262 worker host rejected $262.codePointRange".to_owned());
+    }
+
+    let object_262_key = runtime
+        .intern_property_key("$262")
+        .map_err(|error| format!("intern Test262 host $262 key: {error}"))?;
+    let global = match context.global_object() {
+        Ok(global) => global,
+        Err(error) => {
+            return Err(worker_host_error(
+                runtime,
+                context,
+                "get Test262 global",
+                error,
+            ));
+        }
+    };
+    let defined = match context.define_own_property(
+        &global,
+        &object_262_key,
+        &worker_host_data_property(Value::Object(object_262)),
+    ) {
+        Ok(defined) => defined,
+        Err(error) => {
+            return Err(worker_host_error(
+                runtime,
+                context,
+                "define global $262",
+                error,
+            ));
+        }
+    };
+    if !defined {
+        return Err("Test262 worker host rejected global $262".to_owned());
+    }
+    Ok(())
+}
+
+fn worker_host_data_property(value: Value) -> OrdinaryPropertyDescriptor {
+    OrdinaryPropertyDescriptor {
+        value: DescriptorField::Present(value),
+        writable: DescriptorField::Present(true),
+        enumerable: DescriptorField::Present(true),
+        configurable: DescriptorField::Present(true),
+        ..OrdinaryPropertyDescriptor::new()
+    }
 }
 
 fn worker_host_error(
@@ -552,6 +638,100 @@ r.lastIndex = 0;
 r.global = undefined;
 if (r[Symbol.replace]("aa", "b") !== "ba") {
     throw new Error("coerce-global replacement did not complete");
+}
+"#,
+        )
+        .unwrap();
+
+        let result = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: relative,
+            variant: Variant::Sloppy,
+        })
+        .unwrap();
+        fs::remove_dir_all(suite).unwrap();
+
+        assert_eq!(result.outcome, "pass", "{}", result.detail);
+        assert_eq!(result.actual_phase, "normal");
+    }
+
+    #[test]
+    fn raw_worker_installs_quickjs_code_point_range_host() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let suite = std::env::temp_dir().join(format!(
+            "quickjs-oxide-test262-code-point-range-{}-{unique}",
+            std::process::id()
+        ));
+        let relative = PathBuf::from("test/harness/code-point-range-host.js");
+        let path = suite.join(&relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"/*---
+flags: [raw]
+---*/
+if (typeof $262 !== "object" || typeof $262.codePointRange !== "function") {
+    throw new Error("QuickJS codePointRange host surface is missing");
+}
+var globalDescriptor = Object.getOwnPropertyDescriptor(globalThis, "$262");
+var helperDescriptor = Object.getOwnPropertyDescriptor($262, "codePointRange");
+if (!globalDescriptor.writable || !globalDescriptor.enumerable ||
+    !globalDescriptor.configurable || !helperDescriptor.writable ||
+    !helperDescriptor.enumerable || !helperDescriptor.configurable) {
+    throw new Error("QuickJS host property flags changed");
+}
+if ($262.codePointRange.name !== "codePointRange" ||
+    $262.codePointRange.length !== 2 ||
+    Object.getPrototypeOf($262.codePointRange) !== Function.prototype) {
+    throw new Error("QuickJS codePointRange function metadata changed");
+}
+var constructorThrew = false;
+try {
+    new $262.codePointRange(0, 1);
+} catch (error) {
+    constructorThrew = error instanceof TypeError;
+}
+if (!constructorThrew) {
+    throw new Error("QuickJS codePointRange became constructible");
+}
+
+var conversionLog = "";
+var start = Object();
+start.valueOf = function() { conversionLog += "s"; return 65.9; };
+var end = Object();
+end.valueOf = function() { conversionLog += "e"; return 68.9; };
+var extra = Object();
+extra.valueOf = function() { conversionLog += "x"; throw new Error("extra coerced"); };
+if ($262.codePointRange.call(null, start, end, extra) !== "ABC" ||
+    conversionLog !== "se") {
+    throw new Error("QuickJS codePointRange conversion order changed");
+}
+var marker = Object();
+start.valueOf = function() { conversionLog = "S"; throw marker; };
+end.valueOf = function() { conversionLog += "E"; return 68; };
+try {
+    $262.codePointRange(start, end);
+    throw new Error("QuickJS codePointRange swallowed a conversion throw");
+} catch (error) {
+    if (error !== marker || conversionLog !== "S") {
+        throw new Error("QuickJS codePointRange throw order changed");
+    }
+}
+if ($262.codePointRange(4294967361, 68) !== "ABC" ||
+    $262.codePointRange(-1, 68) !== "") {
+    throw new Error("QuickJS codePointRange ToUint32 behavior changed");
+}
+var surrogate = $262.codePointRange(0xD7FF, 0xD801);
+if (surrogate.length !== 2 || surrogate.charCodeAt(0) !== 0xD7FF ||
+    surrogate.charCodeAt(1) !== 0xD800) {
+    throw new Error("QuickJS codePointRange surrogate behavior changed");
+}
+var capped = $262.codePointRange(0x10FFFF, -1);
+if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
+    throw new Error("QuickJS codePointRange Unicode cap changed");
 }
 "#,
         )
