@@ -1,37 +1,21 @@
-# quickjs-oxide Test262 capability profile.
+# Frozen Unicode RegExp property-escape measurement slice for the pinned
+# Test262 checkout.
 #
-# Features declare surfaces whose tests are eligible to execute; their failures
-# remain visible conformance gaps. Negative tests are exact pinned-suite paths
-# whose expected exception provenance has been audited. Both lists are
-# deliberately fail-closed and bytewise sorted.
-
-[features]
-BigInt
-Math.sumPrecise
-Reflect
-Reflect.construct
-Reflect.set
-Reflect.setPrototypeOf
-String.prototype.at
-String.prototype.endsWith
-String.prototype.matchAll
-String.prototype.replaceAll
-Symbol
-Symbol.isConcatSpreadable
-Symbol.match
-Symbol.matchAll
-Symbol.replace
-Symbol.search
-Symbol.split
-__proto__
-change-array-by-copy
-exponentiation
-for-in-order
-hashbang
-regexp-modifiers
-regexp-unicode-property-escapes
-
-[audited-negative-tests]
+# This is the static, bytewise-sorted union of:
+#
+# - all 144 direct .js children of test/built-ins/RegExp/property-escapes
+#   (the generated/ corpus is intentionally a later harness/data milestone);
+# - four regexp-modifiers paths that exercise property escapes across scoped
+#   ignoreCase boundaries.
+#
+# The 142 parse-negative property-escape paths are admitted through exact,
+# fail-closed provenance entries in compat/test262-oxide.conf. The remaining
+# six paths cover matching and scoped ignoreCase behavior.
+#
+# Exactly 148 unique paths expand to 296 sloppy/strict variants. The
+# bytewise-sorted path set has SHA-256
+# 7ca318b763993b7d401442ab1af74575b7450504cbae37ad7be4ffdae10c210f.
+#
 test/built-ins/RegExp/property-escapes/binary-property-with-value-ASCII_-_F-negated.js
 test/built-ins/RegExp/property-escapes/binary-property-with-value-ASCII_-_F.js
 test/built-ins/RegExp/property-escapes/binary-property-with-value-ASCII_-_Invalid-negated.js
@@ -50,6 +34,7 @@ test/built-ins/RegExp/property-escapes/character-class-range-end.js
 test/built-ins/RegExp/property-escapes/character-class-range-no-dash-end.js
 test/built-ins/RegExp/property-escapes/character-class-range-no-dash-start.js
 test/built-ins/RegExp/property-escapes/character-class-range-start.js
+test/built-ins/RegExp/property-escapes/character-class.js
 test/built-ins/RegExp/property-escapes/grammar-extension-In-prefix-Block-implicit-negated.js
 test/built-ins/RegExp/property-escapes/grammar-extension-In-prefix-Block-implicit.js
 test/built-ins/RegExp/property-escapes/grammar-extension-In-prefix-Script-implicit-negated.js
@@ -130,6 +115,7 @@ test/built-ins/RegExp/property-escapes/non-existent-property-value-Script.js
 test/built-ins/RegExp/property-escapes/non-existent-property-value-Script_Extensions-negated.js
 test/built-ins/RegExp/property-escapes/non-existent-property-value-Script_Extensions.js
 test/built-ins/RegExp/property-escapes/non-existent-property-value-general-category.js
+test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js
 test/built-ins/RegExp/property-escapes/unsupported-binary-property-Composition_Exclusion-negated.js
 test/built-ins/RegExp/property-escapes/unsupported-binary-property-Composition_Exclusion.js
 test/built-ins/RegExp/property-escapes/unsupported-binary-property-Expands_On_NFC-negated.js
@@ -174,106 +160,7 @@ test/built-ins/RegExp/property-escapes/unsupported-property-Line_Break-negated.j
 test/built-ins/RegExp/property-escapes/unsupported-property-Line_Break-with-value-negated.js
 test/built-ins/RegExp/property-escapes/unsupported-property-Line_Break-with-value.js
 test/built-ins/RegExp/property-escapes/unsupported-property-Line_Break.js
-test/language/comments/hashbang/escaped-bang-041.js
-test/language/expressions/object/__proto__-duplicate.js
-test/language/global-code/decl-lex-restricted-global.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-add-remove-i.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-add-remove-m.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-add-remove-multi-duplicate.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-add-remove-s-escape.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-add-remove-s.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-both-empty.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-code-point-repeat-i-1.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-code-point-repeat-i-2.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-no-colon-1.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-no-colon-2.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-no-colon-3.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-other-code-point-arbitrary.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-other-code-point-combining-i.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-other-code-point-combining-m.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-other-code-point-combining-s.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-other-code-point-d.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-other-code-point-g.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-other-code-point-non-display-1.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-other-code-point-non-display-2.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-other-code-point-non-flag.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-other-code-point-u.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-other-code-point-uppercase-I.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-other-code-point-y.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-other-code-point-zwj.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-other-code-point-zwnbsp.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-other-code-point-zwnj.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-add-remove-i.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-add-remove-m.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-add-remove-multi-duplicate.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-add-remove-s-escape.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-add-remove-s.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-code-point-repeat-i-1.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-code-point-repeat-i-2.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-other-code-point-arbitrary.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-other-code-point-combining-i.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-other-code-point-combining-m.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-other-code-point-combining-s.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-other-code-point-d.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-other-code-point-g.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-other-code-point-non-display-1.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-other-code-point-non-display-2.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-other-code-point-non-flag.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-other-code-point-u.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-other-code-point-uppercase-I.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-other-code-point-y.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-other-code-point-zwj.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-other-code-point-zwnbsp.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-other-code-point-zwnj.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-should-not-case-fold-i.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-should-not-case-fold-m.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-should-not-case-fold-s.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-should-not-unicode-case-fold-i.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-reverse-should-not-unicode-case-fold-s.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-should-not-case-fold-i.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-should-not-case-fold-m.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-should-not-case-fold-s.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-should-not-unicode-case-fold-i.js
-test/language/literals/regexp/early-err-arithmetic-modifiers-should-not-unicode-case-fold-s.js
-test/language/literals/regexp/early-err-modifiers-code-point-repeat-i-1.js
-test/language/literals/regexp/early-err-modifiers-code-point-repeat-i-2.js
-test/language/literals/regexp/early-err-modifiers-other-code-point-arbitrary.js
-test/language/literals/regexp/early-err-modifiers-other-code-point-combining-i.js
-test/language/literals/regexp/early-err-modifiers-other-code-point-combining-m.js
-test/language/literals/regexp/early-err-modifiers-other-code-point-combining-s.js
-test/language/literals/regexp/early-err-modifiers-other-code-point-d.js
-test/language/literals/regexp/early-err-modifiers-other-code-point-g.js
-test/language/literals/regexp/early-err-modifiers-other-code-point-non-display-1.js
-test/language/literals/regexp/early-err-modifiers-other-code-point-non-display-2.js
-test/language/literals/regexp/early-err-modifiers-other-code-point-non-flag.js
-test/language/literals/regexp/early-err-modifiers-other-code-point-u.js
-test/language/literals/regexp/early-err-modifiers-other-code-point-uppercase-I.js
-test/language/literals/regexp/early-err-modifiers-other-code-point-y.js
-test/language/literals/regexp/early-err-modifiers-other-code-point-zwj.js
-test/language/literals/regexp/early-err-modifiers-other-code-point-zwnbsp.js
-test/language/literals/regexp/early-err-modifiers-other-code-point-zwnj.js
-test/language/literals/regexp/early-err-modifiers-should-not-case-fold-i.js
-test/language/literals/regexp/early-err-modifiers-should-not-case-fold-m.js
-test/language/literals/regexp/early-err-modifiers-should-not-case-fold-s.js
-test/language/literals/regexp/early-err-modifiers-should-not-unicode-case-fold-i.js
-test/language/literals/regexp/early-err-modifiers-should-not-unicode-case-fold-s.js
-test/language/literals/regexp/early-err-modifiers-should-not-unicode-escape-i.js
-test/language/literals/regexp/early-err-modifiers-should-not-unicode-escape-m.js
-test/language/literals/regexp/early-err-modifiers-should-not-unicode-escape-s.js
-test/language/literals/regexp/u-invalid-legacy-octal-escape.js
-test/language/literals/regexp/u-invalid-oob-decimal-escape.js
-test/language/statements/const/global-use-before-initialization-in-declaration-statement.js
-test/language/statements/const/syntax/with-initializer-while-expression-statement.js
-test/language/statements/for/S12.6.3_A7_T2.js
-test/language/statements/function/early-body-super-prop.js
-test/language/statements/if/S12.5_A8.js
-test/language/statements/if/if-cls-else-cls.js
-test/language/statements/labeled/continue.js
-test/language/statements/let/global-use-before-initialization-in-prior-statement.js
-test/language/statements/switch/scope-lex-const.js
-test/language/statements/variable/S12.2_A8_T2.js
-test/language/statements/variable/S12.2_A8_T7.js
-test/language/statements/variable/arguments-strict-list-first-init.js
-test/language/statements/variable/arguments-strict-list-middle-init.js
-test/language/statements/variable/eval-strict-list-final-init.js
-test/language/statements/while/decl-fun.js
+test/built-ins/RegExp/regexp-modifiers/add-ignoreCase-affects-slash-lower-p.js
+test/built-ins/RegExp/regexp-modifiers/add-ignoreCase-affects-slash-upper-p.js
+test/built-ins/RegExp/regexp-modifiers/remove-ignoreCase-affects-slash-lower-p.js
+test/built-ins/RegExp/regexp-modifiers/remove-ignoreCase-affects-slash-upper-p.js

@@ -1,25 +1,26 @@
 # The complete 230-path regexp-modifiers feature slice is frozen from the R1f
-# full keyed report. R1g admits all 460 variants and records 448 passes; the
-# remaining 12 stop only at typed backreference/property-escape frontiers.
+# full keyed report. R1g records 448 passes, R1k resolves four linked
+# backreference variants, and R1m resolves the final eight property-escape
+# variants.
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
 test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
 test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
-oxide_profile_sha256=6f27d9fcfa5a13423796ad48fe8ccbf8d5edcd49118ad7f0f64cc5a936090645
+oxide_profile_sha256=6d5bb9a92d00babb6a4a0bcb19334fbcfcd532bb5382ce278ce85a960d40d781
 schema=test262-canonical-classified-v2
 mode=both
 timeout_ms=30000
 paths=230
 variants=460
 runnable=460
-passes=452
+passes=460
 manifest_sha256=75233faae95fb86a013292d70c1f877d3a7e0c62e900c2e9762a63c206f76691
 r1f_oxide_profile_sha256=cc10293aa847f5a449ac2b039709dff98d264b672dddc8828b8e17d8b7e12d9a
 r1f_full_tsv_sha256=57caefa97b579fafeb6b56ba45da7daf9cbe5e168849e4ab0459b87452d4745e
 r1f_selected_sha256=21fb00d8d12635b76f8cba511e6ac72880398fb893c8776101de6143825c2c7b
 r1f_variants=460
 r1f_summary=unsupported-feature=460
-tsv_sha256=5bac8c7b42fe97b9b47c90330485116819807fe18d5f2417665f8bcda838bdf7
-jsonl_sha256=ec9b9ce9ce34ea1292733a2cfd9b66e5c140dd19054c88bad44a3f06576decfa
-summary=pass=452 unsupported-parser=8
+tsv_sha256=e7f3c4369b3f550114c334cf5a66623a3e0a3aa65b79adcf1a16d6447c426cb5
+jsonl_sha256=214da091b66a5ccf7e8182700ce8f42304248a0b3224a3c3b15fc7512dab0bb8
+summary=pass=460

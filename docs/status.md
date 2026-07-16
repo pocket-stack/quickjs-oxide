@@ -10,13 +10,13 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 23 reviewed feature tags and 103 exact audited
+  capability profile now admits 24 reviewed feature tags and 245 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 26,079 passes: 25.56% raw, a 31.21% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 84.20% among the 30,971 variants with a
+  has 26,377 passes: 25.85% raw, a 31.57% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 84.36% among the 31,269 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -64,6 +64,12 @@ claim full parity.
   regression. R1l adds forward positive/negative lookahead and its Annex B
   quantifiable form. Its complete join converts 52 already-admitted variants
   to pass without moving any other category or regressing a previous pass.
+  R1m adds Unicode property escapes and admits their fail-closed Test262
+  surface. Its complete join adds 298 passes and 1,170 runnable variants:
+  288 move from `unsupported-feature` to pass, ten from
+  `unsupported-parser` to pass, and 882 generated property-table variants move
+  from `unsupported-feature` to the existing harness-parser frontier. No
+  previous pass regresses.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -97,6 +103,14 @@ claim full parity.
   alternatives, negative completion always rolls them back, and outer
   backtracking can still undo a committed positive capture. Non-Unicode
   quantified assertions retain QuickJS's Annex B zero-advance behavior.
+  Unicode `u` patterns resolve exact-case General_Category, Script,
+  Script_Extensions, and binary property aliases from checksum-pinned Unicode
+  17 Rust tables generated through the pinned QuickJS implementation.
+  `\P` preserves QuickJS's `u+i` inversion-before-folding order, non-Unicode
+  `\p`/`\P` remain identity escapes, and property sets preserve QuickJS's
+  class-range error priority. Full-domain case folding visits only the 1,585
+  Unicode code points affected by the pinned case table rather than expanding
+  all 1,114,112 code points.
   Nullable finite repetitions carry QuickJS's
   zero-advance rollback rule; ignore-case class complements are folded before
   inversion; sequential quantifiers reuse temporary registers.
@@ -133,8 +147,9 @@ claim full parity.
   Forty-four matcher cases and 35 targeted observable intrinsic vectors match
   pinned QuickJS, including cross-realm construction/results/errors. The frozen
   225-path/450-variant Test262 RegExp-core vector now has 436 passes. Ten
-  variants remain runtime failures solely because `eval` is absent; four reach
-  typed frontiers for Unicode properties or legacy control escapes.
+  variants remain runtime failures at missing-`eval` or legacy error-identity
+  boundaries; four reach typed legacy-control or named-backreference
+  frontiers.
   `RegExp.escape` and the remaining advanced
   literal grammar remain intentionally unpublished rather than stubbed. The
   R1a complete join recorded only 669
@@ -506,9 +521,32 @@ claim full parity.
   and
   `b69f3de1d2e61d3cb7667e6de1ffe2f5a811569df83b1cf34929008aaf8e393a`.
 
+  R1m materializes Unicode 17 property sets as generated Rust half-open
+  ranges: 38 General_Category values, 176 Script values, 176
+  Script_Extensions values, and the 55 binary properties accepted by pinned
+  QuickJS. Thirty-seven execution vectors and 28 grammar/error vectors match
+  the oracle, including exact aliases, lone surrogates, astral input, scoped
+  modifiers, the upstream empty-`=` quirk, and class-range error priority.
+  Product builds do not link C; the checksum-pinned C helper is test-only and
+  the parity gate regenerates and compares the Rust tables.
+
+  The static 148-path/296-variant Unicode-property gate passes all 296
+  variants. Its TSV/JSONL SHA-256 values are
+  `66a129065346b23b454c6275b15301508bc8a4afaf6dacd8a473d6a948b7c392`
+  and
+  `87b704d71d7d8e33403abd81445cfd302c136fc2de30308c7f7caf9ceed9d869`.
+  The complete vector reaches 26,377 passes and 34,457 admitted jobs. The
+  exact R1l-to-R1m delta is 288 `unsupported-feature -> pass`, 882
+  `unsupported-feature -> unsupported-harness-parser`, and ten
+  `unsupported-parser -> pass`, with no other category movement or previous
+  pass regression. Full TSV/JSONL SHA-256 values are
+  `275fd8b3f6b1e5f078b6aad58bfc33797abaf6637179f47cc52228bc8f52feda`
+  and
+  `c2e14d42cfbb933946d9ce738d27c371e15fa3b9865131c2a6160cfe70b480f9`.
+
   Advanced grammar still fails closed: lookbehind, named captures, Unicode
-  properties, all `v`-mode execution, and unported Annex-B control escapes
-  return typed unsupported errors. Pattern group
+  set/string properties, all `v`-mode execution, and unported Annex-B control
+  escapes return typed unsupported errors. Pattern group
   nesting is temporarily capped at 256 with a catchable `stack overflow`
   compile error so adversarial input cannot overflow the Rust stack; a later
   iterative parser/compiler must replace that conservative resource frontier

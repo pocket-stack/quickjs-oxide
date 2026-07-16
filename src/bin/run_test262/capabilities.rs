@@ -191,6 +191,7 @@ fn test_path(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::path::Path;
 
     use super::{AUDITED_NEGATIVE_TESTS_SECTION, FEATURES_SECTION, OxideProfile, SECTION_ORDER};
@@ -199,7 +200,15 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/compat/test262-oxide.conf"
     ));
-    const EXPECTED_FEATURES: [&str; 23] = [
+    const PROPERTY_MANIFEST: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-regexp-unicode-properties.txt"
+    ));
+    const PROPERTY_POSITIVE_PATHS: [&str; 2] = [
+        "test/built-ins/RegExp/property-escapes/character-class.js",
+        "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
+    ];
+    const EXPECTED_FEATURES: [&str; 24] = [
         "BigInt",
         "Math.sumPrecise",
         "Reflect",
@@ -223,6 +232,7 @@ mod tests {
         "for-in-order",
         "hashbang",
         "regexp-modifiers",
+        "regexp-unicode-property-escapes",
     ];
     const EXPECTED_AUDITED_NEGATIVES: [&str; 103] = [
         "test/language/comments/hashbang/escaped-bang-041.js",
@@ -346,12 +356,20 @@ mod tests {
                 .map(String::as_str)
                 .eq(EXPECTED_FEATURES)
         );
+        let expected_audited_negatives = EXPECTED_AUDITED_NEGATIVES
+            .into_iter()
+            .chain(PROPERTY_MANIFEST.lines().filter(|path| {
+                path.starts_with("test/built-ins/RegExp/property-escapes/")
+                    && !PROPERTY_POSITIVE_PATHS.contains(path)
+            }))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(expected_audited_negatives.len(), 245);
         assert!(
             profile
                 .audited_negative_tests
                 .iter()
                 .map(String::as_str)
-                .eq(EXPECTED_AUDITED_NEGATIVES)
+                .eq(expected_audited_negatives)
         );
     }
 
