@@ -919,6 +919,13 @@ impl Runtime {
         .expect("BigInt intrinsic initialization must succeed");
         self.initialize_date_intrinsic(realm, &function_prototype, &date_prototype, &global_object)
             .expect("Date intrinsic initialization must succeed");
+        self.initialize_regexp_intrinsic(
+            realm,
+            &function_prototype,
+            &object_prototype,
+            &global_object,
+        )
+        .expect("RegExp intrinsic initialization must succeed");
         drop(global_var_object);
         drop(global_object);
         drop(uninitialized_vars);
@@ -7019,7 +7026,10 @@ impl Runtime {
             NativeFunctionId::ArrayPrototypeSlice(_)
             | NativeFunctionId::ArrayPrototypeToSpliced => 4,
             NativeFunctionId::ArrayPrototypeFlatten(_) => 8,
-            NativeFunctionId::ObjectGroupBy => 9,
+            // Callback reentry retains the iterator and group-array building
+            // stacks together. Reject the ninth family frame so the error can
+            // still be allocated on the default libtest thread.
+            NativeFunctionId::ObjectGroupBy => 8,
             // The heaviest measured getter-reentry path can exhaust a 2 MiB
             // host thread while entering the tenth family frame.
             NativeFunctionId::ObjectKeys(_) => 9,

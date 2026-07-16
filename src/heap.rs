@@ -30,7 +30,7 @@ use crate::bytecode::{Instruction, MAX_LOCAL_SLOTS};
 use crate::debug::Pc2LineTable;
 use crate::error::NativeErrorKind;
 use crate::regexp::CompiledRegExp;
-use crate::shape::{PropertyStorageKind, Shape};
+use crate::shape::{PropertyFlags, PropertyStorageKind, Shape};
 use crate::value::JsString;
 
 /// Stable identity of an object slot until that slot is reclaimed.
@@ -349,6 +349,17 @@ pub enum AutoInitProperty {
     },
 }
 
+/// Realm-owned identities needed to allocate and dispatch genuine RegExp
+/// objects.  QuickJS roots the constructor and initial instance shape
+/// independently from their public property graph because user code may
+/// replace or delete those properties after bootstrap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RegExpRealmData {
+    pub prototype: ObjectId,
+    pub constructor: ObjectId,
+    pub object_shape: ShapeId,
+}
+
 /// Realm-owned roots which participate in QuickJS's cycle graph.
 ///
 /// The bootstrap roots needed by ordinary script evaluation are explicit;
@@ -389,6 +400,10 @@ pub struct ContextData {
     /// ordinary object without a Date time-value slot, then uses it as the
     /// default prototype for genuine Date instances.
     pub date_prototype: Option<ObjectId>,
+    /// Realm-local RegExp constructor, ordinary prototype, and the canonical
+    /// one-slot instance shape. They are attached atomically after the cyclic
+    /// Context has been published.
+    pub regexp: Option<RegExpRealmData>,
     /// `%Function%`, published after the cyclic realm bootstrap has created
     /// `%Function.prototype%` and the global object.
     pub function_constructor: Option<ObjectId>,
@@ -438,6 +453,7 @@ impl ContextData {
             string_iterator_prototype,
             primitive_prototypes: [None; PrimitiveKind::COUNT],
             date_prototype: None,
+            regexp: None,
             function_constructor: None,
             throw_type_error: None,
             global_object,
@@ -1434,6 +1450,37 @@ impl DateNativeKind {
     }
 }
 
+/// Typed selector for pinned QuickJS's shared RegExp flag getter.  The order
+/// follows the public flag surface rather than exposing the engine's bitmask
+/// constants to runtime dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RegExpFlagKind {
+    HasIndices,
+    Global,
+    IgnoreCase,
+    Multiline,
+    DotAll,
+    Unicode,
+    UnicodeSets,
+    Sticky,
+}
+
+/// Typed handler family for the RegExp constructor and the R1a prototype
+/// surface.  `Flag` corresponds to QuickJS's getter-magic callback; all other
+/// variants preserve their table's concrete C protocol through
+/// [`NativeFunctionId::descriptor`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RegExpNativeKind {
+    Constructor,
+    Species,
+    Exec,
+    Test,
+    ToString,
+    Source,
+    Flags,
+    Flag(RegExpFlagKind),
+}
+
 /// Runtime-provided callable identities. The enum is stored in heap payloads
 /// so native dispatch stays typed and does not rely on function pointers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1504,6 +1551,7 @@ pub enum NativeFunctionId {
     ObjectPrototypeLookupAccessor(ObjectAccessorKind),
     Reflect(ReflectKind),
     Date(DateNativeKind),
+    RegExp(RegExpNativeKind),
     PrimitiveConstructor(PrimitiveKind),
     StringStatic(StringStaticKind),
     PrimitivePrototypeToString(PrimitiveKind),
@@ -1851,6 +1899,9 @@ impl NativeFunctionId {
                 | DateNativeKind::SetYear
                 | DateNativeKind::ToJson,
             )
+            | Self::RegExp(
+                RegExpNativeKind::Exec | RegExpNativeKind::Test | RegExpNativeKind::ToString,
+            )
             | Self::Reflect(
                 ReflectKind::Apply
                 | ReflectKind::Construct
@@ -1963,14 +2014,17 @@ impl NativeFunctionId {
             }
             Self::ArrayConstructor
             | Self::ObjectConstructor
-            | Self::Date(DateNativeKind::Constructor) => NativeFunctionDescriptor {
+            | Self::Date(DateNativeKind::Constructor)
+            | Self::RegExp(RegExpNativeKind::Constructor) => NativeFunctionDescriptor {
                 cproto: NativeCProto::ConstructorOrFunction,
             },
-            Self::FunctionPrototypeFileName | Self::ObjectPrototypeProtoGetter => {
-                NativeFunctionDescriptor {
-                    cproto: NativeCProto::Getter,
-                }
-            }
+            Self::FunctionPrototypeFileName
+            | Self::ObjectPrototypeProtoGetter
+            | Self::RegExp(
+                RegExpNativeKind::Species | RegExpNativeKind::Source | RegExpNativeKind::Flags,
+            ) => NativeFunctionDescriptor {
+                cproto: NativeCProto::Getter,
+            },
             Self::ObjectPrototypeProtoSetter => NativeFunctionDescriptor {
                 cproto: NativeCProto::Setter,
             },
@@ -1988,9 +2042,11 @@ impl NativeFunctionId {
             Self::StringIteratorNext | Self::ArrayIteratorNext => NativeFunctionDescriptor {
                 cproto: NativeCProto::IteratorNext,
             },
-            Self::FunctionPrototypePosition(_) => NativeFunctionDescriptor {
-                cproto: NativeCProto::GetterMagic,
-            },
+            Self::FunctionPrototypePosition(_) | Self::RegExp(RegExpNativeKind::Flag(_)) => {
+                NativeFunctionDescriptor {
+                    cproto: NativeCProto::GetterMagic,
+                }
+            }
             Self::ErrorConstructor(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::ConstructorOrFunctionMagic,
             },
@@ -2907,6 +2963,88 @@ impl Heap {
             unreachable!("context identity was validated before retaining Array")
         };
         context.array_constructor = Some(constructor);
+        Ok(())
+    }
+
+    /// Atomically publish the realm's RegExp intrinsic roots after its native
+    /// constructor, ordinary prototype, and canonical instance shape exist.
+    ///
+    /// `last_index_atom` is validation-only: the shape already owns its atom
+    /// edge. Passing it explicitly lets this heap layer prove that the sole
+    /// instance slot really is `lastIndex` without depending on `AtomTable`
+    /// string lookup. The three GC edges are retained as one transaction
+    /// before the Context is mutated.
+    pub(crate) fn attach_regexp_intrinsics(
+        &mut self,
+        realm: ContextId,
+        regexp: RegExpRealmData,
+        last_index_atom: Atom,
+    ) -> Result<(), HeapError> {
+        let context = self.context(realm)?;
+        if context.regexp.is_some() {
+            return Err(HeapError::Invariant(
+                "context already has RegExp intrinsic roots",
+            ));
+        }
+
+        let constructor = self.object(regexp.constructor)?;
+        if !constructor.is_constructor
+            || !matches!(
+                constructor.payload,
+                ObjectPayload::NativeFunction {
+                    data: NativeFunctionData {
+                        target: NativeFunctionId::RegExp(RegExpNativeKind::Constructor),
+                        realm: Some(target_realm),
+                        ..
+                    }
+                } if target_realm == realm
+            )
+        {
+            return Err(HeapError::Invariant(
+                "RegExp constructor root is not the realm's RegExp native",
+            ));
+        }
+
+        let prototype = self.object(regexp.prototype)?;
+        if prototype.kind != ObjectKind::Ordinary
+            || !matches!(prototype.payload, ObjectPayload::Ordinary)
+        {
+            return Err(HeapError::Invariant(
+                "RegExp prototype root is not an ordinary object",
+            ));
+        }
+
+        let object_shape = self.shape(regexp.object_shape)?;
+        if object_shape.prototype() != Some(regexp.prototype) {
+            return Err(HeapError::Invariant(
+                "RegExp object shape does not inherit from the realm's RegExp prototype",
+            ));
+        }
+        let [last_index] = object_shape.entries() else {
+            return Err(HeapError::Invariant(
+                "RegExp object shape does not contain exactly one lastIndex property",
+            ));
+        };
+        if last_index.atom != last_index_atom
+            || last_index.flags != PropertyFlags::data(true, false, false)
+        {
+            return Err(HeapError::Invariant(
+                "RegExp object shape has an invalid lastIndex property",
+            ));
+        }
+
+        let edges = [
+            RawId::Object(regexp.prototype),
+            RawId::Object(regexp.constructor),
+            RawId::Shape(regexp.object_shape),
+        ];
+        self.retain_edges_transactionally(&edges)?;
+
+        let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(realm))?.data
+        else {
+            unreachable!("context identity was validated before retaining RegExp roots")
+        };
+        context.regexp = Some(regexp);
         Ok(())
     }
 
@@ -4708,6 +4846,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
         12usize
             .saturating_add(PrimitiveKind::COUNT)
             .saturating_add(NativeErrorKind::COUNT)
+            .saturating_add(context.regexp.map_or(0, |_| 3))
             .saturating_add(context.global_objects.len())
             .saturating_add(context.intrinsics.len())
             .saturating_add(context.initial_shapes.len()),
@@ -4727,6 +4866,11 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
             .map(RawId::Object),
     );
     edges.extend(context.date_prototype.map(RawId::Object));
+    if let Some(regexp) = context.regexp {
+        edges.push(RawId::Object(regexp.prototype));
+        edges.push(RawId::Object(regexp.constructor));
+        edges.push(RawId::Shape(regexp.object_shape));
+    }
     edges.extend(context.function_constructor.map(RawId::Object));
     edges.extend(context.array_constructor.map(RawId::Object));
     edges.extend(context.array_prototype_values.map(RawId::Object));
@@ -6010,6 +6154,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn regexp_native_selectors_use_pinned_cproto() {
+        let constructor = NativeFunctionId::RegExp(RegExpNativeKind::Constructor);
+        assert_eq!(
+            constructor.descriptor().cproto,
+            NativeCProto::ConstructorOrFunction
+        );
+        assert!(constructor.descriptor().cproto.default_is_constructor());
+
+        for target in [
+            NativeFunctionId::RegExp(RegExpNativeKind::Exec),
+            NativeFunctionId::RegExp(RegExpNativeKind::Test),
+            NativeFunctionId::RegExp(RegExpNativeKind::ToString),
+        ] {
+            assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
+        for target in [
+            NativeFunctionId::RegExp(RegExpNativeKind::Species),
+            NativeFunctionId::RegExp(RegExpNativeKind::Source),
+            NativeFunctionId::RegExp(RegExpNativeKind::Flags),
+        ] {
+            assert_eq!(target.descriptor().cproto, NativeCProto::Getter);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
+        for flag in [
+            RegExpFlagKind::HasIndices,
+            RegExpFlagKind::Global,
+            RegExpFlagKind::IgnoreCase,
+            RegExpFlagKind::Multiline,
+            RegExpFlagKind::DotAll,
+            RegExpFlagKind::Unicode,
+            RegExpFlagKind::UnicodeSets,
+            RegExpFlagKind::Sticky,
+        ] {
+            let target = NativeFunctionId::RegExp(RegExpNativeKind::Flag(flag));
+            assert_eq!(target.descriptor().cproto, NativeCProto::GetterMagic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
+    }
+
     fn one_slot_shape(heap: &mut Heap) -> ShapeId {
         let atom = Atom::from_immediate_integer(0).unwrap();
         heap.allocate_shape(
@@ -6028,6 +6213,332 @@ mod tests {
     fn leaf(heap: &mut Heap, shape: ShapeId) -> ObjectId {
         heap.allocate_object(ObjectData::ordinary(shape, Vec::new()))
             .unwrap()
+    }
+
+    struct RegExpFixture {
+        heap: Heap,
+        empty_shape: ShapeId,
+        root: ObjectId,
+        realm: ContextId,
+        prototype_shape: ShapeId,
+        prototype: ObjectId,
+        function_shape: ShapeId,
+        constructor: ObjectId,
+        object_shape: ShapeId,
+        last_index: Atom,
+    }
+
+    impl RegExpFixture {
+        const fn realm_data(&self) -> RegExpRealmData {
+            RegExpRealmData {
+                prototype: self.prototype,
+                constructor: self.constructor,
+                object_shape: self.object_shape,
+            }
+        }
+
+        fn dispose(mut self) -> GcStats {
+            self.heap.release_shape(self.object_shape).unwrap();
+            self.heap.release_object(self.prototype).unwrap();
+            self.heap.release_object(self.constructor).unwrap();
+            self.heap.release_context(self.realm).unwrap();
+            let stats = self.heap.run_gc().unwrap();
+
+            self.heap.release_shape(self.function_shape).unwrap();
+            self.heap.release_shape(self.prototype_shape).unwrap();
+            self.heap.release_object(self.root).unwrap();
+            self.heap.release_shape(self.empty_shape).unwrap();
+            assert_eq!(self.heap.counts().live, 0);
+            stats
+        }
+    }
+
+    fn regexp_fixture() -> RegExpFixture {
+        let mut heap = Heap::new();
+        let empty_shape = empty_shape(&mut heap);
+        let root = leaf(&mut heap, empty_shape);
+        let realm = heap
+            .allocate_context(ContextData::new(
+                root, root, root, root, root, root, root, root,
+            ))
+            .unwrap();
+        let prototype_shape = heap
+            .allocate_shape(Shape::new(Some(root), []).unwrap())
+            .unwrap();
+        let prototype = heap
+            .allocate_object(ObjectData::ordinary(prototype_shape, Vec::new()))
+            .unwrap();
+        let function_shape = heap
+            .allocate_shape(Shape::new(Some(root), []).unwrap())
+            .unwrap();
+        let constructor = heap
+            .allocate_object(ObjectData::bound_native_function(
+                function_shape,
+                Vec::new(),
+                NativeFunctionId::RegExp(RegExpNativeKind::Constructor),
+                realm,
+                2,
+            ))
+            .unwrap();
+        let last_index = Atom::from_immediate_integer(0).unwrap();
+        let object_shape = heap
+            .allocate_shape(
+                Shape::new(
+                    Some(prototype),
+                    [ShapeEntry {
+                        atom: last_index,
+                        flags: PropertyFlags::data(true, false, false),
+                    }],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        RegExpFixture {
+            heap,
+            empty_shape,
+            root,
+            realm,
+            prototype_shape,
+            prototype,
+            function_shape,
+            constructor,
+            object_shape,
+            last_index,
+        }
+    }
+
+    #[test]
+    fn regexp_intrinsics_attach_transactionally_once_and_finalize_with_realm() {
+        let mut fixture = regexp_fixture();
+        let realm_data = fixture.realm_data();
+        let prototype_strong = fixture.heap.object_strong_count(fixture.prototype).unwrap();
+        let constructor_strong = fixture
+            .heap
+            .object_strong_count(fixture.constructor)
+            .unwrap();
+        let object_shape_strong = fixture
+            .heap
+            .shape_strong_count(fixture.object_shape)
+            .unwrap();
+
+        fixture
+            .heap
+            .live_node_mut(RawId::Shape(fixture.object_shape))
+            .unwrap()
+            .strong = u32::MAX;
+        assert_eq!(
+            fixture
+                .heap
+                .attach_regexp_intrinsics(fixture.realm, realm_data, fixture.last_index,),
+            Err(HeapError::Overflow {
+                operation: "retaining outgoing heap edges",
+            })
+        );
+        assert_eq!(fixture.heap.context(fixture.realm).unwrap().regexp, None);
+        assert_eq!(
+            fixture.heap.object_strong_count(fixture.prototype).unwrap(),
+            prototype_strong
+        );
+        assert_eq!(
+            fixture
+                .heap
+                .object_strong_count(fixture.constructor)
+                .unwrap(),
+            constructor_strong
+        );
+        fixture
+            .heap
+            .live_node_mut(RawId::Shape(fixture.object_shape))
+            .unwrap()
+            .strong = object_shape_strong;
+
+        fixture
+            .heap
+            .attach_regexp_intrinsics(fixture.realm, realm_data, fixture.last_index)
+            .unwrap();
+        assert_eq!(
+            fixture.heap.context(fixture.realm).unwrap().regexp,
+            Some(realm_data)
+        );
+        assert_eq!(
+            fixture.heap.object_strong_count(fixture.prototype).unwrap(),
+            prototype_strong + 1
+        );
+        assert_eq!(
+            fixture
+                .heap
+                .object_strong_count(fixture.constructor)
+                .unwrap(),
+            constructor_strong + 1
+        );
+        assert_eq!(
+            fixture
+                .heap
+                .shape_strong_count(fixture.object_shape)
+                .unwrap(),
+            object_shape_strong + 1
+        );
+
+        assert_eq!(
+            fixture
+                .heap
+                .attach_regexp_intrinsics(fixture.realm, realm_data, fixture.last_index,),
+            Err(HeapError::Invariant(
+                "context already has RegExp intrinsic roots"
+            ))
+        );
+        assert_eq!(
+            fixture
+                .heap
+                .shape_strong_count(fixture.object_shape)
+                .unwrap(),
+            object_shape_strong + 1
+        );
+
+        let stats = fixture.dispose();
+        assert_eq!(stats.cleanup.finalized_contexts, 1);
+        assert_eq!(stats.cleanup.finalized_objects, 2);
+        assert_eq!(stats.cleanup.finalized_shapes, 1);
+    }
+
+    #[test]
+    fn regexp_intrinsics_reject_mismatched_constructor_prototype_and_shape() {
+        let mut fixture = regexp_fixture();
+        let realm_data = fixture.realm_data();
+
+        {
+            let ObjectPayload::NativeFunction { data } = &mut fixture
+                .heap
+                .object_mut(fixture.constructor)
+                .unwrap()
+                .payload
+            else {
+                panic!("fixture constructor must be a native function");
+            };
+            data.target = NativeFunctionId::Date(DateNativeKind::Constructor);
+        }
+        assert!(
+            fixture
+                .heap
+                .attach_regexp_intrinsics(fixture.realm, realm_data, fixture.last_index)
+                .is_err()
+        );
+        {
+            let ObjectPayload::NativeFunction { data } = &mut fixture
+                .heap
+                .object_mut(fixture.constructor)
+                .unwrap()
+                .payload
+            else {
+                panic!("fixture constructor must be a native function");
+            };
+            data.target = NativeFunctionId::RegExp(RegExpNativeKind::Constructor);
+        }
+
+        {
+            let ObjectPayload::NativeFunction { data } = &mut fixture
+                .heap
+                .object_mut(fixture.constructor)
+                .unwrap()
+                .payload
+            else {
+                panic!("fixture constructor must be a native function");
+            };
+            data.realm = None;
+        }
+        assert!(
+            fixture
+                .heap
+                .attach_regexp_intrinsics(fixture.realm, realm_data, fixture.last_index)
+                .is_err()
+        );
+        {
+            let ObjectPayload::NativeFunction { data } = &mut fixture
+                .heap
+                .object_mut(fixture.constructor)
+                .unwrap()
+                .payload
+            else {
+                panic!("fixture constructor must be a native function");
+            };
+            data.realm = Some(fixture.realm);
+        }
+
+        fixture.heap.object_mut(fixture.prototype).unwrap().payload =
+            ObjectPayload::RegExp(RegExpObjectData::Uninitialized);
+        assert!(
+            fixture
+                .heap
+                .attach_regexp_intrinsics(fixture.realm, realm_data, fixture.last_index)
+                .is_err()
+        );
+        fixture.heap.object_mut(fixture.prototype).unwrap().payload = ObjectPayload::Ordinary;
+
+        let wrong_prototype_shape = fixture
+            .heap
+            .allocate_shape(
+                Shape::new(
+                    Some(fixture.root),
+                    [ShapeEntry {
+                        atom: fixture.last_index,
+                        flags: PropertyFlags::data(true, false, false),
+                    }],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(
+            fixture
+                .heap
+                .attach_regexp_intrinsics(
+                    fixture.realm,
+                    RegExpRealmData {
+                        object_shape: wrong_prototype_shape,
+                        ..realm_data
+                    },
+                    fixture.last_index,
+                )
+                .is_err()
+        );
+        fixture.heap.release_shape(wrong_prototype_shape).unwrap();
+
+        let wrong_flags_shape = fixture
+            .heap
+            .allocate_shape(
+                Shape::new(
+                    Some(fixture.prototype),
+                    [ShapeEntry {
+                        atom: fixture.last_index,
+                        flags: DATA_FLAGS,
+                    }],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(
+            fixture
+                .heap
+                .attach_regexp_intrinsics(
+                    fixture.realm,
+                    RegExpRealmData {
+                        object_shape: wrong_flags_shape,
+                        ..realm_data
+                    },
+                    fixture.last_index,
+                )
+                .is_err()
+        );
+        fixture.heap.release_shape(wrong_flags_shape).unwrap();
+
+        let wrong_atom = Atom::from_immediate_integer(1).unwrap();
+        assert!(
+            fixture
+                .heap
+                .attach_regexp_intrinsics(fixture.realm, realm_data, wrong_atom)
+                .is_err()
+        );
+        assert_eq!(fixture.heap.context(fixture.realm).unwrap().regexp, None);
+        fixture.dispose();
     }
 
     #[test]

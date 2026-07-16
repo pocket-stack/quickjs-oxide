@@ -11,9 +11,9 @@ use quickjs_oxide::{
 // (46634-46636). The three methods deliberately share one magic-selected
 // kernel but retain distinct position defaults and search ranges.
 //
-// Rust-side vectors avoid RegExp, Proxy, and object-literal syntax. The
-// oracle-only vectors below preserve those exotic boundaries until their
-// object kinds are available.
+// Rust-side vectors avoid Proxy and object-literal syntax. Constructor-created
+// genuine RegExp values exercise the published R1a brand; the oracle-only
+// vectors below preserve the remaining Proxy boundary.
 
 const CASE_PRELUDE: &str = r#"
 function __bits(object,key){
@@ -369,31 +369,34 @@ const STACK_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-const EXOTIC_ORACLE_ONLY_CASES: &[(&str, &str)] = &[
+const REGEXP_CASES: &[(&str, &str)] = &[
     (
         "real RegExp is rejected before position conversion",
         r#"(function(){
             var log="",position=Object();position[Symbol.toPrimitive]=function(){log+="position;";return 0};
-            try{"abc".includes(/b/,position)}catch(error){return error.name+":"+error.message+"|"+log}
+            try{"abc".includes(RegExp("b"),position)}catch(error){return error.name+":"+error.message+"|"+log}
             return "missing";
         })()"#,
     ),
     (
         "RegExp Symbol.match false and null override the internal brand",
         r#"(function(){
-            var first=/b/;first[Symbol.match]=false;
-            var second=/b/;second[Symbol.match]=null;
+            var first=RegExp("b");first[Symbol.match]=false;
+            var second=RegExp("b");second[Symbol.match]=null;
             return ["abc/b/".includes(first),"abc/b/".startsWith(second,3)].join("|");
         })()"#,
     ),
     (
         "RegExp undefined match falls back to its internal brand",
         r#"(function(){
-            var value=/b/;value[Symbol.match]=undefined;
+            var value=RegExp("b");value[Symbol.match]=undefined;
             try{"abc".endsWith(value)}catch(error){return error.name+":"+error.message}
             return "missing";
         })()"#,
     ),
+];
+
+const EXOTIC_ORACLE_ONLY_CASES: &[(&str, &str)] = &[
     (
         "Proxy exposes match Get then search ToPrimitive order",
         r#"(function(){
@@ -433,6 +436,7 @@ fn string_includes_oracle_vectors_self_check() {
         ("order", ORDER_CASES),
         ("errors", ERROR_CASES),
         ("stack", STACK_CASES),
+        ("RegExp", REGEXP_CASES),
         ("exotic boundary", EXOTIC_ORACLE_ONLY_CASES),
     ] {
         for &(description, source) in cases {
@@ -459,6 +463,7 @@ fn string_includes_values_positions_utf16_and_ropes_match_pinned_quickjs() {
 #[test]
 fn string_includes_is_regexp_and_conversion_order_match_pinned_quickjs() {
     compare_cases("String includes-family order", ORDER_CASES);
+    compare_cases("String includes-family RegExp", REGEXP_CASES);
 }
 
 #[test]
@@ -614,13 +619,13 @@ fn string_includes_callables_are_per_realm_and_collectable() {
 }
 
 #[test]
-fn string_includes_records_current_regexp_proxy_and_module_boundaries() {
+fn string_includes_records_current_proxy_and_module_boundaries() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     assert_eq!(
         context.eval("typeof RegExp+'|'+typeof Proxy").unwrap(),
-        Value::String(JsString::try_from_utf8("undefined|undefined").unwrap()),
-        "move the oracle-only vectors into the differential when these intrinsics land",
+        Value::String(JsString::try_from_utf8("function|undefined").unwrap()),
+        "move the remaining oracle-only vectors into the differential when Proxy lands",
     );
     // Module namespace exotic Get and Proxy invariant paths remain explicit
     // object-model boundaries. Neither is needed for the ordinary IsRegExp

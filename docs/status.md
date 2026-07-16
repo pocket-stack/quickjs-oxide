@@ -13,14 +13,14 @@ claim full parity.
   capability profile, audited negative-test canaries, and source/metadata host
   requirements keep unsupported grammar, features, modes, and `$262` hooks from
   becoming false passes. Bounded workers preserve canonical byte-for-byte TSV
-  and JSONL ordering. The current vector has 23,190 passes: a 27.75% lower bound
-  after the 18,475 pinned QuickJS target exclusions, or 80.53% among the 28,798
+  and JSONL ordering. The current vector has 23,859 passes: a 28.55% lower bound
+  after the 18,475 pinned QuickJS target exclusions, or 82.88% among the 28,788
   variants with a non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
-  the denominators and why none of these figures is a parity claim. The RegExp
-  lexical-goal repair leaves the 23,190 passes unchanged while moving 1,312
-  slash-literal failures from accidental `SyntaxError` buckets to explicit
-  parser/harness frontiers.
+  the denominators and why none of these figures is a parity claim. The first
+  observable RegExp intrinsic slice adds 669 full-vector passes and moves ten
+  advanced-pattern variants from generic runtime failure to typed unsupported
+  results without enabling RegExp literals or Symbol protocols.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -51,13 +51,27 @@ claim full parity.
 
   The heap also has a genuine edge-free RegExp brand with explicit
   uninitialized/compiled states and reference-counted source/program leaves.
-  Exhaustive runtime class matches recognize that brand for `IsRegExp`, the
-  default Object tag, non-callability and ordinary-object storage without
-  publishing a fake global. Forty-four pinned-QuickJS match/capture
-  differential cases and the RegExp/compiler/heap/parser unit group pass. A
-  frozen 225-path/450-variant Test262 RegExp-core vector currently remains
-  450 honest runtime failures because `%RegExp%`, its prototype/protocols, the
-  literal bytecode opcode and realm roots are intentionally not wired yet.
+  Realm data atomically roots the ordinary `%RegExp.prototype%`, constructor,
+  and canonical one-slot `lastIndex` shape. Typed native selectors publish the
+  constructor/call identity and branded-copy paths, all flag/source/flags
+  accessors, generic `toString`, builtin and abstract `exec`, `test`, species,
+  `lastIndex` coercion/update/reset, captures, result metadata, and `d` indices.
+  Allocation, coercion, error and result realms follow the pinned QuickJS
+  order; matcher execution stays behind the interrupt-aware R0 boundary. The
+  executor polls that boundary, while the runtime currently supplies a
+  noninterrupting closure until the host interrupt hook is published.
+
+  Forty-four matcher cases and 23 observable intrinsic vectors match pinned
+  QuickJS, including cross-realm construction/results/errors. The frozen
+  225-path/450-variant Test262 RegExp-core vector now has 430 passes. Ten
+  variants remain runtime failures solely because `eval` is absent; ten reach
+  typed advanced-pattern frontiers for backreferences, lookaround, Unicode
+  properties, or legacy octal/control escapes. RegExp literals, legacy
+  `compile`, `RegExp.escape`, and the Symbol match/search/replace/split
+  protocols remain intentionally unpublished rather than stubbed. The complete
+  102,037-key join records only 669 `fail-runtime -> pass` and ten
+  `fail-runtime -> unsupported-runtime` transitions, with no previous-pass
+  regression.
 
   Advanced grammar fails closed: lookaround, backreferences, named captures,
   inline modifiers, Unicode properties, all `v`-mode execution, and unported
@@ -1108,7 +1122,7 @@ claim full parity.
   each group as a writable, enumerable, configurable property containing a
   defining-realm Array. Appends reuse QuickJS's ordinary push Set/final-length
   path, so an inherited Array index setter or rejection remains observable. A
-  deterministic nine-active-call guard keeps recursive callbacks catchable as
+  deterministic eight-active-call guard keeps recursive callbacks catchable as
   `InternalError: stack overflow`; pinned QuickJS permits a deeper
   platform-stack-dependent chain, so exact threshold parity still requires the
   general native-call trampoline.
@@ -1256,10 +1270,10 @@ claim full parity.
   before search-value conversion, preserves every abrupt-completion boundary,
   clamps position with `JS_ToInt32Clamp`, and scans UTF-16 code units. The heap
   now has a genuine RegExp payload and the internal-brand fallback recognizes
-  only that class; JavaScript cannot construct one until the RegExp realm graph
-  lands. The generic `split` callable has `length=2` and ports pinned QuickJS
-  `js_string_split` without pretending that the still-unwired RegExp runtime
-  protocols exist. Nullish receivers are rejected
+  only that class; the R1a realm graph and constructor now make that branded
+  path observable. The generic `split` callable has `length=2` and ports pinned
+  QuickJS `js_string_split` without claiming the still-unwired
+  `RegExp.prototype[Symbol.split]` protocol. Nullish receivers are rejected
   before any separator access. Only object separators perform the ordinary
   `Symbol.split` Get; a present non-nullish method is called with the separator
   as `this`, the original unconverted receiver and limit, and exactly two
@@ -1277,8 +1291,8 @@ claim full parity.
   nine passing oracle/differential/white-box integration tests plus five
   intrinsic unit tests. The pinned anchors are
   `quickjs.c` 45894-45980 and 46640. Its 127-path focused Test262 vector has
-  174 passes out of 254 variants; 81 of the 120 core split paths pass in both
-  modes, and the remaining outcomes expose RegExp literal/global, eval,
+  178 passes out of 254 variants; 83 of the 120 core split paths pass in both
+  modes, and the remaining outcomes expose RegExp literal/protocol, eval,
   object-literal parser, adjacent-feature and IsHTMLDDA host frontiers. The
   exact full-vector join moves 23,016 to 23,190 passes with no previous-pass
   regression. Declaring `Symbol.split` in the conservative capability profile
@@ -1496,8 +1510,9 @@ claim full parity.
 
   Forty-four Date unit tests, six grouped QuickJS differentials, one oracle
   vector self-check, and two cross-realm/GC integration tests pass. With
-  generic split linked, the 799-path focused Test262 vector has 1,282 passes
-  out of 1,598 variants. At the Date landing, the exact complete-vector join
+  generic split and RegExp R1a linked, the 799-path focused Test262 vector has
+  1,290 passes out of 1,598 variants. At the Date landing, the exact
+  complete-vector join
   moved 21,740 to 23,016 passes through 1,276 `fail-runtime -> pass`
   transitions with no previous-pass regression and no change outside the
   manifest. The Date-landing five- and eight-worker focused and full reports
@@ -2039,21 +2054,21 @@ identifier and ordinary fixed/computed member References. Sloppy
 direct-identifier delete is implemented
 for the current static scope tree and defining-realm global object. Dynamic
 object-environment lookup/deletion introduced by `with` or direct `eval`, the
-remaining seven entries of String's 53-key prototype surface, the RegExp
-constructor/prototype/realm graph and protocol methods needed to make the new
-internal brand JavaScript-constructible, Proxy/exotic internal methods, and the full
+remaining seven entries of String's 53-key prototype surface, RegExp literal
+execution, legacy `compile`, `RegExp.escape` and the Symbol protocol methods,
+Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. AggregateError and
 uncatchable termination state are also pending. Array
 destructuring consumers, `with` object-environment
 semantics, other
-iterator classes and helpers, observable RegExp integration, the remaining
+iterator classes and helpers, the remaining RegExp protocol integration and
 RegExp-/Unicode-backed String methods, object-literal methods/accessors and
 exotic-source spread, and the rest of the builtin table build on those layers.
 
 The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
 identifier, case-conversion, `Cased` and `Case_Ignorable` data, the advanced
-RegExp grammar plus observable constructor/literal/protocol integration,
+RegExp grammar plus observable literal/protocol integration,
 modules, jobs/Promises/async,
 generators, TypedArrays/Atomics, WeakRef/finalization, bytecode version 5 and
 BJSON interoperability, `std`/`os`, workers, REPL/qjsc, and the complete Rust
@@ -2076,6 +2091,10 @@ in `runtime/intrinsics/math.rs`; the complete Reflect table and handlers live in
 `host.rs` own the pure calendar, parser, formatter, and injectable host seams;
 `constructor.rs` and `prototype.rs` own the observable native handlers, while
 the branded payload, typed selectors, and realm-root edge remain in the heap.
+The observable RegExp shell is likewise isolated in
+`runtime/intrinsics/regexp/`: installation/dispatch, constructor/allocation,
+accessors/source formatting, and builtin/abstract execution live in separate
+modules, while `src/regexp/` remains runtime independent.
 The complete VM-to-runtime trait adapter,
 per-frame argument/local/capture storage, iterator protocol bridge and
 bytecode-host error conversion now live in `runtime/vm_host.rs`; host layout is
@@ -2096,8 +2115,10 @@ iterative flattening now live in `runtime/bytecode_publish.rs`. The test, Array,
 Object, VM-host, property, native-dispatch and bytecode-publication
 no-semantic-change splits reduced `runtime.rs` from roughly thirty-two thousand
 lines to 9,937 lines; subsequent wiring reached 9,944 before the RegExp brand
-added only nine exhaustive-class arms, leaving the current parent at 9,953
-lines. The RegExp kernel itself is isolated in
+added only nine exhaustive-class arms. Observable RegExp bootstrap and dispatch
+add seven facade lines; the host-stack guard note leaves the current parent at
+9,963 lines. The feature's algorithms do not return to the parent monolith. The
+RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
 helpers, bytecode publication linking and call dispatch, runtime/root lifecycle,
@@ -2178,6 +2199,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_date_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_regexp_engine -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_regexp_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_lexicals -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -2270,7 +2293,8 @@ subranges, String-conversion core,
 Unicode String case conversion, String-rope/byte/native-Error kernels, Unicode
 identifier core, global
 BaseObjects, complete Number-, BigInt-, Math-, Reflect- and Date-intrinsic
-differentials, the runtime-independent RegExp-kernel differential, and the
+differentials, the runtime-independent RegExp-kernel and observable
+RegExp-intrinsic differentials, and the
 Program-var/function, Program/body/block/switch/classic-for lexical-scope,
 ordinary mapped/unmapped Arguments object,
 single/labelled Annex B, synchronous try/catch/finally, synchronous

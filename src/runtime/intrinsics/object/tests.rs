@@ -78,8 +78,8 @@ fn recursive_group_by_callback_ceiling_is_catchable() {
                         return "group";
                     });
                 }
-                recurse(8);
-                try{recurse(9);return "missing"}
+                recurse(7);
+                try{recurse(8);return "missing"}
                 catch(error){return "ok|"+error.name+":"+error.message}
             })()"#,
         )

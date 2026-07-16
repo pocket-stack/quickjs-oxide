@@ -356,7 +356,15 @@ impl<'a> Parser<'a> {
             }
             let position = self.position;
             let atom = self.parse_atom()?;
-            let quantifier = self.parse_quantifier()?;
+            // QuickJS clears last_atom_start for assertions. A following
+            // brace is therefore parsed as the next term (and becomes a
+            // unicode syntax error), while *, + and ? still reach the common
+            // "nothing to repeat" path.
+            let quantifier = if !atom.is_quantifiable() && self.peek() == Some(u16::from(b'{')) {
+                None
+            } else {
+                self.parse_quantifier()?
+            };
             if quantifier.is_some() && !atom.is_quantifiable() {
                 return Err(CompileError::syntax(position, "invalid quantifier target"));
             }
@@ -389,9 +397,10 @@ impl<'a> Parser<'a> {
                 position,
                 "regular expression syntax error",
             )),
-            0x7b if self.flags.is_unicode() => {
-                Err(CompileError::syntax(position, "invalid repetition count"))
-            }
+            0x7b if self.flags.is_unicode() => Err(CompileError::syntax(
+                position,
+                "regular expression syntax error",
+            )),
             first => Ok(Atom::Literal(self.finish_code_point(first))),
         }
     }
@@ -678,19 +687,41 @@ impl<'a> Parser<'a> {
             {
                 self.position += 1;
                 let second = self.parse_class_atom()?;
-                let (ClassAtom::Single(start), ClassAtom::Single(end)) = (first, second) else {
-                    return Err(CompileError::syntax(first_position, "invalid class range"));
-                };
-                if start > end {
-                    return Err(CompileError::syntax(first_position, "invalid class range"));
+                match (first, second) {
+                    (ClassAtom::Single(start), ClassAtom::Single(end)) => {
+                        if start > end {
+                            return Err(CompileError::syntax(
+                                first_position,
+                                "invalid class range",
+                            ));
+                        }
+                        add_class_atom(
+                            &mut ranges,
+                            ClassAtom::Set(vec![CharacterRange::new(start, end)]),
+                            self.class_max_code_point(),
+                            self.flags.contains(RegExpFlags::IGNORE_CASE),
+                            self.flags.is_unicode(),
+                        );
+                    }
+                    _ if self.flags.is_unicode() => {
+                        return Err(CompileError::syntax(first_position, "invalid class range"));
+                    }
+                    (first, second) => {
+                        // Annex B permits a legacy CharacterClassEscape at
+                        // either range endpoint. QuickJS reinterprets the
+                        // would-be range as the first atom, a literal '-', and
+                        // the second atom instead of rejecting it.
+                        for atom in [first, ClassAtom::Single(u32::from(b'-')), second] {
+                            add_class_atom(
+                                &mut ranges,
+                                atom,
+                                self.class_max_code_point(),
+                                self.flags.contains(RegExpFlags::IGNORE_CASE),
+                                false,
+                            );
+                        }
+                    }
                 }
-                add_class_atom(
-                    &mut ranges,
-                    ClassAtom::Set(vec![CharacterRange::new(start, end)]),
-                    self.class_max_code_point(),
-                    self.flags.contains(RegExpFlags::IGNORE_CASE),
-                    self.flags.is_unicode(),
-                );
             } else {
                 add_class_atom(
                     &mut ranges,
@@ -761,7 +792,7 @@ impl<'a> Parser<'a> {
                 if self.flags.is_unicode() && self.peek().is_some_and(is_ascii_digit) {
                     Err(CompileError::syntax(
                         escaped_position,
-                        "invalid decimal escape in regular expression",
+                        "invalid identity escape",
                     ))
                 } else if self.peek().is_some_and(is_ascii_octal_digit) {
                     Err(CompileError::unsupported(
@@ -772,10 +803,24 @@ impl<'a> Parser<'a> {
                     Ok(ClassAtom::Single(0))
                 }
             }
-            0x31..=0x39 | 0x6b => Err(CompileError::unsupported(
+            0x31..=0x37 if self.flags.is_unicode() => Err(CompileError::syntax(
                 escaped_position,
-                UnsupportedFeature::Backreference,
+                "invalid identity escape",
             )),
+            0x31..=0x37 => Err(CompileError::unsupported(
+                escaped_position,
+                UnsupportedFeature::LegacyOctalEscape,
+            )),
+            0x38..=0x39 if self.flags.is_unicode() => Err(CompileError::syntax(
+                escaped_position,
+                "invalid identity escape",
+            )),
+            0x38..=0x39 => Ok(ClassAtom::Single(u32::from(escaped))),
+            0x6b if self.flags.is_unicode() => Err(CompileError::syntax(
+                escaped_position,
+                "invalid identity escape",
+            )),
+            0x6b => Ok(ClassAtom::Single(u32::from(b'k'))),
             unit if is_syntax_character(unit)
                 || unit == u16::from(b'/')
                 || unit == u16::from(b'-') =>
@@ -826,7 +871,7 @@ impl<'a> Parser<'a> {
                 };
                 if self.peek() != Some(u16::from(b'}')) {
                     if self.flags.is_unicode() {
-                        return Err(CompileError::syntax(start, "invalid repetition count"));
+                        return Err(CompileError::syntax(start, "expecting '}'"));
                     }
                     self.position = start;
                     return Ok(None);
@@ -1595,6 +1640,15 @@ mod tests {
             matches!(instruction, Instruction::Range { ranges, inverted: false, .. }
                 if ranges.as_ref() == [CharacterRange::new(0, 0)])
         }));
+
+        for pattern in [r"[\d-a]", r"[a-\d]", r"[\d-\w]"] {
+            let legacy = compile_ascii(pattern, "").unwrap();
+            assert!(legacy.instructions().iter().any(|instruction| {
+                matches!(instruction, Instruction::Range { ranges, inverted: false, .. }
+                    if ranges.contains(&CharacterRange::new(u32::from(b'-'), u32::from(b'-'))))
+            }));
+            assert!(compile_ascii(pattern, "u").is_err());
+        }
     }
 
     #[test]
@@ -1642,6 +1696,20 @@ mod tests {
                 compile_ascii(pattern, "u").unwrap_err().kind(),
                 CompileErrorKind::Syntax
             ));
+        }
+        for pattern in ["^{", "^{1}", r"\b{1}"] {
+            assert_eq!(
+                compile_ascii(pattern, "u").unwrap_err().message(),
+                "regular expression syntax error",
+                "{pattern}",
+            );
+        }
+        for pattern in ["a{1", "a{1,", "a{1,x}", "a{1,2"] {
+            assert_eq!(
+                compile_ascii(pattern, "u").unwrap_err().message(),
+                "expecting '}'",
+                "{pattern}",
+            );
         }
     }
 

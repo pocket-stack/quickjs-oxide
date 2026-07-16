@@ -351,6 +351,9 @@ impl Runtime {
             NativeFunctionId::Date(kind) => {
                 self.call_date_native(realm, kind, invocation, arguments)
             }
+            NativeFunctionId::RegExp(kind) => {
+                self.call_regexp_native(realm, kind, invocation, arguments)
+            }
             NativeFunctionId::PrimitiveConstructor(kind) => {
                 self.call_primitive_constructor(realm, kind, invocation, arguments)
             }

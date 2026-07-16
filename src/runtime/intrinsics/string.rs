@@ -642,7 +642,10 @@ impl Runtime {
     /// Internal-class fallback of pinned QuickJS `js_is_regexp` after an
     /// object has produced `undefined` for `Symbol.match`.
     ///
-    fn native_object_has_regexp_brand(&self, object: &ObjectRef) -> Result<bool, RuntimeError> {
+    pub(in crate::runtime) fn native_object_has_regexp_brand(
+        &self,
+        object: &ObjectRef,
+    ) -> Result<bool, RuntimeError> {
         let state = self.0.state.borrow();
         let object = state.heap.object(object.object_id())?;
         Ok(match &object.payload {
@@ -667,7 +670,7 @@ impl Runtime {
     /// `Symbol.match` lookup, objects perform one ordinary Get, a present value
     /// is converted only with ToBoolean, and `undefined` falls back to the
     /// internal RegExp brand.
-    fn native_is_regexp(
+    pub(in crate::runtime) fn native_is_regexp(
         &self,
         realm: ContextId,
         value: &Value,

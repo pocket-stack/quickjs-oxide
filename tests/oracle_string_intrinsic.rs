@@ -699,14 +699,14 @@ fn string_wrapper_retains_then_releases_its_realm_graph() {
 }
 
 #[test]
-fn string_intrinsic_records_current_proxy_regexp_and_typed_array_boundaries() {
+fn string_intrinsic_records_current_proxy_and_typed_array_boundaries() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     assert_eq!(
         context
             .eval("typeof Proxy+'|'+typeof RegExp+'|'+typeof Uint16Array+'|'+typeof String.prototype.includes")
             .unwrap(),
-        Value::String(JsString::try_from_utf8("undefined|undefined|undefined|function").unwrap()),
+        Value::String(JsString::try_from_utf8("undefined|function|undefined|function").unwrap()),
         "move the oracle-only vectors into the differential as these surfaces are published",
     );
     // Module namespace raw objects remain a corresponding language/object-model

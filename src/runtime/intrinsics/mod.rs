@@ -5,6 +5,7 @@ pub(super) mod date;
 mod math;
 mod object;
 mod reflect;
+mod regexp;
 mod string;
 
 impl Runtime {
