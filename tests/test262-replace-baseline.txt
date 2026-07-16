@@ -1,0 +1,26 @@
+# The 191-path replace slice is frozen from the R1g full keyed report. R1h
+# admits 332 variants and records 286 passes; six runnable variants fail to
+# parse and 40 stop at typed parser frontiers.
+quickjs=2026-06-04
+test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
+test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
+test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
+oxide_profile_sha256=921df0ef452f4d1286162093ebdf81a74d0805eb7c04601c86abd6ec7347ed7f
+schema=test262-canonical-classified-v2
+mode=both
+timeout_ms=30000
+paths=191
+variants=376
+runnable=332
+passes=286
+manifest_sha256=85999347ba335697a991931a7346e426b9487ca293897527bea06867e691be4a
+r1g_oxide_profile_sha256=0d26aedd5b5d7fa00b6c2551a93c7d776f22e2934b790615d6dc58c454156d5f
+r1g_full_tsv_sha256=5ece50a681fcb4fe97779002b179174930d2cdbdb4bd2120e0679678bd96b161
+r1g_keys_sha256=4bb59888a4c37d5c2082b1c19156ecda7cdb5b659e40c47e1d7bf684f3980999
+r1g_selected_sha256=493abc9c31bab15a4fb843861563c7db4a6e33b2f461c6610b461e2b4bd7c37f
+r1g_variants=376
+r1g_summary=fail-parse=2 fail-runtime=106 pass=10 unsupported-feature=250 unsupported-host-create-realm=2 unsupported-host-is-html-dda=4 unsupported-parser=2
+tsv_sha256=055d52219998a0863a4241b3c5b374b917c1503d93b0715048ee2e171db3d012
+jsonl_sha256=dffcdbd8260a3d6e1c277d76797ba7187e40a971860ff802efaf8b3c6e65c0ad
+summary=fail-parse=6 pass=286 unsupported-feature=38 unsupported-host-create-realm=2 unsupported-host-is-html-dda=4 unsupported-parser=40

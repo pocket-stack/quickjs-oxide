@@ -91,7 +91,7 @@ impl Runtime {
                     realm,
                     pattern_object.clone(),
                     method,
-                    this_value,
+                    std::slice::from_ref(&this_value),
                 );
             }
         }
@@ -113,15 +113,15 @@ impl Runtime {
             Completion::Return(value) => value,
             Completion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        self.call_string_regexp_method(realm, regexp, method, Value::String(source))
+        self.call_string_regexp_method(realm, regexp, method, &[Value::String(source)])
     }
 
-    fn call_string_regexp_method(
+    pub(super) fn call_string_regexp_method(
         &self,
         realm: ContextId,
         receiver: ObjectRef,
         method: Value,
-        input: Value,
+        arguments: &[Value],
     ) -> Result<Completion, RuntimeError> {
         let callable = match method {
             Value::Object(object) => self.as_callable(&object)?,
@@ -141,11 +141,6 @@ impl Runtime {
                 "not a function",
             )?));
         };
-        self.call_internal(
-            realm,
-            &callable,
-            Value::Object(receiver),
-            std::slice::from_ref(&input),
-        )
+        self.call_internal(realm, &callable, Value::Object(receiver), arguments)
     }
 }

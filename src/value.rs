@@ -76,6 +76,7 @@ thread_local! {
     static FAIL_NEXT_PAD_RESERVATION: Cell<bool> = const { Cell::new(false) };
     static FAIL_NEXT_TRIM_RESERVATION: Cell<bool> = const { Cell::new(false) };
     static FAIL_NEXT_CREATE_HTML_RESERVATION: Cell<bool> = const { Cell::new(false) };
+    static FAIL_NEXT_REPLACEMENT_RESERVATION: Cell<bool> = const { Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -114,6 +115,16 @@ pub(crate) fn fail_next_create_html_reservation_for_test() {
         assert!(
             !armed.replace(true),
             "CreateHTML reservation failure was already armed"
+        );
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_replacement_reservation_for_test() {
+    FAIL_NEXT_REPLACEMENT_RESERVATION.with(|armed| {
+        assert!(
+            !armed.replace(true),
+            "replacement StringBuffer reservation failure was already armed"
         );
     });
 }
@@ -165,6 +176,11 @@ enum CreateHtmlStorage {
     Utf16(Vec<u16>),
 }
 
+enum ReplacementStorage {
+    Latin1(Vec<u8>),
+    Utf16(Vec<u16>),
+}
+
 /// Fallible, narrow-first equivalent of QuickJS's `StringBuffer` for the
 /// Annex-B CreateHTML family. Errors are deliberately latched instead of
 /// returned from writes: the runtime must still perform the observable
@@ -172,6 +188,19 @@ enum CreateHtmlStorage {
 /// length failure.
 pub(crate) struct CreateHtmlStringBuffer {
     storage: CreateHtmlStorage,
+    limit: usize,
+    error: Option<JsStringError>,
+}
+
+/// Fallible, narrow-first equivalent of QuickJS's `StringBuffer` for the
+/// String/RegExp replacement family.
+///
+/// The first length or allocation failure is latched. Later writes become
+/// no-ops and cannot replace that error, allowing the runtime to continue any
+/// still-observable property access or replacement callback before `finish`
+/// surfaces the original failure.
+pub(crate) struct ReplacementStringBuffer {
+    storage: ReplacementStorage,
     limit: usize,
     error: Option<JsStringError>,
 }
@@ -345,6 +374,186 @@ impl CreateHtmlStringBuffer {
                 JsString(Rc::new(StringRepr::Latin1(units.into_boxed_slice())))
             }
             CreateHtmlStorage::Utf16(units) => {
+                JsString(Rc::new(StringRepr::Utf16(units.into_boxed_slice())))
+            }
+        })
+    }
+}
+
+impl ReplacementStringBuffer {
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self::with_limit(capacity, JsString::MAX_LEN)
+    }
+
+    pub(crate) fn with_limit(capacity: usize, limit: usize) -> Self {
+        let limit = limit.min(JsString::MAX_LEN);
+        let mut units = Vec::new();
+        // QuickJS allocates the String header even for
+        // `string_buffer_init(..., 0)`. Keep one fallible reservation so an
+        // injected/real initial OOM is latched before the first append.
+        let initial_capacity = capacity.min(limit).clamp(1, 4096);
+        let error = Self::reserve_additional(&mut units, initial_capacity).err();
+        Self {
+            storage: ReplacementStorage::Latin1(units),
+            limit,
+            error,
+        }
+    }
+
+    fn len(&self) -> usize {
+        match &self.storage {
+            ReplacementStorage::Latin1(units) => units.len(),
+            ReplacementStorage::Utf16(units) => units.len(),
+        }
+    }
+
+    fn latch(&mut self, error: JsStringError) {
+        if self.error.is_none() {
+            self.error = Some(error);
+        }
+    }
+
+    fn checked_new_len(&mut self, additional: usize) -> Option<usize> {
+        if self.error.is_some() {
+            return None;
+        }
+        match JsString::checked_length_with_limit(self.len(), additional, self.limit) {
+            Ok(length) => Some(length),
+            Err(error) => {
+                self.latch(error);
+                None
+            }
+        }
+    }
+
+    fn reserve_additional<T>(units: &mut Vec<T>, additional: usize) -> Result<(), JsStringError> {
+        if units.capacity().saturating_sub(units.len()) < additional {
+            #[cfg(test)]
+            if FAIL_NEXT_REPLACEMENT_RESERVATION.with(|armed| armed.replace(false)) {
+                return Err(JsStringError::OutOfMemory);
+            }
+            units
+                .try_reserve_exact(additional)
+                .map_err(|_| JsStringError::OutOfMemory)?;
+        }
+        Ok(())
+    }
+
+    fn widen(&mut self, new_len: usize) -> Option<Vec<u16>> {
+        let ReplacementStorage::Latin1(units) =
+            std::mem::replace(&mut self.storage, ReplacementStorage::Latin1(Vec::new()))
+        else {
+            unreachable!("replacement StringBuffer widened more than once")
+        };
+        let mut wide = Vec::new();
+        if let Err(error) = Self::reserve_additional(&mut wide, new_len.max(units.capacity())) {
+            self.storage = ReplacementStorage::Latin1(units);
+            self.latch(error);
+            return None;
+        }
+        wide.extend(units.iter().copied().map(u16::from));
+        Some(wide)
+    }
+
+    #[must_use]
+    pub(crate) const fn error(&self) -> Option<JsStringError> {
+        self.error
+    }
+
+    pub(crate) fn append_code_unit(&mut self, unit: u16) {
+        let Some(new_len) = self.checked_new_len(1) else {
+            return;
+        };
+        if matches!(self.storage, ReplacementStorage::Latin1(_)) && unit > u16::from(u8::MAX) {
+            let Some(mut wide) = self.widen(new_len) else {
+                return;
+            };
+            wide.push(unit);
+            self.storage = ReplacementStorage::Utf16(wide);
+            return;
+        }
+        let result = match &mut self.storage {
+            ReplacementStorage::Latin1(units) => {
+                Self::reserve_additional(units, 1).map(|()| units.push(unit as u8))
+            }
+            ReplacementStorage::Utf16(units) => {
+                Self::reserve_additional(units, 1).map(|()| units.push(unit))
+            }
+        };
+        if let Err(error) = result {
+            self.latch(error);
+        }
+    }
+
+    pub(crate) fn append_js_string(&mut self, value: &JsString) {
+        self.append_range(value, 0, value.len());
+    }
+
+    /// Append one exact UTF-16 code-unit range without allocating a temporary
+    /// substring. A wide source range only widens the destination when the
+    /// selected units themselves require it.
+    pub(crate) fn append_range(&mut self, value: &JsString, start: usize, end: usize) {
+        assert!(
+            start <= end,
+            "replacement StringBuffer range start exceeded end"
+        );
+        assert!(
+            end <= value.len(),
+            "replacement StringBuffer range exceeded source length"
+        );
+        let additional = end - start;
+        let Some(new_len) = self.checked_new_len(additional) else {
+            return;
+        };
+        if additional == 0 {
+            return;
+        }
+        let requires_wide = value
+            .utf16_units()
+            .skip(start)
+            .take(additional)
+            .any(|unit| unit > u16::from(u8::MAX));
+
+        let result = match &mut self.storage {
+            ReplacementStorage::Latin1(units) if !requires_wide => {
+                Self::reserve_additional(units, additional).map(|()| {
+                    units.extend(
+                        value
+                            .utf16_units()
+                            .skip(start)
+                            .take(additional)
+                            .map(|unit| unit as u8),
+                    );
+                })
+            }
+            ReplacementStorage::Latin1(_) => {
+                let Some(mut wide) = self.widen(new_len) else {
+                    return;
+                };
+                wide.extend(value.utf16_units().skip(start).take(additional));
+                self.storage = ReplacementStorage::Utf16(wide);
+                Ok(())
+            }
+            ReplacementStorage::Utf16(units) => {
+                Self::reserve_additional(units, additional).map(|()| {
+                    units.extend(value.utf16_units().skip(start).take(additional));
+                })
+            }
+        };
+        if let Err(error) = result {
+            self.latch(error);
+        }
+    }
+
+    pub(crate) fn finish(self) -> Result<JsString, JsStringError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        Ok(match self.storage {
+            ReplacementStorage::Latin1(units) => {
+                JsString(Rc::new(StringRepr::Latin1(units.into_boxed_slice())))
+            }
+            ReplacementStorage::Utf16(units) => {
                 JsString(Rc::new(StringRepr::Utf16(units.into_boxed_slice())))
             }
         })
@@ -1944,7 +2153,10 @@ mod tests {
     use std::hash::{Hash, Hasher};
     use std::rc::Rc;
 
-    use super::{JsString, JsStringBuilder, JsStringError, StringRepr, Value, number_to_string};
+    use super::{
+        JsString, JsStringBuilder, JsStringError, ReplacementStringBuffer, StringRepr, Value,
+        number_to_string,
+    };
     use crate::bigint::JsBigInt;
     use crate::error::{Error, ErrorKind, NativeErrorMessage};
 
@@ -2066,6 +2278,72 @@ mod tests {
         assert_eq!(failed.push_code_point(0x1f600), Err(JsStringError::TooLong));
         assert_eq!(failed.push_utf8("b"), Err(JsStringError::TooLong));
         assert_eq!(failed.finish(), Err(JsStringError::TooLong));
+    }
+
+    #[test]
+    fn replacement_string_buffer_is_narrow_first_and_appends_utf16_ranges() {
+        let source = JsString::try_from_utf16([0x78, 0x00e9, 0x0100, 0xd800, 0x79]).unwrap();
+
+        let mut narrow = ReplacementStringBuffer::new(0);
+        narrow.append_js_string(&JsString::from_static("ab"));
+        narrow.append_range(&source, 0, 2);
+        narrow.append_code_unit(u16::from(b'!'));
+        let narrow = narrow.finish().unwrap();
+        assert_eq!(
+            narrow.utf16_units().collect::<Vec<_>>(),
+            [0x61, 0x62, 0x78, 0x00e9, 0x21]
+        );
+        assert!(matches!(narrow.0.as_ref(), StringRepr::Latin1(_)));
+
+        let mut wide = ReplacementStringBuffer::new(0);
+        wide.append_js_string(&JsString::from_static("a"));
+        wide.append_range(&source, 2, 4);
+        wide.append_code_unit(u16::from(b'!'));
+        let wide = wide.finish().unwrap();
+        assert_eq!(
+            wide.utf16_units().collect::<Vec<_>>(),
+            [0x61, 0x0100, 0xd800, 0x21]
+        );
+        assert!(matches!(wide.0.as_ref(), StringRepr::Utf16(_)));
+    }
+
+    #[test]
+    fn replacement_string_buffer_with_limit_latches_the_first_length_error() {
+        let mut buffer = ReplacementStringBuffer::with_limit(0, 3);
+        buffer.append_js_string(&JsString::from_static("ab"));
+        buffer.append_code_unit(u16::from(b'c'));
+        assert_eq!(buffer.error(), None);
+
+        buffer.append_code_unit(u16::from(b'd'));
+        assert_eq!(buffer.error(), Some(JsStringError::TooLong));
+        buffer.append_code_unit(0x0100);
+        buffer.append_js_string(&JsString::from_static("ignored"));
+        assert_eq!(buffer.error(), Some(JsStringError::TooLong));
+        assert_eq!(buffer.finish(), Err(JsStringError::TooLong));
+    }
+
+    #[test]
+    fn replacement_string_buffer_latches_widening_allocation_failure() {
+        let mut buffer = ReplacementStringBuffer::with_limit(0, 4);
+        buffer.append_code_unit(u16::from(b'a'));
+        super::fail_next_replacement_reservation_for_test();
+        buffer.append_code_unit(0x0100);
+        assert_eq!(buffer.error(), Some(JsStringError::OutOfMemory));
+
+        buffer.append_js_string(&JsString::from_static("ignored"));
+        assert_eq!(buffer.error(), Some(JsStringError::OutOfMemory));
+        assert_eq!(buffer.finish(), Err(JsStringError::OutOfMemory));
+    }
+
+    #[test]
+    fn replacement_string_buffer_latches_initial_allocation_failure() {
+        super::fail_next_replacement_reservation_for_test();
+        let mut buffer = ReplacementStringBuffer::with_limit(0, 1);
+        assert_eq!(buffer.error(), Some(JsStringError::OutOfMemory));
+
+        buffer.append_js_string(&JsString::from_static("too long"));
+        assert_eq!(buffer.error(), Some(JsStringError::OutOfMemory));
+        assert_eq!(buffer.finish(), Err(JsStringError::OutOfMemory));
     }
 
     #[test]

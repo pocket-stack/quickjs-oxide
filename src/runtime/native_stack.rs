@@ -4,12 +4,26 @@ use super::*;
 
 impl Runtime {
     pub(super) fn native_call_would_overflow(&self, target: NativeFunctionId) -> bool {
+        // Ordinary Function.prototype.call entries are tail-forwarded by
+        // `call_internal`: each logical frame consumes one argument and no
+        // Rust native frame remains around the target call. A native-stack
+        // family ceiling would therefore reject valid QuickJS call chains
+        // without protecting the host stack.
+        if target == NativeFunctionId::FunctionPrototypeCall {
+            return false;
+        }
+
         // QuickJS checks its platform C-stack pointer before every native
         // call. Rust frame sizes do not map to that byte threshold, so keep a
         // deterministic call-entry ceiling on recursive native/callback paths.
         // Preserve a catchable JavaScript stack-overflow completion without
         // risking the host stack.
         let native_stack_weight = |target| match target {
+            // Ordinary Function.prototype.call invocations are represented by
+            // logical ActiveFrameGuards but tail-forwarded in one Rust frame.
+            // Keep their diagnostic frames without double-charging the target
+            // family's proven stack budget.
+            NativeFunctionId::FunctionPrototypeCall => 0,
             NativeFunctionId::ArrayPrototypeJoin(_) | NativeFunctionId::ArrayPrototypeToString => {
                 1_usize
             }
@@ -32,6 +46,12 @@ impl Runtime {
             // are smaller than the RegExp Symbol protocol loops, but eight
             // nested calls are the proven-safe 2 MiB boundary.
             NativeFunctionId::RegExp(RegExpNativeKind::Compile) => 8,
+            // The replace protocols alternate through user hooks, exec and
+            // functional replacers. Nine nested protocol entries are required
+            // by the pinned finite-recursion oracle; charge them like compile
+            // while rejecting the tenth before the host stack is endangered.
+            NativeFunctionId::StringPrototypeReplace(_)
+            | NativeFunctionId::RegExp(RegExpNativeKind::Replace) => 8,
             // String receiver/argument conversion and RegExp protocol
             // callbacks retain native and property-call stacks while
             // recursively entering these methods.
@@ -99,6 +119,8 @@ impl Runtime {
             NativeFunctionId::ObjectAssign => 9,
             NativeFunctionId::ObjectFromEntries => 4,
             NativeFunctionId::RegExp(RegExpNativeKind::Compile) => 8,
+            NativeFunctionId::StringPrototypeReplace(_)
+            | NativeFunctionId::RegExp(RegExpNativeKind::Replace) => 9,
             // Symbol protocols, receiver and argument conversions can alternate
             // between these String methods. Reject their shared fifth frame
             // while leaving weighted room for one callback leaf.
@@ -171,6 +193,12 @@ impl Runtime {
                     NativeFunctionId::RegExp(RegExpNativeKind::Compile)
                 )
             }
+            NativeFunctionId::StringPrototypeReplace(_)
+            | NativeFunctionId::RegExp(RegExpNativeKind::Replace) => matches!(
+                candidate,
+                NativeFunctionId::StringPrototypeReplace(_)
+                    | NativeFunctionId::RegExp(RegExpNativeKind::Replace)
+            ),
             NativeFunctionId::StringPrototypeIncludes(_)
             | NativeFunctionId::StringPrototypeMatch
             | NativeFunctionId::StringPrototypeSearch

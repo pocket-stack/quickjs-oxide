@@ -455,6 +455,111 @@ fn match_search_and_split_protocol_entries_preserve_pinned_cproto_autoinit_and_f
 }
 
 #[test]
+fn replace_entries_preserve_pinned_cproto_autoinit_and_table_order() {
+    for selector in [StringReplaceKind::Replace, StringReplaceKind::ReplaceAll] {
+        let descriptor = NativeFunctionId::StringPrototypeReplace(selector).descriptor();
+        assert_eq!(descriptor.cproto, NativeCProto::GenericMagic);
+        assert!(!descriptor.cproto.default_is_constructor());
+    }
+    let regexp_descriptor = NativeFunctionId::RegExp(RegExpNativeKind::Replace).descriptor();
+    assert_eq!(regexp_descriptor.cproto, NativeCProto::Generic);
+    assert!(!regexp_descriptor.cproto.default_is_constructor());
+
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let string_prototype = context.string_prototype().unwrap();
+    let Value::Object(regexp_prototype) = context.eval("RegExp.prototype").unwrap() else {
+        panic!("RegExp.prototype was not an object");
+    };
+    let repeat_key = runtime.intern_property_key("repeat").unwrap();
+    let replace_key = runtime.intern_property_key("replace").unwrap();
+    let replace_all_key = runtime.intern_property_key("replaceAll").unwrap();
+    let pad_end_key = runtime.intern_property_key("padEnd").unwrap();
+    let symbol_replace = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::Replace));
+    let symbol_match = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::Match));
+
+    {
+        let state = runtime.0.state.borrow();
+        let string_object = state.heap.object(string_prototype.object_id()).unwrap();
+        let string_shape = state.heap.shape(string_object.shape).unwrap();
+        let repeat = usize::try_from(string_shape.find(repeat_key.atom()).unwrap()).unwrap();
+        let replace = usize::try_from(string_shape.find(replace_key.atom()).unwrap()).unwrap();
+        let replace_all =
+            usize::try_from(string_shape.find(replace_all_key.atom()).unwrap()).unwrap();
+        let pad_end = usize::try_from(string_shape.find(pad_end_key.atom()).unwrap()).unwrap();
+        assert_eq!(replace, repeat + 1);
+        assert_eq!(replace_all, replace + 1);
+        assert_eq!(pad_end, replace_all + 1);
+        for (position, target, name) in [
+            (
+                replace,
+                NativeFunctionId::StringPrototypeReplace(StringReplaceKind::Replace),
+                "replace",
+            ),
+            (
+                replace_all,
+                NativeFunctionId::StringPrototypeReplace(StringReplaceKind::ReplaceAll),
+                "replaceAll",
+            ),
+        ] {
+            assert_eq!(
+                string_shape.entries()[position].flags,
+                PropertyFlags::data(true, false, true)
+            );
+            assert!(matches!(
+                string_object.slots.get(position),
+                Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                    realm,
+                    target: actual_target,
+                    name: actual_name,
+                    length: 2,
+                    min_readable_args: 2,
+                })) if *realm == context.realm
+                    && *actual_target == target
+                    && *actual_name == name
+            ));
+        }
+
+        let regexp_object = state.heap.object(regexp_prototype.object_id()).unwrap();
+        let regexp_shape = state.heap.shape(regexp_object.shape).unwrap();
+        let replace = usize::try_from(regexp_shape.find(symbol_replace.atom()).unwrap()).unwrap();
+        let match_position =
+            usize::try_from(regexp_shape.find(symbol_match.atom()).unwrap()).unwrap();
+        assert_eq!(match_position, replace + 1);
+        assert_eq!(
+            regexp_shape.entries()[replace].flags,
+            PropertyFlags::data(true, false, true)
+        );
+        assert!(matches!(
+            regexp_object.slots.get(replace),
+            Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                realm,
+                target: NativeFunctionId::RegExp(RegExpNativeKind::Replace),
+                name: "[Symbol.replace]",
+                length: 2,
+                min_readable_args: 2,
+            })) if *realm == context.realm
+        ));
+    }
+
+    for (object, key) in [
+        (&string_prototype, replace_key),
+        (&string_prototype, replace_all_key),
+        (&regexp_prototype, symbol_replace),
+    ] {
+        let Value::Object(first) = context.get_property(object, &key).unwrap() else {
+            panic!("replace AutoInit entry did not materialize as a function");
+        };
+        let Value::Object(second) = context.get_property(object, &key).unwrap() else {
+            panic!("replace AutoInit entry did not retain a function");
+        };
+        assert_eq!(first, second);
+        assert!(runtime.as_callable(&first).unwrap().is_some());
+        assert!(!runtime.is_constructor(&first).unwrap());
+    }
+}
+
+#[test]
 fn string_split_is_a_pinned_generic_autoinit_between_search_and_substring() {
     let descriptor = NativeFunctionId::StringPrototypeSplit.descriptor();
     assert_eq!(descriptor.cproto, NativeCProto::Generic);

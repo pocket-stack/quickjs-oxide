@@ -6,6 +6,7 @@ mod math;
 mod object;
 mod reflect;
 mod regexp;
+mod replacement;
 mod string;
 
 impl Runtime {

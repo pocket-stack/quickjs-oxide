@@ -3,6 +3,209 @@
 use super::*;
 
 impl Runtime {
+    /// Tail-forward an ordinary `Function.prototype.call` invocation without
+    /// retaining an otherwise redundant native frame around the target call.
+    /// This preserves QuickJS's observable forwarding while using a Rust-side
+    /// trampoline; upstream retains a thin C frame. Recursive `.call(...)`
+    /// chains remain governed by the eventual target family's stack budget.
+    pub(super) fn forward_function_prototype_call(
+        &self,
+        realm: ContextId,
+        this_value: Value,
+        arguments: &[Value],
+    ) -> Result<NativeConversion<(CallableRef, Value)>, RuntimeError> {
+        let Value::Object(target) = this_value else {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "not a function",
+            )?));
+        };
+        let Some(target) = self.as_callable(&target)? else {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "not a function",
+            )?));
+        };
+        let this_argument = arguments.first().cloned().unwrap_or(Value::Undefined);
+        Ok(NativeConversion::Value((target, this_argument)))
+    }
+
+    pub(super) fn concatenate_bound_arguments(
+        &self,
+        realm: ContextId,
+        bound_arguments: &[Value],
+        call_arguments: &[Value],
+    ) -> Result<NativeConversion<Vec<Value>>, RuntimeError> {
+        const MAX_CALL_ARGUMENTS: usize = 65_534;
+
+        let Some(total) = bound_arguments.len().checked_add(call_arguments.len()) else {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Internal,
+                "stack overflow",
+            )?));
+        };
+        if total > MAX_CALL_ARGUMENTS {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Internal,
+                "stack overflow",
+            )?));
+        }
+        let mut arguments = Vec::with_capacity(total);
+        arguments.extend_from_slice(bound_arguments);
+        arguments.extend_from_slice(call_arguments);
+        Ok(NativeConversion::Value(arguments))
+    }
+
+    pub(super) fn call_internal(
+        &self,
+        mut caller_realm: ContextId,
+        callable: &CallableRef,
+        this_value: Value,
+        arguments: &[Value],
+    ) -> Result<Completion, RuntimeError> {
+        self.0.state.borrow().heap.context(caller_realm)?;
+        self.validate_value_domain(&this_value, "call this value")?;
+        for argument in arguments {
+            self.validate_value_domain(argument, "call argument")?;
+        }
+        let mut callable = callable.clone();
+        let mut this_value = this_value;
+        let mut arguments = arguments.to_vec();
+        // Function.prototype.call consumes one argument per forwarded logical
+        // frame. Advance a window into the owned argv instead of repeatedly
+        // allocating and copying every shrinking suffix.
+        let mut argument_start = 0_usize;
+        let mut forwarded_call_frames = Vec::new();
+        let result = (|| loop {
+            match self.bytecode_for_callable(&callable)? {
+                CallableExecution::Bytecode {
+                    bytecode,
+                    closure_slots,
+                } => {
+                    return self.execute_bytecode_callable(
+                        caller_realm,
+                        &callable,
+                        this_value,
+                        Value::Undefined,
+                        &arguments[argument_start..],
+                        bytecode,
+                        closure_slots,
+                    );
+                }
+                CallableExecution::Native {
+                    target,
+                    realm,
+                    min_readable_args,
+                } => {
+                    if target == NativeFunctionId::FunctionPrototypeCall {
+                        if self.native_call_would_overflow(target) {
+                            return Ok(Completion::Throw(self.new_native_error(
+                                caller_realm,
+                                NativeErrorKind::Internal,
+                                "stack overflow",
+                            )?));
+                        }
+                        forwarded_call_frames.push(self.push_native_active_frame(
+                            callable.as_object().clone(),
+                            realm,
+                            target,
+                            arguments.len() - argument_start,
+                            (arguments.len() - argument_start).max(usize::from(min_readable_args)),
+                        )?);
+                        match self.forward_function_prototype_call(
+                            realm,
+                            this_value,
+                            &arguments[argument_start..],
+                        )? {
+                            NativeConversion::Value((target, next_this)) => {
+                                caller_realm = realm;
+                                callable = target;
+                                this_value = next_this;
+                                if argument_start < arguments.len() {
+                                    argument_start += 1;
+                                }
+                                continue;
+                            }
+                            NativeConversion::Throw(value) => {
+                                return Ok(Completion::Throw(value));
+                            }
+                        }
+                    }
+                    if self.native_call_would_overflow(target) {
+                        return Ok(Completion::Throw(self.new_native_error(
+                            caller_realm,
+                            NativeErrorKind::Internal,
+                            "stack overflow",
+                        )?));
+                    }
+                    return self.call_native_function(
+                        &callable,
+                        realm,
+                        target,
+                        min_readable_args,
+                        this_value,
+                        &arguments[argument_start..],
+                    );
+                }
+                CallableExecution::Bound {
+                    target,
+                    this_value: bound_this,
+                    arguments: bound_arguments,
+                } => {
+                    arguments = match self.concatenate_bound_arguments(
+                        caller_realm,
+                        &bound_arguments,
+                        &arguments[argument_start..],
+                    )? {
+                        NativeConversion::Value(arguments) => arguments,
+                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                    };
+                    argument_start = 0;
+                    callable = target;
+                    this_value = bound_this;
+                }
+            }
+        })();
+        let mut frame_error = None;
+        while let Some(frame) = forwarded_call_frames.pop() {
+            if let Err(error) = frame.finish()
+                && frame_error.is_none()
+            {
+                frame_error = Some(error);
+            }
+        }
+        frame_error.map_or(result, Err)
+    }
+
+    fn call_function_prototype_call(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Function.prototype.call did not receive a generic invocation",
+            ));
+        };
+        let actual_arguments = &arguments.readable[..arguments.actual_arg_count];
+        match self.forward_function_prototype_call(realm, this_value, actual_arguments)? {
+            NativeConversion::Value((target, this_argument)) => {
+                let forwarded = if actual_arguments.is_empty() {
+                    &[]
+                } else {
+                    &actual_arguments[1..]
+                };
+                self.call_internal(realm, &target, this_argument, forwarded)
+            }
+            NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
+        }
+    }
+
     /// Validate the active native frame and adapt the public call shape to the
     /// target's typed C-function protocol. Both ordinary calls and the raw
     /// iterator-next fast path pass through this single boundary.
@@ -386,6 +589,9 @@ impl Runtime {
             }
             NativeFunctionId::StringPrototypeIncludes(selector) => {
                 self.call_string_prototype_includes(realm, selector, invocation, arguments)
+            }
+            NativeFunctionId::StringPrototypeReplace(selector) => {
+                self.call_string_prototype_replace(realm, selector, invocation, arguments)
             }
             NativeFunctionId::StringPrototypeMatch => {
                 self.call_string_prototype_match(realm, invocation, arguments)

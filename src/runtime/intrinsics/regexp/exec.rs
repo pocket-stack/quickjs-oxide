@@ -41,6 +41,7 @@ impl Runtime {
             | RegExpNativeKind::Flags
             | RegExpNativeKind::Flag(_)
             | RegExpNativeKind::ToString
+            | RegExpNativeKind::Replace
             | RegExpNativeKind::Match
             | RegExpNativeKind::Search
             | RegExpNativeKind::Split => Err(RuntimeError::Invariant(

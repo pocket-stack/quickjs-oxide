@@ -1,6 +1,6 @@
 # Implementation status
 
-Last audited: 2026-07-16. The completion definition remains
+Last audited: 2026-07-17. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
@@ -10,13 +10,13 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 19 reviewed feature tags and 101 exact audited
+  capability profile now admits 21 reviewed feature tags and 101 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 25,613 passes: 25.10% raw, a 30.65% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 83.67% among the 30,611 variants with a
+  has 25,893 passes: 25.38% raw, a 30.99% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 84.11% among the 30,785 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -46,7 +46,11 @@ claim full parity.
   regression or key drift. R1g ports scoped `(?ims-ims:...)` RegExp modifiers
   from the pinned compiler. Its complete 460-variant feature join records 448
   `unsupported-feature -> pass` and 12 `unsupported-feature ->
-  unsupported-parser` transitions, with no other outcome movement.
+  unsupported-parser` transitions, with no other outcome movement. R1h ports
+  String `replace`/`replaceAll` and the generic RegExp `@@replace` path,
+  recording 110 `fail-runtime -> pass`, 170 `unsupported-feature -> pass`,
+  four newly exposed parser failures, and 38 newly exposed typed parser
+  frontiers. The exact 102,037-key join has zero previous-pass regressions.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -109,9 +113,10 @@ claim full parity.
   variants remain runtime failures solely because `eval` is absent; eight reach
   typed advanced-pattern frontiers for backreferences, lookaround, Unicode
   properties, or legacy octal/control escapes. `RegExp.escape`, the Symbol
-  matchAll/replace protocols, and the
-  advanced literal grammar remain intentionally unpublished rather than
-  stubbed. The R1a complete join recorded only 669 `fail-runtime -> pass` and
+  matchAll protocol, the standard-RegExp direct `@@replace` matcher fast path,
+  and the advanced literal grammar remain intentionally unpublished rather
+  than stubbed. The R1a complete join recorded only 669
+  `fail-runtime -> pass` and
   ten `fail-runtime -> unsupported-runtime` transitions. The R1b join matches
   all 102,037 keys and moves 840 `unsupported-parser -> pass`, 226
   `unsupported-parser -> fail-runtime`, 24 `unsupported-parser -> fail-parse`,
@@ -212,9 +217,9 @@ claim full parity.
   `arrow-function`, two require the create-realm host hook, and four retain
   typed parser frontiers. Species construction itself is locked by the QuickJS
   differential suite. Its current TSV and JSONL SHA-256 values are
-  `bb59e09c45394a222930ca329857164fbb9ec77829673fd05d54127d2ce64d63`
+  `a59f792332f8648e509067f9c0fd71f30b3bb7f7eb51656bb1c2e6fee05b0022`
   and
-  `1d9fcf172acf86d689cd358073df2563c994592c6f31561b1ff3c1a5d0a06d26`.
+  `97552731b175c37868133235293fa0a1d6c5d6f41265d4036e4bee140ab43860`.
   The independent 127-path/254-variant String split gate now admits 244
   variants and records 234 passes, four missing-global-`eval` runtime failures,
   eight adjacent feature outcomes, two IsHTMLDDA host outcomes, and six typed
@@ -250,15 +255,15 @@ claim full parity.
   policy is now isolated in `runtime/native_stack.rs`, leaving `runtime.rs` at
   9,787 lines while keeping compile's measured recursion ceiling explicit.
 
-  The frozen 35-path/70-variant compile vector records 44 passes. Its only
-  remaining runtime failures are the sloppy/strict variants of one staging
-  replace path, which stop first at the independent missing `@@replace`
-  protocol; feature, host, arrow and object-method parser frontiers remain
-  classified separately. Its TSV/JSONL
-  SHA-256 values are
-  `1f1fb2ff6dfe5cd5dde0445e60daa310fa5b8056dfeeddac83bf3a81f0d74874`
+  At R1f the frozen 35-path/70-variant compile vector recorded 44 passes;
+  its only runtime failures were the sloppy/strict variants of one staging
+  replace path at the then-missing `@@replace` protocol. R1h links that
+  protocol, so the current vector records 46 passes and zero runtime failures;
+  feature, host, arrow and object-method parser frontiers remain classified
+  separately. Its current TSV/JSONL SHA-256 values are
+  `871f919863883dfad5107834a5eb30ca9c37828edeb315529ec0c6ed51aa02c8`
   and
-  `60fbf6017a8302242f5d8fa9de929e7fe39d59d7a7993631d69cc05030c56f43`.
+  `c88a057baef0d3f8046aa56ff11ccad1bb48739c6a41d51e3f7a32d629a4c385`.
   A QuickJS-shaped lexical capture-count prepass also distinguishes known
   out-of-range Unicode decimal escapes from in-range but unimplemented
   backreferences, moving the two `unicode_restricted_octal_escape.js` variants
@@ -275,9 +280,9 @@ claim full parity.
   `57caefa97b579fafeb6b56ba45da7daf9cbe5e168849e4ab0459b87452d4745e`
   and
   `613a396d850698fff9472991e547946eac6bc9bc4f3b95cf90ce57d85953dee0`.
-  The next RegExp priorities are conservatively split between matchAll/replace
-  protocol work and advanced pattern grammar; none of this is a parity
-  completion claim.
+  At that milestone the next RegExp priorities were split between
+  matchAll/replace protocol work and advanced pattern grammar; none of this is
+  a parity completion claim.
 
   R1g ports QuickJS's scoped RegExp modifier grammar
   `(?ims-ims:...)` into the runtime-independent compiler. Duplicate modifiers
@@ -316,6 +321,60 @@ claim full parity.
   Earlier focused reports change only in their profile-hash metadata; replacing
   the new header hash with the R1f value reconstructs every old report hash
   exactly, so their outcome rows and milestone provenance remain unchanged.
+
+  R1h ports QuickJS's shared replacement kernel instead of implementing the
+  three public entry points independently. `ReplacementStringBuffer` retains
+  narrow strings until widening is required, uses fallible growth, and latches
+  the first allocation failure while later observable getters and callbacks
+  continue in the pinned order. A shared `GetSubstitution` implementation
+  handles `$&`, ``$` ``, `$'`, numbered captures, named captures and raw UTF-16.
+  String `replace`/`replaceAll` preserve object-only `Symbol.replace`
+  delegation, conversion order, empty search advancement, callback arguments,
+  and the global-RegExp requirement for `replaceAll`. The generic RegExp
+  `@@replace` path collects every abstract
+  `exec` result before reading captures or invoking callbacks, preserves
+  backward-position observation, enforces QuickJS's 65,534-argument ceiling,
+  and keeps `lastIndex`, Unicode advancement, named groups and abrupt
+  completion order aligned with the pinned source. The standard branded-RegExp
+  direct matcher remains a separate R1i slice because its predicate changes
+  observable getter traffic.
+
+  Six String and eight non-fast-path RegExp differential groups pass against
+  QuickJS 2026-06-04; the one direct-fast-path group remains explicitly
+  ignored for R1i. Recursive custom `exec` initially exposed a native-stack
+  mismatch on the fixed 2 MiB oracle thread. Splitting replacement processing
+  and VM call/numeric dispatch reduced the debug
+  `CallFrame::execute_inner<RuntimeVmHost>` frame from about 75.9 KiB to
+  57.0 KiB. `recurse(8)`, catchable infinite-recursion
+  `InternalError: stack overflow`, logical `Function.prototype.call` frames,
+  and post-overflow recovery now match the pinned oracle without enlarging the
+  test stack or weakening the depth requirement. The call trampoline advances
+  one window through its owned argv instead of copying every suffix, so a
+  20-frame logical call chain also matches QuickJS without the former
+  non-protective 16-frame family ceiling.
+
+  The frozen replace manifest covers 191 paths and 376 variants. R1h admits
+  332 and records 286 passes with zero runtime failures. Its six parse failures
+  are two arrow-function variants and four rest-parameter/array-spread
+  variants; another 40 stop at typed parser frontiers, 38 at independently
+  undeclared features, and six at host capabilities. The focused TSV/JSONL
+  SHA-256 values are
+  `055d52219998a0863a4241b3c5b374b917c1503d93b0715048ee2e171db3d012`
+  and
+  `dffcdbd8260a3d6e1c277d76797ba7187e40a971860ff802efaf8b3c6e65c0ad`.
+  Publishing `String.prototype.replaceAll` and `Symbol.replace` moves the
+  capability profile to 21 feature tags with SHA-256
+  `921df0ef452f4d1286162093ebdf81a74d0805eb7c04601c86abd6ec7347ed7f`.
+
+  The exact R1g-to-R1h full join matches all 102,037 keys with no missing,
+  extra, duplicate, or previous-pass regression. Its transitions are 110
+  `fail-runtime -> pass`, 170 `unsupported-feature -> pass`, four
+  `unsupported-feature -> fail-parse`, and 38
+  `unsupported-feature -> unsupported-parser`. The complete vector moves to
+  25,893 passes and 33,169 admitted jobs. The full TSV/JSONL SHA-256 values are
+  `2895a8d2ddbe5857e83b573827e46b4a60a97d89b5882727c85ff75d2ff9d368`
+  and
+  `64fed7fd3bb722d470bbd420e42995e138aed5d6f3588b7d2657973cb3968419`.
 
   Advanced grammar fails closed: lookaround, backreferences, named captures,
   Unicode properties, all `v`-mode execution, and unported Annex-B
@@ -1677,8 +1736,8 @@ claim full parity.
   writes, fixed-name nullish reads, nullish writes, missing bindings, TDZ and
   VarRef descriptor reads, VM `ThrowReadOnly`, and reserved-identifier
   validation.
-  The remaining five String-prototype own keys (`matchAll`, `replace`,
-  `replaceAll`, `normalize` and `localeCompare`),
+  The remaining three String-prototype own keys (`matchAll`, `normalize` and
+  `localeCompare`),
   Context-level observable
   `ToString`, borrowed C-pointer/refcount ownership, native atom
   diagnostics attached to not-yet-implemented private-field/module/
@@ -2296,15 +2355,16 @@ Native Errors additionally share the
 retain exact raw bytes across compiler/VM Error transport. They also implement
 the not-constructor dynamic name plus the current `JS_AtomGetStr`-backed
 read-only/nullish/binding/TDZ/reserved-identifier diagnostics. It does not
-publish the remaining five prototype own keys, Context/C pointer embedding
+publish the remaining three prototype own keys, Context/C pointer embedding
 semantics, atom diagnostics belonging
 to unimplemented language/builtin surfaces, exact byte-sidecar construction
 for every parser/lexer diagnostic, or general recoverable allocator failures
-outside the repeat/pad/trim/case/CreateHTML result-buffer reservations. Rope
+outside the repeat/pad/trim/case/CreateHTML/replacement result-buffer
+reservations. Rope
 linearization and final `Box`/`Rc` allocation, including those surrounding the
-checked trim, case and CreateHTML buffers, remain part of that general
-allocator gap. Pad, case and CreateHTML widening use a second fallible exact
-UTF-16 buffer and then release the narrow buffer, rather than preserving
+checked trim, case, CreateHTML and replacement buffers, remain part of that
+general allocator gap. Pad, case and CreateHTML widening use a second fallible
+exact UTF-16 buffer and then release the narrow buffer, rather than preserving
 QuickJS allocator/
 realloc identity and peak-memory behavior.
 Prefix/postfix update expressions
@@ -2313,9 +2373,9 @@ identifier and ordinary fixed/computed member References. Sloppy
 direct-identifier delete is implemented
 for the current static scope tree and defining-realm global object. Dynamic
 object-environment lookup/deletion introduced by `with` or direct `eval`, the
-remaining five entries of String's 53-key prototype surface, `RegExp.escape`,
-advanced RegExp grammar and the remaining matchAll/replace
-Symbol protocol methods,
+remaining three entries of String's 53-key prototype surface, `RegExp.escape`,
+advanced RegExp grammar, the remaining matchAll Symbol protocol method, and
+the standard-RegExp direct replace matcher fast path,
 Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. AggregateError and
 uncatchable termination state are also pending. Array
@@ -2328,7 +2388,7 @@ exotic-source spread, and the rest of the builtin table build on those layers.
 The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
 identifier, case-conversion, `Cased` and `Case_Ignorable` data, the advanced
-RegExp grammar plus matchAll/replace observable Symbol protocol integration,
+RegExp grammar plus matchAll integration and direct replace fast-path parity,
 modules, jobs/Promises/async,
 generators, TypedArrays/Atomics, WeakRef/finalization, bytecode version 5 and
 BJSON interoperability, `std`/`os`, workers, REPL/qjsc, and the complete Rust
@@ -2388,8 +2448,11 @@ leaving the parent at 9,982 lines; R1d match dispatch adds eight facade lines,
 and R1e split dispatch adds only four more, leaving that milestone's parent at
 9,994 lines. R1f then moves the complete 224-line native-stack policy to
 `runtime/native_stack.rs`; the compile wiring and extraction leave the current
-`runtime.rs` at 9,787 lines. The feature algorithms do not return to the parent
-monolith. The RegExp kernel itself is isolated in
+`runtime.rs` at 9,787 lines. R1h keeps the replacement algorithms in dedicated
+String, RegExp and shared-substitution modules, then moves internal call and
+bound-argument dispatch into `runtime/native_dispatch.rs`; the parent is now
+9,650 lines. The feature algorithms do not return to the parent monolith. The
+RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
 helpers, bytecode publication linking and call dispatch, runtime/root lifecycle,
@@ -2486,6 +2549,10 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_regexp_modifiers -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_string_replace -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_regexp_replace -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_lexicals -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_declarations -- --nocapture
@@ -2573,6 +2640,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/run-test262-regexp-split.sh
 ./scripts/run-test262-regexp-compile.sh
 ./scripts/run-test262-regexp-modifiers.sh
+./scripts/run-test262-replace.sh
 ./scripts/test-test262-full.sh
 ```
 

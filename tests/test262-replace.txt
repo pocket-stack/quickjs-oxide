@@ -1,0 +1,216 @@
+# Frozen RegExp @@replace and String replace/replaceAll measurement slice for
+# the pinned Test262 checkout.
+#
+# This is the static, bytewise-sorted union of:
+#
+# - all 170 paths in the three direct built-in directories;
+# - five Symbol.replace/replaceAll feature and host outliers; and
+# - sixteen parser-ready linked consumers from the R1g full keyed report.
+#
+# The deliberately slow full-BMP
+# `test/built-ins/RegExp/character-class-escape-non-whitespace.js` canary is
+# excluded from this default focused gate. The source report is R1g commit
+# 23d3b94 (TSV SHA-256
+# 5ece50a681fcb4fe97779002b179174930d2cdbdb4bd2120e0679678bd96b161).
+# Its bytewise-sorted path/variant/outcome/detail projection has SHA-256
+# 493abc9c31bab15a4fb843861563c7db4a6e33b2f461c6610b461e2b4bd7c37f.
+# At R1g the 376 variants classified as fail-parse=2, fail-runtime=106,
+# pass=10, unsupported-feature=250, unsupported-host-create-realm=2,
+# unsupported-host-is-html-dda=4, and unsupported-parser=2. The gate must
+# never select paths dynamically from current outcomes.
+#
+# Exactly 191 unique paths expand to 376 variants. The bytewise-sorted path
+# set has SHA-256
+# 85999347ba335697a991931a7346e426b9487ca293897527bea06867e691be4a.
+#
+test/annexB/built-ins/String/prototype/replace/custom-replacer-emulates-undefined.js
+test/annexB/built-ins/String/prototype/replaceAll/custom-replacer-emulates-undefined.js
+test/built-ins/Proxy/has/trap-is-missing-target-is-proxy.js
+test/built-ins/RegExp/S15.10.2.8_A3_T18.js
+test/built-ins/RegExp/prototype/Symbol.replace/arg-1-coerce-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/arg-1-coerce.js
+test/built-ins/RegExp/prototype/Symbol.replace/arg-2-coerce-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/arg-2-coerce.js
+test/built-ins/RegExp/prototype/Symbol.replace/coerce-global.js
+test/built-ins/RegExp/prototype/Symbol.replace/coerce-lastindex-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/coerce-lastindex.js
+test/built-ins/RegExp/prototype/Symbol.replace/coerce-unicode.js
+test/built-ins/RegExp/prototype/Symbol.replace/exec-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/exec-invocation.js
+test/built-ins/RegExp/prototype/Symbol.replace/flags-tostring-error.js
+test/built-ins/RegExp/prototype/Symbol.replace/fn-coerce-replacement-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/fn-coerce-replacement.js
+test/built-ins/RegExp/prototype/Symbol.replace/fn-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/fn-invoke-args-empty-result.js
+test/built-ins/RegExp/prototype/Symbol.replace/fn-invoke-args.js
+test/built-ins/RegExp/prototype/Symbol.replace/fn-invoke-this-no-strict.js
+test/built-ins/RegExp/prototype/Symbol.replace/fn-invoke-this-strict.js
+test/built-ins/RegExp/prototype/Symbol.replace/g-init-lastindex-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/g-init-lastindex.js
+test/built-ins/RegExp/prototype/Symbol.replace/g-pos-decrement.js
+test/built-ins/RegExp/prototype/Symbol.replace/g-pos-increment.js
+test/built-ins/RegExp/prototype/Symbol.replace/get-exec-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/get-flags-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/get-global-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/get-unicode-error.js
+test/built-ins/RegExp/prototype/Symbol.replace/length.js
+test/built-ins/RegExp/prototype/Symbol.replace/match-failure.js
+test/built-ins/RegExp/prototype/Symbol.replace/name.js
+test/built-ins/RegExp/prototype/Symbol.replace/named-groups-fn.js
+test/built-ins/RegExp/prototype/Symbol.replace/named-groups.js
+test/built-ins/RegExp/prototype/Symbol.replace/not-a-constructor.js
+test/built-ins/RegExp/prototype/Symbol.replace/poisoned-stdlib.js
+test/built-ins/RegExp/prototype/Symbol.replace/prop-desc.js
+test/built-ins/RegExp/prototype/Symbol.replace/replace-with-trailing.js
+test/built-ins/RegExp/prototype/Symbol.replace/replace-without-trailing.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-coerce-capture-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-coerce-capture.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-coerce-groups-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-coerce-groups-prop-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-coerce-groups-prop.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-coerce-groups.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-coerce-index-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-coerce-index-undefined.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-coerce-index.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-coerce-length-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-coerce-length.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-coerce-matched-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-coerce-matched-global.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-coerce-matched.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-get-capture-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-get-groups-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-get-groups-prop-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-get-index-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-get-length-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/result-get-matched-err.js
+test/built-ins/RegExp/prototype/Symbol.replace/subst-after.js
+test/built-ins/RegExp/prototype/Symbol.replace/subst-before.js
+test/built-ins/RegExp/prototype/Symbol.replace/subst-capture-idx-1.js
+test/built-ins/RegExp/prototype/Symbol.replace/subst-capture-idx-2.js
+test/built-ins/RegExp/prototype/Symbol.replace/subst-dollar.js
+test/built-ins/RegExp/prototype/Symbol.replace/subst-matched.js
+test/built-ins/RegExp/prototype/Symbol.replace/this-val-non-obj.js
+test/built-ins/RegExp/prototype/Symbol.replace/u-advance-after-empty.js
+test/built-ins/RegExp/prototype/Symbol.replace/y-fail-global-return.js
+test/built-ins/RegExp/prototype/Symbol.replace/y-fail-lastindex-no-write.js
+test/built-ins/RegExp/prototype/Symbol.replace/y-fail-lastindex.js
+test/built-ins/RegExp/prototype/Symbol.replace/y-fail-return.js
+test/built-ins/RegExp/prototype/Symbol.replace/y-init-lastindex.js
+test/built-ins/RegExp/prototype/Symbol.replace/y-set-lastindex.js
+test/built-ins/String/prototype/replace/15.5.4.11-1.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A12.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A1_T1.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A1_T10.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A1_T11.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A1_T12.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A1_T13.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A1_T14.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A1_T15.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A1_T16.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A1_T17.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A1_T2.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A1_T4.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A1_T5.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A1_T6.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A1_T7.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A1_T8.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A1_T9.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A2_T1.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A2_T10.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A2_T2.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A2_T3.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A2_T4.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A2_T5.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A2_T6.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A2_T7.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A2_T8.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A2_T9.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A3_T1.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A3_T2.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A3_T3.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A4_T1.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A4_T2.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A4_T3.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A4_T4.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A5_T1.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A6.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A7.js
+test/built-ins/String/prototype/replace/cstm-replace-get-err.js
+test/built-ins/String/prototype/replace/cstm-replace-invocation.js
+test/built-ins/String/prototype/replace/cstm-replace-is-null.js
+test/built-ins/String/prototype/replace/cstm-replace-on-bigint-primitive.js
+test/built-ins/String/prototype/replace/cstm-replace-on-boolean-primitive.js
+test/built-ins/String/prototype/replace/cstm-replace-on-number-primitive.js
+test/built-ins/String/prototype/replace/cstm-replace-on-string-primitive.js
+test/built-ins/String/prototype/replace/length.js
+test/built-ins/String/prototype/replace/name.js
+test/built-ins/String/prototype/replace/not-a-constructor.js
+test/built-ins/String/prototype/replace/regexp-capture-by-index.js
+test/built-ins/String/prototype/replace/regexp-prototype-replace-v-u-flag.js
+test/built-ins/String/prototype/replace/replaceValue-evaluation-order-regexp-object.js
+test/built-ins/String/prototype/replace/replaceValue-evaluation-order.js
+test/built-ins/String/prototype/replace/this-value-not-obj-coercible.js
+test/built-ins/String/prototype/replace/tostring-this-throws-symbol.js
+test/built-ins/String/prototype/replace/tostring-this-throws-toprimitive.js
+test/built-ins/String/prototype/replaceAll/cstm-replaceall-on-bigint-primitive.js
+test/built-ins/String/prototype/replaceAll/cstm-replaceall-on-boolean-primitive.js
+test/built-ins/String/prototype/replaceAll/cstm-replaceall-on-number-primitive.js
+test/built-ins/String/prototype/replaceAll/cstm-replaceall-on-string-primitive.js
+test/built-ins/String/prototype/replaceAll/getSubstitution-0x0024-0x0024.js
+test/built-ins/String/prototype/replaceAll/getSubstitution-0x0024-0x0026.js
+test/built-ins/String/prototype/replaceAll/getSubstitution-0x0024-0x0027.js
+test/built-ins/String/prototype/replaceAll/getSubstitution-0x0024-0x003C.js
+test/built-ins/String/prototype/replaceAll/getSubstitution-0x0024-0x0060.js
+test/built-ins/String/prototype/replaceAll/getSubstitution-0x0024.js
+test/built-ins/String/prototype/replaceAll/getSubstitution-0x0024N.js
+test/built-ins/String/prototype/replaceAll/getSubstitution-0x0024NN.js
+test/built-ins/String/prototype/replaceAll/length.js
+test/built-ins/String/prototype/replaceAll/name.js
+test/built-ins/String/prototype/replaceAll/not-a-constructor.js
+test/built-ins/String/prototype/replaceAll/replaceAll.js
+test/built-ins/String/prototype/replaceAll/replaceValue-call-abrupt.js
+test/built-ins/String/prototype/replaceAll/replaceValue-call-each-match-position.js
+test/built-ins/String/prototype/replaceAll/replaceValue-call-matching-empty.js
+test/built-ins/String/prototype/replaceAll/replaceValue-call-skip-no-match.js
+test/built-ins/String/prototype/replaceAll/replaceValue-call-tostring-abrupt.js
+test/built-ins/String/prototype/replaceAll/replaceValue-fn-skip-toString.js
+test/built-ins/String/prototype/replaceAll/replaceValue-tostring-abrupt.js
+test/built-ins/String/prototype/replaceAll/replaceValue-value-replaces-string.js
+test/built-ins/String/prototype/replaceAll/replaceValue-value-tostring.js
+test/built-ins/String/prototype/replaceAll/searchValue-empty-string-this-empty-string.js
+test/built-ins/String/prototype/replaceAll/searchValue-empty-string.js
+test/built-ins/String/prototype/replaceAll/searchValue-flags-no-g-throws.js
+test/built-ins/String/prototype/replaceAll/searchValue-flags-null-undefined-throws.js
+test/built-ins/String/prototype/replaceAll/searchValue-flags-toString-abrupt.js
+test/built-ins/String/prototype/replaceAll/searchValue-get-flags-abrupt.js
+test/built-ins/String/prototype/replaceAll/searchValue-isRegExp-abrupt.js
+test/built-ins/String/prototype/replaceAll/searchValue-replacer-RegExp-call-fn.js
+test/built-ins/String/prototype/replaceAll/searchValue-replacer-RegExp-call.js
+test/built-ins/String/prototype/replaceAll/searchValue-replacer-before-tostring.js
+test/built-ins/String/prototype/replaceAll/searchValue-replacer-call-abrupt.js
+test/built-ins/String/prototype/replaceAll/searchValue-replacer-call.js
+test/built-ins/String/prototype/replaceAll/searchValue-replacer-is-null.js
+test/built-ins/String/prototype/replaceAll/searchValue-replacer-method-abrupt.js
+test/built-ins/String/prototype/replaceAll/searchValue-tostring-abrupt.js
+test/built-ins/String/prototype/replaceAll/searchValue-tostring-regexp.js
+test/built-ins/String/prototype/replaceAll/this-is-null-throws.js
+test/built-ins/String/prototype/replaceAll/this-is-undefined-throws.js
+test/built-ins/String/prototype/replaceAll/this-tostring-abrupt.js
+test/built-ins/String/prototype/replaceAll/this-tostring.js
+test/built-ins/Symbol/replace/cross-realm.js
+test/built-ins/Symbol/replace/prop-desc.js
+test/language/function-code/10.4.3-1-100-s.js
+test/language/function-code/10.4.3-1-100gs.js
+test/language/function-code/10.4.3-1-101-s.js
+test/language/function-code/10.4.3-1-101gs.js
+test/language/function-code/10.4.3-1-102-s.js
+test/language/function-code/10.4.3-1-102gs.js
+test/staging/sm/RegExp/replace-compile.js
+test/staging/sm/RegExp/replace-sticky-lastIndex.js
+test/staging/sm/RegExp/replace-sticky.js
+test/staging/sm/RegExp/replace.js
+test/staging/sm/String/15.5.4.11-01.js
+test/staging/sm/String/AdvanceStringIndex.js
+test/staging/sm/String/regress-369778.js
+test/staging/sm/String/replace-flags.js
+test/staging/sm/String/replace-updates-global-lastIndex.js

@@ -1484,6 +1484,7 @@ pub enum RegExpNativeKind {
     Compile,
     Test,
     ToString,
+    Replace,
     Match,
     Search,
     Split,
@@ -1574,6 +1575,7 @@ pub enum NativeFunctionId {
     StringPrototypeWellFormed(StringWellFormedKind),
     StringPrototypeIndexOf(StringIndexOfKind),
     StringPrototypeIncludes(StringIncludesKind),
+    StringPrototypeReplace(StringReplaceKind),
     StringPrototypeMatch,
     StringPrototypeSearch,
     StringPrototypeSplit,
@@ -1694,6 +1696,14 @@ pub enum StringIncludesKind {
     Includes,
     EndsWith,
     StartsWith,
+}
+
+/// QuickJS magic selector shared by `String.prototype.replace` and
+/// `String.prototype.replaceAll`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StringReplaceKind {
+    Replace,
+    ReplaceAll,
 }
 
 /// Operation selected by the adjacent `substring`, Annex-B `substr`, and
@@ -1917,6 +1927,7 @@ impl NativeFunctionId {
                 | RegExpNativeKind::Compile
                 | RegExpNativeKind::Test
                 | RegExpNativeKind::ToString
+                | RegExpNativeKind::Replace
                 | RegExpNativeKind::Match
                 | RegExpNativeKind::Search
                 | RegExpNativeKind::Split,
@@ -1996,6 +2007,7 @@ impl NativeFunctionId {
             | Self::StringPrototypeCharAt(_)
             | Self::StringPrototypeIndexOf(_)
             | Self::StringPrototypeIncludes(_)
+            | Self::StringPrototypeReplace(_)
             | Self::StringPrototypeMatch
             | Self::StringPrototypeSearch
             | Self::StringPrototypePad(_)
@@ -5695,6 +5707,8 @@ mod tests {
             NativeFunctionId::StringPrototypeCharAt(StringCharAtKind::CharAt),
             NativeFunctionId::StringPrototypePad(StringPadKind::End),
             NativeFunctionId::StringPrototypePad(StringPadKind::Start),
+            NativeFunctionId::StringPrototypeReplace(StringReplaceKind::Replace),
+            NativeFunctionId::StringPrototypeReplace(StringReplaceKind::ReplaceAll),
             NativeFunctionId::StringPrototypeMatch,
             NativeFunctionId::StringPrototypeSearch,
             NativeFunctionId::StringPrototypeTrim(StringTrimKind::Both),
@@ -6192,6 +6206,7 @@ mod tests {
             NativeFunctionId::RegExp(RegExpNativeKind::Compile),
             NativeFunctionId::RegExp(RegExpNativeKind::Test),
             NativeFunctionId::RegExp(RegExpNativeKind::ToString),
+            NativeFunctionId::RegExp(RegExpNativeKind::Replace),
             NativeFunctionId::RegExp(RegExpNativeKind::Match),
             NativeFunctionId::RegExp(RegExpNativeKind::Search),
             NativeFunctionId::RegExp(RegExpNativeKind::Split),

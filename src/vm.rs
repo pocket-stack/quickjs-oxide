@@ -1054,6 +1054,263 @@ impl CallFrame {
         Ok(None)
     }
 
+    // Calls recursively enter bytecode/native execution. Keep their argument
+    // vectors and host-completion temporaries out of the interpreter loop's
+    // frame so each nested JavaScript call retains only the hot dispatch
+    // state on the native stack.
+    #[inline(never)]
+    fn execute_call_instruction(
+        &mut self,
+        instruction: &Instruction,
+        host: &mut impl VmHost,
+    ) -> Result<Option<Completion>, Error> {
+        let completion = match instruction {
+            Instruction::Call(argument_count) => {
+                let arguments = self.take_call_arguments(*argument_count, 1)?;
+                let function = self.pop()?;
+                host.call(function, Value::Undefined, arguments)?
+            }
+            Instruction::CallMethod(argument_count) => {
+                let arguments = self.take_call_arguments(*argument_count, 2)?;
+                let function = self.pop()?;
+                let receiver = self.pop()?;
+                host.call(function, receiver, arguments)?
+            }
+            Instruction::Construct(argument_count) => {
+                let arguments = self.take_call_arguments(*argument_count, 2)?;
+                let new_target = self.pop()?;
+                let function = self.pop()?;
+                host.construct(function, new_target, arguments)?
+            }
+            _ => {
+                return Err(Error::internal(
+                    "non-call instruction reached VM call dispatch",
+                ));
+            }
+        };
+        match completion {
+            Completion::Return(value) => {
+                self.stack.push(value);
+                Ok(None)
+            }
+            Completion::Throw(value) => Ok(Some(Completion::Throw(value))),
+        }
+    }
+
+    // Numeric coercion and BigInt paths instantiate several large generic
+    // result temporaries in debug builds. Isolate the whole family so ordinary
+    // bytecode calls do not reserve those slots in every recursive VM frame.
+    #[inline(never)]
+    fn execute_numeric_instruction(
+        &mut self,
+        instruction: &Instruction,
+        host: &mut impl VmHost,
+    ) -> Result<Option<Completion>, Error> {
+        match instruction {
+            Instruction::Neg => {
+                if let OperationOutcome::Throw(value) = self.neg(host)? {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::Plus => {
+                if let OperationOutcome::Throw(value) = self.unary_plus(host)? {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::Inc | Instruction::Dec => {
+                let increment = matches!(instruction, Instruction::Inc);
+                if let OperationOutcome::Throw(value) =
+                    self.update_numeric(host, increment, false)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::PostInc | Instruction::PostDec => {
+                let increment = matches!(instruction, Instruction::PostInc);
+                if let OperationOutcome::Throw(value) =
+                    self.update_numeric(host, increment, true)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::BitNot => {
+                if let OperationOutcome::Throw(value) = self.bit_not(host)? {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::Not => {
+                let value = self.pop()?;
+                self.stack.push(Value::Bool(!value.to_boolean()));
+            }
+            Instruction::TypeOf => {
+                let value = self.pop()?;
+                self.stack
+                    .push(Value::String(JsString::from_static(host.type_of(&value)?)));
+            }
+            Instruction::IsUndefinedOrNull => {
+                let value = self.pop()?;
+                self.stack
+                    .push(Value::Bool(matches!(value, Value::Undefined | Value::Null)));
+            }
+            Instruction::Add => {
+                if let OperationOutcome::Throw(value) = self.add(host)? {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::Sub => {
+                if let OperationOutcome::Throw(value) =
+                    self.binary_numeric(host, |left, right| left - right, JsBigInt::sub)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::Mul => {
+                if let OperationOutcome::Throw(value) =
+                    self.binary_numeric(host, |left, right| left * right, JsBigInt::mul)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::Div => {
+                if let OperationOutcome::Throw(value) =
+                    self.binary_numeric(host, |left, right| left / right, JsBigInt::div)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::Mod => {
+                if let OperationOutcome::Throw(value) =
+                    self.binary_numeric(host, |left, right| left % right, JsBigInt::rem)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::Pow => {
+                if let OperationOutcome::Throw(value) =
+                    self.binary_numeric(host, crate::number::pow, JsBigInt::pow)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::Shl => {
+                if let OperationOutcome::Throw(value) = self.binary_numeric(
+                    host,
+                    |left, right| {
+                        f64::from(
+                            number_to_int32(left).wrapping_shl(number_to_uint32(right) & 0x1f),
+                        )
+                    },
+                    JsBigInt::shl,
+                )? {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::Sar => {
+                if let OperationOutcome::Throw(value) = self.binary_numeric(
+                    host,
+                    |left, right| {
+                        f64::from(number_to_int32(left) >> (number_to_uint32(right) & 0x1f))
+                    },
+                    JsBigInt::shr,
+                )? {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::Shr => {
+                if let OperationOutcome::Throw(value) = self.unsigned_shift_right(host)? {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::BitAnd => {
+                if let OperationOutcome::Throw(value) = self.binary_numeric(
+                    host,
+                    |left, right| f64::from(number_to_int32(left) & number_to_int32(right)),
+                    JsBigInt::bit_and,
+                )? {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::BitXor => {
+                if let OperationOutcome::Throw(value) = self.binary_numeric(
+                    host,
+                    |left, right| f64::from(number_to_int32(left) ^ number_to_int32(right)),
+                    JsBigInt::bit_xor,
+                )? {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::BitOr => {
+                if let OperationOutcome::Throw(value) = self.binary_numeric(
+                    host,
+                    |left, right| f64::from(number_to_int32(left) | number_to_int32(right)),
+                    JsBigInt::bit_or,
+                )? {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::Eq => {
+                let (left, right) = self.pop_pair()?;
+                match abstract_equal(host, left, right)? {
+                    OperationOutcome::Value(equal) => self.stack.push(Value::Bool(equal)),
+                    OperationOutcome::Throw(value) => {
+                        return Ok(Some(Completion::Throw(value)));
+                    }
+                }
+            }
+            Instruction::StrictEq => {
+                let (left, right) = self.pop_pair()?;
+                self.stack.push(Value::Bool(left.strict_equal(&right)));
+            }
+            Instruction::Neq => {
+                let (left, right) = self.pop_pair()?;
+                match abstract_equal(host, left, right)? {
+                    OperationOutcome::Value(equal) => self.stack.push(Value::Bool(!equal)),
+                    OperationOutcome::Throw(value) => {
+                        return Ok(Some(Completion::Throw(value)));
+                    }
+                }
+            }
+            Instruction::StrictNeq => {
+                let (left, right) = self.pop_pair()?;
+                self.stack.push(Value::Bool(!left.strict_equal(&right)));
+            }
+            Instruction::Lt => {
+                if let OperationOutcome::Throw(value) =
+                    self.compare(host, std::cmp::Ordering::is_lt)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::Lte => {
+                if let OperationOutcome::Throw(value) =
+                    self.compare(host, std::cmp::Ordering::is_le)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::Gt => {
+                if let OperationOutcome::Throw(value) =
+                    self.compare(host, std::cmp::Ordering::is_gt)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::Gte => {
+                if let OperationOutcome::Throw(value) =
+                    self.compare(host, std::cmp::Ordering::is_ge)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            _ => {
+                return Err(Error::internal(
+                    "non-numeric instruction reached VM numeric dispatch",
+                ));
+            }
+        }
+        Ok(None)
+    }
+
     fn execute_inner(
         &mut self,
         code: &[Instruction],
@@ -1081,6 +1338,55 @@ impl CallFrame {
                     | Instruction::ForInNext
             ) {
                 if let Some(completion) = self.execute_cold_instruction(instruction, host)? {
+                    return Ok(completion);
+                }
+                continue;
+            }
+
+            if matches!(
+                instruction,
+                Instruction::Call(_) | Instruction::CallMethod(_) | Instruction::Construct(_)
+            ) {
+                if let Some(completion) = self.execute_call_instruction(instruction, host)? {
+                    return Ok(completion);
+                }
+                continue;
+            }
+
+            if matches!(
+                instruction,
+                Instruction::Neg
+                    | Instruction::Plus
+                    | Instruction::Inc
+                    | Instruction::Dec
+                    | Instruction::PostInc
+                    | Instruction::PostDec
+                    | Instruction::BitNot
+                    | Instruction::Not
+                    | Instruction::TypeOf
+                    | Instruction::IsUndefinedOrNull
+                    | Instruction::Add
+                    | Instruction::Sub
+                    | Instruction::Mul
+                    | Instruction::Div
+                    | Instruction::Mod
+                    | Instruction::Pow
+                    | Instruction::Shl
+                    | Instruction::Sar
+                    | Instruction::Shr
+                    | Instruction::BitAnd
+                    | Instruction::BitXor
+                    | Instruction::BitOr
+                    | Instruction::Eq
+                    | Instruction::StrictEq
+                    | Instruction::Neq
+                    | Instruction::StrictNeq
+                    | Instruction::Lt
+                    | Instruction::Lte
+                    | Instruction::Gt
+                    | Instruction::Gte
+            ) {
+                if let Some(completion) = self.execute_numeric_instruction(instruction, host)? {
                     return Ok(completion);
                 }
                 continue;
@@ -1424,197 +1730,36 @@ impl CallFrame {
                     let value = self.stack[index].clone();
                     self.stack.insert(index + 1, value);
                 }
-                Instruction::Neg => {
-                    if let OperationOutcome::Throw(value) = self.neg(host)? {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::Plus => {
-                    if let OperationOutcome::Throw(value) = self.unary_plus(host)? {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::Inc | Instruction::Dec => {
-                    let increment = matches!(instruction, Instruction::Inc);
-                    if let OperationOutcome::Throw(value) =
-                        self.update_numeric(host, increment, false)?
-                    {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::PostInc | Instruction::PostDec => {
-                    let increment = matches!(instruction, Instruction::PostInc);
-                    if let OperationOutcome::Throw(value) =
-                        self.update_numeric(host, increment, true)?
-                    {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::BitNot => {
-                    if let OperationOutcome::Throw(value) = self.bit_not(host)? {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::Not => {
-                    let value = self.pop()?;
-                    self.stack.push(Value::Bool(!value.to_boolean()));
-                }
-                Instruction::TypeOf => {
-                    let value = self.pop()?;
-                    self.stack
-                        .push(Value::String(JsString::from_static(host.type_of(&value)?)));
-                }
-                Instruction::IsUndefinedOrNull => {
-                    let value = self.pop()?;
-                    self.stack
-                        .push(Value::Bool(matches!(value, Value::Undefined | Value::Null)));
-                }
-                Instruction::Add => {
-                    if let OperationOutcome::Throw(value) = self.add(host)? {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::Sub => {
-                    if let OperationOutcome::Throw(value) =
-                        self.binary_numeric(host, |left, right| left - right, JsBigInt::sub)?
-                    {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::Mul => {
-                    if let OperationOutcome::Throw(value) =
-                        self.binary_numeric(host, |left, right| left * right, JsBigInt::mul)?
-                    {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::Div => {
-                    if let OperationOutcome::Throw(value) =
-                        self.binary_numeric(host, |left, right| left / right, JsBigInt::div)?
-                    {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::Mod => {
-                    if let OperationOutcome::Throw(value) =
-                        self.binary_numeric(host, |left, right| left % right, JsBigInt::rem)?
-                    {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::Pow => {
-                    if let OperationOutcome::Throw(value) =
-                        self.binary_numeric(host, crate::number::pow, JsBigInt::pow)?
-                    {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::Shl => {
-                    if let OperationOutcome::Throw(value) = self.binary_numeric(
-                        host,
-                        |left, right| {
-                            f64::from(
-                                number_to_int32(left).wrapping_shl(number_to_uint32(right) & 0x1f),
-                            )
-                        },
-                        JsBigInt::shl,
-                    )? {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::Sar => {
-                    if let OperationOutcome::Throw(value) = self.binary_numeric(
-                        host,
-                        |left, right| {
-                            f64::from(number_to_int32(left) >> (number_to_uint32(right) & 0x1f))
-                        },
-                        JsBigInt::shr,
-                    )? {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::Shr => {
-                    if let OperationOutcome::Throw(value) = self.unsigned_shift_right(host)? {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::BitAnd => {
-                    if let OperationOutcome::Throw(value) = self.binary_numeric(
-                        host,
-                        |left, right| f64::from(number_to_int32(left) & number_to_int32(right)),
-                        JsBigInt::bit_and,
-                    )? {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::BitXor => {
-                    if let OperationOutcome::Throw(value) = self.binary_numeric(
-                        host,
-                        |left, right| f64::from(number_to_int32(left) ^ number_to_int32(right)),
-                        JsBigInt::bit_xor,
-                    )? {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::BitOr => {
-                    if let OperationOutcome::Throw(value) = self.binary_numeric(
-                        host,
-                        |left, right| f64::from(number_to_int32(left) | number_to_int32(right)),
-                        JsBigInt::bit_or,
-                    )? {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::Eq => {
-                    let (left, right) = self.pop_pair()?;
-                    match abstract_equal(host, left, right)? {
-                        OperationOutcome::Value(equal) => self.stack.push(Value::Bool(equal)),
-                        OperationOutcome::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                }
-                Instruction::StrictEq => {
-                    let (left, right) = self.pop_pair()?;
-                    self.stack.push(Value::Bool(left.strict_equal(&right)));
-                }
-                Instruction::Neq => {
-                    let (left, right) = self.pop_pair()?;
-                    match abstract_equal(host, left, right)? {
-                        OperationOutcome::Value(equal) => self.stack.push(Value::Bool(!equal)),
-                        OperationOutcome::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                }
-                Instruction::StrictNeq => {
-                    let (left, right) = self.pop_pair()?;
-                    self.stack.push(Value::Bool(!left.strict_equal(&right)));
-                }
-                Instruction::Lt => {
-                    if let OperationOutcome::Throw(value) =
-                        self.compare(host, std::cmp::Ordering::is_lt)?
-                    {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::Lte => {
-                    if let OperationOutcome::Throw(value) =
-                        self.compare(host, std::cmp::Ordering::is_le)?
-                    {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::Gt => {
-                    if let OperationOutcome::Throw(value) =
-                        self.compare(host, std::cmp::Ordering::is_gt)?
-                    {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::Gte => {
-                    if let OperationOutcome::Throw(value) =
-                        self.compare(host, std::cmp::Ordering::is_ge)?
-                    {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
+                Instruction::Neg
+                | Instruction::Plus
+                | Instruction::Inc
+                | Instruction::Dec
+                | Instruction::PostInc
+                | Instruction::PostDec
+                | Instruction::BitNot
+                | Instruction::Not
+                | Instruction::TypeOf
+                | Instruction::IsUndefinedOrNull
+                | Instruction::Add
+                | Instruction::Sub
+                | Instruction::Mul
+                | Instruction::Div
+                | Instruction::Mod
+                | Instruction::Pow
+                | Instruction::Shl
+                | Instruction::Sar
+                | Instruction::Shr
+                | Instruction::BitAnd
+                | Instruction::BitXor
+                | Instruction::BitOr
+                | Instruction::Eq
+                | Instruction::StrictEq
+                | Instruction::Neq
+                | Instruction::StrictNeq
+                | Instruction::Lt
+                | Instruction::Lte
+                | Instruction::Gt
+                | Instruction::Gte => unreachable!("numeric dispatch was bypassed"),
                 Instruction::In => {
                     let (key, object) = self.pop_pair()?;
                     let Value::Object(object) = object else {
@@ -1816,31 +1961,8 @@ impl CallFrame {
                         }
                     }
                 }
-                Instruction::Call(argument_count) => {
-                    let arguments = self.take_call_arguments(*argument_count, 1)?;
-                    let function = self.pop()?;
-                    match host.call(function, Value::Undefined, arguments)? {
-                        Completion::Return(value) => self.stack.push(value),
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                }
-                Instruction::CallMethod(argument_count) => {
-                    let arguments = self.take_call_arguments(*argument_count, 2)?;
-                    let function = self.pop()?;
-                    let receiver = self.pop()?;
-                    match host.call(function, receiver, arguments)? {
-                        Completion::Return(value) => self.stack.push(value),
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                }
-                Instruction::Construct(argument_count) => {
-                    let arguments = self.take_call_arguments(*argument_count, 2)?;
-                    let new_target = self.pop()?;
-                    let function = self.pop()?;
-                    match host.construct(function, new_target, arguments)? {
-                        Completion::Return(value) => self.stack.push(value),
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
+                Instruction::Call(_) | Instruction::CallMethod(_) | Instruction::Construct(_) => {
+                    unreachable!("call dispatch was bypassed")
                 }
                 Instruction::Return => return self.pop().map(Completion::Return),
                 Instruction::Throw => return self.pop().map(Completion::Throw),

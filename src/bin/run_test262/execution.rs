@@ -11,6 +11,11 @@ use super::metadata::{Metadata, parse_metadata};
 use super::report::WorkerResult;
 use super::{Variant, WorkerOptions, validate_relative_test_path};
 
+const WORKER_HOST_FILENAME: &str = "<test262-worker-host>";
+const WORKER_HOST_SOURCE: &str = r#"
+globalThis.print = function print(value) {};
+"#;
+
 pub(super) fn run_isolated_worker(
     executable: &Path,
     suite: &Path,
@@ -123,10 +128,12 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
 
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
+    install_worker_host(&runtime, &mut context)?;
     // The progress baseline follows the pinned Test262 interpretation rather
     // than run-test262.c's raw-test deviation: raw means no harness and no
-    // source rewriting. Harness files remain separate scripts and keep their
-    // own filenames.
+    // source rewriting. The qjs-compatible `print` surface above is a worker
+    // host capability installed as its own script; harness files likewise
+    // remain separate scripts and keep their own filenames.
     let mut includes = Vec::new();
     if !metadata.is_raw() {
         includes.extend(["assert.js".to_owned(), "sta.js".to_owned()]);
@@ -256,6 +263,31 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
             ))
         }
         Err(error) => Ok(engine_fault("engine-fault", "runtime", error, None)),
+    }
+}
+
+fn install_worker_host(runtime: &Runtime, context: &mut Context) -> Result<(), String> {
+    let options = CompileOptions::new(WORKER_HOST_FILENAME);
+    let function = context
+        .compile_with_options_preserving_unsupported_diagnostics(WORKER_HOST_SOURCE, &options)
+        .map_err(|error| worker_host_error(runtime, context, "compile", error))?;
+    context
+        .execute(&function)
+        .map(|_| ())
+        .map_err(|error| worker_host_error(runtime, context, "execute", error))
+}
+
+fn worker_host_error(
+    runtime: &Runtime,
+    context: &mut Context,
+    phase: &str,
+    error: RuntimeError,
+) -> String {
+    if error == RuntimeError::Exception {
+        let (error_type, detail) = take_error(runtime, context, error);
+        format!("Test262 worker host {phase} threw {error_type}: {detail}")
+    } else {
+        format!("Test262 worker host {phase} failed: {error}")
     }
 }
 
@@ -481,6 +513,60 @@ mod tests {
         assert_eq!(result.outcome, "fail-missing-throw");
         assert_eq!(result.actual_phase, "normal");
         assert!(result.detail.contains("expected SyntaxError during parse"));
+    }
+
+    #[test]
+    fn raw_worker_installs_print_host_for_coerce_global_style_tests() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let suite = std::env::temp_dir().join(format!(
+            "quickjs-oxide-test262-print-{}-{unique}",
+            std::process::id()
+        ));
+        let relative =
+            PathBuf::from("test/built-ins/RegExp/prototype/Symbol.replace/coerce-global.js");
+        let path = suite.join(&relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"/*---
+flags: [raw]
+features: [Symbol.replace]
+---*/
+if (typeof assert !== "undefined") {
+    throw new Error("raw worker unexpectedly installed the Test262 harness");
+}
+if (typeof print !== "function" || print.name !== "print" || print.length !== 1) {
+    throw new Error("qjs print host surface is missing");
+}
+if (print("discarded", 1, true) !== undefined) {
+    throw new Error("qjs print host did not return undefined");
+}
+
+Array.print = print;
+var r = /a/g;
+Object.defineProperty(r, "global", { writable: true });
+r.lastIndex = 0;
+r.global = undefined;
+if (r[Symbol.replace]("aa", "b") !== "ba") {
+    throw new Error("coerce-global replacement did not complete");
+}
+"#,
+        )
+        .unwrap();
+
+        let result = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: relative,
+            variant: Variant::Sloppy,
+        })
+        .unwrap();
+        fs::remove_dir_all(suite).unwrap();
+
+        assert_eq!(result.outcome, "pass", "{}", result.detail);
+        assert_eq!(result.actual_phase, "normal");
     }
 
     #[test]

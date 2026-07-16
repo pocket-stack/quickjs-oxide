@@ -3,6 +3,7 @@
 use super::super::*;
 
 mod regexp;
+mod replace;
 
 #[cfg(test)]
 mod tests;
@@ -210,9 +211,19 @@ impl Runtime {
             1,
             1,
         )?;
-        // QuickJS publishes replace/replaceAll between repeat and this pair.
-        // They remain absent until their own parity slice, so preserve the
-        // filtered table order and the release's padEnd-before-padStart order.
+        for (selector, name) in [
+            (StringReplaceKind::Replace, "replace"),
+            (StringReplaceKind::ReplaceAll, "replaceAll"),
+        ] {
+            self.define_native_builtin_auto_init(
+                string_prototype,
+                realm,
+                NativeFunctionId::StringPrototypeReplace(selector),
+                name,
+                2,
+                2,
+            )?;
+        }
         for (selector, name) in [
             (StringPadKind::End, "padEnd"),
             (StringPadKind::Start, "padStart"),

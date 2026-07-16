@@ -3,15 +3,16 @@
 //! The pure matcher lives in [`crate::regexp`].  This module owns the
 //! observable ECMAScript shell around it: realm-local constructor/prototype
 //! identities, derived allocation, accessors, `lastIndex`, and match result
-//! objects. RegExp literals, the legacy `compile` method, `@@match`,
-//! `@@search`, and `@@split` are linked; `RegExp.escape` and the remaining
-//! Symbol protocols stay separate parity slices.
+//! objects. RegExp literals, the legacy `compile` method, `@@replace`,
+//! `@@match`, `@@search`, and `@@split` are linked; `RegExp.escape` and the
+//! remaining Symbol protocols stay separate parity slices.
 
 mod compile;
 mod constructor;
 mod exec;
 mod match_protocol;
 mod prototype;
+mod replace;
 mod search;
 mod split;
 
@@ -83,6 +84,17 @@ impl Runtime {
                 min_readable_args,
             )?;
         }
+        let replace_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Replace));
+        self.define_native_builtin_auto_init_with_key(
+            &regexp_prototype,
+            realm,
+            &replace_key,
+            NativeFunctionId::RegExp(RegExpNativeKind::Replace),
+            "[Symbol.replace]",
+            2,
+            2,
+            PropertyFlags::data(true, false, true),
+        )?;
         let match_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Match));
         self.define_native_builtin_auto_init_with_key(
             &regexp_prototype,
@@ -217,6 +229,9 @@ impl Runtime {
             }
             RegExpNativeKind::Compile => self.call_regexp_compile(realm, invocation, arguments),
             RegExpNativeKind::ToString => self.call_regexp_to_string(realm, invocation),
+            RegExpNativeKind::Replace => {
+                self.call_regexp_symbol_replace(realm, invocation, arguments)
+            }
             RegExpNativeKind::Match => self.call_regexp_symbol_match(realm, invocation, arguments),
             RegExpNativeKind::Search => {
                 self.call_regexp_symbol_search(realm, invocation, arguments)

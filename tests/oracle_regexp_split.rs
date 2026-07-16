@@ -730,7 +730,7 @@ fn mixed_string_and_regexp_split_recursion_guard_is_catchable_and_recovers() {
                 .unwrap();
 
             for (entry, kind, safe_depth, overflow_depth) in [
-                ("String.prototype.split", 0, 2, 3),
+                ("String.prototype.split", 0, 3, 4),
                 ("RegExp @@split", 1, 3, 4),
             ] {
                 assert_eq!(

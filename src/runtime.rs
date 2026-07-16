@@ -46,9 +46,9 @@ use crate::heap::{
     ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind, ObjectKeysKind, ObjectKind,
     ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot,
     RawValue, ReflectKind, RegExpNativeKind, ShapeId, StringCaseKind, StringCharAtKind,
-    StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind, StringStaticKind,
-    StringSubrangeKind, StringTrimKind, StringWellFormedKind, SymbolRegistryKind, VarRefData,
-    VarRefId, VariableDefinition,
+    StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind, StringReplaceKind,
+    StringStaticKind, StringSubrangeKind, StringTrimKind, StringWellFormedKind, SymbolRegistryKind,
+    VarRefData, VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -4847,106 +4847,6 @@ impl Runtime {
         Ok(ObjectRef::from_borrowed_handle(self.clone(), prototype)?)
     }
 
-    fn concatenate_bound_arguments(
-        &self,
-        realm: ContextId,
-        bound_arguments: &[Value],
-        call_arguments: &[Value],
-    ) -> Result<NativeConversion<Vec<Value>>, RuntimeError> {
-        const MAX_CALL_ARGUMENTS: usize = 65_534;
-
-        let Some(total) = bound_arguments.len().checked_add(call_arguments.len()) else {
-            return Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Internal,
-                "stack overflow",
-            )?));
-        };
-        if total > MAX_CALL_ARGUMENTS {
-            return Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Internal,
-                "stack overflow",
-            )?));
-        }
-        let mut arguments = Vec::with_capacity(total);
-        arguments.extend_from_slice(bound_arguments);
-        arguments.extend_from_slice(call_arguments);
-        Ok(NativeConversion::Value(arguments))
-    }
-
-    fn call_internal(
-        &self,
-        caller_realm: ContextId,
-        callable: &CallableRef,
-        this_value: Value,
-        arguments: &[Value],
-    ) -> Result<Completion, RuntimeError> {
-        self.0.state.borrow().heap.context(caller_realm)?;
-        self.validate_value_domain(&this_value, "call this value")?;
-        for argument in arguments {
-            self.validate_value_domain(argument, "call argument")?;
-        }
-        let mut callable = callable.clone();
-        let mut this_value = this_value;
-        let mut arguments = arguments.to_vec();
-        loop {
-            match self.bytecode_for_callable(&callable)? {
-                CallableExecution::Bytecode {
-                    bytecode,
-                    closure_slots,
-                } => {
-                    return self.execute_bytecode_callable(
-                        caller_realm,
-                        &callable,
-                        this_value,
-                        Value::Undefined,
-                        &arguments,
-                        bytecode,
-                        closure_slots,
-                    );
-                }
-                CallableExecution::Native {
-                    target,
-                    realm,
-                    min_readable_args,
-                } => {
-                    if self.native_call_would_overflow(target) {
-                        return Ok(Completion::Throw(self.new_native_error(
-                            caller_realm,
-                            NativeErrorKind::Internal,
-                            "stack overflow",
-                        )?));
-                    }
-                    return self.call_native_function(
-                        &callable,
-                        realm,
-                        target,
-                        min_readable_args,
-                        this_value,
-                        &arguments,
-                    );
-                }
-                CallableExecution::Bound {
-                    target,
-                    this_value: bound_this,
-                    arguments: bound_arguments,
-                } => {
-                    arguments = match self.concatenate_bound_arguments(
-                        caller_realm,
-                        &bound_arguments,
-                        &arguments,
-                    )? {
-                        NativeConversion::Value(arguments) => arguments,
-                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                    };
-                    callable = target;
-                    this_value = bound_this;
-                }
-            }
-        }
-    }
-
     fn construct_value_internal(
         &self,
         caller_realm: ContextId,
@@ -6264,43 +6164,6 @@ impl Runtime {
             NativeErrorKind::Type,
             "invalid property access",
         )?))
-    }
-
-    fn call_function_prototype_call(
-        &self,
-        realm: ContextId,
-        invocation: NativeInvocation,
-        arguments: &NativeArguments,
-    ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Function.prototype.call did not receive a generic invocation",
-            ));
-        };
-        let Value::Object(target) = this_value else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
-        };
-        let Some(target) = self.as_callable(&target)? else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
-        };
-        if arguments.actual_arg_count == 0 {
-            return self.call_internal(realm, &target, Value::Undefined, &[]);
-        }
-        let this_argument = arguments.readable[0].clone();
-        self.call_internal(
-            realm,
-            &target,
-            this_argument,
-            &arguments.readable[1..arguments.actual_arg_count],
-        )
     }
 
     fn call_function_constructor(

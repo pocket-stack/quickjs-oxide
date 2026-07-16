@@ -1,21 +1,22 @@
 # The 35-path slice freezes the complete Annex-B compile directory plus every
 # pinned-suite source that directly invokes RegExp.prototype.compile. With
-# R1f, 44 variants pass: the linked RegExp @@split consumers and every core
-# compile variant that reaches execution. Two staging replace variants first
-# stop at missing @@replace. Independent feature, host, arrow, and
-# object-method parser frontiers remain explicit in the same static vector.
+# R1f, 44 variants passed: the linked RegExp @@split consumers and every core
+# compile variant that reached execution. R1h makes the two staging replace
+# variants pass as well, for 46 current passes. Independent feature, host,
+# arrow, and object-method parser frontiers remain explicit in the same static
+# vector.
 schema=test262-canonical-classified-v2
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 timeout_ms=30000
 paths=35
 variants=70
 runnable=60
-passes=44
+passes=46
 manifest_sha256=87a9d837697333e2416718a22b7e420cf7eed46ba60d422034bf313160396651
 r1e_full_tsv_sha256=5673ac15896bab5b1665bf8930db517447012c3d63d69bfbb1da9b8e7f9574c1
 r1e_selected_sha256=5b21cbcefdb504453a661d60ab50f7b3a2750e98b247084af4837f952c325581
 r1e_variants=70
 r1e_summary=fail-parse=6 fail-runtime=46 skipped-feature=4 unsupported-feature=4 unsupported-host-create-realm=2 unsupported-parser=8
-tsv_sha256=0bf5d38facbcd858109fbc768523ed0b0c0dec6f9a645b51ddf57645d4ddbc52
-jsonl_sha256=048371baff1f84299f154b201be94c8f3765e21d9932643132dce38eed379067
-summary=fail-parse=6 fail-runtime=2 pass=44 skipped-feature=4 unsupported-feature=4 unsupported-host-create-realm=2 unsupported-parser=8
+tsv_sha256=871f919863883dfad5107834a5eb30ca9c37828edeb315529ec0c6ed51aa02c8
+jsonl_sha256=c88a057baef0d3f8046aa56ff11ccad1bb48739c6a41d51e3f7a32d629a4c385
+summary=fail-parse=6 pass=46 skipped-feature=4 unsupported-feature=4 unsupported-host-create-realm=2 unsupported-parser=8

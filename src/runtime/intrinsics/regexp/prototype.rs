@@ -27,6 +27,7 @@ impl Runtime {
             | RegExpNativeKind::Compile
             | RegExpNativeKind::Test
             | RegExpNativeKind::ToString
+            | RegExpNativeKind::Replace
             | RegExpNativeKind::Match
             | RegExpNativeKind::Search
             | RegExpNativeKind::Split => Err(RuntimeError::Invariant(
