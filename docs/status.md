@@ -10,12 +10,13 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 18 reviewed feature tags; audited negative-test
-  canaries and source/metadata host requirements keep unsupported grammar,
+  capability profile now admits 19 reviewed feature tags and 101 exact audited
+  negative-test paths. Those fail-closed canaries and the source/metadata host
+  requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 25,165 passes: 24.66% raw, a 30.12% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 83.43% among the 30,163 variants with a
+  has 25,613 passes: 25.10% raw, a 30.65% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 83.67% among the 30,611 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -42,7 +43,10 @@ claim full parity.
   pinned legacy RegExp `compile` mutation and one Unicode decimal-escape syntax
   refinement. Its exact join records 44 `fail-runtime -> pass` and two
   `unsupported-runtime -> pass` transitions, again with zero previous-pass
-  regression or key drift.
+  regression or key drift. R1g ports scoped `(?ims-ims:...)` RegExp modifiers
+  from the pinned compiler. Its complete 460-variant feature join records 448
+  `unsupported-feature -> pass` and 12 `unsupported-feature ->
+  unsupported-parser` transitions, with no other outcome movement.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -275,9 +279,47 @@ claim full parity.
   protocol work and advanced pattern grammar; none of this is a parity
   completion claim.
 
+  R1g ports QuickJS's scoped RegExp modifier grammar
+  `(?ims-ims:...)` into the runtime-independent compiler. Duplicate modifiers
+  are rejected within each list before empty/overlapping sets and a missing
+  colon, matching the pinned error priority. Each modifier group snapshots the
+  effective `i`, `m`, and `s` state, applies it to literals, character-class
+  canonicalization, word boundaries, anchors, and dot instructions, then
+  restores the enclosing state. The group remains noncapturing and
+  quantifiable, and the RegExp object's global flags are unchanged. Eighteen
+  QuickJS differential vectors cover grammar, nesting, Unicode case folding,
+  constructor/literal equivalence, captures, quantification, and global exec
+  state; all four oracle test groups and all 675 library tests pass. The change
+  stays in `src/regexp/compiler.rs`; `runtime.rs` remains 9,787 lines.
+
+  The complete focused feature vector freezes 230 paths and 460 variants. It
+  admits all 460, records 448 passes, and leaves only 12 typed parser
+  frontiers: four backreference variants and eight Unicode property-escape
+  variants. Its TSV/JSONL SHA-256 values are
+  `b9baafd9e3d49b1cda6a6a5b99bbddc5ae938aa494c35bd31e1a1ceccb545c68`
+  and
+  `cf2e6a818da59c66735d46f429b885c916454cf4a2b160f6b2d10dd2b40b8e86`.
+  Publishing the feature also audits exactly 83 modifier-owned literal
+  parse-negative paths, moving the capability profile to 19 feature tags and
+  101 negative paths with SHA-256
+  `0d26aedd5b5d7fa00b6c2551a93c7d776f22e2934b790615d6dc58c454156d5f`.
+
+  The exact R1f-to-R1g full join matches all 102,037 keys with no missing,
+  extra, duplicate, outside-feature, or previous-pass regression. Its only
+  changes are 448 `unsupported-feature -> pass` and 12
+  `unsupported-feature -> unsupported-parser`, moving the complete vector to
+  25,613 passes and 32,957 admitted jobs. Five- and eight-worker reports are
+  byte-identical; the full TSV/JSONL SHA-256 values are
+  `5ece50a681fcb4fe97779002b179174930d2cdbdb4bd2120e0679678bd96b161`
+  and
+  `83539d1bcea789f87853cdc6d9862dd2741d61a5b6696e8513e551318c9e5df8`.
+  Earlier focused reports change only in their profile-hash metadata; replacing
+  the new header hash with the R1f value reconstructs every old report hash
+  exactly, so their outcome rows and milestone provenance remain unchanged.
+
   Advanced grammar fails closed: lookaround, backreferences, named captures,
-  inline modifiers, Unicode properties, all `v`-mode execution, and unported
-  Annex-B octal/control escapes return typed unsupported errors. Pattern group
+  Unicode properties, all `v`-mode execution, and unported Annex-B
+  octal/control escapes return typed unsupported errors. Pattern group
   nesting is temporarily capped at 256 with a catchable `stack overflow`
   compile error so adversarial input cannot overflow the Rust stack; a later
   iterative parser/compiler must replace that conservative resource frontier
@@ -2442,6 +2484,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_regexp_compile -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_regexp_modifiers -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_lexicals -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_declarations -- --nocapture
@@ -2528,6 +2572,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/run-test262-regexp-match.sh
 ./scripts/run-test262-regexp-split.sh
 ./scripts/run-test262-regexp-compile.sh
+./scripts/run-test262-regexp-modifiers.sh
 ./scripts/test-test262-full.sh
 ```
 

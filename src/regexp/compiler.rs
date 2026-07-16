@@ -194,6 +194,50 @@ struct Term {
     position: usize,
 }
 
+const MODIFIER_IGNORE_CASE: u8 = 1 << 0;
+const MODIFIER_MULTILINE: u8 = 1 << 1;
+const MODIFIER_DOT_ALL: u8 = 1 << 2;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ModifierState {
+    ignore_case: bool,
+    multiline: bool,
+    dot_all: bool,
+}
+
+impl ModifierState {
+    fn from_flags(flags: RegExpFlags) -> Self {
+        Self {
+            ignore_case: flags.contains(RegExpFlags::IGNORE_CASE),
+            multiline: flags.contains(RegExpFlags::MULTILINE),
+            dot_all: flags.contains(RegExpFlags::DOT_ALL),
+        }
+    }
+
+    fn updated(self, add_mask: u8, remove_mask: u8) -> Self {
+        Self {
+            ignore_case: update_modifier(
+                self.ignore_case,
+                add_mask,
+                remove_mask,
+                MODIFIER_IGNORE_CASE,
+            ),
+            multiline: update_modifier(self.multiline, add_mask, remove_mask, MODIFIER_MULTILINE),
+            dot_all: update_modifier(self.dot_all, add_mask, remove_mask, MODIFIER_DOT_ALL),
+        }
+    }
+}
+
+fn update_modifier(mut value: bool, add_mask: u8, remove_mask: u8, modifier: u8) -> bool {
+    if add_mask & modifier != 0 {
+        value = true;
+    }
+    if remove_mask & modifier != 0 {
+        value = false;
+    }
+    value
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Atom {
     Literal(u32),
@@ -209,6 +253,7 @@ enum Atom {
     Class(CharacterClass),
     Group {
         capture: Option<u8>,
+        modifiers: Option<ModifierState>,
         expression: Expression,
     },
 }
@@ -234,6 +279,7 @@ impl Atom {
             Self::Group {
                 capture,
                 expression,
+                ..
             } => match (*capture, expression.capture_range()) {
                 (Some(capture), Some((_, end))) => Some((capture, end)),
                 (Some(capture), None) => Some((capture, capture)),
@@ -298,6 +344,7 @@ struct Parser<'a> {
     units: &'a [u16],
     position: usize,
     flags: RegExpFlags,
+    modifiers: ModifierState,
     next_capture: u16,
     group_depth: usize,
 }
@@ -308,6 +355,7 @@ impl<'a> Parser<'a> {
             units,
             position: 0,
             flags,
+            modifiers: ModifierState::from_flags(flags),
             next_capture: 1,
             group_depth: 0,
         }
@@ -410,10 +458,19 @@ impl<'a> Parser<'a> {
             return Err(CompileError::syntax(position, "stack overflow"));
         }
         self.group_depth += 1;
-        let capture = if self.peek() == Some(u16::from(b'?')) {
+        let result = self.parse_group_inner(position);
+        self.group_depth -= 1;
+        result
+    }
+
+    fn parse_group_inner(&mut self, position: usize) -> Result<Atom, CompileError> {
+        let (capture, modifiers) = if self.peek() == Some(u16::from(b'?')) {
             self.position += 1;
-            match self.take() {
-                Some(0x3a) => None,
+            match self.peek() {
+                Some(0x3a) => {
+                    self.position += 1;
+                    (None, None)
+                }
                 Some(0x3d | 0x21) => {
                     return Err(CompileError::unsupported(
                         position,
@@ -421,7 +478,7 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 Some(0x3c) => {
-                    if matches!(self.peek(), Some(0x3d | 0x21)) {
+                    if matches!(self.peek_n(1), Some(0x3d | 0x21)) {
                         return Err(CompileError::unsupported(
                             position,
                             UnsupportedFeature::Lookaround,
@@ -433,10 +490,21 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 Some(0x69 | 0x6d | 0x73 | 0x2d) => {
-                    return Err(CompileError::unsupported(
-                        position,
-                        UnsupportedFeature::InlineModifier,
-                    ));
+                    let add_mask = self.parse_modifiers()?;
+                    let remove_mask = if self.peek() == Some(u16::from(b'-')) {
+                        self.position += 1;
+                        self.parse_modifiers()?
+                    } else {
+                        0
+                    };
+                    if (add_mask == 0 && remove_mask == 0) || add_mask & remove_mask != 0 {
+                        return Err(CompileError::syntax(position, "invalid modifiers"));
+                    }
+                    if self.peek() != Some(u16::from(b':')) {
+                        return Err(CompileError::syntax(self.position, "expecting ':'"));
+                    }
+                    self.position += 1;
+                    (None, Some(self.modifiers.updated(add_mask, remove_mask)))
                 }
                 Some(_) | None => {
                     return Err(CompileError::syntax(position, "invalid group specifier"));
@@ -449,18 +517,51 @@ impl<'a> Parser<'a> {
             let capture = u8::try_from(self.next_capture)
                 .map_err(|_| CompileError::too_many_captures(position))?;
             self.next_capture += 1;
-            Some(capture)
+            (Some(capture), None)
         };
-        let expression = self.parse_disjunction(true);
-        self.group_depth -= 1;
-        let expression = expression?;
-        if self.take() != Some(u16::from(b')')) {
-            return Err(CompileError::syntax(position, "unterminated group"));
+
+        let saved_modifiers = self.modifiers;
+        if let Some(modifiers) = modifiers {
+            self.modifiers = modifiers;
         }
-        Ok(Atom::Group {
-            capture,
-            expression,
-        })
+        let result = (|| {
+            let expression = self.parse_disjunction(true)?;
+            if self.take() != Some(u16::from(b')')) {
+                return Err(CompileError::syntax(position, "unterminated group"));
+            }
+            Ok(Atom::Group {
+                capture,
+                modifiers,
+                expression,
+            })
+        })();
+        self.modifiers = saved_modifiers;
+        result
+    }
+
+    fn parse_modifiers(&mut self) -> Result<u8, CompileError> {
+        let mut mask = 0;
+        loop {
+            let modifier = match self.peek() {
+                Some(0x69) => MODIFIER_IGNORE_CASE,
+                Some(0x6d) => MODIFIER_MULTILINE,
+                Some(0x73) => MODIFIER_DOT_ALL,
+                _ => break,
+            };
+            if mask & modifier != 0 {
+                let duplicate = char::from_u32(u32::from(
+                    self.peek().expect("modifier disappeared after matching"),
+                ))
+                .expect("RegExp modifiers are ASCII");
+                return Err(CompileError::syntax(
+                    self.position,
+                    format!("duplicate modifier: '{duplicate}'"),
+                ));
+            }
+            mask |= modifier;
+            self.position += 1;
+        }
+        Ok(mask)
     }
 
     fn parse_escape(&mut self, in_class: bool) -> Result<Atom, CompileError> {
@@ -716,7 +817,7 @@ impl<'a> Parser<'a> {
                             &mut ranges,
                             ClassAtom::Set(vec![CharacterRange::new(start, end)]),
                             self.class_max_code_point(),
-                            self.flags.contains(RegExpFlags::IGNORE_CASE),
+                            self.modifiers.ignore_case,
                             self.flags.is_unicode(),
                         );
                     }
@@ -733,7 +834,7 @@ impl<'a> Parser<'a> {
                                 &mut ranges,
                                 atom,
                                 self.class_max_code_point(),
-                                self.flags.contains(RegExpFlags::IGNORE_CASE),
+                                self.modifiers.ignore_case,
                                 false,
                             );
                         }
@@ -744,7 +845,7 @@ impl<'a> Parser<'a> {
                     &mut ranges,
                     first,
                     self.class_max_code_point(),
-                    self.flags.contains(RegExpFlags::IGNORE_CASE),
+                    self.modifiers.ignore_case,
                     self.flags.is_unicode(),
                 );
             }
@@ -966,7 +1067,7 @@ impl<'a> Parser<'a> {
     }
 
     fn make_character_class(&self, ranges: Vec<CharacterRange>, inverted: bool) -> CharacterClass {
-        let ranges = if self.flags.contains(RegExpFlags::IGNORE_CASE) {
+        let ranges = if self.modifiers.ignore_case {
             canonicalize_ranges(&ranges, self.flags.is_unicode())
         } else {
             normalize_ranges(ranges)
@@ -1181,12 +1282,27 @@ impl CodeBuilder {
             }
             Atom::Group {
                 capture,
+                modifiers,
                 expression,
             } => {
                 if let Some(capture) = capture {
                     self.emit(Instruction::SaveStart { capture: *capture });
                 }
-                self.compile_expression(expression)?;
+                let saved_modifiers = ModifierState {
+                    ignore_case: self.ignore_case,
+                    multiline: self.multiline,
+                    dot_all: self.dot_all,
+                };
+                if let Some(modifiers) = modifiers {
+                    self.ignore_case = modifiers.ignore_case;
+                    self.multiline = modifiers.multiline;
+                    self.dot_all = modifiers.dot_all;
+                }
+                let result = self.compile_expression(expression);
+                self.ignore_case = saved_modifiers.ignore_case;
+                self.multiline = saved_modifiers.multiline;
+                self.dot_all = saved_modifiers.dot_all;
+                result?;
                 if let Some(capture) = capture {
                     self.emit(Instruction::SaveEnd { capture: *capture });
                 }
@@ -1752,15 +1868,219 @@ mod tests {
     }
 
     #[test]
+    fn scoped_modifier_grammar_matches_quickjs_error_priority() {
+        for pattern in [
+            "(?i:a)",
+            "(?-i:a)",
+            "(?i-:a)",
+            "(?ims-:a)",
+            "(?-ims:a)",
+            "(?im-s:a)",
+        ] {
+            assert!(compile_ascii(pattern, "").is_ok(), "{pattern}");
+        }
+
+        for (pattern, message) in [
+            ("(?ii:a)", "duplicate modifier: 'i'"),
+            ("(?i-mm:a)", "duplicate modifier: 'm'"),
+            ("(?i-i:a)", "invalid modifiers"),
+            ("(?ims-m:a)", "invalid modifiers"),
+            ("(?-:a)", "invalid modifiers"),
+            // QuickJS validates duplicate/overlapping/empty modifier sets
+            // before requiring the colon.
+            ("(?ii)", "duplicate modifier: 'i'"),
+            ("(?i-i)", "invalid modifiers"),
+            ("(?-)", "invalid modifiers"),
+            ("(?i)", "expecting ':'"),
+            ("(?i-x:a)", "expecting ':'"),
+            ("(?d:a)", "invalid group specifier"),
+        ] {
+            let error = compile_ascii(pattern, "").unwrap_err();
+            assert_eq!(error.kind(), &CompileErrorKind::Syntax, "{pattern}");
+            assert_eq!(error.message(), message, "{pattern}");
+        }
+    }
+
+    #[test]
+    fn scoped_ignore_case_applies_to_literals_classes_and_word_boundaries() {
+        let compiled = compile_ascii(r"(?i:a[a]\b)(?-i:b[b]\B)c", "").unwrap();
+        assert_eq!(compiled.flags(), RegExpFlags::EMPTY);
+        assert_eq!(compiled.flags().canonical_string(), "");
+
+        let characters = compiled
+            .instructions()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::Char { value, ignore_case } => Some((*value, *ignore_case)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            characters,
+            vec![
+                (u32::from(b'A'), true),
+                (u32::from(b'b'), false),
+                (u32::from(b'c'), false),
+            ],
+        );
+
+        let classes = compiled
+            .instructions()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::Range {
+                    ranges,
+                    inverted: false,
+                    ignore_case,
+                } => Some((ranges.to_vec(), *ignore_case)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            classes,
+            vec![
+                (
+                    vec![CharacterRange::new(u32::from(b'A'), u32::from(b'A'))],
+                    true
+                ),
+                (
+                    vec![CharacterRange::new(u32::from(b'b'), u32::from(b'b'))],
+                    false
+                ),
+            ],
+        );
+
+        let boundaries = compiled
+            .instructions()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::WordBoundary {
+                    inverted,
+                    ignore_case,
+                } => Some((*inverted, *ignore_case)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(boundaries, vec![(false, true), (true, false)]);
+    }
+
+    #[test]
+    fn nested_scoped_modifiers_restore_the_enclosing_and_global_state() {
+        let nested = compile_ascii("(?i:a(?-i:b(?i:c)d)e)f", "").unwrap();
+        let characters = nested
+            .instructions()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::Char { value, ignore_case } => Some((*value, *ignore_case)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            characters,
+            vec![
+                (u32::from(b'A'), true),
+                (u32::from(b'b'), false),
+                (u32::from(b'C'), true),
+                (u32::from(b'd'), false),
+                (u32::from(b'E'), true),
+                (u32::from(b'f'), false),
+            ],
+        );
+
+        let global = compile_ascii("(?-i:a)b", "i").unwrap();
+        assert_eq!(global.flags().canonical_string(), "i");
+        let characters = global
+            .instructions()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::Char { value, ignore_case } => Some((*value, *ignore_case)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            characters,
+            vec![(u32::from(b'a'), false), (u32::from(b'B'), true)],
+        );
+    }
+
+    #[test]
+    fn scoped_modifier_parser_restores_state_after_nested_parse_errors() {
+        for pattern in ["(?i:a", "(?i:(?x:a))", "(?i:[a"] {
+            let units = pattern.encode_utf16().collect::<Vec<_>>();
+            let mut parser = Parser::new(&units, RegExpFlags::EMPTY);
+            assert!(parser.parse_atom().is_err(), "{pattern}");
+            assert_eq!(
+                parser.modifiers,
+                ModifierState::from_flags(RegExpFlags::EMPTY),
+                "{pattern}",
+            );
+            assert_eq!(parser.group_depth, 0, "{pattern}");
+        }
+
+        let units = "(?-ims:(?x:a))".encode_utf16().collect::<Vec<_>>();
+        let flags = parse_flags(&[u16::from(b'i'), u16::from(b'm'), u16::from(b's')]).unwrap();
+        let mut parser = Parser::new(&units, flags);
+        assert!(parser.parse_atom().is_err());
+        assert_eq!(parser.modifiers, ModifierState::from_flags(flags));
+        assert_eq!(parser.group_depth, 0);
+    }
+
+    #[test]
+    fn scoped_multiline_and_dot_all_apply_only_inside_their_group() {
+        let compiled = compile_ascii("^(?ms:^.$)(?-ms:^.$)^.$", "").unwrap();
+        assert_eq!(compiled.flags(), RegExpFlags::EMPTY);
+
+        let starts = compiled
+            .instructions()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::LineStart { multiline } => Some(*multiline),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(starts, vec![false, true, false, false]);
+
+        let ends = compiled
+            .instructions()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::LineEnd { multiline } => Some(*multiline),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ends, vec![true, false, false]);
+
+        let dots = compiled
+            .instructions()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::Any => Some(true),
+                Instruction::Dot => Some(false),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(dots, vec![true, false, false]);
+
+        let global = compile_ascii("(?-ms:^.$)^.$", "ms").unwrap();
+        assert_eq!(global.flags().canonical_string(), "ms");
+        let dots = global
+            .instructions()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::Any => Some(true),
+                Instruction::Dot => Some(false),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(dots, vec![false, true]);
+    }
+
+    #[test]
     fn malformed_core_syntax_is_rejected_at_compile_time() {
         for pattern in ["(", "[a", "*a", "{1}", "a{1}{2}", "a{3,2}", "a**", "(?x:a)"] {
             let error = compile_ascii(pattern, "").unwrap_err();
             assert_eq!(error.source(), CompileErrorSource::Pattern, "{pattern}");
-            assert!(matches!(
-                error.kind(),
-                CompileErrorKind::Syntax
-                    | CompileErrorKind::Unsupported(UnsupportedFeature::InlineModifier)
-            ));
+            assert_eq!(error.kind(), &CompileErrorKind::Syntax);
         }
         assert!(compile_ascii("a{not-a-quantifier}", "").is_ok());
         assert!(compile_ascii("a{not-a-quantifier}", "u").is_err());
@@ -1793,7 +2113,6 @@ mod tests {
             (r"(?<name>a)", UnsupportedFeature::NamedCapture),
             (r"(a)\1", UnsupportedFeature::Backreference),
             (r"(?=a)", UnsupportedFeature::Lookaround),
-            (r"(?i:a)", UnsupportedFeature::InlineModifier),
         ] {
             let error = compile_ascii(pattern, "u").unwrap_err();
             assert_eq!(
