@@ -251,6 +251,9 @@ enum Atom {
         inverted: bool,
     },
     Class(CharacterClass),
+    BackReference {
+        capture: u8,
+    },
     Group {
         capture: Option<u8>,
         modifiers: Option<ModifierState>,
@@ -262,13 +265,19 @@ impl Atom {
     fn is_quantifiable(&self) -> bool {
         matches!(
             self,
-            Self::Literal(_) | Self::Dot | Self::Space { .. } | Self::Class(_) | Self::Group { .. }
+            Self::Literal(_)
+                | Self::Dot
+                | Self::Space { .. }
+                | Self::Class(_)
+                | Self::BackReference { .. }
+                | Self::Group { .. }
         )
     }
 
     fn can_match_empty(&self) -> bool {
         match self {
             Self::LineStart | Self::LineEnd | Self::WordBoundary { .. } => true,
+            Self::BackReference { .. } => true,
             Self::Group { expression, .. } => expression.can_match_empty(),
             Self::Literal(_) | Self::Dot | Self::Space { .. } | Self::Class(_) => false,
         }
@@ -291,7 +300,8 @@ impl Atom {
             | Self::LineEnd
             | Self::WordBoundary { .. }
             | Self::Space { .. }
-            | Self::Class(_) => None,
+            | Self::Class(_)
+            | Self::BackReference { .. } => None,
         }
     }
 }
@@ -346,6 +356,7 @@ struct Parser<'a> {
     flags: RegExpFlags,
     modifiers: ModifierState,
     next_capture: u16,
+    total_capture_count: u32,
     group_depth: usize,
 }
 
@@ -357,6 +368,7 @@ impl<'a> Parser<'a> {
             flags,
             modifiers: ModifierState::from_flags(flags),
             next_capture: 1,
+            total_capture_count: count_captures(units),
             group_depth: 0,
         }
     }
@@ -588,38 +600,19 @@ impl<'a> Parser<'a> {
                 escape_position,
                 UnsupportedFeature::Backreference,
             )),
-            0x31..=0x39 => {
-                if self.flags.is_unicode() {
-                    if in_class {
-                        return Err(CompileError::syntax(
-                            escape_position,
-                            "invalid identity escape",
-                        ));
-                    }
-                    let reference = self.decimal_escape_value(unit);
-                    if reference >= count_captures(self.units) {
-                        return Err(CompileError::syntax(
-                            escape_position,
-                            "back reference out of range in regular expression",
-                        ));
-                    }
-                }
-                Err(CompileError::unsupported(
-                    escape_position,
-                    UnsupportedFeature::Backreference,
-                ))
-            }
+            0x31..=0x39 if in_class => Err(CompileError::syntax(
+                escape_position,
+                "invalid identity escape",
+            )),
+            0x31..=0x39 => self.parse_decimal_escape(escape_position, unit),
             0x30 => {
                 if self.flags.is_unicode() && self.peek().is_some_and(is_ascii_digit) {
                     Err(CompileError::syntax(
                         escape_position,
                         "invalid decimal escape in regular expression",
                     ))
-                } else if self.peek().is_some_and(is_ascii_octal_digit) {
-                    Err(CompileError::unsupported(
-                        escape_position,
-                        UnsupportedFeature::LegacyOctalEscape,
-                    ))
+                } else if !self.flags.is_unicode() {
+                    Ok(Atom::Literal(self.parse_legacy_octal(unit)))
                 } else {
                     Ok(Atom::Literal(0))
                 }
@@ -648,6 +641,71 @@ impl<'a> Parser<'a> {
             )),
             escaped => Ok(Atom::Literal(self.finish_code_point(escaped))),
         }
+    }
+
+    fn parse_decimal_escape(&mut self, position: usize, first: u16) -> Result<Atom, CompileError> {
+        let (reference, digit_end) = self.scan_decimal_escape(first);
+        if reference
+            .filter(|reference| *reference < self.total_capture_count)
+            .is_some()
+        {
+            self.position = digit_end;
+            let capture = u8::try_from(reference.expect("checked decimal reference range"))
+                .expect("capture prepass caps valid decimal references below u8::MAX");
+            return Ok(Atom::BackReference { capture });
+        }
+        if self.flags.is_unicode() {
+            return Err(CompileError::syntax(
+                position,
+                "back reference out of range in regular expression",
+            ));
+        }
+        if is_ascii_octal_digit(first) {
+            Ok(Atom::Literal(self.parse_legacy_octal(first)))
+        } else {
+            Ok(Atom::Literal(u32::from(first)))
+        }
+    }
+
+    /// Scan all decimal digits without committing the parser cursor. QuickJS
+    /// must first decide whether the complete number names a capture before it
+    /// can reinterpret the same source as an Annex B legacy escape.
+    fn scan_decimal_escape(&self, first: u16) -> (Option<u32>, usize) {
+        let mut value = Some(u32::from(first - u16::from(b'0')));
+        let mut position = self.position;
+        while let Some(unit) = self
+            .units
+            .get(position)
+            .copied()
+            .filter(|unit| is_ascii_digit(*unit))
+        {
+            value = value
+                .and_then(|value| value.checked_mul(10))
+                .and_then(|value| value.checked_add(u32::from(unit - u16::from(b'0'))))
+                .filter(|value| *value < i32::MAX as u32);
+            position += 1;
+        }
+        (value, position)
+    }
+
+    /// Annex B legacy octal parsing from pinned QuickJS `lre_parse_escape`.
+    /// The first digit was already consumed; at most two additional octal
+    /// digits belong to this escape.
+    fn parse_legacy_octal(&mut self, first: u16) -> u32 {
+        let mut value = u32::from(first - u16::from(b'0'));
+        let Some(second) = self.peek().filter(|unit| is_ascii_octal_digit(*unit)) else {
+            return value;
+        };
+        value = (value << 3) | u32::from(second - u16::from(b'0'));
+        self.position += 1;
+        if value >= 32 {
+            return value;
+        }
+        let Some(third) = self.peek().filter(|unit| is_ascii_octal_digit(*unit)) else {
+            return value;
+        };
+        self.position += 1;
+        (value << 3) | u32::from(third - u16::from(b'0'))
     }
 
     fn parse_control_escape(&mut self, position: usize) -> Result<u32, CompileError> {
@@ -912,11 +970,8 @@ impl<'a> Parser<'a> {
                         escaped_position,
                         "invalid identity escape",
                     ))
-                } else if self.peek().is_some_and(is_ascii_octal_digit) {
-                    Err(CompileError::unsupported(
-                        escaped_position,
-                        UnsupportedFeature::LegacyOctalEscape,
-                    ))
+                } else if !self.flags.is_unicode() {
+                    Ok(ClassAtom::Single(self.parse_legacy_octal(escaped)))
                 } else {
                     Ok(ClassAtom::Single(0))
                 }
@@ -925,10 +980,7 @@ impl<'a> Parser<'a> {
                 escaped_position,
                 "invalid identity escape",
             )),
-            0x31..=0x37 => Err(CompileError::unsupported(
-                escaped_position,
-                UnsupportedFeature::LegacyOctalEscape,
-            )),
+            0x31..=0x37 => Ok(ClassAtom::Single(self.parse_legacy_octal(escaped))),
             0x38..=0x39 if self.flags.is_unicode() => Err(CompileError::syntax(
                 escaped_position,
                 "invalid identity escape",
@@ -1023,23 +1075,6 @@ impl<'a> Parser<'a> {
                 .saturating_add(u32::from(unit - u16::from(b'0')))
                 .min(INFINITE_REPETITION);
             self.position += 1;
-        }
-        value
-    }
-
-    fn decimal_escape_value(&self, first: u16) -> u32 {
-        let mut value = u32::from(first - u16::from(b'0'));
-        let mut position = self.position;
-        while let Some(unit) = self
-            .units
-            .get(position)
-            .copied()
-            .filter(|unit| is_ascii_digit(*unit))
-        {
-            value = value
-                .saturating_mul(10)
-                .saturating_add(u32::from(unit - u16::from(b'0')));
-            position += 1;
         }
         value
     }
@@ -1277,6 +1312,12 @@ impl CodeBuilder {
                 self.emit(Instruction::Range {
                     ranges: class.ranges.clone().into_boxed_slice(),
                     inverted: class.inverted,
+                    ignore_case: self.ignore_case,
+                });
+            }
+            Atom::BackReference { capture } => {
+                self.emit(Instruction::BackReference {
+                    captures: vec![*capture].into_boxed_slice(),
                     ignore_case: self.ignore_case,
                 });
             }
@@ -2111,7 +2152,7 @@ mod tests {
         for (pattern, feature) in [
             (r"\p{Letter}", UnsupportedFeature::UnicodePropertyEscape),
             (r"(?<name>a)", UnsupportedFeature::NamedCapture),
-            (r"(a)\1", UnsupportedFeature::Backreference),
+            (r"\k<name>", UnsupportedFeature::Backreference),
             (r"(?=a)", UnsupportedFeature::Lookaround),
         ] {
             let error = compile_ascii(pattern, "u").unwrap_err();
@@ -2127,23 +2168,18 @@ mod tests {
             &CompileErrorKind::Unsupported(UnsupportedFeature::UnicodeSetOperation),
         );
 
-        for (pattern, feature) in [
-            (r"\01", UnsupportedFeature::LegacyOctalEscape),
-            (r"[\07]", UnsupportedFeature::LegacyOctalEscape),
-            (r"\c0", UnsupportedFeature::LegacyControlEscape),
-            (r"[\c0]", UnsupportedFeature::LegacyControlEscape),
-        ] {
+        for pattern in [r"\c0", r"[\c0]"] {
             let error = compile_ascii(pattern, "").unwrap_err();
             assert_eq!(
                 error.kind(),
-                &CompileErrorKind::Unsupported(feature),
+                &CompileErrorKind::Unsupported(UnsupportedFeature::LegacyControlEscape),
                 "{pattern}",
             );
         }
     }
 
     #[test]
-    fn unicode_decimal_escapes_distinguish_invalid_and_unsupported_backreferences() {
+    fn decimal_backreferences_use_the_complete_number_and_total_capture_count() {
         for pattern in [r"\1", r"\2", r"(a)\2", r"(?:a)\1", r"\10"] {
             let error = compile_ascii(pattern, "u").unwrap_err();
             assert_eq!(error.kind(), &CompileErrorKind::Syntax, "{pattern}");
@@ -2158,19 +2194,53 @@ mod tests {
             assert_eq!(error.kind(), &CompileErrorKind::Syntax, "{pattern}");
             assert_eq!(error.message(), "invalid identity escape", "{pattern}");
         }
-        for pattern in [r"(a)\1", r"\1(a)", r"\2(a)(b)", r"\1(?<x>a)"] {
-            let error = compile_ascii(pattern, "u").unwrap_err();
-            assert_eq!(
-                error.kind(),
-                &CompileErrorKind::Unsupported(UnsupportedFeature::Backreference),
-                "{pattern}",
-            );
+
+        for (pattern, captures) in [
+            (r"(a)\1", &[1_u8][..]),
+            (r"\1(a)", &[1]),
+            (r"\2(a)(b)", &[2]),
+        ] {
+            let compiled = compile_ascii(pattern, "u").unwrap();
+            assert!(compiled.instructions().iter().any(|instruction| {
+                matches!(instruction, Instruction::BackReference { captures: found, .. }
+                    if found.as_ref() == captures)
+            }));
         }
 
-        let empty_class_then_capture = compile_ascii(r"[](a)\1", "u").unwrap_err();
+        let named = compile_ascii(r"\1(?<x>a)", "u").unwrap_err();
         assert_eq!(
-            empty_class_then_capture.kind(),
-            &CompileErrorKind::Unsupported(UnsupportedFeature::Backreference),
+            named.kind(),
+            &CompileErrorKind::Unsupported(UnsupportedFeature::NamedCapture),
+        );
+        assert!(compile_ascii(r"[](a)\1", "u").is_ok());
+
+        let ten_captures = format!("{}\\10", "(a)".repeat(10));
+        let compiled = compile_ascii(&ten_captures, "u").unwrap();
+        assert!(compiled.instructions().iter().any(|instruction| {
+            matches!(instruction, Instruction::BackReference { captures, .. }
+                if captures.as_ref() == [10])
+        }));
+        assert!(!compiled.instructions().iter().any(|instruction| {
+            matches!(instruction, Instruction::Char { value, .. } if *value == u32::from(b'0'))
+        }));
+
+        let scoped = compile_ascii(r"(a)(?i:\1)(?-i:\1)", "").unwrap();
+        let ignore_case = scoped
+            .instructions()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::BackReference { ignore_case, .. } => Some(*ignore_case),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ignore_case, vec![true, false]);
+
+        let nullable = compile_ascii(r"(a)?\1*", "").unwrap();
+        assert!(
+            nullable
+                .instructions()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::CheckAdvance { .. }))
         );
 
         let capture_limit = format!(r"\255{}", "(a)".repeat(255));
@@ -2185,6 +2255,46 @@ mod tests {
         let error = compile_ascii(&too_many_capture_priority, "u").unwrap_err();
         assert_eq!(error.kind(), &CompileErrorKind::TooManyCaptures);
         assert_eq!(error.message(), "too many captures");
+    }
+
+    #[test]
+    fn annex_b_decimal_fallback_matches_quickjs_legacy_escape_width() {
+        let compiled = compile_ascii(r"\1\7\8\9\10\18\377\400\1234\08", "").unwrap();
+        let characters = compiled
+            .instructions()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::Char { value, .. } => Some(*value),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            characters,
+            vec![
+                0x01,
+                0x07,
+                u32::from(b'8'),
+                u32::from(b'9'),
+                0x08,
+                0x01,
+                u32::from(b'8'),
+                0xff,
+                0x20,
+                u32::from(b'0'),
+                u32::from(b'S'),
+                u32::from(b'4'),
+                0x00,
+                u32::from(b'8'),
+            ],
+        );
+
+        for (pattern, value) in [(r"[\1]", 0x01), (r"[\07]", 0x07), (r"[\377]", 0xff)] {
+            let compiled = compile_ascii(pattern, "").unwrap();
+            assert!(compiled.instructions().iter().any(|instruction| {
+                matches!(instruction, Instruction::Range { ranges, .. }
+                    if ranges.as_ref() == [CharacterRange::new(value, value)])
+            }));
+        }
     }
 
     #[test]

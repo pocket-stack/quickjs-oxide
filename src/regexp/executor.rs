@@ -45,6 +45,7 @@ pub enum ProgramError {
     BranchTarget { pc: usize, target: usize },
     CaptureIndex { pc: usize, capture: u8 },
     CaptureRange { pc: usize, from: u8, to: u8 },
+    EmptyBackReference { pc: usize },
     RegisterIndex { pc: usize, register: u8 },
     CounterRegisterExpected { pc: usize, register: u8 },
     PositionRegisterExpected { pc: usize, register: u8 },
@@ -79,6 +80,12 @@ impl fmt::Display for ProgramError {
                 write!(
                     formatter,
                     "RegExp instruction {pc} has invalid capture range {from}..={to}"
+                )
+            }
+            Self::EmptyBackReference { pc } => {
+                write!(
+                    formatter,
+                    "RegExp instruction {pc} has no back-reference captures"
                 )
             }
             Self::RegisterIndex { pc, register } => {
@@ -257,6 +264,20 @@ fn validate_program(program: &CompiledRegExp) -> Result<(), ExecError> {
                     to: *to,
                 }
                 .into());
+            }
+            Instruction::BackReference { captures, .. } => {
+                if captures.is_empty() {
+                    return Err(ProgramError::EmptyBackReference { pc }.into());
+                }
+                for capture in captures {
+                    if *capture >= capture_count {
+                        return Err(ProgramError::CaptureIndex {
+                            pc,
+                            capture: *capture,
+                        }
+                        .into());
+                    }
+                }
             }
             Instruction::SetRegister { register, .. }
             | Instruction::Loop { register, .. }
@@ -586,6 +607,31 @@ where
                     fail_branch!();
                 }
             }
+            Instruction::BackReference {
+                captures,
+                ignore_case,
+            } => {
+                let participating = captures.iter().find_map(|capture| {
+                    let capture = usize::from(*capture);
+                    match (state.captures[capture * 2], state.captures[capture * 2 + 1]) {
+                        (Some(start), Some(end)) => Some((start, end)),
+                        _ => None,
+                    }
+                });
+                if let Some((start, end)) = participating {
+                    let Some(position) = match_back_reference(
+                        input,
+                        start,
+                        end,
+                        state.position,
+                        unicode,
+                        *ignore_case,
+                    ) else {
+                        fail_branch!();
+                    };
+                    state.position = position;
+                }
+            }
             Instruction::Jump { target } => state.pc = *target,
             Instruction::Split { first, second } => {
                 state.push_backtrack(*second)?;
@@ -676,6 +722,34 @@ fn read_character(input: &[u16], position: usize, unicode: bool) -> Option<(u32,
         return Some((code_point, position + 2));
     }
     Some((u32::from(first), position + 1))
+}
+
+fn match_back_reference(
+    input: &[u16],
+    capture_start: usize,
+    capture_end: usize,
+    input_start: usize,
+    unicode: bool,
+    ignore_case: bool,
+) -> Option<usize> {
+    let capture_input = input.get(..capture_end)?;
+    let mut capture_position = capture_start;
+    let mut input_position = input_start;
+    while capture_position < capture_end {
+        let (mut captured, next_capture) =
+            read_character(capture_input, capture_position, unicode)?;
+        let (mut current, next_input) = read_character(input, input_position, unicode)?;
+        if ignore_case {
+            captured = canonicalize(captured, unicode);
+            current = canonicalize(current, unicode);
+        }
+        if captured != current {
+            return None;
+        }
+        capture_position = next_capture;
+        input_position = next_input;
+    }
+    Some(input_position)
 }
 
 fn previous_character(input: &[u16], position: usize, unicode: bool) -> Option<u32> {
@@ -1110,6 +1184,39 @@ mod tests {
                 target: 4,
             }))
         );
+
+        let empty_back_reference = program(
+            RegExpFlags::EMPTY,
+            1,
+            0,
+            vec![Instruction::BackReference {
+                captures: Box::new([]),
+                ignore_case: false,
+            }],
+        );
+        assert_eq!(
+            execute(&empty_back_reference, &[], 0),
+            Err(ExecError::InvalidProgram(
+                ProgramError::EmptyBackReference { pc: 0 }
+            ))
+        );
+
+        let invalid_back_reference = program(
+            RegExpFlags::EMPTY,
+            1,
+            0,
+            vec![Instruction::BackReference {
+                captures: Box::new([1]),
+                ignore_case: false,
+            }],
+        );
+        assert_eq!(
+            execute(&invalid_back_reference, &[], 0),
+            Err(ExecError::InvalidProgram(ProgramError::CaptureIndex {
+                pc: 0,
+                capture: 1,
+            }))
+        );
     }
 
     #[test]
@@ -1157,6 +1264,226 @@ mod tests {
         assert_eq!(
             complete_range(execute(&compile("[k]", "iu"), &[0x212a], 0).unwrap()),
             Some(0..1)
+        );
+    }
+
+    #[test]
+    fn compiler_programs_execute_backreferences_with_quickjs_empty_semantics() {
+        for (pattern, input, complete, captures) in [
+            (r"(ab)\1", "abab", 0..4, vec![Some(0..4), Some(0..2)]),
+            (r"\1(a)", "a", 0..1, vec![Some(0..1), Some(0..1)]),
+            (r"(a\1)", "a", 0..1, vec![Some(0..1), Some(0..1)]),
+            (
+                r"(a|(b))\2c",
+                "ac",
+                0..2,
+                vec![Some(0..2), Some(0..1), None],
+            ),
+            (r"(a)?\1b", "b", 0..1, vec![Some(0..1), None]),
+            (r"()\1x", "x", 0..1, vec![Some(0..1), Some(0..0)]),
+        ] {
+            let result = execute(&compile(pattern, "u"), &units(input), 0)
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.capture(0), Some(&complete), "{pattern}");
+            assert_eq!(result.captures(), captures.as_slice(), "{pattern}");
+        }
+
+        let empty_loop = execute(&compile(r"^(a)?\1*$", ""), &[], 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(empty_loop.capture(0), Some(&(0..0)));
+        assert_eq!(empty_loop.capture(1), None);
+    }
+
+    #[test]
+    fn backreferences_restore_backtracking_captures_and_apply_scoped_case_folding() {
+        let result = execute(&compile(r"^(a+)\1$", ""), &units("aaaaaa"), 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.capture(0), Some(&(0..6)));
+        assert_eq!(result.capture(1), Some(&(0..3)));
+
+        let result = execute(&compile(r"^(a|ab)+\1$", ""), &units("abab"), 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.capture(0), Some(&(0..4)));
+        assert_eq!(result.capture(1), Some(&(0..2)));
+
+        let result = execute(&compile(r"(a(b)?)+\2", ""), &units("aba"), 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.capture(0), Some(&(0..3)));
+        assert_eq!(result.capture(1), Some(&(2..3)));
+        assert_eq!(result.capture(2), None);
+
+        assert!(
+            execute(&compile(r"(a)(?i:\1)", ""), &units("aA"), 0)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            execute(&compile(r"(a)(?-i:\1)", "i"), &units("aA"), 0)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            execute(&compile(r"(k)\1", "iu"), &units("kK"), 0)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            execute(&compile(r"(k)\1", "i"), &units("kK"), 0)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn multi_capture_backreferences_use_the_first_participating_capture_only() {
+        let first_unmatched = program(
+            RegExpFlags::STICKY,
+            3,
+            0,
+            vec![
+                Instruction::SaveStart { capture: 0 },
+                Instruction::SaveStart { capture: 2 },
+                Instruction::Char {
+                    value: u32::from(b'a'),
+                    ignore_case: false,
+                },
+                Instruction::SaveEnd { capture: 2 },
+                Instruction::BackReference {
+                    captures: Box::new([1, 2]),
+                    ignore_case: false,
+                },
+                Instruction::SaveEnd { capture: 0 },
+                Instruction::Match,
+            ],
+        );
+        assert_eq!(
+            complete_range(execute(&first_unmatched, &units("aa"), 0).unwrap()),
+            Some(0..2)
+        );
+
+        let first_empty = program(
+            RegExpFlags::STICKY,
+            3,
+            0,
+            vec![
+                Instruction::SaveStart { capture: 0 },
+                Instruction::SaveStart { capture: 1 },
+                Instruction::SaveEnd { capture: 1 },
+                Instruction::SaveStart { capture: 2 },
+                Instruction::Char {
+                    value: u32::from(b'a'),
+                    ignore_case: false,
+                },
+                Instruction::SaveEnd { capture: 2 },
+                Instruction::BackReference {
+                    captures: Box::new([1, 2]),
+                    ignore_case: false,
+                },
+                Instruction::SaveEnd { capture: 0 },
+                Instruction::Match,
+            ],
+        );
+        assert_eq!(
+            complete_range(execute(&first_empty, &units("aa"), 0).unwrap()),
+            Some(0..1)
+        );
+
+        let first_mismatch = program(
+            RegExpFlags::STICKY,
+            3,
+            0,
+            vec![
+                Instruction::SaveStart { capture: 0 },
+                Instruction::SaveStart { capture: 1 },
+                Instruction::Char {
+                    value: u32::from(b'a'),
+                    ignore_case: false,
+                },
+                Instruction::SaveEnd { capture: 1 },
+                Instruction::SaveStart { capture: 2 },
+                Instruction::Char {
+                    value: u32::from(b'b'),
+                    ignore_case: false,
+                },
+                Instruction::SaveEnd { capture: 2 },
+                Instruction::BackReference {
+                    captures: Box::new([1, 2]),
+                    ignore_case: false,
+                },
+                Instruction::SaveEnd { capture: 0 },
+                Instruction::Match,
+            ],
+        );
+        assert_eq!(execute(&first_mismatch, &units("abb"), 0).unwrap(), None);
+
+        let all_unmatched = program(
+            RegExpFlags::STICKY,
+            3,
+            0,
+            vec![
+                Instruction::SaveStart { capture: 0 },
+                Instruction::BackReference {
+                    captures: Box::new([1, 2]),
+                    ignore_case: false,
+                },
+                Instruction::SaveEnd { capture: 0 },
+                Instruction::Match,
+            ],
+        );
+        assert_eq!(
+            complete_range(execute(&all_unmatched, &[], 0).unwrap()),
+            Some(0..0)
+        );
+    }
+
+    #[test]
+    fn unicode_backreferences_respect_capture_end_and_code_point_boundaries() {
+        let deseret = [
+            0xd801, 0xdc00, // U+10400
+            0xd801, 0xdc28, // U+10428
+        ];
+        assert!(
+            execute(&compile(r"(\u{10400})\1", "iu"), &deseret, 0)
+                .unwrap()
+                .is_some()
+        );
+
+        let split_pair = [
+            u16::from(b'f'),
+            u16::from(b'o'),
+            u16::from(b'o'),
+            0xd834,
+            u16::from(b'b'),
+            u16::from(b'a'),
+            u16::from(b'r'),
+            0xd834,
+            0xdc00,
+        ];
+        assert!(
+            execute(&compile(r"foo(.+)bar\1", "u"), &split_pair, 0)
+                .unwrap()
+                .is_none()
+        );
+
+        let lone_surrogates = [
+            u16::from(b'f'),
+            u16::from(b'o'),
+            u16::from(b'o'),
+            0xd834,
+            u16::from(b'b'),
+            u16::from(b'a'),
+            u16::from(b'r'),
+            0xd834,
+            0xd834,
+        ];
+        assert_eq!(
+            complete_range(execute(&compile(r"foo(.+)bar\1", "u"), &lone_surrogates, 0).unwrap()),
+            Some(0..8)
         );
     }
 

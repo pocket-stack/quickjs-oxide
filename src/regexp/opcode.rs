@@ -49,6 +49,13 @@ pub enum Instruction {
         inverted: bool,
         ignore_case: bool,
     },
+    /// QuickJS's variable-length back-reference opcode. Numeric references
+    /// currently emit one capture; the slice shape also accommodates duplicate
+    /// named captures without changing the executor ABI later.
+    BackReference {
+        captures: Box<[u8]>,
+        ignore_case: bool,
+    },
     Jump {
         target: usize,
     },
