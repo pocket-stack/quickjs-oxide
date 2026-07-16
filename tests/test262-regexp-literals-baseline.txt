@@ -3,12 +3,12 @@ timeout_ms=30000
 paths=48
 variants=96
 runnable=96
-passes=94
+passes=96
 r1a_full_tsv_sha256=77147ada7e07de9f9f78dc75687f7c0fdf5891be954de9193824aa752046da05
 r1a_selected_sha256=77ea1b326480b21d98c98bc01736d948b3535e0426eca7081776e3596221fa06
 r1a_variants=96
 r1a_outcome=unsupported-parser
 r1a_detail=this literal form is not implemented yet
-tsv_sha256=6a67c3f69b6c3fe8c348bef9d49fecfc0d8379dd9e860338dc83ca21c053aafc
-jsonl_sha256=91002f432b978026ad4f2d645b66815844c486ac7fd32db619a76afcea5c7f53
-summary=pass=94 unsupported-parser=2
+tsv_sha256=da0345deb77e84f7e869e169a8feed5b098a3df65896459d6f4a38bf8559fb9f
+jsonl_sha256=62f9ebf712ac0df89abcfdcc9fa994ed426fb995db3f158f6afee01ec71bb685
+summary=pass=96

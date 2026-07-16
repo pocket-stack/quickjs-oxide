@@ -1,0 +1,54 @@
+# Frozen forward-lookahead RegExp measurement slice for the pinned Test262
+# checkout.
+#
+# This is the static, bytewise-sorted union of every featureless path that
+# reached the typed Lookaround parser/runtime frontier in the complete
+# preimplementation R1l keyed vector. It covers:
+#
+# - the two Annex B quantifiable-assertion paths;
+# - the complete 19-path legacy S15.10.2.8/S15.10.2.13 lookahead slice;
+# - two modern RegExp capture/Unicode-boundary paths; and
+# - three staging RegExp/String forward-lookahead paths.
+#
+# Feature-gated regexp-lookbehind paths are deliberately excluded and remain a
+# separate future milestone.
+#
+# The source report is the complete preimplementation R1l keyed vector at
+# commit 7c2a1c8 (TSV SHA-256
+# 0bdf4955b2a9060279d0ad4232f653adb2018e9864654148f068caf22c0aabd6).
+# Its bytewise-sorted path/variant/outcome/detail projection has SHA-256
+# 528a5dbc6f09840800fad046fe1f74cc4acd3d325238b79614fd5e9cf4b5fd8a.
+# Before implementation the 52 variants classify as unsupported-parser=50 and
+# unsupported-runtime=2. The gate must never select paths dynamically from
+# current outcomes.
+#
+# Exactly 26 unique paths expand to 52 sloppy/strict variants. The
+# bytewise-sorted path set has SHA-256
+# b694f2c3682fb369a9412c2d53e558c278e08cf5cd0afd198087cb0ad54e2d55.
+#
+test/annexB/language/literals/regexp/quantifiable-assertion-followed-by.js
+test/annexB/language/literals/regexp/quantifiable-assertion-not-followed-by.js
+test/built-ins/RegExp/S15.10.2.13_A1_T3.js
+test/built-ins/RegExp/S15.10.2.13_A1_T4.js
+test/built-ins/RegExp/S15.10.2.13_A1_T5.js
+test/built-ins/RegExp/S15.10.2.8_A1_T1.js
+test/built-ins/RegExp/S15.10.2.8_A1_T2.js
+test/built-ins/RegExp/S15.10.2.8_A1_T3.js
+test/built-ins/RegExp/S15.10.2.8_A1_T4.js
+test/built-ins/RegExp/S15.10.2.8_A1_T5.js
+test/built-ins/RegExp/S15.10.2.8_A2_T1.js
+test/built-ins/RegExp/S15.10.2.8_A2_T10.js
+test/built-ins/RegExp/S15.10.2.8_A2_T11.js
+test/built-ins/RegExp/S15.10.2.8_A2_T2.js
+test/built-ins/RegExp/S15.10.2.8_A2_T3.js
+test/built-ins/RegExp/S15.10.2.8_A2_T4.js
+test/built-ins/RegExp/S15.10.2.8_A2_T5.js
+test/built-ins/RegExp/S15.10.2.8_A2_T6.js
+test/built-ins/RegExp/S15.10.2.8_A2_T7.js
+test/built-ins/RegExp/S15.10.2.8_A2_T8.js
+test/built-ins/RegExp/S15.10.2.8_A2_T9.js
+test/built-ins/RegExp/lookahead-quantifier-match-groups.js
+test/built-ins/RegExp/unicode_restricted_quantifiable_assertion.js
+test/staging/sm/RegExp/empty-lookahead.js
+test/staging/sm/RegExp/regress-yarr-regexp.js
+test/staging/sm/String/match-forward-lookahead.js
