@@ -2,7 +2,7 @@
 
 use crate::value::ReplacementStringBuffer;
 
-use super::super::replacement::{SubstitutionInput, SubstitutionStatus};
+use super::super::replacement::{SubstitutionInput, SubstitutionMatch, SubstitutionStatus};
 use super::*;
 
 impl Runtime {
@@ -177,7 +177,7 @@ impl Runtime {
                     realm,
                     &mut output,
                     SubstitutionInput {
-                        matched: &search,
+                        matched: SubstitutionMatch::Converted(&search),
                         input: &source,
                         position,
                         captures: None,

@@ -51,6 +51,10 @@ claim full parity.
   recording 110 `fail-runtime -> pass`, 170 `unsupported-feature -> pass`,
   four newly exposed parser failures, and 38 newly exposed typed parser
   frontiers. The exact 102,037-key join has zero previous-pass regressions.
+  R1i adds QuickJS's raw standard-RegExp predicate and direct `@@replace`
+  matcher. It is a semantic-path milestone rather than a coverage expansion:
+  both the focused 376-variant replacement report and the complete
+  102,037-variant report remain byte-identical to R1h.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -113,9 +117,8 @@ claim full parity.
   variants remain runtime failures solely because `eval` is absent; eight reach
   typed advanced-pattern frontiers for backreferences, lookaround, Unicode
   properties, or legacy octal/control escapes. `RegExp.escape`, the Symbol
-  matchAll protocol, the standard-RegExp direct `@@replace` matcher fast path,
-  and the advanced literal grammar remain intentionally unpublished rather
-  than stubbed. The R1a complete join recorded only 669
+  matchAll protocol, and the advanced literal grammar remain intentionally
+  unpublished rather than stubbed. The R1a complete join recorded only 669
   `fail-runtime -> pass` and
   ten `fail-runtime -> unsupported-runtime` transitions. The R1b join matches
   all 102,037 keys and moves 840 `unsupported-parser -> pass`, 226
@@ -335,15 +338,31 @@ claim full parity.
   `exec` result before reading captures or invoking callbacks, preserves
   backward-position observation, enforces QuickJS's 65,534-argument ceiling,
   and keeps `lastIndex`, Unicode advancement, named groups and abrupt
-  completion order aligned with the pinned source. The standard branded-RegExp
-  direct matcher remains a separate R1i slice because its predicate changes
-  observable getter traffic.
+  completion order aligned with the pinned source.
 
-  Six String and eight non-fast-path RegExp differential groups pass against
-  QuickJS 2026-06-04; the one direct-fast-path group remains explicitly
-  ignored for R1i. Recursive custom `exec` initially exposed a native-stack
-  mismatch on the fixed 2 MiB oracle thread. Splitting replacement processing
-  and VM call/numeric dispatch reduced the debug
+  R1i ports QuickJS's standard-RegExp predicate without performing ordinary
+  property reads: it requires a genuine RegExp, a numeric raw own `lastIndex`,
+  exact native `exec`, `flags`, `global`, and `unicode` targets, and stops raw
+  prototype traversal at Array, Arguments, or String exotic objects. AutoInit
+  remains observable: a cold `exec` slot forces the first call through the
+  generic path, while its materialization can make a later call—or the same
+  call after replacement conversion—eligible. Native target identity is
+  compared independently of realm, matching QuickJS's C-function-plus-magic
+  check, and deliberately does not inspect the other flag getters.
+
+  Eligible non-functional replacements drive the compiled matcher directly,
+  without abstract `exec`, result arrays, groups, or indices allocation.
+  Capture ranges feed the shared substitution parser directly, while global,
+  sticky, empty-match Unicode advancement, executor errors, the second direct
+  StringBuffer, and `lastIndex` writes follow the pinned order. Six String and
+  all nine RegExp differential groups now pass against QuickJS 2026-06-04,
+  including predicate fallback, exotic prototypes, unchecked getters,
+  cross-realm native targets, captures, global/sticky state, and Unicode empty
+  matches.
+
+  Recursive custom `exec` initially exposed a native-stack mismatch on the
+  fixed 2 MiB oracle thread. Splitting replacement processing and VM
+  call/numeric dispatch reduced the debug
   `CallFrame::execute_inner<RuntimeVmHost>` frame from about 75.9 KiB to
   57.0 KiB. `recurse(8)`, catchable infinite-recursion
   `InternalError: stack overflow`, logical `Function.prototype.call` frames,
@@ -375,6 +394,14 @@ claim full parity.
   `2895a8d2ddbe5857e83b573827e46b4a60a97d89b5882727c85ff75d2ff9d368`
   and
   `64fed7fd3bb722d470bbd420e42995e138aed5d6f3588b7d2657973cb3968419`.
+
+  R1i changes the route taken by already-passing branded RegExp replacements,
+  so it intentionally does not widen the capability profile or frozen
+  manifests. Re-running both gates produces the same 286/376 focused result,
+  the same 25,893/102,037 complete result, and the exact same four report
+  hashes above. The exact R1h-to-R1i join therefore has zero outcome
+  transitions, missing keys, extra keys, duplicates, or previous-pass
+  regressions.
 
   Advanced grammar fails closed: lookaround, backreferences, named captures,
   Unicode properties, all `v`-mode execution, and unported Annex-B
@@ -2374,8 +2401,7 @@ direct-identifier delete is implemented
 for the current static scope tree and defining-realm global object. Dynamic
 object-environment lookup/deletion introduced by `with` or direct `eval`, the
 remaining three entries of String's 53-key prototype surface, `RegExp.escape`,
-advanced RegExp grammar, the remaining matchAll Symbol protocol method, and
-the standard-RegExp direct replace matcher fast path,
+advanced RegExp grammar, the remaining matchAll Symbol protocol method,
 Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. AggregateError and
 uncatchable termination state are also pending. Array
@@ -2388,8 +2414,7 @@ exotic-source spread, and the rest of the builtin table build on those layers.
 The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
 identifier, case-conversion, `Cased` and `Case_Ignorable` data, the advanced
-RegExp grammar plus matchAll integration and direct replace fast-path parity,
-modules, jobs/Promises/async,
+RegExp grammar plus matchAll integration, modules, jobs/Promises/async,
 generators, TypedArrays/Atomics, WeakRef/finalization, bytecode version 5 and
 BJSON interoperability, `std`/`os`, workers, REPL/qjsc, and the complete Rust
 and C embedding APIs.
@@ -2451,6 +2476,8 @@ and R1e split dispatch adds only four more, leaving that milestone's parent at
 `runtime.rs` at 9,787 lines. R1h keeps the replacement algorithms in dedicated
 String, RegExp and shared-substitution modules, then moves internal call and
 bound-argument dispatch into `runtime/native_dispatch.rs`; the parent is now
+9,650 lines. R1i adds its raw predicate, direct matcher, and range-aware
+substitution support inside those same dedicated modules; `runtime.rs` remains
 9,650 lines. The feature algorithms do not return to the parent monolith. The
 RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than

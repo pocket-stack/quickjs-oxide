@@ -35,8 +35,8 @@ tests. They are intentionally not counted as passes now.
 This 189/193 result is a runner smoke baseline, not a project-wide 97.9%
 estimate. The sample was selected from already implemented synchronous
 surfaces. Module, async/jobs, most `$262` host hooks, RegExp's remaining
-matchAll well-known-Symbol protocol, standard-RegExp direct replace fast path,
-and advanced pattern grammar, classes, generators,
+matchAll well-known-Symbol protocol, advanced pattern grammar, classes,
+generators,
 TypedArrays and many other broad layers remain absent.
 
 Nineteen additional provenance variants guard the result: four audited negative
@@ -475,6 +475,23 @@ Earlier focused vectors retain their outcome rows and update only their profile
 metadata hashes, except the compile vector, whose two linked staging replace
 variants now pass and move that focused result from 44 to 46 passes.
 
+R1i implements the branded standard-RegExp direct replacement matcher and its
+raw, AutoInit-sensitive predicate. This changes observable getter traffic on
+already-passing programs but does not add a Test262 capability, manifest path,
+or runnable variant. The focused replacement gate remains byte-identical at
+286/376, with TSV/JSONL hashes
+`055d52219998a0863a4241b3c5b374b917c1503d93b0715048ee2e171db3d012`
+and
+`dffcdbd8260a3d6e1c277d76797ba7187e40a971860ff802efaf8b3c6e65c0ad`.
+The complete gate likewise remains byte-identical at 25,893/102,037, with
+TSV/JSONL hashes
+`2895a8d2ddbe5857e83b573827e46b4a60a97d89b5882727c85ff75d2ff9d368`
+and
+`64fed7fd3bb722d470bbd420e42995e138aed5d6f3588b7d2657973cb3968419`.
+The exact R1h/R1i join therefore has zero transitions and zero previous-pass
+regressions; focused QuickJS differentials, rather than pass-count movement,
+are the acceptance evidence for this semantic-path milestone.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -540,10 +557,10 @@ The Date transition also resolves the four otherwise-ready Reflect variants
 which had stopped at `Date.now`; generic split resolves six more linked Reflect
 variants. Basic RegExp literal execution, the search/match/split protocols,
 legacy compile, scoped modifiers, and generic replacement are now measured
-separately in R1b/R1c/R1d/R1e/R1f/R1g/R1h. The standard-RegExp direct replace
-matcher is the narrow R1i target; matchAll protocol work and the remaining
-advanced RegExp grammar follow as conservative candidates. The complete
-classified report decides their ordering. Test262 remains the project
-scoreboard, while focused QuickJS differentials decide exact target semantics
-for each slice. None of these progress figures is a feature-parity completion
-claim.
+separately in R1b/R1c/R1d/R1e/R1f/R1g/R1h; R1i completes the direct
+standard-RegExp replacement route without changing that scoreboard. MatchAll
+protocol work and the remaining advanced RegExp grammar are the next
+conservative candidates. The complete classified report decides their
+ordering. Test262 remains the project scoreboard, while focused QuickJS
+differentials decide exact target semantics for each slice. None of these
+progress figures is a feature-parity completion claim.

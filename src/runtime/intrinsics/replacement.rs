@@ -10,11 +10,23 @@ pub(super) enum SubstitutionStatus {
     BufferFailed,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum SubstitutionMatch<'a> {
+    Converted(&'a JsString),
+    InputRange { start: usize, end: usize },
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum SubstitutionCaptures<'a> {
+    Converted(&'a [Value]),
+    MatchRanges(&'a [Option<std::ops::Range<usize>>]),
+}
+
 pub(super) struct SubstitutionInput<'a> {
-    pub(super) matched: &'a JsString,
+    pub(super) matched: SubstitutionMatch<'a>,
     pub(super) input: &'a JsString,
     pub(super) position: usize,
-    pub(super) captures: Option<&'a [Value]>,
+    pub(super) captures: Option<SubstitutionCaptures<'a>>,
     pub(super) named_captures: Option<&'a ObjectRef>,
     pub(super) replacement: &'a JsString,
 }
@@ -22,10 +34,12 @@ pub(super) struct SubstitutionInput<'a> {
 impl Runtime {
     /// Rust port of pinned QuickJS `js_string_GetSubstitution`.
     ///
-    /// `captures`, when present, contains the already-observed and converted
-    /// capture values with the complete match at index zero. Named capture
-    /// properties remain lazy: every `$<name>` occurrence performs its own Get
-    /// and ToString in the defining realm.
+    /// Generic callers provide already-observed and converted capture values.
+    /// QuickJS's standard-RegExp direct matcher instead supplies raw capture
+    /// ranges, so `$&` and `$n` can copy from the input without allocating
+    /// result objects or temporary capture strings. Named capture properties
+    /// remain lazy: every `$<name>` occurrence performs its own Get and
+    /// ToString in the defining realm.
     pub(super) fn append_get_substitution(
         &self,
         realm: ContextId,
@@ -41,8 +55,14 @@ impl Runtime {
             replacement,
         } = substitution;
         let replacement = replacement.linearize();
-        let capture_count = captures.map_or(0, <[Value]>::len);
-        let matched_len = matched.len();
+        let capture_count = captures.map_or(0, |captures| match captures {
+            SubstitutionCaptures::Converted(values) => values.len(),
+            SubstitutionCaptures::MatchRanges(ranges) => ranges.len(),
+        });
+        let matched_len = match matched {
+            SubstitutionMatch::Converted(value) => value.len(),
+            SubstitutionMatch::InputRange { start, end } => end - start,
+        };
         let mut cursor = 0_usize;
 
         while cursor < replacement.len() {
@@ -69,7 +89,12 @@ impl Runtime {
                     buffer.append_code_unit(u16::from(b'$'));
                 }
                 unit if unit == u16::from(b'&') => {
-                    buffer.append_js_string(matched);
+                    match matched {
+                        SubstitutionMatch::Converted(value) => buffer.append_js_string(value),
+                        SubstitutionMatch::InputRange { start, end } => {
+                            buffer.append_range(input, start, end);
+                        }
+                    }
                     if buffer.error().is_some() {
                         return Ok(Ok(SubstitutionStatus::BufferFailed));
                     }
@@ -98,21 +123,30 @@ impl Runtime {
                         }
                     }
                     if (1..capture_count).contains(&capture_index) {
-                        let capture = &captures
-                            .expect("non-zero capture count omitted capture storage")
-                            [capture_index];
-                        match capture {
-                            Value::Undefined => {}
-                            Value::String(value) => {
-                                buffer.append_js_string(value);
-                                if buffer.error().is_some() {
-                                    return Ok(Ok(SubstitutionStatus::BufferFailed));
+                        match captures.expect("non-zero capture count omitted capture storage") {
+                            SubstitutionCaptures::Converted(values) => {
+                                match &values[capture_index] {
+                                    Value::Undefined => {}
+                                    Value::String(value) => {
+                                        buffer.append_js_string(value);
+                                        if buffer.error().is_some() {
+                                            return Ok(Ok(SubstitutionStatus::BufferFailed));
+                                        }
+                                    }
+                                    _ => {
+                                        return Err(RuntimeError::Invariant(
+                                            "replacement capture was not pre-converted",
+                                        ));
+                                    }
                                 }
                             }
-                            _ => {
-                                return Err(RuntimeError::Invariant(
-                                    "replacement capture was not pre-converted",
-                                ));
+                            SubstitutionCaptures::MatchRanges(ranges) => {
+                                if let Some(range) = &ranges[capture_index] {
+                                    buffer.append_range(input, range.start, range.end);
+                                    if buffer.error().is_some() {
+                                        return Ok(Ok(SubstitutionStatus::BufferFailed));
+                                    }
+                                }
                             }
                         }
                     } else {

@@ -15,6 +15,8 @@ mod prototype;
 mod replace;
 mod search;
 mod split;
+#[cfg(test)]
+mod tests;
 
 use crate::heap::{RegExpFlagKind, RegExpNativeKind, RegExpRealmData};
 

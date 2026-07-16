@@ -1,7 +1,10 @@
 use std::ffi::OsStr;
 use std::process::Command;
 
-use quickjs_oxide::{CallableRef, Context, JsString, ObjectRef, Runtime, RuntimeError, Value};
+use quickjs_oxide::{
+    AccessorValue, CallableRef, Context, DescriptorField, JsString, ObjectRef,
+    OrdinaryPropertyDescriptor, Runtime, RuntimeError, Value,
+};
 
 // Differential lock for pinned QuickJS 2026-06-04
 // `js_regexp_Symbol_replace` (`quickjs.c` 48622-48815), its direct matcher
@@ -430,9 +433,10 @@ const LAST_INDEX_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-const FAST_PATH_CASES: &[(&str, &str)] = &[(
-    "standard-regexp fast path activates only after exec AutoInit materialization",
-    r#"(function(){
+const FAST_PATH_CASES: &[(&str, &str)] = &[
+    (
+        "standard-regexp fast path activates only after exec AutoInit materialization",
+        r#"(function(){
             var hits=0,regexp=/a/;
             Object.defineProperty(regexp,"ignoreCase",{get:function(){
                 hits++;return false;
@@ -442,7 +446,143 @@ const FAST_PATH_CASES: &[(&str, &str)] = &[(
             return [first,second,hits,
                 RegExp.prototype.exec===RegExp.prototype.exec].join("|");
         })()"#,
-)];
+    ),
+    (
+        "replacement conversion can materialize exec before the same replace predicate",
+        r#"(function(){
+            var hits=0,regexp=/a/,replacement=Object();
+            Object.defineProperty(regexp,"ignoreCase",{get:function(){
+                hits++;return false;
+            }});
+            replacement.toString=function(){
+                RegExp.prototype.exec;
+                return "X";
+            };
+            return regexp[Symbol.replace]("a",replacement)+"|"+hits;
+        })()"#,
+    ),
+    (
+        "required raw slots and exotic prototypes force the generic path",
+        r#"(function(){
+            RegExp.prototype.exec;
+            function run(kind){
+                var log="",regexp=/a/,builtin=RegExp.prototype.exec;
+                Object.defineProperty(regexp,"ignoreCase",{get:function(){
+                    log+="i";return false;
+                }});
+                if(kind==="exec"){
+                    regexp.exec=function(value){
+                        log+="e";return builtin.call(this,value);
+                    };
+                }else if(kind==="lastIndex"){
+                    var marker=Object();
+                    marker.valueOf=function(){log+="l";return 0};
+                    regexp.lastIndex=marker;
+                }else if(kind==="flags"){
+                    Object.defineProperty(regexp,"flags",{get:function(){
+                        log+="f";return "";
+                    }});
+                }else if(kind==="global"){
+                    Object.defineProperty(regexp,"global",{get:function(){
+                        log+="g";return false;
+                    }});
+                }else if(kind==="unicode"){
+                    Object.defineProperty(regexp,"unicode",{get:function(){
+                        log+="u";return false;
+                    }});
+                }else{
+                    var exotic=[];
+                    Object.setPrototypeOf(exotic,RegExp.prototype);
+                    Object.setPrototypeOf(regexp,exotic);
+                }
+                return kind+":"+regexp[Symbol.replace]("a","X")+":"+log;
+            }
+            return [
+                run("exec"),run("lastIndex"),run("flags"),
+                run("global"),run("unicode"),run("exotic")
+            ].join("|");
+        })()"#,
+    ),
+    (
+        "unchecked flag getters and unrelated own properties stay off the direct path surface",
+        r#"(function(){
+            RegExp.prototype.exec;
+            var log="",regexp=/a/;
+            regexp.extra=1;
+            regexp.exec=RegExp.prototype.exec;
+            Object.defineProperty(regexp,"ignoreCase",{get:function(){
+                log+="i";return false;
+            }});
+            Object.defineProperty(regexp,"multiline",{get:function(){
+                log+="m";return false;
+            }});
+            Object.defineProperty(regexp,"dotAll",{get:function(){
+                log+="s";return false;
+            }});
+            Object.defineProperty(regexp,"sticky",{get:function(){
+                log+="y";return false;
+            }});
+            Object.defineProperty(regexp,"unicodeSets",{get:function(){
+                log+="v";return false;
+            }});
+            Object.defineProperty(regexp,"hasIndices",{get:function(){
+                log+="d";return false;
+            }});
+            var direct=regexp[Symbol.replace]("a","X");
+
+            var functional=/a/;
+            Object.defineProperty(functional,"ignoreCase",{get:function(){
+                log+="f";return false;
+            }});
+            var generic=functional[Symbol.replace]("a",function(){return "Z"});
+            return [direct,regexp.extra,log,generic].join("|");
+        })()"#,
+    ),
+    (
+        "prewarmed direct matcher preserves captures global sticky and Unicode advancement",
+        r#"(function(){
+            RegExp.prototype.exec;
+            var captures=/(b)(c)?/,plain=/a/,global=/a/g,
+                sticky=/a/y,stickyMiss=/a/y,
+                astral=String.fromCharCode(0xd83d,0xde00,0xd800),
+                emptyUnicode=new RegExp("","gu");
+            plain.lastIndex=7;
+            global.lastIndex=7;
+            sticky.lastIndex=1;
+            stickyMiss.lastIndex=0;
+            return [
+                captures[Symbol.replace](
+                    "abcd","$$|$&|$`|$'|$1|$2|$3|$01|$20"),
+                plain[Symbol.replace]("a","X"),plain.lastIndex,
+                global[Symbol.replace]("baac","X"),global.lastIndex,
+                sticky[Symbol.replace]("ba","X"),sticky.lastIndex,
+                stickyMiss[Symbol.replace]("ba","X"),stickyMiss.lastIndex,
+                __units(emptyUnicode[Symbol.replace](astral,"-")),
+                emptyUnicode.lastIndex
+            ].join("|");
+        })()"#,
+    ),
+    (
+        "direct matcher writes only the lastIndex modes required by QuickJS",
+        r#"(function(){
+            RegExp.prototype.exec;
+            function locked(flags,lastIndex,input){
+                var regexp=new RegExp("a",flags);
+                regexp.lastIndex=lastIndex;
+                Object.defineProperty(regexp,"lastIndex",{writable:false});
+                return __completion(function(){
+                    return regexp[Symbol.replace](input,"X");
+                })+":"+regexp.lastIndex;
+            }
+            return [
+                locked("",7,"a"),
+                locked("g",7,"a"),
+                locked("y",0,"a"),
+                locked("y",1,"ba")
+            ].join("|");
+        })()"#,
+    ),
+];
 
 const RECURSION_CASES: &[(&str, &str)] = &[(
     "RegExp Symbol.replace exec recursion overflows catchably and the runtime recovers",
@@ -522,9 +662,98 @@ fn regexp_replace_position_and_last_index_match_pinned_quickjs() {
 }
 
 #[test]
-#[ignore = "R1i standard-RegExp direct matcher parity"]
 fn regexp_replace_standard_fast_path_matches_pinned_quickjs() {
     compare_cases("RegExp replace standard fast path", FAST_PATH_CASES);
+}
+
+#[test]
+fn regexp_replace_standard_fast_path_accepts_cross_realm_native_targets() {
+    let runtime = Runtime::new();
+    let mut defining = runtime.new_context();
+    let mut caller = runtime.new_context();
+    let exec = eval_optional_callable(
+        &runtime,
+        &mut defining,
+        "RegExp.prototype.exec",
+        "foreign RegExp exec",
+    )
+    .expect("foreign RegExp exec was not callable");
+    let flags = eval_optional_callable(
+        &runtime,
+        &mut defining,
+        "Object.getOwnPropertyDescriptor(RegExp.prototype,'flags').get",
+        "foreign RegExp flags getter",
+    )
+    .expect("foreign RegExp flags getter was not callable");
+    let global = eval_optional_callable(
+        &runtime,
+        &mut defining,
+        "Object.getOwnPropertyDescriptor(RegExp.prototype,'global').get",
+        "foreign RegExp global getter",
+    )
+    .expect("foreign RegExp global getter was not callable");
+    let unicode = eval_optional_callable(
+        &runtime,
+        &mut defining,
+        "Object.getOwnPropertyDescriptor(RegExp.prototype,'unicode').get",
+        "foreign RegExp unicode getter",
+    )
+    .expect("foreign RegExp unicode getter was not callable");
+    let prototype = eval_object(&mut caller, "RegExp.prototype", "caller RegExp prototype");
+
+    let exec_key = runtime.intern_property_key("exec").unwrap();
+    let exec_object = exec.as_object().clone();
+    assert!(
+        runtime
+            .define_own_property(
+                &prototype,
+                &exec_key,
+                &OrdinaryPropertyDescriptor {
+                    value: DescriptorField::Present(Value::Object(exec_object)),
+                    writable: DescriptorField::Present(true),
+                    enumerable: DescriptorField::Present(false),
+                    configurable: DescriptorField::Present(true),
+                    ..OrdinaryPropertyDescriptor::new()
+                },
+            )
+            .unwrap(),
+        "foreign RegExp exec definition was rejected",
+    );
+    for (name, getter) in [("flags", flags), ("global", global), ("unicode", unicode)] {
+        let key = runtime.intern_property_key(name).unwrap();
+        assert!(
+            runtime
+                .define_own_property(
+                    &prototype,
+                    &key,
+                    &OrdinaryPropertyDescriptor {
+                        get: DescriptorField::Present(AccessorValue::Callable(getter)),
+                        set: DescriptorField::Present(AccessorValue::Undefined),
+                        enumerable: DescriptorField::Present(false),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap(),
+            "foreign RegExp {name} getter definition was rejected",
+        );
+    }
+
+    let Value::String(result) = caller
+        .eval(
+            r#"(function(){
+                var hits=0,regexp=/a/;
+                Object.defineProperty(regexp,"ignoreCase",{get:function(){
+                    hits++;return false;
+                }});
+                return regexp[Symbol.replace]("a","X")+"|"+hits;
+            })()"#,
+        )
+        .unwrap()
+    else {
+        panic!("cross-realm standard RegExp replacement did not return a string");
+    };
+    assert_eq!(result.to_utf8_lossy(), "X|0");
 }
 
 #[test]

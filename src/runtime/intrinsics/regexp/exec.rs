@@ -246,7 +246,7 @@ impl Runtime {
         self.native_to_length(realm, &value)
     }
 
-    fn set_regexp_last_index(
+    pub(super) fn set_regexp_last_index(
         &self,
         realm: ContextId,
         object: &ObjectRef,
