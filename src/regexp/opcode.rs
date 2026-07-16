@@ -56,6 +56,16 @@ pub enum Instruction {
         captures: Box<[u8]>,
         ignore_case: bool,
     },
+    /// Enter a forward lookahead assertion. `target` is the instruction after
+    /// the paired [`Instruction::LookAheadEnd`].
+    LookAhead {
+        negative: bool,
+        target: usize,
+    },
+    /// Complete the nearest lookahead assertion of the same polarity.
+    LookAheadEnd {
+        negative: bool,
+    },
     Jump {
         target: usize,
     },

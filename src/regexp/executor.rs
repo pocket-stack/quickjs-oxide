@@ -51,6 +51,7 @@ pub enum ProgramError {
     PositionRegisterExpected { pc: usize, register: u8 },
     InvalidCharacter { pc: usize, value: u32 },
     InvalidCharacterRange { pc: usize, start: u32, end: u32 },
+    AssertionStructure { pc: usize },
     IncompleteCapture { capture: u8 },
 }
 
@@ -116,6 +117,12 @@ impl fmt::Display for ProgramError {
                 formatter,
                 "RegExp instruction {pc} has invalid range U+{start:X}..=U+{end:X}"
             ),
+            Self::AssertionStructure { pc } => {
+                write!(
+                    formatter,
+                    "RegExp instruction {pc} has invalid lookahead structure"
+                )
+            }
             Self::IncompleteCapture { capture } => {
                 write!(formatter, "RegExp capture {capture} has only one boundary")
             }
@@ -202,6 +209,8 @@ where
 }
 
 fn validate_program(program: &CompiledRegExp) -> Result<(), ExecError> {
+    const NO_ASSERTION_SCOPE: usize = usize::MAX;
+
     let instructions = program.instructions();
     if instructions.is_empty() {
         return Err(ProgramError::EmptyProgram.into());
@@ -211,8 +220,20 @@ fn validate_program(program: &CompiledRegExp) -> Result<(), ExecError> {
     }
     let capture_count = program.capture_count();
     let register_count = program.register_count();
+    let mut assertions = Vec::new();
+    let mut assertion_scopes = Vec::new();
+    assertion_scopes
+        .try_reserve_exact(instructions.len())
+        .map_err(|_| ExecError::OutOfMemory)?;
 
     for (pc, instruction) in instructions.iter().enumerate() {
+        // A begin PC is unique, so the innermost assertion identifies the
+        // complete active assertion chain and distinguishes sibling regions.
+        assertion_scopes.push(
+            assertions
+                .last()
+                .map_or(NO_ASSERTION_SCOPE, |(begin, _, _)| *begin),
+        );
         let target = match instruction {
             Instruction::Jump { target } => Some(*target),
             Instruction::Split { first, second } => {
@@ -224,6 +245,15 @@ fn validate_program(program: &CompiledRegExp) -> Result<(), ExecError> {
                 None
             }
             Instruction::Loop { target, .. } => Some(*target),
+            Instruction::LookAhead {
+                negative, target, ..
+            } => {
+                assertions
+                    .try_reserve(1)
+                    .map_err(|_| ExecError::OutOfMemory)?;
+                assertions.push((pc, *negative, *target));
+                Some(*target)
+            }
             _ => None,
         };
         if let Some(target) = target
@@ -279,6 +309,14 @@ fn validate_program(program: &CompiledRegExp) -> Result<(), ExecError> {
                     }
                 }
             }
+            Instruction::LookAheadEnd { negative } => {
+                let Some((begin, expected_negative, target)) = assertions.pop() else {
+                    return Err(ProgramError::AssertionStructure { pc }.into());
+                };
+                if expected_negative != *negative || target != pc + 1 || begin >= pc {
+                    return Err(ProgramError::AssertionStructure { pc }.into());
+                }
+            }
             Instruction::SetRegister { register, .. }
             | Instruction::Loop { register, .. }
             | Instruction::SavePosition { register }
@@ -290,6 +328,35 @@ fn validate_program(program: &CompiledRegExp) -> Result<(), ExecError> {
                     register: *register,
                 }
                 .into());
+            }
+            _ => {}
+        }
+    }
+    if let Some((pc, _, _)) = assertions.pop() {
+        return Err(ProgramError::AssertionStructure { pc }.into());
+    }
+
+    for (pc, instruction) in instructions.iter().enumerate() {
+        let scope = assertion_scopes[pc];
+        let validate_target = |target: usize| -> Result<(), ExecError> {
+            if assertion_scopes[target] != scope {
+                return Err(ProgramError::AssertionStructure { pc }.into());
+            }
+            Ok(())
+        };
+        match instruction {
+            Instruction::Jump { target } | Instruction::Loop { target, .. } => {
+                validate_target(*target)?;
+            }
+            Instruction::Split { first, second } => {
+                validate_target(*first)?;
+                validate_target(*second)?;
+            }
+            Instruction::LookAhead { target, .. } => {
+                validate_target(*target)?;
+            }
+            Instruction::Match if scope != NO_ASSERTION_SCOPE => {
+                return Err(ProgramError::AssertionStructure { pc }.into());
             }
             _ => {}
         }
@@ -344,9 +411,30 @@ enum Undo {
     },
 }
 
+impl Undo {
+    fn same_location(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Capture { slot: left, .. }, Self::Capture { slot: right, .. }) => left == right,
+            (
+                Self::Register { register: left, .. },
+                Self::Register {
+                    register: right, ..
+                },
+            ) => left == right,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
-struct Backtrack {
-    pc: usize,
+enum ControlKind {
+    Split { pc: usize },
+    LookAhead { negative: bool, target: usize },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ControlFrame {
+    kind: ControlKind,
     position: usize,
     undo_len: usize,
 }
@@ -357,7 +445,7 @@ struct AttemptState {
     captures: Vec<Option<usize>>,
     registers: Vec<RegisterValue>,
     undo: Vec<Undo>,
-    backtracks: Vec<Backtrack>,
+    controls: Vec<ControlFrame>,
 }
 
 impl AttemptState {
@@ -381,39 +469,150 @@ impl AttemptState {
             captures,
             registers,
             undo: Vec::new(),
-            backtracks: Vec::new(),
+            controls: Vec::new(),
         })
     }
 
     fn push_backtrack(&mut self, pc: usize) -> Result<(), ExecError> {
-        self.backtracks
+        self.controls
             .try_reserve(1)
             .map_err(|_| ExecError::OutOfMemory)?;
-        self.backtracks.push(Backtrack {
-            pc,
+        self.controls.push(ControlFrame {
+            kind: ControlKind::Split { pc },
             position: self.position,
             undo_len: self.undo.len(),
         });
         Ok(())
     }
 
-    fn restore_backtrack(&mut self) -> bool {
-        let Some(backtrack) = self.backtracks.pop() else {
-            return false;
-        };
-        while self.undo.len() > backtrack.undo_len {
+    fn push_lookahead(&mut self, negative: bool, target: usize) -> Result<(), ExecError> {
+        self.controls
+            .try_reserve(1)
+            .map_err(|_| ExecError::OutOfMemory)?;
+        self.controls.push(ControlFrame {
+            kind: ControlKind::LookAhead { negative, target },
+            position: self.position,
+            undo_len: self.undo.len(),
+        });
+        Ok(())
+    }
+
+    fn rollback_to(&mut self, undo_len: usize) {
+        while self.undo.len() > undo_len {
             match self.undo.pop().expect("undo length was checked") {
                 Undo::Capture { slot, previous } => self.captures[slot] = previous,
                 Undo::Register { register, previous } => self.registers[register] = previous,
             }
         }
-        self.pc = backtrack.pc;
-        self.position = backtrack.position;
-        true
+    }
+
+    /// Restore the next viable control state after one matching branch fails.
+    ///
+    /// A failed positive lookahead propagates through its boundary. A failed
+    /// negative lookahead succeeds at its continuation. Split frames resume
+    /// their retained branch.
+    fn restore_backtrack(&mut self) -> bool {
+        loop {
+            let Some(frame) = self.controls.pop() else {
+                return false;
+            };
+            self.rollback_to(frame.undo_len);
+            self.position = frame.position;
+            match frame.kind {
+                ControlKind::Split { pc } => {
+                    self.pc = pc;
+                    return true;
+                }
+                ControlKind::LookAhead {
+                    negative: false, ..
+                } => {}
+                ControlKind::LookAhead {
+                    negative: true,
+                    target,
+                } => {
+                    self.pc = target;
+                    return true;
+                }
+            }
+        }
+    }
+
+    fn finish_positive_lookahead(&mut self, pc: usize) -> Result<(), ExecError> {
+        let Some(index) = self
+            .controls
+            .iter()
+            .rposition(|frame| matches!(frame.kind, ControlKind::LookAhead { .. }))
+        else {
+            return Err(ProgramError::AssertionStructure { pc }.into());
+        };
+        let frame = self.controls[index];
+        if !matches!(
+            frame.kind,
+            ControlKind::LookAhead {
+                negative: false,
+                target,
+            } if target == pc + 1
+        ) {
+            return Err(ProgramError::AssertionStructure { pc }.into());
+        }
+
+        self.controls.truncate(index);
+        self.position = frame.position;
+        if let Some(outer) = self.controls.last() {
+            // Internal alternatives can record the same location at several
+            // nested checkpoints. QuickJS retains only the first old value
+            // needed by the surviving outer transaction.
+            let outer_checkpoint = outer.undo_len;
+            let old_len = self.undo.len();
+            let mut write = frame.undo_len;
+            for read in frame.undo_len..old_len {
+                let entry = self.undo[read];
+                if self.undo[outer_checkpoint..write]
+                    .iter()
+                    .copied()
+                    .any(|existing| existing.same_location(entry))
+                {
+                    continue;
+                }
+                self.undo[write] = entry;
+                write += 1;
+            }
+            self.undo.truncate(write);
+        } else {
+            // Captures retain their successful values. With no outer control
+            // state, however, their undo records can no longer be observed.
+            self.undo.truncate(frame.undo_len);
+        }
+        Ok(())
+    }
+
+    fn reject_negative_lookahead(&mut self, pc: usize) -> Result<(), ExecError> {
+        let Some(index) = self
+            .controls
+            .iter()
+            .rposition(|frame| matches!(frame.kind, ControlKind::LookAhead { .. }))
+        else {
+            return Err(ProgramError::AssertionStructure { pc }.into());
+        };
+        let frame = self.controls[index];
+        if !matches!(
+            frame.kind,
+            ControlKind::LookAhead {
+                negative: true,
+                target,
+            } if target == pc + 1
+        ) {
+            return Err(ProgramError::AssertionStructure { pc }.into());
+        }
+
+        self.rollback_to(frame.undo_len);
+        self.controls.truncate(index);
+        self.position = frame.position;
+        Ok(())
     }
 
     fn record_capture(&mut self, slot: usize) -> Result<(), ExecError> {
-        let Some(checkpoint) = self.backtracks.last().map(|state| state.undo_len) else {
+        let Some(checkpoint) = self.controls.last().map(|state| state.undo_len) else {
             return Ok(());
         };
         if self.undo[checkpoint..]
@@ -439,7 +638,7 @@ impl AttemptState {
     }
 
     fn record_register(&mut self, register: usize) -> Result<(), ExecError> {
-        let Some(checkpoint) = self.backtracks.last().map(|state| state.undo_len) else {
+        let Some(checkpoint) = self.controls.last().map(|state| state.undo_len) else {
             return Ok(());
         };
         if self.undo[checkpoint..].iter().any(
@@ -631,6 +830,16 @@ where
                     };
                     state.position = position;
                 }
+            }
+            Instruction::LookAhead { negative, target } => {
+                state.push_lookahead(*negative, *target)?;
+            }
+            Instruction::LookAheadEnd { negative: false } => {
+                state.finish_positive_lookahead(instruction_pc)?;
+            }
+            Instruction::LookAheadEnd { negative: true } => {
+                state.reject_negative_lookahead(instruction_pc)?;
+                fail_branch!();
             }
             Instruction::Jump { target } => state.pc = *target,
             Instruction::Split { first, second } => {
@@ -1217,6 +1426,90 @@ mod tests {
                 capture: 1,
             }))
         );
+
+        for (instructions, pc) in [
+            (
+                vec![
+                    Instruction::LookAheadEnd { negative: false },
+                    Instruction::Match,
+                ],
+                0,
+            ),
+            (
+                vec![
+                    Instruction::LookAhead {
+                        negative: false,
+                        target: 2,
+                    },
+                    Instruction::LookAheadEnd { negative: true },
+                    Instruction::Match,
+                ],
+                1,
+            ),
+            (
+                vec![
+                    Instruction::LookAhead {
+                        negative: false,
+                        target: 1,
+                    },
+                    Instruction::Match,
+                ],
+                0,
+            ),
+            (
+                vec![
+                    Instruction::LookAhead {
+                        negative: false,
+                        target: 3,
+                    },
+                    Instruction::Jump { target: 3 },
+                    Instruction::LookAheadEnd { negative: false },
+                    Instruction::Match,
+                ],
+                1,
+            ),
+            (
+                vec![
+                    Instruction::LookAhead {
+                        negative: false,
+                        target: 3,
+                    },
+                    Instruction::Match,
+                    Instruction::LookAheadEnd { negative: false },
+                    Instruction::Match,
+                ],
+                1,
+            ),
+            (
+                vec![
+                    Instruction::LookAhead {
+                        negative: false,
+                        target: 3,
+                    },
+                    Instruction::Jump { target: 5 },
+                    Instruction::LookAheadEnd { negative: false },
+                    Instruction::LookAhead {
+                        negative: false,
+                        target: 6,
+                    },
+                    Instruction::Char {
+                        value: u32::from(b'a'),
+                        ignore_case: false,
+                    },
+                    Instruction::LookAheadEnd { negative: false },
+                    Instruction::Match,
+                ],
+                1,
+            ),
+        ] {
+            let invalid = program(RegExpFlags::EMPTY, 1, 0, instructions);
+            assert_eq!(
+                execute(&invalid, &[], 0),
+                Err(ExecError::InvalidProgram(
+                    ProgramError::AssertionStructure { pc }
+                ))
+            );
+        }
     }
 
     #[test]
@@ -1294,6 +1587,75 @@ mod tests {
             .unwrap();
         assert_eq!(empty_loop.capture(0), Some(&(0..0)));
         assert_eq!(empty_loop.capture(1), None);
+    }
+
+    #[test]
+    fn forward_lookahead_is_zero_width_and_preserves_only_positive_captures() {
+        for (pattern, input, expected) in [
+            (r"^(?=a)a$", "a", true),
+            (r"^(?!b)a$", "a", true),
+            (r"^(?=b)a$", "a", false),
+            (r"^(?!a)a$", "a", false),
+            (r"^(?=(?=a)a)a$", "a", true),
+            (r"^(?!(?!a))a$", "a", true),
+        ] {
+            assert_eq!(
+                execute(&compile(pattern, "u"), &units(input), 0)
+                    .unwrap()
+                    .is_some(),
+                expected,
+                "{pattern}"
+            );
+        }
+
+        let positive = execute(&compile(r"^(?=(a+))\1$", "u"), &units("aaa"), 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(positive.captures(), &[Some(0..3), Some(0..3)]);
+
+        let negative = execute(&compile(r"^(?!b(a))a\1$", "u"), &units("a"), 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(negative.captures(), &[Some(0..1), None]);
+    }
+
+    #[test]
+    fn positive_lookahead_is_atomic_and_outer_backtracking_undoes_its_captures() {
+        assert!(
+            execute(&compile(r"^(?=(a|ab))\1c$", "u"), &units("abc"), 0)
+                .unwrap()
+                .is_none()
+        );
+
+        let result = execute(&compile(r"^(?:(?=(a))b|a)$", "u"), &units("a"), 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.captures(), &[Some(0..1), None]);
+    }
+
+    #[test]
+    fn annex_b_quantified_lookahead_terminates_and_resets_captures() {
+        for pattern in [
+            r"^(?=a)*a$",
+            r"^(?=a)+a$",
+            r"^(?=a)??a$",
+            r"^(?=a){2}a$",
+            r"^(?!b)*a$",
+        ] {
+            assert!(
+                execute(&compile(pattern, ""), &units("a"), 0)
+                    .unwrap()
+                    .is_some(),
+                "{pattern}"
+            );
+        }
+
+        for pattern in [r"^(?=(a))*a$", r"^(?=(a)){0}a$"] {
+            let result = execute(&compile(pattern, ""), &units("a"), 0)
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.captures(), &[Some(0..1), None], "{pattern}");
+        }
     }
 
     #[test]

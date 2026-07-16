@@ -13999,7 +13999,8 @@ mod tests {
             assert_eq!(error.message(), expected, "{source:?}");
         }
 
-        let unsupported = compile_unlinked_script("/(?=a)/").unwrap_err();
+        compile_unlinked_script("/(?=a)/").expect("forward lookahead literal should compile");
+        let unsupported = compile_unlinked_script("/(?<=a)/").unwrap_err();
         assert_eq!(unsupported.kind(), ErrorKind::Unsupported);
         assert!(unsupported.message().contains("Lookaround"));
         let unsupported_v = compile_unlinked_script("1 / /denominator/v;").unwrap_err();

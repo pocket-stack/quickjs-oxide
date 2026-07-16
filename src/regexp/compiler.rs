@@ -254,6 +254,11 @@ enum Atom {
     BackReference {
         capture: u8,
     },
+    LookAhead {
+        negative: bool,
+        quantifiable: bool,
+        expression: Expression,
+    },
     Group {
         capture: Option<u8>,
         modifiers: Option<ModifierState>,
@@ -271,6 +276,12 @@ impl Atom {
                 | Self::Class(_)
                 | Self::BackReference { .. }
                 | Self::Group { .. }
+        ) || matches!(
+            self,
+            Self::LookAhead {
+                quantifiable: true,
+                ..
+            }
         )
     }
 
@@ -278,6 +289,7 @@ impl Atom {
         match self {
             Self::LineStart | Self::LineEnd | Self::WordBoundary { .. } => true,
             Self::BackReference { .. } => true,
+            Self::LookAhead { .. } => true,
             Self::Group { expression, .. } => expression.can_match_empty(),
             Self::Literal(_) | Self::Dot | Self::Space { .. } | Self::Class(_) => false,
         }
@@ -294,6 +306,7 @@ impl Atom {
                 (Some(capture), None) => Some((capture, capture)),
                 (None, range) => range,
             },
+            Self::LookAhead { expression, .. } => expression.capture_range(),
             Self::Literal(_)
             | Self::Dot
             | Self::LineStart
@@ -483,11 +496,17 @@ impl<'a> Parser<'a> {
                     self.position += 1;
                     (None, None)
                 }
-                Some(0x3d | 0x21) => {
-                    return Err(CompileError::unsupported(
-                        position,
-                        UnsupportedFeature::Lookaround,
-                    ));
+                Some(marker @ (0x3d | 0x21)) => {
+                    self.position += 1;
+                    let expression = self.parse_disjunction(true)?;
+                    if self.take() != Some(u16::from(b')')) {
+                        return Err(CompileError::syntax(position, "unterminated group"));
+                    }
+                    return Ok(Atom::LookAhead {
+                        negative: marker == u16::from(b'!'),
+                        quantifiable: !self.flags.is_unicode(),
+                        expression,
+                    });
                 }
                 Some(0x3c) => {
                     if matches!(self.peek_n(1), Some(0x3d | 0x21)) {
@@ -1321,6 +1340,25 @@ impl CodeBuilder {
                     ignore_case: self.ignore_case,
                 });
             }
+            Atom::LookAhead {
+                negative,
+                expression,
+                ..
+            } => {
+                let start = self.emit(Instruction::LookAhead {
+                    negative: *negative,
+                    target: usize::MAX,
+                });
+                self.compile_expression(expression)?;
+                self.emit(Instruction::LookAheadEnd {
+                    negative: *negative,
+                });
+                let target = self.instructions.len();
+                self.instructions[start] = Instruction::LookAhead {
+                    negative: *negative,
+                    target,
+                };
+            }
             Atom::Group {
                 capture,
                 modifiers,
@@ -2153,7 +2191,7 @@ mod tests {
             (r"\p{Letter}", UnsupportedFeature::UnicodePropertyEscape),
             (r"(?<name>a)", UnsupportedFeature::NamedCapture),
             (r"\k<name>", UnsupportedFeature::Backreference),
-            (r"(?=a)", UnsupportedFeature::Lookaround),
+            (r"(?<=a)", UnsupportedFeature::Lookaround),
         ] {
             let error = compile_ascii(pattern, "u").unwrap_err();
             assert_eq!(
@@ -2174,6 +2212,91 @@ mod tests {
                 error.kind(),
                 &CompileErrorKind::Unsupported(UnsupportedFeature::LegacyControlEscape),
                 "{pattern}",
+            );
+        }
+    }
+
+    #[test]
+    fn forward_lookahead_compiles_to_paired_assertion_instructions() {
+        let positive = compile_ascii(r"(?=(a|b))\1", "u").unwrap();
+        assert_eq!(positive.capture_count(), 2);
+        let start = positive
+            .instructions()
+            .iter()
+            .position(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::LookAhead {
+                        negative: false,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        let end = positive
+            .instructions()
+            .iter()
+            .position(|instruction| {
+                matches!(instruction, Instruction::LookAheadEnd { negative: false })
+            })
+            .unwrap();
+        assert!(matches!(
+            positive.instructions()[start],
+            Instruction::LookAhead {
+                negative: false,
+                target
+            } if target == end + 1
+        ));
+        assert!(
+            positive.instructions()[start + 1..end]
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Split { .. }))
+        );
+        assert!(
+            positive.instructions()[end + 1..]
+                .iter()
+                .any(|instruction| {
+                    matches!(
+                        instruction,
+                        Instruction::BackReference { captures, .. } if captures.as_ref() == [1]
+                    )
+                })
+        );
+
+        let negative = compile_ascii(r"(?!a)b", "u").unwrap();
+        assert!(negative.instructions().iter().any(|instruction| {
+            matches!(instruction, Instruction::LookAhead { negative: true, .. })
+        }));
+        assert!(negative.instructions().iter().any(|instruction| {
+            matches!(instruction, Instruction::LookAheadEnd { negative: true })
+        }));
+    }
+
+    #[test]
+    fn annex_b_alone_allows_quantified_forward_lookahead() {
+        for pattern in [
+            r"(?=a)*",
+            r"(?=a)+",
+            r"(?=a)?",
+            r"(?=a){0}",
+            r"(?=a){1,2}",
+            r"(?!a)*?",
+        ] {
+            assert!(compile_ascii(pattern, "").is_ok(), "{pattern}");
+        }
+
+        for pattern in [r"(?=a)*", r"(?=a)+", r"(?=a)?", r"(?!a)*?"] {
+            let error = compile_ascii(pattern, "u").unwrap_err();
+            assert_eq!(error.kind(), &CompileErrorKind::Syntax, "{pattern}");
+            assert_eq!(error.message(), "invalid quantifier target", "{pattern}");
+        }
+        for pattern in [r"(?=a){0}", r"(?=a){1,2}", r"(?!a){2}?"] {
+            let error = compile_ascii(pattern, "u").unwrap_err();
+            assert_eq!(error.kind(), &CompileErrorKind::Syntax, "{pattern}");
+            assert_eq!(
+                error.message(),
+                "regular expression syntax error",
+                "{pattern}"
             );
         }
     }
@@ -2302,6 +2425,11 @@ mod tests {
         let depth = MAX_GROUP_NESTING + 1;
         let pattern = format!("{}a{}", "(?:".repeat(depth), ")".repeat(depth));
         let error = compile_ascii(&pattern, "").unwrap_err();
+        assert_eq!(error.kind(), &CompileErrorKind::Syntax);
+        assert_eq!(error.message(), "stack overflow");
+
+        let lookahead = format!("{}a{}", "(?=".repeat(depth), ")".repeat(depth));
+        let error = compile_ascii(&lookahead, "").unwrap_err();
         assert_eq!(error.kind(), &CompileErrorKind::Syntax);
         assert_eq!(error.message(), "stack overflow");
 
