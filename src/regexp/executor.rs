@@ -120,7 +120,7 @@ impl fmt::Display for ProgramError {
             Self::AssertionStructure { pc } => {
                 write!(
                     formatter,
-                    "RegExp instruction {pc} has invalid lookahead structure"
+                    "RegExp instruction {pc} has invalid lookaround structure"
                 )
             }
             Self::IncompleteCapture { capture } => {
@@ -295,7 +295,8 @@ fn validate_program(program: &CompiledRegExp) -> Result<(), ExecError> {
                 }
                 .into());
             }
-            Instruction::BackReference { captures, .. } => {
+            Instruction::BackReference { captures, .. }
+            | Instruction::BackwardBackReference { captures, .. } => {
                 if captures.is_empty() {
                     return Err(ProgramError::EmptyBackReference { pc }.into());
                 }
@@ -806,6 +807,13 @@ where
                     fail_branch!();
                 }
             }
+            Instruction::Prev => {
+                let Some((_, previous)) = read_previous_character(input, state.position, unicode)
+                else {
+                    fail_branch!();
+                };
+                state.position = previous;
+            }
             Instruction::BackReference {
                 captures,
                 ignore_case,
@@ -819,6 +827,31 @@ where
                 });
                 if let Some((start, end)) = participating {
                     let Some(position) = match_back_reference(
+                        input,
+                        start,
+                        end,
+                        state.position,
+                        unicode,
+                        *ignore_case,
+                    ) else {
+                        fail_branch!();
+                    };
+                    state.position = position;
+                }
+            }
+            Instruction::BackwardBackReference {
+                captures,
+                ignore_case,
+            } => {
+                let participating = captures.iter().find_map(|capture| {
+                    let capture = usize::from(*capture);
+                    match (state.captures[capture * 2], state.captures[capture * 2 + 1]) {
+                        (Some(start), Some(end)) => Some((start, end)),
+                        _ => None,
+                    }
+                });
+                if let Some((start, end)) = participating {
+                    let Some(position) = match_backward_back_reference(
                         input,
                         start,
                         end,
@@ -961,17 +994,62 @@ fn match_back_reference(
     Some(input_position)
 }
 
+fn match_backward_back_reference(
+    input: &[u16],
+    capture_start: usize,
+    capture_end: usize,
+    input_end: usize,
+    unicode: bool,
+    ignore_case: bool,
+) -> Option<usize> {
+    let mut capture_position = capture_end;
+    let mut input_position = input_end;
+    while capture_position > capture_start {
+        let (mut captured, previous_capture) =
+            read_previous_character_bounded(input, capture_position, capture_start, unicode)?;
+        let (mut current, previous_input) =
+            read_previous_character_bounded(input, input_position, 0, unicode)?;
+        if ignore_case {
+            captured = canonicalize(captured, unicode);
+            current = canonicalize(current, unicode);
+        }
+        if captured != current {
+            return None;
+        }
+        capture_position = previous_capture;
+        input_position = previous_input;
+    }
+    (capture_position == capture_start).then_some(input_position)
+}
+
 fn previous_character(input: &[u16], position: usize, unicode: bool) -> Option<u32> {
+    read_previous_character(input, position, unicode).map(|(character, _)| character)
+}
+
+fn read_previous_character(input: &[u16], position: usize, unicode: bool) -> Option<(u32, usize)> {
+    read_previous_character_bounded(input, position, 0, unicode)
+}
+
+fn read_previous_character_bounded(
+    input: &[u16],
+    position: usize,
+    lower_bound: usize,
+    unicode: bool,
+) -> Option<(u32, usize)> {
+    if position <= lower_bound {
+        return None;
+    }
     let last = *input.get(position.checked_sub(1)?)?;
-    if unicode && is_low_surrogate(last) && position >= 2 {
+    if unicode && is_low_surrogate(last) && position >= lower_bound.saturating_add(2) {
         let first = input[position - 2];
         if is_high_surrogate(first) {
-            return Some(
+            return Some((
                 0x1_0000 + ((u32::from(first) - 0xd800) << 10) + (u32::from(last) - 0xdc00),
-            );
+                position - 2,
+            ));
         }
     }
-    Some(u32::from(last))
+    Some((u32::from(last), position - 1))
 }
 
 const fn is_high_surrogate(unit: u16) -> bool {
@@ -1436,6 +1514,21 @@ mod tests {
                 ProgramError::EmptyBackReference { pc: 0 }
             ))
         );
+        let empty_backward_reference = program(
+            RegExpFlags::EMPTY,
+            1,
+            0,
+            vec![Instruction::BackwardBackReference {
+                captures: Box::new([]),
+                ignore_case: false,
+            }],
+        );
+        assert_eq!(
+            execute(&empty_backward_reference, &[], 0),
+            Err(ExecError::InvalidProgram(
+                ProgramError::EmptyBackReference { pc: 0 }
+            ))
+        );
 
         let invalid_back_reference = program(
             RegExpFlags::EMPTY,
@@ -1448,6 +1541,22 @@ mod tests {
         );
         assert_eq!(
             execute(&invalid_back_reference, &[], 0),
+            Err(ExecError::InvalidProgram(ProgramError::CaptureIndex {
+                pc: 0,
+                capture: 1,
+            }))
+        );
+        let invalid_backward_reference = program(
+            RegExpFlags::EMPTY,
+            1,
+            0,
+            vec![Instruction::BackwardBackReference {
+                captures: Box::new([1]),
+                ignore_case: false,
+            }],
+        );
+        assert_eq!(
+            execute(&invalid_backward_reference, &[], 0),
             Err(ExecError::InvalidProgram(ProgramError::CaptureIndex {
                 pc: 0,
                 capture: 1,
@@ -1644,6 +1753,87 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(negative.captures(), &[Some(0..1), None]);
+    }
+
+    #[test]
+    fn lookbehind_runs_quickjs_reverse_programs_without_consuming_twice() {
+        for (pattern, input, complete, captures) in [
+            (r"(?<=ab)c", "abc", 2..3, vec![Some(2..3)]),
+            (r"(?<=(\w){3})d", "abcd", 3..4, vec![Some(3..4), Some(0..1)]),
+            (r"(?<=([ab]+))c", "abc", 2..3, vec![Some(2..3), Some(0..2)]),
+            (
+                r"(?<=(bc)|(cd)).",
+                "abcdef",
+                3..4,
+                vec![Some(3..4), Some(1..3), None],
+            ),
+            (r"(?<=\1(a))b", "aab", 2..3, vec![Some(2..3), Some(1..2)]),
+        ] {
+            let result = execute(&compile(pattern, "u"), &units(input), 0)
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.capture(0), Some(&complete), "{pattern}");
+            assert_eq!(result.captures(), captures.as_slice(), "{pattern}");
+        }
+
+        let negative = execute(&compile(r"(?<!(^|[ab]))\w{2}", "u"), &units("abcdef"), 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(negative.captures(), &[Some(3..5), None]);
+    }
+
+    #[test]
+    fn nested_and_unicode_lookbehind_preserve_assertion_boundaries() {
+        for (pattern, flags, input, complete) in [
+            (r"(?<=(?=b)b)c", "u", "abc", 2..3),
+            (r"(?<=(?<=a)b)c", "u", "abc", 2..3),
+            (r"(?<=😀)x", "u", "😀x", 2..3),
+            (r"(?<=😀)x", "", "😀x", 2..3),
+            (r"(?<=^a)b", "u", "ab", 1..2),
+            (r"(?<=\ba)b", "u", "ab", 1..2),
+        ] {
+            assert_eq!(
+                complete_range(execute(&compile(pattern, flags), &units(input), 0).unwrap()),
+                Some(complete),
+                "{pattern}/{flags}",
+            );
+        }
+
+        let result = execute(&compile(r"(?<=\1(\w))d", "iu"), &units("abcCd"), 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.captures(), &[Some(4..5), Some(3..4)]);
+    }
+
+    #[test]
+    fn lookbehind_is_atomic_and_rolls_back_abandoned_captures() {
+        assert!(
+            execute(&compile(r"(?<=(a|ba))c", "u"), &units("bac"), 0)
+                .unwrap()
+                .is_some()
+        );
+
+        let result = execute(&compile(r"(?:(?<=(a))b|a)", "u"), &units("a"), 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.captures(), &[Some(0..1), None]);
+
+        let result = execute(&compile(r"(?<!(a))b", "u"), &units("b"), 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.captures(), &[Some(0..1), None]);
+    }
+
+    #[test]
+    fn reverse_character_reads_respect_unicode_capture_bounds() {
+        let input = [0xd83d, 0xde00, 0xde00];
+        assert_eq!(
+            match_backward_back_reference(&input, 1, 2, 3, true, false),
+            Some(2)
+        );
+
+        let at_start = captured(compile("", "uy").flags(), vec![Instruction::Prev]);
+        assert_eq!(execute(&at_start, &input, 0).unwrap(), None);
     }
 
     #[test]

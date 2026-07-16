@@ -73,6 +73,8 @@ pub enum UnsupportedFeature {
     UnicodeSetOperation,
     NamedCapture,
     Backreference,
+    /// Retained for source compatibility; supported lookahead/lookbehind
+    /// syntax no longer produces this classification.
     Lookaround,
     InlineModifier,
     LegacyOctalEscape,
@@ -254,8 +256,9 @@ enum Atom {
     BackReference {
         capture: u8,
     },
-    LookAhead {
+    LookAround {
         negative: bool,
+        backward: bool,
         quantifiable: bool,
         expression: Expression,
     },
@@ -278,7 +281,7 @@ impl Atom {
                 | Self::Group { .. }
         ) || matches!(
             self,
-            Self::LookAhead {
+            Self::LookAround {
                 quantifiable: true,
                 ..
             }
@@ -289,7 +292,7 @@ impl Atom {
         match self {
             Self::LineStart | Self::LineEnd | Self::WordBoundary { .. } => true,
             Self::BackReference { .. } => true,
-            Self::LookAhead { .. } => true,
+            Self::LookAround { .. } => true,
             Self::Group { expression, .. } => expression.can_match_empty(),
             Self::Literal(_) | Self::Dot | Self::Space { .. } | Self::Class(_) => false,
         }
@@ -306,7 +309,7 @@ impl Atom {
                 (Some(capture), None) => Some((capture, capture)),
                 (None, range) => range,
             },
-            Self::LookAhead { expression, .. } => expression.capture_range(),
+            Self::LookAround { expression, .. } => expression.capture_range(),
             Self::Literal(_)
             | Self::Dot
             | Self::LineStart
@@ -503,18 +506,26 @@ impl<'a> Parser<'a> {
                     if self.take() != Some(u16::from(b')')) {
                         return Err(CompileError::syntax(position, "unterminated group"));
                     }
-                    return Ok(Atom::LookAhead {
+                    return Ok(Atom::LookAround {
                         negative: marker == u16::from(b'!'),
+                        backward: false,
                         quantifiable: !self.flags.is_unicode(),
                         expression,
                     });
                 }
                 Some(0x3c) => {
-                    if matches!(self.peek_n(1), Some(0x3d | 0x21)) {
-                        return Err(CompileError::unsupported(
-                            position,
-                            UnsupportedFeature::Lookaround,
-                        ));
+                    if let Some(marker @ (0x3d | 0x21)) = self.peek_n(1) {
+                        self.position += 2;
+                        let expression = self.parse_disjunction(true)?;
+                        if self.take() != Some(u16::from(b')')) {
+                            return Err(CompileError::syntax(position, "unterminated group"));
+                        }
+                        return Ok(Atom::LookAround {
+                            negative: marker == u16::from(b'!'),
+                            backward: true,
+                            quantifiable: false,
+                            expression,
+                        });
                     }
                     return Err(CompileError::unsupported(
                         position,
@@ -1318,7 +1329,7 @@ impl CodeBuilder {
 
     fn compile(mut self, expression: &Expression) -> Result<(Vec<Instruction>, u8), CompileError> {
         self.emit(Instruction::SaveStart { capture: 0 });
-        self.compile_expression(expression)?;
+        self.compile_expression(expression, false)?;
         self.emit(Instruction::SaveEnd { capture: 0 });
         self.emit(Instruction::Match);
         let register_count =
@@ -1326,11 +1337,15 @@ impl CodeBuilder {
         Ok((self.instructions, register_count))
     }
 
-    fn compile_expression(&mut self, expression: &Expression) -> Result<(), CompileError> {
+    fn compile_expression(
+        &mut self,
+        expression: &Expression,
+        backward: bool,
+    ) -> Result<(), CompileError> {
         let mut end_jumps = Vec::new();
         for (index, sequence) in expression.alternatives.iter().enumerate() {
             if index + 1 == expression.alternatives.len() {
-                self.compile_sequence(sequence)?;
+                self.compile_sequence(sequence, backward)?;
                 break;
             }
             let split = self.emit(Instruction::Split {
@@ -1338,7 +1353,7 @@ impl CodeBuilder {
                 second: usize::MAX,
             });
             let first = self.instructions.len();
-            self.compile_sequence(sequence)?;
+            self.compile_sequence(sequence, backward)?;
             let jump = self.emit(Instruction::Jump { target: usize::MAX });
             let second = self.instructions.len();
             self.patch_split(split, first, second);
@@ -1351,19 +1366,33 @@ impl CodeBuilder {
         Ok(())
     }
 
-    fn compile_sequence(&mut self, sequence: &Sequence) -> Result<(), CompileError> {
-        for term in sequence {
-            match term.quantifier {
-                Some(quantifier) => {
-                    self.compile_quantified(&term.atom, quantifier, term.position)?
-                }
-                None => self.compile_atom(&term.atom)?,
+    fn compile_sequence(
+        &mut self,
+        sequence: &Sequence,
+        backward: bool,
+    ) -> Result<(), CompileError> {
+        if backward {
+            for term in sequence.iter().rev() {
+                self.compile_term(term, true)?;
+            }
+        } else {
+            for term in sequence {
+                self.compile_term(term, false)?;
             }
         }
         Ok(())
     }
 
-    fn compile_atom(&mut self, atom: &Atom) -> Result<(), CompileError> {
+    fn compile_term(&mut self, term: &Term, backward: bool) -> Result<(), CompileError> {
+        match term.quantifier {
+            Some(quantifier) => {
+                self.compile_quantified(&term.atom, quantifier, term.position, backward)
+            }
+            None => self.compile_atom(&term.atom, backward),
+        }
+    }
+
+    fn compile_atom(&mut self, atom: &Atom, backward: bool) -> Result<(), CompileError> {
         match atom {
             Atom::Literal(value) => {
                 let value = if self.ignore_case {
@@ -1371,10 +1400,12 @@ impl CodeBuilder {
                 } else {
                     *value
                 };
+                self.emit_backward_character_guard(backward);
                 self.emit(Instruction::Char {
                     value,
                     ignore_case: self.ignore_case,
                 });
+                self.emit_backward_character_guard(backward);
             }
             Atom::Dot => {
                 let instruction = if self.dot_all {
@@ -1382,7 +1413,9 @@ impl CodeBuilder {
                 } else {
                     Instruction::Dot
                 };
+                self.emit_backward_character_guard(backward);
                 self.emit(instruction);
+                self.emit_backward_character_guard(backward);
             }
             Atom::LineStart => {
                 self.emit(Instruction::LineStart {
@@ -1401,25 +1434,38 @@ impl CodeBuilder {
                 });
             }
             Atom::Space { inverted } => {
+                self.emit_backward_character_guard(backward);
                 self.emit(Instruction::Space {
                     inverted: *inverted,
                 });
+                self.emit_backward_character_guard(backward);
             }
             Atom::Class(class) => {
+                self.emit_backward_character_guard(backward);
                 self.emit(Instruction::Range {
                     ranges: class.ranges.clone().into_boxed_slice(),
                     inverted: class.inverted,
                     ignore_case: self.ignore_case,
                 });
+                self.emit_backward_character_guard(backward);
             }
             Atom::BackReference { capture } => {
-                self.emit(Instruction::BackReference {
-                    captures: vec![*capture].into_boxed_slice(),
-                    ignore_case: self.ignore_case,
-                });
+                let captures = vec![*capture].into_boxed_slice();
+                if backward {
+                    self.emit(Instruction::BackwardBackReference {
+                        captures,
+                        ignore_case: self.ignore_case,
+                    });
+                } else {
+                    self.emit(Instruction::BackReference {
+                        captures,
+                        ignore_case: self.ignore_case,
+                    });
+                }
             }
-            Atom::LookAhead {
+            Atom::LookAround {
                 negative,
+                backward,
                 expression,
                 ..
             } => {
@@ -1427,7 +1473,7 @@ impl CodeBuilder {
                     negative: *negative,
                     target: usize::MAX,
                 });
-                self.compile_expression(expression)?;
+                self.compile_expression(expression, *backward)?;
                 self.emit(Instruction::LookAheadEnd {
                     negative: *negative,
                 });
@@ -1443,7 +1489,11 @@ impl CodeBuilder {
                 expression,
             } => {
                 if let Some(capture) = capture {
-                    self.emit(Instruction::SaveStart { capture: *capture });
+                    self.emit(if backward {
+                        Instruction::SaveEnd { capture: *capture }
+                    } else {
+                        Instruction::SaveStart { capture: *capture }
+                    });
                 }
                 let saved_modifiers = ModifierState {
                     ignore_case: self.ignore_case,
@@ -1455,13 +1505,17 @@ impl CodeBuilder {
                     self.multiline = modifiers.multiline;
                     self.dot_all = modifiers.dot_all;
                 }
-                let result = self.compile_expression(expression);
+                let result = self.compile_expression(expression, backward);
                 self.ignore_case = saved_modifiers.ignore_case;
                 self.multiline = saved_modifiers.multiline;
                 self.dot_all = saved_modifiers.dot_all;
                 result?;
                 if let Some(capture) = capture {
-                    self.emit(Instruction::SaveEnd { capture: *capture });
+                    self.emit(if backward {
+                        Instruction::SaveStart { capture: *capture }
+                    } else {
+                        Instruction::SaveEnd { capture: *capture }
+                    });
                 }
             }
         }
@@ -1473,6 +1527,7 @@ impl CodeBuilder {
         atom: &Atom,
         quantifier: Quantifier,
         position: usize,
+        backward: bool,
     ) -> Result<(), CompileError> {
         let capture_range = atom.capture_range();
         if quantifier.maximum == Some(0) {
@@ -1480,7 +1535,13 @@ impl CodeBuilder {
             return Ok(());
         }
 
-        self.compile_required_repetitions(atom, quantifier.minimum, capture_range, position)?;
+        self.compile_required_repetitions(
+            atom,
+            quantifier.minimum,
+            capture_range,
+            position,
+            backward,
+        )?;
         match quantifier.maximum {
             Some(maximum) if maximum == quantifier.minimum => {}
             Some(maximum) => {
@@ -1490,6 +1551,7 @@ impl CodeBuilder {
                     quantifier.greedy,
                     capture_range,
                     position,
+                    backward,
                 )?;
             }
             None => {
@@ -1498,6 +1560,7 @@ impl CodeBuilder {
                     quantifier.greedy,
                     capture_range,
                     position,
+                    backward,
                 )?;
             }
         }
@@ -1510,12 +1573,13 @@ impl CodeBuilder {
         count: u32,
         capture_range: Option<(u8, u8)>,
         position: usize,
+        backward: bool,
     ) -> Result<(), CompileError> {
         match count {
             0 => {
                 self.emit_capture_reset(capture_range);
             }
-            1 => self.compile_iteration(atom, capture_range)?,
+            1 => self.compile_iteration(atom, capture_range, backward)?,
             count => {
                 let register = self.allocate_register(position)?;
                 self.emit(Instruction::SetRegister {
@@ -1523,7 +1587,7 @@ impl CodeBuilder {
                     value: count,
                 });
                 let start = self.instructions.len();
-                self.compile_iteration(atom, capture_range)?;
+                self.compile_iteration(atom, capture_range, backward)?;
                 self.emit(Instruction::Loop {
                     register,
                     target: start,
@@ -1541,6 +1605,7 @@ impl CodeBuilder {
         greedy: bool,
         capture_range: Option<(u8, u8)>,
         position: usize,
+        backward: bool,
     ) -> Result<(), CompileError> {
         if count == 0 {
             return Ok(());
@@ -1567,7 +1632,7 @@ impl CodeBuilder {
         } else {
             None
         };
-        self.compile_iteration(atom, capture_range)?;
+        self.compile_iteration(atom, capture_range, backward)?;
         if let Some(register) = advance_register {
             self.emit(Instruction::CheckAdvance { register });
         }
@@ -1594,6 +1659,7 @@ impl CodeBuilder {
         greedy: bool,
         capture_range: Option<(u8, u8)>,
         position: usize,
+        backward: bool,
     ) -> Result<(), CompileError> {
         let decision = self.emit(Instruction::Split {
             first: usize::MAX,
@@ -1607,7 +1673,7 @@ impl CodeBuilder {
         } else {
             None
         };
-        self.compile_iteration(atom, capture_range)?;
+        self.compile_iteration(atom, capture_range, backward)?;
         if let Some(register) = advance_register {
             self.emit(Instruction::CheckAdvance { register });
         }
@@ -1624,9 +1690,16 @@ impl CodeBuilder {
         &mut self,
         atom: &Atom,
         capture_range: Option<(u8, u8)>,
+        backward: bool,
     ) -> Result<(), CompileError> {
         self.emit_capture_reset(capture_range);
-        self.compile_atom(atom)
+        self.compile_atom(atom, backward)
+    }
+
+    fn emit_backward_character_guard(&mut self, backward: bool) {
+        if backward {
+            self.emit(Instruction::Prev);
+        }
     }
 
     fn emit_capture_reset(&mut self, capture_range: Option<(u8, u8)>) {
@@ -2350,7 +2423,6 @@ mod tests {
         for (pattern, feature) in [
             (r"(?<name>a)", UnsupportedFeature::NamedCapture),
             (r"\k<name>", UnsupportedFeature::Backreference),
-            (r"(?<=a)", UnsupportedFeature::Lookaround),
         ] {
             let error = compile_ascii(pattern, "u").unwrap_err();
             assert_eq!(
@@ -2429,6 +2501,115 @@ mod tests {
         assert!(negative.instructions().iter().any(|instruction| {
             matches!(instruction, Instruction::LookAheadEnd { negative: true })
         }));
+    }
+
+    #[test]
+    fn lookbehind_compiles_quickjs_reverse_instructions() {
+        let positive = compile_ascii(r"(?<=(a)b)\1", "u").unwrap();
+        assert_eq!(positive.capture_count(), 2);
+        let start = positive
+            .instructions()
+            .iter()
+            .position(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::LookAhead {
+                        negative: false,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        let end = positive
+            .instructions()
+            .iter()
+            .position(|instruction| {
+                matches!(instruction, Instruction::LookAheadEnd { negative: false })
+            })
+            .unwrap();
+        assert!(matches!(
+            positive.instructions()[start],
+            Instruction::LookAhead {
+                negative: false,
+                target
+            } if target == end + 1
+        ));
+        assert_eq!(
+            &positive.instructions()[start + 1..end],
+            &[
+                Instruction::Prev,
+                Instruction::Char {
+                    value: u32::from(b'b'),
+                    ignore_case: false,
+                },
+                Instruction::Prev,
+                Instruction::SaveEnd { capture: 1 },
+                Instruction::Prev,
+                Instruction::Char {
+                    value: u32::from(b'a'),
+                    ignore_case: false,
+                },
+                Instruction::Prev,
+                Instruction::SaveStart { capture: 1 },
+            ],
+        );
+        assert!(
+            positive.instructions()[end + 1..]
+                .iter()
+                .any(|instruction| matches!(
+                    instruction,
+                    Instruction::BackReference { captures, .. } if captures.as_ref() == [1]
+                ))
+        );
+
+        let backward_reference = compile_ascii(r"(?<=(a)\1)b", "u").unwrap();
+        assert!(
+            backward_reference
+                .instructions()
+                .iter()
+                .any(|instruction| matches!(
+                    instruction,
+                    Instruction::BackwardBackReference { captures, .. }
+                        if captures.as_ref() == [1]
+                ))
+        );
+
+        let negative = compile_ascii(r"(?<!a)b", "u").unwrap();
+        assert!(negative.instructions().iter().any(|instruction| {
+            matches!(instruction, Instruction::LookAhead { negative: true, .. })
+        }));
+        assert!(negative.instructions().iter().any(|instruction| {
+            matches!(instruction, Instruction::LookAheadEnd { negative: true })
+        }));
+    }
+
+    #[test]
+    fn lookbehind_is_never_quantifiable() {
+        for flags in ["", "u"] {
+            for pattern in [r"(?<=a)*", r"(?<!a)+", r"(?<=a)?"] {
+                let error = compile_ascii(pattern, flags).unwrap_err();
+                assert_eq!(error.kind(), &CompileErrorKind::Syntax, "{pattern}/{flags}");
+                assert_eq!(
+                    error.message(),
+                    "invalid quantifier target",
+                    "{pattern}/{flags}"
+                );
+            }
+        }
+
+        for pattern in [r"(?<=a){1}", r"(?<!a){0,2}"] {
+            let legacy = compile_ascii(pattern, "").unwrap_err();
+            assert_eq!(legacy.kind(), &CompileErrorKind::Syntax, "{pattern}");
+            assert_eq!(legacy.message(), "nothing to repeat", "{pattern}");
+
+            let unicode = compile_ascii(pattern, "u").unwrap_err();
+            assert_eq!(unicode.kind(), &CompileErrorKind::Syntax, "{pattern}");
+            assert_eq!(
+                unicode.message(),
+                "regular expression syntax error",
+                "{pattern}"
+            );
+        }
     }
 
     #[test]

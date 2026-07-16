@@ -49,6 +49,11 @@ pub enum Instruction {
         inverted: bool,
         ignore_case: bool,
     },
+    /// Move to the preceding UTF-16 code unit or Unicode code point. QuickJS
+    /// brackets ordinary consuming instructions with `prev` while compiling a
+    /// backwards lookaround body, so the existing forward matcher can be
+    /// reused without a second character-instruction family.
+    Prev,
     /// QuickJS's variable-length back-reference opcode. Numeric references
     /// currently emit one capture; the slice shape also accommodates duplicate
     /// named captures without changing the executor ABI later.
@@ -56,13 +61,20 @@ pub enum Instruction {
         captures: Box<[u8]>,
         ignore_case: bool,
     },
-    /// Enter a forward lookahead assertion. `target` is the instruction after
+    /// Compare a participating capture from right to left and leave the input
+    /// position at the start of the matched text.
+    BackwardBackReference {
+        captures: Box<[u8]>,
+        ignore_case: bool,
+    },
+    /// Enter a zero-width lookaround assertion. Body instructions encode their
+    /// own forward or backward direction; `target` is the instruction after
     /// the paired [`Instruction::LookAheadEnd`].
     LookAhead {
         negative: bool,
         target: usize,
     },
-    /// Complete the nearest lookahead assertion of the same polarity.
+    /// Complete the nearest lookaround assertion of the same polarity.
     LookAheadEnd {
         negative: bool,
     },

@@ -14151,9 +14151,7 @@ mod tests {
         }
 
         compile_unlinked_script("/(?=a)/").expect("forward lookahead literal should compile");
-        let unsupported = compile_unlinked_script("/(?<=a)/").unwrap_err();
-        assert_eq!(unsupported.kind(), ErrorKind::Unsupported);
-        assert!(unsupported.message().contains("Lookaround"));
+        compile_unlinked_script("/(?<=a)/").expect("backward lookaround literal should compile");
         let unsupported_v = compile_unlinked_script("1 / /denominator/v;").unwrap_err();
         assert_eq!(unsupported_v.kind(), ErrorKind::Unsupported);
         assert!(unsupported_v.message().contains("UnicodeSetOperation"));
