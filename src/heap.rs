@@ -350,13 +350,17 @@ pub enum AutoInitProperty {
 }
 
 /// Realm-owned identities needed to allocate and dispatch genuine RegExp
-/// objects.  QuickJS roots the constructor and initial instance shape
-/// independently from their public property graph because user code may
-/// replace or delete those properties after bootstrap.
+/// objects and their string iterators. QuickJS roots the constructor, iterator
+/// prototype, and initial instance shape independently from their public
+/// property graph because user code may replace or delete those properties
+/// after bootstrap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RegExpRealmData {
     pub prototype: ObjectId,
     pub constructor: ObjectId,
+    /// Realm-local `%RegExpStringIteratorPrototype%`, created with the RegExp
+    /// intrinsic and inheriting from this realm's `%IteratorPrototype%`.
+    pub string_iterator_prototype: ObjectId,
     pub object_shape: ShapeId,
 }
 
@@ -400,9 +404,9 @@ pub struct ContextData {
     /// ordinary object without a Date time-value slot, then uses it as the
     /// default prototype for genuine Date instances.
     pub date_prototype: Option<ObjectId>,
-    /// Realm-local RegExp constructor, ordinary prototype, and the canonical
-    /// one-slot instance shape. They are attached atomically after the cyclic
-    /// Context has been published.
+    /// Realm-local RegExp constructor, ordinary prototype, RegExp String
+    /// Iterator prototype, and canonical one-slot instance shape. They are
+    /// attached atomically after the cyclic Context has been published.
     pub regexp: Option<RegExpRealmData>,
     /// `%Function%`, published after the cyclic realm bootstrap has created
     /// `%Function.prototype%` and the global object.
@@ -802,6 +806,17 @@ pub enum ObjectPayload {
     Date(f64),
     /// QuickJS `JS_CLASS_REGEXP`'s source and compiled matcher program.
     RegExp(RegExpObjectData),
+    /// `JS_CLASS_REGEXP_STRING_ITERATOR`: the species-created matcher is the
+    /// payload's sole arena edge. The iterated UTF-16 string is reference
+    /// counted outside the arena. Completion deliberately retains both values
+    /// until finalization, matching QuickJS's class finalizer.
+    RegExpStringIterator {
+        regexp: ObjectId,
+        string: JsString,
+        global: bool,
+        full_unicode: bool,
+        done: bool,
+    },
     /// Realm global object and its hidden table of unresolved global VarRefs.
     GlobalObject {
         uninitialized_vars: ObjectId,
@@ -846,6 +861,7 @@ pub enum ObjectKind {
     Primitive,
     Date,
     RegExp,
+    RegExpStringIterator,
     GlobalObject,
     Error,
     StringIterator,
@@ -1486,6 +1502,7 @@ pub enum RegExpNativeKind {
     ToString,
     Replace,
     Match,
+    MatchAll,
     Search,
     Split,
     Source,
@@ -1577,6 +1594,7 @@ pub enum NativeFunctionId {
     StringPrototypeIncludes(StringIncludesKind),
     StringPrototypeReplace(StringReplaceKind),
     StringPrototypeMatch,
+    StringPrototypeMatchAll,
     StringPrototypeSearch,
     StringPrototypeSplit,
     MathMinMax(MathMinMaxKind),
@@ -1598,6 +1616,7 @@ pub enum NativeFunctionId {
     IteratorPrototypeToStringTagSetter,
     StringPrototypeIterator,
     StringIteratorNext,
+    RegExpStringIteratorNext,
     SymbolRegistry(SymbolRegistryKind),
     SymbolPrototypeDescription,
     BigIntAsN(BigIntAsNKind),
@@ -1929,6 +1948,7 @@ impl NativeFunctionId {
                 | RegExpNativeKind::ToString
                 | RegExpNativeKind::Replace
                 | RegExpNativeKind::Match
+                | RegExpNativeKind::MatchAll
                 | RegExpNativeKind::Search
                 | RegExpNativeKind::Split,
             )
@@ -2009,6 +2029,7 @@ impl NativeFunctionId {
             | Self::StringPrototypeIncludes(_)
             | Self::StringPrototypeReplace(_)
             | Self::StringPrototypeMatch
+            | Self::StringPrototypeMatchAll
             | Self::StringPrototypeSearch
             | Self::StringPrototypePad(_)
             | Self::StringPrototypeTrim(_)
@@ -2072,9 +2093,11 @@ impl NativeFunctionId {
             Self::IteratorPrototypeToStringTagSetter => NativeFunctionDescriptor {
                 cproto: NativeCProto::Setter,
             },
-            Self::StringIteratorNext | Self::ArrayIteratorNext => NativeFunctionDescriptor {
-                cproto: NativeCProto::IteratorNext,
-            },
+            Self::StringIteratorNext | Self::RegExpStringIteratorNext | Self::ArrayIteratorNext => {
+                NativeFunctionDescriptor {
+                    cproto: NativeCProto::IteratorNext,
+                }
+            }
             Self::FunctionPrototypePosition(_) | Self::RegExp(RegExpNativeKind::Flag(_)) => {
                 NativeFunctionDescriptor {
                     cproto: NativeCProto::GetterMagic,
@@ -2300,6 +2323,35 @@ impl ObjectData {
             is_constructor: false,
             kind: ObjectKind::RegExp,
             payload: ObjectPayload::RegExp(RegExpObjectData::Compiled { pattern, program }),
+        }
+    }
+
+    /// Construct a branded RegExp String Iterator over one species-created
+    /// matcher. The matcher and input string remain retained after completion;
+    /// only finalization releases them in pinned QuickJS.
+    #[must_use]
+    pub const fn regexp_string_iterator(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        regexp: ObjectId,
+        string: JsString,
+        global: bool,
+        full_unicode: bool,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::RegExpStringIterator,
+            payload: ObjectPayload::RegExpStringIterator {
+                regexp,
+                string,
+                global,
+                full_unicode,
+                done: false,
+            },
         }
     }
 
@@ -2823,6 +2875,7 @@ impl Heap {
             | ObjectPayload::Primitive(_)
             | ObjectPayload::Date(_)
             | ObjectPayload::RegExp(_)
+            | ObjectPayload::RegExpStringIterator { .. }
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }
@@ -3000,12 +3053,13 @@ impl Heap {
     }
 
     /// Atomically publish the realm's RegExp intrinsic roots after its native
-    /// constructor, ordinary prototype, and canonical instance shape exist.
+    /// constructor, ordinary prototype, RegExp String Iterator prototype, and
+    /// canonical instance shape exist.
     ///
     /// `last_index_atom` is validation-only: the shape already owns its atom
     /// edge. Passing it explicitly lets this heap layer prove that the sole
     /// instance slot really is `lastIndex` without depending on `AtomTable`
-    /// string lookup. The three GC edges are retained as one transaction
+    /// string lookup. The four GC edges are retained as one transaction
     /// before the Context is mutated.
     pub(crate) fn attach_regexp_intrinsics(
         &mut self,
@@ -3019,6 +3073,7 @@ impl Heap {
                 "context already has RegExp intrinsic roots",
             ));
         }
+        let iterator_prototype = context.iterator_prototype;
 
         let constructor = self.object(regexp.constructor)?;
         if !constructor.is_constructor
@@ -3047,6 +3102,20 @@ impl Heap {
             ));
         }
 
+        let string_iterator_prototype = self.object(regexp.string_iterator_prototype)?;
+        if string_iterator_prototype.kind != ObjectKind::Ordinary
+            || !matches!(string_iterator_prototype.payload, ObjectPayload::Ordinary)
+        {
+            return Err(HeapError::Invariant(
+                "RegExp String Iterator prototype root is not an ordinary object",
+            ));
+        }
+        if self.shape(string_iterator_prototype.shape)?.prototype() != Some(iterator_prototype) {
+            return Err(HeapError::Invariant(
+                "RegExp String Iterator prototype does not inherit from the realm's Iterator prototype",
+            ));
+        }
+
         let object_shape = self.shape(regexp.object_shape)?;
         if object_shape.prototype() != Some(regexp.prototype) {
             return Err(HeapError::Invariant(
@@ -3069,6 +3138,7 @@ impl Heap {
         let edges = [
             RawId::Object(regexp.prototype),
             RawId::Object(regexp.constructor),
+            RawId::Object(regexp.string_iterator_prototype),
             RawId::Shape(regexp.object_shape),
         ];
         self.retain_edges_transactionally(&edges)?;
@@ -3679,6 +3749,41 @@ impl Heap {
             ));
         };
         Ok(std::mem::replace(current, replacement))
+    }
+
+    /// Snapshot one branded RegExp String Iterator's retained matcher, input
+    /// string, cached flag modes, and completion state.
+    pub fn regexp_string_iterator_state(
+        &self,
+        id: ObjectId,
+    ) -> Result<(ObjectId, JsString, bool, bool, bool), HeapError> {
+        let ObjectPayload::RegExpStringIterator {
+            regexp,
+            string,
+            global,
+            full_unicode,
+            done,
+        } = &self.object(id)?.payload
+        else {
+            return Err(HeapError::Invariant(
+                "RegExp String Iterator state reached an object with the wrong class",
+            ));
+        };
+        Ok((*regexp, string.clone(), *global, *full_unicode, *done))
+    }
+
+    /// Mark one branded RegExp String Iterator complete without releasing its
+    /// matcher or input string. Pinned QuickJS retains both payload values until
+    /// the iterator object itself is finalized.
+    pub fn finish_regexp_string_iterator(&mut self, id: ObjectId) -> Result<(), HeapError> {
+        let ObjectPayload::RegExpStringIterator { done, .. } = &mut self.object_mut(id)?.payload
+        else {
+            return Err(HeapError::Invariant(
+                "RegExp String Iterator completion reached an object with the wrong class",
+            ));
+        };
+        *done = true;
+        Ok(())
     }
 
     /// Snapshot one branded Array Iterator's live target, cursor, and mode.
@@ -4298,6 +4403,10 @@ impl Heap {
                 | (ObjectKind::Primitive, ObjectPayload::Primitive(_))
                 | (ObjectKind::Date, ObjectPayload::Date(_))
                 | (ObjectKind::RegExp, ObjectPayload::RegExp(_))
+                | (
+                    ObjectKind::RegExpStringIterator,
+                    ObjectPayload::RegExpStringIterator { .. }
+                )
                 | (ObjectKind::GlobalObject, ObjectPayload::GlobalObject { .. })
                 | (ObjectKind::Error, ObjectPayload::Error)
                 | (
@@ -4761,6 +4870,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
         | ObjectPayload::NativeFunction { .. } => 0,
+        ObjectPayload::RegExpStringIterator { .. } => 1,
         ObjectPayload::BoundFunction { arguments, .. } => arguments.len().saturating_add(2),
         ObjectPayload::BytecodeFunction { closure_slots, .. } => closure_slots.len(),
     };
@@ -4784,6 +4894,9 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::RegExp(_)
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. } => {}
+        ObjectPayload::RegExpStringIterator { regexp, .. } => {
+            edges.push(RawId::Object(*regexp));
+        }
         ObjectPayload::ArrayIterator { object, .. } => {
             edges.extend(object.map(RawId::Object));
         }
@@ -4879,7 +4992,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
         12usize
             .saturating_add(PrimitiveKind::COUNT)
             .saturating_add(NativeErrorKind::COUNT)
-            .saturating_add(context.regexp.map_or(0, |_| 3))
+            .saturating_add(context.regexp.map_or(0, |_| 4))
             .saturating_add(context.global_objects.len())
             .saturating_add(context.intrinsics.len())
             .saturating_add(context.initial_shapes.len()),
@@ -4902,6 +5015,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     if let Some(regexp) = context.regexp {
         edges.push(RawId::Object(regexp.prototype));
         edges.push(RawId::Object(regexp.constructor));
+        edges.push(RawId::Object(regexp.string_iterator_prototype));
         edges.push(RawId::Shape(regexp.object_shape));
     }
     edges.extend(context.function_constructor.map(RawId::Object));
@@ -4981,6 +5095,7 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
         | ObjectPayload::ForInIterator(_)
         | ObjectPayload::Date(_)
         | ObjectPayload::RegExp(_)
+        | ObjectPayload::RegExpStringIterator { .. }
         | ObjectPayload::GlobalObject { .. }
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
@@ -5526,6 +5641,66 @@ mod tests {
     }
 
     #[test]
+    fn regexp_string_iterator_retains_matcher_after_completion_until_finalization() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let regexp = leaf(&mut heap, shape);
+        let string = JsString::from_static("input");
+        let iterator = heap
+            .allocate_object(ObjectData::regexp_string_iterator(
+                shape,
+                Vec::new(),
+                regexp,
+                string.clone(),
+                true,
+                true,
+            ))
+            .unwrap();
+
+        assert_eq!(heap.object_strong_count(regexp), Ok(2));
+        heap.release_object(regexp).unwrap();
+        assert_eq!(heap.object_strong_count(regexp), Ok(1));
+        assert_eq!(
+            heap.regexp_string_iterator_state(iterator),
+            Ok((regexp, string, true, true, false))
+        );
+        assert_eq!(
+            object_edges(heap.object(iterator).unwrap()),
+            vec![RawId::Shape(shape), RawId::Object(regexp)]
+        );
+
+        heap.finish_regexp_string_iterator(iterator).unwrap();
+        assert_eq!(
+            heap.regexp_string_iterator_state(iterator),
+            Ok((regexp, JsString::from_static("input"), true, true, true))
+        );
+        assert_eq!(heap.object_strong_count(regexp), Ok(1));
+        heap.finish_regexp_string_iterator(iterator).unwrap();
+        assert_eq!(heap.object_strong_count(regexp), Ok(1));
+
+        let ordinary = leaf(&mut heap, shape);
+        assert!(matches!(
+            heap.regexp_string_iterator_state(ordinary),
+            Err(HeapError::Invariant(
+                "RegExp String Iterator state reached an object with the wrong class"
+            ))
+        ));
+        assert!(matches!(
+            heap.finish_regexp_string_iterator(ordinary),
+            Err(HeapError::Invariant(
+                "RegExp String Iterator completion reached an object with the wrong class"
+            ))
+        ));
+        heap.release_object(ordinary).unwrap();
+
+        let cleanup = heap.release_object(iterator).unwrap();
+        assert_eq!(cleanup.finalized_objects, 2);
+        assert!(matches!(heap.object(regexp), Err(HeapError::Stale { .. })));
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
     fn array_iterator_payload_retains_its_source_until_completion() {
         let mut heap = Heap::new();
         let shape = empty_shape(&mut heap);
@@ -5710,6 +5885,7 @@ mod tests {
             NativeFunctionId::StringPrototypeReplace(StringReplaceKind::Replace),
             NativeFunctionId::StringPrototypeReplace(StringReplaceKind::ReplaceAll),
             NativeFunctionId::StringPrototypeMatch,
+            NativeFunctionId::StringPrototypeMatchAll,
             NativeFunctionId::StringPrototypeSearch,
             NativeFunctionId::StringPrototypeTrim(StringTrimKind::Both),
             NativeFunctionId::StringPrototypeTrim(StringTrimKind::End),
@@ -5728,6 +5904,12 @@ mod tests {
         );
         assert_eq!(
             NativeFunctionId::StringIteratorNext.descriptor().cproto,
+            NativeCProto::IteratorNext
+        );
+        assert_eq!(
+            NativeFunctionId::RegExpStringIteratorNext
+                .descriptor()
+                .cproto,
             NativeCProto::IteratorNext
         );
         assert!(!NativeCProto::IteratorNext.default_is_constructor());
@@ -6208,6 +6390,7 @@ mod tests {
             NativeFunctionId::RegExp(RegExpNativeKind::ToString),
             NativeFunctionId::RegExp(RegExpNativeKind::Replace),
             NativeFunctionId::RegExp(RegExpNativeKind::Match),
+            NativeFunctionId::RegExp(RegExpNativeKind::MatchAll),
             NativeFunctionId::RegExp(RegExpNativeKind::Search),
             NativeFunctionId::RegExp(RegExpNativeKind::Split),
         ] {
@@ -6265,6 +6448,7 @@ mod tests {
         realm: ContextId,
         prototype_shape: ShapeId,
         prototype: ObjectId,
+        string_iterator_prototype: ObjectId,
         function_shape: ShapeId,
         constructor: ObjectId,
         object_shape: ShapeId,
@@ -6276,6 +6460,7 @@ mod tests {
             RegExpRealmData {
                 prototype: self.prototype,
                 constructor: self.constructor,
+                string_iterator_prototype: self.string_iterator_prototype,
                 object_shape: self.object_shape,
             }
         }
@@ -6283,6 +6468,9 @@ mod tests {
         fn dispose(mut self) -> GcStats {
             self.heap.release_shape(self.object_shape).unwrap();
             self.heap.release_object(self.prototype).unwrap();
+            self.heap
+                .release_object(self.string_iterator_prototype)
+                .unwrap();
             self.heap.release_object(self.constructor).unwrap();
             self.heap.release_context(self.realm).unwrap();
             let stats = self.heap.run_gc().unwrap();
@@ -6309,6 +6497,9 @@ mod tests {
             .allocate_shape(Shape::new(Some(root), []).unwrap())
             .unwrap();
         let prototype = heap
+            .allocate_object(ObjectData::ordinary(prototype_shape, Vec::new()))
+            .unwrap();
+        let string_iterator_prototype = heap
             .allocate_object(ObjectData::ordinary(prototype_shape, Vec::new()))
             .unwrap();
         let function_shape = heap
@@ -6343,6 +6534,7 @@ mod tests {
             realm,
             prototype_shape,
             prototype,
+            string_iterator_prototype,
             function_shape,
             constructor,
             object_shape,
@@ -6358,6 +6550,10 @@ mod tests {
         let constructor_strong = fixture
             .heap
             .object_strong_count(fixture.constructor)
+            .unwrap();
+        let string_iterator_prototype_strong = fixture
+            .heap
+            .object_strong_count(fixture.string_iterator_prototype)
             .unwrap();
         let object_shape_strong = fixture
             .heap
@@ -6389,6 +6585,13 @@ mod tests {
                 .unwrap(),
             constructor_strong
         );
+        assert_eq!(
+            fixture
+                .heap
+                .object_strong_count(fixture.string_iterator_prototype)
+                .unwrap(),
+            string_iterator_prototype_strong
+        );
         fixture
             .heap
             .live_node_mut(RawId::Shape(fixture.object_shape))
@@ -6417,6 +6620,13 @@ mod tests {
         assert_eq!(
             fixture
                 .heap
+                .object_strong_count(fixture.string_iterator_prototype)
+                .unwrap(),
+            string_iterator_prototype_strong + 1
+        );
+        assert_eq!(
+            fixture
+                .heap
                 .shape_strong_count(fixture.object_shape)
                 .unwrap(),
             object_shape_strong + 1
@@ -6440,7 +6650,7 @@ mod tests {
 
         let stats = fixture.dispose();
         assert_eq!(stats.cleanup.finalized_contexts, 1);
-        assert_eq!(stats.cleanup.finalized_objects, 2);
+        assert_eq!(stats.cleanup.finalized_objects, 3);
         assert_eq!(stats.cleanup.finalized_shapes, 1);
     }
 
@@ -6516,6 +6726,37 @@ mod tests {
                 .is_err()
         );
         fixture.heap.object_mut(fixture.prototype).unwrap().payload = ObjectPayload::Ordinary;
+
+        fixture
+            .heap
+            .object_mut(fixture.string_iterator_prototype)
+            .unwrap()
+            .payload = ObjectPayload::RegExp(RegExpObjectData::Uninitialized);
+        assert!(
+            fixture
+                .heap
+                .attach_regexp_intrinsics(fixture.realm, realm_data, fixture.last_index)
+                .is_err()
+        );
+        fixture
+            .heap
+            .object_mut(fixture.string_iterator_prototype)
+            .unwrap()
+            .payload = ObjectPayload::Ordinary;
+
+        assert!(
+            fixture
+                .heap
+                .attach_regexp_intrinsics(
+                    fixture.realm,
+                    RegExpRealmData {
+                        string_iterator_prototype: fixture.root,
+                        ..realm_data
+                    },
+                    fixture.last_index,
+                )
+                .is_err()
+        );
 
         let wrong_prototype_shape = fixture
             .heap

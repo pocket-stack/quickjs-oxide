@@ -1029,7 +1029,8 @@ impl VmHost for RuntimeVmHost {
             | ObjectPayload::Primitive(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
-            | ObjectPayload::StringIterator { .. } => "object",
+            | ObjectPayload::StringIterator { .. }
+            | ObjectPayload::RegExpStringIterator { .. } => "object",
         })
     }
 

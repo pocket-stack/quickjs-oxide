@@ -171,8 +171,14 @@ impl Runtime {
             1,
             1,
         )?;
-        // QuickJS has matchAll between match and search. It remains
-        // unpublished while both linked protocols keep their pinned order.
+        self.define_native_builtin_auto_init(
+            string_prototype,
+            realm,
+            NativeFunctionId::StringPrototypeMatchAll,
+            "matchAll",
+            1,
+            1,
+        )?;
         self.define_native_builtin_auto_init(
             string_prototype,
             realm,
@@ -688,6 +694,7 @@ impl Runtime {
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }
+            | ObjectPayload::RegExpStringIterator { .. }
             | ObjectPayload::NativeFunction { .. }
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. } => false,

@@ -43,6 +43,7 @@ impl Runtime {
             | RegExpNativeKind::ToString
             | RegExpNativeKind::Replace
             | RegExpNativeKind::Match
+            | RegExpNativeKind::MatchAll
             | RegExpNativeKind::Search
             | RegExpNativeKind::Split => Err(RuntimeError::Invariant(
                 "non-exec RegExp selector reached exec dispatch",
@@ -132,6 +133,7 @@ impl Runtime {
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }
+                | ObjectPayload::RegExpStringIterator { .. }
                 | ObjectPayload::NativeFunction { .. }
                 | ObjectPayload::BoundFunction { .. }
                 | ObjectPayload::BytecodeFunction { .. } => None,

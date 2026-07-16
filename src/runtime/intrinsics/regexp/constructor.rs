@@ -242,6 +242,7 @@ impl Runtime {
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }
+            | ObjectPayload::RegExpStringIterator { .. }
             | ObjectPayload::NativeFunction { .. }
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. } => None,
@@ -349,6 +350,25 @@ impl Runtime {
         realm: ContextId,
         pattern: Value,
     ) -> Result<Completion, RuntimeError> {
+        self.construct_intrinsic_regexp_arguments(realm, &[pattern])
+    }
+
+    /// MatchAll's fallback uses the same retained constructor root as the
+    /// one-argument String protocols but supplies the literal global flag.
+    pub(in crate::runtime) fn construct_intrinsic_regexp_with_flags(
+        &self,
+        realm: ContextId,
+        pattern: Value,
+        flags: Value,
+    ) -> Result<Completion, RuntimeError> {
+        self.construct_intrinsic_regexp_arguments(realm, &[pattern, flags])
+    }
+
+    fn construct_intrinsic_regexp_arguments(
+        &self,
+        realm: ContextId,
+        arguments: &[Value],
+    ) -> Result<Completion, RuntimeError> {
         let constructor_id = self.regexp_realm_data(realm)?.constructor;
         let constructor = ObjectRef::from_borrowed_handle(self.clone(), constructor_id)?;
         let callable = self
@@ -356,7 +376,7 @@ impl Runtime {
             .ok_or(RuntimeError::Invariant(
                 "realm RegExp constructor root was not callable",
             ))?;
-        self.construct_internal(realm, &callable, &callable, &[pattern])
+        self.construct_internal(realm, &callable, &callable, arguments)
     }
 
     /// QuickJS `OP_regexp`: instantiate one already-compiled literal using

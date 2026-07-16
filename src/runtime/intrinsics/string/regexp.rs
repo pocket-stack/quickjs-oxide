@@ -5,6 +5,7 @@ use super::*;
 #[derive(Clone, Copy)]
 enum StringRegExpProtocol {
     Match,
+    MatchAll,
     Search,
 }
 
@@ -12,6 +13,7 @@ impl StringRegExpProtocol {
     const fn symbol(self) -> WellKnownSymbol {
         match self {
             Self::Match => WellKnownSymbol::Match,
+            Self::MatchAll => WellKnownSymbol::MatchAll,
             Self::Search => WellKnownSymbol::Search,
         }
     }
@@ -19,6 +21,7 @@ impl StringRegExpProtocol {
     const fn invocation_invariant(self) -> &'static str {
         match self {
             Self::Match => "String match did not receive a generic-magic invocation",
+            Self::MatchAll => "String matchAll did not receive a generic-magic invocation",
             Self::Search => "String search did not receive a generic-magic invocation",
         }
     }
@@ -26,6 +29,7 @@ impl StringRegExpProtocol {
     const fn argument_invariant(self) -> &'static str {
         match self {
             Self::Match => "String match pattern argv was not padded",
+            Self::MatchAll => "String matchAll pattern argv was not padded",
             Self::Search => "String search pattern argv was not padded",
         }
     }
@@ -50,7 +54,22 @@ impl Runtime {
         self.call_string_regexp_protocol(realm, invocation, arguments, StringRegExpProtocol::Search)
     }
 
-    /// Rust port of the `Symbol.match` and `Symbol.search` branches in pinned
+    pub(in crate::runtime) fn call_string_prototype_match_all(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        self.call_string_regexp_protocol(
+            realm,
+            invocation,
+            arguments,
+            StringRegExpProtocol::MatchAll,
+        )
+    }
+
+    /// Rust port of the `Symbol.match`, `Symbol.matchAll`, and `Symbol.search`
+    /// branches in pinned
     /// QuickJS `js_string_match`.
     ///
     /// Object patterns may intercept the operation before receiver coercion.
@@ -86,6 +105,12 @@ impl Runtime {
                 Completion::Return(value) => value,
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
             };
+            if matches!(protocol, StringRegExpProtocol::MatchAll)
+                && let Some(value) =
+                    self.check_string_match_all_global(realm, pattern_object, pattern)?
+            {
+                return Ok(Completion::Throw(value));
+            }
             if !matches!(method, Value::Undefined | Value::Null) {
                 return self.call_string_regexp_method(
                     realm,
@@ -100,7 +125,16 @@ impl Runtime {
             NativeConversion::Value(value) => value,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let regexp = match self.construct_intrinsic_regexp(realm, pattern.clone())? {
+        let constructed = if matches!(protocol, StringRegExpProtocol::MatchAll) {
+            self.construct_intrinsic_regexp_with_flags(
+                realm,
+                pattern.clone(),
+                Value::String(JsString::from_static("g")),
+            )?
+        } else {
+            self.construct_intrinsic_regexp(realm, pattern.clone())?
+        };
+        let regexp = match constructed {
             Completion::Return(Value::Object(value)) => value,
             Completion::Return(_) => {
                 return Err(RuntimeError::Invariant(
@@ -114,6 +148,47 @@ impl Runtime {
             Completion::Throw(value) => return Ok(Completion::Throw(value)),
         };
         self.call_string_regexp_method(realm, regexp, method, &[Value::String(source)])
+    }
+
+    /// Pinned QuickJS `check_regexp_g_flag`, called only after the
+    /// `Symbol.matchAll` method lookup has completed.
+    fn check_string_match_all_global(
+        &self,
+        realm: ContextId,
+        pattern_object: &ObjectRef,
+        pattern: &Value,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let is_regexp = match self.native_is_regexp(realm, pattern)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Some(value)),
+        };
+        if !is_regexp {
+            return Ok(None);
+        }
+        let flags_key = self.intern_property_key("flags")?;
+        let flags = match self.get_property_in_realm(realm, pattern_object, &flags_key)? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => return Ok(Some(value)),
+        };
+        if matches!(flags, Value::Undefined | Value::Null) {
+            return Ok(Some(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "cannot convert to object",
+            )?));
+        }
+        let flags = match self.native_to_js_string(realm, &flags)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Some(value)),
+        };
+        if !flags.utf16_units().any(|unit| unit == u16::from(b'g')) {
+            return Ok(Some(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "regexp must have the 'g' flag",
+            )?));
+        }
+        Ok(None)
     }
 
     pub(super) fn call_string_regexp_method(

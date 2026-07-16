@@ -29,6 +29,7 @@ impl Runtime {
             | RegExpNativeKind::ToString
             | RegExpNativeKind::Replace
             | RegExpNativeKind::Match
+            | RegExpNativeKind::MatchAll
             | RegExpNativeKind::Search
             | RegExpNativeKind::Split => Err(RuntimeError::Invariant(
                 "non-accessor RegExp selector reached accessor dispatch",
@@ -123,6 +124,7 @@ impl Runtime {
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }
+                | ObjectPayload::RegExpStringIterator { .. }
                 | ObjectPayload::NativeFunction { .. }
                 | ObjectPayload::BoundFunction { .. }
                 | ObjectPayload::BytecodeFunction { .. } => None,
@@ -179,6 +181,7 @@ impl Runtime {
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }
+                | ObjectPayload::RegExpStringIterator { .. }
                 | ObjectPayload::NativeFunction { .. }
                 | ObjectPayload::BoundFunction { .. }
                 | ObjectPayload::BytecodeFunction { .. } => None,

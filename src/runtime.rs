@@ -928,6 +928,7 @@ impl Runtime {
             realm,
             &function_prototype,
             &object_prototype,
+            &iterator_prototype,
             &global_object,
         )
         .expect("RegExp intrinsic initialization must succeed");
@@ -4699,7 +4700,8 @@ impl Runtime {
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
-                | ObjectPayload::StringIterator { .. } => {
+                | ObjectPayload::StringIterator { .. }
+                | ObjectPayload::RegExpStringIterator { .. } => {
                     return Err(RuntimeError::Engine(Error::new(
                         ErrorKind::Type,
                         "not a function",
@@ -4753,7 +4755,8 @@ impl Runtime {
             | ObjectPayload::Primitive(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
-            | ObjectPayload::StringIterator { .. } => Err(RuntimeError::Invariant(
+            | ObjectPayload::StringIterator { .. }
+            | ObjectPayload::RegExpStringIterator { .. } => Err(RuntimeError::Invariant(
                 "validated callable no longer has a callable payload",
             )),
         }
@@ -5089,7 +5092,8 @@ impl Runtime {
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
-                | ObjectPayload::StringIterator { .. } => {
+                | ObjectPayload::StringIterator { .. }
+                | ObjectPayload::RegExpStringIterator { .. } => {
                     return Err(RuntimeError::Engine(Error::new(
                         ErrorKind::Type,
                         "not a function",
@@ -6140,6 +6144,7 @@ impl Runtime {
                         | ObjectPayload::GlobalObject { .. }
                         | ObjectPayload::Error
                         | ObjectPayload::StringIterator { .. }
+                        | ObjectPayload::RegExpStringIterator { .. }
                         | ObjectPayload::BoundFunction { .. }
                         | ObjectPayload::NativeFunction { .. } => false,
                     }
@@ -6441,7 +6446,8 @@ impl Runtime {
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
-                | ObjectPayload::StringIterator { .. } => (false, None, FunctionKind::Normal),
+                | ObjectPayload::StringIterator { .. }
+                | ObjectPayload::RegExpStringIterator { .. } => (false, None, FunctionKind::Normal),
             }
         };
         if !is_callable {
@@ -6652,7 +6658,8 @@ impl Runtime {
                         | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
                         | ObjectPayload::Error
-                        | ObjectPayload::StringIterator { .. } => {
+                        | ObjectPayload::StringIterator { .. }
+                        | ObjectPayload::RegExpStringIterator { .. } => {
                             return Err(RuntimeError::Invariant(
                                 "ordinary instanceof received a non-callable target",
                             ));
@@ -6753,6 +6760,7 @@ impl Runtime {
                         | ObjectPayload::GlobalObject { .. }
                         | ObjectPayload::Error
                         | ObjectPayload::StringIterator { .. }
+                        | ObjectPayload::RegExpStringIterator { .. }
                         | ObjectPayload::NativeFunction { .. }
                         | ObjectPayload::BoundFunction { .. }
                         | ObjectPayload::BytecodeFunction { .. } => None,
@@ -7120,6 +7128,7 @@ impl Runtime {
                     | ObjectPayload::GlobalObject { .. }
                     | ObjectPayload::Error
                     | ObjectPayload::StringIterator { .. }
+                    | ObjectPayload::RegExpStringIterator { .. }
                     | ObjectPayload::NativeFunction { .. }
                     | ObjectPayload::BoundFunction { .. }
                     | ObjectPayload::BytecodeFunction { .. } => None,
@@ -8184,6 +8193,7 @@ impl Runtime {
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }
+                | ObjectPayload::RegExpStringIterator { .. }
                 | ObjectPayload::NativeFunction { .. }
                 | ObjectPayload::BoundFunction { .. }
                 | ObjectPayload::BytecodeFunction { .. } => None,

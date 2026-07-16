@@ -157,6 +157,7 @@ impl Runtime {
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }
+            | ObjectPayload::RegExpStringIterator { .. }
             | ObjectPayload::NativeFunction { .. }
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. } => return Ok(None),

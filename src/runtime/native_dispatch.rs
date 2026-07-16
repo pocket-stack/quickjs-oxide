@@ -356,6 +356,9 @@ impl Runtime {
             NativeFunctionId::ArrayIteratorNext => {
                 self.call_array_iterator_next_raw(realm, invocation)
             }
+            NativeFunctionId::RegExpStringIteratorNext => {
+                self.call_regexp_string_iterator_next_raw(realm, invocation)
+            }
             _ => Err(RuntimeError::Invariant(
                 "IteratorNext cproto has no raw native dispatcher",
             )),
@@ -596,6 +599,9 @@ impl Runtime {
             NativeFunctionId::StringPrototypeMatch => {
                 self.call_string_prototype_match(realm, invocation, arguments)
             }
+            NativeFunctionId::StringPrototypeMatchAll => {
+                self.call_string_prototype_match_all(realm, invocation, arguments)
+            }
             NativeFunctionId::StringPrototypeSearch => {
                 self.call_string_prototype_search(realm, invocation, arguments)
             }
@@ -650,6 +656,9 @@ impl Runtime {
             }
             NativeFunctionId::StringIteratorNext => {
                 self.call_string_iterator_next(realm, invocation)
+            }
+            NativeFunctionId::RegExpStringIteratorNext => {
+                self.call_regexp_string_iterator_next(realm, invocation)
             }
             NativeFunctionId::SymbolRegistry(kind) => {
                 self.call_symbol_registry(realm, kind, invocation, arguments)

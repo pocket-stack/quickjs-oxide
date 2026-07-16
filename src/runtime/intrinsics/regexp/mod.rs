@@ -10,6 +10,7 @@
 mod compile;
 mod constructor;
 mod exec;
+mod match_all;
 mod match_protocol;
 mod prototype;
 mod replace;
@@ -34,9 +35,37 @@ impl Runtime {
         realm: ContextId,
         function_prototype: &ObjectRef,
         object_prototype: &ObjectRef,
+        iterator_prototype: &ObjectRef,
         global_object: &ObjectRef,
     ) -> Result<(), RuntimeError> {
         let regexp_prototype = self.new_object(Some(object_prototype))?;
+        let regexp_string_iterator_prototype = self.new_object(Some(iterator_prototype))?;
+        self.define_native_builtin_auto_init(
+            &regexp_string_iterator_prototype,
+            realm,
+            NativeFunctionId::RegExpStringIteratorNext,
+            "next",
+            0,
+            0,
+        )?;
+        let iterator_tag = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));
+        if !self.define_own_property(
+            &regexp_string_iterator_prototype,
+            &iterator_tag,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(Value::String(JsString::from_static(
+                    "RegExp String Iterator",
+                ))),
+                writable: DescriptorField::Present(false),
+                enumerable: DescriptorField::Present(false),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )? {
+            return Err(RuntimeError::Invariant(
+                "RegExp String Iterator toStringTag definition was rejected",
+            ));
+        }
         // Preserve pinned source-table order.  OrdinaryOwnPropertyKeys later
         // performs its own integer/String/Symbol grouping.
         for (kind, property_name, getter_name) in [
@@ -104,6 +133,17 @@ impl Runtime {
             &match_key,
             NativeFunctionId::RegExp(RegExpNativeKind::Match),
             "[Symbol.match]",
+            1,
+            1,
+            PropertyFlags::data(true, false, true),
+        )?;
+        let match_all_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::MatchAll));
+        self.define_native_builtin_auto_init_with_key(
+            &regexp_prototype,
+            realm,
+            &match_all_key,
+            NativeFunctionId::RegExp(RegExpNativeKind::MatchAll),
+            "[Symbol.matchAll]",
             1,
             1,
             PropertyFlags::data(true, false, true),
@@ -198,6 +238,7 @@ impl Runtime {
                 prototype: regexp_prototype.object_id(),
                 constructor: constructor.as_object().object_id(),
                 object_shape,
+                string_iterator_prototype: regexp_string_iterator_prototype.object_id(),
             },
             last_index.atom(),
         );
@@ -235,6 +276,9 @@ impl Runtime {
                 self.call_regexp_symbol_replace(realm, invocation, arguments)
             }
             RegExpNativeKind::Match => self.call_regexp_symbol_match(realm, invocation, arguments),
+            RegExpNativeKind::MatchAll => {
+                self.call_regexp_symbol_match_all(realm, invocation, arguments)
+            }
             RegExpNativeKind::Search => {
                 self.call_regexp_symbol_search(realm, invocation, arguments)
             }

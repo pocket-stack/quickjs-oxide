@@ -823,9 +823,9 @@ impl Runtime {
                 ObjectPayload::Ordinary
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::GlobalObject { .. } => JsString::from_static("Object"),
-                ObjectPayload::ArrayIterator { .. } | ObjectPayload::StringIterator { .. } => {
-                    JsString::from_static("Object")
-                }
+                ObjectPayload::ArrayIterator { .. }
+                | ObjectPayload::StringIterator { .. }
+                | ObjectPayload::RegExpStringIterator { .. } => JsString::from_static("Object"),
             }
         };
         let to_string_tag = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));

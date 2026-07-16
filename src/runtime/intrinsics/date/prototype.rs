@@ -111,7 +111,8 @@ impl Runtime {
                 | ObjectPayload::BytecodeFunction { .. }
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
-                | ObjectPayload::StringIterator { .. } => None,
+                | ObjectPayload::StringIterator { .. }
+                | ObjectPayload::RegExpStringIterator { .. } => None,
             }
         };
         let Some(value) = value else {

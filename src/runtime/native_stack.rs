@@ -57,6 +57,7 @@ impl Runtime {
             // recursively entering these methods.
             NativeFunctionId::StringPrototypeIncludes(_)
             | NativeFunctionId::StringPrototypeMatch
+            | NativeFunctionId::StringPrototypeMatchAll
             | NativeFunctionId::StringPrototypeSearch
             | NativeFunctionId::StringPrototypeSplit
             | NativeFunctionId::StringPrototypeSubrange(_)
@@ -66,8 +67,10 @@ impl Runtime {
             | NativeFunctionId::StringPrototypeCase(_)
             | NativeFunctionId::StringPrototypeCreateHtml(_)
             | NativeFunctionId::RegExp(RegExpNativeKind::Match)
+            | NativeFunctionId::RegExp(RegExpNativeKind::MatchAll)
             | NativeFunctionId::RegExp(RegExpNativeKind::Search)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Split) => 16,
+            | NativeFunctionId::RegExp(RegExpNativeKind::Split)
+            | NativeFunctionId::RegExpStringIteratorNext => 16,
             _ => 8,
         };
         let active_native_cost = self
@@ -126,6 +129,7 @@ impl Runtime {
             // while leaving weighted room for one callback leaf.
             NativeFunctionId::StringPrototypeIncludes(_)
             | NativeFunctionId::StringPrototypeMatch
+            | NativeFunctionId::StringPrototypeMatchAll
             | NativeFunctionId::StringPrototypeSearch
             | NativeFunctionId::StringPrototypeSplit
             | NativeFunctionId::StringPrototypeSubrange(_)
@@ -135,8 +139,10 @@ impl Runtime {
             | NativeFunctionId::StringPrototypeCase(_)
             | NativeFunctionId::StringPrototypeCreateHtml(_)
             | NativeFunctionId::RegExp(RegExpNativeKind::Match)
+            | NativeFunctionId::RegExp(RegExpNativeKind::MatchAll)
             | NativeFunctionId::RegExp(RegExpNativeKind::Search)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Split) => 4,
+            | NativeFunctionId::RegExp(RegExpNativeKind::Split)
+            | NativeFunctionId::RegExpStringIteratorNext => 4,
             // ToString, ToNumber and String.raw's property/conversion path can
             // all re-enter any other member of this constructor family.
             NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
@@ -201,6 +207,7 @@ impl Runtime {
             ),
             NativeFunctionId::StringPrototypeIncludes(_)
             | NativeFunctionId::StringPrototypeMatch
+            | NativeFunctionId::StringPrototypeMatchAll
             | NativeFunctionId::StringPrototypeSearch
             | NativeFunctionId::StringPrototypeSplit
             | NativeFunctionId::StringPrototypeSubrange(_)
@@ -210,11 +217,14 @@ impl Runtime {
             | NativeFunctionId::StringPrototypeCase(_)
             | NativeFunctionId::StringPrototypeCreateHtml(_)
             | NativeFunctionId::RegExp(RegExpNativeKind::Match)
+            | NativeFunctionId::RegExp(RegExpNativeKind::MatchAll)
             | NativeFunctionId::RegExp(RegExpNativeKind::Search)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Split) => matches!(
+            | NativeFunctionId::RegExp(RegExpNativeKind::Split)
+            | NativeFunctionId::RegExpStringIteratorNext => matches!(
                 candidate,
                 NativeFunctionId::StringPrototypeIncludes(_)
                     | NativeFunctionId::StringPrototypeMatch
+                    | NativeFunctionId::StringPrototypeMatchAll
                     | NativeFunctionId::StringPrototypeSearch
                     | NativeFunctionId::StringPrototypeSplit
                     | NativeFunctionId::StringPrototypeSubrange(_)
@@ -224,8 +234,10 @@ impl Runtime {
                     | NativeFunctionId::StringPrototypeCase(_)
                     | NativeFunctionId::StringPrototypeCreateHtml(_)
                     | NativeFunctionId::RegExp(RegExpNativeKind::Match)
+                    | NativeFunctionId::RegExp(RegExpNativeKind::MatchAll)
                     | NativeFunctionId::RegExp(RegExpNativeKind::Search)
                     | NativeFunctionId::RegExp(RegExpNativeKind::Split)
+                    | NativeFunctionId::RegExpStringIteratorNext
             ),
             NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
             | NativeFunctionId::StringStatic(_) => matches!(

@@ -38,6 +38,7 @@ impl Runtime {
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }
+            | ObjectPayload::RegExpStringIterator { .. }
             | ObjectPayload::NativeFunction { .. }
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. } => None,
@@ -1182,6 +1183,7 @@ impl Runtime {
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }
+                | ObjectPayload::RegExpStringIterator { .. }
                 | ObjectPayload::NativeFunction { .. }
                 | ObjectPayload::BoundFunction { .. }
                 | ObjectPayload::BytecodeFunction { .. } => None,
