@@ -421,6 +421,10 @@ impl Drop for VarRefRoot {
 enum FlatConstant {
     Value(RawValue),
     AtomString(JsString),
+    RegExp {
+        pattern: JsString,
+        program: Rc<crate::regexp::CompiledRegExp>,
+    },
     Child(usize),
 }
 
@@ -3995,6 +3999,9 @@ impl Runtime {
                         atom_string_constants.push(linked_constants.len());
                         linked_constants.push(BytecodeConstant::Value(RawValue::String(value)));
                     }
+                    FlatConstant::RegExp { pattern, program } => {
+                        linked_constants.push(BytecodeConstant::RegExp { pattern, program });
+                    }
                     FlatConstant::Child(index) => {
                         let child = roots.get(index).and_then(Option::as_ref).ok_or(
                             RuntimeError::Invariant(
@@ -4022,6 +4029,7 @@ impl Runtime {
                         let value = match linked_constants.get(index) {
                             Some(BytecodeConstant::Value(RawValue::String(value))) => value.clone(),
                             Some(BytecodeConstant::Value(_))
+                            | Some(BytecodeConstant::RegExp { .. })
                             | Some(BytecodeConstant::Function(_))
                             | None => {
                                 return Err(RuntimeError::Invariant(
@@ -4059,7 +4067,9 @@ impl Runtime {
                             .and_then(|index| linked_constants.get(index))
                             .and_then(|constant| match constant {
                                 BytecodeConstant::Value(RawValue::String(name)) => Some(name),
-                                BytecodeConstant::Value(_) | BytecodeConstant::Function(_) => None,
+                                BytecodeConstant::Value(_)
+                                | BytecodeConstant::RegExp { .. }
+                                | BytecodeConstant::Function(_) => None,
                             })
                             .ok_or(RuntimeError::Invariant(
                                 "verified closure name was not a string constant",
@@ -4343,7 +4353,7 @@ impl Runtime {
             let bytecode = state.heap.function_bytecode(function.bytecode_id())?;
             match bytecode.constants.get(constant_index) {
                 Some(BytecodeConstant::Function(id)) => *id,
-                Some(BytecodeConstant::Value(_)) => {
+                Some(BytecodeConstant::Value(_) | BytecodeConstant::RegExp { .. }) => {
                     return Err(RuntimeError::Invariant(
                         "requested child constant is a value",
                     ));

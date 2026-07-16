@@ -8,7 +8,7 @@
 use std::rc::Rc;
 
 use crate::heap::{RegExpObjectData, RegExpRealmData};
-use crate::regexp::{CompileError, CompileErrorKind, CompileErrorSource, CompiledRegExp};
+use crate::regexp::CompiledRegExp;
 
 use super::super::super::*;
 
@@ -132,16 +132,11 @@ impl Runtime {
         let program = match crate::regexp::compile(&pattern, &flags) {
             Ok(program) => Rc::new(program),
             Err(error) => {
-                let kind = match error.kind() {
-                    CompileErrorKind::Unsupported(_) => ErrorKind::Unsupported,
-                    CompileErrorKind::Syntax
-                    | CompileErrorKind::TooManyCaptures
-                    | CompileErrorKind::TooManyRegisters => ErrorKind::Syntax,
-                };
+                let kind = crate::regexp::javascript_compile_error_kind(&error);
                 let message = if kind == ErrorKind::Unsupported {
                     error.to_string()
                 } else {
-                    quickjs_regexp_compile_message(&error).to_owned()
+                    crate::regexp::javascript_compile_error_message(&error).to_owned()
                 };
                 return Err(RuntimeError::Engine(Error::new(kind, message)));
             }
@@ -288,28 +283,30 @@ impl Runtime {
             .copied()
             .ok_or(RuntimeError::Invariant("realm has no RegExp intrinsic"))
     }
-}
 
-/// `lre_compile` exposes its short diagnostic directly as the SyntaxError
-/// message.  The typed compiler retains more provenance in its Display form,
-/// so collapse that diagnostic metadata at the JavaScript boundary.
-fn quickjs_regexp_compile_message(error: &CompileError) -> &str {
-    if error.source() == CompileErrorSource::Flags {
-        return "invalid regular expression flags";
-    }
-    match error.message() {
-        "unexpected end of pattern" | "unterminated character class" | "trailing backslash" => {
-            "unexpected end"
-        }
-        "unterminated group" => "expecting ')'",
-        "unexpected closing parenthesis" => "extraneous characters at the end",
-        "invalid group specifier" => "invalid group",
-        "regular expression syntax error" => "syntax error",
-        "invalid quantifier target" => "nothing to repeat",
-        "invalid control escape"
-        | "invalid hexadecimal escape"
-        | "invalid Unicode escape"
-        | "invalid identity escape" => "invalid escape sequence in regular expression",
-        message => message,
+    /// QuickJS `OP_regexp`: instantiate one already-compiled literal using
+    /// the bytecode realm's canonical RegExp shape. This path intentionally
+    /// performs no `Get` on the global constructor or its mutable `prototype`
+    /// property and therefore cannot invoke user code.
+    pub(in crate::runtime) fn new_compiled_regexp_literal(
+        &self,
+        realm: ContextId,
+        pattern: JsString,
+        program: Rc<CompiledRegExp>,
+    ) -> Result<ObjectRef, RuntimeError> {
+        let _operation = self.operation();
+        let shape = self.regexp_realm_data(realm)?.object_shape;
+        let object =
+            self.0
+                .state
+                .borrow_mut()
+                .heap
+                .allocate_object(ObjectData::compiled_regexp(
+                    shape,
+                    vec![PropertySlot::Data(RawValue::Int(0))],
+                    pattern,
+                    program,
+                ))?;
+        Ok(ObjectRef::from_owned_handle(self.clone(), object))
     }
 }

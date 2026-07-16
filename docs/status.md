@@ -13,14 +13,16 @@ claim full parity.
   capability profile, audited negative-test canaries, and source/metadata host
   requirements keep unsupported grammar, features, modes, and `$262` hooks from
   becoming false passes. Bounded workers preserve canonical byte-for-byte TSV
-  and JSONL ordering. The current vector has 23,859 passes: a 28.55% lower bound
-  after the 18,475 pinned QuickJS target exclusions, or 82.88% among the 28,788
+  and JSONL ordering. The current vector has 24,699 passes: a 29.56% lower bound
+  after the 18,475 pinned QuickJS target exclusions, or 82.38% among the 29,981
   variants with a non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
-  observable RegExp intrinsic slice adds 669 full-vector passes and moves ten
+  observable RegExp intrinsic slice added 669 full-vector passes and moved ten
   advanced-pattern variants from generic runtime failure to typed unsupported
-  results without enabling RegExp literals or Symbol protocols.
+  results. The subsequent R1b literal slice adds another 840 passes. Its exact
+  full-vector join has 1,193 transitions and no previous-pass regression; the
+  independent 96-variant focused vector remains the faster literal gate.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -61,17 +63,32 @@ claim full parity.
   executor polls that boundary, while the runtime currently supplies a
   noninterrupting closure until the host interrupt hook is published.
 
-  Forty-four matcher cases and 23 observable intrinsic vectors match pinned
+  RegExp literals now follow QuickJS's compile-once/instantiate-many boundary:
+  the compiler validates and compiles the pattern into a typed bytecode
+  constant, and `Instruction::RegExp` creates a fresh object for every
+  evaluation without observing the global constructor. The object uses the
+  bytecode execution realm's canonical RegExp shape and prototype, with a new
+  zero-valued `lastIndex`; invalid and unsupported patterns therefore retain
+  compile-time diagnostics rather than becoming catchable constructor-time
+  failures. A frozen 48-path/96-variant focused vector records 88 passes, two
+  runtime failures that require the still-missing String match/search methods,
+  and six typed parser frontiers: two lookaround and four backreference
+  variants. All 88 passes were RegExp-literal parser frontiers under R1a.
+
+  Forty-four matcher cases and 26 observable intrinsic vectors match pinned
   QuickJS, including cross-realm construction/results/errors. The frozen
   225-path/450-variant Test262 RegExp-core vector now has 430 passes. Ten
   variants remain runtime failures solely because `eval` is absent; ten reach
   typed advanced-pattern frontiers for backreferences, lookaround, Unicode
-  properties, or legacy octal/control escapes. RegExp literals, legacy
-  `compile`, `RegExp.escape`, and the Symbol match/search/replace/split
-  protocols remain intentionally unpublished rather than stubbed. The complete
-  102,037-key join records only 669 `fail-runtime -> pass` and ten
-  `fail-runtime -> unsupported-runtime` transitions, with no previous-pass
-  regression.
+  properties, or legacy octal/control escapes. Legacy `compile`,
+  `RegExp.escape`, the Symbol match/search/replace/split protocols, and the
+  advanced literal grammar remain intentionally unpublished rather than
+  stubbed. The R1a complete join recorded only 669 `fail-runtime -> pass` and
+  ten `fail-runtime -> unsupported-runtime` transitions. The R1b join matches
+  all 102,037 keys and moves 840 `unsupported-parser -> pass`, 226
+  `unsupported-parser -> fail-runtime`, 24 `unsupported-parser -> fail-parse`,
+  and 103 `unsupported-harness-parser -> harness-error`, again with no
+  previous-pass regression.
 
   Advanced grammar fails closed: lookaround, backreferences, named captures,
   inline modifiers, Unicode properties, all `v`-mode execution, and unported
@@ -1291,9 +1308,10 @@ claim full parity.
   nine passing oracle/differential/white-box integration tests plus five
   intrinsic unit tests. The pinned anchors are
   `quickjs.c` 45894-45980 and 46640. Its 127-path focused Test262 vector has
-  178 passes out of 254 variants; 83 of the 120 core split paths pass in both
-  modes, and the remaining outcomes expose RegExp literal/protocol, eval,
-  object-literal parser, adjacent-feature and IsHTMLDDA host frontiers. The
+  186 passes out of 254 variants; 87 of the 120 core split paths pass in both
+  modes, and the remaining outcomes expose the RegExp split protocol or
+  advanced grammar, eval, object-literal parser, adjacent-feature and IsHTMLDDA
+  host frontiers. The
   exact full-vector join moves 23,016 to 23,190 passes with no previous-pass
   regression. Declaring `Symbol.split` in the conservative capability profile
   means only that the well-known symbol and generic/custom delegation have been
@@ -2054,8 +2072,9 @@ identifier and ordinary fixed/computed member References. Sloppy
 direct-identifier delete is implemented
 for the current static scope tree and defining-realm global object. Dynamic
 object-environment lookup/deletion introduced by `with` or direct `eval`, the
-remaining seven entries of String's 53-key prototype surface, RegExp literal
-execution, legacy `compile`, `RegExp.escape` and the Symbol protocol methods,
+remaining seven entries of String's 53-key prototype surface, legacy
+`compile`, `RegExp.escape`, advanced RegExp grammar and the Symbol protocol
+methods,
 Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. AggregateError and
 uncatchable termination state are also pending. Array
@@ -2068,7 +2087,7 @@ exotic-source spread, and the rest of the builtin table build on those layers.
 The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
 identifier, case-conversion, `Cased` and `Case_Ignorable` data, the advanced
-RegExp grammar plus observable literal/protocol integration,
+RegExp grammar plus observable Symbol protocol integration,
 modules, jobs/Promises/async,
 generators, TypedArrays/Atomics, WeakRef/finalization, bytecode version 5 and
 BJSON interoperability, `std`/`os`, workers, REPL/qjsc, and the complete Rust
@@ -2116,8 +2135,9 @@ Object, VM-host, property, native-dispatch and bytecode-publication
 no-semantic-change splits reduced `runtime.rs` from roughly thirty-two thousand
 lines to 9,937 lines; subsequent wiring reached 9,944 before the RegExp brand
 added only nine exhaustive-class arms. Observable RegExp bootstrap and dispatch
-add seven facade lines; the host-stack guard note leaves the current parent at
-9,963 lines. The feature's algorithms do not return to the parent monolith. The
+add seven facade lines; the host-stack guard note reached 9,963 lines, and R1b
+literal wiring adds only ten more, leaving the current parent at 9,973 lines.
+The feature's algorithms do not return to the parent monolith. The
 RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -2127,6 +2147,9 @@ similarly combines several compiler phases.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.
+
+`README.md` remains the 45-line public entry point; milestone bookkeeping stays
+in these dedicated status and Test262 documents.
 
 ## Reproduce current evidence
 
@@ -2283,6 +2306,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-date.sh
 ./scripts/test-test262-string-split.sh
 ./scripts/test-test262-regexp-core.sh
+./scripts/run-test262-regexp-literals.sh
 ./scripts/test-test262-full.sh
 ```
 

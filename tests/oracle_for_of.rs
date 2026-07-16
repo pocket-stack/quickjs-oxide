@@ -167,6 +167,10 @@ const CLOSE_CASES: &[(&str, &str)] = &[
 const ERROR_CASES: &[(&str, &str)] = &[
     ("number is not iterable", "for(var value of 1)value"),
     (
+        "RegExp literal is not iterable",
+        "for(var value of /a;b/)value",
+    ),
+    (
         "non-callable iterator method",
         "function X(){}X.prototype[Symbol.iterator]=1;for(var value of new X)value",
     ),
@@ -358,10 +362,6 @@ fn for_in_of_destructuring_and_for_await_boundaries_remain_explicit() {
         (
             "for await(var value of 'a')value",
             "for-await-of loops are not implemented yet",
-        ),
-        (
-            "for(var value of /a;b/)value",
-            "this literal form is not implemented yet",
         ),
     ] {
         let Err(RuntimeError::Exception) = context.compile(source) else {

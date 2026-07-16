@@ -34,6 +34,7 @@ use num_bigint::BigUint;
 use num_traits::ToPrimitive;
 use std::collections::HashMap;
 use std::ops::Range;
+use std::rc::Rc;
 
 /// Default filename used by the Rust convenience compile/eval APIs.
 pub const DEFAULT_EVAL_FILENAME: &str = "<input>";
@@ -286,6 +287,13 @@ enum IrConstant {
     Primitive(Value),
     /// Source String emitted through QuickJS's atom-value constant path.
     AtomString(JsString),
+    /// QuickJS stores the literal pattern and `lre_compile` bytecode as two
+    /// constants consumed by `OP_regexp`. The typed form keeps the same
+    /// compile-once payload behind one verified constant index.
+    RegExp {
+        pattern: JsString,
+        program: Rc<crate::regexp::CompiledRegExp>,
+    },
     Child(FunctionId),
 }
 
@@ -3795,8 +3803,6 @@ impl<'source> Parser<'source> {
         // same parser-owned decision here: operator parsing consumes genuine
         // division before it can reach this function, while a slash which is
         // asked to begin an operand is rescanned as one complete RegExp token.
-        // The literal remains an explicit implementation frontier below until
-        // its compiler, bytecode opcode and runtime class land together.
         if matches!(
             self.current().kind,
             TokenKind::Punctuator(Punctuator::Divide | Punctuator::DivideAssign)
@@ -3899,7 +3905,33 @@ impl<'source> Parser<'source> {
                     source_span(token.span),
                 ));
             }
-            TokenKind::RegExp(_) | TokenKind::PrivateIdentifier(_) => {
+            TokenKind::RegExp(literal) => {
+                // Pinned QuickJS calls `compile_regexp` before advancing to the
+                // next token. Preserve that diagnostic precedence and retain
+                // the resulting program in immutable bytecode so evaluation
+                // only allocates a fresh branded object.
+                let pattern = JsString::try_from_utf8(literal.pattern)?;
+                let flags = JsString::try_from_utf8(literal.flags)?;
+                let program = crate::regexp::compile(&pattern, &flags).map_err(|error| {
+                    let kind = crate::regexp::javascript_compile_error_kind(&error);
+                    let message = if kind == ErrorKind::Unsupported {
+                        error.to_string()
+                    } else {
+                        crate::regexp::javascript_compile_error_message(&error).to_owned()
+                    };
+                    Error::new(kind, message).with_span(source_span(token.span))
+                })?;
+                let constant = self.add_constant(IrConstant::RegExp {
+                    pattern,
+                    program: Rc::new(program),
+                })?;
+                self.emit_instruction_at(
+                    Instruction::RegExp(constant),
+                    source_offset(token.span)?,
+                )?;
+                self.advance()?;
+            }
+            TokenKind::PrivateIdentifier(_) => {
                 return Err(self.unsupported_here("this literal form is not implemented yet"));
             }
             TokenKind::Punctuator(punctuator) => {
@@ -7794,6 +7826,10 @@ fn lower_detached_script(tree: FunctionTree) -> Result<BytecodeFunction, Error> 
                     }
                 }
             }
+            IrConstant::RegExp { .. } => Err(Error::new(
+                ErrorKind::Unsupported,
+                "RegExp literals require runtime publication; use Context::compile or Context::eval",
+            )),
             IrConstant::Child(_) => Err(Error::internal(
                 "detached compiler accepted a child-function constant",
             )),
@@ -7895,6 +7931,9 @@ fn lower_unlinked_tree(
             .map(|constant| match constant {
                 IrConstant::AtomString(value) => Ok(UnlinkedConstant::atom_string(value)),
                 IrConstant::Primitive(value) => unlinked_primitive(value),
+                IrConstant::RegExp { pattern, program } => {
+                    Ok(UnlinkedConstant::regexp(pattern, program))
+                }
                 IrConstant::Child(child) => lowered
                     .get_mut(child)
                     .and_then(Option::take)
@@ -10789,15 +10828,10 @@ mod tests {
             "for(Function.item of Function);",
             "for(Function.item of 'a;b');",
             "for(Function.item of `a;b`);",
+            "for(Function.item of /a;b/);",
         ] {
             compile_unlinked_script(source).unwrap();
         }
-        assert_eq!(
-            compile_unlinked_script("for(Function.item of /a;b/);")
-                .unwrap_err()
-                .message(),
-            "this literal form is not implemented yet"
-        );
         for source in [
             "for(Function.item in Function;;);",
             "for(Function.item of Function;;);",
@@ -13927,33 +13961,50 @@ mod tests {
         // Pinned QuickJS makes this decision in its primary-expression parser:
         // `/` and `/=` are ordinary punctuators until the grammar requires an
         // operand, at which point it rewinds and scans the complete literal.
-        // RegExp execution is still deliberately unsupported here, so the
-        // full-token span and typed frontier are the observable parser gate.
-        for (source, literal) in [
-            ("/start/g;", "/start/g"),
-            ("/=prefix/m;", "/=prefix/m"),
-            ("Function.value = /rhs/gi;", "/rhs/gi"),
-            ("(function(){ return /ret/m; })", "/ret/m"),
-            ("Function(/argument/s);", "/argument/s"),
-            ("true ? /consequent/u : 0;", "/consequent/u"),
-            ("false ? 0 : /alternate/y;", "/alternate/y"),
-            ("false || /logical/d;", "/logical/d"),
-            ("1 / /denominator/v;", "/denominator/v"),
+        for source in [
+            "/start/g;",
+            "/=prefix/m;",
+            "Function.value = /rhs/gi;",
+            "(function(){ return /ret/m; })",
+            "Function(/argument/s);",
+            "true ? /consequent/u : 0;",
+            "false ? 0 : /alternate/y;",
+            "false || /logical/d;",
+            "1 / /denominator/u;",
+        ] {
+            compile_unlinked_script(source)
+                .unwrap_or_else(|error| panic!("RegExp literal {source:?} failed: {error}"));
+        }
+        let script = compile_unlinked_script("/start/g;").unwrap();
+        assert!(matches!(script.code()[0], Instruction::RegExp(0)));
+
+        let invalid_pattern = compile_unlinked_script("/(/").unwrap_err();
+        assert_eq!(invalid_pattern.kind(), ErrorKind::Syntax);
+        assert_eq!(invalid_pattern.message(), "expecting ')'");
+        let span = invalid_pattern.span().expect("literal SyntaxError span");
+        assert_eq!((span.start.line, span.start.column), (1, 1));
+        assert_eq!((span.start.byte_offset, span.end.byte_offset), (0, 3));
+
+        let invalid_flags = compile_unlinked_script("/a/gg").unwrap_err();
+        assert_eq!(invalid_flags.kind(), ErrorKind::Syntax);
+        assert_eq!(invalid_flags.message(), "invalid regular expression flags");
+
+        for (source, expected) in [
+            ("/a", "unexpected end of regexp"),
+            ("/a\n/", "unexpected line terminator in regexp"),
+            ("/a\\\n/", "unexpected line terminator in regexp"),
         ] {
             let error = compile_unlinked_script(source).unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::Unsupported, "{source}");
-            assert_eq!(
-                error.message(),
-                "this literal form is not implemented yet",
-                "{source}"
-            );
-            let start = source.find(literal).expect("test literal is in source");
-            let span = error
-                .span()
-                .unwrap_or_else(|| panic!("missing RegExp frontier span for {source}"));
-            assert_eq!(span.start.byte_offset, start, "{source}");
-            assert_eq!(span.end.byte_offset, start + literal.len(), "{source}");
+            assert_eq!(error.kind(), ErrorKind::Syntax, "{source:?}");
+            assert_eq!(error.message(), expected, "{source:?}");
         }
+
+        let unsupported = compile_unlinked_script("/(?=a)/").unwrap_err();
+        assert_eq!(unsupported.kind(), ErrorKind::Unsupported);
+        assert!(unsupported.message().contains("Lookaround"));
+        let unsupported_v = compile_unlinked_script("1 / /denominator/v;").unwrap_err();
+        assert_eq!(unsupported_v.kind(), ErrorKind::Unsupported);
+        assert!(unsupported_v.message().contains("UnicodeSetOperation"));
 
         // The same slash tokens remain operators when the expression parser
         // has already produced their left operand.
@@ -14845,10 +14896,7 @@ mod tests {
             compile_unlinked_script("[1 2]").unwrap_err().message(),
             "expecting ']'"
         );
-        assert_eq!(
-            compile_unlinked_script("[/a/]").unwrap_err().message(),
-            "this literal form is not implemented yet"
-        );
+        compile_unlinked_script("[/a/]").unwrap();
         for source in ["[... ]", "[1,, 2 3]"] {
             assert!(
                 compile_unlinked_script(source).is_err(),

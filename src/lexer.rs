@@ -1621,13 +1621,13 @@ impl<'a> Lexer<'a> {
                 return Err(self.error_from(
                     start,
                     LexErrorKind::UnterminatedRegExp,
-                    "unterminated regular-expression literal",
+                    "unexpected end of regexp",
                 ));
             };
             if is_line_terminator(ch) {
                 return Err(self.error_here(
                     LexErrorKind::LineTerminatorInRegExp,
-                    "line terminator is not allowed in a regular-expression literal",
+                    "unexpected line terminator in regexp",
                 ));
             }
             if ch == '/' && !in_character_class {
@@ -1641,13 +1641,13 @@ impl<'a> Lexer<'a> {
                     return Err(self.error_from(
                         start,
                         LexErrorKind::UnterminatedRegExp,
-                        "regular-expression escape reaches end of source",
+                        "unexpected end of regexp",
                     ));
                 };
                 if is_line_terminator(escaped) {
                     return Err(self.error_here(
                         LexErrorKind::LineTerminatorInRegExp,
-                        "escaped line terminator is not allowed in a regular expression",
+                        "unexpected line terminator in regexp",
                     ));
                 }
                 self.bump_char();

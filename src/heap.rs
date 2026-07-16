@@ -506,6 +506,13 @@ impl ContextData {
 #[derive(Clone, Debug, PartialEq)]
 pub enum BytecodeConstant {
     Value(RawValue),
+    /// Compile-once RegExp literal payload. These reference-counted Rust
+    /// leaves own no arena or atom edge; executing `Instruction::RegExp`
+    /// clones them into a fresh realm-local RegExp object.
+    RegExp {
+        pattern: JsString,
+        program: Rc<CompiledRegExp>,
+    },
     Function(FunctionBytecodeId),
 }
 
@@ -4899,6 +4906,7 @@ fn function_bytecode_edges(bytecode: &FunctionBytecodeData) -> Vec<RawId> {
     for constant in bytecode.constants.iter() {
         match constant {
             BytecodeConstant::Value(value) => edges.extend(raw_value_edges(value)),
+            BytecodeConstant::RegExp { .. } => {}
             BytecodeConstant::Function(function) => {
                 edges.push(RawId::FunctionBytecode(*function));
             }
@@ -4987,7 +4995,7 @@ fn function_bytecode_atoms(bytecode: &FunctionBytecodeData) -> impl Iterator<Ite
                 .iter()
                 .filter_map(|constant| match constant {
                     BytecodeConstant::Value(value) => raw_value_atom(value),
-                    BytecodeConstant::Function(_) => None,
+                    BytecodeConstant::RegExp { .. } | BytecodeConstant::Function(_) => None,
                 }),
         )
 }
@@ -7403,6 +7411,46 @@ mod tests {
         let mut expected = vec![child_atom, parent_atom, symbol_atom];
         expected.sort_unstable();
         assert_eq!(cleanup.atoms, expected);
+
+        let context_cleanup = heap.release_context(context).unwrap();
+        assert_eq!(context_cleanup.finalized_contexts, 1);
+        assert_eq!(context_cleanup.finalized_objects, 1);
+        assert_eq!(context_cleanup.finalized_shapes, 1);
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn bytecode_regexp_constant_releases_its_rc_leaf_on_finalization() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let prototype = leaf(&mut heap, shape);
+        let context = heap
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+                prototype,
+            ))
+            .unwrap();
+        heap.release_object(prototype).unwrap();
+        heap.release_shape(shape).unwrap();
+
+        let pattern = JsString::from_static("a");
+        let flags = JsString::from_static("g");
+        let program = Rc::new(crate::regexp::compile(&pattern, &flags).unwrap());
+        let weak = Rc::downgrade(&program);
+        let code: Rc<[Instruction]> = Rc::from([Instruction::RegExp(0), Instruction::Return]);
+        let function = heap
+            .allocate_function_bytecode(bytecode(
+                &code,
+                context,
+                vec![BytecodeConstant::RegExp { pattern, program }],
+                Vec::new(),
+            ))
+            .unwrap();
+        assert_eq!(weak.strong_count(), 1);
+
+        let cleanup = heap.release_function_bytecode(function).unwrap();
+        assert_eq!(cleanup.finalized_function_bytecodes, 1);
+        assert_eq!(weak.strong_count(), 0);
 
         let context_cleanup = heap.release_context(context).unwrap();
         assert_eq!(context_cleanup.finalized_contexts, 1);

@@ -4693,6 +4693,46 @@ fn publication_rejects_value_opcode_for_child_bytecode_before_heap_changes() {
 }
 
 #[test]
+fn publication_rejects_mismatched_regexp_constants_even_in_dead_code() {
+    let runtime = Runtime::new();
+    let context = runtime.new_context();
+    let pattern = JsString::from_static("a");
+    let flags = JsString::from_static("g");
+    let program = std::rc::Rc::new(crate::regexp::compile(&pattern, &flags).unwrap());
+
+    let regexp_as_value = UnlinkedFunction::new(
+        vec![Instruction::PushConst(0), Instruction::Return],
+        vec![UnlinkedConstant::regexp(pattern, program)],
+        FunctionMetadata {
+            max_stack: 1,
+            ..FunctionMetadata::default()
+        },
+    );
+    assert!(matches!(
+        runtime.publish_unlinked_function(context.realm, regexp_as_value),
+        Err(RuntimeError::Engine(_))
+    ));
+
+    let value_as_regexp = UnlinkedFunction::new(
+        vec![
+            Instruction::Undefined,
+            Instruction::Return,
+            Instruction::RegExp(0),
+        ],
+        vec![UnlinkedConstant::primitive(Value::String(JsString::from_static("a"))).unwrap()],
+        FunctionMetadata {
+            max_stack: 1,
+            ..FunctionMetadata::default()
+        },
+    );
+    assert!(matches!(
+        runtime.publish_unlinked_function(context.realm, value_as_regexp),
+        Err(RuntimeError::Engine(_))
+    ));
+    assert_eq!(runtime.heap_counts().function_bytecode_nodes, 0);
+}
+
+#[test]
 fn publication_rejects_string_key_opcodes_with_non_string_constants() {
     let runtime = Runtime::new();
     let context = runtime.new_context();

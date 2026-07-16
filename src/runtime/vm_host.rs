@@ -271,7 +271,11 @@ impl RuntimeVmHost {
             .and_then(|index| self.constants.get(index))
         {
             Some(BytecodeConstant::Value(RawValue::String(name))) => name.clone(),
-            Some(BytecodeConstant::Value(_) | BytecodeConstant::Function(_)) => {
+            Some(
+                BytecodeConstant::Value(_)
+                | BytecodeConstant::Function(_)
+                | BytecodeConstant::RegExp { .. },
+            ) => {
                 return Err(Error::internal(
                     "field opcode referenced a non-string constant",
                 ));
@@ -986,6 +990,9 @@ impl VmHost for RuntimeVmHost {
             BytecodeConstant::Function(_) => Err(Error::internal(
                 "child function bytecode was loaded with a value-constant opcode",
             )),
+            BytecodeConstant::RegExp { .. } => Err(Error::internal(
+                "RegExp program was loaded with a value-constant opcode",
+            )),
         }
     }
 
@@ -1254,6 +1261,27 @@ impl VmHost for RuntimeVmHost {
     fn object(&mut self) -> Result<Completion, Error> {
         self.runtime
             .new_ordinary_object_in_realm(self.current_realm)
+            .map(|object| Completion::Return(Value::Object(object)))
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn create_regexp(&mut self, index: u32) -> Result<Completion, Error> {
+        let (pattern, program) = match usize::try_from(index)
+            .ok()
+            .and_then(|index| self.constants.get(index))
+        {
+            Some(BytecodeConstant::RegExp { pattern, program }) => {
+                (pattern.clone(), program.clone())
+            }
+            Some(BytecodeConstant::Value(_) | BytecodeConstant::Function(_)) => {
+                return Err(Error::internal(
+                    "RegExp opcode referenced a non-RegExp constant",
+                ));
+            }
+            None => return Err(Error::internal("constant index is out of bounds")),
+        };
+        self.runtime
+            .new_compiled_regexp_literal(self.current_realm, pattern, program)
             .map(|object| Completion::Return(Value::Object(object)))
             .map_err(runtime_error_to_vm_error)
     }

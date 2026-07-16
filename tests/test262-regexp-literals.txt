@@ -1,0 +1,64 @@
+# Frozen RegExp-literal measurement slice for the pinned Test262 checkout.
+#
+# This is a static, bytewise-sorted 48-path set selected from the R1a full
+# keyed report (TSV SHA-256
+# 77147ada7e07de9f9f78dc75687f7c0fdf5891be954de9193824aa752046da05).
+# All 96 sloppy/strict variants reached the typed parser frontier with detail
+# `this literal form is not implemented yet`; their bytewise-sorted
+# path/variant/outcome/detail projection has SHA-256
+# 77ea1b326480b21d98c98bc01736d948b3535e0426eca7081776e3596221fa06.
+# The set combines the complete admitted language/literals/regexp frontier,
+# six non-eval statement-list contexts, five representative whitespace
+# boundaries, and twelve ES5 RegExp grammar/runtime representatives. The gate
+# must never select paths dynamically from current outcomes.
+#
+# Exactly 48 unique paths expand to 96 sloppy/strict variants.
+
+test/built-ins/RegExp/S15.10.2.10_A1.1_T1.js
+test/built-ins/RegExp/S15.10.2.11_A1_T1.js
+test/built-ins/RegExp/S15.10.2.12_A3_T5.js
+test/built-ins/RegExp/S15.10.2.13_A1_T1.js
+test/built-ins/RegExp/S15.10.2.3_A1_T1.js
+test/built-ins/RegExp/S15.10.2.5_A1_T1.js
+test/built-ins/RegExp/S15.10.2.6_A1_T1.js
+test/built-ins/RegExp/S15.10.2.7_A1_T1.js
+test/built-ins/RegExp/S15.10.2.8_A1_T1.js
+test/built-ins/RegExp/S15.10.2.9_A1_T1.js
+test/built-ins/RegExp/S15.10.3.1_A1_T1.js
+test/built-ins/RegExp/S15.10.4.1_A1_T1.js
+test/language/literals/regexp/S7.8.5_A1.1_T1.js
+test/language/literals/regexp/S7.8.5_A1.4_T1.js
+test/language/literals/regexp/S7.8.5_A2.1_T1.js
+test/language/literals/regexp/S7.8.5_A2.4_T1.js
+test/language/literals/regexp/S7.8.5_A3.1_T1.js
+test/language/literals/regexp/S7.8.5_A3.1_T2.js
+test/language/literals/regexp/S7.8.5_A3.1_T3.js
+test/language/literals/regexp/S7.8.5_A3.1_T4.js
+test/language/literals/regexp/S7.8.5_A3.1_T5.js
+test/language/literals/regexp/S7.8.5_A3.1_T6.js
+test/language/literals/regexp/S7.8.5_A4.1.js
+test/language/literals/regexp/S7.8.5_A4.2.js
+test/language/literals/regexp/inequality.js
+test/language/literals/regexp/lastIndex.js
+test/language/literals/regexp/u-astral-char-class-invert.js
+test/language/literals/regexp/u-astral.js
+test/language/literals/regexp/u-case-mapping.js
+test/language/literals/regexp/u-null-character-escape.js
+test/language/literals/regexp/u-surrogate-pairs-atom-char-class.js
+test/language/literals/regexp/u-surrogate-pairs-atom-dot.js
+test/language/literals/regexp/u-surrogate-pairs-atom-escape-char-class.js
+test/language/literals/regexp/u-surrogate-pairs-atom-escape-decimal.js
+test/language/literals/regexp/u-surrogate-pairs.js
+test/language/literals/regexp/u-unicode-esc.js
+test/language/literals/regexp/y-assertion-start.js
+test/language/statementList/block-regexp-literal-flags.js
+test/language/statementList/block-regexp-literal.js
+test/language/statementList/block-with-statment-regexp-literal-flags.js
+test/language/statementList/block-with-statment-regexp-literal.js
+test/language/statementList/fn-regexp-literal-flags.js
+test/language/statementList/fn-regexp-literal.js
+test/language/white-space/after-regular-expression-literal-line-feed.js
+test/language/white-space/after-regular-expression-literal-line-separator.js
+test/language/white-space/after-regular-expression-literal-nbsp.js
+test/language/white-space/after-regular-expression-literal-paragraph-separator.js
+test/language/white-space/after-regular-expression-literal-space.js

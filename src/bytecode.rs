@@ -29,6 +29,10 @@ pub enum Instruction {
     PushI32(i32),
     PushConst(u32),
     FClosure(u32),
+    /// QuickJS `OP_regexp`, represented as one typed compile-time constant
+    /// instead of two generic stack values. Each execution allocates a fresh
+    /// branded RegExp in the bytecode realm without consulting user code.
+    RegExp(u32),
     /// QuickJS `OP_set_name`: conditionally define the name of the object at
     /// the top of the stack from a string constant, without consuming it.
     SetName(u32),
@@ -266,6 +270,7 @@ impl Instruction {
             Self::PushI32(_)
             | Self::PushConst(_)
             | Self::FClosure(_)
+            | Self::RegExp(_)
             | Self::Undefined
             | Self::Null
             | Self::PushFalse
@@ -397,6 +402,14 @@ impl BytecodeFunction {
             ));
         }
         for instruction in &self.code {
+            if matches!(instruction, Instruction::RegExp(_)) {
+                // Detached bytecode exposes only `Vec<Value>` constants, so
+                // it cannot structurally represent the compile-once matcher
+                // payload required by this runtime-publication opcode.
+                return Err(Error::internal(
+                    "detached bytecode cannot encode RegExp constants",
+                ));
+            }
             if let Instruction::SetName(index)
             | Instruction::ThrowReadOnly(index)
             | Instruction::GetField(index)
@@ -455,6 +468,7 @@ pub(crate) fn verify_parts(
         match instruction {
             Instruction::PushConst(index)
             | Instruction::FClosure(index)
+            | Instruction::RegExp(index)
             | Instruction::SetName(index)
             | Instruction::ThrowReadOnly(index)
             | Instruction::GetField(index)
@@ -1590,6 +1604,18 @@ mod tests {
             max_stack: 1,
         };
         assert!(bad_constant.verify().is_err());
+
+        let runtime_regexp_constant = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::RegExp(0), Instruction::Return],
+            constants: vec![Value::String(JsString::from_static("a"))],
+            local_count: 0,
+            max_stack: 1,
+        };
+        assert_eq!(
+            runtime_regexp_constant.verify().unwrap_err().message(),
+            "detached bytecode cannot encode RegExp constants"
+        );
 
         let bad_join = BytecodeFunction {
             name: None,

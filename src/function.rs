@@ -16,14 +16,16 @@
 use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 use crate::bytecode::Instruction;
 use crate::debug::Pc2LineTable;
 use crate::heap::{
     ClosureVariable, ClosureVariableKind, FunctionBytecodeId, FunctionMetadata, HeapError,
 };
+use crate::regexp::CompiledRegExp;
 use crate::runtime::Runtime;
-use crate::value::Value;
+use crate::value::{JsString, Value};
 
 /// A public owning root for immutable runtime-local function bytecode.
 ///
@@ -159,24 +161,31 @@ impl fmt::Display for UnlinkedConstantError {
 
 impl Error for UnlinkedConstantError {}
 
-/// Private representation keeps the primitive-only invariant structural.
+/// Private representation keeps runtime independence structural.
 ///
 /// Making the enum itself crate-visible would let any module construct
 /// `Primitive(Value::Object(_))` and bypass the checked constructor.
 #[derive(Debug)]
-#[allow(dead_code)] // Constructed by the function-syntax compiler slice.
 enum UnlinkedConstantKind {
     Primitive(Value),
     /// Source String lowered through QuickJS `emit_push_const(..., as_atom=1)`.
     /// Publication canonicalizes non-immediate atoms in the runtime domain.
     AtomString(Value),
+    /// Runtime-independent RegExp literal source and its compile-once matcher
+    /// program. Both payloads are reference-counted leaves with no heap or
+    /// atom identity, so the draft remains safe to publish into any runtime.
+    RegExp {
+        pattern: JsString,
+        program: Rc<CompiledRegExp>,
+    },
     Child(Box<UnlinkedFunction>),
 }
 
 /// One constant in a compiler draft, before runtime publication.
 ///
 /// Primitive constants may contain undefined, null, booleans, numbers,
-/// BigInts, and strings.  Symbols are ECMAScript primitives but remain
+/// BigInts, and strings. RegExp constants own only pure-Rust String/Rc leaves.
+/// Symbols are ECMAScript primitives but remain
 /// runtime-owned atom identities, so they intentionally use a future dedicated
 /// linked representation instead of this draft variant.
 #[derive(Debug)]
@@ -205,43 +214,76 @@ impl UnlinkedConstant {
         Self(UnlinkedConstantKind::AtomString(Value::String(value)))
     }
 
+    /// Store one compile-once RegExp literal payload.
+    #[must_use]
+    pub(crate) fn regexp(pattern: JsString, program: Rc<CompiledRegExp>) -> Self {
+        Self(UnlinkedConstantKind::RegExp { pattern, program })
+    }
+
     /// Store one recursively compiled child-function draft.
     #[must_use]
-    #[allow(dead_code)] // The runtime publisher already supports this future compiler output.
     pub(crate) fn child(function: UnlinkedFunction) -> Self {
         Self(UnlinkedConstantKind::Child(Box::new(function)))
     }
 
-    /// Borrow the primitive value, or return `None` for a child function.
+    /// Borrow the primitive value, or return `None` for another constant kind.
     #[must_use]
     pub(crate) fn as_primitive(&self) -> Option<&Value> {
         match &self.0 {
             UnlinkedConstantKind::Primitive(value) | UnlinkedConstantKind::AtomString(value) => {
                 Some(value)
             }
-            UnlinkedConstantKind::Child(_) => None,
+            UnlinkedConstantKind::RegExp { .. } | UnlinkedConstantKind::Child(_) => None,
         }
     }
 
-    /// Borrow the child draft, or return `None` for a primitive constant.
+    /// Borrow a RegExp literal payload, or return `None` for other constants.
+    #[must_use]
+    pub(crate) fn as_regexp(&self) -> Option<(&JsString, &Rc<CompiledRegExp>)> {
+        match &self.0 {
+            UnlinkedConstantKind::RegExp { pattern, program } => Some((pattern, program)),
+            UnlinkedConstantKind::Primitive(_)
+            | UnlinkedConstantKind::AtomString(_)
+            | UnlinkedConstantKind::Child(_) => None,
+        }
+    }
+
+    /// Consume a RegExp literal payload without cloning its matcher program.
+    /// Non-RegExp constants are returned unchanged to preserve their private
+    /// representation invariant for the ordinary publication path.
+    pub(crate) fn into_regexp(self) -> Result<(JsString, Rc<CompiledRegExp>), Self> {
+        match self.0 {
+            UnlinkedConstantKind::RegExp { pattern, program } => Ok((pattern, program)),
+            other => Err(Self(other)),
+        }
+    }
+
+    /// Borrow the child draft, or return `None` for another constant kind.
     #[must_use]
     pub(crate) fn as_child(&self) -> Option<&UnlinkedFunction> {
         match &self.0 {
-            UnlinkedConstantKind::Primitive(_) | UnlinkedConstantKind::AtomString(_) => None,
+            UnlinkedConstantKind::Primitive(_)
+            | UnlinkedConstantKind::AtomString(_)
+            | UnlinkedConstantKind::RegExp { .. } => None,
             UnlinkedConstantKind::Child(function) => Some(function),
         }
     }
 
     /// Consume this constant for transactional runtime publication.
     ///
-    /// Exactly one optional tuple field is `Some`; the middle flag marks the
-    /// atom-string representation of a primitive payload. Returning output-only
-    /// parts keeps the private invariant from being bypassed by callers.
+    /// RegExp payloads are first consumed by [`Self::into_regexp`]. For the
+    /// remaining kinds, exactly one optional tuple field is `Some`; the middle
+    /// flag marks the atom-string representation of a primitive payload.
+    /// Returning output-only parts keeps the private invariant from being
+    /// bypassed by callers.
     #[must_use]
     pub(crate) fn into_parts(self) -> (Option<Value>, bool, Option<UnlinkedFunction>) {
         match self.0 {
             UnlinkedConstantKind::Primitive(value) => (Some(value), false, None),
             UnlinkedConstantKind::AtomString(value) => (Some(value), true, None),
+            UnlinkedConstantKind::RegExp { .. } => {
+                unreachable!("RegExp constants must use into_regexp before ordinary publication")
+            }
             UnlinkedConstantKind::Child(function) => (None, false, Some(*function)),
         }
     }
@@ -569,6 +611,26 @@ mod tests {
         assert!(matches!(primitive, Some(Value::String(_))));
         assert!(atom_string);
         assert!(child.is_none());
+    }
+
+    #[test]
+    fn regexp_literal_constant_is_a_runtime_independent_rc_leaf() {
+        let pattern = JsString::from_static("a");
+        let flags = JsString::from_static("g");
+        let program = std::rc::Rc::new(crate::regexp::compile(&pattern, &flags).unwrap());
+        let weak = std::rc::Rc::downgrade(&program);
+        let constant = UnlinkedConstant::regexp(pattern.clone(), program);
+
+        assert!(constant.as_primitive().is_none());
+        assert!(constant.as_child().is_none());
+        let (borrowed_pattern, _) = constant.as_regexp().unwrap();
+        assert_eq!(borrowed_pattern, &pattern);
+
+        let (owned_pattern, owned_program) = constant.into_regexp().unwrap();
+        assert_eq!(owned_pattern, pattern);
+        assert!(weak.upgrade().is_some());
+        drop(owned_program);
+        assert!(weak.upgrade().is_none());
     }
 
     #[test]

@@ -1,0 +1,14 @@
+schema=test262-canonical-classified-v2
+timeout_ms=30000
+paths=48
+variants=96
+runnable=96
+passes=88
+r1a_full_tsv_sha256=77147ada7e07de9f9f78dc75687f7c0fdf5891be954de9193824aa752046da05
+r1a_selected_sha256=77ea1b326480b21d98c98bc01736d948b3535e0426eca7081776e3596221fa06
+r1a_variants=96
+r1a_outcome=unsupported-parser
+r1a_detail=this literal form is not implemented yet
+tsv_sha256=500e95691d4d004cb18f8c1bf7a5ccfa38019c3c5f3af3fe9e79673c85ad0dac
+jsonl_sha256=16e2c59866c1e4c5b9afc3884c7cec1728560edb230e6daa1af68537fb2eaf68
+summary=fail-runtime=2 pass=88 unsupported-parser=6

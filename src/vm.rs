@@ -157,6 +157,9 @@ pub(crate) trait VmHost {
     fn create_arguments(&mut self, kind: ArgumentsKind) -> Result<Completion, Error>;
     /// Create a fresh ordinary Object in the executing bytecode's realm.
     fn object(&mut self) -> Result<Completion, Error>;
+    /// Instantiate a compile-time RegExp constant in the executing bytecode's
+    /// realm, bypassing observable constructor and prototype reads.
+    fn create_regexp(&mut self, index: u32) -> Result<Completion, Error>;
     /// Create a fresh Array in the executing bytecode's realm from one dense
     /// literal prefix. `Return` carries the Array; `Throw` carries allocation
     /// or Array-exotic failure.
@@ -511,6 +514,12 @@ impl VmHost for DetachedHost<'_> {
         }
         Err(Error::internal(
             "detached VM cannot create runtime-owned Object values",
+        ))
+    }
+
+    fn create_regexp(&mut self, _index: u32) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "detached VM cannot create runtime-owned RegExp objects",
         ))
     }
 
@@ -977,6 +986,10 @@ impl CallFrame {
                 Completion::Return(object) => self.stack.push(object),
                 Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
             },
+            Instruction::RegExp(index) => match host.create_regexp(*index)? {
+                Completion::Return(object) => self.stack.push(object),
+                Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+            },
             Instruction::SetNameComputed => {
                 let key_index = self
                     .stack
@@ -1060,6 +1073,7 @@ impl CallFrame {
                 instruction,
                 Instruction::Arguments(_)
                     | Instruction::Object
+                    | Instruction::RegExp(_)
                     | Instruction::SetNameComputed
                     | Instruction::SetProto
                     | Instruction::CopyDataProperties
@@ -1098,6 +1112,9 @@ impl CallFrame {
                     unreachable!("arguments-object dispatch was bypassed")
                 }
                 Instruction::Object => unreachable!("object literal dispatch was bypassed"),
+                Instruction::RegExp(_) => {
+                    unreachable!("RegExp literal dispatch was bypassed")
+                }
                 Instruction::SetName(index) => {
                     let value = self
                         .stack

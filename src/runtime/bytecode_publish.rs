@@ -330,6 +330,23 @@ pub(super) fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), Ru
                             "value-constant opcode referenced child function bytecode",
                         )));
                     }
+                    if constant.as_regexp().is_some() {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "value-constant opcode referenced a RegExp literal constant",
+                        )));
+                    }
+                }
+                crate::bytecode::Instruction::RegExp(index) => {
+                    let index = usize::try_from(*index)
+                        .map_err(|_| RuntimeError::Invariant("constant index did not fit usize"))?;
+                    let constant = function.constants().get(index).ok_or_else(|| {
+                        RuntimeError::Engine(Error::internal("constant index is out of bounds"))
+                    })?;
+                    if constant.as_regexp().is_none() {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "RegExp opcode referenced a non-RegExp constant",
+                        )));
+                    }
                 }
                 crate::bytecode::Instruction::FClosure(index) => {
                     let index = usize::try_from(*index)
@@ -702,7 +719,7 @@ pub(super) fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), Ru
                     }
                 }
                 pending.push((child, false));
-            } else if constant.as_primitive().is_none() {
+            } else if constant.as_primitive().is_none() && constant.as_regexp().is_none() {
                 return Err(RuntimeError::Invariant(
                     "unlinked constant did not contain exactly one payload",
                 ));
@@ -786,6 +803,17 @@ pub(super) fn flatten_unlinked_tree(
             .remaining
             .next();
         if let Some(constant) = next {
+            let constant = match constant.into_regexp() {
+                Ok((pattern, program)) => {
+                    frames
+                        .last_mut()
+                        .expect("flatten frame remains present")
+                        .constants
+                        .push(FlatConstant::RegExp { pattern, program });
+                    continue;
+                }
+                Err(constant) => constant,
+            };
             let (primitive, atom_string, child) = constant.into_parts();
             match (primitive, atom_string, child) {
                 (Some(Value::String(value)), true, None) => frames

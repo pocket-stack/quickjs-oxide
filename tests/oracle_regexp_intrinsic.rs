@@ -3,9 +3,9 @@ use std::process::Command;
 
 use quickjs_oxide::{CallableRef, Context, JsString, ObjectRef, Runtime, RuntimeError, Value};
 
-// Differential lock for the first observable RegExp intrinsic slice in pinned
-// QuickJS 2026-06-04. The vectors deliberately stay below later RegExp
-// protocol work: they do not use literals or String.prototype symbol hooks.
+// Differential lock for observable RegExp semantics in pinned QuickJS
+// 2026-06-04. The vectors deliberately stay below later String.prototype
+// symbol hooks.
 
 const PRELUDE: &str = r#"
 function __bit(value){return value?"1":"0"}
@@ -202,6 +202,43 @@ const CONSTRUCTOR_CASES: &[(&str, &str)] = &[
                 identities.test("8"),identities.test("9"),identities.test("k"),identities.test("7"),
                 __error(function(){return new RegExp("[\\d-a]","u")}),
                 __error(function(){return new RegExp("[a-\\d]","u")})].join("|");
+        })()"#,
+    ),
+];
+
+const LITERAL_CASES: &[(&str, &str)] = &[
+    (
+        "RegExp literals compile once and allocate a fresh branded value per evaluation",
+        r#"(function(){
+            function make(){return /a(b)?/dgi}
+            var first=make(),second=make(),descriptor=
+                Object.getOwnPropertyDescriptor(first,"lastIndex");
+            first.lastIndex=1;
+            var match=first.exec("zab");
+            return [first!==second,first.source,first.flags,second.lastIndex,
+                descriptor.writable,descriptor.enumerable,descriptor.configurable,
+                match[0],match[1],match.index,first.lastIndex].join("|");
+        })()"#,
+    ),
+    (
+        "RegExp literals bypass the global constructor and mutable constructor prototype",
+        r#"(function(){
+            var intrinsic=RegExp.prototype,hits=0;
+            RegExp.prototype={replacement:true};
+            Object.defineProperty(globalThis,"RegExp",{configurable:true,get:function(){
+                hits++;throw Error("observable constructor access");
+            }});
+            var literal=/a/g;
+            return [hits,Object.getPrototypeOf(literal)===intrinsic,literal.source,
+                literal.flags,literal.lastIndex].join("|");
+        })()"#,
+    ),
+    (
+        "RegExp literal source and flags preserve pinned canonical spelling",
+        r#"(function(){
+            var escaped=/a\/b/ims,empty=/(?:)/,newline=/\n/u;
+            return [escaped.source,escaped.flags,empty.source,empty.flags,
+                newline.source,newline.flags,newline.test("\n")].join("|");
         })()"#,
     ),
 ];
@@ -408,6 +445,7 @@ fn regexp_intrinsic_oracle_vectors_self_check() {
     for &(group, cases) in &[
         ("graph", GRAPH_CASES),
         ("constructor", CONSTRUCTOR_CASES),
+        ("literal", LITERAL_CASES),
         ("accessors", ACCESSOR_CASES),
         ("exec", EXEC_CASES),
         ("test", TEST_CASES),
@@ -430,6 +468,43 @@ fn regexp_graph_and_native_metadata_match_pinned_quickjs() {
 #[test]
 fn regexp_constructor_identity_copy_and_order_match_pinned_quickjs() {
     compare_cases("RegExp constructor", CONSTRUCTOR_CASES);
+}
+
+#[test]
+fn regexp_literal_allocation_and_intrinsic_bypass_match_pinned_quickjs() {
+    compare_cases("RegExp literals", LITERAL_CASES);
+}
+
+#[test]
+fn regexp_literal_uses_the_bytecode_realm_and_is_fresh_on_every_execution() {
+    let runtime = Runtime::new();
+    let mut defining = runtime.new_context();
+    let mut caller = runtime.new_context();
+    let defining_prototype = eval_object(
+        &mut defining,
+        "RegExp.prototype",
+        "defining RegExp prototype",
+    );
+    let caller_prototype = eval_object(&mut caller, "RegExp.prototype", "caller RegExp prototype");
+    let function = defining.compile("/realm/g").unwrap();
+
+    // Mutating the constructor relationship after compilation must not affect
+    // QuickJS's realm-canonical literal shape.
+    defining
+        .eval("RegExp.prototype={replacement:true}")
+        .unwrap();
+    let first = expect_object(caller.execute(&function).unwrap(), "first RegExp literal");
+    let second = expect_object(caller.execute(&function).unwrap(), "second RegExp literal");
+
+    assert_ne!(first, second);
+    assert_eq!(
+        runtime.get_prototype_of(&first).unwrap(),
+        Some(defining_prototype)
+    );
+    assert_ne!(
+        runtime.get_prototype_of(&first).unwrap(),
+        Some(caller_prototype)
+    );
 }
 
 #[test]
