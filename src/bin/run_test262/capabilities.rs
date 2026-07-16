@@ -360,6 +360,7 @@ mod tests {
             .into_iter()
             .chain(PROPERTY_MANIFEST.lines().filter(|path| {
                 path.starts_with("test/built-ins/RegExp/property-escapes/")
+                    && !path.starts_with("test/built-ins/RegExp/property-escapes/generated/")
                     && !PROPERTY_POSITIVE_PATHS.contains(path)
             }))
             .collect::<BTreeSet<_>>();

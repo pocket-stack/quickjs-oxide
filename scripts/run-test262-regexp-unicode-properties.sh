@@ -53,6 +53,23 @@ expected_keys() {
     awk 'NF && $1 !~ /^#/ { print $0 "\tsloppy"; print $0 "\tstrict" }' "$manifest"
 }
 
+generated_paths() {
+    awk '
+        BEGIN {
+            prefix = "test/built-ins/RegExp/property-escapes/generated/"
+        }
+        NF && $1 !~ /^#/ && index($0, prefix) == 1 {
+            relative = substr($0, length(prefix) + 1)
+            if (index(relative, "/") == 0 && relative ~ /[.]js$/)
+                print
+        }
+    ' "$manifest"
+}
+
+generated_keys() {
+    generated_paths | awk '{ print $0 "\tsloppy"; print $0 "\tstrict" }'
+}
+
 cd -- "$root"
 if [[ ! -f "$baseline" ]]; then
     echo "error: Unicode-property Test262 baseline is missing: $baseline" >&2
@@ -80,6 +97,14 @@ expected_r1m_keys=$(read_value r1m_keys_sha256)
 expected_r1m_selected=$(read_value r1m_selected_sha256)
 expected_r1m_variants=$(read_value r1m_variants)
 expected_r1m_summary=$(read_value r1m_summary)
+expected_r1n_keys=$(read_value r1n_keys_sha256)
+expected_r1n_full_tsv=$(read_value r1n_full_tsv_sha256)
+expected_r1n_generated_manifest=$(read_value r1n_generated_manifest_sha256)
+expected_r1n_generated_keys=$(read_value r1n_generated_keys_sha256)
+expected_r1m_generated_selected=$(read_value r1m_generated_selected_sha256)
+expected_r1n_generated_paths=$(read_value r1n_generated_paths)
+expected_r1m_generated_variants=$(read_value r1m_generated_variants)
+expected_r1m_generated_summary=$(read_value r1m_generated_summary)
 expected_tsv=$(read_value tsv_sha256)
 expected_jsonl=$(read_value jsonl_sha256)
 expected_summary=$(read_value summary)
@@ -93,17 +118,25 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_schema" != "test262-canonical-classified-v2" \
     || "$expected_mode" != "both" \
     || "$timeout_ms" != "30000" \
-    || "$expected_paths" != "148" \
-    || "$expected_variants" != "296" \
-    || "$expected_runnable" != "296" \
-    || "$expected_passes" != "296" \
-    || "$expected_manifest" != "7ca318b763993b7d401442ab1af74575b7450504cbae37ad7be4ffdae10c210f" \
+    || "$expected_paths" != "589" \
+    || "$expected_variants" != "1178" \
+    || "$expected_runnable" != "1178" \
+    || "$expected_passes" != "1178" \
+    || "$expected_manifest" != "06d5c064c9a67e1cb657c326e6613ded980aa6a8723bb798c6556d66b431ff1a" \
     || "$expected_r1m_full_tsv" != "9a60ea477bb8d383b316b9418683865031b43b3609400d7bcacb448cb535a85b" \
     || "$expected_r1m_keys" != "e5e56d32193c6dcc1252e2a66efcd4e87b5c04b0fc33e1ce3c365aa34ff9a5e0" \
     || "$expected_r1m_selected" != "0b0019ab182f91b06bbb55079f132d1172e00e26a0bb876b1ee68042ffb8e7f9" \
     || "$expected_r1m_variants" != "296" \
-    || "$expected_r1m_summary" != "unsupported-feature=288 unsupported-parser=8" ]]; then
-    echo "error: Unicode-property R1m provenance metadata drifted" >&2
+    || "$expected_r1m_summary" != "unsupported-feature=288 unsupported-parser=8" \
+    || "$expected_r1n_keys" != "f769d38255e67ee3c6bf83d144d7d6c2e4c046b920585f2137ed84aff3aa7208" \
+    || "$expected_r1n_full_tsv" != "275fd8b3f6b1e5f078b6aad58bfc33797abaf6637179f47cc52228bc8f52feda" \
+    || "$expected_r1n_generated_manifest" != "3627e3a9b1c78972d5095bcc45f44098e9dd07b7efcbe32b6b2ab812e7ea7e31" \
+    || "$expected_r1n_generated_keys" != "c3c8ba970cd65dc59c0838af7e4fbfd5930caa41745394195c5740ebaee41acd" \
+    || "$expected_r1m_generated_selected" != "a8e9359c3a95348b88c82ed0d374ea5c89e6af6cbc71e1871a06a3038c6fab5a" \
+    || "$expected_r1n_generated_paths" != "441" \
+    || "$expected_r1m_generated_variants" != "882" \
+    || "$expected_r1m_generated_summary" != "unsupported-harness-parser=882" ]]; then
+    echo "error: Unicode-property R1m/R1n provenance metadata drifted" >&2
     exit 1
 fi
 
@@ -127,10 +160,33 @@ if [[ "$actual_manifest" != "$expected_manifest" ]]; then
     exit 1
 fi
 actual_keys=$(expected_keys | LC_ALL=C sort | sha256_stream)
-if [[ "$actual_keys" != "$expected_r1m_keys" ]]; then
+if [[ "$actual_keys" != "$expected_r1n_keys" ]]; then
     echo "error: Unicode-property manifest variant keys drifted" >&2
-    echo "expected: $expected_r1m_keys" >&2
+    echo "expected: $expected_r1n_keys" >&2
     echo "actual:   $actual_keys" >&2
+    exit 1
+fi
+
+actual_generated_paths=$(generated_paths | wc -l | tr -d '[:space:]')
+unique_generated_paths=$(generated_paths | LC_ALL=C sort -u | wc -l | tr -d '[:space:]')
+if [[ "$actual_generated_paths" != "$expected_r1n_generated_paths" \
+    || "$unique_generated_paths" != "$expected_r1n_generated_paths" ]]; then
+    echo "error: generated Unicode-property manifest cardinality drifted" >&2
+    echo "paths expected/actual/unique: $expected_r1n_generated_paths / $actual_generated_paths / $unique_generated_paths" >&2
+    exit 1
+fi
+actual_generated_manifest=$(generated_paths | sha256_stream)
+if [[ "$actual_generated_manifest" != "$expected_r1n_generated_manifest" ]]; then
+    echo "error: generated Unicode-property manifest content drifted" >&2
+    echo "expected: $expected_r1n_generated_manifest" >&2
+    echo "actual:   $actual_generated_manifest" >&2
+    exit 1
+fi
+actual_generated_keys=$(generated_keys | LC_ALL=C sort | sha256_stream)
+if [[ "$actual_generated_keys" != "$expected_r1n_generated_keys" ]]; then
+    echo "error: generated Unicode-property variant keys drifted" >&2
+    echo "expected: $expected_r1n_generated_keys" >&2
+    echo "actual:   $actual_generated_keys" >&2
     exit 1
 fi
 

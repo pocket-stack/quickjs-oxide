@@ -1,6 +1,6 @@
-# R1m freezes the direct Unicode property-escape grammar slice and its scoped
-# ignoreCase frontier. Generated Unicode-property data tests remain a separate
-# harness/data-plane milestone.
+# R1n extends the R1m grammar and scoped-ignoreCase slice with all generated
+# Unicode 17 code-point property data. The generated properties-of-strings
+# corpus remains behind the separate RegExp v-mode frontier.
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
@@ -10,16 +10,24 @@ oxide_profile_sha256=6d5bb9a92d00babb6a4a0bcb19334fbcfcd532bb5382ce278ce85a960d4
 schema=test262-canonical-classified-v2
 mode=both
 timeout_ms=30000
-paths=148
-variants=296
-runnable=296
-passes=296
-manifest_sha256=7ca318b763993b7d401442ab1af74575b7450504cbae37ad7be4ffdae10c210f
+paths=589
+variants=1178
+runnable=1178
+passes=1178
+manifest_sha256=06d5c064c9a67e1cb657c326e6613ded980aa6a8723bb798c6556d66b431ff1a
 r1m_full_tsv_sha256=9a60ea477bb8d383b316b9418683865031b43b3609400d7bcacb448cb535a85b
 r1m_keys_sha256=e5e56d32193c6dcc1252e2a66efcd4e87b5c04b0fc33e1ce3c365aa34ff9a5e0
 r1m_selected_sha256=0b0019ab182f91b06bbb55079f132d1172e00e26a0bb876b1ee68042ffb8e7f9
 r1m_variants=296
 r1m_summary=unsupported-feature=288 unsupported-parser=8
-tsv_sha256=66a129065346b23b454c6275b15301508bc8a4afaf6dacd8a473d6a948b7c392
-jsonl_sha256=87b704d71d7d8e33403abd81445cfd302c136fc2de30308c7f7caf9ceed9d869
-summary=pass=296
+r1n_keys_sha256=f769d38255e67ee3c6bf83d144d7d6c2e4c046b920585f2137ed84aff3aa7208
+r1n_full_tsv_sha256=275fd8b3f6b1e5f078b6aad58bfc33797abaf6637179f47cc52228bc8f52feda
+r1n_generated_manifest_sha256=3627e3a9b1c78972d5095bcc45f44098e9dd07b7efcbe32b6b2ab812e7ea7e31
+r1n_generated_keys_sha256=c3c8ba970cd65dc59c0838af7e4fbfd5930caa41745394195c5740ebaee41acd
+r1m_generated_selected_sha256=a8e9359c3a95348b88c82ed0d374ea5c89e6af6cbc71e1871a06a3038c6fab5a
+r1n_generated_paths=441
+r1m_generated_variants=882
+r1m_generated_summary=unsupported-harness-parser=882
+tsv_sha256=1cc6e3fec21a989c4a916a5dcfd069c9600efaa03883611a7dc5888ead73dd48
+jsonl_sha256=8b0dd3a9e76c7795f945631987f4dbd1ab3c5596dfda921993ea4594cb2f072e
+summary=pass=1178

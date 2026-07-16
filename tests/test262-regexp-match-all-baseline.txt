@@ -1,6 +1,6 @@
-# R1j freezes the direct matchAll protocol surface before feature admission,
-# then measures the complete post-implementation vector. Mixed parser,
-# harness, and unrelated-feature boundaries remain explicit.
+# R1j freezes the direct matchAll protocol surface before feature admission.
+# R1n removes the shared regExpUtils.js destructuring frontier: fourteen of
+# its twenty variants pass and six advance to the test parser frontier.
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
@@ -13,13 +13,18 @@ timeout_ms=30000
 paths=68
 variants=136
 runnable=112
-passes=64
+passes=78
 manifest_sha256=2f8c3d730c36ed86f46218c67f069c18698210704b1db7575fb4d2a95c69a671
 r1j_full_tsv_sha256=2895a8d2ddbe5857e83b573827e46b4a60a97d89b5882727c85ff75d2ff9d368
 r1j_keys_sha256=6fd466297dedbee518fbf7b168ea99d4d802b6bccc421fab4e61c2f913ba09ee
 r1j_selected_sha256=277b6f66951415f1552d45a91984a498cda48e61f5647597371137b06ad5343b
 r1j_variants=136
 r1j_summary=unsupported-feature=136
-tsv_sha256=eb84f770fc2d45616f294bfb532ca542468a1a7dc23b92761f92fa65237e3636
-jsonl_sha256=510a05e488ed8fb14c0a86c054a84e8d584bbe1ae67273a77b58592e5d96d086
-summary=pass=64 unsupported-feature=24 unsupported-harness-parser=20 unsupported-parser=28
+r1n_shared_harness_keys_sha256=02cb6947a41a508b01d9be0c1830b7941df8ceda2e35ca92cb1c99e1501d85f6
+r1j_shared_harness_selected_sha256=a678ad14b62a3a3cabd4f62af83b0e34bffc808c07ce86c6d6c0e07e65efea76
+r1j_shared_harness_summary=unsupported-harness-parser=20
+r1n_shared_harness_variants=20
+r1n_shared_harness_summary=pass=14 unsupported-parser=6
+tsv_sha256=29c56ecf914bffef99e5bf97a4b586abb471f88dbda6c656218dc7288ff61be9
+jsonl_sha256=c99df251e1084ae44150636636ece747dca0d7284bc83eb76c7c13e66764aa2b
+summary=pass=78 unsupported-feature=24 unsupported-parser=34

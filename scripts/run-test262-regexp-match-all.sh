@@ -53,6 +53,24 @@ expected_keys() {
     awk 'NF && $1 !~ /^#/ { print $0 "\tsloppy"; print $0 "\tstrict" }' "$manifest"
 }
 
+shared_harness_paths() {
+    printf '%s\n' \
+        test/built-ins/RegExp/prototype/Symbol.matchAll/species-constructor-is-undefined.js \
+        test/built-ins/RegExp/prototype/Symbol.matchAll/string-tostring.js \
+        test/built-ins/RegExp/prototype/Symbol.matchAll/this-get-flags.js \
+        test/built-ins/RegExp/prototype/Symbol.matchAll/this-lastindex-cached.js \
+        test/built-ins/RegExp/prototype/Symbol.matchAll/this-tostring-flags.js \
+        test/built-ins/RegExpStringIteratorPrototype/next/custom-regexpexec-not-callable.js \
+        test/built-ins/RegExpStringIteratorPrototype/next/next-iteration-global.js \
+        test/built-ins/RegExpStringIteratorPrototype/next/next-iteration.js \
+        test/built-ins/String/prototype/matchAll/regexp-is-null.js \
+        test/built-ins/String/prototype/matchAll/regexp-is-undefined.js
+}
+
+shared_harness_keys() {
+    shared_harness_paths | awk '{ print $0 "\tsloppy"; print $0 "\tstrict" }'
+}
+
 cd -- "$root"
 if [[ ! -f "$baseline" ]]; then
     echo "error: matchAll Test262 baseline is missing: $baseline" >&2
@@ -80,6 +98,11 @@ expected_r1j_keys=$(read_value r1j_keys_sha256)
 expected_r1j_selected=$(read_value r1j_selected_sha256)
 expected_r1j_variants=$(read_value r1j_variants)
 expected_r1j_summary=$(read_value r1j_summary)
+expected_r1n_shared_harness_keys=$(read_value r1n_shared_harness_keys_sha256)
+expected_r1j_shared_harness_selected=$(read_value r1j_shared_harness_selected_sha256)
+expected_r1j_shared_harness_summary=$(read_value r1j_shared_harness_summary)
+expected_r1n_shared_harness_variants=$(read_value r1n_shared_harness_variants)
+expected_r1n_shared_harness_summary=$(read_value r1n_shared_harness_summary)
 expected_tsv=$(read_value tsv_sha256)
 expected_jsonl=$(read_value jsonl_sha256)
 expected_summary=$(read_value summary)
@@ -96,14 +119,19 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_paths" != "68" \
     || "$expected_variants" != "136" \
     || "$expected_runnable" != "112" \
-    || "$expected_passes" != "64" \
+    || "$expected_passes" != "78" \
     || "$expected_manifest" != "2f8c3d730c36ed86f46218c67f069c18698210704b1db7575fb4d2a95c69a671" \
     || "$expected_r1j_full_tsv" != "2895a8d2ddbe5857e83b573827e46b4a60a97d89b5882727c85ff75d2ff9d368" \
     || "$expected_r1j_keys" != "6fd466297dedbee518fbf7b168ea99d4d802b6bccc421fab4e61c2f913ba09ee" \
     || "$expected_r1j_selected" != "277b6f66951415f1552d45a91984a498cda48e61f5647597371137b06ad5343b" \
     || "$expected_r1j_variants" != "136" \
-    || "$expected_r1j_summary" != "unsupported-feature=136" ]]; then
-    echo "error: matchAll R1j provenance metadata drifted" >&2
+    || "$expected_r1j_summary" != "unsupported-feature=136" \
+    || "$expected_r1n_shared_harness_keys" != "02cb6947a41a508b01d9be0c1830b7941df8ceda2e35ca92cb1c99e1501d85f6" \
+    || "$expected_r1j_shared_harness_selected" != "a678ad14b62a3a3cabd4f62af83b0e34bffc808c07ce86c6d6c0e07e65efea76" \
+    || "$expected_r1j_shared_harness_summary" != "unsupported-harness-parser=20" \
+    || "$expected_r1n_shared_harness_variants" != "20" \
+    || "$expected_r1n_shared_harness_summary" != "pass=14 unsupported-parser=6" ]]; then
+    echo "error: matchAll R1j/R1n provenance metadata drifted" >&2
     exit 1
 fi
 
@@ -131,6 +159,13 @@ if [[ "$actual_keys" != "$expected_r1j_keys" ]]; then
     echo "error: matchAll manifest variant keys drifted" >&2
     echo "expected: $expected_r1j_keys" >&2
     echo "actual:   $actual_keys" >&2
+    exit 1
+fi
+actual_shared_harness_keys=$(shared_harness_keys | LC_ALL=C sort | sha256_stream)
+if [[ "$actual_shared_harness_keys" != "$expected_r1n_shared_harness_keys" ]]; then
+    echo "error: matchAll shared-harness variant keys drifted" >&2
+    echo "expected: $expected_r1n_shared_harness_keys" >&2
+    echo "actual:   $actual_shared_harness_keys" >&2
     exit 1
 fi
 
@@ -188,6 +223,33 @@ if ! diff -u \
     <(expected_keys | LC_ALL=C sort) \
     <(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") { print $1 "\t" $2 }' "$report" | LC_ALL=C sort); then
     echo "error: matchAll Test262 report keys drifted from the frozen manifest" >&2
+    exit 1
+fi
+
+if ! diff -u \
+    <(shared_harness_keys | LC_ALL=C sort) \
+    <(awk -F'\t' '
+        NR == FNR { selected[$0] = 1; next }
+        !/^#/ && ($1 in selected) { print $1 "\t" $2 }
+    ' <(shared_harness_paths) "$report" | LC_ALL=C sort); then
+    echo "error: matchAll shared-harness report keys drifted" >&2
+    exit 1
+fi
+actual_shared_harness_variants=$(awk -F'\t' '
+    NR == FNR { selected[$0] = 1; next }
+    !/^#/ && ($1 in selected) { count++ }
+    END { print count + 0 }
+' <(shared_harness_paths) "$report")
+actual_shared_harness_summary=$(awk -F'\t' '
+    NR == FNR { selected[$0] = 1; next }
+    !/^#/ && ($1 in selected) { outcomes[$7]++ }
+    END { for (outcome in outcomes) print outcome "=" outcomes[outcome] }
+' <(shared_harness_paths) "$report" | LC_ALL=C sort | paste -sd ' ' -)
+if [[ "$actual_shared_harness_variants" != "$expected_r1n_shared_harness_variants" \
+    || "$actual_shared_harness_summary" != "$expected_r1n_shared_harness_summary" ]]; then
+    echo "error: matchAll shared-harness R1n transition vector drifted" >&2
+    echo "variants expected/actual: $expected_r1n_shared_harness_variants / $actual_shared_harness_variants" >&2
+    echo "summary expected/actual:  $expected_r1n_shared_harness_summary / $actual_shared_harness_summary" >&2
     exit 1
 fi
 

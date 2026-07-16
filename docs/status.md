@@ -15,8 +15,8 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 26,377 passes: 25.85% raw, a 31.57% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 84.36% among the 31,269 variants with a
+  has 27,293 passes: 26.75% raw, a 32.66% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 84.78% among the 32,193 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -70,6 +70,11 @@ claim full parity.
   `unsupported-parser` to pass, and 882 generated property-table variants move
   from `unsupported-feature` to the existing harness-parser frontier. No
   previous pass regresses.
+  R1n removes that generated-data frontier with the pinned QuickJS
+  `codePointRange` host helper, identifier-only array BindingPatterns in
+  synchronous for-in/of declarations, and binary RegExp range lookup. The
+  complete join adds 916 passes without changing the 34,457 admitted jobs or
+  regressing a previous pass.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -544,6 +549,35 @@ claim full parity.
   and
   `c2e14d42cfbb933946d9ce738d27c371e15fa3b9865131c2a6160cfe70b480f9`.
 
+  R1n adds the QuickJS-exported `js_string_codePointRange` helper as a
+  realm-bound, non-constructible native which the Test262 worker publishes
+  under `$262`; it does not publish the remaining host hooks. The compiler
+  reuses nested `ForOfStart`/`ForOfNext`/`IteratorClose` regions for
+  identifier-only `const`/`let`/`var` array declaration patterns in
+  synchronous for-in/of. Holes, empty and trailing patterns, early exhaustion,
+  fresh lexical cells, and inner/outer abrupt-close precedence match pinned
+  QuickJS. Assignment, object, default, rest, and nested patterns remain
+  explicit typed frontiers. Normalized RegExp ranges now use binary membership
+  lookup, so full-domain generated property tests do not multiply input length
+  by the number of property intervals.
+
+  The cumulative 589-path/1,178-variant Unicode-property gate passes every
+  variant. Its TSV/JSONL SHA-256 values are
+  `1cc6e3fec21a989c4a916a5dcfd069c9600efaa03883611a7dc5888ead73dd48`
+  and
+  `8b0dd3a9e76c7795f945631987f4dbd1ab3c5596dfda921993ea4594cb2f072e`.
+  The exact 102,037-key full join records 896
+  `unsupported-harness-parser -> pass`, six
+  `unsupported-harness-parser -> unsupported-parser`, 20
+  `unsupported-parser -> pass`, six `unsupported-parser -> fail-runtime`, and
+  two `unsupported-parser -> fail-parse` transitions. All 935 changed complete
+  rows are inside the pre-audited 475-path set, with no previous-pass
+  regression or outside-set drift. The vector reaches 27,293 passes while
+  admitted jobs remain 34,457. Full TSV/JSONL SHA-256 values are
+  `6035ae86888c4db9e99b73be65e706bf7b90ee83c108082a3e7931f2000edc61`
+  and
+  `fb37235d0d651a2d424cb4f63c16b6662813183f25fd2126e970bacb3506c50d`.
+
   Advanced grammar still fails closed: lookbehind, named captures, Unicode
   set/string properties, all `v`-mode execution, and unported Annex-B control
   escapes return typed unsupported errors. Pattern group
@@ -915,10 +949,10 @@ claim full parity.
   scoped lexical creation, Annex source writes, and argument/local hoist
   attachment)
   in QuickJS 2026-06-04. Direct/indirect eval declaration environments,
-  async/generator declarations, for-in destructuring, `for-await`, for-of
-  destructuring, single-statement lexical declarations, and catch/class scopes
-  remain explicit boundaries rather than falling back to local or ordinary
-  global storage.
+  async/generator declarations, `for-await`, general
+  assignment/object/default/rest/nested destructuring, single-statement
+  lexical declarations, and catch/class scopes remain explicit boundaries
+  rather than falling back to local or ordinary global storage.
 
   The immutable function format and VM provide the lexical-frame substrate for
   this compiler slice. Published bytecode owns
@@ -1033,8 +1067,10 @@ claim full parity.
   the pinned per-iteration boundary. Local and labelled continue retain the
   active iterator, while edges crossing an iterator control close it in
   inner-to-outer order and interleave correctly with switch cleanup and
-  try/finally subroutines. `for-await-of` and for-of destructuring remain
-  explicit frontiers. The classic head continues to port QuickJS's
+  try/finally subroutines. Identifier-only array declaration patterns reuse a
+  nested iterator record with QuickJS close semantics; assignment,
+  object/default/rest/nested patterns and `for-await-of` remain explicit
+  frontiers. The classic head continues to port QuickJS's
   sloppy `is_let(..., DECL_MASK_OTHER)` ambiguity; the shared statement parser
   applies the corresponding list-versus-single-statement mask.
 
@@ -2365,13 +2401,14 @@ claim full parity.
   abrupt-finally control flow, Script completion, the pinned caught-throw cell
   quirk, realm splitting, three debug modes, exact diagnostics, and the still
   explicit catch-destructuring frontier.
-  The `oracle_for_of` target locks simple binding/reference heads, the generic
-  iterator protocol and accessor order, Unicode String iteration, natural and
-  abrupt close behavior, completion precedence, nested labels/switch/finally,
-  raw native-next dispatch, realm splitting, exact diagnostics, and all three
+  The `oracle_for_of` target locks simple binding/reference heads,
+  identifier-only array declaration patterns, the generic iterator protocol
+  and accessor order, Unicode String iteration, natural and abrupt close
+  behavior, completion precedence, nested labels/switch/finally, raw
+  native-next dispatch, realm splitting, exact diagnostics, and all three
   debug modes. Generic Array iteration is now covered by `oracle_array`;
-  `for-await-of`, for-of destructuring, and Iterator Helpers remain separate
-  milestones.
+  `for-await-of`, remaining destructuring forms, and Iterator Helpers remain
+  separate milestones.
   The `oracle_for_in` target locks ordinary and representation-sensitive fast
   Array enumeration, per-level snapshots, live presence/prototype changes,
   shadowing, primitive boxing, simple assignment/declaration heads, lexical
@@ -2384,27 +2421,27 @@ claim full parity.
 The complete pinned Test262 vector is now recorded conservatively. Remaining
 parser frontiers with generic syntax diagnostics cannot contribute negative
 test passes until they gain typed `Unsupported` provenance or are individually
-audited as genuine early errors. Native `$262` host hooks, module
+audited as genuine early errors. The remaining native `$262` host hooks, module
 parse/link/evaluate, Promises/jobs and async completion, the ES5.1 suite, and a
 separate QuickJS-runner-quirk profile remain future milestones. Unsupported and
 host-missing outcomes are failures, not additional feature skips.
 
 The language slice is intentionally narrow. Async/generator declarations,
-for-in destructuring, `for-await`, for-of destructuring, other general
-assignment targets, module resolution, object method/accessor definitions and
-their home-object semantics, non-simple parameter lists, direct/indirect eval
-declaration environments, arrow/async/generator functions, `with`, and callable
-Proxy classes are not yet implemented. Unsupported declaration contexts are
-rejected instead of being
+`for-await`, general assignment/object/default/rest/nested destructuring,
+other general assignment targets, module resolution, object method/accessor
+definitions and their home-object semantics, non-simple parameter lists,
+direct/indirect eval declaration environments, arrow/async/generator
+functions, `with`, and callable Proxy classes are not yet implemented.
+Unsupported declaration contexts are rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` is currently
 limited to simple identifier lists in direct Program code, authored
 ordinary-function bodies, non-empty nested brace blocks, shared switch scopes,
 classic `for (;;)` heads, and synchronous simple-binding `for-in`/`for-of`
 heads. These forms also work in scripts, and ordinary bodies including classic
 heads are available through the normal `%Function%` constructor.
-Single-statement lexical declarations and destructuring loop heads,
-destructuring (including catch binding patterns), and class lexical
-environments remain later compiler slices. Direct
+Single-statement lexical declarations, remaining loop-head destructuring,
+destructuring in other contexts (including catch binding patterns), and class
+lexical environments remain later compiler slices. Direct
 Program lexicals now use the production global VarRef path with two-phase
 instantiation; simple-name Program vars and direct ordinary function
 declarations use ordered, kind-specific global declaration records. One
