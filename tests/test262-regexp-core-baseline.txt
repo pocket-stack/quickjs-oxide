@@ -1,0 +1,9 @@
+schema=test262-canonical-classified-v2
+timeout_ms=30000
+paths=225
+variants=450
+runnable=450
+passes=0
+tsv_sha256=95e7c6f281125bfa976e91b3ced8a99cf4f38a12b5bc09c13c7c504a5239c4b5
+jsonl_sha256=d9a5b748b7150e112f9b1d49c53fdf6cd32e0b47b742b2218a80a53885625c4d
+summary=fail-runtime=450

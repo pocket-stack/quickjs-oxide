@@ -3,6 +3,6 @@ timeout_ms=30000
 variants=427
 runnable=373
 passes=321
-tsv_sha256=d39f26f6569cffd137c3c6ba0f82814f95e027da60e8509c7c8de7debef964ff
-jsonl_sha256=e102084fd80f0248f8111add57811309fd2213f302b0b59d03442d46ccf7d92d
-summary=fail-parse=10 fail-runtime=30 harness-error=6 pass=321 unsupported-feature=54 unsupported-parser=6
+tsv_sha256=d96741e506df557f884542075065519a428797c8a19faa1bbb374e0678057ef6
+jsonl_sha256=77868d1a18c437771bd6bf3ba6a3cafb2a6ea93cc9a2eb928890027e72ba29f5
+summary=fail-parse=8 fail-runtime=30 harness-error=6 pass=321 unsupported-feature=54 unsupported-parser=8

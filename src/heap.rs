@@ -29,6 +29,7 @@ use crate::bigint::JsBigInt;
 use crate::bytecode::{Instruction, MAX_LOCAL_SLOTS};
 use crate::debug::Pc2LineTable;
 use crate::error::NativeErrorKind;
+use crate::regexp::CompiledRegExp;
 use crate::shape::{PropertyStorageKind, Shape};
 use crate::value::JsString;
 
@@ -723,6 +724,21 @@ impl PrimitiveObjectData {
     }
 }
 
+/// Internal payload of one genuine `JS_CLASS_REGEXP` object.
+///
+/// QuickJS allocates the branded object before compiling its pattern, so the
+/// explicit uninitialized state preserves that observable allocation/error
+/// order. Compiled programs and their source strings are reference-counted
+/// leaves outside the GC arena and own no heap or atom edge.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RegExpObjectData {
+    Uninitialized,
+    Compiled {
+        pattern: JsString,
+        program: Rc<CompiledRegExp>,
+    },
+}
+
 /// Class-specific edges stored alongside an object's ordinary properties.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ObjectPayload {
@@ -761,6 +777,8 @@ pub enum ObjectPayload {
     /// QuickJS `JS_CLASS_DATE`'s internal millisecond time value. NaN is the
     /// required invalid-Date sentinel for genuine Date instances.
     Date(f64),
+    /// QuickJS `JS_CLASS_REGEXP`'s source and compiled matcher program.
+    RegExp(RegExpObjectData),
     /// Realm global object and its hidden table of unresolved global VarRefs.
     GlobalObject {
         uninitialized_vars: ObjectId,
@@ -804,6 +822,7 @@ pub enum ObjectKind {
     ForInIterator,
     Primitive,
     Date,
+    RegExp,
     GlobalObject,
     Error,
     StringIterator,
@@ -2160,6 +2179,41 @@ impl ObjectData {
         }
     }
 
+    /// Construct a branded RegExp object before its pattern is compiled.
+    /// This mirrors QuickJS's derived-constructor order, in which object
+    /// allocation can succeed before compilation reports a SyntaxError.
+    #[must_use]
+    pub const fn regexp(shape: ShapeId, slots: Vec<PropertySlot>) -> Self {
+        Self {
+            shape,
+            slots,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::RegExp,
+            payload: ObjectPayload::RegExp(RegExpObjectData::Uninitialized),
+        }
+    }
+
+    /// Construct a branded RegExp object whose program is already compiled.
+    #[must_use]
+    pub fn compiled_regexp(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        pattern: JsString,
+        program: Rc<CompiledRegExp>,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::RegExp,
+            payload: ObjectPayload::RegExp(RegExpObjectData::Compiled { pattern, program }),
+        }
+    }
+
     /// Construct a realm global object with QuickJS's hidden unresolved-name
     /// VarRef table.
     #[must_use]
@@ -2679,6 +2733,7 @@ impl Heap {
             | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)
             | ObjectPayload::Date(_)
+            | ObjectPayload::RegExp(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }
@@ -3428,6 +3483,33 @@ impl Heap {
         Ok(())
     }
 
+    /// Read the typed internal state of one genuine RegExp object.
+    pub fn regexp_data(&self, id: ObjectId) -> Result<&RegExpObjectData, HeapError> {
+        let ObjectPayload::RegExp(data) = &self.object(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "RegExp data requested for an object with the wrong class",
+            ));
+        };
+        Ok(data)
+    }
+
+    /// Replace one genuine RegExp object's source/program state.
+    ///
+    /// Both variants are reference-counted leaves without arena or atom
+    /// edges, so mutation needs no retain/release transaction in this heap.
+    pub fn replace_regexp_data(
+        &mut self,
+        id: ObjectId,
+        replacement: RegExpObjectData,
+    ) -> Result<RegExpObjectData, HeapError> {
+        let ObjectPayload::RegExp(current) = &mut self.object_mut(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "RegExp data update reached an object with the wrong class",
+            ));
+        };
+        Ok(std::mem::replace(current, replacement))
+    }
+
     /// Snapshot one branded Array Iterator's live target, cursor, and mode.
     pub fn array_iterator_state(
         &self,
@@ -4044,6 +4126,7 @@ impl Heap {
                 | (ObjectKind::ForInIterator, ObjectPayload::ForInIterator(_))
                 | (ObjectKind::Primitive, ObjectPayload::Primitive(_))
                 | (ObjectKind::Date, ObjectPayload::Date(_))
+                | (ObjectKind::RegExp, ObjectPayload::RegExp(_))
                 | (ObjectKind::GlobalObject, ObjectPayload::GlobalObject { .. })
                 | (ObjectKind::Error, ObjectPayload::Error)
                 | (
@@ -4502,6 +4585,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::ForInIterator(_)
         | ObjectPayload::Primitive(_)
         | ObjectPayload::Date(_)
+        | ObjectPayload::RegExp(_)
         | ObjectPayload::GlobalObject { .. }
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
@@ -4526,6 +4610,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::Arguments { .. }
         | ObjectPayload::Primitive(_)
         | ObjectPayload::Date(_)
+        | ObjectPayload::RegExp(_)
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. } => {}
         ObjectPayload::ArrayIterator { object, .. } => {
@@ -4717,6 +4802,7 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
         | ObjectPayload::ArrayIterator { .. }
         | ObjectPayload::ForInIterator(_)
         | ObjectPayload::Date(_)
+        | ObjectPayload::RegExp(_)
         | ObjectPayload::GlobalObject { .. }
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
@@ -4832,6 +4918,9 @@ mod tests {
         let prototype = heap
             .allocate_object(ObjectData::ordinary(shape, Vec::new()))
             .unwrap();
+        let regexp = heap
+            .allocate_object(ObjectData::regexp(shape, Vec::new()))
+            .unwrap();
         let native_shape = heap
             .allocate_shape(Shape::new(Some(prototype), []).unwrap())
             .unwrap();
@@ -4856,9 +4945,12 @@ mod tests {
         assert_eq!(heap.context_strong_count(realm), Ok(2));
         assert!(heap.attach_native_function_realm(prototype, realm).is_err());
         assert_eq!(heap.context_strong_count(realm), Ok(2));
+        assert!(heap.attach_native_function_realm(regexp, realm).is_err());
+        assert_eq!(heap.context_strong_count(realm), Ok(2));
 
         heap.release_context(realm).unwrap();
         heap.release_object(function).unwrap();
+        heap.release_object(regexp).unwrap();
         heap.release_object(prototype).unwrap();
         heap.release_shape(native_shape).unwrap();
         heap.release_shape(shape).unwrap();
@@ -5078,6 +5170,131 @@ mod tests {
 
         heap.release_object(ordinary).unwrap();
         heap.release_object(date).unwrap();
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn regexp_payload_is_branded_edge_free_and_structurally_validated() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+
+        let mut invalid = ObjectData::regexp(shape, Vec::new());
+        invalid.kind = ObjectKind::Ordinary;
+        assert_eq!(
+            heap.allocate_object(invalid),
+            Err(HeapError::Invariant(
+                "object kind does not match its class payload"
+            ))
+        );
+        assert_eq!(heap.counts().object_nodes, 0);
+
+        let regexp = heap
+            .allocate_object(ObjectData::regexp(shape, Vec::new()))
+            .unwrap();
+        let regexp_object = heap.object(regexp).unwrap();
+        assert_eq!(regexp_object.kind, ObjectKind::RegExp);
+        assert!(matches!(
+            regexp_object.payload,
+            ObjectPayload::RegExp(RegExpObjectData::Uninitialized)
+        ));
+        assert!(matches!(
+            heap.regexp_data(regexp),
+            Ok(RegExpObjectData::Uninitialized)
+        ));
+        assert_eq!(object_edges(regexp_object), vec![RawId::Shape(shape)]);
+        assert_eq!(object_atoms(regexp_object).count(), 0);
+
+        let ordinary = heap
+            .allocate_object(ObjectData::ordinary(shape, Vec::new()))
+            .unwrap();
+        assert_eq!(
+            heap.regexp_data(ordinary),
+            Err(HeapError::Invariant(
+                "RegExp data requested for an object with the wrong class"
+            ))
+        );
+        assert_eq!(
+            heap.replace_regexp_data(ordinary, RegExpObjectData::Uninitialized),
+            Err(HeapError::Invariant(
+                "RegExp data update reached an object with the wrong class"
+            ))
+        );
+
+        heap.release_object(ordinary).unwrap();
+        heap.release_object(regexp).unwrap();
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn compiled_regexp_payload_replacement_and_finalization_release_rc_leaves() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let pattern = JsString::try_from_utf16([u16::from(b'a'), 0xd800, u16::from(b'b')]).unwrap();
+        let flags = JsString::from_static("");
+        let program = Rc::new(crate::regexp::compile(&pattern, &flags).unwrap());
+        assert_eq!(Rc::strong_count(&program), 1);
+
+        let regexp = heap
+            .allocate_object(ObjectData::regexp(shape, Vec::new()))
+            .unwrap();
+        let previous = heap
+            .replace_regexp_data(
+                regexp,
+                RegExpObjectData::Compiled {
+                    pattern: pattern.clone(),
+                    program: program.clone(),
+                },
+            )
+            .unwrap();
+        assert_eq!(previous, RegExpObjectData::Uninitialized);
+        assert_eq!(Rc::strong_count(&program), 2);
+        let RegExpObjectData::Compiled {
+            pattern: stored_pattern,
+            program: stored_program,
+        } = heap.regexp_data(regexp).unwrap()
+        else {
+            panic!("RegExp replacement did not install compiled data");
+        };
+        assert_eq!(stored_pattern, &pattern);
+        assert!(Rc::ptr_eq(stored_program, &program));
+        assert_eq!(
+            object_edges(heap.object(regexp).unwrap()),
+            vec![RawId::Shape(shape)]
+        );
+        assert_eq!(object_atoms(heap.object(regexp).unwrap()).count(), 0);
+
+        let precompiled = heap
+            .allocate_object(ObjectData::compiled_regexp(
+                shape,
+                Vec::new(),
+                pattern.clone(),
+                program.clone(),
+            ))
+            .unwrap();
+        assert_eq!(Rc::strong_count(&program), 3);
+        heap.release_object(precompiled).unwrap();
+        assert_eq!(Rc::strong_count(&program), 2);
+
+        let previous = heap
+            .replace_regexp_data(regexp, RegExpObjectData::Uninitialized)
+            .unwrap();
+        assert_eq!(Rc::strong_count(&program), 2);
+        let RegExpObjectData::Compiled {
+            pattern: previous_pattern,
+            program: previous_program,
+        } = previous
+        else {
+            panic!("RegExp replacement did not return the previous compiled data");
+        };
+        assert_eq!(previous_pattern, pattern);
+        assert!(Rc::ptr_eq(&previous_program, &program));
+        drop(previous_program);
+        assert_eq!(Rc::strong_count(&program), 1);
+
+        heap.release_object(regexp).unwrap();
+        assert_eq!(Rc::strong_count(&program), 1);
         heap.release_shape(shape).unwrap();
         assert_eq!(heap.counts().live, 0);
     }

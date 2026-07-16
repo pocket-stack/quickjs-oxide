@@ -819,6 +819,7 @@ impl Runtime {
                 ObjectPayload::Array { .. } => JsString::from_static("Array"),
                 ObjectPayload::Arguments { .. } => JsString::from_static("Arguments"),
                 ObjectPayload::Date(_) => JsString::from_static("Date"),
+                ObjectPayload::RegExp(_) => JsString::from_static("RegExp"),
                 ObjectPayload::Ordinary
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::GlobalObject { .. } => JsString::from_static("Object"),

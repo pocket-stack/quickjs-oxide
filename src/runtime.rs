@@ -4673,6 +4673,7 @@ impl Runtime {
                 } => (*bytecode, closure_slots.clone()),
                 ObjectPayload::Ordinary
                 | ObjectPayload::Date(_)
+                | ObjectPayload::RegExp(_)
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
@@ -4726,6 +4727,7 @@ impl Runtime {
             }
             ObjectPayload::Ordinary
             | ObjectPayload::Date(_)
+            | ObjectPayload::RegExp(_)
             | ObjectPayload::Array { .. }
             | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }
@@ -5161,6 +5163,7 @@ impl Runtime {
                 }
                 ObjectPayload::Ordinary
                 | ObjectPayload::Date(_)
+                | ObjectPayload::RegExp(_)
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
@@ -6210,6 +6213,7 @@ impl Runtime {
                         }
                         ObjectPayload::Ordinary
                         | ObjectPayload::Date(_)
+                        | ObjectPayload::RegExp(_)
                         | ObjectPayload::Array { .. }
                         | ObjectPayload::Arguments { .. }
                         | ObjectPayload::ArrayIterator { .. }
@@ -6548,6 +6552,7 @@ impl Runtime {
                 }
                 ObjectPayload::Ordinary
                 | ObjectPayload::Date(_)
+                | ObjectPayload::RegExp(_)
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
@@ -6758,6 +6763,7 @@ impl Runtime {
                         | ObjectPayload::BytecodeFunction { .. } => None,
                         ObjectPayload::Ordinary
                         | ObjectPayload::Date(_)
+                        | ObjectPayload::RegExp(_)
                         | ObjectPayload::Array { .. }
                         | ObjectPayload::Arguments { .. }
                         | ObjectPayload::ArrayIterator { .. }
@@ -6857,6 +6863,7 @@ impl Runtime {
                         }
                         ObjectPayload::Ordinary
                         | ObjectPayload::Date(_)
+                        | ObjectPayload::RegExp(_)
                         | ObjectPayload::Array { .. }
                         | ObjectPayload::Arguments { .. }
                         | ObjectPayload::ArrayIterator { .. }
@@ -7407,6 +7414,7 @@ impl Runtime {
                     }
                     ObjectPayload::Ordinary
                     | ObjectPayload::Date(_)
+                    | ObjectPayload::RegExp(_)
                     | ObjectPayload::Array { .. }
                     | ObjectPayload::Arguments { .. }
                     | ObjectPayload::ArrayIterator { .. }
@@ -8471,6 +8479,7 @@ impl Runtime {
                 ObjectPayload::GlobalObject { uninitialized_vars } => Some(uninitialized_vars),
                 ObjectPayload::Ordinary
                 | ObjectPayload::Date(_)
+                | ObjectPayload::RegExp(_)
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }

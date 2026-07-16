@@ -18,6 +18,7 @@ pub mod number;
 pub mod number_parse;
 pub mod object;
 pub mod property;
+pub mod regexp;
 pub mod runtime;
 pub mod shape;
 mod unicode;

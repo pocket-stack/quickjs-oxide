@@ -29,6 +29,7 @@ impl Runtime {
             ObjectPayload::Primitive(PrimitiveObjectData::String(value)) => Some(value.len()),
             ObjectPayload::Ordinary
             | ObjectPayload::Date(_)
+            | ObjectPayload::RegExp(_)
             | ObjectPayload::Array { .. }
             | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }
@@ -1173,6 +1174,7 @@ impl Runtime {
                 }
                 ObjectPayload::Ordinary
                 | ObjectPayload::Date(_)
+                | ObjectPayload::RegExp(_)
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }

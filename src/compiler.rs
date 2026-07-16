@@ -3789,6 +3789,20 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_primary(&mut self) -> Result<(), Error> {
+        // QuickJS initially tokenizes a leading slash as `/` or `/=`, then
+        // rewinds from `js_parse_postfix_expr` once the grammar has proved
+        // that the current position requires a PrimaryExpression.  Keep the
+        // same parser-owned decision here: operator parsing consumes genuine
+        // division before it can reach this function, while a slash which is
+        // asked to begin an operand is rescanned as one complete RegExp token.
+        // The literal remains an explicit implementation frontier below until
+        // its compiler, bytecode opcode and runtime class land together.
+        if matches!(
+            self.current().kind,
+            TokenKind::Punctuator(Punctuator::Divide | Punctuator::DivideAssign)
+        ) {
+            self.relex_current_with_goal(LexicalGoal::RegExp)?;
+        }
         let token = self.current().clone();
         self.anonymous_function_definition = None;
         match token.kind {
@@ -5351,6 +5365,20 @@ impl<'source> Parser<'source> {
             let token = self.lexer.next_token_with_goal(goal).map_err(lex_error)?;
             self.tokens.push(token);
         }
+        Ok(())
+    }
+
+    /// Rescan the current token after the parser has selected its lexical
+    /// goal.  Seeking to the token itself intentionally avoids committing a
+    /// lexer heuristic; preserve the already-observed trivia bit because the
+    /// rescan starts after that trivia rather than before it.
+    fn relex_current_with_goal(&mut self, goal: LexicalGoal) -> Result<(), Error> {
+        let position = self.current().span.start;
+        let line_terminator_before = self.current().line_terminator_before;
+        self.tokens.truncate(self.cursor);
+        self.lexer.seek(position);
+        self.ensure_token_with_goal(self.cursor, goal)?;
+        self.tokens[self.cursor].line_terminator_before = line_terminator_before;
         Ok(())
     }
 
@@ -13892,6 +13920,48 @@ mod tests {
         );
         let raw_span = raw_token_error.span().unwrap();
         assert_eq!((raw_span.start.line, raw_span.start.column), (2, 1));
+    }
+
+    #[test]
+    fn primary_expression_slashes_are_rescanned_as_complete_regexp_tokens() {
+        // Pinned QuickJS makes this decision in its primary-expression parser:
+        // `/` and `/=` are ordinary punctuators until the grammar requires an
+        // operand, at which point it rewinds and scans the complete literal.
+        // RegExp execution is still deliberately unsupported here, so the
+        // full-token span and typed frontier are the observable parser gate.
+        for (source, literal) in [
+            ("/start/g;", "/start/g"),
+            ("/=prefix/m;", "/=prefix/m"),
+            ("Function.value = /rhs/gi;", "/rhs/gi"),
+            ("(function(){ return /ret/m; })", "/ret/m"),
+            ("Function(/argument/s);", "/argument/s"),
+            ("true ? /consequent/u : 0;", "/consequent/u"),
+            ("false ? 0 : /alternate/y;", "/alternate/y"),
+            ("false || /logical/d;", "/logical/d"),
+            ("1 / /denominator/v;", "/denominator/v"),
+        ] {
+            let error = compile_unlinked_script(source).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Unsupported, "{source}");
+            assert_eq!(
+                error.message(),
+                "this literal form is not implemented yet",
+                "{source}"
+            );
+            let start = source.find(literal).expect("test literal is in source");
+            let span = error
+                .span()
+                .unwrap_or_else(|| panic!("missing RegExp frontier span for {source}"));
+            assert_eq!(span.start.byte_offset, start, "{source}");
+            assert_eq!(span.end.byte_offset, start + literal.len(), "{source}");
+        }
+
+        // The same slash tokens remain operators when the expression parser
+        // has already produced their left operand.
+        assert_eq!(evaluate("84 / 2"), Value::Int(42));
+        assert_eq!(
+            evaluate_in_context("(function(){ var value=84; value /= 2; return value; })()"),
+            Value::Int(42)
+        );
     }
 
     #[test]

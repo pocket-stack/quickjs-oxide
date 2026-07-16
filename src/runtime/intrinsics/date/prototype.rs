@@ -100,6 +100,7 @@ impl Runtime {
             match &state.heap.object(object.object_id())?.payload {
                 ObjectPayload::Date(value) => Some(*value),
                 ObjectPayload::Ordinary
+                | ObjectPayload::RegExp(_)
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }

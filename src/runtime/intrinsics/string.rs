@@ -642,15 +642,11 @@ impl Runtime {
     /// Internal-class fallback of pinned QuickJS `js_is_regexp` after an
     /// object has produced `undefined` for `Symbol.match`.
     ///
-    /// No RegExp payload is constructible yet. Keep this match exhaustive so
-    /// adding that payload makes the missing `true` branch a compile-time
-    /// integration point instead of silently treating RegExp instances as
-    /// ordinary objects.
-    #[allow(clippy::match_single_binding)]
     fn native_object_has_regexp_brand(&self, object: &ObjectRef) -> Result<bool, RuntimeError> {
         let state = self.0.state.borrow();
         let object = state.heap.object(object.object_id())?;
         Ok(match &object.payload {
+            ObjectPayload::RegExp(_) => true,
             ObjectPayload::Ordinary
             | ObjectPayload::Date(_)
             | ObjectPayload::Array { .. }

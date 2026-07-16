@@ -221,16 +221,21 @@ impl CaseMapping {
     }
 }
 
-fn case_conversion_entry(code_point: u32, to_lower: bool, index: usize, entry: u32) -> CaseMapping {
+fn case_conversion_entry(
+    code_point: u32,
+    conversion: u32,
+    index: usize,
+    entry: u32,
+) -> CaseMapping {
     let run_type = (entry >> 4) & 0xf;
     let data = ((entry & 0xf) << 8) | u32::from(tables::CASE_CONV_TABLE2[index]);
     let run_start = entry >> 15;
-    let is_lower = u32::from(to_lower);
+    let is_lower = u32::from(conversion != 0);
     let mut converted = code_point;
 
     match run_type {
         RUN_TYPE_U | RUN_TYPE_L | RUN_TYPE_UF | RUN_TYPE_LF => {
-            if is_lower == (run_type & 1) {
+            if conversion == (run_type & 1) || run_type >= RUN_TYPE_UF && conversion == 2 {
                 let mapped_start = tables::CASE_CONV_TABLE1[data as usize] >> 15;
                 converted = code_point - run_start + mapped_start;
             }
@@ -250,7 +255,7 @@ fn case_conversion_entry(code_point: u32, to_lower: bool, index: usize, entry: u
             }
         }
         RUN_TYPE_U2L_399_EXT2 => {
-            if to_lower {
+            if conversion != 0 {
                 converted = code_point - run_start
                     + u32::from(tables::CASE_CONV_EXT[(data & 0x3f) as usize]);
             } else {
@@ -261,13 +266,14 @@ fn case_conversion_entry(code_point: u32, to_lower: bool, index: usize, entry: u
             }
         }
         RUN_TYPE_UF_D20 => {
-            if !to_lower {
-                converted = data;
+            if conversion != 1 {
+                converted = data + u32::from(conversion == 2) * 0x20;
             }
         }
         RUN_TYPE_UF_D1_EXT => {
-            if !to_lower {
-                converted = u32::from(tables::CASE_CONV_EXT[data as usize]);
+            if conversion != 1 {
+                converted =
+                    u32::from(tables::CASE_CONV_EXT[data as usize]) + u32::from(conversion == 2);
             }
         }
         RUN_TYPE_U_EXT | RUN_TYPE_LF_EXT => {
@@ -276,7 +282,7 @@ fn case_conversion_entry(code_point: u32, to_lower: bool, index: usize, entry: u
             }
         }
         RUN_TYPE_UF_EXT2 => {
-            if !to_lower {
+            if conversion != 1 {
                 return CaseMapping::two(
                     code_point - run_start + u32::from(tables::CASE_CONV_EXT[(data >> 6) as usize]),
                     u32::from(tables::CASE_CONV_EXT[(data & 0x3f) as usize]),
@@ -284,7 +290,7 @@ fn case_conversion_entry(code_point: u32, to_lower: bool, index: usize, entry: u
             }
         }
         RUN_TYPE_LF_EXT2 => {
-            if to_lower {
+            if conversion != 0 {
                 return CaseMapping::two(
                     code_point - run_start + u32::from(tables::CASE_CONV_EXT[(data >> 6) as usize]),
                     u32::from(tables::CASE_CONV_EXT[(data & 0x3f) as usize]),
@@ -292,7 +298,7 @@ fn case_conversion_entry(code_point: u32, to_lower: bool, index: usize, entry: u
             }
         }
         RUN_TYPE_UF_EXT3 => {
-            if !to_lower {
+            if conversion != 1 {
                 return CaseMapping::three(
                     u32::from(tables::CASE_CONV_EXT[(data >> 8) as usize]),
                     u32::from(tables::CASE_CONV_EXT[((data >> 4) & 0xf) as usize]),
@@ -329,10 +335,60 @@ fn case_conversion(code_point: u32, to_lower: bool) -> CaseMapping {
         } else if code_point >= run_start + run_len {
             lower = middle + 1;
         } else {
-            return case_conversion_entry(code_point, to_lower, middle, entry);
+            return case_conversion_entry(code_point, u32::from(to_lower), middle, entry);
         }
     }
     CaseMapping::one(code_point)
+}
+
+/// Apply QuickJS's RegExp-specific canonicalization using the checksum-pinned
+/// Unicode 17 tables. Legacy expressions use the single-code-point uppercase
+/// rule; `u`/`v` expressions use Unicode simple case folding.
+pub(crate) fn regexp_canonicalize(code_point: u32, unicode: bool) -> u32 {
+    if code_point < 128 {
+        if unicode && (u32::from(b'A')..=u32::from(b'Z')).contains(&code_point) {
+            return code_point + u32::from(b'a' - b'A');
+        }
+        if !unicode && (u32::from(b'a')..=u32::from(b'z')).contains(&code_point) {
+            return code_point - u32::from(b'a' - b'A');
+        }
+        return code_point;
+    }
+
+    let mut lower = 0;
+    let mut upper = tables::CASE_CONV_TABLE1.len();
+    while lower < upper {
+        let middle = (lower + upper) / 2;
+        let entry = tables::CASE_CONV_TABLE1[middle];
+        let run_start = entry >> 15;
+        let run_len = (entry >> 8) & 0x7f;
+        if code_point < run_start {
+            upper = middle;
+        } else if code_point >= run_start + run_len {
+            lower = middle + 1;
+        } else {
+            let mapping =
+                case_conversion_entry(code_point, if unicode { 2 } else { 0 }, middle, entry);
+            if mapping.len == 1 {
+                let mapped = mapping.code_points[0];
+                return if unicode || mapped >= 128 {
+                    mapped
+                } else {
+                    code_point
+                };
+            }
+            if unicode {
+                return match code_point {
+                    0xfb06 => 0xfb05,
+                    0x1fd3 => 0x0390,
+                    0x1fe3 => 0x03b0,
+                    _ => code_point,
+                };
+            }
+            return code_point;
+        }
+    }
+    code_point
 }
 
 fn index_position(code_point: u32, index: &[u8]) -> Option<(u32, usize)> {
@@ -534,7 +590,8 @@ pub(crate) fn convert_case_with_limit(
 mod tests {
     use super::{
         case_conversion, convert_case_with_limit, fail_case_reservation_after_for_test,
-        fail_next_case_reservation_for_test, is_case_ignorable, is_cased, tables,
+        fail_next_case_reservation_for_test, is_case_ignorable, is_cased, regexp_canonicalize,
+        tables,
     };
     use crate::value::{JsString, JsStringError};
 
@@ -559,6 +616,25 @@ mod tests {
         assert_eq!(tables::CASED_INDEX.len(), 18);
         assert_eq!(tables::CASE_IGNORABLE_TABLE.len(), 785);
         assert_eq!(tables::CASE_IGNORABLE_INDEX.len(), 75);
+    }
+
+    #[test]
+    fn regexp_canonicalization_matches_legacy_and_unicode_rules() {
+        assert_eq!(regexp_canonicalize(u32::from(b'a'), false), u32::from(b'A'));
+        assert_eq!(regexp_canonicalize(u32::from(b'A'), false), u32::from(b'A'));
+        assert_eq!(regexp_canonicalize(u32::from(b'A'), true), u32::from(b'a'));
+        assert_eq!(regexp_canonicalize(u32::from(b'a'), true), u32::from(b'a'));
+
+        // Unicode simple folding admits these two non-ASCII word characters;
+        // legacy canonicalization must not map either one down into ASCII.
+        assert_eq!(regexp_canonicalize(0x017f, false), 0x017f);
+        assert_eq!(regexp_canonicalize(0x212a, false), 0x212a);
+        assert_eq!(regexp_canonicalize(0x017f, true), u32::from(b's'));
+        assert_eq!(regexp_canonicalize(0x212a, true), u32::from(b'k'));
+
+        assert_eq!(regexp_canonicalize(0xfb06, true), 0xfb05);
+        assert_eq!(regexp_canonicalize(0x1fd3, true), 0x0390);
+        assert_eq!(regexp_canonicalize(0x1fe3, true), 0x03b0);
     }
 
     #[test]

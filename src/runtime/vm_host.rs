@@ -1014,6 +1014,7 @@ impl VmHost for RuntimeVmHost {
             | ObjectPayload::BytecodeFunction { .. } => "function",
             ObjectPayload::Ordinary
             | ObjectPayload::Date(_)
+            | ObjectPayload::RegExp(_)
             | ObjectPayload::Array { .. }
             | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }

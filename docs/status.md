@@ -14,10 +14,13 @@ claim full parity.
   requirements keep unsupported grammar, features, modes, and `$262` hooks from
   becoming false passes. Bounded workers preserve canonical byte-for-byte TSV
   and JSONL ordering. The current vector has 23,190 passes: a 27.75% lower bound
-  after the 18,475 pinned QuickJS target exclusions, or 77.02% among the 30,110
+  after the 18,475 pinned QuickJS target exclusions, or 80.53% among the 28,798
   variants with a non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
-  the denominators and why none of these figures is a parity claim.
+  the denominators and why none of these figures is a parity claim. The RegExp
+  lexical-goal repair leaves the 23,190 passes unchanged while moving 1,312
+  slash-literal failures from accidental `SyntaxError` buckets to explicit
+  parser/harness frontiers.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -33,6 +36,36 @@ claim full parity.
   malformed-escape commitment and tested reserved/parser/lexer error priority,
   including line and column. Module/generator/async contextual-word behavior
   remains with those unimplemented grammar surfaces.
+- The first runtime-independent RegExp kernel follows pinned
+  `libregexp.c`/`libregexp-opcode.h` rather than a host regex library.
+  `src/regexp/` owns exact QuickJS flag bits, a UTF-16 pattern parser, typed IR,
+  a compiler, and a non-recursive executor with explicit backtrack/capture/
+  register undo stacks and a 10,000-step interrupt poll. The audited core covers
+  literals, dot/anchors, alternation, capturing and noncapturing groups,
+  greedy/lazy and bounded quantifiers, classes/ranges/inversion,
+  `\dDsSwW`, word boundaries, basic escapes, leftmost/sticky search, raw
+  UTF-16 and `u`-mode surrogate handling, and checksum-pinned Unicode 17
+  RegExp case folding. Nullable finite repetitions carry QuickJS's
+  zero-advance rollback rule; ignore-case class complements are folded before
+  inversion; sequential quantifiers reuse temporary registers.
+
+  The heap also has a genuine edge-free RegExp brand with explicit
+  uninitialized/compiled states and reference-counted source/program leaves.
+  Exhaustive runtime class matches recognize that brand for `IsRegExp`, the
+  default Object tag, non-callability and ordinary-object storage without
+  publishing a fake global. Forty-four pinned-QuickJS match/capture
+  differential cases and the RegExp/compiler/heap/parser unit group pass. A
+  frozen 225-path/450-variant Test262 RegExp-core vector currently remains
+  450 honest runtime failures because `%RegExp%`, its prototype/protocols, the
+  literal bytecode opcode and realm roots are intentionally not wired yet.
+
+  Advanced grammar fails closed: lookaround, backreferences, named captures,
+  inline modifiers, Unicode properties, all `v`-mode execution, and unported
+  Annex-B octal/control escapes return typed unsupported errors. Pattern group
+  nesting is temporarily capped at 256 with a catchable `stack overflow`
+  compile error so adversarial input cannot overflow the Rust stack; a later
+  iterative parser/compiler must replace that conservative resource frontier
+  before the runtime surface is exposed as complete.
 - Runtime-local atoms preserve exact UTF-16 spellings, cover immediate integer
   atoms, string/global-symbol interning, unique/private/well-known symbols, and
   explicit retain/release. Safe handles carry a runtime domain and slot
@@ -1221,11 +1254,12 @@ claim full parity.
   NaN/default-position behavior. The regexp-aware `includes`/`endsWith`/
   `startsWith` family additionally performs `IsRegExp` through `Symbol.match`
   before search-value conversion, preserves every abrupt-completion boundary,
-  clamps position with `JS_ToInt32Clamp`, and scans UTF-16 code units. Until a
-  RegExp object class lands, the internal-brand fallback remains an exhaustive
-  false branch with pinned oracle-only vectors. The generic `split` callable
-  has `length=2` and ports pinned QuickJS `js_string_split` without pretending
-  that the still-absent RegExp engine exists. Nullish receivers are rejected
+  clamps position with `JS_ToInt32Clamp`, and scans UTF-16 code units. The heap
+  now has a genuine RegExp payload and the internal-brand fallback recognizes
+  only that class; JavaScript cannot construct one until the RegExp realm graph
+  lands. The generic `split` callable has `length=2` and ports pinned QuickJS
+  `js_string_split` without pretending that the still-unwired RegExp runtime
+  protocols exist. Nullish receivers are rejected
   before any separator access. Only object separators perform the ordinary
   `Symbol.split` Get; a present non-nullish method is called with the separator
   as `this`, the original unconverted receiver and limit, and exactly two
@@ -2005,22 +2039,22 @@ identifier and ordinary fixed/computed member References. Sloppy
 direct-identifier delete is implemented
 for the current static scope tree and defining-realm global object. Dynamic
 object-environment lookup/deletion introduced by `with` or direct `eval`, the
-remaining seven entries of String's 53-key prototype surface, the RegExp object
-class needed by `IsRegExp`'s internal-brand fallback, Proxy/exotic internal
-methods, and the full
+remaining seven entries of String's 53-key prototype surface, the RegExp
+constructor/prototype/realm graph and protocol methods needed to make the new
+internal brand JavaScript-constructible, Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. AggregateError and
 uncatchable termination state are also pending. Array
 destructuring consumers, `with` object-environment
 semantics, other
-iterator classes and helpers,
-RegExp, the remaining RegExp-/Unicode-backed String methods, object-literal
-methods/accessors and exotic-source spread, and the rest of the builtin table
-build on those layers.
+iterator classes and helpers, observable RegExp integration, the remaining
+RegExp-/Unicode-backed String methods, object-literal methods/accessors and
+exotic-source spread, and the rest of the builtin table build on those layers.
 
 The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
-identifier, case-conversion, `Cased` and `Case_Ignorable` data, RegExp bytecode
-engine, modules, jobs/Promises/async,
+identifier, case-conversion, `Cased` and `Case_Ignorable` data, the advanced
+RegExp grammar plus observable constructor/literal/protocol integration,
+modules, jobs/Promises/async,
 generators, TypedArrays/Atomics, WeakRef/finalization, bytecode version 5 and
 BJSON interoperability, `std`/`os`, workers, REPL/qjsc, and the complete Rust
 and C embedding APIs.
@@ -2061,7 +2095,11 @@ main runtime file merely to wire a selector. Bytecode draft validation and
 iterative flattening now live in `runtime/bytecode_publish.rs`. The test, Array,
 Object, VM-host, property, native-dispatch and bytecode-publication
 no-semantic-change splits reduced `runtime.rs` from roughly thirty-two thousand
-lines to 9,937 lines. Realm-aware property completion wrappers and storage
+lines to 9,937 lines; subsequent wiring reached 9,944 before the RegExp brand
+added only nine exhaustive-class arms, leaving the current parent at 9,953
+lines. The RegExp kernel itself is isolated in
+`src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
+growing the runtime facade. Realm-aware property completion wrappers and storage
 helpers, bytecode publication linking and call dispatch, runtime/root lifecycle,
 and the remaining intrinsic families still share the file; `compiler.rs`
 similarly combines several compiler phases.
@@ -2138,6 +2176,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_reflect_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_date_intrinsic -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_regexp_engine -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_lexicals -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -2219,6 +2259,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-reflect.sh
 ./scripts/test-test262-date.sh
 ./scripts/test-test262-string-split.sh
+./scripts/test-test262-regexp-core.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -2229,7 +2270,7 @@ subranges, String-conversion core,
 Unicode String case conversion, String-rope/byte/native-Error kernels, Unicode
 identifier core, global
 BaseObjects, complete Number-, BigInt-, Math-, Reflect- and Date-intrinsic
-differentials, and the
+differentials, the runtime-independent RegExp-kernel differential, and the
 Program-var/function, Program/body/block/switch/classic-for lexical-scope,
 ordinary mapped/unmapped Arguments object,
 single/labelled Annex B, synchronous try/catch/finally, synchronous

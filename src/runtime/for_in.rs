@@ -148,6 +148,7 @@ impl Runtime {
             } => *fast_len,
             ObjectPayload::Ordinary
             | ObjectPayload::Date(_)
+            | ObjectPayload::RegExp(_)
             | ObjectPayload::Array { fast_len: None }
             | ObjectPayload::Arguments { fast_len: None, .. }
             | ObjectPayload::ArrayIterator { .. }
