@@ -40,6 +40,7 @@ impl Runtime {
             | RegExpNativeKind::Flags
             | RegExpNativeKind::Flag(_)
             | RegExpNativeKind::ToString
+            | RegExpNativeKind::Match
             | RegExpNativeKind::Search => Err(RuntimeError::Invariant(
                 "non-exec RegExp selector reached exec dispatch",
             )),

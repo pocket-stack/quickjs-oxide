@@ -162,8 +162,16 @@ impl Runtime {
                 1,
             )?;
         }
-        // QuickJS has match/matchAll before search. Those two methods remain
-        // unpublished, while search keeps its pinned position before split.
+        self.define_native_builtin_auto_init(
+            string_prototype,
+            realm,
+            NativeFunctionId::StringPrototypeMatch,
+            "match",
+            1,
+            1,
+        )?;
+        // QuickJS has matchAll between match and search. It remains
+        // unpublished while both linked protocols keep their pinned order.
         self.define_native_builtin_auto_init(
             string_prototype,
             realm,

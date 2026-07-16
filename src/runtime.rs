@@ -6996,6 +6996,7 @@ impl Runtime {
             // callbacks retain native and property-call stacks while
             // recursively entering these methods.
             NativeFunctionId::StringPrototypeIncludes(_)
+            | NativeFunctionId::StringPrototypeMatch
             | NativeFunctionId::StringPrototypeSearch
             | NativeFunctionId::StringPrototypeSplit
             | NativeFunctionId::StringPrototypeSubrange(_)
@@ -7004,6 +7005,7 @@ impl Runtime {
             | NativeFunctionId::StringPrototypeTrim(_)
             | NativeFunctionId::StringPrototypeCase(_)
             | NativeFunctionId::StringPrototypeCreateHtml(_)
+            | NativeFunctionId::RegExp(RegExpNativeKind::Match)
             | NativeFunctionId::RegExp(RegExpNativeKind::Search) => 16,
             _ => 8,
         };
@@ -7059,6 +7061,7 @@ impl Runtime {
             // between these String methods. Reject their shared fifth frame
             // while leaving weighted room for one callback leaf.
             NativeFunctionId::StringPrototypeIncludes(_)
+            | NativeFunctionId::StringPrototypeMatch
             | NativeFunctionId::StringPrototypeSearch
             | NativeFunctionId::StringPrototypeSplit
             | NativeFunctionId::StringPrototypeSubrange(_)
@@ -7067,6 +7070,7 @@ impl Runtime {
             | NativeFunctionId::StringPrototypeTrim(_)
             | NativeFunctionId::StringPrototypeCase(_)
             | NativeFunctionId::StringPrototypeCreateHtml(_)
+            | NativeFunctionId::RegExp(RegExpNativeKind::Match)
             | NativeFunctionId::RegExp(RegExpNativeKind::Search) => 4,
             // ToString, ToNumber and String.raw's property/conversion path can
             // all re-enter any other member of this constructor family.
@@ -7119,6 +7123,7 @@ impl Runtime {
                 matches!(candidate, NativeFunctionId::ObjectFromEntries)
             }
             NativeFunctionId::StringPrototypeIncludes(_)
+            | NativeFunctionId::StringPrototypeMatch
             | NativeFunctionId::StringPrototypeSearch
             | NativeFunctionId::StringPrototypeSplit
             | NativeFunctionId::StringPrototypeSubrange(_)
@@ -7127,9 +7132,11 @@ impl Runtime {
             | NativeFunctionId::StringPrototypeTrim(_)
             | NativeFunctionId::StringPrototypeCase(_)
             | NativeFunctionId::StringPrototypeCreateHtml(_)
+            | NativeFunctionId::RegExp(RegExpNativeKind::Match)
             | NativeFunctionId::RegExp(RegExpNativeKind::Search) => matches!(
                 candidate,
                 NativeFunctionId::StringPrototypeIncludes(_)
+                    | NativeFunctionId::StringPrototypeMatch
                     | NativeFunctionId::StringPrototypeSearch
                     | NativeFunctionId::StringPrototypeSplit
                     | NativeFunctionId::StringPrototypeSubrange(_)
@@ -7138,6 +7145,7 @@ impl Runtime {
                     | NativeFunctionId::StringPrototypeTrim(_)
                     | NativeFunctionId::StringPrototypeCase(_)
                     | NativeFunctionId::StringPrototypeCreateHtml(_)
+                    | NativeFunctionId::RegExp(RegExpNativeKind::Match)
                     | NativeFunctionId::RegExp(RegExpNativeKind::Search)
             ),
             NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)

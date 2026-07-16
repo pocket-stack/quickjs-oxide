@@ -1,0 +1,120 @@
+# Frozen RegExp @@match / String.prototype.match measurement slice for the
+# pinned Test262 checkout.
+#
+# This is the static, bytewise-sorted union of all paths under
+# test/built-ins/RegExp/prototype/Symbol.match and
+# test/built-ins/String/prototype/match in the R1c full keyed report (commit
+# 170f52c, TSV SHA-256
+# 27982c6cbd922e61c9798d7532316f0d382c858bd01039c2700697ddb76b33c9).
+# Its bytewise-sorted path/variant/outcome/detail projection has SHA-256
+# 309d815d6dedded573ba282b76f2fb97cbd9364b2000df08144a7b85e520c3b7.
+# At R1c the 208 variants classified as fail-runtime=76, pass=2, and
+# unsupported-feature=130. The gate must never select paths dynamically from
+# current outcomes.
+#
+# Exactly 104 unique paths expand to 208 sloppy/strict variants.
+#
+test/built-ins/RegExp/prototype/Symbol.match/builtin-coerce-lastindex.js
+test/built-ins/RegExp/prototype/Symbol.match/builtin-failure-g-set-lastindex-err.js
+test/built-ins/RegExp/prototype/Symbol.match/builtin-failure-g-set-lastindex.js
+test/built-ins/RegExp/prototype/Symbol.match/builtin-failure-return-val.js
+test/built-ins/RegExp/prototype/Symbol.match/builtin-failure-y-return-val.js
+test/built-ins/RegExp/prototype/Symbol.match/builtin-failure-y-set-lastindex-err.js
+test/built-ins/RegExp/prototype/Symbol.match/builtin-failure-y-set-lastindex.js
+test/built-ins/RegExp/prototype/Symbol.match/builtin-infer-unicode.js
+test/built-ins/RegExp/prototype/Symbol.match/builtin-success-g-set-lastindex-err.js
+test/built-ins/RegExp/prototype/Symbol.match/builtin-success-g-set-lastindex.js
+test/built-ins/RegExp/prototype/Symbol.match/builtin-success-return-val-groups.js
+test/built-ins/RegExp/prototype/Symbol.match/builtin-success-return-val.js
+test/built-ins/RegExp/prototype/Symbol.match/builtin-success-u-return-val-groups.js
+test/built-ins/RegExp/prototype/Symbol.match/builtin-success-y-set-lastindex-err.js
+test/built-ins/RegExp/prototype/Symbol.match/builtin-success-y-set-lastindex.js
+test/built-ins/RegExp/prototype/Symbol.match/builtin-y-coerce-lastindex-err.js
+test/built-ins/RegExp/prototype/Symbol.match/coerce-arg-err.js
+test/built-ins/RegExp/prototype/Symbol.match/coerce-arg.js
+test/built-ins/RegExp/prototype/Symbol.match/coerce-global.js
+test/built-ins/RegExp/prototype/Symbol.match/exec-err.js
+test/built-ins/RegExp/prototype/Symbol.match/exec-invocation.js
+test/built-ins/RegExp/prototype/Symbol.match/exec-return-type-invalid.js
+test/built-ins/RegExp/prototype/Symbol.match/exec-return-type-valid.js
+test/built-ins/RegExp/prototype/Symbol.match/flags-tostring-error.js
+test/built-ins/RegExp/prototype/Symbol.match/g-coerce-result-err.js
+test/built-ins/RegExp/prototype/Symbol.match/g-get-exec-err.js
+test/built-ins/RegExp/prototype/Symbol.match/g-get-result-err.js
+test/built-ins/RegExp/prototype/Symbol.match/g-init-lastindex-err.js
+test/built-ins/RegExp/prototype/Symbol.match/g-init-lastindex.js
+test/built-ins/RegExp/prototype/Symbol.match/g-match-empty-advance-lastindex.js
+test/built-ins/RegExp/prototype/Symbol.match/g-match-empty-coerce-lastindex-err.js
+test/built-ins/RegExp/prototype/Symbol.match/g-match-empty-set-lastindex-err.js
+test/built-ins/RegExp/prototype/Symbol.match/g-match-no-coerce-lastindex.js
+test/built-ins/RegExp/prototype/Symbol.match/g-match-no-set-lastindex.js
+test/built-ins/RegExp/prototype/Symbol.match/g-success-return-val.js
+test/built-ins/RegExp/prototype/Symbol.match/g-zero-matches.js
+test/built-ins/RegExp/prototype/Symbol.match/get-exec-err.js
+test/built-ins/RegExp/prototype/Symbol.match/get-flags-err.js
+test/built-ins/RegExp/prototype/Symbol.match/get-global-err.js
+test/built-ins/RegExp/prototype/Symbol.match/get-unicode-error.js
+test/built-ins/RegExp/prototype/Symbol.match/length.js
+test/built-ins/RegExp/prototype/Symbol.match/name.js
+test/built-ins/RegExp/prototype/Symbol.match/not-a-constructor.js
+test/built-ins/RegExp/prototype/Symbol.match/prop-desc.js
+test/built-ins/RegExp/prototype/Symbol.match/this-val-non-obj.js
+test/built-ins/RegExp/prototype/Symbol.match/this-val-non-regexp.js
+test/built-ins/RegExp/prototype/Symbol.match/u-advance-after-empty.js
+test/built-ins/RegExp/prototype/Symbol.match/y-fail-global-return.js
+test/built-ins/RegExp/prototype/Symbol.match/y-fail-lastindex-no-write.js
+test/built-ins/RegExp/prototype/Symbol.match/y-fail-lastindex.js
+test/built-ins/RegExp/prototype/Symbol.match/y-fail-return.js
+test/built-ins/RegExp/prototype/Symbol.match/y-init-lastindex.js
+test/built-ins/RegExp/prototype/Symbol.match/y-set-lastindex.js
+test/built-ins/String/prototype/match/S15.5.4.10_A1_T10.js
+test/built-ins/String/prototype/match/S15.5.4.10_A1_T11.js
+test/built-ins/String/prototype/match/S15.5.4.10_A1_T12.js
+test/built-ins/String/prototype/match/S15.5.4.10_A1_T13.js
+test/built-ins/String/prototype/match/S15.5.4.10_A1_T14.js
+test/built-ins/String/prototype/match/S15.5.4.10_A1_T3.js
+test/built-ins/String/prototype/match/S15.5.4.10_A1_T4.js
+test/built-ins/String/prototype/match/S15.5.4.10_A1_T5.js
+test/built-ins/String/prototype/match/S15.5.4.10_A1_T6.js
+test/built-ins/String/prototype/match/S15.5.4.10_A1_T7.js
+test/built-ins/String/prototype/match/S15.5.4.10_A1_T8.js
+test/built-ins/String/prototype/match/S15.5.4.10_A1_T9.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T1.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T10.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T11.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T12.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T13.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T14.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T15.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T16.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T17.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T18.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T2.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T3.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T4.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T5.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T6.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T7.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T8.js
+test/built-ins/String/prototype/match/S15.5.4.10_A2_T9.js
+test/built-ins/String/prototype/match/S15.5.4.10_A6.js
+test/built-ins/String/prototype/match/S15.5.4.10_A7.js
+test/built-ins/String/prototype/match/S15.5.4.10_A8.js
+test/built-ins/String/prototype/match/S15.5.4.10_A9.js
+test/built-ins/String/prototype/match/cstm-matcher-get-err.js
+test/built-ins/String/prototype/match/cstm-matcher-invocation.js
+test/built-ins/String/prototype/match/cstm-matcher-is-null.js
+test/built-ins/String/prototype/match/cstm-matcher-on-bigint-primitive.js
+test/built-ins/String/prototype/match/cstm-matcher-on-boolean-primitive.js
+test/built-ins/String/prototype/match/cstm-matcher-on-number-primitive.js
+test/built-ins/String/prototype/match/cstm-matcher-on-string-primitive.js
+test/built-ins/String/prototype/match/duplicate-named-groups-properties.js
+test/built-ins/String/prototype/match/duplicate-named-indices-groups-properties.js
+test/built-ins/String/prototype/match/invoke-builtin-match.js
+test/built-ins/String/prototype/match/length.js
+test/built-ins/String/prototype/match/name.js
+test/built-ins/String/prototype/match/not-a-constructor.js
+test/built-ins/String/prototype/match/regexp-prototype-match-v-u-flag.js
+test/built-ins/String/prototype/match/this-val-bool.js
+test/built-ins/String/prototype/match/this-val-obj.js
+test/built-ins/String/prototype/match/this-value-not-obj-coercible.js

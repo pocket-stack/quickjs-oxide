@@ -387,6 +387,9 @@ impl Runtime {
             NativeFunctionId::StringPrototypeIncludes(selector) => {
                 self.call_string_prototype_includes(realm, selector, invocation, arguments)
             }
+            NativeFunctionId::StringPrototypeMatch => {
+                self.call_string_prototype_match(realm, invocation, arguments)
+            }
             NativeFunctionId::StringPrototypeSearch => {
                 self.call_string_prototype_search(realm, invocation, arguments)
             }

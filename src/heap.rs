@@ -1483,6 +1483,7 @@ pub enum RegExpNativeKind {
     Exec,
     Test,
     ToString,
+    Match,
     Search,
     Source,
     Flags,
@@ -1571,6 +1572,7 @@ pub enum NativeFunctionId {
     StringPrototypeWellFormed(StringWellFormedKind),
     StringPrototypeIndexOf(StringIndexOfKind),
     StringPrototypeIncludes(StringIncludesKind),
+    StringPrototypeMatch,
     StringPrototypeSearch,
     StringPrototypeSplit,
     MathMinMax(MathMinMaxKind),
@@ -1912,6 +1914,7 @@ impl NativeFunctionId {
                 RegExpNativeKind::Exec
                 | RegExpNativeKind::Test
                 | RegExpNativeKind::ToString
+                | RegExpNativeKind::Match
                 | RegExpNativeKind::Search,
             )
             | Self::Reflect(
@@ -1989,6 +1992,7 @@ impl NativeFunctionId {
             | Self::StringPrototypeCharAt(_)
             | Self::StringPrototypeIndexOf(_)
             | Self::StringPrototypeIncludes(_)
+            | Self::StringPrototypeMatch
             | Self::StringPrototypeSearch
             | Self::StringPrototypePad(_)
             | Self::StringPrototypeTrim(_)
@@ -5687,6 +5691,7 @@ mod tests {
             NativeFunctionId::StringPrototypeCharAt(StringCharAtKind::CharAt),
             NativeFunctionId::StringPrototypePad(StringPadKind::End),
             NativeFunctionId::StringPrototypePad(StringPadKind::Start),
+            NativeFunctionId::StringPrototypeMatch,
             NativeFunctionId::StringPrototypeSearch,
             NativeFunctionId::StringPrototypeTrim(StringTrimKind::Both),
             NativeFunctionId::StringPrototypeTrim(StringTrimKind::End),
@@ -6182,6 +6187,7 @@ mod tests {
             NativeFunctionId::RegExp(RegExpNativeKind::Exec),
             NativeFunctionId::RegExp(RegExpNativeKind::Test),
             NativeFunctionId::RegExp(RegExpNativeKind::ToString),
+            NativeFunctionId::RegExp(RegExpNativeKind::Match),
             NativeFunctionId::RegExp(RegExpNativeKind::Search),
         ] {
             assert_eq!(target.descriptor().cproto, NativeCProto::Generic);

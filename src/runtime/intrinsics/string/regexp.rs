@@ -2,24 +2,71 @@
 
 use super::*;
 
+#[derive(Clone, Copy)]
+enum StringRegExpProtocol {
+    Match,
+    Search,
+}
+
+impl StringRegExpProtocol {
+    const fn symbol(self) -> WellKnownSymbol {
+        match self {
+            Self::Match => WellKnownSymbol::Match,
+            Self::Search => WellKnownSymbol::Search,
+        }
+    }
+
+    const fn invocation_invariant(self) -> &'static str {
+        match self {
+            Self::Match => "String match did not receive a generic-magic invocation",
+            Self::Search => "String search did not receive a generic-magic invocation",
+        }
+    }
+
+    const fn argument_invariant(self) -> &'static str {
+        match self {
+            Self::Match => "String match pattern argv was not padded",
+            Self::Search => "String search pattern argv was not padded",
+        }
+    }
+}
+
 impl Runtime {
-    /// Rust port of the `Symbol.search` branch in pinned QuickJS
-    /// `js_string_match`.
-    ///
-    /// Object patterns may intercept the operation before receiver coercion.
-    /// The fallback converts the receiver, constructs with the defining
-    /// realm's retained intrinsic RegExp constructor, and dynamically invokes
-    /// `@@search` on that fresh value so prototype mutations remain observable.
+    pub(in crate::runtime) fn call_string_prototype_match(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        self.call_string_regexp_protocol(realm, invocation, arguments, StringRegExpProtocol::Match)
+    }
+
     pub(in crate::runtime) fn call_string_prototype_search(
         &self,
         realm: ContextId,
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
+        self.call_string_regexp_protocol(realm, invocation, arguments, StringRegExpProtocol::Search)
+    }
+
+    /// Rust port of the `Symbol.match` and `Symbol.search` branches in pinned
+    /// QuickJS `js_string_match`.
+    ///
+    /// Object patterns may intercept the operation before receiver coercion.
+    /// The fallback converts the receiver, constructs with the defining
+    /// realm's retained intrinsic RegExp constructor, and dynamically invokes
+    /// the selected protocol on that fresh value so prototype mutations remain
+    /// observable.
+    fn call_string_regexp_protocol(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+        protocol: StringRegExpProtocol,
+    ) -> Result<Completion, RuntimeError> {
         let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String search did not receive a generic-magic invocation",
-            ));
+            return Err(RuntimeError::Invariant(protocol.invocation_invariant()));
         };
         if matches!(this_value, Value::Undefined | Value::Null) {
             return Ok(Completion::Throw(self.new_native_error(
@@ -28,18 +75,19 @@ impl Runtime {
                 "cannot convert to object",
             )?));
         }
-        let pattern = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "String search pattern argv was not padded",
-        ))?;
-        let search = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Search));
+        let pattern = arguments
+            .readable
+            .first()
+            .ok_or(RuntimeError::Invariant(protocol.argument_invariant()))?;
+        let protocol_key = PropertyKey::from(self.well_known_symbol(protocol.symbol()));
 
         if let Value::Object(pattern_object) = pattern {
-            let method = match self.get_property_in_realm(realm, pattern_object, &search)? {
+            let method = match self.get_property_in_realm(realm, pattern_object, &protocol_key)? {
                 Completion::Return(value) => value,
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
             };
             if !matches!(method, Value::Undefined | Value::Null) {
-                return self.call_string_search_method(
+                return self.call_string_regexp_method(
                     realm,
                     pattern_object.clone(),
                     method,
@@ -61,14 +109,14 @@ impl Runtime {
             }
             Completion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let method = match self.get_property_in_realm(realm, &regexp, &search)? {
+        let method = match self.get_property_in_realm(realm, &regexp, &protocol_key)? {
             Completion::Return(value) => value,
             Completion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        self.call_string_search_method(realm, regexp, method, Value::String(source))
+        self.call_string_regexp_method(realm, regexp, method, Value::String(source))
     }
 
-    fn call_string_search_method(
+    fn call_string_regexp_method(
         &self,
         realm: ContextId,
         receiver: ObjectRef,
