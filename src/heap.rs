@@ -2643,6 +2643,10 @@ impl RawId {
     }
 }
 
+// Context nodes intentionally stay inline in the generational arena: boxing
+// only this variant would add a second allocator/failure boundary to realm
+// publication and collection without shrinking any live Context graph.
+#[allow(clippy::large_enum_variant)]
 enum NodeData {
     Object(ObjectData),
     Shape(Shape),
