@@ -1,0 +1,54 @@
+# Frozen RegExp lookbehind measurement slice for the pinned Test262 checkout.
+#
+# This is the static, bytewise-sorted union of:
+#
+# - all 17 paths under test/built-ins/RegExp/lookBehind tagged with
+#   regexp-lookbehind;
+# - the two named-group paths co-tagged with regexp-named-groups and
+#   regexp-lookbehind; and
+# - all eight RegExp-literal parse-negative paths which quantify a positive or
+#   negative lookbehind assertion, with and without the Unicode flag.
+#
+# The source report is the complete preimplementation R1o keyed vector at the
+# R1n bookkeeping commit d3dd9a4. Before implementation the 34 pure-lookbehind
+# variants classify as unsupported-feature=34, the four co-tagged named-group
+# variants classify as unsupported-feature=4, and the 16 parse-negative
+# variants classify as unsupported-negative-provenance=16. The full R1n
+# TSV/JSONL SHA-256 values are
+# 6035ae86888c4db9e99b73be65e706bf7b90ee83c108082a3e7931f2000edc61
+# and
+# fb37235d0d651a2d424cb4f63c16b6662813183f25fd2126e970bacb3506c50d.
+# The gate retains that provenance and must never select paths dynamically from
+# current outcomes.
+#
+# Exactly 27 unique paths expand to 54 sloppy/strict variants. The
+# bytewise-sorted path set has SHA-256
+# 6068e781c7b2185d2b3ccc402b59f6284e3429100dbf951adde680971d814fb7.
+#
+test/annexB/built-ins/RegExp/named-groups/non-unicode-malformed-lookbehind.js
+test/built-ins/RegExp/lookBehind/alternations.js
+test/built-ins/RegExp/lookBehind/back-references-to-captures.js
+test/built-ins/RegExp/lookBehind/back-references.js
+test/built-ins/RegExp/lookBehind/captures-negative.js
+test/built-ins/RegExp/lookBehind/captures.js
+test/built-ins/RegExp/lookBehind/do-not-backtrack.js
+test/built-ins/RegExp/lookBehind/greedy-loop.js
+test/built-ins/RegExp/lookBehind/misc.js
+test/built-ins/RegExp/lookBehind/mutual-recursive.js
+test/built-ins/RegExp/lookBehind/negative.js
+test/built-ins/RegExp/lookBehind/nested-lookaround.js
+test/built-ins/RegExp/lookBehind/simple-fixed-length.js
+test/built-ins/RegExp/lookBehind/sliced-strings.js
+test/built-ins/RegExp/lookBehind/start-of-line.js
+test/built-ins/RegExp/lookBehind/sticky.js
+test/built-ins/RegExp/lookBehind/variable-length.js
+test/built-ins/RegExp/lookBehind/word-boundary.js
+test/built-ins/RegExp/named-groups/lookbehind.js
+test/language/literals/regexp/invalid-optional-lookbehind.js
+test/language/literals/regexp/invalid-optional-negative-lookbehind.js
+test/language/literals/regexp/invalid-range-lookbehind.js
+test/language/literals/regexp/invalid-range-negative-lookbehind.js
+test/language/literals/regexp/u-invalid-optional-lookbehind.js
+test/language/literals/regexp/u-invalid-optional-negative-lookbehind.js
+test/language/literals/regexp/u-invalid-range-lookbehind.js
+test/language/literals/regexp/u-invalid-range-negative-lookbehind.js

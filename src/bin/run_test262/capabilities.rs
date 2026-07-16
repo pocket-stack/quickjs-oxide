@@ -208,7 +208,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 24] = [
+    const EXPECTED_FEATURES: [&str; 25] = [
         "BigInt",
         "Math.sumPrecise",
         "Reflect",
@@ -231,10 +231,11 @@ mod tests {
         "exponentiation",
         "for-in-order",
         "hashbang",
+        "regexp-lookbehind",
         "regexp-modifiers",
         "regexp-unicode-property-escapes",
     ];
-    const EXPECTED_AUDITED_NEGATIVES: [&str; 103] = [
+    const EXPECTED_AUDITED_NEGATIVES: [&str; 111] = [
         "test/language/comments/hashbang/escaped-bang-041.js",
         "test/language/expressions/object/__proto__-duplicate.js",
         "test/language/global-code/decl-lex-restricted-global.js",
@@ -321,8 +322,16 @@ mod tests {
         "test/language/literals/regexp/early-err-modifiers-should-not-unicode-escape-i.js",
         "test/language/literals/regexp/early-err-modifiers-should-not-unicode-escape-m.js",
         "test/language/literals/regexp/early-err-modifiers-should-not-unicode-escape-s.js",
+        "test/language/literals/regexp/invalid-optional-lookbehind.js",
+        "test/language/literals/regexp/invalid-optional-negative-lookbehind.js",
+        "test/language/literals/regexp/invalid-range-lookbehind.js",
+        "test/language/literals/regexp/invalid-range-negative-lookbehind.js",
         "test/language/literals/regexp/u-invalid-legacy-octal-escape.js",
         "test/language/literals/regexp/u-invalid-oob-decimal-escape.js",
+        "test/language/literals/regexp/u-invalid-optional-lookbehind.js",
+        "test/language/literals/regexp/u-invalid-optional-negative-lookbehind.js",
+        "test/language/literals/regexp/u-invalid-range-lookbehind.js",
+        "test/language/literals/regexp/u-invalid-range-negative-lookbehind.js",
         "test/language/statements/const/global-use-before-initialization-in-declaration-statement.js",
         "test/language/statements/const/syntax/with-initializer-while-expression-statement.js",
         "test/language/statements/for/S12.6.3_A7_T2.js",
@@ -364,7 +373,7 @@ mod tests {
                     && !PROPERTY_POSITIVE_PATHS.contains(path)
             }))
             .collect::<BTreeSet<_>>();
-        assert_eq!(expected_audited_negatives.len(), 245);
+        assert_eq!(expected_audited_negatives.len(), 253);
         assert!(
             profile
                 .audited_negative_tests

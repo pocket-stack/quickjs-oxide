@@ -10,13 +10,13 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 24 reviewed feature tags and 245 exact audited
+  capability profile now admits 25 reviewed feature tags and 253 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 27,293 passes: 26.75% raw, a 32.66% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 84.78% among the 32,193 variants with a
+  has 27,343 passes: 26.80% raw, a 32.72% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 84.80% among the 32,243 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -75,6 +75,9 @@ claim full parity.
   synchronous for-in/of declarations, and binary RegExp range lookup. The
   complete join adds 916 passes without changing the 34,457 admitted jobs or
   regressing a previous pass.
+  R1o ports positive and negative variable-length lookbehind through the same
+  QuickJS-shaped assertion stack. It adds 50 passes and admitted jobs with no
+  previous-pass regression or outcome drift outside the frozen 27-path set.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -108,6 +111,12 @@ claim full parity.
   alternatives, negative completion always rolls them back, and outer
   backtracking can still undo a committed positive capture. Non-Unicode
   quantified assertions retain QuickJS's Annex B zero-advance behavior.
+  Lookbehind reuses those assertion frames while code generation reverses each
+  alternative's terms, emits QuickJS-shaped `Prev` instructions around
+  ordinary consuming atoms, swaps capture boundaries, and selects a bounded
+  backward backreference. Variable-length, nested forward/backward assertions,
+  greedy/lazy captures, anchors, word boundaries, and Unicode surrogate
+  movement are covered without a recursive sub-executor.
   Unicode `u` patterns resolve exact-case General_Category, Script,
   Script_Extensions, and binary property aliases from checksum-pinned Unicode
   17 Rust tables generated through the pinned QuickJS implementation.
@@ -483,12 +492,13 @@ claim full parity.
   Two pinned QuickJS differential groups cover successful matches, syntax
   errors, capture reset/backtracking, scoped and Unicode case folding, surrogate
   boundaries, complete-number priority, and Annex B widths. The static
-  49-path/98-variant Test262 gate admits 78 variants. R1l resolves its four
-  linked lookahead variants, so all 78 admitted variants now pass; 20 remain
-  behind named-group/lookbehind feature gates. Its TSV/JSONL SHA-256 values are
-  `d2061ba176a7f90943d5c5fe25c529661275c731b3df207f04ec2d1ff966131e`
+  49-path/98-variant Test262 gate admits 92 variants. R1l resolves its four
+  linked lookahead variants and R1o resolves fourteen linked lookbehind
+  variants, so all 92 admitted variants now pass; six remain behind the
+  named-group feature gate. Its TSV/JSONL SHA-256 values are
+  `b2cf049ff8a95f0b3f9ebce081236b3ac9f3363f72d6665d237ee2b376ea4d92`
   and
-  `d180956eafd41037558a2da1595c71e50c951d2d8aaf5f68c260b5072c8ee278`.
+  `16d419a093183257504980133ed7ace522f3b0fa4c304ffc6562b7b0c9bfb347`.
 
   The complete vector moves to 26,027 passes and 33,287 admitted jobs. Its
   exact R1j-to-R1k outcome delta is 62 `unsupported-parser -> pass`, two
@@ -578,7 +588,33 @@ claim full parity.
   and
   `fb37235d0d651a2d424cb4f63c16b6662813183f25fd2126e970bacb3506c50d`.
 
-  Advanced grammar still fails closed: lookbehind, named captures, Unicode
+  R1o follows pinned QuickJS's backwards-direction compiler rather than adding
+  a second matcher. Each lookbehind alternative retains source priority while
+  its terms execute in reverse; consuming atoms use `Prev, op, Prev`, captures
+  swap their saved boundaries, and participating numeric backreferences
+  compare right-to-left without crossing their capture start. The existing
+  non-recursive positive/negative assertion controls preserve atomicity,
+  capture retention, rollback, and interruption behavior.
+
+  Forty-two execution vectors and ten grammar vectors match pinned QuickJS.
+  The frozen Test262 gate covers 27 paths and 54 variants: all 50 variants
+  owned solely by lookbehind semantics or its audited parse-negative grammar
+  pass, while four co-tagged variants remain honestly gated by named captures.
+  Its TSV/JSONL SHA-256 values are
+  `c1a1e3be20bea8f115977ad460234afe2825c141793846b82c3c2ce4317f23da`
+  and
+  `3a47f9a1fb77a5dd47af69354ac4cf2db757ad25c8286156d5281f500b1b3888`.
+  The exact R1n/R1o full join matches all 102,037 keys: 34
+  `unsupported-feature -> pass` and 16
+  `unsupported-negative-provenance -> pass`, with 50 outcome changes, 54
+  complete-row changes, no previous-pass regression, and no drift outside the
+  frozen set. The vector reaches 27,343 passes and 34,507 admitted jobs. Full
+  TSV/JSONL SHA-256 values are
+  `50fe24e393c2532e2c25fc2113e6bbb48c163678a6bc8a0991f8c6ad0d8273c1`
+  and
+  `c997357b861109bfd17c46ad0c8059004f2b797cf9254394b90892dca078810b`.
+
+  Advanced grammar still fails closed: named captures, Unicode
   set/string properties, all `v`-mode execution, and unported Annex-B control
   escapes return typed unsupported errors. Pattern group
   nesting is temporarily capped at 256 with a catchable `stack overflow`
@@ -2858,6 +2894,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/run-test262-regexp-match-all.sh
 ./scripts/run-test262-regexp-backreferences.sh
 ./scripts/run-test262-regexp-lookahead.sh
+./scripts/run-test262-regexp-lookbehind.sh
+./scripts/run-test262-regexp-unicode-properties.sh
 ./scripts/test-test262-full.sh
 ```
 
