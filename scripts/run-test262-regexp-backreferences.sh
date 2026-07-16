@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
-# Reproduce the complete classified outcome vector for RegExp inline modifiers.
+# Reproduce the complete classified outcome vector for numbered backreferences.
 
 set -euo pipefail
 export TZ=America/Los_Angeles
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$script_dir/.." && pwd)
-suite=$("$script_dir/prepare-test262.sh")
-source_dir=$(dirname -- "$suite")
-baseline=tests/test262-regexp-modifiers-baseline.txt
-manifest=tests/test262-regexp-modifiers.txt
-report=target/test262-regexp-modifiers.tsv
-json_report=target/test262-regexp-modifiers.jsonl
+baseline=tests/test262-regexp-backreferences-baseline.txt
+manifest=tests/test262-regexp-backreferences.txt
+report=target/test262-regexp-backreferences.tsv
+json_report=target/test262-regexp-backreferences.jsonl
 workers=${TEST262_WORKERS:-8}
 
 read_value() {
@@ -51,7 +49,18 @@ sha256_stream() {
     fi
 }
 
+expected_keys() {
+    awk 'NF && $1 !~ /^#/ { print $0 "\tsloppy"; print $0 "\tstrict" }' "$manifest"
+}
+
 cd -- "$root"
+if [[ ! -f "$baseline" ]]; then
+    echo "error: numbered-backreference Test262 baseline is missing: $baseline" >&2
+    exit 1
+fi
+suite=$("$script_dir/prepare-test262.sh")
+source_dir=$(dirname -- "$suite")
+
 expected_quickjs=$(read_value quickjs)
 expected_test262=$(read_value test262)
 expected_patch=$(read_value test262_patch_sha256)
@@ -65,15 +74,15 @@ expected_paths=$(read_value paths)
 expected_variants=$(read_value variants)
 expected_runnable=$(read_value runnable)
 expected_passes=$(read_value passes)
+expected_manifest=$(read_value manifest_sha256)
+expected_r1k_full_tsv=$(read_value r1k_full_tsv_sha256)
+expected_r1k_keys=$(read_value r1k_keys_sha256)
+expected_r1k_selected=$(read_value r1k_selected_sha256)
+expected_r1k_variants=$(read_value r1k_variants)
+expected_r1k_summary=$(read_value r1k_summary)
 expected_tsv=$(read_value tsv_sha256)
 expected_jsonl=$(read_value jsonl_sha256)
 expected_summary=$(read_value summary)
-expected_manifest=$(read_value manifest_sha256)
-expected_r1f_profile=$(read_value r1f_oxide_profile_sha256)
-expected_r1f_full_tsv=$(read_value r1f_full_tsv_sha256)
-expected_r1f_selected=$(read_value r1f_selected_sha256)
-expected_r1f_variants=$(read_value r1f_variants)
-expected_r1f_summary=$(read_value r1f_summary)
 
 if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_test262" != "5c8206929d81b2d3d727ca6aac56c18358c8d790" \
@@ -84,13 +93,17 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_schema" != "test262-canonical-classified-v2" \
     || "$expected_mode" != "both" \
     || "$timeout_ms" != "30000" \
-    || "$expected_manifest" != "75233faae95fb86a013292d70c1f877d3a7e0c62e900c2e9762a63c206f76691" \
-    || "$expected_r1f_profile" != "cc10293aa847f5a449ac2b039709dff98d264b672dddc8828b8e17d8b7e12d9a" \
-    || "$expected_r1f_full_tsv" != "57caefa97b579fafeb6b56ba45da7daf9cbe5e168849e4ab0459b87452d4745e" \
-    || "$expected_r1f_selected" != "21fb00d8d12635b76f8cba511e6ac72880398fb893c8776101de6143825c2c7b" \
-    || "$expected_r1f_variants" != "460" \
-    || "$expected_r1f_summary" != "unsupported-feature=460" ]]; then
-    echo "error: RegExp modifiers R1f provenance metadata drifted" >&2
+    || "$expected_paths" != "49" \
+    || "$expected_variants" != "98" \
+    || "$expected_runnable" != "78" \
+    || "$expected_passes" != "74" \
+    || "$expected_manifest" != "80b226f4d12eaf8f3f87a3188051b05cc66e623b7e24a081652dbe4370b5e1ce" \
+    || "$expected_r1k_full_tsv" != "5f0e4601ce6b0212dacdd5c98fc1ba4cb2c8c217e3f0eb6c91411ad6e3f243fa" \
+    || "$expected_r1k_keys" != "88327e165201d7d7d9d6a4e8059d115a828d73cf616f00bee91c3fca45277bbf" \
+    || "$expected_r1k_selected" != "b70d7aaede4f9061b147f8190c757271d1deccf580eb6e8cd9c93f98f52e9609" \
+    || "$expected_r1k_variants" != "98" \
+    || "$expected_r1k_summary" != "pass=6 unsupported-feature=20 unsupported-negative-provenance=4 unsupported-parser=66 unsupported-runtime=2" ]]; then
+    echo "error: numbered-backreference R1k provenance metadata drifted" >&2
     exit 1
 fi
 
@@ -98,19 +111,26 @@ actual_manifest_paths=$(awk 'NF && $1 !~ /^#/ { count++ } END { print count + 0 
 unique_manifest_paths=$(awk 'NF && $1 !~ /^#/ { print }' "$manifest" | LC_ALL=C sort -u | wc -l | tr -d '[:space:]')
 if [[ "$actual_manifest_paths" != "$expected_paths" \
     || "$unique_manifest_paths" != "$expected_paths" ]]; then
-    echo "error: RegExp modifiers manifest cardinality drifted" >&2
+    echo "error: numbered-backreference manifest cardinality drifted" >&2
     echo "paths expected/actual/unique: $expected_paths / $actual_manifest_paths / $unique_manifest_paths" >&2
     exit 1
 fi
 if ! awk 'NF && $1 !~ /^#/ { print }' "$manifest" | LC_ALL=C sort -c; then
-    echo "error: RegExp modifiers manifest is not bytewise sorted" >&2
+    echo "error: numbered-backreference manifest is not bytewise sorted" >&2
     exit 1
 fi
 actual_manifest=$(awk 'NF && $1 !~ /^#/ { print }' "$manifest" | sha256_stream)
 if [[ "$actual_manifest" != "$expected_manifest" ]]; then
-    echo "error: RegExp modifiers manifest content drifted" >&2
+    echo "error: numbered-backreference manifest content drifted" >&2
     echo "expected: $expected_manifest" >&2
     echo "actual:   $actual_manifest" >&2
+    exit 1
+fi
+actual_keys=$(expected_keys | LC_ALL=C sort | sha256_stream)
+if [[ "$actual_keys" != "$expected_r1k_keys" ]]; then
+    echo "error: numbered-backreference manifest variant keys drifted" >&2
+    echo "expected: $expected_r1k_keys" >&2
+    echo "actual:   $actual_keys" >&2
     exit 1
 fi
 
@@ -150,7 +170,7 @@ if [[ "$actual_quickjs" != "$expected_quickjs" \
     || "$actual_mode" != "$expected_mode" \
     || "$actual_variants" != "$expected_variants" \
     || "$actual_runnable" != "$expected_runnable" ]]; then
-    echo "error: RegExp modifiers Test262 baseline metadata drifted" >&2
+    echo "error: numbered-backreference Test262 baseline metadata drifted" >&2
     echo "quickjs expected/actual:  $expected_quickjs / $actual_quickjs" >&2
     echo "test262 expected/actual:  $expected_test262 / $actual_test262" >&2
     echo "patch expected/actual:    $expected_patch / $actual_patch" >&2
@@ -165,33 +185,33 @@ if [[ "$actual_quickjs" != "$expected_quickjs" \
 fi
 
 if ! diff -u \
-    <(awk 'NF && $1 !~ /^#/ { print $0 "\tsloppy"; print $0 "\tstrict" }' "$manifest" | LC_ALL=C sort) \
+    <(expected_keys | LC_ALL=C sort) \
     <(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") { print $1 "\t" $2 }' "$report" | LC_ALL=C sort); then
-    echo "error: RegExp modifiers Test262 report keys drifted from the frozen manifest" >&2
+    echo "error: numbered-backreference report keys drifted from the frozen manifest" >&2
     exit 1
 fi
 
 actual_summary=$(tail -n 1 "$report")
 if [[ "$actual_summary" != "# summary $expected_summary" ]]; then
-    echo "error: RegExp modifiers Test262 classified summary drifted" >&2
+    echo "error: numbered-backreference classified summary drifted" >&2
     echo "expected: # summary $expected_summary" >&2
     echo "actual:   $actual_summary" >&2
     exit 1
 fi
 if [[ "$expected_passes" == 0 ]]; then
     if [[ " $expected_summary " == *" pass="* ]]; then
-        echo "error: zero-pass RegExp modifiers baseline unexpectedly records a pass outcome" >&2
+        echo "error: zero-pass numbered-backreference baseline records a pass outcome" >&2
         exit 1
     fi
 elif [[ " $expected_summary " != *" pass=$expected_passes "* ]]; then
-    echo "error: RegExp modifiers pass count is inconsistent with the pinned summary" >&2
+    echo "error: numbered-backreference pass count is inconsistent with the pinned summary" >&2
     exit 1
 fi
 
 actual_tsv=$(sha256_file "$report")
 actual_jsonl=$(sha256_file "$json_report")
 if [[ "$actual_tsv" != "$expected_tsv" || "$actual_jsonl" != "$expected_jsonl" ]]; then
-    echo "error: RegExp modifiers Test262 classified vector drifted" >&2
+    echo "error: numbered-backreference classified vector drifted" >&2
     echo "TSV expected:   $expected_tsv" >&2
     echo "TSV actual:     $actual_tsv" >&2
     echo "JSONL expected: $expected_jsonl" >&2
@@ -199,5 +219,5 @@ if [[ "$actual_tsv" != "$expected_tsv" || "$actual_jsonl" != "$expected_jsonl" ]
     exit 1
 fi
 
-printf 'RegExp modifiers Test262 vector matches: %s pass of %s variants across %s paths\n' \
+printf 'numbered-backreference Test262 vector matches: %s pass of %s variants across %s paths\n' \
     "$expected_passes" "$expected_variants" "$expected_paths"

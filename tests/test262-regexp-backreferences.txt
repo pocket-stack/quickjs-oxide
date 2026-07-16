@@ -1,0 +1,75 @@
+# Frozen numbered RegExp backreference measurement slice for the pinned
+# Test262 checkout.
+#
+# This is the static, bytewise-sorted union of:
+#
+# - numbered-reference and Annex B decimal-escape paths that reached a typed
+#   parser/runtime frontier before implementation;
+# - two untagged paths whose numbered references remain behind lookaround;
+# - two exact Unicode parse-negative provenance canaries;
+# - three already-passing syntax-priority/Unicode constructor canaries; and
+# - ten linked named-group/lookbehind feature-frontier paths.
+#
+# The source report is the complete preimplementation R1k keyed vector (TSV
+# SHA-256
+# 5f0e4601ce6b0212dacdd5c98fc1ba4cb2c8c217e3f0eb6c91411ad6e3f243fa).
+# Its bytewise-sorted path/variant/outcome/detail projection has SHA-256
+# b70d7aaede4f9061b147f8190c757271d1deccf580eb6e8cd9c93f98f52e9609.
+# Before implementation the 98 variants classify as pass=6,
+# unsupported-feature=20, unsupported-negative-provenance=4,
+# unsupported-parser=66, and unsupported-runtime=2. The gate must never select
+# paths dynamically from current outcomes.
+#
+# Exactly 49 unique paths expand to 98 sloppy/strict variants. The
+# bytewise-sorted path set has SHA-256
+# 80b226f4d12eaf8f3f87a3188051b05cc66e623b7e24a081652dbe4370b5e1ce.
+#
+test/annexB/built-ins/RegExp/RegExp-decimal-escape-class-range.js
+test/annexB/built-ins/RegExp/RegExp-decimal-escape-not-capturing.js
+test/annexB/built-ins/RegExp/RegExp-leading-escape.js
+test/annexB/built-ins/RegExp/RegExp-trailing-escape.js
+test/annexB/built-ins/RegExp/named-groups/non-unicode-malformed.js
+test/annexB/built-ins/RegExp/prototype/compile/pattern-string-invalid-u.js
+test/annexB/language/literals/regexp/legacy-octal-escape.js
+test/built-ins/RegExp/S15.10.2.11_A1_T4.js
+test/built-ins/RegExp/S15.10.2.11_A1_T5.js
+test/built-ins/RegExp/S15.10.2.11_A1_T6.js
+test/built-ins/RegExp/S15.10.2.11_A1_T7.js
+test/built-ins/RegExp/S15.10.2.11_A1_T8.js
+test/built-ins/RegExp/S15.10.2.11_A1_T9.js
+test/built-ins/RegExp/S15.10.2.15_A1_T10.js
+test/built-ins/RegExp/S15.10.2.15_A1_T30.js
+test/built-ins/RegExp/S15.10.2.5_A1_T5.js
+test/built-ins/RegExp/S15.10.2.7_A6_T5.js
+test/built-ins/RegExp/S15.10.2.8_A1_T2.js
+test/built-ins/RegExp/S15.10.2.8_A2_T1.js
+test/built-ins/RegExp/S15.10.2.8_A3_T10.js
+test/built-ins/RegExp/S15.10.2.8_A3_T13.js
+test/built-ins/RegExp/S15.10.2.8_A3_T14.js
+test/built-ins/RegExp/S15.10.2.8_A3_T7.js
+test/built-ins/RegExp/S15.10.2.8_A3_T8.js
+test/built-ins/RegExp/S15.10.2.8_A3_T9.js
+test/built-ins/RegExp/S15.10.2.9_A1_T1.js
+test/built-ins/RegExp/S15.10.2.9_A1_T2.js
+test/built-ins/RegExp/S15.10.2.9_A1_T3.js
+test/built-ins/RegExp/S15.10.2.9_A1_T5.js
+test/built-ins/RegExp/lookBehind/back-references-to-captures.js
+test/built-ins/RegExp/lookBehind/back-references.js
+test/built-ins/RegExp/lookBehind/do-not-backtrack.js
+test/built-ins/RegExp/lookBehind/misc.js
+test/built-ins/RegExp/lookBehind/mutual-recursive.js
+test/built-ins/RegExp/lookBehind/sliced-strings.js
+test/built-ins/RegExp/lookBehind/start-of-line.js
+test/built-ins/RegExp/named-groups/non-unicode-match.js
+test/built-ins/RegExp/named-groups/unicode-match.js
+test/built-ins/RegExp/regexp-modifiers/add-ignoreCase-affects-backreferences.js
+test/built-ins/RegExp/regexp-modifiers/remove-ignoreCase-affects-backreferences.js
+test/built-ins/RegExp/unicode_restricted_octal_escape.js
+test/built-ins/String/prototype/replace/S15.5.4.11_A5_T1.js
+test/language/literals/regexp/u-invalid-legacy-octal-escape.js
+test/language/literals/regexp/u-invalid-oob-decimal-escape.js
+test/language/literals/regexp/u-surrogate-pairs-atom-escape-decimal.js
+test/staging/sm/RegExp/regress-576828.js
+test/staging/sm/RegExp/regress-613820-1.js
+test/staging/sm/RegExp/regress-613820-3.js
+test/staging/sm/RegExp/unicode-back-reference.js

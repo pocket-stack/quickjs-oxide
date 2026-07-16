@@ -224,7 +224,7 @@ mod tests {
         "hashbang",
         "regexp-modifiers",
     ];
-    const EXPECTED_AUDITED_NEGATIVES: [&str; 101] = [
+    const EXPECTED_AUDITED_NEGATIVES: [&str; 103] = [
         "test/language/comments/hashbang/escaped-bang-041.js",
         "test/language/expressions/object/__proto__-duplicate.js",
         "test/language/global-code/decl-lex-restricted-global.js",
@@ -311,6 +311,8 @@ mod tests {
         "test/language/literals/regexp/early-err-modifiers-should-not-unicode-escape-i.js",
         "test/language/literals/regexp/early-err-modifiers-should-not-unicode-escape-m.js",
         "test/language/literals/regexp/early-err-modifiers-should-not-unicode-escape-s.js",
+        "test/language/literals/regexp/u-invalid-legacy-octal-escape.js",
+        "test/language/literals/regexp/u-invalid-oob-decimal-escape.js",
         "test/language/statements/const/global-use-before-initialization-in-declaration-statement.js",
         "test/language/statements/const/syntax/with-initializer-while-expression-statement.js",
         "test/language/statements/for/S12.6.3_A7_T2.js",

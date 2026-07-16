@@ -10,13 +10,13 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 23 reviewed feature tags and 101 exact audited
+  capability profile now admits 23 reviewed feature tags and 103 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 25,959 passes: 25.44% raw, a 31.07% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 84.14% among the 30,851 variants with a
+  has 26,027 passes: 25.51% raw, a 31.15% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 84.18% among the 30,919 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -58,7 +58,10 @@ claim full parity.
   R1j ports `String.prototype.matchAll`,
   `RegExp.prototype[Symbol.matchAll]`, and the branded RegExp String Iterator.
   Its complete join adds 66 passes and admits 114 more jobs without regressing
-  any previous pass.
+  any previous pass. R1k adds numeric backreferences and the inseparable
+  non-Unicode Annex B decimal/octal fallback. Its complete join adds 68 passes
+  and admits four audited parse-negative variants, again with no previous-pass
+  regression.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -83,7 +86,11 @@ claim full parity.
   greedy/lazy and bounded quantifiers, classes/ranges/inversion,
   `\dDsSwW`, word boundaries, basic escapes, leftmost/sticky search, raw
   UTF-16 and `u`-mode surrogate handling, and checksum-pinned Unicode 17
-  RegExp case folding. Nullable finite repetitions carry QuickJS's
+  RegExp case folding. Numeric backreferences preserve forward, self,
+  unmatched, empty, scoped-ignoreCase, Unicode code-point and capture
+  backtracking semantics; out-of-range non-Unicode decimal escapes follow
+  QuickJS's Annex B octal/identity widths in and outside character classes.
+  Nullable finite repetitions carry QuickJS's
   zero-advance rollback rule; ignore-case class complements are folded before
   inversion; sequential quantifiers reuse temporary registers.
 
@@ -113,14 +120,14 @@ claim full parity.
   backreference variants. All 88 passes were RegExp-literal parser frontiers
   under R1a. The two runtime variants stopped at an earlier
   `String.prototype.match` call; R1d makes both pass, so the current focused
-  literal vector has 90 passes and six typed parser frontiers.
+  literal vector has 94 passes and two typed lookaround frontiers.
 
   Forty-four matcher cases and 35 targeted observable intrinsic vectors match
   pinned QuickJS, including cross-realm construction/results/errors. The frozen
-  225-path/450-variant Test262 RegExp-core vector now has 432 passes. Ten
-  variants remain runtime failures solely because `eval` is absent; eight reach
-  typed advanced-pattern frontiers for backreferences, lookaround, Unicode
-  properties, or legacy octal/control escapes. `RegExp.escape` and the advanced
+  225-path/450-variant Test262 RegExp-core vector now has 434 passes. Ten
+  variants remain runtime failures solely because `eval` is absent; six reach
+  typed frontiers for lookaround, Unicode properties, or legacy control
+  escapes. `RegExp.escape` and the remaining advanced
   literal grammar remain intentionally unpublished rather than stubbed. The
   R1a complete join recorded only 669
   `fail-runtime -> pass` and
@@ -268,15 +275,15 @@ claim full parity.
   protocol, so the current vector records 46 passes and zero runtime failures;
   feature, host, arrow and object-method parser frontiers remain classified
   separately. Its current TSV/JSONL SHA-256 values are
-  `871f919863883dfad5107834a5eb30ca9c37828edeb315529ec0c6ed51aa02c8`
+  `c3809dcf0c44dcee8c6eaeb62fb2dd854e6acb189feae91fcb816a96ae236d82`
   and
-  `c88a057baef0d3f8046aa56ff11ccad1bb48739c6a41d51e3f7a32d629a4c385`.
+  `7ca1040554bb7e7920fd4773db42a9cc5529f2ed1d8a30acdd6e8d771b079ed5`.
   A QuickJS-shaped lexical capture-count prepass also distinguishes known
-  out-of-range Unicode decimal escapes from in-range but unimplemented
-  backreferences, moving the two `unicode_restricted_octal_escape.js` variants
-  to pass while preserving typed Unsupported results for valid backreferences.
-  The RegExp-core gate therefore moves from 430 at R1a to 432 currently, with
-  eight advanced-pattern outcomes.
+  out-of-range Unicode decimal escapes from in-range references, moving the two
+  `unicode_restricted_octal_escape.js` variants to pass while preserving typed
+  Unsupported results until the reference executor landed. R1k completes that
+  path, so the RegExp-core gate moves from 430 at R1a to 434 currently, with
+  six typed frontier outcomes.
 
   The exact R1e-to-R1f full join matches all 102,037 keys with no missing,
   extra, or duplicate rows and no previous-pass regression. Its only changes
@@ -305,12 +312,11 @@ claim full parity.
   stays in `src/regexp/compiler.rs`; `runtime.rs` remains 9,787 lines.
 
   The complete focused feature vector freezes 230 paths and 460 variants. It
-  admits all 460, records 448 passes, and leaves only 12 typed parser
-  frontiers: four backreference variants and eight Unicode property-escape
-  variants. Its TSV/JSONL SHA-256 values are
-  `b9baafd9e3d49b1cda6a6a5b99bbddc5ae938aa494c35bd31e1a1ceccb545c68`
+  admits all 460, records 452 passes, and leaves only eight Unicode
+  property-escape parser frontiers. Its current TSV/JSONL SHA-256 values are
+  `5bac8c7b42fe97b9b47c90330485116819807fe18d5f2417665f8bcda838bdf7`
   and
-  `cf2e6a818da59c66735d46f429b885c916454cf4a2b160f6b2d10dd2b40b8e86`.
+  `ec9b9ce9ce34ea1292733a2cfd9b66e5c140dd19054c88bad44a3f06576decfa`.
   Publishing the feature also audits exactly 83 modifier-owned literal
   parse-negative paths, moving the capability profile to 19 feature tags and
   101 negative paths with SHA-256
@@ -377,14 +383,14 @@ claim full parity.
   non-protective 16-frame family ceiling.
 
   The frozen replace manifest covers 191 paths and 376 variants. R1h admits
-  332 and records 286 passes with zero runtime failures. Its six parse failures
+  332 and records 288 passes with zero runtime failures. Its six parse failures
   are two arrow-function variants and four rest-parameter/array-spread
-  variants; another 40 stop at typed parser frontiers, 38 at independently
-  undeclared features, and six at host capabilities. The focused TSV/JSONL
-  SHA-256 values are
-  `055d52219998a0863a4241b3c5b374b917c1503d93b0715048ee2e171db3d012`
+  variants; another 38 stop at typed parser frontiers, 38 at independently
+  undeclared features, and six at host capabilities. The current focused
+  TSV/JSONL SHA-256 values are
+  `a4fab8792480a679be825cbef98c451e80b5ccce0250a33b75320ec98c41e78d`
   and
-  `dffcdbd8260a3d6e1c277d76797ba7187e40a971860ff802efaf8b3c6e65c0ad`.
+  `0409c085139276de1b2ff0054133a7943fc7754c6104946fc06abf74d955730e`.
   Publishing `String.prototype.replaceAll` and `Symbol.replace` moves the
   capability profile to 21 feature tags with SHA-256
   `921df0ef452f4d1286162093ebdf81a74d0805eb7c04601c86abd6ec7347ed7f`.
@@ -437,9 +443,40 @@ claim full parity.
   `unsupported-feature -> unsupported-parser` transitions, with zero
   previous-pass regressions.
 
-  Advanced grammar fails closed: lookaround, backreferences, named captures,
-  Unicode properties, all `v`-mode execution, and unported Annex-B
-  octal/control escapes return typed unsupported errors. Pattern group
+  R1k adds a QuickJS-shaped variable-length `BackReference` instruction whose
+  boxed capture list is already compatible with future duplicate named
+  captures. The parser caches a lexical total-capture prepass, consumes the
+  complete decimal number, accepts forward references, and otherwise replays
+  the source through Annex B octal/identity rules. The non-recursive executor
+  compares through bounded UTF-16/code-point cursors, commits position only
+  after a complete match, applies scoped `i` at the reference site, and treats
+  forward, self, unmatched, and empty captures as zero-length success.
+
+  Two pinned QuickJS differential groups cover successful matches, syntax
+  errors, capture reset/backtracking, scoped and Unicode case folding, surrogate
+  boundaries, complete-number priority, and Annex B widths. The static
+  49-path/98-variant Test262 gate admits 78 variants and records 74 passes; 20
+  remain behind named-group/lookbehind feature gates and four stop at the
+  existing lookaround parser frontier. Its TSV/JSONL SHA-256 values are
+  `a0e3e0cf4e74ed81a582c4c772e32d0619ce6adb0f903c92f01817cb2fdf9b21`
+  and
+  `37c228b1f0e7dc31c71c035ac6bd6ffba3e5f172daeee2c3582599fedbe2a9a5`.
+
+  The complete vector moves to 26,027 passes and 33,287 admitted jobs. Its
+  exact R1j-to-R1k outcome delta is 62 `unsupported-parser -> pass`, two
+  `unsupported-runtime -> pass`, and four
+  `unsupported-negative-provenance -> pass`, with no other category movement
+  and no previous-pass regression. The full TSV/JSONL SHA-256 values are
+  `0bdf4955b2a9060279d0ad4232f653adb2018e9864654148f068caf22c0aabd6`
+  and
+  `7fcfbcd8157fa1d21d52af7df7e3b2226db7be08bfe42254994a28d56a5b9857`.
+  Auditing the two Unicode decimal-escape negative paths moves the profile to
+  103 exact negatives with SHA-256
+  `6f27d9fcfa5a13423796ad48fe8ccbf8d5edcd49118ad7f0f64cc5a936090645`.
+
+  Advanced grammar still fails closed: lookaround, named captures, Unicode
+  properties, all `v`-mode execution, and unported Annex-B control escapes
+  return typed unsupported errors. Pattern group
   nesting is temporarily capped at 256 with a catchable `stack overflow`
   compile error so adversarial input cannot overflow the Rust stack; a later
   iterative parser/compiler must replace that conservative resource frontier
@@ -2619,6 +2656,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_string_match_all -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_regexp_backreferences -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_lexicals -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_declarations -- --nocapture
@@ -2708,6 +2747,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/run-test262-regexp-modifiers.sh
 ./scripts/run-test262-replace.sh
 ./scripts/run-test262-regexp-match-all.sh
+./scripts/run-test262-regexp-backreferences.sh
 ./scripts/test-test262-full.sh
 ```
 

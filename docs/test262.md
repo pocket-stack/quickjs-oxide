@@ -10,7 +10,7 @@ differentials still decide exact behavior inside each implemented slice.
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
 - quickjs-oxide capability profile SHA-256:
-  `5aaca9f98ddca05a2bcb3bb6dfdc297f3f27a8314cb6efde61b25c2944548fd9`
+  `6f27d9fcfa5a13423796ad48fe8ccbf8d5edcd49118ad7f0f64cc5a936090645`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -50,30 +50,30 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 25,959 pass;
+- 26,027 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 52,711 are classified as unsupported feature, mode, host capability, parser
+- 52,643 are classified as unsupported feature, mode, host capability, parser
   frontier, harness frontier, or unaudited negative-test provenance;
 - 989 fail to parse, 3,693 fail at runtime, 206 fail in the harness, and four
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 33,283 variants to execution. That count includes variants
+The runner admitted 33,287 variants to execution. That count includes variants
 which then report a typed parser or harness frontier rather than an observed
 non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 25.44% (`25,959 / 102,037`);
-- conservative target-scope lower bound: 31.07%
-  (`25,959 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 84.14%
-  (`25,959 / 30,851`).
+- raw suite pass rate: 25.51% (`26,027 / 102,037`);
+- conservative target-scope lower bound: 31.15%
+  (`26,027 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 84.18%
+  (`26,027 / 30,919`).
 
-The 31.07% figure is the useful whole-project progress floor, not a claim that
-the engine is 31.07% conformant. The 84.14% conditional rate measures quality
+The 31.15% figure is the useful whole-project progress floor, not a claim that
+the engine is 31.15% conformant. The 84.18% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. The capability profile currently admits 23 reviewed Test262
-feature tags and 101 reviewed negative-test paths; all other feature-tagged or
+feature tags and 103 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
 lands can only make the measurement more representative. Focused QuickJS
 differential tests remain the semantic judge.
@@ -86,9 +86,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`5f0e4601ce6b0212dacdd5c98fc1ba4cb2c8c217e3f0eb6c91411ad6e3f243fa`
+`0bdf4955b2a9060279d0ad4232f653adb2018e9864654148f068caf22c0aabd6`
 and
-`a829007d38ffe4bd84b7420200b0fef505671808e1a003326c2fccb6383edcd6`.
+`7fcfbcd8157fa1d21d52af7df7e3b2226db7be08bfe42254994a28d56a5b9857`.
 
 ## Milestone policy
 
@@ -512,10 +512,33 @@ TSV/JSONL hashes are
 `5f0e4601ce6b0212dacdd5c98fc1ba4cb2c8c217e3f0eb6c91411ad6e3f243fa`
 and
 `a829007d38ffe4bd84b7420200b0fef505671808e1a003326c2fccb6383edcd6`.
-The capability profile now contains 23 reviewed feature tags and has SHA-256
+At R1j the capability profile contained 23 reviewed feature tags and had
+SHA-256
 `5aaca9f98ddca05a2bcb3bb6dfdc297f3f27a8314cb6efde61b25c2944548fd9`.
 Earlier focused outcome rows remain unchanged; their whole-report hashes move
 mechanically because this profile hash is part of every report header.
+
+R1k ports numeric RegExp backreferences together with QuickJS's inseparable
+non-Unicode Annex B decimal/octal fallback. The static focused manifest covers
+49 paths and 98 variants, including syntax-priority canaries and linked
+lookaround/named-group frontiers. Seventy-eight variants are admitted and 74
+pass; 20 remain behind unrelated feature gates and four stop at the existing
+lookaround parser frontier. The focused TSV/JSONL hashes are
+`a0e3e0cf4e74ed81a582c4c772e32d0619ce6adb0f903c92f01817cb2fdf9b21`
+and
+`37c228b1f0e7dc31c71c035ac6bd6ffba3e5f172daeee2c3582599fedbe2a9a5`.
+
+The exact R1j/R1k full join adds 68 passes with no previous-pass regression:
+62 variants move from `unsupported-parser`, two from `unsupported-runtime`,
+and four audited Unicode parse-negative variants from
+`unsupported-negative-provenance`. The complete vector reaches 26,027 passes
+and 33,287 admitted jobs. Its TSV/JSONL hashes are
+`0bdf4955b2a9060279d0ad4232f653adb2018e9864654148f068caf22c0aabd6`
+and
+`7fcfbcd8157fa1d21d52af7df7e3b2226db7be08bfe42254994a28d56a5b9857`.
+The profile still has 23 feature tags, now with 103 exact audited negative
+paths and SHA-256
+`6f27d9fcfa5a13423796ad48fe8ccbf8d5edcd49118ad7f0f64cc5a936090645`.
 
 ## Runner contract
 
@@ -568,6 +591,7 @@ canonical progress report.
 ./scripts/run-test262-regexp-modifiers.sh
 ./scripts/run-test262-replace.sh
 ./scripts/run-test262-regexp-match-all.sh
+./scripts/run-test262-regexp-backreferences.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -582,11 +606,12 @@ blockers in their reviewed sets.
 The Date transition also resolves the four otherwise-ready Reflect variants
 which had stopped at `Date.now`; generic split resolves six more linked Reflect
 variants. Basic RegExp literal execution, the search/match/split protocols,
-legacy compile, scoped modifiers, generic replacement, and matchAll are now
-measured separately in R1b/R1c/R1d/R1e/R1f/R1g/R1h/R1j; R1i completes the
-direct standard-RegExp replacement route without changing that scoreboard.
-Numeric backreferences and Unicode property escapes are the next conservative
-RegExp candidates. The complete classified report decides their ordering.
+legacy compile, scoped modifiers, generic replacement, matchAll, and numeric
+backreferences are now measured separately in
+R1b/R1c/R1d/R1e/R1f/R1g/R1h/R1j/R1k; R1i completes the direct standard-RegExp
+replacement route without changing that scoreboard. Unicode property escapes
+and lookaround are the next conservative RegExp candidates. The complete
+classified report decides their ordering.
 Test262 remains the project scoreboard, while focused QuickJS
 differentials decide exact target semantics for each slice. None of these
 progress figures is a feature-parity completion claim.
