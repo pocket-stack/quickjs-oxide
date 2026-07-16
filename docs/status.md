@@ -10,13 +10,13 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 21 reviewed feature tags and 101 exact audited
+  capability profile now admits 23 reviewed feature tags and 101 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 25,893 passes: 25.38% raw, a 30.99% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 84.11% among the 30,785 variants with a
+  has 25,959 passes: 25.44% raw, a 31.07% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 84.14% among the 30,851 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -55,6 +55,10 @@ claim full parity.
   matcher. It is a semantic-path milestone rather than a coverage expansion:
   both the focused 376-variant replacement report and the complete
   102,037-variant report remain byte-identical to R1h.
+  R1j ports `String.prototype.matchAll`,
+  `RegExp.prototype[Symbol.matchAll]`, and the branded RegExp String Iterator.
+  Its complete join adds 66 passes and admits 114 more jobs without regressing
+  any previous pass.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -116,9 +120,9 @@ claim full parity.
   225-path/450-variant Test262 RegExp-core vector now has 432 passes. Ten
   variants remain runtime failures solely because `eval` is absent; eight reach
   typed advanced-pattern frontiers for backreferences, lookaround, Unicode
-  properties, or legacy octal/control escapes. `RegExp.escape`, the Symbol
-  matchAll protocol, and the advanced literal grammar remain intentionally
-  unpublished rather than stubbed. The R1a complete join recorded only 669
+  properties, or legacy octal/control escapes. `RegExp.escape` and the advanced
+  literal grammar remain intentionally unpublished rather than stubbed. The
+  R1a complete join recorded only 669
   `fail-runtime -> pass` and
   ten `fail-runtime -> unsupported-runtime` transitions. The R1b join matches
   all 102,037 keys and moves 840 `unsupported-parser -> pass`, 226
@@ -402,6 +406,36 @@ claim full parity.
   hashes above. The exact R1h-to-R1i join therefore has zero outcome
   transitions, missing keys, extra keys, duplicates, or previous-pass
   regressions.
+
+  R1j adds a distinct `RegExpStringIterator` heap class with its own
+  `%RegExpStringIteratorPrototype%`, raw IteratorNext ABI, and matcher GC edge.
+  Completion flips only the iterator's `done` bit; the matcher and input remain
+  retained until finalization, matching QuickJS. `RegExp @@matchAll` preserves
+  input conversion, species lookup, flags conversion, construction,
+  `lastIndex` cloning, cached global/full-Unicode modes, abstract `exec`, empty
+  match advancement, and exception retry state. String `matchAll` preserves
+  the observable `Get(@@matchAll)`, `IsRegExp`, flags-validation, delegation
+  order, while its fallback uses the defining realm's retained RegExp
+  constructor with the literal `g` flag.
+
+  Twelve differential tests across 26 QuickJS vectors cover metadata,
+  construction order, custom exec, done/error behavior, Unicode empty matches,
+  fallback, global validation, and cross-realm ownership. The frozen 68-path
+  Test262 gate expands to 136 variants: 112 are admitted, 64 pass, and the
+  remaining 72 stay at explicit unrelated-feature, parser, or harness
+  frontiers. The focused TSV/JSONL SHA-256 values are
+  `03def26414f02bf5056ebb1421a28d28178c29946b07fc8d0e085fdbb9bfe72b`
+  and
+  `b020aa4bd8cd878a8b96aa66b1736eee991df4fc87b6adda3510101a0a911fd8`.
+  The complete vector moves to 25,959 passes and 33,283 admitted jobs. Its
+  TSV/JSONL SHA-256 values are
+  `5f0e4601ce6b0212dacdd5c98fc1ba4cb2c8c217e3f0eb6c91411ad6e3f243fa`
+  and
+  `a829007d38ffe4bd84b7420200b0fef505671808e1a003326c2fccb6383edcd6`.
+  The exact R1i-to-R1j join has 66 `unsupported-feature -> pass`, 20
+  `unsupported-feature -> unsupported-harness-parser`, 28
+  `unsupported-feature -> unsupported-parser` transitions, with zero
+  previous-pass regressions.
 
   Advanced grammar fails closed: lookaround, backreferences, named captures,
   Unicode properties, all `v`-mode execution, and unported Annex-B
@@ -1581,10 +1615,8 @@ claim full parity.
   keys in QuickJS order. The UTF-16 prefix then installs `at`, `charCodeAt`,
   `charAt`, `concat`, `codePointAt`, `isWellFormed`, `toWellFormed`, `indexOf`,
   `lastIndexOf`, `includes`, `endsWith` and `startsWith`, publishes `match`,
-  skips the pending `matchAll` entry, publishes `search` then `split`, then
-  publishes
-  `substring`, `substr`, `slice` and `repeat`, skips the pending
-  `replace`/`replaceAll`, and
+  `matchAll`, `search` then `split`, then publishes
+  `substring`, `substr`, `slice`, `repeat`, `replace` and `replaceAll`, and
   publishes `padEnd` then `padStart`, followed by `trim`, `trimEnd`,
   `trimRight`, `trimStart` and `trimLeft`, in pinned table-relative order ahead
   of the conversion core's exact `toString`/`valueOf` brand methods. It then
@@ -1763,8 +1795,7 @@ claim full parity.
   writes, fixed-name nullish reads, nullish writes, missing bindings, TDZ and
   VarRef descriptor reads, VM `ThrowReadOnly`, and reserved-identifier
   validation.
-  The remaining three String-prototype own keys (`matchAll`, `normalize` and
-  `localeCompare`),
+  The remaining two String-prototype own keys (`normalize` and `localeCompare`),
   Context-level observable
   `ToString`, borrowed C-pointer/refcount ownership, native atom
   diagnostics attached to not-yet-implemented private-field/module/
@@ -2400,21 +2431,21 @@ identifier and ordinary fixed/computed member References. Sloppy
 direct-identifier delete is implemented
 for the current static scope tree and defining-realm global object. Dynamic
 object-environment lookup/deletion introduced by `with` or direct `eval`, the
-remaining three entries of String's 53-key prototype surface, `RegExp.escape`,
-advanced RegExp grammar, the remaining matchAll Symbol protocol method,
+remaining two entries of String's 53-key prototype surface, `RegExp.escape`,
+advanced RegExp grammar,
 Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. AggregateError and
 uncatchable termination state are also pending. Array
 destructuring consumers, `with` object-environment
 semantics, other
-iterator classes and helpers, the remaining RegExp protocol integration and
-RegExp-/Unicode-backed String methods, object-literal methods/accessors and
+iterator classes and helpers, the remaining RegExp grammar/static surface and
+Unicode-backed String methods, object-literal methods/accessors and
 exotic-source spread, and the rest of the builtin table build on those layers.
 
 The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
 identifier, case-conversion, `Cased` and `Case_Ignorable` data, the advanced
-RegExp grammar plus matchAll integration, modules, jobs/Promises/async,
+RegExp grammar, modules, jobs/Promises/async,
 generators, TypedArrays/Atomics, WeakRef/finalization, bytecode version 5 and
 BJSON interoperability, `std`/`os`, workers, REPL/qjsc, and the complete Rust
 and C embedding APIs.
@@ -2427,7 +2458,8 @@ surface now live with `groupBy` in `runtime/intrinsics/object.rs`; the String
 constructor/static table, implemented prototype-table initialization,
 index-search pair, regexp-aware includes family, generic split, subrange trio,
 `repeat`, the pad pair, trim group, Unicode case-conversion group and Annex-B
-CreateHTML family live in `runtime/intrinsics/string.rs`; generic match/search
+CreateHTML family live in `runtime/intrinsics/string.rs`; generic
+match/matchAll/search
 protocol integration lives in `runtime/intrinsics/string/regexp.rs`, while the
 remaining String initialization and handlers still await migration there. The
 complete Math
@@ -2478,7 +2510,10 @@ String, RegExp and shared-substitution modules, then moves internal call and
 bound-argument dispatch into `runtime/native_dispatch.rs`; the parent is now
 9,650 lines. R1i adds its raw predicate, direct matcher, and range-aware
 substitution support inside those same dedicated modules; `runtime.rs` remains
-9,650 lines. The feature algorithms do not return to the parent monolith. The
+9,650 lines. R1j keeps the complete matchAll algorithms in
+`runtime/intrinsics/regexp/match_all.rs` and String's existing RegExp protocol
+module; only exhaustive class wiring reaches the parent, now 9,660 lines. The
+feature algorithms do not return to the parent monolith. The
 RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -2580,6 +2615,10 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_regexp_replace -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_regexp_match_all -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_string_match_all -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_lexicals -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_function_body_declarations -- --nocapture
@@ -2668,6 +2707,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/run-test262-regexp-compile.sh
 ./scripts/run-test262-regexp-modifiers.sh
 ./scripts/run-test262-replace.sh
+./scripts/run-test262-regexp-match-all.sh
 ./scripts/test-test262-full.sh
 ```
 

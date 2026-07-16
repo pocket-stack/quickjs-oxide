@@ -1,0 +1,90 @@
+# Frozen RegExp @@matchAll / RegExp String Iterator /
+# String.prototype.matchAll measurement slice for the pinned Test262 checkout.
+#
+# This is the static, bytewise-sorted union of all paths under:
+#
+# - test/built-ins/RegExp/prototype/Symbol.matchAll;
+# - test/built-ins/RegExpStringIteratorPrototype; and
+# - test/built-ins/String/prototype/matchAll.
+#
+# The source report is the R1j pre-implementation full keyed vector at the R1i
+# commit d3a34a1 (TSV SHA-256
+# 2895a8d2ddbe5857e83b573827e46b4a60a97d89b5882727c85ff75d2ff9d368).
+# Its bytewise-sorted path/variant/outcome/detail projection has SHA-256
+# 277b6f66951415f1552d45a91984a498cda48e61f5647597371137b06ad5343b.
+# Before implementation all 136 variants classified as
+# unsupported-feature=136. The gate retains that provenance and must never
+# select paths dynamically from current outcomes.
+#
+# Exactly 68 unique paths expand to 136 sloppy/strict variants.
+# The bytewise-sorted path set has SHA-256
+# 2f8c3d730c36ed86f46218c67f069c18698210704b1db7575fb4d2a95c69a671.
+#
+test/built-ins/RegExp/prototype/Symbol.matchAll/isregexp-called-once.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/isregexp-this-throws.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/length.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/name.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/not-a-constructor.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/prop-desc.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/regexpcreate-this-throws.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/species-constructor-get-constructor-throws.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/species-constructor-get-species-throws.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/species-constructor-is-not-object-throws.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/species-constructor-is-undefined.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/species-constructor-species-is-not-constructor.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/species-constructor-species-is-null-or-undefined.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/species-constructor-species-throws.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/species-constructor.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/species-regexp-get-global-throws.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/species-regexp-get-unicode-throws.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/string-tostring-throws.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/string-tostring.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/this-get-flags-throws.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/this-get-flags.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/this-lastindex-cached.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/this-not-object-throws.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/this-tolength-lastindex-throws.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/this-tostring-flags-throws.js
+test/built-ins/RegExp/prototype/Symbol.matchAll/this-tostring-flags.js
+test/built-ins/RegExpStringIteratorPrototype/Symbol.toStringTag.js
+test/built-ins/RegExpStringIteratorPrototype/ancestry.js
+test/built-ins/RegExpStringIteratorPrototype/next/custom-regexpexec-call-throws.js
+test/built-ins/RegExpStringIteratorPrototype/next/custom-regexpexec-get-throws.js
+test/built-ins/RegExpStringIteratorPrototype/next/custom-regexpexec-match-get-0-throws.js
+test/built-ins/RegExpStringIteratorPrototype/next/custom-regexpexec-match-get-0-tostring-throws.js
+test/built-ins/RegExpStringIteratorPrototype/next/custom-regexpexec-match-get-0-tostring.js
+test/built-ins/RegExpStringIteratorPrototype/next/custom-regexpexec-not-callable.js
+test/built-ins/RegExpStringIteratorPrototype/next/custom-regexpexec.js
+test/built-ins/RegExpStringIteratorPrototype/next/length.js
+test/built-ins/RegExpStringIteratorPrototype/next/name.js
+test/built-ins/RegExpStringIteratorPrototype/next/next-iteration-global.js
+test/built-ins/RegExpStringIteratorPrototype/next/next-iteration.js
+test/built-ins/RegExpStringIteratorPrototype/next/next-missing-internal-slots.js
+test/built-ins/RegExpStringIteratorPrototype/next/prop-desc.js
+test/built-ins/RegExpStringIteratorPrototype/next/regexp-tolength-lastindex-throws.js
+test/built-ins/RegExpStringIteratorPrototype/next/this-is-not-object-throws.js
+test/built-ins/String/prototype/matchAll/cstm-matchall-on-bigint-primitive.js
+test/built-ins/String/prototype/matchAll/cstm-matchall-on-boolean-primitive.js
+test/built-ins/String/prototype/matchAll/cstm-matchall-on-number-primitive.js
+test/built-ins/String/prototype/matchAll/cstm-matchall-on-string-primitive.js
+test/built-ins/String/prototype/matchAll/flags-nonglobal-throws.js
+test/built-ins/String/prototype/matchAll/flags-undefined-throws.js
+test/built-ins/String/prototype/matchAll/length.js
+test/built-ins/String/prototype/matchAll/name.js
+test/built-ins/String/prototype/matchAll/not-a-constructor.js
+test/built-ins/String/prototype/matchAll/prop-desc.js
+test/built-ins/String/prototype/matchAll/regexp-get-matchAll-throws.js
+test/built-ins/String/prototype/matchAll/regexp-is-null.js
+test/built-ins/String/prototype/matchAll/regexp-is-undefined-or-null-invokes-matchAll.js
+test/built-ins/String/prototype/matchAll/regexp-is-undefined.js
+test/built-ins/String/prototype/matchAll/regexp-matchAll-invocation.js
+test/built-ins/String/prototype/matchAll/regexp-matchAll-is-undefined-or-null.js
+test/built-ins/String/prototype/matchAll/regexp-matchAll-not-callable.js
+test/built-ins/String/prototype/matchAll/regexp-matchAll-throws.js
+test/built-ins/String/prototype/matchAll/regexp-prototype-get-matchAll-throws.js
+test/built-ins/String/prototype/matchAll/regexp-prototype-has-no-matchAll.js
+test/built-ins/String/prototype/matchAll/regexp-prototype-matchAll-invocation.js
+test/built-ins/String/prototype/matchAll/regexp-prototype-matchAll-throws.js
+test/built-ins/String/prototype/matchAll/regexp-prototype-matchAll-v-u-flag.js
+test/built-ins/String/prototype/matchAll/this-val-non-obj-coercible.js
+test/built-ins/String/prototype/matchAll/toString-this-val.js
