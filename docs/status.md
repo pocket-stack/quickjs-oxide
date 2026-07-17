@@ -10,13 +10,13 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 26 reviewed feature tags and 307 exact audited
+  capability profile now admits 27 reviewed feature tags and 307 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 27,505 passes: 26.96% raw, a 32.92% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 84.86% among the 32,411 variants with a
+  has 27,531 passes: 26.98% raw, a 32.95% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 84.86% among the 32,443 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -83,6 +83,11 @@ claim full parity.
   162 full-vector passes and 184 admitted jobs with no previous-pass
   regression; four linked `\k` canaries outside the 101-path manifest also
   resolve as expected.
+  R1q audits and declares duplicate named captures without changing the
+  already-compatible engine. It adds 26 passes and 32 admitted jobs; all 38
+  complete-row changes stay inside the frozen 19-path set, while six arrow
+  variants reach the existing parser frontier and six match-indices variants
+  remain independently gated.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -240,13 +245,13 @@ claim full parity.
   cross-realm and recursion-guard tests pass; every differential vector
   matches QuickJS 2026-06-04 while the explicit guard test preserves the
   depth frontier above. The frozen
-  104-path/208-variant match vector admits 198 variants: 180 pass, two stop at
+  104-path/208-variant match vector admits 200 variants: 182 pass, two stop at
   the independent missing-`eval` runtime frontier, 16 retain the typed
-  object-literal method/accessor parser frontier, and ten remain behind adjacent
+  object-literal method/accessor parser frontier, and eight remain behind adjacent
   feature tags. Its TSV and JSONL SHA-256 values are
-  `604668247405c5f7d69b30ccc0c50d850c66a78895d94e54e41bea933ebf1247`
+  `13811543bada9e1f91e69f9b6aee968812d9dcb67e7aa549fabeb20c8b3c10e6`
   and
-  `c59e26c261539c41929592e0603d521a88b8c761fd177e87b122a1e1db0f5d76`.
+  `cfeef60ff5c832df3591e88548042ff3881f771743fd10b15a324a95b0aee5a9`.
   Admitting `Symbol.match` brings the conservative profile to 18 tags with
   SHA-256
   `cc10293aa847f5a449ac2b039709dff98d264b672dddc8828b8e17d8b7e12d9a`.
@@ -280,17 +285,17 @@ claim full parity.
   `arrow-function`, two require the create-realm host hook, and four retain
   typed parser frontiers. Species construction itself is locked by the QuickJS
   differential suite. Its current TSV and JSONL SHA-256 values are
-  `d71bc5e3f64613a19e3ee93fbdb78b15c9dafc8afcaf86bdcc4253658b3fbadc`
+  `ce13c1409af6af84140fb79457c2e98e3d9264a054444dcd5359803c4545ab48`
   and
-  `7cffb51be3d1af722de04e3d02c4031b83dd53012181626d524127cb5272113b`.
+  `e9c24f1210c1e1b27225e94bdd0cb56d3daa8f5c7b09873492c314a51c8cc490`.
   The independent 127-path/254-variant String split gate now admits 244
   variants and records 236 passes, four missing-global-`eval` runtime failures,
   eight adjacent feature outcomes, two IsHTMLDDA host outcomes, and four typed
   parser frontiers. R1p resolves the two Annex B `\k` separator variants. Its
   current TSV/JSONL SHA-256 values are
-  `c017569c2184dc6e82797f7e6261ca9e741c27374d8755296cf4522abc565c2e`
+  `d8befca75b131842c564099071f3558aa08150102a87679b20f0ca2f83c1a1fd`
   and
-  `996d8743867fa66697a264d06e721f86369480980c5306a0d4ea4f4e948e21f9`.
+  `7039dfbd827a0db6465c8837372bf4b0419aa9f73119b2828aaced4cce749ae4`.
 
   The exact R1d-to-R1e full join has only 90 `fail-runtime -> pass`
   transitions, moving the complete vector to 25,119 passes while leaving
@@ -324,10 +329,11 @@ claim full parity.
   replace path at the then-missing `@@replace` protocol. R1h links that
   protocol, so the current vector records 46 passes and zero runtime failures;
   feature, host, arrow and object-method parser frontiers remain classified
-  separately. Its current TSV/JSONL SHA-256 values are
-  `115ce8f79ec6344ee6d059061b50f3f6be6e16968c5935f1dfef98d8a5effc1f`
+  separately. R1q admits two duplicate-name syntax variants, which reach the
+  existing arrow parser frontier. Its current TSV/JSONL SHA-256 values are
+  `f161d9ffc36659e5f789cdfb71937e720b8187d7d368822aaf3cc934605dfd91`
   and
-  `9400d3e14d3c7e1fc9ac1b4026f360bda2ad1a45e263570f60c541633833fc9c`.
+  `6db134e33e0c31c33afd37c805a3969016998f2fa7befa22437e4ae88a7cb56d`.
   A QuickJS-shaped lexical capture-count prepass also distinguishes known
   out-of-range Unicode decimal escapes from in-range references, moving the two
   `unicode_restricted_octal_escape.js` variants to pass while preserving typed
@@ -366,9 +372,9 @@ claim full parity.
   R1g it admitted all 460, recorded 452 passes, and left eight Unicode
   property-escape parser frontiers; R1m resolves those final eight, so the
   current gate passes all 460. Its current TSV/JSONL SHA-256 values are
-  `a24d4fcbcdc835e33240054469949974f7aa2eaecbaafdae55f167785ac91fe0`
+  `f39f3d8d319075b4d2744df9359f5bc523dc367b3748c6903244fcf6a330edb1`
   and
-  `3fa444fc4be67f4037addef69b70bd707df6f5f8ea5e09e5ca59319fc41e7a2c`.
+  `2dccace4c1b245cd987f45714beb5472f2f3b4633170f34d48dae5141e6dd6fd`.
   Publishing the feature also audits exactly 83 modifier-owned literal
   parse-negative paths, moving the capability profile to 19 feature tags and
   101 negative paths with SHA-256
@@ -441,9 +447,9 @@ claim full parity.
   rest-parameter/array-spread variants; another 42 stop at typed parser
   frontiers, 22 at independently undeclared features, and six at host
   capabilities. The current focused TSV/JSONL SHA-256 values are
-  `160423cd138f2ece33b99f472e0d4b573fae4fce12ccfa32c82c71084f4048af`
+  `06c12e5aa4b874c56c6a28262fa6dde9f6efec3f3dedd803d213f294ab7c7749`
   and
-  `1489f6f8a024c04aa6dab3c2741cfd23cbb31441b3e37c9f3e56fd80893ac638`.
+  `0f5d159db6972e241e43f67363f8ca84c3575215005d20032610a41091318256`.
   Publishing `String.prototype.replaceAll` and `Symbol.replace` moves the
   capability profile to 21 feature tags with SHA-256
   `921df0ef452f4d1286162093ebdf81a74d0805eb7c04601c86abd6ec7347ed7f`.
@@ -515,9 +521,9 @@ claim full parity.
   match/reference cases reach the existing lexical-destructuring parser
   frontier. The current gate therefore has 94 passes and four typed parser
   frontiers. Its TSV/JSONL SHA-256 values are
-  `ada0bcd173757d2c9668df3b0a3dac50e765da4fa31b568a494d2e889ac9195e`
+  `fb9f4501ef7a267b6a6e10275ce88c4c914dbb782f8b56806341927b60c7309c`
   and
-  `e898f978e1c01f55de9bb4aefd73d2e396ccbe7a4aa5fe2c2122b6568845e7fe`.
+  `288906a0a7edd0229807931614a6b60aac551bfd1619c9fe5a07dca3687a126f`.
 
   The complete vector moves to 26,027 passes and 33,287 admitted jobs. Its
   exact R1j-to-R1k outcome delta is 62 `unsupported-parser -> pass`, two
@@ -543,9 +549,9 @@ claim full parity.
 
   The static 26-path/52-variant lookahead gate now passes all 52 variants. Its
   TSV/JSONL SHA-256 values are
-  `ff22eba0ba5e98cb3aa5b08ca96521ec4f053079602f096e8386ddcbcb7d9066`
+  `87bd4bf3ef361c063779f46c04d332349ec0c376d120cb854523c860cc32280e`
   and
-  `5b87d59237f58c36234a3f26043192f87f617492f91bdf3a3b5441b2f6764402`.
+  `ba716c99a6a95dc3a9bb1847bee65447de845aebc6e28c4ac69ce891c5bba024`.
   The complete vector moves to 26,079 passes while admitted jobs remain
   33,287. The exact R1k-to-R1l delta is 50
   `unsupported-parser -> pass` and two `unsupported-runtime -> pass`, with no
@@ -592,9 +598,9 @@ claim full parity.
 
   The cumulative 589-path/1,178-variant Unicode-property gate passes every
   variant. Its TSV/JSONL SHA-256 values are
-  `5ab6474c68ea68dbe28dbcbce961e083832bb90c72520502e81a1895f9fb9d67`
+  `33e3da0a2ff60501fd68a838e80dbfced58551a27ceb5a96d51cb230b07e9488`
   and
-  `510830fb77b7635a4e6499f024f205948591bfe3230116f5459d044fdffea388`.
+  `3c75c5e8bbb3551554475e2eb8e1e8af053633456da5ee704f05589a2d508e6d`.
   The exact 102,037-key full join records 896
   `unsupported-harness-parser -> pass`, six
   `unsupported-harness-parser -> unsupported-parser`, 20
@@ -620,9 +626,9 @@ claim full parity.
   owned solely by lookbehind and left four co-tagged named-group variants
   gated. R1p resolves those four, so the current gate passes all 54. Its
   current TSV/JSONL SHA-256 values are
-  `32dc8238f6f40bf0149405033830b7e06bf7f15d31ef44eeb52e4a651e7176da`
+  `f161d1c666e327b16e5ab7b57d7d77371a1d96d65076c7fda7b96656c8b534de`
   and
-  `d1135c58c92b7d0a227b65a324513dff764332f098170a8cf664172d0f07799c`.
+  `8215004edf9d2cca29cdf403cd52cf2fa24cc043f83efc0adbab1f0e16a9bc4d`.
   The exact R1n/R1o full join matches all 102,037 keys: 34
   `unsupported-feature -> pass` and 16
   `unsupported-negative-provenance -> pass`, with 50 outcome changes, 54
@@ -650,10 +656,10 @@ claim full parity.
   101-path/202-variant gate admits 184 variants and passes 158; its six parse
   failures and 20 typed parser frontiers expose pre-existing arrow, class,
   object-method, and destructuring gaps, while 18 variants retain honest
-  adjacent gates. Focused TSV/JSONL hashes are
-  `2193d2942d153df13445d7d456e9fee83b3dd5ddfe434dbce3b2036569d2f224`
+  adjacent gates. Current focused TSV/JSONL hashes are
+  `505845ba54ec78ae1a636f91f7285e447444d3ffca8b66a03592591573a15d26`
   and
-  `c6a98aef641f0dd6558439d561d81497d980e197d68755a4b08eff2276da257f`.
+  `5daec58cf49af34cdf2ad8e70d5a945513e6490180ab4c74e9e996f39d4fa234`.
 
   The exact R1o/R1p join matches all 102,037 keys. It records 158
   `unsupported-feature -> pass`, six `unsupported-feature -> fail-parse`, 20
@@ -669,11 +675,36 @@ claim full parity.
   The engine changes stay in `src/regexp/` and
   `runtime/intrinsics/regexp/result.rs`; `runtime.rs` remains 9,677 lines.
 
+  R1q's source audit confirms that R1p already mirrors pinned QuickJS's global
+  wrapping 8-bit duplicate-name scope, including its nested-alternative leak,
+  multi-capture backreference selection, capture reset, result ordering, and
+  defined-value replacement behavior. No production engine change is needed.
+  The frozen 19-path/38-variant duplicate-name gate admits 32 variants and
+  passes 26. Six variants in three callback-heavy tests reach the existing
+  arrow parser frontier; six co-tagged variants remain behind
+  `regexp-match-indices`. Focused TSV/JSONL hashes are
+  `bd55aacd10c14cf1f0f7a38e11a610ad3763bce8c4f326c9a6ae3ad548a8ef30`
+  and
+  `1b9dc971d9c965910b7e0bd88573e80553d17b74651c0ef4762dd34d998cc666`.
+
+  The exact R1p/R1q join matches all 102,037 keys. It records 26
+  `unsupported-feature -> pass` and six
+  `unsupported-feature -> fail-parse` transitions. All 32 outcome changes and
+  38 complete-row changes are inside the frozen manifest, with no
+  previous-pass regression. The vector reaches 27,531 passes and 34,723
+  admitted jobs. Full TSV/JSONL hashes are
+  `16759de6e768905a3feae8dc96889936668838f42b64217bd70776cb6e56db96`
+  and
+  `36b947828eda57d0216d84e623b6af51143d26586860db3639cc3875765fc7e0`.
+  The profile now contains 27 reviewed features and 307 audited negative
+  paths, with SHA-256
+  `8b78e178e2c433f5c9f40b101482a74cb3c5dc61967aa9ab9ee523479e132aa8`.
+  `runtime.rs` remains 9,677 lines.
+
   Advanced grammar still fails closed: Unicode set/string properties, all
   `v`-mode execution, and unported Annex-B control escapes return typed
-  unsupported errors. The duplicate-named-group-only Test262 feature remains
-  undeclared pending its own complete audit. Pattern group
-  nesting is temporarily capped at 256 with a catchable `stack overflow`
+  unsupported errors. Pattern group nesting is temporarily capped at 256 with
+  a catchable `stack overflow`
   compile error so adversarial input cannot overflow the Rust stack; a later
   iterative parser/compiler must replace that conservative resource frontier
   before the runtime surface is exposed as complete.
@@ -2958,6 +2989,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/run-test262-regexp-lookbehind.sh
 ./scripts/run-test262-regexp-unicode-properties.sh
 ./scripts/run-test262-regexp-named-groups.sh
+./scripts/run-test262-regexp-duplicate-named-groups.sh
 ./scripts/test-test262-full.sh
 ```
 

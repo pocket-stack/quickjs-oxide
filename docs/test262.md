@@ -10,7 +10,7 @@ differentials still decide exact behavior inside each implemented slice.
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
 - quickjs-oxide capability profile SHA-256:
-  `992a8e2ba743ca662b3ab087e83306b0ad488fa438e69744f10e163387900523`
+  `8b78e178e2c433f5c9f40b101482a74cb3c5dc61967aa9ab9ee523479e132aa8`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -50,29 +50,29 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 27,505 pass;
+- 27,531 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 51,151 are classified as unsupported feature, mode, host capability, parser
+- 51,119 are classified as unsupported feature, mode, host capability, parser
   frontier, harness frontier, or unaudited negative-test provenance;
-- 997 fail to parse, 3,699 fail at runtime, 206 fail in the harness, and four
+- 1,003 fail to parse, 3,699 fail at runtime, 206 fail in the harness, and four
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 34,691 variants to execution. That count includes variants
+The runner admitted 34,723 variants to execution. That count includes variants
 which then report a typed parser or harness frontier rather than an observed
 non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 26.96% (`27,505 / 102,037`);
-- conservative target-scope lower bound: 32.92%
-  (`27,505 / (102,037 - 18,475)`);
+- raw suite pass rate: 26.98% (`27,531 / 102,037`);
+- conservative target-scope lower bound: 32.95%
+  (`27,531 / (102,037 - 18,475)`);
 - pass rate among variants with a non-unsupported observed outcome: 84.86%
-  (`27,505 / 32,411`).
+  (`27,531 / 32,443`).
 
-The 32.92% figure is the useful whole-project progress floor, not a claim that
-the engine is 32.92% conformant. The 84.86% conditional rate measures quality
+The 32.95% figure is the useful whole-project progress floor, not a claim that
+the engine is 32.95% conformant. The 84.86% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
-completion. The capability profile currently admits 26 reviewed Test262
+completion. The capability profile currently admits 27 reviewed Test262
 feature tags and 307 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
 lands can only make the measurement more representative. Focused QuickJS
@@ -86,9 +86,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`ff31a5f63b2b9e27f5650dd99c301cbff9c863314cce48e592f97b6ca1df2704`
+`16759de6e768905a3feae8dc96889936668838f42b64217bd70776cb6e56db96`
 and
-`e1766ea22ab3e33ef610310a6d83ce101eb66dcfa598d581ebaed257295e9402`.
+`36b947828eda57d0216d84e623b6af51143d26586860db3639cc3875765fc7e0`.
 
 ## Milestone policy
 
@@ -211,9 +211,9 @@ The capability profile remains unchanged at 18 reviewed tags.
 R1p's Annex B named-backreference parser resolves the two
 `separator-regexp.js` variants. The current gate has 236 passes and four typed
 parser frontiers; current TSV/JSONL hashes are
-`c017569c2184dc6e82797f7e6261ca9e741c27374d8755296cf4522abc565c2e`
+`d8befca75b131842c564099071f3558aa08150102a87679b20f0ca2f83c1a1fd`
 and
-`996d8743867fa66697a264d06e721f86369480980c5306a0d4ea4f4e948e21f9`.
+`7039dfbd827a0db6465c8837372bf4b0419aa9f73119b2828aaced4cce749ae4`.
 
 The RegExp R0 foundation deliberately did not increase the pass count. It
 added the internal UTF-16 compiler/executor and heap brand while `%RegExp%`
@@ -258,9 +258,9 @@ Subsequent RegExp grammar slices moved the same core gate to 436 passes; R1p's
 Unicode bare-`\k` diagnostic resolves two more. The current core vector has 438
 passes, ten missing-`eval` runtime failures, and two typed legacy-control
 frontiers. Its TSV/JSONL hashes are
-`0f25cfccc24c90ff61aab4877cdec18a01da22b8e06c587c19b11f090c6896dc`
+`795528ba6f14fa0955f632db1c8883e2a3e54db70f811e6cb3b9485b7de81fd6`
 and
-`04e00d8738b9920f30acc40025ff74aebdf05e693928c29bc112338e4cc0b4c6`.
+`b37b1c7d255ceac85d1ed930f68a9beadd01dbf03fd485574702f846417ba8bc`.
 The frozen core vector is reproduced by
 `scripts/test-test262-regexp-core.sh`.
 
@@ -276,8 +276,10 @@ landing, the focused vector had 88 passes, two `fail-runtime` outcomes and six
 typed `unsupported-parser` outcomes: two lookaround and four backreference
 variants. Relative to R1a, all 88 passes move from the typed RegExp-literal
 parser frontier. The two runtime variants still stop at an earlier
-`String.prototype.match` call; R1d later makes both pass, moving the current
-focused literal vector from 88 to 90 passes. The complete R1b vector moves
+`String.prototype.match` call; R1d later makes both pass, moving the vector
+from 88 to 90 passes. R1k resolves four linked backreference variants and R1l
+the final two lookahead variants, so the current focused gate passes all 96.
+The complete R1b vector moves
 from 23,859 to 24,699 passes while the 18,475 target exclusions and 32,289
 admitted jobs stay unchanged. Its exact 102,037-key join has 1,193 transitions:
 840 `unsupported-parser -> pass`, 226 `unsupported-parser -> fail-runtime`, 24
@@ -325,15 +327,15 @@ where pinned QuickJS continues.
 sloppy/strict variants from the R1c report;
 `tests/test262-regexp-match-baseline.txt` pins both the R1c selection provenance
 and current outcome hashes, and `scripts/run-test262-regexp-match.sh`
-reproduces the gate. It admits 198 variants and records 180 passes, two
+reproduces the gate. It admits 200 variants and records 182 passes, two
 `fail-runtime` outcomes at the independent missing-`eval` frontier, 16 typed
 `unsupported-parser` outcomes from eight object-literal method/accessor paths,
-and ten outcomes still gated by five adjacent feature declarations. At R1c the
+and eight outcomes still gated by four adjacent-feature paths. At R1c the
 same keys were two passes, 76 runtime failures and 130 feature-gated outcomes.
 The focused TSV and JSONL SHA-256 values are
-`7db1917f2f5e2f0ed2a9a5bfb01a3bda94c498a92bfaf38f8519e642127fac84`
+`13811543bada9e1f91e69f9b6aee968812d9dcb67e7aa549fabeb20c8b3c10e6`
 and
-`1450d3d8445e86ab30b3b6fc80386a18358a8b36811c4150afc6073207302707`.
+`cfeef60ff5c832df3591e88548042ff3881f771743fd10b15a324a95b0aee5a9`.
 
 The complete R1d vector moves from 24,817 to 25,029 passes and from 32,353 to
 32,497 admitted jobs. Its exact old/new join matches all 102,037 keys with no
@@ -369,9 +371,9 @@ require the create-realm host hook, and four retain typed parser frontiers. The
 QuickJS differential suite separately locks SpeciesConstructor semantics
 without widening the full-suite capability profile. Its current TSV and JSONL
 SHA-256 values are
-`d71bc5e3f64613a19e3ee93fbdb78b15c9dafc8afcaf86bdcc4253658b3fbadc`
+`ce13c1409af6af84140fb79457c2e98e3d9264a054444dcd5359803c4545ab48`
 and
-`7cffb51be3d1af722de04e3d02c4031b83dd53012181626d524127cb5272113b`.
+`e9c24f1210c1e1b27225e94bdd0cb56d3daa8f5c7b09873492c314a51c8cc490`.
 The independent 127-path String split gate now records the 236 passes and
 hashes above.
 
@@ -471,9 +473,9 @@ admits 348 variants and records 300 passes, two arrow-function plus four
 rest-parameter/array-spread parse failures, 42 typed parser frontiers, 22
 adjacent feature outcomes, and six host outcomes. Current focused TSV/JSONL
 hashes are
-`160423cd138f2ece33b99f472e0d4b573fae4fce12ccfa32c82c71084f4048af`
+`06c12e5aa4b874c56c6a28262fa6dde9f6efec3f3dedd803d213f294ab7c7749`
 and
-`1489f6f8a024c04aa6dab3c2741cfd23cbb31441b3e37c9f3e56fd80893ac638`.
+`0f5d159db6972e241e43f67363f8ca84c3575215005d20032610a41091318256`.
 
 Publishing `String.prototype.replaceAll` and `Symbol.replace` moves the
 capability profile to 21 reviewed feature tags, with SHA-256
@@ -546,9 +548,9 @@ resolved four linked lookahead variants, R1o resolved 14 linked lookbehind
 variants, and R1p admits the final six named-group variants. The current gate
 therefore runs all 98 variants: 94 pass and four reach typed
 lexical-destructuring parser frontiers. Current focused TSV/JSONL hashes are
-`ada0bcd173757d2c9668df3b0a3dac50e765da4fa31b568a494d2e889ac9195e`
+`fb9f4501ef7a267b6a6e10275ce88c4c914dbb782f8b56806341927b60c7309c`
 and
-`e898f978e1c01f55de9bb4aefd73d2e396ccbe7a4aa5fe2c2122b6568845e7fe`.
+`288906a0a7edd0229807931614a6b60aac551bfd1619c9fe5a07dca3687a126f`.
 
 The exact R1j/R1k full join adds 68 passes with no previous-pass regression:
 62 variants move from `unsupported-parser`, two from `unsupported-runtime`,
@@ -662,9 +664,9 @@ The frozen focused gate contains 27 paths and 54 variants. At R1o, its 17 pure
 lookbehind paths and eight audited parse-negative paths contributed 50 passing
 variants while four co-tagged named-group variants stayed gated. R1p resolves
 those four, so the current gate passes all 54. Focused TSV/JSONL hashes are
-`32dc8238f6f40bf0149405033830b7e06bf7f15d31ef44eeb52e4a651e7176da`
+`f161d1c666e327b16e5ab7b57d7d77371a1d96d65076c7fda7b96656c8b534de`
 and
-`d1135c58c92b7d0a227b65a324513dff764332f098170a8cf664172d0f07799c`.
+`8215004edf9d2cca29cdf403cd52cf2fa24cc043f83efc0adbab1f0e16a9bc4d`.
 
 The exact R1n/R1o full join matches all 102,037 keys. It records 34
 `unsupported-feature -> pass` and 16
@@ -693,12 +695,13 @@ defining-realm ownership. The frozen focused gate is 101 paths and 202
 variants: 184 are admitted and 158 pass. Six reach pre-existing arrow-function
 parse failures, 20 reach typed class/object-method/destructuring parser
 frontiers, and 18 stay behind `regexp-match-indices`, `Symbol.iterator`, or
-class syntax. The 19 paths tagged only `regexp-duplicate-named-groups` remain
-outside this declaration even though the lower-level QuickJS duplicate
-selection behavior is implemented. Focused TSV/JSONL hashes are
-`2193d2942d153df13445d7d456e9fee83b3dd5ddfe434dbce3b2036569d2f224`
+class syntax. At the R1p landing, the 19 paths tagged with
+`regexp-duplicate-named-groups` remained outside that declaration even though
+the lower-level QuickJS duplicate selection behavior was implemented; R1q
+audits them below. Current focused TSV/JSONL hashes are
+`505845ba54ec78ae1a636f91f7285e447444d3ffca8b66a03592591573a15d26`
 and
-`c6a98aef641f0dd6558439d561d81497d980e197d68755a4b08eff2276da257f`.
+`5daec58cf49af34cdf2ad8e70d5a945513e6490180ab4c74e9e996f39d4fa234`.
 
 The exact R1o/R1p full join again matches all 102,037 keys. It records 158
 `unsupported-feature -> pass`, six `unsupported-feature -> fail-parse`, 20
@@ -713,6 +716,31 @@ identity-escape behavior when no named capture exists. The vector reaches
 `ff31a5f63b2b9e27f5650dd99c301cbff9c863314cce48e592f97b6ca1df2704`
 and
 `e1766ea22ab3e33ef610310a6d83ce101eb66dcfa598d581ebaed257295e9402`.
+
+R1q declares the duplicate-named-capture feature after a separate pinned
+QuickJS source and adversarial-probe audit confirmed that R1p already mirrors
+the target's global wrapping 8-bit scope, nested-alternative leakage,
+multi-capture backreference selection, reset behavior, result order, indices,
+and replacement semantics. No production engine change is needed.
+
+The frozen focused gate is the complete 19-path/38-variant feature set. It
+admits 32 variants and passes 26. Six variants in the constructor,
+`RegExp.prototype.compile`, and matchAll syntax tests reach the existing arrow
+parser frontier; six match-indices co-tagged variants remain honestly gated.
+Focused TSV/JSONL hashes are
+`bd55aacd10c14cf1f0f7a38e11a610ad3763bce8c4f326c9a6ae3ad548a8ef30`
+and
+`1b9dc971d9c965910b7e0bd88573e80553d17b74651c0ef4762dd34d998cc666`.
+
+The exact R1p/R1q full join matches all 102,037 keys. It records 26
+`unsupported-feature -> pass` and six
+`unsupported-feature -> fail-parse` transitions. All 32 outcome changes and
+38 complete-row changes stay inside the focused manifest, with no
+previous-pass regression. The complete vector reaches 27,531 passes and
+34,723 admitted jobs. Full TSV/JSONL hashes are
+`16759de6e768905a3feae8dc96889936668838f42b64217bd70776cb6e56db96`
+and
+`36b947828eda57d0216d84e623b6af51143d26586860db3639cc3875765fc7e0`.
 
 ## Runner contract
 
@@ -770,6 +798,7 @@ canonical progress report.
 ./scripts/run-test262-regexp-lookbehind.sh
 ./scripts/run-test262-regexp-unicode-properties.sh
 ./scripts/run-test262-regexp-named-groups.sh
+./scripts/run-test262-regexp-duplicate-named-groups.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -785,10 +814,12 @@ The Date transition also resolves the four otherwise-ready Reflect variants
 which had stopped at `Date.now`; generic split resolves six more linked Reflect
 variants. Basic RegExp literal execution, the search/match/split protocols,
 legacy compile, scoped modifiers, generic replacement, matchAll, and numeric
-backreferences, forward lookahead, lookbehind, Unicode property escapes, and
-ordinary named captures are now measured separately in
-R1b/R1c/R1d/R1e/R1f/R1g/R1h/R1j/R1k/R1l/R1m/R1n/R1o/R1p; R1i completes the
-direct standard-RegExp replacement route without changing that scoreboard.
+backreferences, forward lookahead, lookbehind, Unicode property escapes,
+ordinary named captures, and duplicate named captures are now measured
+separately in
+R1b/R1c/R1d/R1e/R1f/R1g/R1h/R1j/R1k/R1l/R1m/R1n/R1o/R1p/R1q; R1i
+completes the direct standard-RegExp replacement route without changing that
+scoreboard.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

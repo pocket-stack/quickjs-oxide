@@ -1,0 +1,27 @@
+# Frozen duplicate-named-capture measurement slice for the pinned Test262 checkout.
+#
+# This is the complete bytewise-sorted set of all 19 paths tagged with
+# regexp-duplicate-named-groups. The three regexp-match-indices co-tagged paths
+# remain governed by that independent capability.
+#
+# Exactly 19 unique paths expand to 38 sloppy/strict variants.
+#
+test/annexB/built-ins/RegExp/prototype/compile/duplicate-named-capturing-groups-syntax.js
+test/built-ins/RegExp/duplicate-named-capturing-groups-syntax.js
+test/built-ins/RegExp/named-groups/duplicate-names-exec.js
+test/built-ins/RegExp/named-groups/duplicate-names-group-property-enumeration-order.js
+test/built-ins/RegExp/named-groups/duplicate-names-match-indices.js
+test/built-ins/RegExp/named-groups/duplicate-names-match.js
+test/built-ins/RegExp/named-groups/duplicate-names-matchall.js
+test/built-ins/RegExp/named-groups/duplicate-names-replace.js
+test/built-ins/RegExp/named-groups/duplicate-names-replaceall.js
+test/built-ins/RegExp/named-groups/duplicate-names-search.js
+test/built-ins/RegExp/named-groups/duplicate-names-split.js
+test/built-ins/RegExp/named-groups/duplicate-names-test.js
+test/built-ins/RegExp/prototype/exec/duplicate-named-groups-properties.js
+test/built-ins/RegExp/prototype/exec/duplicate-named-indices-groups-properties.js
+test/built-ins/String/prototype/match/duplicate-named-groups-properties.js
+test/built-ins/String/prototype/match/duplicate-named-indices-groups-properties.js
+test/staging/built-ins/RegExp/named-groups/duplicate-named-groups-replace.js
+test/staging/built-ins/RegExp/named-groups/duplicate-named-groups-search.js
+test/staging/built-ins/RegExp/named-groups/duplicate-named-groups.js
