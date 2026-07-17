@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
-# Reproduce the complete classified outcome vector for RegExp.prototype.compile.
+# Reproduce the complete classified outcome vector for Unicode U+180E.
 
 set -euo pipefail
 export TZ=America/Los_Angeles
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$script_dir/.." && pwd)
-suite=$("$script_dir/prepare-test262.sh")
-source_dir=$(dirname -- "$suite")
-baseline=tests/test262-regexp-compile-baseline.txt
-manifest=tests/test262-regexp-compile.txt
-report=target/test262-regexp-compile.tsv
-json_report=target/test262-regexp-compile.jsonl
+baseline=tests/test262-unicode-u180e-baseline.txt
+manifest=tests/test262-unicode-u180e.txt
+report=target/test262-unicode-u180e.tsv
+json_report=target/test262-unicode-u180e.jsonl
 workers=${TEST262_WORKERS:-8}
 
 read_value() {
@@ -51,28 +49,37 @@ sha256_stream() {
     fi
 }
 
+expected_keys() {
+    awk 'NF && $1 !~ /^#/ { print $0 "\tsloppy"; print $0 "\tstrict" }' "$manifest"
+}
+
 cd -- "$root"
+if [[ ! -f "$baseline" ]]; then
+    echo "error: U+180E Test262 baseline is missing: $baseline" >&2
+    exit 1
+fi
+suite=$("$script_dir/prepare-test262.sh")
+source_dir=$(dirname -- "$suite")
+
 expected_quickjs=$(read_value quickjs)
 expected_test262=$(read_value test262)
 expected_patch=$(read_value test262_patch_sha256)
 expected_config=$(read_value test262_config_sha256)
 expected_metadata=$(read_value test262_metadata_sha256)
 expected_profile=$(read_value oxide_profile_sha256)
-timeout_ms=$(read_value timeout_ms)
 expected_schema=$(read_value schema)
 expected_mode=$(read_value mode)
+timeout_ms=$(read_value timeout_ms)
 expected_paths=$(read_value paths)
 expected_variants=$(read_value variants)
 expected_runnable=$(read_value runnable)
 expected_passes=$(read_value passes)
+expected_manifest=$(read_value manifest_sha256)
+expected_keys_hash=$(read_value keys_sha256)
+expected_nonpass=$(read_value nonpass_sha256)
 expected_tsv=$(read_value tsv_sha256)
 expected_jsonl=$(read_value jsonl_sha256)
 expected_summary=$(read_value summary)
-expected_manifest=$(read_value manifest_sha256)
-expected_r1e_full_tsv=$(read_value r1e_full_tsv_sha256)
-expected_r1e_selected=$(read_value r1e_selected_sha256)
-expected_r1e_variants=$(read_value r1e_variants)
-expected_r1e_summary=$(read_value r1e_summary)
 
 if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_test262" != "5c8206929d81b2d3d727ca6aac56c18358c8d790" \
@@ -83,16 +90,11 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_schema" != "test262-canonical-classified-v2" \
     || "$expected_mode" != "both" \
     || "$timeout_ms" != "30000" \
-    || "$expected_paths" != "35" \
-    || "$expected_variants" != "70" \
-    || "$expected_runnable" != "64" \
-    || "$expected_passes" != "48" \
-    || "$expected_manifest" != "87a9d837697333e2416718a22b7e420cf7eed46ba60d422034bf313160396651" \
-    || "$expected_r1e_full_tsv" != "5673ac15896bab5b1665bf8930db517447012c3d63d69bfbb1da9b8e7f9574c1" \
-    || "$expected_r1e_selected" != "5b21cbcefdb504453a661d60ab50f7b3a2750e98b247084af4837f952c325581" \
-    || "$expected_r1e_variants" != "70" \
-    || "$expected_r1e_summary" != "fail-parse=6 fail-runtime=46 skipped-feature=4 unsupported-feature=4 unsupported-host-create-realm=2 unsupported-parser=8" ]]; then
-    echo "error: RegExp compile R1e provenance metadata drifted" >&2
+    || "$expected_paths" != "25" \
+    || "$expected_variants" != "50" \
+    || "$expected_runnable" != "50" \
+    || "$expected_passes" != "40" ]]; then
+    echo "error: U+180E baseline metadata drifted" >&2
     exit 1
 fi
 
@@ -100,19 +102,18 @@ actual_manifest_paths=$(awk 'NF && $1 !~ /^#/ { count++ } END { print count + 0 
 unique_manifest_paths=$(awk 'NF && $1 !~ /^#/ { print }' "$manifest" | LC_ALL=C sort -u | wc -l | tr -d '[:space:]')
 if [[ "$actual_manifest_paths" != "$expected_paths" \
     || "$unique_manifest_paths" != "$expected_paths" ]]; then
-    echo "error: RegExp compile manifest cardinality drifted" >&2
-    echo "paths expected/actual/unique: $expected_paths / $actual_manifest_paths / $unique_manifest_paths" >&2
+    echo "error: U+180E manifest cardinality drifted" >&2
     exit 1
 fi
 if ! awk 'NF && $1 !~ /^#/ { print }' "$manifest" | LC_ALL=C sort -c; then
-    echo "error: RegExp compile manifest is not bytewise sorted" >&2
+    echo "error: U+180E manifest is not bytewise sorted" >&2
     exit 1
 fi
 actual_manifest=$(awk 'NF && $1 !~ /^#/ { print }' "$manifest" | sha256_stream)
-if [[ "$actual_manifest" != "$expected_manifest" ]]; then
-    echo "error: RegExp compile manifest content drifted" >&2
-    echo "expected: $expected_manifest" >&2
-    echo "actual:   $actual_manifest" >&2
+actual_keys_hash=$(expected_keys | LC_ALL=C sort | sha256_stream)
+if [[ "$actual_manifest" != "$expected_manifest" \
+    || "$actual_keys_hash" != "$expected_keys_hash" ]]; then
+    echo "error: U+180E manifest content drifted" >&2
     exit 1
 fi
 
@@ -152,54 +153,38 @@ if [[ "$actual_quickjs" != "$expected_quickjs" \
     || "$actual_mode" != "$expected_mode" \
     || "$actual_variants" != "$expected_variants" \
     || "$actual_runnable" != "$expected_runnable" ]]; then
-    echo "error: RegExp compile Test262 baseline metadata drifted" >&2
-    echo "quickjs expected/actual:  $expected_quickjs / $actual_quickjs" >&2
-    echo "test262 expected/actual:  $expected_test262 / $actual_test262" >&2
-    echo "patch expected/actual:    $expected_patch / $actual_patch" >&2
-    echo "config expected/actual:   $expected_config / $actual_config" >&2
-    echo "metadata expected/actual: $expected_metadata / $actual_metadata" >&2
-    echo "profile expected/actual:  $expected_profile / $actual_profile" >&2
-    echo "schema expected/actual:   $expected_schema / $actual_schema" >&2
-    echo "mode expected/actual:     $expected_mode / $actual_mode" >&2
-    echo "variants expected/actual: $expected_variants / $actual_variants" >&2
-    echo "runnable expected/actual: $expected_runnable / $actual_runnable" >&2
+    echo "error: U+180E Test262 baseline metadata drifted" >&2
     exit 1
 fi
 
 if ! diff -u \
-    <(awk 'NF && $1 !~ /^#/ { print $0 "\tsloppy"; print $0 "\tstrict" }' "$manifest" | LC_ALL=C sort) \
+    <(expected_keys | LC_ALL=C sort) \
     <(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") { print $1 "\t" $2 }' "$report" | LC_ALL=C sort); then
-    echo "error: RegExp compile Test262 report keys drifted from the frozen manifest" >&2
+    echo "error: U+180E report keys drifted from the frozen manifest" >&2
     exit 1
 fi
 
 actual_summary=$(tail -n 1 "$report")
-if [[ "$actual_summary" != "# summary $expected_summary" ]]; then
-    echo "error: RegExp compile Test262 classified summary drifted" >&2
-    echo "expected: # summary $expected_summary" >&2
-    echo "actual:   $actual_summary" >&2
-    exit 1
-fi
-if [[ "$expected_passes" == 0 ]]; then
-    if [[ " $expected_summary " == *" pass="* ]]; then
-        echo "error: zero-pass RegExp compile baseline unexpectedly records a pass outcome" >&2
-        exit 1
-    fi
-elif [[ " $expected_summary " != *" pass=$expected_passes "* ]]; then
-    echo "error: RegExp compile pass count is inconsistent with the pinned summary" >&2
+actual_passes=$(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") && $7 == "pass" { count++ } END { print count + 0 }' "$report")
+actual_nonpass=$(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") && $7 != "pass" { print $1 "\t" $2 "\t" $7 "\t" $8 "\t" $9 "\t" $10 }' "$report" | sha256_stream)
+if [[ "$actual_summary" != "# summary $expected_summary" \
+    || "$actual_passes" != "$expected_passes" \
+    || "$actual_nonpass" != "$expected_nonpass" ]]; then
+    echo "error: U+180E classified outcomes drifted" >&2
     exit 1
 fi
 
+actual_jsonl_lines=$(wc -l < "$json_report" | tr -d '[:space:]')
+expected_jsonl_lines=$((expected_variants + 2))
 actual_tsv=$(sha256_file "$report")
 actual_jsonl=$(sha256_file "$json_report")
-if [[ "$actual_tsv" != "$expected_tsv" || "$actual_jsonl" != "$expected_jsonl" ]]; then
-    echo "error: RegExp compile Test262 classified vector drifted" >&2
-    echo "TSV expected:   $expected_tsv" >&2
-    echo "TSV actual:     $actual_tsv" >&2
-    echo "JSONL expected: $expected_jsonl" >&2
-    echo "JSONL actual:   $actual_jsonl" >&2
+if [[ "$actual_jsonl_lines" != "$expected_jsonl_lines" \
+    || "$actual_tsv" != "$expected_tsv" \
+    || "$actual_jsonl" != "$expected_jsonl" ]]; then
+    echo "error: U+180E classified TSV/JSONL vector drifted" >&2
     exit 1
 fi
 
-printf 'RegExp compile Test262 vector matches: %s pass of %s variants across %s paths\n' \
+"$script_dir/check-rust-only.sh"
+printf 'U+180E Test262 vector matches: %s pass of %s variants across %s paths\n' \
     "$expected_passes" "$expected_variants" "$expected_paths"

@@ -1,0 +1,32 @@
+# Frozen U+180E measurement slice for the pinned Test262 checkout.
+#
+# This is the complete bytewise-sorted set of all 25 paths tagged with
+# u180e. Independent global eval support remains visible as runtime failures.
+#
+# Exactly 25 unique paths expand to 50 sloppy/strict variants.
+#
+test/built-ins/Number/S9.3.1_A2_U180E.js
+test/built-ins/Number/S9.3.1_A3_T1_U180E.js
+test/built-ins/Number/S9.3.1_A3_T2_U180E.js
+test/built-ins/RegExp/character-class-escape-non-whitespace-u180e.js
+test/built-ins/RegExp/dotall/with-dotall-unicode.js
+test/built-ins/RegExp/dotall/with-dotall.js
+test/built-ins/RegExp/dotall/without-dotall-unicode.js
+test/built-ins/RegExp/dotall/without-dotall.js
+test/built-ins/RegExp/u180e.js
+test/built-ins/String/prototype/toLocaleLowerCase/Final_Sigma_U180E.js
+test/built-ins/String/prototype/toLowerCase/Final_Sigma_U180E.js
+test/built-ins/String/prototype/trim/u180e.js
+test/built-ins/parseFloat/S15.1.2.3_A2_T10_U180E.js
+test/built-ins/parseInt/S15.1.2.2_A2_T10_U180E.js
+test/language/comments/mongolian-vowel-separator-multi.js
+test/language/comments/mongolian-vowel-separator-single-eval.js
+test/language/comments/mongolian-vowel-separator-single.js
+test/language/expressions/template-literal/mongolian-vowel-separator-eval.js
+test/language/expressions/template-literal/mongolian-vowel-separator.js
+test/language/literals/regexp/mongolian-vowel-separator-eval.js
+test/language/literals/regexp/mongolian-vowel-separator.js
+test/language/literals/string/mongolian-vowel-separator-eval.js
+test/language/literals/string/mongolian-vowel-separator.js
+test/language/white-space/mongolian-vowel-separator-eval.js
+test/language/white-space/mongolian-vowel-separator.js

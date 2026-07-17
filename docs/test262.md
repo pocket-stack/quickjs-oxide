@@ -10,7 +10,7 @@ differentials still decide exact behavior inside each implemented slice.
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
 - quickjs-oxide capability profile SHA-256:
-  `84fe6615092829a107e66beb49ac54b00a1910616424494f47e5f75c8ccc7880`
+  `3c5dee6fa18c428a45556488873ab216dd99e9f8859875ce2e4d1475d307aca6`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -50,30 +50,30 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 27,587 pass;
+- 27,627 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 51,053 are classified as unsupported feature, mode, host capability, parser
+- 51,003 are classified as unsupported feature, mode, host capability, parser
   frontier, harness frontier, or unaudited negative-test provenance;
-- 1,009 fail to parse, 3,699 fail at runtime, 210 fail in the harness, and four
+- 1,009 fail to parse, 3,709 fail at runtime, 210 fail in the harness, and four
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 34,799 variants to execution. That count includes variants
+The runner admitted 34,849 variants to execution. That count includes variants
 which then report a typed parser or harness frontier rather than an observed
 non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 27.04% (`27,587 / 102,037`);
-- conservative target-scope lower bound: 33.01%
-  (`27,587 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 84.86%
-  (`27,587 / 32,509`).
+- raw suite pass rate: 27.08% (`27,627 / 102,037`);
+- conservative target-scope lower bound: 33.06%
+  (`27,627 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 84.85%
+  (`27,627 / 32,559`).
 
-The 33.01% figure is the useful whole-project progress floor, not a claim that
-the engine is 33.01% conformant. The 84.86% conditional rate measures quality
+The 33.06% figure is the useful whole-project progress floor, not a claim that
+the engine is 33.06% conformant. The 84.85% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
-completion. The capability profile currently admits 29 reviewed Test262
-feature tags and 307 reviewed negative-test paths; all other feature-tagged or
+completion. The capability profile currently admits 30 reviewed Test262
+feature tags and 308 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
 lands can only make the measurement more representative. Focused QuickJS
 differential tests remain the semantic judge.
@@ -86,9 +86,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`44f7ee3d6de6c97962c4b372da2f492882b8834d76663b334dd46265fae9e69f`
+`7ea006b596e26f56712c9618f74cd8a5af9aada88702d08f855e6bc8eb313424`
 and
-`fa263cbcd0483000f0645f017d486e4a4403d5227b97ce3bf5e812bf8a6857ce`.
+`6d1d42c46ff6ff145dd72890c90abf6047d11910545599186e5f285028a21fc4`.
 
 ## Milestone policy
 
@@ -820,6 +820,42 @@ negative paths, with SHA-256
 The admission and differential locks add no production code; `runtime.rs`
 remains 9,677 lines.
 
+R1t declares `u180e` after pinned QuickJS source review and focused probes
+confirmed that the existing Rust implementation already matches the target
+where that semantics is implemented. U+180E is not ECMAScript whitespace or a
+line terminator; it is preserved in comments and literals, rejected between
+tokens, rejected by Number conversion, honored as a prefix-parser stopping
+point, retained by trim, skipped as Case_Ignorable for Final Sigma, excluded
+from RegExp `\s`, and matched by dot and `\S`. Seven dedicated differential
+tests lock these lexer, conversion, string, casing, and RegExp boundaries.
+Global `eval` and JSON are recorded as independent subsystem frontiers rather
+than receiving U+180E-specific production code.
+
+The frozen focused gate contains all 25 paths and 50 variants tagged with
+`u180e`. All 50 are admitted and 40 pass. Ten variants fail at runtime because
+the five `*-eval.js` paths require the still-missing JavaScript global `eval`;
+the exact parse-negative path is separately provenance-audited and passes as a
+real SyntaxError. Its summary is `fail-runtime=10 pass=40`. Focused TSV/JSONL
+hashes are
+`3e42dd0c0e7272d51f02a03f95c1d907218b9f3ee5e29a20c0c6760565fbaf0c`
+and
+`4d6e6d514c9a4e6108f828b57b53507e24564df2d0a670a31132a878dbbc8d5c`.
+
+The exact R1s/R1t join matches all 102,037 keys. It records 40
+`unsupported-feature -> pass` and ten `unsupported-feature -> fail-runtime`
+transitions. All 50 outcome and complete-row changes stay inside the frozen
+manifest, with no detail-only changes or previous-pass regression. The
+complete vector reaches 27,627 passes and 34,849 admitted jobs. Full
+TSV/JSONL hashes are
+`7ea006b596e26f56712c9618f74cd8a5af9aada88702d08f855e6bc8eb313424`
+and
+`6d1d42c46ff6ff145dd72890c90abf6047d11910545599186e5f285028a21fc4`.
+The capability profile now contains 30 reviewed feature tags and 308 audited
+negative paths, with SHA-256
+`3c5dee6fa18c428a45556488873ab216dd99e9f8859875ce2e4d1475d307aca6`.
+The admission and differential locks add no production code; `runtime.rs`
+remains 9,677 lines.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -879,6 +915,7 @@ canonical progress report.
 ./scripts/run-test262-regexp-duplicate-named-groups.sh
 ./scripts/run-test262-regexp-match-indices.sh
 ./scripts/run-test262-regexp-dotall.sh
+./scripts/run-test262-unicode-u180e.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -896,8 +933,8 @@ variants. Basic RegExp literal execution, the search/match/split protocols,
 legacy compile, scoped modifiers, generic replacement, matchAll, and numeric
 backreferences, forward lookahead, lookbehind, Unicode property escapes,
 ordinary named captures, duplicate named captures, match indices, and dotAll
-are now measured separately in
-R1b/R1c/R1d/R1e/R1f/R1g/R1h/R1j/R1k/R1l/R1m/R1n/R1o/R1p/R1q/R1r/R1s;
+and U+180E are now measured separately in
+R1b/R1c/R1d/R1e/R1f/R1g/R1h/R1j/R1k/R1l/R1m/R1n/R1o/R1p/R1q/R1r/R1s/R1t;
 R1i
 completes the direct standard-RegExp replacement route without changing that
 scoreboard.

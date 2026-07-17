@@ -86,14 +86,14 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_patch" != "f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3" \
     || "$expected_config" != "79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b" \
     || "$expected_metadata" != "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a" \
-    || "$expected_profile" != "84fe6615092829a107e66beb49ac54b00a1910616424494f47e5f75c8ccc7880" \
+    || "$expected_profile" != "3c5dee6fa18c428a45556488873ab216dd99e9f8859875ce2e4d1475d307aca6" \
     || "$expected_schema" != "test262-canonical-classified-v2" \
     || "$expected_mode" != "both" \
     || "$timeout_ms" != "30000" \
     || "$expected_paths" != "17" \
     || "$expected_variants" != "34" \
-    || "$expected_runnable" != "26" \
-    || "$expected_passes" != "18" ]]; then
+    || "$expected_runnable" != "30" \
+    || "$expected_passes" != "22" ]]; then
     echo "error: dotAll baseline metadata drifted" >&2
     exit 1
 fi

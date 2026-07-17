@@ -10,13 +10,13 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 29 reviewed feature tags and 307 exact audited
+  capability profile now admits 30 reviewed feature tags and 308 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 27,587 passes: 27.04% raw, a 33.01% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 84.86% among the 32,509 variants with a
+  has 27,627 passes: 27.08% raw, a 33.06% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 84.85% among the 32,559 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -98,6 +98,10 @@ claim full parity.
   without a production engine change. It adds 18 passes and 26 admitted jobs;
   all 26 outcome changes and six detail-only changes stay inside the frozen
   17-path set, for 32 complete-row changes and no previous-pass regression.
+  R1t audits and declares `u180e`, again without changing production code.
+  It adds 40 passes and 50 admitted jobs; ten newly admitted variants expose
+  the existing global-`eval` frontier. All 50 row and outcome changes stay
+  inside the frozen 25-path set, with no previous-pass regression.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -787,6 +791,40 @@ claim full parity.
   `84fe6615092829a107e66beb49ac54b00a1910616424494f47e5f75c8ccc7880`.
   The admission and differential locks add no production code; `runtime.rs`
   remains 9,677 lines.
+
+  R1t audits U+180E against pinned QuickJS at the lexer, numeric-conversion,
+  trimming, Final Sigma, and RegExp layers. Both engines treat it as ordinary
+  format content rather than ECMAScript whitespace: raw token separation is a
+  SyntaxError, comments and literals preserve it, Number rejects it,
+  prefix-number parsers stop at it, trim does not cross it, lowercase skips it
+  as Case_Ignorable, and `\s` excludes it while dot and `\S` match it. Seven
+  dedicated differential tests lock those boundaries. No production engine
+  change is needed; global `eval` and JSON remain independent subsystem
+  frontiers rather than U+180E exceptions.
+
+  The complete 25-path/50-variant focused gate is fully admitted and passes 40.
+  Its ten runtime failures are the five `*-eval.js` paths in sloppy and strict
+  mode: four pairs report the missing global `eval` ReferenceError, while the
+  whitespace pair correctly records Test262's resulting assertion error. The
+  single parse-negative path is separately provenance-audited and passes as a
+  real lexer-originated SyntaxError. Focused TSV/JSONL hashes are
+  `3e42dd0c0e7272d51f02a03f95c1d907218b9f3ee5e29a20c0c6760565fbaf0c`
+  and
+  `4d6e6d514c9a4e6108f828b57b53507e24564df2d0a670a31132a878dbbc8d5c`.
+
+  The exact R1s/R1t join matches all 102,037 keys. It records 40
+  `unsupported-feature -> pass` and ten `unsupported-feature -> fail-runtime`
+  transitions. All 50 outcome and complete-row changes stay inside the frozen
+  manifest, with no detail-only changes or previous-pass regression. The
+  vector reaches 27,627 passes and 34,849 admitted jobs. Full TSV/JSONL hashes
+  are
+  `7ea006b596e26f56712c9618f74cd8a5af9aada88702d08f855e6bc8eb313424`
+  and
+  `6d1d42c46ff6ff145dd72890c90abf6047d11910545599186e5f285028a21fc4`.
+  The profile now contains 30 reviewed features and 308 audited negative
+  paths, with SHA-256
+  `3c5dee6fa18c428a45556488873ab216dd99e9f8859875ce2e4d1475d307aca6`.
+  The milestone adds no production code; `runtime.rs` remains 9,677 lines.
 
   Advanced grammar still fails closed: Unicode set/string properties, all
   `v`-mode execution, and unported Annex-B control escapes return typed
@@ -3055,6 +3093,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_map_filter -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_reduce -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_unicode_u180e -- --nocapture
 
 ./scripts/test-parity-slice.sh
 ./scripts/test-test262-smoke.sh
@@ -3079,6 +3119,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/run-test262-regexp-duplicate-named-groups.sh
 ./scripts/run-test262-regexp-match-indices.sh
 ./scripts/run-test262-regexp-dotall.sh
+./scripts/run-test262-unicode-u180e.sh
 ./scripts/test-test262-full.sh
 ```
 

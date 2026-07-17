@@ -208,7 +208,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 29] = [
+    const EXPECTED_FEATURES: [&str; 30] = [
         "BigInt",
         "Math.sumPrecise",
         "Reflect",
@@ -238,8 +238,9 @@ mod tests {
         "regexp-modifiers",
         "regexp-named-groups",
         "regexp-unicode-property-escapes",
+        "u180e",
     ];
-    const EXPECTED_AUDITED_NEGATIVES: [&str; 165] = [
+    const EXPECTED_AUDITED_NEGATIVES: [&str; 166] = [
         "test/language/comments/hashbang/escaped-bang-041.js",
         "test/language/expressions/object/__proto__-duplicate.js",
         "test/language/global-code/decl-lex-restricted-global.js",
@@ -405,6 +406,7 @@ mod tests {
         "test/language/statements/variable/arguments-strict-list-middle-init.js",
         "test/language/statements/variable/eval-strict-list-final-init.js",
         "test/language/statements/while/decl-fun.js",
+        "test/language/white-space/mongolian-vowel-separator.js",
     ];
 
     #[test]
@@ -431,7 +433,7 @@ mod tests {
                     && !PROPERTY_POSITIVE_PATHS.contains(path)
             }))
             .collect::<BTreeSet<_>>();
-        assert_eq!(expected_audited_negatives.len(), 307);
+        assert_eq!(expected_audited_negatives.len(), 308);
         assert!(
             profile
                 .audited_negative_tests
