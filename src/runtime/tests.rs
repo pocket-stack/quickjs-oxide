@@ -306,6 +306,54 @@ fn get_property(
 }
 
 #[test]
+fn direct_eval_identity_is_realm_local_and_independent_of_the_global_property() {
+    let runtime = Runtime::new();
+    let mut first = runtime.new_context();
+    let mut second = runtime.new_context();
+    let first_eval = global_callable(&runtime, &mut first, "eval");
+    let second_eval = global_callable(&runtime, &mut second, "eval");
+    let first_value = Value::Object(first_eval.as_object().clone());
+    let second_value = Value::Object(second_eval.as_object().clone());
+
+    let mut first_host = RuntimeVmHost::empty_for_test(runtime.clone(), first.realm);
+    assert!(VmHost::is_original_eval(&mut first_host, &first_value).unwrap());
+    assert!(!VmHost::is_original_eval(&mut first_host, &second_value).unwrap());
+
+    let mut second_host = RuntimeVmHost::empty_for_test(runtime.clone(), second.realm);
+    assert!(VmHost::is_original_eval(&mut second_host, &second_value).unwrap());
+    assert!(!VmHost::is_original_eval(&mut second_host, &first_value).unwrap());
+
+    let foreign_runtime = Runtime::new();
+    let mut foreign_context = foreign_runtime.new_context();
+    let foreign_eval = global_callable(&foreign_runtime, &mut foreign_context, "eval");
+    assert_eq!(
+        runtime.is_original_eval(
+            first.realm,
+            &Value::Object(foreign_eval.as_object().clone())
+        ),
+        Err(RuntimeError::WrongRuntime("eval function"))
+    );
+
+    assert_eq!(
+        second.eval("delete globalThis.eval").unwrap(),
+        Value::Bool(true)
+    );
+    assert!(VmHost::is_original_eval(&mut second_host, &second_value).unwrap());
+    second
+        .eval("globalThis.eval = function replacement() { return 17; }")
+        .unwrap();
+    let replacement = global_callable(&runtime, &mut second, "eval");
+    assert!(
+        !VmHost::is_original_eval(
+            &mut second_host,
+            &Value::Object(replacement.as_object().clone())
+        )
+        .unwrap()
+    );
+    assert!(VmHost::is_original_eval(&mut second_host, &second_value).unwrap());
+}
+
+#[test]
 fn array_class_roots_length_layout_values_and_realm_prototype() {
     let runtime = Runtime::new();
     let mut first = runtime.new_context();

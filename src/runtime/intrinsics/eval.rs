@@ -40,11 +40,53 @@ impl Runtime {
                 "global eval used an unexpected native invocation protocol",
             ));
         };
-        let value = arguments
-            .readable
-            .first()
-            .cloned()
-            .unwrap_or(Value::Undefined);
+        Self::evaluate_eval_argument(
+            arguments
+                .readable
+                .first()
+                .cloned()
+                .unwrap_or(Value::Undefined),
+        )
+    }
+
+    /// Execute the original-eval branch selected by QuickJS `OP_eval` after
+    /// realm-local identity matching. This deliberately bypasses the native
+    /// `%eval%` call frame so future String execution can see the bytecode
+    /// caller's linked lexical environment.
+    pub(in crate::runtime) fn call_direct_eval_original(
+        &self,
+        input: Value,
+    ) -> Result<Completion, RuntimeError> {
+        Self::evaluate_eval_argument(input)
+    }
+
+    pub(in crate::runtime) fn is_original_eval(
+        &self,
+        realm: ContextId,
+        function: &Value,
+    ) -> Result<bool, RuntimeError> {
+        if let Value::Object(object) = function {
+            if !object.belongs_to(self) {
+                return Err(RuntimeError::WrongRuntime("eval function"));
+            }
+        }
+        let original = self
+            .0
+            .state
+            .borrow()
+            .heap
+            .context(realm)?
+            .eval_function
+            .ok_or(RuntimeError::Invariant(
+                "context has no original eval function root",
+            ))?;
+        Ok(matches!(
+            function,
+            Value::Object(object) if object.object_id() == original
+        ))
+    }
+
+    fn evaluate_eval_argument(value: Value) -> Result<Completion, RuntimeError> {
         if matches!(value, Value::String(_)) {
             return Err(RuntimeError::Engine(Error::new(
                 ErrorKind::Unsupported,

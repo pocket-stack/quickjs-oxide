@@ -114,6 +114,22 @@ claim full parity.
   accepted or swallowed the missing-global `ReferenceError`. Net pass growth
   is therefore 14, not 55; this is an explicit false-positive correction, not
   a regression in previously implemented JavaScript semantics.
+  R1v adds QuickJS-shaped syntactic direct-eval lowering without opening
+  String source execution. The parser retains the call-site `ScopeId` in
+  `IrOp::EvalCall`, then publishes the current shell as `Instruction::Eval`;
+  this avoids putting an uninterpretable parser scope number in public
+  bytecode while preserving the information needed for the later linked eval
+  environment table. The VM performs QuickJS's current-realm original-object
+  identity gate: a match consumes only the first already-evaluated argument
+  and bypasses a native `%eval%` frame, while a mismatch calls the replacement
+  with `this = undefined` and the complete argument list. Parenthesized and
+  locally bound identifier references are candidates; comma, alias, property,
+  `.call`/`.apply`, and conditional/assignment results remain ordinary calls;
+  construction remains on the non-eval `Construct` path. Pinned QuickJS probes
+  freeze that call-form matrix, including the still-deferred spread and
+  optional-call boundaries. Both the focused
+  55-variant report and the complete 102,037-variant Test262 reports are
+  byte-identical to R1u, as required for this semantic-path milestone.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -876,6 +892,31 @@ claim full parity.
   `3c5dee6fa18c428a45556488873ab216dd99e9f8859875ce2e4d1475d307aca6`.
   Eval code lives in `runtime/intrinsics/eval.rs`; bootstrap wiring adds only
   two lines to `runtime.rs`, now 9,679 lines.
+
+  R1v then establishes the direct-eval bytecode and realm-identity path while
+  deliberately keeping the same String-source frontier. Compiler tests prove
+  that `eval(x)`, `(eval)(x)`, nested parentheses, escaped spelling, and a
+  local binding named `eval` publish `Eval`, while composed values, aliases,
+  properties, `.call`, conditionals, assignments, and `new` do not. VM tests
+  lock the `(argc + 1) -> 1` stack contract, first-argument-only original path,
+  complete-argument replacement fallback, and undefined receiver. Runtime
+  tests prove the cached identity is realm-local and survives deletion or
+  replacement of the global property. The parser IR retains the exact
+  call-site scope for the future immutable eval-environment descriptor; a raw
+  `ScopeId` is intentionally not exposed in verified bytecode.
+
+  This is a zero-scoreboard-movement architecture milestone. The eval-focused
+  TSV/JSONL remain byte-identical at
+  `9d364c24169423efa49ecfa384c86280f94011b430fa787f72a8214fe867a6f6`
+  and
+  `63d5717d85f57c19705196aee0333c18cc270242b37e431622a035a8c34cf2fd`;
+  the full TSV/JSONL remain byte-identical at
+  `59736a4a4f63122a458a33374d2afd873a706aeb7ff271b52f9fa4aa2aa71fbe`
+  and
+  `c4849aecc54afcc7c73bb182cd240bc9cf35634bc74bc4d5558d6951898af2f2`.
+  There are zero outcome, complete-row, detail-only, key, or pass-count
+  changes. `runtime.rs` remains 9,679 lines; all new eval behavior stays in
+  the compiler, typed VM boundary, and `runtime/intrinsics/eval.rs`.
 
   Advanced grammar still fails closed: Unicode set/string properties, all
   `v`-mode execution, and unported Annex-B control escapes return typed

@@ -392,6 +392,14 @@ enum IrOp {
     /// u16 argument guard.  Retain the full count until the bytecode stack
     /// limit has been checked during lowering.
     TemplateCall(usize),
+    /// Parser/linker form of QuickJS `OP_eval`. Retain the syntactic call
+    /// site's scope identity until bytecode publication so String-source eval
+    /// can later lower it into a verified environment descriptor. R1v's
+    /// non-String shell intentionally publishes only the argument count.
+    EvalCall {
+        argument_count: u16,
+        scope: ScopeId,
+    },
     PushConstant(u32),
     MakeClosure(u32),
     /// Lowering-only assignment-expression form. QuickJS has no `set_var`;
@@ -469,6 +477,7 @@ impl IrOp {
             Self::Bytecode(instruction) => instruction.stack_effect(),
             Self::EnterScope(_) | Self::LeaveScope(_) => (0, 0),
             Self::TemplateCall(argument_count) => (argument_count + 2, 1),
+            Self::EvalCall { argument_count, .. } => (usize::from(*argument_count) + 1, 1),
             Self::PushConstant(_) | Self::MakeClosure(_) => (0, 1),
             Self::GlobalSet(_) | Self::CapturedLexicalSet(_) => (1, 1),
             Self::Identifier {
@@ -3565,14 +3574,36 @@ impl<'source> Parser<'source> {
             if self.is_punctuator(Punctuator::LeftParen) {
                 let call_span = self.current().span;
                 let is_method = self.promote_last_member_get_for_call()?;
+                // QuickJS selects OP_eval from the syntactic callee before
+                // binding resolution. Parentheses preserve IdentifierReference,
+                // while comma/member/other composed expressions have already
+                // cleared this marker. Runtime identity still decides whether
+                // this is original eval or an ordinary replacement call.
+                let direct_eval_scope = if is_method {
+                    None
+                } else {
+                    self.promote_tail_identifier_get()?
+                        .filter(|reference| reference.name == "eval")
+                        .map(|reference| reference.scope)
+                };
                 self.advance()?;
                 let argument_count = self.parse_call_arguments()?;
-                let instruction = if is_method {
-                    Instruction::CallMethod(argument_count)
+                if let Some(scope) = direct_eval_scope {
+                    self.emit_at(
+                        IrOp::EvalCall {
+                            argument_count,
+                            scope,
+                        },
+                        source_offset(call_span)?,
+                    )?;
                 } else {
-                    Instruction::Call(argument_count)
-                };
-                self.emit_instruction_at(instruction, source_offset(call_span)?)?;
+                    let instruction = if is_method {
+                        Instruction::CallMethod(argument_count)
+                    } else {
+                        Instruction::Call(argument_count)
+                    };
+                    self.emit_instruction_at(instruction, source_offset(call_span)?)?;
+                }
                 self.anonymous_function_definition = None;
                 continue;
             }
@@ -8289,6 +8320,19 @@ fn lower_ops(operations: Vec<SpannedIrOp>, scopes: &[ScopeLifecycle]) -> Result<
                 code.push(Instruction::CallMethod(argument_count as u16));
                 pc_sites.push(pc_site);
             }
+            IrOp::EvalCall {
+                argument_count,
+                scope,
+            } => {
+                // Validate the retained parser scope before deliberately
+                // discarding it for the non-String shell. String execution
+                // will publish a linked environment descriptor here instead.
+                scopes
+                    .get(scope.0)
+                    .ok_or_else(|| Error::internal("eval call scope is out of bounds"))?;
+                code.push(Instruction::Eval(argument_count));
+                pc_sites.push(pc_site);
+            }
             IrOp::PushConstant(index) => {
                 code.push(Instruction::PushConst(index));
                 pc_sites.push(pc_site);
@@ -12118,6 +12162,55 @@ mod tests {
             panic!("function expression did not produce an object");
         };
         assert!(runtime.is_constructor(&function).unwrap());
+    }
+
+    #[test]
+    fn compiler_marks_only_syntactic_eval_identifier_calls() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+
+        for source in ["eval(0)", "(eval)(0)", "((eval))(0)", r"\u0065val(0)"] {
+            let root = context.compile(source).unwrap();
+            let code = runtime.test_function_code(&root).unwrap();
+            assert_eq!(
+                code.iter()
+                    .filter(|instruction| matches!(instruction, Instruction::Eval(1)))
+                    .count(),
+                1,
+                "direct source: {source}"
+            );
+        }
+
+        let local = context
+            .compile("(function(eval){ return eval(0); })")
+            .unwrap();
+        let local = runtime.test_child_function_bytecode(&local, 0).unwrap();
+        assert!(
+            runtime
+                .test_function_code(&local)
+                .unwrap()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Eval(1)))
+        );
+
+        for source in [
+            "(0, eval)(0)",
+            "var alias = eval; alias(0)",
+            "(true ? eval : eval)(0)",
+            "(eval = Function)(0)",
+            "globalThis.eval(0)",
+            "eval.call(undefined, 0)",
+            "new eval(0)",
+        ] {
+            let root = context.compile(source).unwrap();
+            let code = runtime.test_function_code(&root).unwrap();
+            assert!(
+                !code
+                    .iter()
+                    .any(|instruction| matches!(instruction, Instruction::Eval(_))),
+                "indirect/non-call source: {source}"
+            );
+        }
     }
 
     #[test]

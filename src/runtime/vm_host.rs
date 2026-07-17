@@ -1782,6 +1782,18 @@ impl VmHost for RuntimeVmHost {
             .map_err(runtime_error_to_vm_error)
     }
 
+    fn is_original_eval(&mut self, function: &Value) -> Result<bool, Error> {
+        self.runtime
+            .is_original_eval(self.current_realm, function)
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn direct_eval(&mut self, input: Value) -> Result<Completion, Error> {
+        self.runtime
+            .call_direct_eval_original(input)
+            .map_err(runtime_error_to_vm_error)
+    }
+
     fn construct(
         &mut self,
         function: Value,

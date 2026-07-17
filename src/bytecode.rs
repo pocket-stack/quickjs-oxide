@@ -244,6 +244,12 @@ pub enum Instruction {
     /// iterator_close` return-unwind sequence.
     IteratorClosePreserve,
     Call(u16),
+    /// QuickJS `OP_eval`: a syntactic direct-eval call site. The runtime first
+    /// compares the resolved callee with the executing realm's original
+    /// `%eval%`; a replacement callee falls back to an ordinary call with an
+    /// undefined receiver. A linked lexical-environment descriptor will be
+    /// added when String-source direct evaluation is implemented.
+    Eval(u16),
     CallMethod(u16),
     /// QuickJS `OP_call_constructor`: `func new.target args -> result`.
     Construct(u16),
@@ -306,7 +312,9 @@ impl Instruction {
             Self::SetNameComputed => (2, 2),
             Self::SetProto | Self::CopyDataProperties => (2, 1),
             Self::Delete => (2, 1),
-            Self::Call(argument_count) => (*argument_count as usize + 1, 1),
+            Self::Call(argument_count) | Self::Eval(argument_count) => {
+                (*argument_count as usize + 1, 1)
+            }
             Self::CallMethod(argument_count) => (*argument_count as usize + 2, 1),
             Self::Construct(argument_count) => (*argument_count as usize + 2, 1),
             Self::Drop
@@ -990,6 +998,85 @@ mod tests {
             constants: vec![],
             local_count: 0,
             max_stack: 0,
+        };
+        assert_eq!(
+            undersized.verify().unwrap_err().message(),
+            "declared maximum stack is smaller than required"
+        );
+    }
+
+    #[test]
+    fn verifier_models_eval_with_the_quickjs_call_stack_shape() {
+        for (argument_count, code, maximum) in [
+            (
+                0,
+                vec![
+                    Instruction::Undefined,
+                    Instruction::Eval(0),
+                    Instruction::Return,
+                ],
+                1,
+            ),
+            (
+                2,
+                vec![
+                    Instruction::Undefined,
+                    Instruction::PushI32(1),
+                    Instruction::PushI32(2),
+                    Instruction::Eval(2),
+                    Instruction::Return,
+                ],
+                3,
+            ),
+        ] {
+            let function = BytecodeFunction {
+                name: None,
+                code,
+                constants: vec![],
+                local_count: 0,
+                max_stack: maximum,
+            };
+            assert_eq!(
+                function.verify().unwrap().max_stack,
+                maximum,
+                "argument count {argument_count}"
+            );
+        }
+
+        for code in [
+            vec![Instruction::Eval(0), Instruction::Return],
+            vec![
+                Instruction::Undefined,
+                Instruction::PushI32(1),
+                Instruction::Eval(2),
+                Instruction::Return,
+            ],
+        ] {
+            let function = BytecodeFunction {
+                name: None,
+                code,
+                constants: vec![],
+                local_count: 0,
+                max_stack: 2,
+            };
+            assert_eq!(
+                function.verify().unwrap_err().message(),
+                "bytecode stack underflow"
+            );
+        }
+
+        let undersized = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Undefined,
+                Instruction::PushI32(1),
+                Instruction::PushI32(2),
+                Instruction::Eval(2),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
         };
         assert_eq!(
             undersized.verify().unwrap_err().message(),

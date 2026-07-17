@@ -240,6 +240,12 @@ pub(crate) trait VmHost {
         this_value: Value,
         arguments: Vec<Value>,
     ) -> Result<Completion, Error>;
+    /// Test the callee identity for QuickJS `OP_eval` against the executing
+    /// realm's cached original eval, never its mutable global property.
+    fn is_original_eval(&mut self, function: &Value) -> Result<bool, Error>;
+    /// Enter original direct eval without creating a native `%eval%` frame.
+    /// Arguments have already been evaluated; only the first input survives.
+    fn direct_eval(&mut self, input: Value) -> Result<Completion, Error>;
     fn construct(
         &mut self,
         function: Value,
@@ -304,6 +310,18 @@ struct DetachedHost<'a> {
     copy_data_properties_results: VecDeque<Completion>,
     #[cfg(test)]
     copy_data_properties_inputs: Vec<(Value, Value)>,
+    #[cfg(test)]
+    eval_identity_results: VecDeque<Result<bool, Error>>,
+    #[cfg(test)]
+    eval_identity_inputs: Vec<Value>,
+    #[cfg(test)]
+    direct_eval_results: VecDeque<Result<Completion, Error>>,
+    #[cfg(test)]
+    direct_eval_inputs: Vec<Value>,
+    #[cfg(test)]
+    call_results: VecDeque<Result<Completion, Error>>,
+    #[cfg(test)]
+    call_inputs: Vec<(Value, Value, Vec<Value>)>,
 }
 
 impl<'a> DetachedHost<'a> {
@@ -347,6 +365,18 @@ impl<'a> DetachedHost<'a> {
             copy_data_properties_results: VecDeque::new(),
             #[cfg(test)]
             copy_data_properties_inputs: Vec::new(),
+            #[cfg(test)]
+            eval_identity_results: VecDeque::new(),
+            #[cfg(test)]
+            eval_identity_inputs: Vec::new(),
+            #[cfg(test)]
+            direct_eval_results: VecDeque::new(),
+            #[cfg(test)]
+            direct_eval_inputs: Vec::new(),
+            #[cfg(test)]
+            call_results: VecDeque::new(),
+            #[cfg(test)]
+            call_inputs: Vec::new(),
         }
     }
 
@@ -700,8 +730,41 @@ impl VmHost for DetachedHost<'_> {
         _this_value: Value,
         _arguments: Vec<Value>,
     ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        {
+            self.call_inputs.push((_function, _this_value, _arguments));
+            if let Some(result) = self.call_results.pop_front() {
+                return result;
+            }
+        }
         Err(Error::internal(
             "detached VM cannot call runtime-owned function objects",
+        ))
+    }
+
+    fn is_original_eval(&mut self, _function: &Value) -> Result<bool, Error> {
+        #[cfg(test)]
+        {
+            self.eval_identity_inputs.push(_function.clone());
+            if let Some(result) = self.eval_identity_results.pop_front() {
+                return result;
+            }
+        }
+        Err(Error::internal(
+            "detached VM cannot identify runtime-owned eval function objects",
+        ))
+    }
+
+    fn direct_eval(&mut self, _input: Value) -> Result<Completion, Error> {
+        #[cfg(test)]
+        {
+            self.direct_eval_inputs.push(_input);
+            if let Some(result) = self.direct_eval_results.pop_front() {
+                return result;
+            }
+        }
+        Err(Error::internal(
+            "detached VM cannot directly evaluate runtime-owned function objects",
         ))
     }
 
@@ -1070,6 +1133,16 @@ impl CallFrame {
                 let function = self.pop()?;
                 host.call(function, Value::Undefined, arguments)?
             }
+            Instruction::Eval(argument_count) => {
+                let arguments = self.take_call_arguments(*argument_count, 1)?;
+                let function = self.pop()?;
+                if host.is_original_eval(&function)? {
+                    let input = arguments.first().cloned().unwrap_or(Value::Undefined);
+                    host.direct_eval(input)?
+                } else {
+                    host.call(function, Value::Undefined, arguments)?
+                }
+            }
             Instruction::CallMethod(argument_count) => {
                 let arguments = self.take_call_arguments(*argument_count, 2)?;
                 let function = self.pop()?;
@@ -1345,7 +1418,10 @@ impl CallFrame {
 
             if matches!(
                 instruction,
-                Instruction::Call(_) | Instruction::CallMethod(_) | Instruction::Construct(_)
+                Instruction::Call(_)
+                    | Instruction::Eval(_)
+                    | Instruction::CallMethod(_)
+                    | Instruction::Construct(_)
             ) {
                 if let Some(completion) = self.execute_call_instruction(instruction, host)? {
                     return Ok(completion);
@@ -1961,7 +2037,10 @@ impl CallFrame {
                         }
                     }
                 }
-                Instruction::Call(_) | Instruction::CallMethod(_) | Instruction::Construct(_) => {
+                Instruction::Call(_)
+                | Instruction::Eval(_)
+                | Instruction::CallMethod(_)
+                | Instruction::Construct(_) => {
                     unreachable!("call dispatch was bypassed")
                 }
                 Instruction::Return => return self.pop().map(Completion::Return),
@@ -2633,6 +2712,86 @@ mod tests {
         };
 
         assert_eq!(Vm::new().execute(&function).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn eval_opcode_gates_original_identity_and_preserves_fallback_arguments() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(7),
+                Instruction::PushI32(11),
+                Instruction::PushI32(12),
+                Instruction::Eval(2),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 3,
+        };
+        function.verify().unwrap();
+
+        let mut original = DetachedHost::new(&function);
+        original.eval_identity_results.push_back(Ok(true));
+        original
+            .direct_eval_results
+            .push_back(Ok(Completion::Return(Value::Int(42))));
+        assert_eq!(
+            CallFrame::new(3)
+                .execute(&function.code, &mut original)
+                .unwrap(),
+            Completion::Return(Value::Int(42))
+        );
+        assert_eq!(original.direct_eval_inputs, [Value::Int(11)]);
+        assert_eq!(original.eval_identity_inputs, [Value::Int(7)]);
+        assert!(original.call_inputs.is_empty());
+
+        let mut replacement = DetachedHost::new(&function);
+        replacement.eval_identity_results.push_back(Ok(false));
+        replacement
+            .call_results
+            .push_back(Ok(Completion::Return(Value::Int(43))));
+        assert_eq!(
+            CallFrame::new(3)
+                .execute(&function.code, &mut replacement)
+                .unwrap(),
+            Completion::Return(Value::Int(43))
+        );
+        assert!(replacement.direct_eval_inputs.is_empty());
+        assert_eq!(replacement.eval_identity_inputs, [Value::Int(7)]);
+        assert_eq!(
+            replacement.call_inputs,
+            [(
+                Value::Int(7),
+                Value::Undefined,
+                vec![Value::Int(11), Value::Int(12)]
+            )]
+        );
+
+        let no_arguments = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Undefined,
+                Instruction::Eval(0),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        let mut original = DetachedHost::new(&no_arguments);
+        original.eval_identity_results.push_back(Ok(true));
+        original
+            .direct_eval_results
+            .push_back(Ok(Completion::Return(Value::Undefined)));
+        assert_eq!(
+            CallFrame::new(1)
+                .execute(&no_arguments.code, &mut original)
+                .unwrap(),
+            Completion::Return(Value::Undefined)
+        );
+        assert_eq!(original.direct_eval_inputs, [Value::Undefined]);
+        assert_eq!(original.eval_identity_inputs, [Value::Undefined]);
     }
 
     #[test]

@@ -904,6 +904,31 @@ and
 The capability profile remains byte-identical at
 `3c5dee6fa18c428a45556488873ab216dd99e9f8859875ce2e4d1475d307aca6`.
 
+R1v adds the QuickJS-shaped direct-eval opcode path but intentionally changes
+no Test262 classification. The compiler recognizes only a syntactic
+IdentifierReference named `eval`, retaining the call-site scope in parser IR;
+the VM then compares the resolved callee with the current realm's cached
+original `%eval%`. Identity mismatch remains an ordinary call with an
+undefined receiver and all evaluated arguments. Identity match bypasses the
+native callable frame and forwards only the first argument (or `undefined`) to
+the existing non-String/typed-Unsupported shell. This is the execution shape
+required before String source can receive a linked caller environment.
+
+The 31-path/55-variant focused report is byte-identical to R1u: 55 pass, zero
+fail, unsupported, or skipped outcomes, with TSV/JSONL SHA-256
+`9d364c24169423efa49ecfa384c86280f94011b430fa787f72a8214fe867a6f6`
+and
+`63d5717d85f57c19705196aee0333c18cc270242b37e431622a035a8c34cf2fd`.
+The complete 102,037-key report is also byte-identical, with zero outcome,
+complete-row, detail-only, missing, extra, or duplicate changes. It remains at
+27,641 passes and 34,849 admitted jobs; full TSV/JSONL SHA-256 are
+`59736a4a4f63122a458a33374d2afd873a706aeb7ff271b52f9fa4aa2aa71fbe`
+and
+`c4849aecc54afcc7c73bb182cd240bc9cf35634bc74bc4d5558d6951898af2f2`.
+This zero movement is the acceptance result for R1v, not a claim that direct
+String eval is complete. Spread arguments (`OP_apply_eval`), optional calls,
+and the immutable eval-environment descriptor table remain later milestones.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -985,8 +1010,9 @@ ordinary named captures, duplicate named captures, match indices, and dotAll
 and U+180E are now measured separately in
 R1b/R1c/R1d/R1e/R1f/R1g/R1h/R1j/R1k/R1l/R1m/R1n/R1o/R1p/R1q/R1r/R1s/R1t;
 R1u separately measures the eval intrinsic shell and its typed String-source
-frontier. R1i completes the direct standard-RegExp replacement route without
-changing that scoreboard.
+frontier; R1v establishes its syntactic opcode and realm-identity path with a
+byte-identical scoreboard. R1i completes the direct standard-RegExp replacement
+route without changing that scoreboard.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS
