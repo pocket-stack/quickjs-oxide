@@ -208,7 +208,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 28] = [
+    const EXPECTED_FEATURES: [&str; 29] = [
         "BigInt",
         "Math.sumPrecise",
         "Reflect",
@@ -231,6 +231,7 @@ mod tests {
         "exponentiation",
         "for-in-order",
         "hashbang",
+        "regexp-dotall",
         "regexp-duplicate-named-groups",
         "regexp-lookbehind",
         "regexp-match-indices",

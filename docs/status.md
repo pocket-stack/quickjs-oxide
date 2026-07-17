@@ -10,13 +10,13 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 28 reviewed feature tags and 307 exact audited
+  capability profile now admits 29 reviewed feature tags and 307 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 27,569 passes: 27.02% raw, a 32.99% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 84.86% among the 32,487 variants with a
+  has 27,587 passes: 27.04% raw, a 33.01% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 84.86% among the 32,509 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -94,7 +94,10 @@ claim full parity.
   target parity. Declaring `regexp-match-indices` adds 38 passes and 50
   admitted jobs. All 50 outcome changes and ten detail-only changes stay
   inside its frozen 31-path set, for 60 complete-row changes and no
-  previous-pass regression.
+  previous-pass regression. R1s audits and declares `regexp-dotall`, again
+  without a production engine change. It adds 18 passes and 26 admitted jobs;
+  all 26 outcome changes and six detail-only changes stay inside the frozen
+  17-path set, for 32 complete-row changes and no previous-pass regression.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -720,12 +723,13 @@ claim full parity.
   replacement non-observation, and nested defining realms against the pinned
   oracle.
 
-  The frozen 31-path/62-variant gate admits 50 variants and passes 38. Two
-  variants expose the existing arrow-function parse frontier, four stop in the
-  existing `deepEqual.js` harness frontier, and six reach the typed
-  object-setter parser frontier. Ten variants remain behind the independently
-  gated `regexp-dotall` feature, and two retain the missing `$262.createRealm`
-  host requirement. Focused TSV/JSONL hashes are
+  At the R1r landing, the frozen 31-path/62-variant gate admits 50 variants and
+  passes 38. Two variants expose the existing arrow-function parse frontier,
+  four stop in the existing `deepEqual.js` harness frontier, and six reach the
+  typed object-setter parser frontier. Ten variants remain behind the
+  independently gated `regexp-dotall` feature in that historical report and
+  are admitted by R1s, while two retain the missing `$262.createRealm` host
+  requirement. Focused TSV/JSONL hashes are
   `b626f453c4a22402c9bf35f0b6a95ad3cf54cb2095ff21c023a150ec6904a230`
   and
   `edc7cb06eb9d18596202ae4d6f9faa4e56c1e2c4a6a81b51a54a26b0b34cd31f`.
@@ -744,6 +748,45 @@ claim full parity.
   paths, with SHA-256
   `b39bee15a2aaa88e00c8f7ca6cb0736313456d43a77e176a8c5cf7844e9ea718`.
   `runtime.rs` remains 9,677 lines.
+
+  R1s audits and declares `regexp-dotall` after pinned QuickJS source review
+  and focused probes confirm that the existing Rust path already matches the
+  target. The `s` flag uses QuickJS's bit, selects the all-character
+  instruction instead of ordinary dot, and shares the executor's exact UTF-16
+  and Unicode width. Scoped modifiers restore their enclosing state, while
+  literals, construction, legacy `compile`, accessors, canonical flags,
+  protocols, species-created matchers, and defining-realm brand checks retain
+  dotAll semantics. No production engine change is needed. Six dedicated
+  differential tests lock the oracle vectors, matching and UTF-16 state,
+  public/construction surface, nested scoped modifiers, matchAll/split species
+  flags, and cross-realm getter brands and error realms.
+
+  The frozen 17-path/34-variant gate admits 26 variants and passes 18. Four
+  variants expose the existing empty-parameter arrow parse frontier, four
+  reach the typed object-literal accessor parser frontier, six retain the
+  independently gated `u180e` or `regexp-v-flag` requirements, and two retain
+  the missing `$262.createRealm` host requirement. Its exact summary is
+  `fail-parse=4 pass=18 unsupported-feature=6` and
+  `unsupported-host-create-realm=2 unsupported-parser=4`. Focused TSV/JSONL
+  hashes are
+  `8a559e418e99793dcacb558e46f0a4da16fa09dc43aa44a4bf79c2b0b6904f0d`
+  and
+  `21f09cf404aae476f8041360539cf531dad7693e2aa0d7cc2f990698f2039e06`.
+
+  The exact R1r/R1s join matches all 102,037 keys. It records 18
+  `unsupported-feature -> pass`, four `unsupported-feature -> fail-parse`, and
+  four `unsupported-feature -> unsupported-parser` transitions. All 26
+  outcome changes and six detail-only changes are inside the frozen manifest,
+  for 32 complete-row changes and no previous-pass regression. The vector
+  reaches 27,587 passes and 34,799 admitted jobs. Full TSV/JSONL hashes are
+  `44f7ee3d6de6c97962c4b372da2f492882b8834d76663b334dd46265fae9e69f`
+  and
+  `fa263cbcd0483000f0645f017d486e4a4403d5227b97ce3bf5e812bf8a6857ce`.
+  The profile now contains 29 reviewed features and 307 audited negative
+  paths, with SHA-256
+  `84fe6615092829a107e66beb49ac54b00a1910616424494f47e5f75c8ccc7880`.
+  The admission and differential locks add no production code; `runtime.rs`
+  remains 9,677 lines.
 
   Advanced grammar still fails closed: Unicode set/string properties, all
   `v`-mode execution, and unported Annex-B control escapes return typed
@@ -3035,6 +3078,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/run-test262-regexp-named-groups.sh
 ./scripts/run-test262-regexp-duplicate-named-groups.sh
 ./scripts/run-test262-regexp-match-indices.sh
+./scripts/run-test262-regexp-dotall.sh
 ./scripts/test-test262-full.sh
 ```
 

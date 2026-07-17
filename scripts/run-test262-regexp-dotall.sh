@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Reproduce the complete classified outcome vector for ordinary RegExp named groups.
+# Reproduce the complete classified outcome vector for RegExp dotAll.
 
 set -euo pipefail
 export TZ=America/Los_Angeles
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$script_dir/.." && pwd)
-baseline=tests/test262-regexp-named-groups-baseline.txt
-manifest=tests/test262-regexp-named-groups.txt
-report=target/test262-regexp-named-groups.tsv
-json_report=target/test262-regexp-named-groups.jsonl
+baseline=tests/test262-regexp-dotall-baseline.txt
+manifest=tests/test262-regexp-dotall.txt
+report=target/test262-regexp-dotall.tsv
+json_report=target/test262-regexp-dotall.jsonl
 workers=${TEST262_WORKERS:-8}
 
 read_value() {
@@ -55,7 +55,7 @@ expected_keys() {
 
 cd -- "$root"
 if [[ ! -f "$baseline" ]]; then
-    echo "error: named-groups Test262 baseline is missing: $baseline" >&2
+    echo "error: dotAll Test262 baseline is missing: $baseline" >&2
     exit 1
 fi
 suite=$("$script_dir/prepare-test262.sh")
@@ -90,11 +90,11 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_schema" != "test262-canonical-classified-v2" \
     || "$expected_mode" != "both" \
     || "$timeout_ms" != "30000" \
-    || "$expected_paths" != "101" \
-    || "$expected_variants" != "202" \
-    || "$expected_runnable" != "198" \
-    || "$expected_passes" != "164" ]]; then
-    echo "error: named-groups baseline metadata drifted" >&2
+    || "$expected_paths" != "17" \
+    || "$expected_variants" != "34" \
+    || "$expected_runnable" != "26" \
+    || "$expected_passes" != "18" ]]; then
+    echo "error: dotAll baseline metadata drifted" >&2
     exit 1
 fi
 
@@ -102,18 +102,18 @@ actual_manifest_paths=$(awk 'NF && $1 !~ /^#/ { count++ } END { print count + 0 
 unique_manifest_paths=$(awk 'NF && $1 !~ /^#/ { print }' "$manifest" | LC_ALL=C sort -u | wc -l | tr -d '[:space:]')
 if [[ "$actual_manifest_paths" != "$expected_paths" \
     || "$unique_manifest_paths" != "$expected_paths" ]]; then
-    echo "error: named-groups manifest cardinality drifted" >&2
+    echo "error: dotAll manifest cardinality drifted" >&2
     exit 1
 fi
 if ! awk 'NF && $1 !~ /^#/ { print }' "$manifest" | LC_ALL=C sort -c; then
-    echo "error: named-groups manifest is not bytewise sorted" >&2
+    echo "error: dotAll manifest is not bytewise sorted" >&2
     exit 1
 fi
 actual_manifest=$(awk 'NF && $1 !~ /^#/ { print }' "$manifest" | sha256_stream)
 actual_keys_hash=$(expected_keys | LC_ALL=C sort | sha256_stream)
 if [[ "$actual_manifest" != "$expected_manifest" \
     || "$actual_keys_hash" != "$expected_keys_hash" ]]; then
-    echo "error: named-groups manifest content drifted" >&2
+    echo "error: dotAll manifest content drifted" >&2
     exit 1
 fi
 
@@ -153,14 +153,14 @@ if [[ "$actual_quickjs" != "$expected_quickjs" \
     || "$actual_mode" != "$expected_mode" \
     || "$actual_variants" != "$expected_variants" \
     || "$actual_runnable" != "$expected_runnable" ]]; then
-    echo "error: named-groups Test262 baseline metadata drifted" >&2
+    echo "error: dotAll Test262 baseline metadata drifted" >&2
     exit 1
 fi
 
 if ! diff -u \
     <(expected_keys | LC_ALL=C sort) \
     <(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") { print $1 "\t" $2 }' "$report" | LC_ALL=C sort); then
-    echo "error: named-groups report keys drifted from the frozen manifest" >&2
+    echo "error: dotAll report keys drifted from the frozen manifest" >&2
     exit 1
 fi
 
@@ -170,7 +170,7 @@ actual_nonpass=$(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") && $7 !
 if [[ "$actual_summary" != "# summary $expected_summary" \
     || "$actual_passes" != "$expected_passes" \
     || "$actual_nonpass" != "$expected_nonpass" ]]; then
-    echo "error: named-groups classified outcomes drifted" >&2
+    echo "error: dotAll classified outcomes drifted" >&2
     exit 1
 fi
 
@@ -181,10 +181,10 @@ actual_jsonl=$(sha256_file "$json_report")
 if [[ "$actual_jsonl_lines" != "$expected_jsonl_lines" \
     || "$actual_tsv" != "$expected_tsv" \
     || "$actual_jsonl" != "$expected_jsonl" ]]; then
-    echo "error: named-groups classified TSV/JSONL vector drifted" >&2
+    echo "error: dotAll classified TSV/JSONL vector drifted" >&2
     exit 1
 fi
 
 "$script_dir/check-rust-only.sh"
-printf 'named-groups Test262 vector matches: %s pass of %s variants across %s paths\n' \
+printf 'dotAll Test262 vector matches: %s pass of %s variants across %s paths\n' \
     "$expected_passes" "$expected_variants" "$expected_paths"

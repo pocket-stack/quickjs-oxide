@@ -1,0 +1,25 @@
+# Frozen RegExp dotAll measurement slice for the pinned Test262 checkout.
+#
+# This is the complete bytewise-sorted set of all 17 paths tagged with
+# regexp-dotall. Independent u180e, v-mode, and host requirements remain
+# authoritative.
+#
+# Exactly 17 unique paths expand to 34 sloppy/strict variants.
+#
+test/annexB/built-ins/RegExp/prototype/flags/order-after-compile.js
+test/built-ins/RegExp/dotall/with-dotall-unicode.js
+test/built-ins/RegExp/dotall/with-dotall.js
+test/built-ins/RegExp/duplicate-flags.js
+test/built-ins/RegExp/prototype/dotAll/cross-realm.js
+test/built-ins/RegExp/prototype/dotAll/length.js
+test/built-ins/RegExp/prototype/dotAll/name.js
+test/built-ins/RegExp/prototype/dotAll/prop-desc.js
+test/built-ins/RegExp/prototype/dotAll/this-val-invalid-obj.js
+test/built-ins/RegExp/prototype/dotAll/this-val-non-obj.js
+test/built-ins/RegExp/prototype/dotAll/this-val-regexp-prototype.js
+test/built-ins/RegExp/prototype/dotAll/this-val-regexp.js
+test/built-ins/RegExp/prototype/flags/coercion-dotall.js
+test/built-ins/RegExp/prototype/flags/get-order.js
+test/built-ins/RegExp/prototype/flags/rethrow.js
+test/built-ins/RegExp/prototype/flags/return-order.js
+test/built-ins/RegExp/prototype/flags/this-val-regexp.js
