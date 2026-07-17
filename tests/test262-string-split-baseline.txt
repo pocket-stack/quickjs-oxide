@@ -1,19 +1,20 @@
 # Two core String split paths still require the missing global eval callable
 # and account for all four runtime failures.
-# The existing independent feature, HTMLDDA-host, and parser classifications
-# remain unchanged from the frozen R1d projection.
+# The independent feature and HTMLDDA-host classifications remain unchanged
+# from the frozen R1d projection; Annex B named-backreference parsing removes
+# two parser classifications without changing the historical R1d fields below.
 schema=test262-canonical-classified-v2
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 timeout_ms=30000
 paths=127
 variants=254
 runnable=244
-passes=234
+passes=236
 manifest_sha256=de13f656ba1237660233f8b47c5b638424415f902f991eeda6e5c482fe342714
 r1d_full_tsv_sha256=a695d6299b44e4298b553c28c12983b6b12fc9d8522f1216e18e16a6bad28012
 r1d_selected_sha256=c471c60bb73b7cd9cc05c1c9793de646d46539fdea4b8e50ada3716b8142306e
 r1d_variants=254
 r1d_summary=fail-runtime=52 pass=186 unsupported-feature=8 unsupported-host-is-html-dda=2 unsupported-parser=6
-tsv_sha256=38d0104867463b3e6ff60e53f38803bdf27b4472c538a69ea500b0d7661459ed
-jsonl_sha256=008ba06afefd1318bc7209103e3c95f523b7a4e44a9b320e33c418664cd01f16
-summary=fail-runtime=4 pass=234 unsupported-feature=8 unsupported-host-is-html-dda=2 unsupported-parser=6
+tsv_sha256=c017569c2184dc6e82797f7e6261ca9e741c27374d8755296cf4522abc565c2e
+jsonl_sha256=996d8743867fa66697a264d06e721f86369480980c5306a0d4ea4f4e948e21f9
+summary=fail-runtime=4 pass=236 unsupported-feature=8 unsupported-host-is-html-dda=2 unsupported-parser=4

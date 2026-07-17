@@ -3,7 +3,14 @@
 # Five paths remain behind independent feature declarations (arrow functions,
 # duplicate named groups, match indices, or regexp-v), and the legacy eval
 # consumer remains at the separate missing-global-eval runtime frontier.
+quickjs=2026-06-04
+test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
+test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
+test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
+oxide_profile_sha256=992a8e2ba743ca662b3ab087e83306b0ad488fa438e69744f10e163387900523
 schema=test262-canonical-classified-v2
+mode=both
 timeout_ms=30000
 paths=104
 variants=208
@@ -14,6 +21,6 @@ r1c_full_tsv_sha256=27982c6cbd922e61c9798d7532316f0d382c858bd01039c2700697ddb76b
 r1c_selected_sha256=309d815d6dedded573ba282b76f2fb97cbd9364b2000df08144a7b85e520c3b7
 r1c_variants=208
 r1c_summary=fail-runtime=76 pass=2 unsupported-feature=130
-tsv_sha256=4602e14e3c8b4ddc89236e5350a6d0f162737b2e31aa2c4ac79a41ffd0b8610f
-jsonl_sha256=c32c0fcc984ed0d473ca02c59c9d0d8254d6344dab6152fd0fdba3246538a822
+tsv_sha256=604668247405c5f7d69b30ccc0c50d850c66a78895d94e54e41bea933ebf1247
+jsonl_sha256=c59e26c261539c41929592e0603d521a88b8c761fd177e87b122a1e1db0f5d76
 summary=fail-runtime=2 pass=180 unsupported-feature=10 unsupported-parser=16

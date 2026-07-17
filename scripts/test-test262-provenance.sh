@@ -11,6 +11,7 @@ report=target/test262-provenance.tsv
 json_report=target/test262-provenance.jsonl
 baseline=tests/test262-provenance-baseline.tsv
 json_baseline=tests/test262-provenance-baseline.jsonl
+workers=${TEST262_WORKERS:-4}
 
 cd -- "$root"
 rm -f -- "$report" "$json_report"
@@ -21,7 +22,7 @@ cargo run --locked --quiet --bin run-test262 -- \
     --manifest tests/test262-provenance-canaries.txt \
     --report "$report" \
     --mode both \
-    --workers 4 \
+    --workers "$workers" \
     --allow-failures
 
 if ! cmp -s "$baseline" "$report"; then

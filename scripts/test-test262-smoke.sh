@@ -13,6 +13,7 @@ json_report=target/test262-smoke.jsonl
 baseline=tests/test262-smoke-baseline.tsv
 json_baseline=tests/test262-smoke-baseline.jsonl
 expected_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
+workers=${TEST262_WORKERS:-4}
 
 cd -- "$root"
 rm -f -- "$metadata_records" "$report" "$json_report"
@@ -42,7 +43,7 @@ cargo run --locked --quiet --bin run-test262 -- \
     --manifest tests/test262-smoke.txt \
     --report "$report" \
     --mode both \
-    --workers 4 \
+    --workers "$workers" \
     --allow-failures
 
 if ! cmp -s "$baseline" "$report"; then

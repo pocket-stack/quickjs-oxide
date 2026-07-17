@@ -24,6 +24,11 @@ read_value() {
     printf '%s\n' "$value"
 }
 
+read_header() {
+    key=$1
+    awk -F= -v key="$key" '$1 == "# " key { print $2; found=1 } END { if (!found) exit 1 }' "$report"
+}
+
 sha256_file() {
     if command -v sha256sum >/dev/null 2>&1; then
         sha256sum "$1" | awk '{print $1}'
@@ -47,9 +52,15 @@ sha256_stream() {
 }
 
 cd -- "$root"
+expected_quickjs=$(read_value quickjs)
+expected_test262=$(read_value test262)
+expected_patch=$(read_value test262_patch_sha256)
+expected_config=$(read_value test262_config_sha256)
+expected_metadata=$(read_value test262_metadata_sha256)
+expected_profile=$(read_value oxide_profile_sha256)
 timeout_ms=$(read_value timeout_ms)
 expected_schema=$(read_value schema)
-expected_test262=$(read_value test262)
+expected_mode=$(read_value mode)
 expected_paths=$(read_value paths)
 expected_variants=$(read_value variants)
 expected_runnable=$(read_value runnable)
@@ -63,7 +74,19 @@ expected_r1d_selected=$(read_value r1d_selected_sha256)
 expected_r1d_variants=$(read_value r1d_variants)
 expected_r1d_summary=$(read_value r1d_summary)
 
-if [[ "$expected_test262" != "5c8206929d81b2d3d727ca6aac56c18358c8d790" \
+if [[ "$expected_quickjs" != "2026-06-04" \
+    || "$expected_test262" != "5c8206929d81b2d3d727ca6aac56c18358c8d790" \
+    || "$expected_patch" != "f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3" \
+    || "$expected_config" != "79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b" \
+    || "$expected_metadata" != "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a" \
+    || "$expected_profile" != "992a8e2ba743ca662b3ab087e83306b0ad488fa438e69744f10e163387900523" \
+    || "$expected_schema" != "test262-canonical-classified-v2" \
+    || "$expected_mode" != "both" \
+    || "$timeout_ms" != "10000" \
+    || "$expected_paths" != "46" \
+    || "$expected_variants" != "92" \
+    || "$expected_runnable" != "48" \
+    || "$expected_passes" != "44" \
     || "$expected_manifest" != "fe5c9cc7b72022f45495237363505d534a2cc0e07a25c9c55dd9046f3f3ce9c6" \
     || "$expected_r1d_full_tsv" != "a695d6299b44e4298b553c28c12983b6b12fc9d8522f1216e18e16a6bad28012" \
     || "$expected_r1d_selected" != "d2bd57b0168a215151bedca53f2b852092c7f475545f45e46988bca1b34c231b" \
@@ -100,26 +123,44 @@ run_output=$(cargo run --locked --release --quiet --bin run-test262 -- \
     --oxide-profile compat/test262-oxide.conf \
     --manifest "$manifest" \
     --report "$report" \
-    --mode both \
+    --mode "$expected_mode" \
     --workers "$workers" \
     --timeout-ms "$timeout_ms" \
     --allow-failures)
 printf '%s\n' "$run_output"
 
-actual_schema=$(awk -F= '$1 == "# profile" { print $2; found=1 } END { if (!found) exit 1 }' "$report")
-actual_test262=$(awk -F= '$1 == "# test262" { print $2; found=1 } END { if (!found) exit 1 }' "$report")
+actual_quickjs=$(read_header quickjs)
+actual_test262=$(read_header test262)
+actual_patch=$(read_header test262_patch_sha256)
+actual_config=$(read_header test262_config_sha256)
+actual_metadata=$(read_header test262_metadata_sha256)
+actual_profile=$(read_header oxide_profile_sha256)
+actual_schema=$(read_header profile)
+actual_mode=$(read_header mode)
 actual_variants=$(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") { count++ } END { print count + 0 }' "$report")
 execution_line=$(printf '%s\n' "$run_output" | awk '/^execution: runnable=/ { print; found=1 } END { if (!found) exit 1 }')
 actual_runnable=${execution_line#*runnable=}
 actual_runnable=${actual_runnable%% *}
 
-if [[ "$actual_schema" != "$expected_schema" \
+if [[ "$actual_quickjs" != "$expected_quickjs" \
     || "$actual_test262" != "$expected_test262" \
+    || "$actual_patch" != "$expected_patch" \
+    || "$actual_config" != "$expected_config" \
+    || "$actual_metadata" != "$expected_metadata" \
+    || "$actual_profile" != "$expected_profile" \
+    || "$actual_schema" != "$expected_schema" \
+    || "$actual_mode" != "$expected_mode" \
     || "$actual_variants" != "$expected_variants" \
     || "$actual_runnable" != "$expected_runnable" ]]; then
     echo "error: RegExp split Test262 baseline metadata drifted" >&2
-    echo "schema expected/actual:   $expected_schema / $actual_schema" >&2
+    echo "quickjs expected/actual:  $expected_quickjs / $actual_quickjs" >&2
     echo "test262 expected/actual:  $expected_test262 / $actual_test262" >&2
+    echo "patch expected/actual:    $expected_patch / $actual_patch" >&2
+    echo "config expected/actual:   $expected_config / $actual_config" >&2
+    echo "metadata expected/actual: $expected_metadata / $actual_metadata" >&2
+    echo "profile expected/actual:  $expected_profile / $actual_profile" >&2
+    echo "schema expected/actual:   $expected_schema / $actual_schema" >&2
+    echo "mode expected/actual:     $expected_mode / $actual_mode" >&2
     echo "variants expected/actual: $expected_variants / $actual_variants" >&2
     echo "runnable expected/actual: $expected_runnable / $actual_runnable" >&2
     exit 1

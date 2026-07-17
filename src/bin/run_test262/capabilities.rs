@@ -208,7 +208,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 25] = [
+    const EXPECTED_FEATURES: [&str; 26] = [
         "BigInt",
         "Math.sumPrecise",
         "Reflect",
@@ -233,9 +233,10 @@ mod tests {
         "hashbang",
         "regexp-lookbehind",
         "regexp-modifiers",
+        "regexp-named-groups",
         "regexp-unicode-property-escapes",
     ];
-    const EXPECTED_AUDITED_NEGATIVES: [&str; 111] = [
+    const EXPECTED_AUDITED_NEGATIVES: [&str; 165] = [
         "test/language/comments/hashbang/escaped-bang-041.js",
         "test/language/expressions/object/__proto__-duplicate.js",
         "test/language/global-code/decl-lex-restricted-global.js",
@@ -326,6 +327,60 @@ mod tests {
         "test/language/literals/regexp/invalid-optional-negative-lookbehind.js",
         "test/language/literals/regexp/invalid-range-lookbehind.js",
         "test/language/literals/regexp/invalid-range-negative-lookbehind.js",
+        "test/language/literals/regexp/named-groups/invalid-dangling-groupname-2-u.js",
+        "test/language/literals/regexp/named-groups/invalid-dangling-groupname-2.js",
+        "test/language/literals/regexp/named-groups/invalid-dangling-groupname-3-u.js",
+        "test/language/literals/regexp/named-groups/invalid-dangling-groupname-3.js",
+        "test/language/literals/regexp/named-groups/invalid-dangling-groupname-4-u.js",
+        "test/language/literals/regexp/named-groups/invalid-dangling-groupname-4.js",
+        "test/language/literals/regexp/named-groups/invalid-dangling-groupname-5.js",
+        "test/language/literals/regexp/named-groups/invalid-dangling-groupname-u.js",
+        "test/language/literals/regexp/named-groups/invalid-dangling-groupname-without-group-u.js",
+        "test/language/literals/regexp/named-groups/invalid-dangling-groupname.js",
+        "test/language/literals/regexp/named-groups/invalid-duplicate-groupspecifier-2-u.js",
+        "test/language/literals/regexp/named-groups/invalid-duplicate-groupspecifier-2.js",
+        "test/language/literals/regexp/named-groups/invalid-duplicate-groupspecifier-u.js",
+        "test/language/literals/regexp/named-groups/invalid-duplicate-groupspecifier.js",
+        "test/language/literals/regexp/named-groups/invalid-empty-groupspecifier-u.js",
+        "test/language/literals/regexp/named-groups/invalid-empty-groupspecifier.js",
+        "test/language/literals/regexp/named-groups/invalid-identity-escape-in-capture-u.js",
+        "test/language/literals/regexp/named-groups/invalid-incomplete-groupname-2-u.js",
+        "test/language/literals/regexp/named-groups/invalid-incomplete-groupname-2.js",
+        "test/language/literals/regexp/named-groups/invalid-incomplete-groupname-3-u.js",
+        "test/language/literals/regexp/named-groups/invalid-incomplete-groupname-3.js",
+        "test/language/literals/regexp/named-groups/invalid-incomplete-groupname-4.js",
+        "test/language/literals/regexp/named-groups/invalid-incomplete-groupname-5.js",
+        "test/language/literals/regexp/named-groups/invalid-incomplete-groupname-6.js",
+        "test/language/literals/regexp/named-groups/invalid-incomplete-groupname-u.js",
+        "test/language/literals/regexp/named-groups/invalid-incomplete-groupname-without-group-2-u.js",
+        "test/language/literals/regexp/named-groups/invalid-incomplete-groupname-without-group-3-u.js",
+        "test/language/literals/regexp/named-groups/invalid-incomplete-groupname-without-group-u.js",
+        "test/language/literals/regexp/named-groups/invalid-incomplete-groupname.js",
+        "test/language/literals/regexp/named-groups/invalid-non-id-continue-groupspecifier-4-u.js",
+        "test/language/literals/regexp/named-groups/invalid-non-id-continue-groupspecifier-4.js",
+        "test/language/literals/regexp/named-groups/invalid-non-id-continue-groupspecifier.js",
+        "test/language/literals/regexp/named-groups/invalid-non-id-start-groupspecifier-2-u.js",
+        "test/language/literals/regexp/named-groups/invalid-non-id-start-groupspecifier-2.js",
+        "test/language/literals/regexp/named-groups/invalid-non-id-start-groupspecifier-3.js",
+        "test/language/literals/regexp/named-groups/invalid-non-id-start-groupspecifier-4-u.js",
+        "test/language/literals/regexp/named-groups/invalid-non-id-start-groupspecifier-4.js",
+        "test/language/literals/regexp/named-groups/invalid-non-id-start-groupspecifier-5-u.js",
+        "test/language/literals/regexp/named-groups/invalid-non-id-start-groupspecifier-5.js",
+        "test/language/literals/regexp/named-groups/invalid-non-id-start-groupspecifier-6.js",
+        "test/language/literals/regexp/named-groups/invalid-non-id-start-groupspecifier-7.js",
+        "test/language/literals/regexp/named-groups/invalid-non-id-start-groupspecifier-8-u.js",
+        "test/language/literals/regexp/named-groups/invalid-non-id-start-groupspecifier-8.js",
+        "test/language/literals/regexp/named-groups/invalid-non-id-start-groupspecifier-9-u.js",
+        "test/language/literals/regexp/named-groups/invalid-non-id-start-groupspecifier-u.js",
+        "test/language/literals/regexp/named-groups/invalid-non-id-start-groupspecifier.js",
+        "test/language/literals/regexp/named-groups/invalid-numeric-groupspecifier-u.js",
+        "test/language/literals/regexp/named-groups/invalid-numeric-groupspecifier.js",
+        "test/language/literals/regexp/named-groups/invalid-punctuator-starting-groupspecifier-u.js",
+        "test/language/literals/regexp/named-groups/invalid-punctuator-starting-groupspecifier.js",
+        "test/language/literals/regexp/named-groups/invalid-punctuator-within-groupspecifier-u.js",
+        "test/language/literals/regexp/named-groups/invalid-punctuator-within-groupspecifier.js",
+        "test/language/literals/regexp/named-groups/invalid-unterminated-groupspecifier-u.js",
+        "test/language/literals/regexp/named-groups/invalid-unterminated-groupspecifier.js",
         "test/language/literals/regexp/u-invalid-legacy-octal-escape.js",
         "test/language/literals/regexp/u-invalid-oob-decimal-escape.js",
         "test/language/literals/regexp/u-invalid-optional-lookbehind.js",
@@ -373,7 +428,7 @@ mod tests {
                     && !PROPERTY_POSITIVE_PATHS.contains(path)
             }))
             .collect::<BTreeSet<_>>();
-        assert_eq!(expected_audited_negatives.len(), 253);
+        assert_eq!(expected_audited_negatives.len(), 307);
         assert!(
             profile
                 .audited_negative_tests

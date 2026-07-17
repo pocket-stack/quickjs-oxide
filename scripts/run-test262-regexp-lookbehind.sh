@@ -97,14 +97,14 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_patch" != "f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3" \
     || "$expected_config" != "79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b" \
     || "$expected_metadata" != "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a" \
-    || "$expected_profile" != "ba965bc2ef08327bb242a3140ccd0ad98f2793dfa75530372ef22ad9bbdb137d" \
+    || "$expected_profile" != "992a8e2ba743ca662b3ab087e83306b0ad488fa438e69744f10e163387900523" \
     || "$expected_schema" != "test262-canonical-classified-v2" \
     || "$expected_mode" != "both" \
     || "$timeout_ms" != "30000" \
     || "$expected_paths" != "27" \
     || "$expected_variants" != "54" \
-    || "$expected_runnable" != "50" \
-    || "$expected_passes" != "50" \
+    || "$expected_runnable" != "54" \
+    || "$expected_passes" != "54" \
     || "$expected_manifest" != "6068e781c7b2185d2b3ccc402b59f6284e3429100dbf951adde680971d814fb7" \
     || "$expected_r1n_profile" != "6d5bb9a92d00babb6a4a0bcb19334fbcfcd532bb5382ce278ce85a960d40d781" \
     || "$expected_r1n_full_tsv" != "6035ae86888c4db9e99b73be65e706bf7b90ee83c108082a3e7931f2000edc61" \
@@ -202,32 +202,25 @@ fi
 
 actual_summary=$(tail -n 1 "$report")
 actual_passes=$(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") && $7 == "pass" { count++ } END { print count + 0 }' "$report")
-actual_unsupported=$(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") && $7 == "unsupported-feature" { count++ } END { print count + 0 }' "$report")
 if [[ "$actual_summary" != "# summary $expected_summary" \
-    || "$actual_passes" != "$expected_passes" \
-    || "$actual_unsupported" != "4" ]]; then
+    || "$actual_passes" != "$expected_passes" ]]; then
     echo "error: lookbehind classified outcome counts drifted" >&2
-    echo "summary expected/actual:     # summary $expected_summary / $actual_summary" >&2
-    echo "passes expected/actual:      $expected_passes / $actual_passes" >&2
-    echo "unsupported expected/actual: 4 / $actual_unsupported" >&2
+    echo "summary expected/actual: # summary $expected_summary / $actual_summary" >&2
+    echo "passes expected/actual:  $expected_passes / $actual_passes" >&2
     exit 1
 fi
 
 if ! diff -u \
     <(named_group_keys | LC_ALL=C sort) \
-    <(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") && $7 != "pass" { print $1 "\t" $2 }' "$report" | LC_ALL=C sort); then
-    echo "error: only the four named-group lookbehind variants may remain unsupported" >&2
+    <(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") && $4 ~ /regexp-named-groups/ { print $1 "\t" $2 }' "$report" | LC_ALL=C sort); then
+    echo "error: named-group lookbehind overlap drifted" >&2
     exit 1
 fi
 if ! awk -F'\t' '
-    !/^#/ && !($1 == "path" && $2 == "variant") && $7 != "pass" {
-        if ($7 != "unsupported-feature" ||
-            $10 != "quickjs-oxide does not declare Test262 feature support: regexp-named-groups")
-            bad=1
-    }
+    !/^#/ && !($1 == "path" && $2 == "variant") && $4 ~ /regexp-named-groups/ && $7 != "pass" { bad=1 }
     END { exit bad }
 ' "$report"; then
-    echo "error: named-group lookbehind frontier classification drifted" >&2
+    echo "error: named-group lookbehind variants no longer pass" >&2
     exit 1
 fi
 
