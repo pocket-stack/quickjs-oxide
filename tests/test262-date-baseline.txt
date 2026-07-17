@@ -2,7 +2,7 @@ schema=test262-canonical-classified-v2
 timeout_ms=30000
 variants=1598
 runnable=1394
-passes=1298
-tsv_sha256=36e05c56fde7585ecf6c90a9b95f6f79ac100b5cd41532d0a7cd33f3ec35a768
-jsonl_sha256=59cc5b039e29ab68219adeeaf602c025e057dd943490db6cb8432e4693e5784d
-summary=fail-parse=22 fail-runtime=4 pass=1298 skipped-config-exclude=16 skipped-feature=18 unsupported-feature=160 unsupported-host-create-realm=10 unsupported-parser=70
+passes=1300
+tsv_sha256=86bbf9ec51c6ebfb5687aab5ef28197182aa84322a19a9faa15d4c501bae52a6
+jsonl_sha256=a97387ae6acb4f73aee24e5576c8fdf83e8189e40b39f1d9cce213e3c9896666
+summary=fail-parse=22 fail-runtime=2 pass=1300 skipped-config-exclude=16 skipped-feature=18 unsupported-feature=160 unsupported-host-create-realm=10 unsupported-parser=70

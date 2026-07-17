@@ -672,6 +672,7 @@ impl Runtime {
             NativeFunctionId::BigIntAsN(kind) => {
                 self.call_bigint_as_n(realm, kind, invocation, arguments)
             }
+            NativeFunctionId::GlobalEval => self.call_global_eval(invocation, arguments),
             NativeFunctionId::GlobalNumberParse(kind) => {
                 self.call_global_number_parse(realm, kind, invocation, arguments)
             }

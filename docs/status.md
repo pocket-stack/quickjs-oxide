@@ -15,8 +15,8 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 27,627 passes: 27.08% raw, a 33.06% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 84.85% among the 32,559 variants with a
+  has 27,641 passes: 27.09% raw, a 33.08% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 88.96% among the 31,070 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -102,6 +102,18 @@ claim full parity.
   It adds 40 passes and 50 admitted jobs; ten newly admitted variants expose
   the existing global-`eval` frontier. All 50 row and outcome changes stay
   inside the frozen 25-path set, with no previous-pass regression.
+  R1u installs the realm-local `%eval%` intrinsic shell at the same
+  `js_global_funcs` position and with the same cached-original identity model
+  as pinned QuickJS. Metadata, descriptors, non-constructability, global
+  mutation, cross-realm calling, and every non-String argument now have target
+  behavior; primitive String source execution remains a typed, uncatchable
+  `Unsupported` frontier until the compiler and VM have direct/indirect eval
+  environments. The complete positive slice adds 55 passes across 31 paths.
+  The full join also moves 1,448 missing-eval runtime failures to the typed
+  frontier and corrects 41 old false passes whose assertions had accidentally
+  accepted or swallowed the missing-global `ReferenceError`. Net pass growth
+  is therefore 14, not 55; this is an explicit false-positive correction, not
+  a regression in previously implemented JavaScript semantics.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -825,6 +837,45 @@ claim full parity.
   paths, with SHA-256
   `3c5dee6fa18c428a45556488873ab216dd99e9f8859875ce2e4d1475d307aca6`.
   The milestone adds no production code; `runtime.rs` remains 9,677 lines.
+
+  R1u adds the global `%eval%` callable without pretending that String source
+  execution is complete. Pinned QuickJS source and differential probes lock
+  `name`, `length`, property flags, lack of `prototype`, non-constructability,
+  no-argument `undefined`, non-String identity without coercion, held aliases
+  after global deletion/replacement, and cross-realm calls. Each realm also
+  retains its original callable independently of the writable/configurable
+  global property, matching QuickJS's `JSContext.eval_obj`; that root is the
+  identity gate required by the future direct-eval opcode. Primitive Strings
+  return the engine-level `Unsupported` error
+  `eval source execution is not implemented yet`, which JavaScript
+  `try`/`catch` cannot misclassify as a language exception.
+
+  The frozen positive gate contains all 31 paths and 55 variants that move to
+  pass because of this shell, and passes 55/55. Its manifest SHA-256 is
+  `ae398ca6148d5babf468e7ba1cdcf956f454d35cdb6f612a3c4444d2b3c97cea`;
+  focused TSV/JSONL hashes are
+  `9d364c24169423efa49ecfa384c86280f94011b430fa787f72a8214fe867a6f6`
+  and
+  `63d5717d85f57c19705196aee0333c18cc270242b37e431622a035a8c34cf2fd`.
+  This is the complete positive transition surface, not a claim that String
+  eval or direct eval is implemented.
+
+  The exact R1t/R1u join matches all 102,037 keys with no additions, removals,
+  detail-only changes, or duplicate rows. It records 55
+  `fail-runtime -> pass`, 1,448 `fail-runtime -> unsupported-runtime`, and 41
+  `pass -> unsupported-runtime` transitions. The latter are fully audited
+  missing-eval false positives: 31 variants had mistaken the outer
+  “`eval` is not defined” `ReferenceError` for an expected source-thrown
+  `ReferenceError`, and ten had swallowed that same error with a broad catch
+  before asserting untouched state. The vector therefore reaches 27,641
+  passes and keeps 34,849 admitted jobs. Full TSV/JSONL hashes are
+  `59736a4a4f63122a458a33374d2afd873a706aeb7ff271b52f9fa4aa2aa71fbe`
+  and
+  `c4849aecc54afcc7c73bb182cd240bc9cf35634bc74bc4d5558d6951898af2f2`.
+  The capability profile remains byte-identical at
+  `3c5dee6fa18c428a45556488873ab216dd99e9f8859875ce2e4d1475d307aca6`.
+  Eval code lives in `runtime/intrinsics/eval.rs`; bootstrap wiring adds only
+  two lines to `runtime.rs`, now 9,679 lines.
 
   Advanced grammar still fails closed: Unicode set/string properties, all
   `v`-mode execution, and unported Annex-B control escapes return typed
@@ -2909,8 +2960,10 @@ substitution support inside those same dedicated modules; `runtime.rs` remains
 module; only exhaustive class wiring reaches the parent, now 9,660 lines. The
 subsequent R1k-R1o wiring leaves the parent at 9,677 lines. R1p moves result
 construction into `runtime/intrinsics/regexp/result.rs`, so named captures add
-zero lines to `runtime.rs`. The feature algorithms do not return to the parent
-monolith. The
+zero lines to `runtime.rs`. R1u keeps eval bootstrap and dispatch semantics in
+`runtime/intrinsics/eval.rs`; the parent receives only the two-line bootstrap
+call and remains 9,679 lines. The feature algorithms do not return to the
+parent monolith. The
 RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -3095,6 +3148,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_reduce -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_unicode_u180e -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_eval_intrinsic -- --nocapture
 
 ./scripts/test-parity-slice.sh
 ./scripts/test-test262-smoke.sh
@@ -3120,6 +3175,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/run-test262-regexp-match-indices.sh
 ./scripts/run-test262-regexp-dotall.sh
 ./scripts/run-test262-unicode-u180e.sh
+./scripts/run-test262-eval-intrinsic.sh
 ./scripts/test-test262-full.sh
 ```
 

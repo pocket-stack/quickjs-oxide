@@ -50,11 +50,11 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 27,627 pass;
+- 27,641 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 51,003 are classified as unsupported feature, mode, host capability, parser
+- 52,492 are classified as unsupported feature, mode, host capability, parser
   frontier, harness frontier, or unaudited negative-test provenance;
-- 1,009 fail to parse, 3,709 fail at runtime, 210 fail in the harness, and four
+- 1,009 fail to parse, 2,206 fail at runtime, 210 fail in the harness, and four
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 34,849 variants to execution. That count includes variants
@@ -63,16 +63,18 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 27.08% (`27,627 / 102,037`);
-- conservative target-scope lower bound: 33.06%
-  (`27,627 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 84.85%
-  (`27,627 / 32,559`).
+- raw suite pass rate: 27.09% (`27,641 / 102,037`);
+- conservative target-scope lower bound: 33.08%
+  (`27,641 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 88.96%
+  (`27,641 / 31,070`).
 
-The 33.06% figure is the useful whole-project progress floor, not a claim that
-the engine is 33.06% conformant. The 84.85% conditional rate measures quality
+The 33.08% figure is the useful whole-project progress floor, not a claim that
+the engine is 33.08% conformant. The 88.96% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
-completion. The capability profile currently admits 30 reviewed Test262
+completion; R1u also demonstrates that this conditional rate can rise when
+previously ambiguous failures move to a more honest typed unsupported class.
+The capability profile currently admits 30 reviewed Test262
 feature tags and 308 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
 lands can only make the measurement more representative. Focused QuickJS
@@ -86,9 +88,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`7ea006b596e26f56712c9618f74cd8a5af9aada88702d08f855e6bc8eb313424`
+`59736a4a4f63122a458a33374d2afd873a706aeb7ff271b52f9fa4aa2aa71fbe`
 and
-`6d1d42c46ff6ff145dd72890c90abf6047d11910545599186e5f285028a21fc4`.
+`c4849aecc54afcc7c73bb182cd240bc9cf35634bc74bc4d5558d6951898af2f2`.
 
 ## Milestone policy
 
@@ -831,12 +833,12 @@ tests lock these lexer, conversion, string, casing, and RegExp boundaries.
 Global `eval` and JSON are recorded as independent subsystem frontiers rather
 than receiving U+180E-specific production code.
 
-The frozen focused gate contains all 25 paths and 50 variants tagged with
-`u180e`. All 50 are admitted and 40 pass. Ten variants fail at runtime because
-the five `*-eval.js` paths require the still-missing JavaScript global `eval`;
-the exact parse-negative path is separately provenance-audited and passes as a
-real SyntaxError. Its summary is `fail-runtime=10 pass=40`. Focused TSV/JSONL
-hashes are
+At the R1t landing, the frozen focused gate contained all 25 paths and 50
+variants tagged with `u180e`. All 50 were admitted and 40 passed. Ten variants
+failed at runtime because the five `*-eval.js` paths required the then-missing
+JavaScript global `eval`; the exact parse-negative path was separately
+provenance-audited and passed as a real SyntaxError. Its historical summary was
+`fail-runtime=10 pass=40`. R1t focused TSV/JSONL hashes are
 `3e42dd0c0e7272d51f02a03f95c1d907218b9f3ee5e29a20c0c6760565fbaf0c`
 and
 `4d6e6d514c9a4e6108f828b57b53507e24564df2d0a670a31132a878dbbc8d5c`.
@@ -855,6 +857,52 @@ negative paths, with SHA-256
 `3c5dee6fa18c428a45556488873ab216dd99e9f8859875ce2e4d1475d307aca6`.
 The admission and differential locks add no production code; `runtime.rs`
 remains 9,677 lines.
+
+R1u installs the global eval intrinsic shell while keeping primitive String
+source execution fail-closed. Pinned QuickJS differentials cover the callable
+metadata and descriptors, lack of a prototype and constructor protocol,
+no-argument behavior, exact non-String identity with no coercion, global
+delete/replacement with a held alias, and cross-realm calls. The original
+callable is retained as a realm-local root independently of the mutable global
+property, matching the identity model that QuickJS's direct-eval opcode uses.
+Primitive String input returns the uncatchable engine-level `Unsupported`
+frontier rather than being run through the host Script evaluator.
+
+Before R1u, a source-and-diagnostic inventory identified 1,085 eval-bearing
+paths / 1,517 fail-runtime variants as the audit ceiling. Of those, 1,056 paths
+/ 1,465 variants execute String source through direct, indirect, or mixed eval;
+the remaining 29 / 52 only depend on the callable surface. The exact frozen
+join moves 1,503 of those variants, while 14 remain unchanged fail-runtime
+behind earlier or secondary independent failures. This is an architectural
+work queue, not a predicted pass delta, because String execution will expose
+further parser and runtime gaps. The independent `$262.evalScript` host hook
+accounts for another 31 paths / 44 variants and is not global eval.
+
+The complete positive focused gate contains 31 paths and 55 variants, and all
+55 pass. Its manifest, TSV, and JSONL SHA-256 values are
+`ae398ca6148d5babf468e7ba1cdcf956f454d35cdb6f612a3c4444d2b3c97cea`,
+`9d364c24169423efa49ecfa384c86280f94011b430fa787f72a8214fe867a6f6`,
+and
+`63d5717d85f57c19705196aee0333c18cc270242b37e431622a035a8c34cf2fd`.
+The R1u versions of the U+180E, RegExp-core, RegExp-match, and String-split
+focused gates now classify their String eval consumers as
+`unsupported-runtime`; the Date gate gains two linked passes. No other existing
+focused manifest changes.
+
+The exact R1t/R1u full join matches all 102,037 keys. It records 55
+`fail-runtime -> pass`, 1,448 `fail-runtime -> unsupported-runtime`, and 41
+`pass -> unsupported-runtime` transitions, with 1,544 outcome and complete-row
+changes and no detail-only changes. The 41 former passes were all audited as
+missing-eval false positives: 31 accepted the wrong outer `ReferenceError`,
+while ten swallowed it and asserted state left untouched because the eval
+source never ran. This correction makes the scoreboard more truthful even
+though the net gain is only 14 passes. The full vector reaches 27,641 passes
+and 34,849 admitted jobs. Full TSV/JSONL hashes are
+`59736a4a4f63122a458a33374d2afd873a706aeb7ff271b52f9fa4aa2aa71fbe`
+and
+`c4849aecc54afcc7c73bb182cd240bc9cf35634bc74bc4d5558d6951898af2f2`.
+The capability profile remains byte-identical at
+`3c5dee6fa18c428a45556488873ab216dd99e9f8859875ce2e4d1475d307aca6`.
 
 ## Runner contract
 
@@ -916,6 +964,7 @@ canonical progress report.
 ./scripts/run-test262-regexp-match-indices.sh
 ./scripts/run-test262-regexp-dotall.sh
 ./scripts/run-test262-unicode-u180e.sh
+./scripts/run-test262-eval-intrinsic.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -935,9 +984,9 @@ backreferences, forward lookahead, lookbehind, Unicode property escapes,
 ordinary named captures, duplicate named captures, match indices, and dotAll
 and U+180E are now measured separately in
 R1b/R1c/R1d/R1e/R1f/R1g/R1h/R1j/R1k/R1l/R1m/R1n/R1o/R1p/R1q/R1r/R1s/R1t;
-R1i
-completes the direct standard-RegExp replacement route without changing that
-scoreboard.
+R1u separately measures the eval intrinsic shell and its typed String-source
+frontier. R1i completes the direct standard-RegExp replacement route without
+changing that scoreboard.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

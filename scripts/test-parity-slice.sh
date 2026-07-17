@@ -77,6 +77,7 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/run-test262-regexp-match-indices.sh
 ./scripts/run-test262-regexp-dotall.sh
 ./scripts/run-test262-unicode-u180e.sh
+./scripts/run-test262-eval-intrinsic.sh
 ./scripts/test-test262-full.sh
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ./scripts/check-rust-only.sh

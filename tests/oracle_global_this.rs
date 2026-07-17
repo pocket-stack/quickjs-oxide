@@ -32,6 +32,7 @@ const IMPLEMENTED_GLOBALS: &[&str] = &[
     "Infinity",
     "NaN",
     "undefined",
+    "eval",
     "Number",
     "Boolean",
     "String",
@@ -59,7 +60,7 @@ var implemented = [
     "TypeError", "URIError", "InternalError", "Array", "Object", "Function", "parseInt",
     "parseFloat", "isNaN", "isFinite", "decodeURI", "decodeURIComponent",
     "encodeURI", "encodeURIComponent", "escape", "unescape", "Infinity",
-    "NaN", "undefined", "Number", "Boolean", "String", "Math", "Reflect", "Symbol", "globalThis", "BigInt", "Date", "RegExp"
+    "NaN", "undefined", "eval", "Number", "Boolean", "String", "Math", "Reflect", "Symbol", "globalThis", "BigInt", "Date", "RegExp"
 ];
 var keys = Reflect.ownKeys(root);
 var firstSymbol = keys.findIndex(function(key) { return typeof key === "symbol"; });
@@ -168,7 +169,7 @@ print("reconnect=" + [
 
 const EXPECTED_OBSERVATIONS: &[&str] = &[
     "initial=true|101|true|true",
-    "keys=Error,EvalError,RangeError,ReferenceError,SyntaxError,TypeError,URIError,InternalError,Array,Object,Function,parseInt,parseFloat,isNaN,isFinite,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,unescape,Infinity,NaN,undefined,Number,Boolean,String,Math,Reflect,Symbol,globalThis,BigInt,Date,RegExp|true|true",
+    "keys=Error,EvalError,RangeError,ReferenceError,SyntaxError,TypeError,URIError,InternalError,Array,Object,Function,parseInt,parseFloat,isNaN,isFinite,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,unescape,Infinity,NaN,undefined,eval,Number,Boolean,String,Math,Reflect,Symbol,globalThis,BigInt,Date,RegExp|true|true",
     "assignment=17|101",
     "delete=true|true|undefined",
     "strict-missing=ReferenceError:'globalThis' is not defined:true|true",

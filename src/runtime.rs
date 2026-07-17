@@ -862,6 +862,8 @@ impl Runtime {
             .expect("global primitive constant initialization must succeed");
         self.initialize_global_to_string_tag(&global_object)
             .expect("global toStringTag initialization must succeed");
+        self.initialize_eval_intrinsic(realm, &function_prototype, &global_object)
+            .expect("eval intrinsic initialization must succeed");
         self.initialize_number_intrinsic(
             realm,
             &function_prototype,

@@ -414,6 +414,10 @@ pub struct ContextData {
     /// Shared frozen poison callable used by legacy restricted function
     /// accessors and strict arguments objects.
     pub throw_type_error: Option<ObjectId>,
+    /// Original realm-local `%eval%` identity. QuickJS caches this callable
+    /// separately from the writable/configurable global `eval` property so
+    /// future direct-eval dispatch can compare identity after user mutation.
+    pub eval_function: Option<ObjectId>,
     pub global_object: ObjectId,
     /// Null-prototype storage for global lexical bindings (`let`/`const`).
     pub global_var_object: ObjectId,
@@ -460,6 +464,7 @@ impl ContextData {
             regexp: None,
             function_constructor: None,
             throw_type_error: None,
+            eval_function: None,
             global_object,
             global_var_object,
             error_prototype: None,
@@ -1622,6 +1627,7 @@ pub enum NativeFunctionId {
     SymbolRegistry(SymbolRegistryKind),
     SymbolPrototypeDescription,
     BigIntAsN(BigIntAsNKind),
+    GlobalEval,
     GlobalNumberParse(NumberParseKind),
     GlobalNumberPredicate(GlobalNumberPredicateKind),
     GlobalUriCodec(GlobalUriCodecKind),
@@ -1999,6 +2005,7 @@ impl NativeFunctionId {
             | Self::ArrayPrototypeToSpliced
             | Self::ArrayPrototypeCopyWithin
             | Self::SymbolRegistry(_)
+            | Self::GlobalEval
             | Self::GlobalNumberParse(_)
             | Self::GlobalNumberPredicate(_)
             | Self::NumberPredicate(_)
@@ -3016,6 +3023,46 @@ impl Heap {
             unreachable!("context identity was validated before retaining Function")
         };
         context.function_constructor = Some(constructor);
+        Ok(())
+    }
+
+    /// Cache the realm's original `%eval%` callable independently from its
+    /// mutable global property, matching `JSContext.eval_obj`.
+    pub(crate) fn attach_eval_function(
+        &mut self,
+        realm: ContextId,
+        function: ObjectId,
+    ) -> Result<(), HeapError> {
+        let context = self.context(realm)?;
+        if context.eval_function.is_some() {
+            return Err(HeapError::Invariant(
+                "context already has an eval function root",
+            ));
+        }
+        let function_object = self.object(function)?;
+        if function_object.is_constructor
+            || !matches!(
+                function_object.payload,
+                ObjectPayload::NativeFunction {
+                    data: NativeFunctionData {
+                        target: NativeFunctionId::GlobalEval,
+                        realm: Some(target_realm),
+                        ..
+                    }
+                } if target_realm == realm
+            )
+        {
+            return Err(HeapError::Invariant(
+                "eval function root is not the realm's non-constructor eval native",
+            ));
+        }
+
+        self.retain_raw(RawId::Object(function), 1)?;
+        let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(realm))?.data
+        else {
+            unreachable!("context identity was validated before retaining eval")
+        };
+        context.eval_function = Some(function);
         Ok(())
     }
 
@@ -4996,7 +5043,7 @@ fn raw_value_edges(value: &RawValue) -> Vec<RawId> {
 
 fn context_edges(context: &ContextData) -> Vec<RawId> {
     let mut edges = Vec::with_capacity(
-        12usize
+        13usize
             .saturating_add(PrimitiveKind::COUNT)
             .saturating_add(NativeErrorKind::COUNT)
             .saturating_add(context.regexp.map_or(0, |_| 4))
@@ -5029,6 +5076,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     edges.extend(context.array_constructor.map(RawId::Object));
     edges.extend(context.array_prototype_values.map(RawId::Object));
     edges.extend(context.throw_type_error.map(RawId::Object));
+    edges.extend(context.eval_function.map(RawId::Object));
     edges.push(RawId::Object(context.global_object));
     edges.push(RawId::Object(context.global_var_object));
     edges.extend(context.error_prototype.map(RawId::Object));
@@ -5841,6 +5889,7 @@ mod tests {
     #[test]
     fn numeric_and_uri_native_selectors_use_pinned_cproto() {
         let targets = [
+            NativeFunctionId::GlobalEval,
             NativeFunctionId::GlobalNumberParse(NumberParseKind::ParseInt),
             NativeFunctionId::GlobalNumberParse(NumberParseKind::ParseFloat),
             NativeFunctionId::GlobalNumberPredicate(GlobalNumberPredicateKind::IsNaN),
