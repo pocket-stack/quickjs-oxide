@@ -1,11 +1,13 @@
 use std::ffi::OsStr;
 use std::process::Command;
 
-use quickjs_oxide::{CallableRef, Context, ErrorKind, JsString, Runtime, RuntimeError, Value};
+use quickjs_oxide::{
+    CallableRef, Context, DebugInfoMode, ErrorKind, JsString, Runtime, RuntimeError, Value,
+};
 
-// This probe deliberately stops before String source execution. It freezes the
-// realm-local %eval% shell that can be implemented without silently treating a
-// syntactic direct eval as an indirect Context::eval call.
+// This probe deliberately isolates the non-String shell from source execution.
+// It freezes the realm-local %eval% callable and identity semantics separately
+// from the compiler and environment assertions below.
 const ORACLE_PROBE: &str = r#"
 (function () {
     function flags(descriptor) {
@@ -115,9 +117,8 @@ const EXPECTED_OBSERVATIONS: &[&str] = &[
     "mutation=true|true|true|true|true|0",
 ];
 
-// String execution is intentionally still closed in Oxide, so this second
-// probe runs only in the pinned oracle. It freezes which syntactic forms must
-// receive a caller lexical environment once the next eval milestone opens.
+// This probe freezes which syntactic forms receive a caller lexical environment
+// and which forms take the ordinary, indirect call path.
 const DIRECTNESS_ORACLE_PROBE: &str = r#"
 (function () {
     globalThis.x = "G";
@@ -163,6 +164,38 @@ const DIRECTNESS_ORACLE_PROBE: &str = r#"
 "#;
 
 const EXPECTED_DIRECTNESS: &str = "L|L|L|L|L|G|G|G|G|G|G|G|TypeError|R:x:7|R:x:8|L|G";
+
+// Keep the executable Rust slice inside syntax that the main parser already
+// supports. Spread-call and optional-call parsing remain separate milestones;
+// the full QuickJS contract above stays frozen by the oracle-only probe.
+const R1X_DIRECTNESS_PROBE: &str = r#"
+(function () {
+    globalThis.x = "G";
+    var result = (function () {
+        var x = "L";
+        var original = eval;
+        var alias = eval;
+        return [
+            eval("x"),
+            (eval)("x"),
+            ((eval))("x"),
+            \u0065val("x"),
+            (function (eval) { return eval("x"); })(original),
+            (0, eval)("x"),
+            alias("x"),
+            globalThis.eval("x"),
+            eval.call(null, "x"),
+            eval.apply(null, ["x"]),
+            (true ? eval : eval)("x"),
+            (eval = original)("x")
+        ].join("|");
+    })();
+    delete globalThis.x;
+    return result;
+})()
+"#;
+
+const EXPECTED_R1X_DIRECTNESS: &str = "L|L|L|L|L|G|G|G|G|G|G|G";
 
 // This remains oracle-only until String execution opens. It freezes the
 // environment contract which the Oxide descriptor/materialization milestone
@@ -279,6 +312,15 @@ fn pinned_quickjs_direct_eval_syntax_contract_is_frozen() {
         oracle_value(&oracle, DIRECTNESS_ORACLE_PROBE),
         EXPECTED_DIRECTNESS,
         "pinned QuickJS direct/indirect eval classification drifted"
+    );
+}
+
+#[test]
+fn primitive_string_directness_matches_the_supported_quickjs_slice() {
+    assert_eq!(
+        rust_value(R1X_DIRECTNESS_PROBE),
+        EXPECTED_R1X_DIRECTNESS,
+        "Rust direct/indirect eval classification drifted",
     );
 }
 
@@ -409,71 +451,311 @@ fn syntactic_eval_replacements_take_the_complete_ordinary_call_path() {
 }
 
 #[test]
-fn primitive_string_eval_stays_a_typed_uncatchable_frontier() {
+fn primitive_string_eval_executes_indirect_and_direct_completion_values() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     let eval = global_eval(&runtime, &mut context);
 
-    assert_unsupported(
-        context.call(
-            &eval,
-            Value::Undefined,
-            &[Value::String(JsString::try_from_utf8("40 + 2").unwrap())],
-        ),
-        "host Context::call",
+    assert_eq!(
+        context
+            .call(
+                &eval,
+                Value::Undefined,
+                &[Value::String(JsString::try_from_utf8("40 + 2").unwrap())],
+            )
+            .unwrap(),
+        Value::Int(42),
+        "host Context::call did not execute primitive String eval",
     );
-    assert!(!context.has_exception());
-    assert_eq!(context.take_exception().unwrap(), None);
+    assert_eq!(
+        context.eval(r#"(0, eval)("40 + 2")"#).unwrap(),
+        Value::Int(42)
+    );
+    assert_eq!(
+        context.eval(r#"eval("(0, eval)('40 + 2')")"#).unwrap(),
+        Value::Int(42),
+        "eval source incorrectly rejected a nested indirect eval",
+    );
 
-    let runtime = Runtime::new();
-    let mut context = runtime.new_context();
-    assert_unsupported(
-        context.eval(
-            r#"(function () {
-                try {
-                    return eval("40 + 2");
-                } catch (error) {
-                    return "caught:" + error;
-                }
-            })()"#,
-        ),
-        "source-level try/catch",
+    assert_eq!(
+        context
+            .eval(
+                r#"
+                    (function (argument) {
+                        let local = 1;
+                        var completion = eval("local += argument; local");
+                        return completion + ":" + local;
+                    })(41)
+                "#,
+            )
+            .unwrap(),
+        string_value("42:42"),
+        "direct eval did not read and update the caller's live argument/local slots",
     );
-    assert!(
-        !context.has_exception(),
-        "Unsupported eval source execution leaked into the JavaScript exception slot"
-    );
-    assert_eq!(context.take_exception().unwrap(), None);
 
-    for source in [
-        r#"eval("40 + 2")"#,
-        r#"(eval)("40 + 2")"#,
-        r#"((eval))("40 + 2")"#,
-        r#"(function (eval) { return eval("40 + 2"); })(globalThis.eval)"#,
-        r#"(0, eval)("40 + 2")"#,
-        r#"var alias = eval; alias("40 + 2")"#,
-        r#"globalThis.eval("40 + 2")"#,
-        r#"eval.call(null, "40 + 2")"#,
-        r#"eval.apply(null, ["40 + 2"])"#,
-        r#"(function (argument) { var local = 1; { let block = 2; return eval("argument + local + block"); } })(3)"#,
-        r#"(function (argument) { "use strict"; let local = 1; return eval("argument + local"); })(3)"#,
-        r#"new (function EvalConstructor(argument) { eval("[new.target, arguments[0], this]"); })(3)"#,
+    assert_eq!(
+        context
+            .eval(
+                r#"
+                    (function (argument) {
+                        "use strict";
+                        let local = 1;
+                        return eval("local += argument; local");
+                    })(41)
+                "#,
+            )
+            .unwrap(),
+        Value::Int(42),
+        "direct eval did not inherit strict caller bindings",
+    );
+    assert_eq!(
+        context
+            .eval(r#"(function named() { return eval("named") === named; })()"#)
+            .unwrap(),
+        Value::Bool(true),
+        "direct eval did not import the caller's private function-name binding",
+    );
+    assert_eq!(
+        context
+            .eval(
+                r#"
+                    (function named() {
+                        return eval("(function () { return named.name; })");
+                    })()()
+                "#,
+            )
+            .unwrap(),
+        string_value("named"),
+        "eval child closure did not relay the caller's function-name binding",
+    );
+}
+
+#[test]
+fn eval_lexicals_are_ephemeral_but_returned_closures_retain_them() {
+    for (description, source) in [
+        (
+            "direct",
+            r#"
+                (function () {
+                    var closure = eval(
+                        "let answer = 40; const increment = 2; " +
+                        "(function () { return answer + increment; })"
+                    );
+                    return [closure(), typeof answer, typeof increment].join("|");
+                })()
+            "#,
+        ),
+        (
+            "indirect",
+            r#"
+                var closure = (0, eval)(
+                    "let answer = 40; const increment = 2; " +
+                    "(function () { return answer + increment; })"
+                );
+                [closure(), typeof answer, typeof increment].join("|")
+            "#,
+        ),
     ] {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
-        assert_unsupported(context.eval(source), source);
-        assert!(!context.has_exception(), "{source}");
+        assert_eq!(
+            context.eval(source).unwrap(),
+            string_value("42|undefined|undefined"),
+            "{description} eval lexical lifetime drifted",
+        );
+    }
+}
+
+#[test]
+fn returned_eval_closure_retains_caller_lexical_in_every_debug_mode() {
+    for debug_info in [
+        DebugInfoMode::Full,
+        DebugInfoMode::StripSource,
+        DebugInfoMode::StripDebug,
+    ] {
+        let runtime = Runtime::new();
+        runtime.set_debug_info_mode(debug_info);
+        let mut context = runtime.new_context();
+        assert_eq!(
+            context
+                .eval(
+                    r#"
+                        (function () {
+                            let answer = 42;
+                            return eval("(function () { return answer; })");
+                        })()()
+                    "#,
+                )
+                .unwrap(),
+            Value::Int(42),
+            "eval external relay drifted in {debug_info:?}",
+        );
+    }
+}
+
+#[test]
+fn eval_syntax_errors_are_catchable_and_direct_eval_inherits_strictness() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+
+    assert_eq!(
+        context
+            .eval(
+                r#"
+                    try { (0, eval)("1 +"); "none"; }
+                    catch (error) { error.name; }
+                "#,
+            )
+            .unwrap(),
+        string_value("SyntaxError"),
+        "indirect eval parse errors must be JavaScript exceptions",
+    );
+    assert_eq!(
+        context
+            .eval(
+                r#"
+                    (function () {
+                        "use strict";
+                        try { eval("010"); return "none"; }
+                        catch (error) { return error.name; }
+                    })()
+                "#,
+            )
+            .unwrap(),
+        string_value("SyntaxError"),
+        "direct eval did not inherit the caller's strict parse goal",
+    );
+    assert_eq!(
+        context
+            .eval(r#"(function () { return eval("010"); })()"#)
+            .unwrap(),
+        Value::Int(8),
+        "sloppy direct eval unexpectedly inherited strict mode",
+    );
+    assert_eq!(
+        context
+            .eval(
+                r#"
+                    (function () {
+                        "use strict";
+                        try { eval("strictEvalLeak = 1"); return "none"; }
+                        catch (error) {
+                            return error.name + "|" + typeof strictEvalLeak;
+                        }
+                    })()
+                "#,
+            )
+            .unwrap(),
+        string_value("ReferenceError|undefined"),
+        "direct eval lost inherited strict assignment semantics",
+    );
+}
+
+#[test]
+fn eval_var_function_and_nested_direct_eval_stay_typed_frontiers() {
+    for (source, expected_message) in [
+        (
+            r#"(function () { return eval("var added = 42; added"); })()"#,
+            "var declarations in eval source require a dynamic variable environment",
+        ),
+        (
+            r#"(0, eval)("function answer() { return 42; } answer()")"#,
+            "function declarations in eval source are not implemented yet",
+        ),
+        (
+            r#"(function () { return eval("eval('40 + 2')"); })()"#,
+            "direct eval nested inside eval source is not implemented yet",
+        ),
+    ] {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        assert_unsupported(context.eval(source), source, expected_message);
+        assert!(
+            !context.has_exception(),
+            "typed Unsupported leaked into the JavaScript exception slot: {source}",
+        );
         assert_eq!(context.take_exception().unwrap(), None, "{source}");
     }
 }
 
+#[test]
+fn foreign_realm_primitive_string_eval_uses_its_defining_realm() {
+    let runtime = Runtime::new();
+    let mut defining = runtime.new_context();
+    let mut caller = runtime.new_context();
+    defining.eval("globalThis.evalRealmMarker = 42").unwrap();
+    caller.eval("globalThis.evalRealmMarker = 7").unwrap();
+
+    let defining_array_prototype = eval_object(&mut defining, "Array.prototype");
+    let caller_array_prototype = eval_object(&mut caller, "Array.prototype");
+    let defining_syntax_error_prototype = eval_object(&mut defining, "SyntaxError.prototype");
+    let eval = global_eval(&runtime, &mut defining);
+
+    assert_eq!(
+        caller
+            .call(
+                &eval,
+                Value::Undefined,
+                &[Value::String(
+                    JsString::try_from_utf8("evalRealmMarker").unwrap(),
+                )],
+            )
+            .unwrap(),
+        Value::Int(42),
+        "indirect eval resolved the caller realm instead of its defining realm",
+    );
+    let Value::Object(array) = caller
+        .call(
+            &eval,
+            Value::Undefined,
+            &[Value::String(JsString::try_from_utf8("[]").unwrap())],
+        )
+        .unwrap()
+    else {
+        panic!("foreign primitive String eval did not return an Array object");
+    };
+    assert_eq!(
+        runtime.get_prototype_of(&array).unwrap(),
+        Some(defining_array_prototype),
+        "indirect eval allocated its result outside the defining realm",
+    );
+    assert_ne!(
+        runtime.get_prototype_of(&array).unwrap(),
+        Some(caller_array_prototype),
+    );
+
+    assert!(matches!(
+        caller.call(
+            &eval,
+            Value::Undefined,
+            &[Value::String(JsString::try_from_utf8("1 +").unwrap())],
+        ),
+        Err(RuntimeError::Exception),
+    ));
+    let Value::Object(error) = caller.take_exception().unwrap().unwrap() else {
+        panic!("foreign eval SyntaxError was not an object");
+    };
+    assert_eq!(
+        runtime.get_prototype_of(&error).unwrap(),
+        Some(defining_syntax_error_prototype),
+        "eval SyntaxError was allocated in the caller realm",
+    );
+}
+
 fn rust_observations() -> Vec<String> {
+    rust_value(ORACLE_PROBE)
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn rust_value(source: &str) -> String {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
-    let Value::String(value) = context.eval(ORACLE_PROBE).unwrap() else {
+    let Value::String(value) = context.eval(source).unwrap() else {
         panic!("eval oracle probe did not return a String");
     };
-    value.to_utf8_lossy().lines().map(str::to_owned).collect()
+    value.to_utf8_lossy()
 }
 
 fn oracle_observations(oracle: &OsStr) -> Vec<String> {
@@ -516,14 +798,17 @@ fn string_value(value: &str) -> Value {
     Value::String(JsString::try_from_utf8(value).unwrap())
 }
 
-fn assert_unsupported(result: Result<Value, RuntimeError>, boundary: &str) {
+fn eval_object(context: &mut Context, source: &str) -> quickjs_oxide::ObjectRef {
+    let Value::Object(object) = context.eval(source).unwrap() else {
+        panic!("{source} did not evaluate to an object");
+    };
+    object
+}
+
+fn assert_unsupported(result: Result<Value, RuntimeError>, boundary: &str, expected_message: &str) {
     let Err(RuntimeError::Engine(error)) = result else {
-        panic!("primitive String eval did not stay an engine error at {boundary}: {result:?}");
+        panic!("eval frontier was not an engine error at {boundary}: {result:?}");
     };
     assert_eq!(error.kind(), ErrorKind::Unsupported, "{boundary}");
-    assert_eq!(
-        error.message(),
-        "eval source execution is not implemented yet",
-        "{boundary}"
-    );
+    assert_eq!(error.message(), expected_message, "{boundary}");
 }

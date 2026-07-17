@@ -2901,7 +2901,8 @@ impl Runtime {
                 ClosureSource::ParentLocal(_)
                 | ClosureSource::ParentArgument(_)
                 | ClosureSource::ParentClosure(_)
-                | ClosureSource::ParentGlobal(_) => {
+                | ClosureSource::ParentGlobal(_)
+                | ClosureSource::EvalEnvironment(_) => {
                     return Err(RuntimeError::Invariant(
                         "root bytecode closure descriptor used a child source",
                     ));
@@ -3990,6 +3991,14 @@ impl Runtime {
         function: UnlinkedFunction,
     ) -> Result<FunctionBytecodeRef, RuntimeError> {
         bytecode_publish::verify_unlinked_tree(&function)?;
+        self.publish_verified_unlinked_function(realm, function)
+    }
+
+    fn publish_verified_unlinked_function(
+        &self,
+        realm: ContextId,
+        function: UnlinkedFunction,
+    ) -> Result<FunctionBytecodeRef, RuntimeError> {
         let flat_functions = bytecode_publish::flatten_unlinked_tree(function)?;
         let _operation = self.operation();
         let mut roots: Vec<Option<FunctionBytecodeRef>> = Vec::with_capacity(flat_functions.len());

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproduce the complete classified outcome vector for the eval intrinsic shell.
+# Reproduce the classified eval intrinsic and primitive-String execution vector.
 
 set -euo pipefail
 export TZ=America/Los_Angeles
@@ -86,10 +86,10 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_schema" != "test262-canonical-classified-v2" \
     || "$expected_mode" != "both" \
     || "$timeout_ms" != "30000" \
-    || "$expected_paths" != "31" \
-    || "$expected_variants" != "55" \
-    || "$expected_runnable" != "55" \
-    || "$expected_passes" != "55" ]]; then
+    || "$expected_paths" != "74" \
+    || "$expected_variants" != "138" \
+    || "$expected_runnable" != "138" \
+    || "$expected_passes" != "138" ]]; then
     echo "error: eval-intrinsic baseline metadata drifted" >&2
     exit 1
 fi

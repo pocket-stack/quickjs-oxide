@@ -1,8 +1,7 @@
 # Eight RegExp @@match paths use unsupported object-literal methods/accessors;
 # their sloppy/strict variants account for all 16 unsupported-parser outcomes.
 # Three paths remain behind independent feature declarations (arrow functions
-# or regexp-v), and the legacy eval consumer reaches the separate typed
-# String-source execution frontier.
+# or regexp-v); R1x executes the legacy eval consumer.
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
@@ -15,12 +14,12 @@ timeout_ms=30000
 paths=104
 variants=208
 runnable=202
-passes=184
+passes=186
 manifest_sha256=2438976641de3a6fe33d7b8bfab36522ab2d61f6d879eb725dcd10779017deb9
 r1c_full_tsv_sha256=27982c6cbd922e61c9798d7532316f0d382c858bd01039c2700697ddb76b33c9
 r1c_selected_sha256=309d815d6dedded573ba282b76f2fb97cbd9364b2000df08144a7b85e520c3b7
 r1c_variants=208
 r1c_summary=fail-runtime=76 pass=2 unsupported-feature=130
-tsv_sha256=b1f3762ae6fbfe25464fd15d06dedaa9369e995c7512938f1082360340b6bef5
-jsonl_sha256=25be818fe71928e48a01df59e316648df2403dd1ecf48fd3100ae9b7bbcc32d0
-summary=pass=184 unsupported-feature=6 unsupported-parser=16 unsupported-runtime=2
+tsv_sha256=ed1909a11d44f134be293181009e5a4fcb61b52128b678fa2333b22fbc2eb165
+jsonl_sha256=c6648090e1353fe6a1146b72238069f60f7eacd70ad19789baa76634e1620871
+summary=pass=186 unsupported-feature=6 unsupported-parser=16

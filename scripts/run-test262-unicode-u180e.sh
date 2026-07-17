@@ -93,7 +93,7 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_paths" != "25" \
     || "$expected_variants" != "50" \
     || "$expected_runnable" != "50" \
-    || "$expected_passes" != "40" ]]; then
+    || "$expected_passes" != "50" ]]; then
     echo "error: U+180E baseline metadata drifted" >&2
     exit 1
 fi

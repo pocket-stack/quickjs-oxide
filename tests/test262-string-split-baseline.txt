@@ -1,5 +1,5 @@
-# Two core String split paths reach the typed eval String-source frontier and
-# account for all four unsupported-runtime outcomes.
+# R1x executes the two core String split paths that previously stopped at the
+# typed eval String-source frontier; all four variants now pass.
 # The independent feature and HTMLDDA-host classifications remain unchanged
 # from the frozen R1d projection; Annex B named-backreference parsing removes
 # two parser classifications without changing the historical R1d fields below.
@@ -9,12 +9,12 @@ timeout_ms=30000
 paths=127
 variants=254
 runnable=244
-passes=236
+passes=240
 manifest_sha256=de13f656ba1237660233f8b47c5b638424415f902f991eeda6e5c482fe342714
 r1d_full_tsv_sha256=a695d6299b44e4298b553c28c12983b6b12fc9d8522f1216e18e16a6bad28012
 r1d_selected_sha256=c471c60bb73b7cd9cc05c1c9793de646d46539fdea4b8e50ada3716b8142306e
 r1d_variants=254
 r1d_summary=fail-runtime=52 pass=186 unsupported-feature=8 unsupported-host-is-html-dda=2 unsupported-parser=6
-tsv_sha256=4353f23199376b4ef1afa9307c6762e843642ff4d9e057a348c0d8b0dc8e3e23
-jsonl_sha256=b094e953ff4f43bba2844c66f6757b7c91d9b25f38f07283d13f6bb3c4f674e4
-summary=pass=236 unsupported-feature=8 unsupported-host-is-html-dda=2 unsupported-parser=4 unsupported-runtime=4
+tsv_sha256=60192320eef4ecb542e58f633a3505364d7d9c76aa2c0dd2b29f9f2968f3004f
+jsonl_sha256=a9a2403ff24e52a2ac64adfcef3cdcbbac8bc7bf9e7a947dbe78d9c691f0903c
+summary=pass=240 unsupported-feature=8 unsupported-host-is-html-dda=2 unsupported-parser=4

@@ -3,7 +3,7 @@
 use super::*;
 
 use crate::bytecode::{MAX_LOCAL_SLOTS, verify_parts};
-use crate::heap::{EvalBinding, EvalScope};
+use crate::heap::{EvalBinding, EvalKind, EvalRootBinding, EvalScope};
 
 /// Intern every semantically retained direct-eval binding name while keeping
 /// the parent publication routine's atom transaction authoritative. The
@@ -298,10 +298,108 @@ fn verify_eval_environments(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum RootPublication<'a> {
+    Script,
+    Eval {
+        kind: EvalKind,
+        caller_strict: bool,
+        expected_bindings: &'a [EvalRootBinding<JsString>],
+    },
+}
+
 pub(super) fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError> {
+    verify_unlinked_tree_with_root(function, RootPublication::Script)
+}
+
+/// Authenticate a synthetic eval root against the exact caller bindings that
+/// will instantiate its `EvalEnvironment` closure slots. This entry point is
+/// deliberately separate from ordinary script publication: accepting these
+/// sources without the live caller descriptor would make a forged bytecode
+/// root indistinguishable from a compiler-produced direct eval.
+pub(in crate::runtime) fn verify_unlinked_eval_tree(
+    function: &UnlinkedFunction,
+    kind: EvalKind,
+    caller_strict: bool,
+    expected_bindings: &[EvalRootBinding<JsString>],
+) -> Result<(), RuntimeError> {
+    if kind == EvalKind::None {
+        return Err(RuntimeError::Engine(Error::internal(
+            "eval publication requires a direct or indirect eval kind",
+        )));
+    }
+    if kind == EvalKind::Indirect && !expected_bindings.is_empty() {
+        return Err(RuntimeError::Engine(Error::internal(
+            "indirect eval publication received caller bindings",
+        )));
+    }
+    if kind == EvalKind::Indirect && caller_strict {
+        return Err(RuntimeError::Engine(Error::internal(
+            "indirect eval publication received caller strictness",
+        )));
+    }
+    verify_unlinked_tree_with_root(
+        function,
+        RootPublication::Eval {
+            kind,
+            caller_strict,
+            expected_bindings,
+        },
+    )
+}
+
+fn verify_unlinked_tree_with_root(
+    function: &UnlinkedFunction,
+    root_publication: RootPublication<'_>,
+) -> Result<(), RuntimeError> {
     let mut pending = vec![(function, 0_usize)];
     while let Some((function, function_depth)) = pending.pop() {
         let is_root = function_depth == 0;
+        let expected_eval_kind = if is_root {
+            match root_publication {
+                RootPublication::Script => EvalKind::None,
+                RootPublication::Eval { kind, .. } => kind,
+            }
+        } else {
+            EvalKind::None
+        };
+        if function.metadata().eval_kind != expected_eval_kind {
+            return Err(RuntimeError::Engine(Error::internal(if is_root {
+                "root bytecode eval kind disagrees with its publication entry point"
+            } else {
+                "non-root bytecode carried a synthetic eval kind"
+            })));
+        }
+        if is_root
+            && matches!(
+                root_publication,
+                RootPublication::Eval {
+                    kind: EvalKind::Direct,
+                    caller_strict: true,
+                    ..
+                }
+            )
+            && !function.metadata().strict
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "direct eval root lost inherited caller strictness",
+            )));
+        }
+        let expected_eval_bindings = if is_root {
+            match root_publication {
+                RootPublication::Script => None,
+                RootPublication::Eval {
+                    expected_bindings, ..
+                } => Some(expected_bindings),
+            }
+        } else {
+            None
+        };
+        if expected_eval_bindings.is_some() && !function.eval_environments().is_empty() {
+            return Err(RuntimeError::Engine(Error::internal(
+                "eval root retained a nested direct-eval environment",
+            )));
+        }
         if function.metadata().local_count > MAX_LOCAL_SLOTS {
             return Err(RuntimeError::Engine(Error::internal(
                 "bytecode local count exceeds QuickJS JS_MAX_LOCAL_VARS",
@@ -390,6 +488,7 @@ pub(super) fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), Ru
         let mut global_declaration_names = HashMap::new();
         let mut first_global_declaration_indices = HashMap::new();
         let mut global_function_declarations = Vec::new();
+        let mut verified_eval_binding_count = 0_usize;
         for (descriptor_index, descriptor) in function.closure_variables().iter().enumerate() {
             if descriptor.kind == ClosureVariableKind::GlobalFunction
                 && (descriptor.is_lexical || descriptor.is_const)
@@ -431,6 +530,7 @@ pub(super) fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), Ru
                     ClosureSource::GlobalDeclaration
                         | ClosureSource::Global
                         | ClosureSource::ParentGlobal(_)
+                        | ClosureSource::EvalEnvironment(_)
                 );
             let name = unlinked_closure_name(function, descriptor)?;
             if descriptor.source == ClosureSource::GlobalDeclaration {
@@ -488,19 +588,77 @@ pub(super) fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), Ru
                     "closure descriptor name does not match its binding kind",
                 )));
             }
-            match (is_root, descriptor.source) {
-                (true, ClosureSource::GlobalDeclaration | ClosureSource::Global) => {}
-                (true, _) => {
+            if is_root {
+                match root_publication {
+                    RootPublication::Script => {
+                        if !matches!(
+                            descriptor.source,
+                            ClosureSource::GlobalDeclaration | ClosureSource::Global
+                        ) {
+                            return Err(RuntimeError::Engine(Error::internal(
+                                "root bytecode closure descriptor did not use Global",
+                            )));
+                        }
+                    }
+                    RootPublication::Eval { .. } => match descriptor.source {
+                        ClosureSource::Global | ClosureSource::EvalEnvironment(_) => {}
+                        ClosureSource::GlobalDeclaration => {
+                            return Err(RuntimeError::Engine(Error::internal(
+                                "eval root contained a global declaration descriptor",
+                            )));
+                        }
+                        _ => {
+                            return Err(RuntimeError::Engine(Error::internal(
+                                "eval root closure descriptor used a non-root source",
+                            )));
+                        }
+                    },
+                }
+            } else {
+                match descriptor.source {
+                    ClosureSource::GlobalDeclaration | ClosureSource::Global => {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "only root bytecode may resolve a global closure binding",
+                        )));
+                    }
+                    ClosureSource::EvalEnvironment(_) => {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "only a verified eval root may use an eval environment binding",
+                        )));
+                    }
+                    _ => {}
+                }
+            }
+            if let ClosureSource::EvalEnvironment(index) = descriptor.source {
+                let expected_bindings = expected_eval_bindings.ok_or_else(|| {
+                    RuntimeError::Engine(Error::internal(
+                        "eval environment binding escaped specialized eval publication",
+                    ))
+                })?;
+                let index = usize::from(index);
+                if index != descriptor_index || index != verified_eval_binding_count {
                     return Err(RuntimeError::Engine(Error::internal(
-                        "root bytecode closure descriptor did not use Global",
+                        "eval environment closure descriptors are not in caller binding order",
                     )));
                 }
-                (false, ClosureSource::GlobalDeclaration | ClosureSource::Global) => {
+                let expected = expected_bindings.get(index).ok_or_else(|| {
+                    RuntimeError::Engine(Error::internal(
+                        "eval environment closure descriptor exceeds caller binding count",
+                    ))
+                })?;
+                if name != Some(&expected.name) {
                     return Err(RuntimeError::Engine(Error::internal(
-                        "only root bytecode may resolve a global closure binding",
+                        "eval environment closure name disagrees with the caller binding",
                     )));
                 }
-                (false, _) => {}
+                if (descriptor.is_lexical, descriptor.is_const, descriptor.kind)
+                    != (expected.is_lexical, expected.is_const, expected.kind)
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "eval environment closure flags disagree with the caller binding",
+                    )));
+                }
+                verified_eval_binding_count += 1;
             }
             if matches!(
                 descriptor.source,
@@ -513,6 +671,13 @@ pub(super) fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), Ru
             ) {
                 return Err(RuntimeError::Engine(Error::internal(
                     "global closure descriptor has a non-global binding kind",
+                )));
+            }
+        }
+        if let Some(expected_bindings) = expected_eval_bindings {
+            if verified_eval_binding_count != expected_bindings.len() {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "eval environment closure descriptor count disagrees with caller bindings",
                 )));
             }
         }
@@ -1033,6 +1198,11 @@ pub(super) fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), Ru
                                 )));
                             }
                         }
+                        ClosureSource::EvalEnvironment(_) => {
+                            return Err(RuntimeError::Engine(Error::internal(
+                                "child bytecode directly referenced an eval environment binding",
+                            )));
+                        }
                     }
                 }
                 let child_depth = function_depth.checked_add(1).ok_or_else(|| {
@@ -1285,6 +1455,319 @@ mod tests {
                 ..FunctionMetadata::default()
             },
         )
+    }
+
+    fn eval_root_binding(
+        name: &'static str,
+        scope: u16,
+        is_lexical: bool,
+        is_const: bool,
+        kind: ClosureVariableKind,
+    ) -> EvalRootBinding<JsString> {
+        EvalRootBinding {
+            name: JsString::from_static(name),
+            scope,
+            is_lexical,
+            is_const,
+            kind,
+        }
+    }
+
+    fn eval_root_with_descriptors(
+        eval_kind: EvalKind,
+        descriptors: Vec<(ClosureSource, &'static str, bool, bool, ClosureVariableKind)>,
+    ) -> UnlinkedFunction {
+        let constants = descriptors
+            .iter()
+            .map(|(_, name, _, _, _)| {
+                UnlinkedConstant::primitive(Value::String(JsString::from_static(name))).unwrap()
+            })
+            .collect();
+        let closure_variables = descriptors
+            .into_iter()
+            .enumerate()
+            .map(
+                |(index, (source, _, is_lexical, is_const, kind))| ClosureVariable {
+                    source,
+                    name: ClosureVariableName::Constant(
+                        u32::try_from(index).expect("test descriptor index fits u32"),
+                    ),
+                    is_lexical,
+                    is_const,
+                    kind,
+                },
+            )
+            .collect::<Vec<_>>();
+        UnlinkedFunction::new_with_closure_variables(
+            vec![Instruction::Undefined, Instruction::Return],
+            constants,
+            FunctionMetadata {
+                closure_count: u16::try_from(closure_variables.len())
+                    .expect("test descriptor count fits u16"),
+                max_stack: 1,
+                eval_kind,
+                ..FunctionMetadata::default()
+            },
+            closure_variables,
+        )
+    }
+
+    #[test]
+    fn eval_root_authenticates_ordered_caller_bindings_and_globals() {
+        let expected = [
+            eval_root_binding("outer", 3, false, false, ClosureVariableKind::Normal),
+            eval_root_binding("inner", 0, true, true, ClosureVariableKind::Normal),
+        ];
+        let root = eval_root_with_descriptors(
+            EvalKind::Direct,
+            vec![
+                (
+                    ClosureSource::EvalEnvironment(0),
+                    "outer",
+                    false,
+                    false,
+                    ClosureVariableKind::Normal,
+                ),
+                (
+                    ClosureSource::EvalEnvironment(1),
+                    "inner",
+                    true,
+                    true,
+                    ClosureVariableKind::Normal,
+                ),
+                (
+                    ClosureSource::Global,
+                    "globalName",
+                    false,
+                    false,
+                    ClosureVariableKind::Normal,
+                ),
+            ],
+        );
+
+        verify_unlinked_eval_tree(&root, EvalKind::Direct, false, &expected).unwrap();
+    }
+
+    #[test]
+    fn script_and_eval_root_publication_are_not_interchangeable() {
+        let eval_root = eval_root_with_descriptors(EvalKind::Direct, Vec::new());
+        assert!(
+            verify_unlinked_tree(&eval_root)
+                .unwrap_err()
+                .to_string()
+                .contains("publication entry point")
+        );
+
+        let script_root = eval_root_with_descriptors(EvalKind::None, Vec::new());
+        assert!(
+            verify_unlinked_eval_tree(&script_root, EvalKind::Direct, false, &[])
+                .unwrap_err()
+                .to_string()
+                .contains("publication entry point")
+        );
+        assert!(verify_unlinked_eval_tree(&script_root, EvalKind::None, false, &[]).is_err());
+    }
+
+    #[test]
+    fn eval_root_rejects_caller_binding_spoofs() {
+        let expected = [
+            eval_root_binding("outer", 1, false, false, ClosureVariableKind::Normal),
+            eval_root_binding("inner", 0, true, false, ClosureVariableKind::Normal),
+        ];
+
+        let wrong_name = eval_root_with_descriptors(
+            EvalKind::Direct,
+            vec![(
+                ClosureSource::EvalEnvironment(0),
+                "spoofed",
+                false,
+                false,
+                ClosureVariableKind::Normal,
+            )],
+        );
+        assert!(
+            verify_unlinked_eval_tree(&wrong_name, EvalKind::Direct, false, &expected[..1])
+                .unwrap_err()
+                .to_string()
+                .contains("name disagrees")
+        );
+
+        let wrong_flags = eval_root_with_descriptors(
+            EvalKind::Direct,
+            vec![(
+                ClosureSource::EvalEnvironment(0),
+                "outer",
+                true,
+                false,
+                ClosureVariableKind::Normal,
+            )],
+        );
+        assert!(
+            verify_unlinked_eval_tree(&wrong_flags, EvalKind::Direct, false, &expected[..1])
+                .unwrap_err()
+                .to_string()
+                .contains("flags disagree")
+        );
+
+        let wrong_kind = eval_root_with_descriptors(
+            EvalKind::Direct,
+            vec![(
+                ClosureSource::EvalEnvironment(0),
+                "outer",
+                false,
+                false,
+                ClosureVariableKind::FunctionName,
+            )],
+        );
+        assert!(
+            verify_unlinked_eval_tree(&wrong_kind, EvalKind::Direct, false, &expected[..1])
+                .unwrap_err()
+                .to_string()
+                .contains("flags disagree")
+        );
+
+        let wrong_order = eval_root_with_descriptors(
+            EvalKind::Direct,
+            vec![
+                (
+                    ClosureSource::EvalEnvironment(1),
+                    "inner",
+                    true,
+                    false,
+                    ClosureVariableKind::Normal,
+                ),
+                (
+                    ClosureSource::EvalEnvironment(0),
+                    "outer",
+                    false,
+                    false,
+                    ClosureVariableKind::Normal,
+                ),
+            ],
+        );
+        assert!(
+            verify_unlinked_eval_tree(&wrong_order, EvalKind::Direct, false, &expected)
+                .unwrap_err()
+                .to_string()
+                .contains("caller binding order")
+        );
+
+        let missing = eval_root_with_descriptors(
+            EvalKind::Direct,
+            vec![(
+                ClosureSource::EvalEnvironment(0),
+                "outer",
+                false,
+                false,
+                ClosureVariableKind::Normal,
+            )],
+        );
+        assert!(
+            verify_unlinked_eval_tree(&missing, EvalKind::Direct, false, &expected)
+                .unwrap_err()
+                .to_string()
+                .contains("descriptor count")
+        );
+    }
+
+    #[test]
+    fn eval_root_rejects_global_declarations_and_child_eval_sources() {
+        let declaration = eval_root_with_descriptors(
+            EvalKind::Direct,
+            vec![(
+                ClosureSource::GlobalDeclaration,
+                "declared",
+                false,
+                false,
+                ClosureVariableKind::Normal,
+            )],
+        );
+        assert!(
+            verify_unlinked_eval_tree(&declaration, EvalKind::Direct, false, &[])
+                .unwrap_err()
+                .to_string()
+                .contains("global declaration")
+        );
+
+        let child = eval_root_with_descriptors(
+            EvalKind::None,
+            vec![(
+                ClosureSource::EvalEnvironment(0),
+                "escaped",
+                false,
+                false,
+                ClosureVariableKind::Normal,
+            )],
+        );
+        let root = UnlinkedFunction::new(
+            vec![Instruction::Undefined, Instruction::Return],
+            vec![UnlinkedConstant::child(child)],
+            FunctionMetadata {
+                max_stack: 1,
+                eval_kind: EvalKind::Direct,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(
+            verify_unlinked_eval_tree(&root, EvalKind::Direct, false, &[])
+                .unwrap_err()
+                .to_string()
+                .contains("child bytecode directly referenced")
+        );
+    }
+
+    #[test]
+    fn eval_kind_is_root_only_and_indirect_eval_has_no_caller_bindings() {
+        let child = eval_root_with_descriptors(EvalKind::Direct, Vec::new());
+        let root = UnlinkedFunction::new(
+            vec![Instruction::Undefined, Instruction::Return],
+            vec![UnlinkedConstant::child(child)],
+            FunctionMetadata {
+                max_stack: 1,
+                eval_kind: EvalKind::Direct,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(
+            verify_unlinked_eval_tree(&root, EvalKind::Direct, false, &[])
+                .unwrap_err()
+                .to_string()
+                .contains("non-root bytecode")
+        );
+
+        let indirect = eval_root_with_descriptors(
+            EvalKind::Indirect,
+            vec![(
+                ClosureSource::Global,
+                "globalName",
+                false,
+                false,
+                ClosureVariableKind::Normal,
+            )],
+        );
+        verify_unlinked_eval_tree(&indirect, EvalKind::Indirect, false, &[]).unwrap();
+        let caller_binding =
+            eval_root_binding("caller", 0, false, false, ClosureVariableKind::Normal);
+        assert!(
+            verify_unlinked_eval_tree(&indirect, EvalKind::Indirect, false, &[caller_binding])
+                .unwrap_err()
+                .to_string()
+                .contains("received caller bindings")
+        );
+        assert!(
+            verify_unlinked_eval_tree(&indirect, EvalKind::Indirect, true, &[])
+                .unwrap_err()
+                .to_string()
+                .contains("received caller strictness")
+        );
+
+        let sloppy_direct = eval_root_with_descriptors(EvalKind::Direct, Vec::new());
+        assert!(
+            verify_unlinked_eval_tree(&sloppy_direct, EvalKind::Direct, true, &[])
+                .unwrap_err()
+                .to_string()
+                .contains("lost inherited caller strictness")
+        );
     }
 
     #[test]

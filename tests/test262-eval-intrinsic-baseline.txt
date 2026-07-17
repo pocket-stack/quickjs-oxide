@@ -1,5 +1,5 @@
-# R1u freezes every positive transition caused by the eval-intrinsic shell.
-# Primitive String source execution remains a typed runtime frontier.
+# R1x freezes the eval intrinsic plus independent direct/indirect String roots.
+# Dynamic var/function declarations and nested syntactic direct eval remain typed frontiers.
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
@@ -9,13 +9,13 @@ oxide_profile_sha256=3c5dee6fa18c428a45556488873ab216dd99e9f8859875ce2e4d1475d30
 schema=test262-canonical-classified-v2
 mode=both
 timeout_ms=30000
-paths=31
-variants=55
-runnable=55
-passes=55
-manifest_sha256=ae398ca6148d5babf468e7ba1cdcf956f454d35cdb6f612a3c4444d2b3c97cea
-keys_sha256=5d44a575ee4b36afe94690ac02f6406c292b0d63234ac9f15bc58034ae4d5dc2
+paths=74
+variants=138
+runnable=138
+passes=138
+manifest_sha256=99aa8af497946369babf6f639f5ccfb4c8da5bffb7587f75825ead076556c314
+keys_sha256=17b4c4716f11646c273dc1001ab85ae3ae9a7bcdf47a1996de782433cdea1da6
 nonpass_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-tsv_sha256=9d364c24169423efa49ecfa384c86280f94011b430fa787f72a8214fe867a6f6
-jsonl_sha256=63d5717d85f57c19705196aee0333c18cc270242b37e431622a035a8c34cf2fd
-summary=pass=55
+tsv_sha256=2b3f87db4ae4333cee6ff896c3d0ead2e061fd98000b0673a6fa32ff4acd7ad4
+jsonl_sha256=29e965a24abdd74d70ea0970a8c2afd6ce20f5b52153239f1b15bb7ec651b34e
+summary=pass=138

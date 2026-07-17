@@ -540,6 +540,11 @@ pub struct FunctionMetadata {
     pub closure_count: u16,
     pub max_stack: u16,
     pub strict: bool,
+    /// Whether this bytecode is the synthetic root compiled for an
+    /// ECMAScript eval invocation. Ordinary scripts/functions use `None`;
+    /// nested functions inside eval code also use `None` because only the
+    /// synthetic root consumes an external caller environment.
+    pub eval_kind: EvalKind,
     /// Source-level callable kind used by `Function.prototype.toString` when
     /// debug source has been stripped. This mirrors QuickJS `func_kind`
     /// independently from constructor protocol.
@@ -548,6 +553,15 @@ pub struct FunctionMetadata {
     pub has_prototype: bool,
     /// Base/derived constructor protocol carried by QuickJS bytecode.
     pub constructor_kind: ConstructorKind,
+}
+
+/// QuickJS eval type carried by one synthetic eval bytecode root.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum EvalKind {
+    #[default]
+    None,
+    Direct,
+    Indirect,
 }
 
 /// QuickJS bytecode callable kind. Keeping it in immutable function metadata
@@ -584,6 +598,11 @@ pub enum ClosureSource {
     Global,
     /// Reuse a parent's global binding without re-resolving the name.
     ParentGlobal(u16),
+    /// Attach the synthetic direct-eval root to the exact live caller binding
+    /// at this flattened environment index. This source is valid only on a
+    /// verified direct-eval root and is instantiated from caller-owned
+    /// `VarRef` roots in the same synchronous operation that publishes it.
+    EvalEnvironment(u16),
 }
 
 /// Closure-name representation before and after runtime publication.
@@ -693,6 +712,21 @@ pub struct EvalEnvironment<Name> {
     pub scopes: Box<[EvalScope<Name>]>,
     pub variable_environment: EvalVariableEnvironment,
     pub caller_strict: bool,
+}
+
+/// One exact caller binding imported by a synthetic direct-eval root.
+///
+/// The index of an entry in this list is also the operand carried by
+/// [`ClosureSource::EvalEnvironment`]. `scope` preserves provenance back to
+/// the immutable R1w environment descriptor even though identifier lookup in
+/// the eval compiler only needs innermost-name precedence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalRootBinding<Name> {
+    pub name: Name,
+    pub scope: u16,
+    pub is_lexical: bool,
+    pub is_const: bool,
+    pub kind: ClosureVariableKind,
 }
 
 /// Runtime-owned immutable bytecode, constant pool, and function realm.
@@ -3422,6 +3456,13 @@ impl Heap {
         }
         let mut global_declaration_names = HashMap::new();
         for descriptor in bytecode.closure_variables.iter().copied() {
+            if matches!(descriptor.source, ClosureSource::EvalEnvironment(_))
+                && bytecode.metadata.eval_kind != EvalKind::Direct
+            {
+                return Err(HeapError::Invariant(
+                    "eval-environment closure escaped a direct-eval root",
+                ));
+            }
             if descriptor.kind == ClosureVariableKind::GlobalFunction
                 && (descriptor.is_lexical || descriptor.is_const)
             {
@@ -3469,6 +3510,7 @@ impl Heap {
                 ClosureSource::GlobalDeclaration
                     | ClosureSource::Global
                     | ClosureSource::ParentGlobal(_)
+                    | ClosureSource::EvalEnvironment(_)
             ) || descriptor.kind == ClosureVariableKind::FunctionName;
             let allows_name = requires_name
                 || descriptor.is_lexical
@@ -7514,6 +7556,54 @@ mod tests {
         let published = heap.allocate_function_bytecode(published).unwrap();
         assert_eq!(
             heap.release_function_bytecode(published).unwrap().atoms,
+            vec![name]
+        );
+        heap.release_context(context).unwrap();
+        heap.release_shape(shape).unwrap();
+    }
+
+    #[test]
+    fn eval_environment_closure_is_confined_to_direct_eval_root() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let prototype = leaf(&mut heap, shape);
+        let context = heap
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+                prototype,
+            ))
+            .unwrap();
+        heap.release_object(prototype).unwrap();
+
+        let code: Rc<[Instruction]> = Rc::from([]);
+        let name = Atom::from_raw(59);
+        let make_bytecode = |kind| {
+            let mut bytecode = bytecode(&code, context, Vec::new(), vec![name]);
+            bytecode.metadata.eval_kind = kind;
+            bytecode.metadata.closure_count = 1;
+            bytecode.closure_variables = Rc::from([ClosureVariable {
+                source: ClosureSource::EvalEnvironment(0),
+                name: ClosureVariableName::Atom(name),
+                is_lexical: true,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }]);
+            bytecode
+        };
+
+        for kind in [EvalKind::None, EvalKind::Indirect] {
+            assert_eq!(
+                heap.allocate_function_bytecode(make_bytecode(kind)),
+                Err(HeapError::Invariant(
+                    "eval-environment closure escaped a direct-eval root"
+                ))
+            );
+        }
+        let direct = heap
+            .allocate_function_bytecode(make_bytecode(EvalKind::Direct))
+            .unwrap();
+        assert_eq!(
+            heap.release_function_bytecode(direct).unwrap().atoms,
             vec![name]
         );
         heap.release_context(context).unwrap();

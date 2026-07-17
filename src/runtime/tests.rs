@@ -493,7 +493,33 @@ fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy(
     assert!(!non_string.eval_binding_is_captured_for_test(EvalBindingSource::Local(0)));
     assert!(!non_string.eval_binding_is_captured_for_test(EvalBindingSource::Argument(0)));
 
-    let mut string = RuntimeVmHost::eval_frame_for_test(
+    let mut syntax_error = RuntimeVmHost::eval_frame_for_test(
+        runtime.clone(),
+        context.realm,
+        &child,
+        vec![closure.clone()],
+        vec![Value::Int(10)],
+        vec![Value::Int(20)],
+    )
+    .unwrap();
+    assert!(matches!(
+        VmHost::direct_eval(
+            &mut syntax_error,
+            DirectEvalInvocation {
+                input: Value::String(JsString::from_static(")")),
+                environment: 0,
+                this_value: Value::Int(1),
+                new_target: Value::Int(2),
+                caller_strict: false,
+            },
+        )
+        .unwrap(),
+        Completion::Throw(_)
+    ));
+    assert!(!syntax_error.eval_binding_is_captured_for_test(EvalBindingSource::Local(0)));
+    assert!(!syntax_error.eval_binding_is_captured_for_test(EvalBindingSource::Argument(0)));
+
+    let mut unsupported = RuntimeVmHost::eval_frame_for_test(
         runtime.clone(),
         context.realm,
         &child,
@@ -503,9 +529,9 @@ fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy(
     )
     .unwrap();
     let error = VmHost::direct_eval(
-        &mut string,
+        &mut unsupported,
         DirectEvalInvocation {
-            input: Value::String(JsString::from_static("40 + 2")),
+            input: Value::String(JsString::from_static("var evalVar = 1")),
             environment: 0,
             this_value: Value::Int(1),
             new_target: Value::Int(2),
@@ -514,6 +540,32 @@ fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy(
     )
     .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(!unsupported.eval_binding_is_captured_for_test(EvalBindingSource::Local(0)));
+    assert!(!unsupported.eval_binding_is_captured_for_test(EvalBindingSource::Argument(0)));
+
+    let mut string = RuntimeVmHost::eval_frame_for_test(
+        runtime.clone(),
+        context.realm,
+        &child,
+        vec![closure.clone()],
+        vec![Value::Int(10)],
+        vec![Value::Int(20)],
+    )
+    .unwrap();
+    assert_eq!(
+        VmHost::direct_eval(
+            &mut string,
+            DirectEvalInvocation {
+                input: Value::String(JsString::from_static("40 + 2")),
+                environment: 0,
+                this_value: Value::Int(1),
+                new_target: Value::Int(2),
+                caller_strict: false,
+            },
+        )
+        .unwrap(),
+        Completion::Return(Value::Int(42))
+    );
     assert!(string.eval_binding_is_captured_for_test(EvalBindingSource::Local(0)));
     assert!(string.eval_binding_is_captured_for_test(EvalBindingSource::Argument(0)));
     assert!(string.eval_binding_is_captured_for_test(EvalBindingSource::Closure(0)));

@@ -1,6 +1,6 @@
 # Implementation status
 
-Last audited: 2026-07-17. The completion definition remains
+Last audited: 2026-07-18. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
@@ -15,8 +15,8 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 27,641 passes: 27.09% raw, a 33.08% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 88.96% among the 31,070 variants with a
+  has 28,216 passes: 27.65% raw, a 33.77% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 89.13% among the 31,658 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -145,6 +145,47 @@ claim full parity.
   normalize `this`. Primitive String execution deliberately remains the same
   typed `Unsupported` frontier, so both Test262 vectors are byte-identical to
   R1v.
+  R1x opens the first primitive-String execution slice on a dedicated synthetic
+  Eval root rather than reusing the Script root. Direct roots import the exact
+  ordered caller descriptor as authenticated `EvalEnvironment` closure slots;
+  indirect roots have no caller slots and use the original `%eval%` callable's
+  defining realm and global `this`. Eval-local `let`/`const`, expression and
+  statement completion, caller-cell reads/writes, returned closures, strict
+  inheritance, catchable parse errors, and nested indirect eval now execute.
+  The compiler, heap and publication boundary independently enforce root kind,
+  strictness, binding count/order/names/flags, root-only external slots and
+  child relay topology. Compilation and publication happen before caller
+  Local/Argument cells become VarRefs, matching QuickJS's error ordering; the
+  caller bytecode and materialized roots remain owned through instantiation and
+  execution. Full, StripSource and StripDebug modes retain the semantic names
+  needed by returned external closures.
+
+  The eval gate expands from 31 paths / 55 variants to 74 paths / 138 variants,
+  all passing. Its manifest, TSV and JSONL SHA-256 values are
+  `99aa8af497946369babf6f639f5ccfb4c8da5bffb7587f75825ead076556c314`,
+  `2b3f87db4ae4333cee6ff896c3d0ead2e061fd98000b0673a6fa32ff4acd7ad4`
+  and
+  `29e965a24abdd74d70ea0970a8c2afd6ce20f5b52153239f1b15bb7ec651b34e`.
+  Existing frozen manifests move with the same implementation: RegExp core
+  rises from 438 to 448 passes, RegExp match from 184 to 186, generic String
+  split from 236 to 240, and U+180E from 40 to 50.
+  The exact full-vector join keeps all 102,037 keys, adds 575 passes, and has
+  zero previous-pass regressions. Thirteen formerly typed frontiers become
+  visible runtime failures: ten stop at existing arrow/async/generator or
+  non-simple-parameter grammar boundaries, while three are pinned QuickJS's
+  already-recorded SpiderMonkey staging differences. The complete vector is
+  now 28,216 passes with 34,849 runnable jobs; TSV/JSONL SHA-256 values are
+  `c62f104a2a3801c9b3eca38362fa5075f1fc21564395c58f45dfb23153ef1530`
+  and
+  `526c00942821ff5f153e08d3056627bbe35e7e12e4cde3702a55c220351bbd09`.
+
+  Dynamic eval-created `var`, eval FunctionDeclaration instantiation, nested
+  syntactic direct eval, direct `new.target`, and ill-formed UTF-16 source stay
+  explicit typed frontiers. QuickJS also allocates the callable and VarRef
+  array before capturing caller cells, while this Rust slice materializes the
+  roots first and then allocates the callable; only successful-compilation
+  OOM/GC priority is affected, but exact allocation-order parity remains a
+  later generic closure-instantiation task.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -235,9 +276,9 @@ claim full parity.
 
   Forty-four original matcher cases and 35 targeted observable intrinsic vectors match
   pinned QuickJS, including cross-realm construction/results/errors. The frozen
-  225-path/450-variant Test262 RegExp-core vector now has 438 passes. Ten
-  variants remain runtime failures at missing-`eval` or legacy error-identity
-  boundaries; two reach typed legacy-control frontiers.
+  225-path/450-variant Test262 RegExp-core vector now has 448 passes. R1x
+  executes the five eval consumers; only two typed legacy-control frontiers
+  remain.
   `RegExp.escape` and the remaining advanced
   literal grammar remain intentionally unpublished rather than stubbed. The
   R1a complete join recorded only 669
@@ -302,13 +343,13 @@ claim full parity.
   cross-realm and recursion-guard tests pass; every differential vector
   matches QuickJS 2026-06-04 while the explicit guard test preserves the
   depth frontier above. The frozen
-  104-path/208-variant match vector admits 200 variants: 182 pass, two stop at
-  the independent missing-`eval` runtime frontier, 16 retain the typed
-  object-literal method/accessor parser frontier, and eight remain behind adjacent
-  feature tags. Its TSV and JSONL SHA-256 values are
-  `13811543bada9e1f91e69f9b6aee968812d9dcb67e7aa549fabeb20c8b3c10e6`
+  104-path/208-variant match vector admits 202 variants: 186 pass, 16 retain
+  the typed object-literal method/accessor parser frontier, and six remain
+  behind adjacent feature tags. R1x executes the legacy eval consumer. Its TSV
+  and JSONL SHA-256 values are
+  `ed1909a11d44f134be293181009e5a4fcb61b52128b678fa2333b22fbc2eb165`
   and
-  `cfeef60ff5c832df3591e88548042ff3881f771743fd10b15a324a95b0aee5a9`.
+  `c6648090e1353fe6a1146b72238069f60f7eacd70ad19789baa76634e1620871`.
   Admitting `Symbol.match` brings the conservative profile to 18 tags with
   SHA-256
   `cc10293aa847f5a449ac2b039709dff98d264b672dddc8828b8e17d8b7e12d9a`.
@@ -346,13 +387,13 @@ claim full parity.
   and
   `e9c24f1210c1e1b27225e94bdd0cb56d3daa8f5c7b09873492c314a51c8cc490`.
   The independent 127-path/254-variant String split gate now admits 244
-  variants and records 236 passes, four missing-global-`eval` runtime failures,
-  eight adjacent feature outcomes, two IsHTMLDDA host outcomes, and four typed
-  parser frontiers. R1p resolves the two Annex B `\k` separator variants. Its
+  variants and records 240 passes, eight adjacent feature outcomes, two
+  IsHTMLDDA host outcomes, and four typed parser frontiers. R1p resolves the two
+  Annex B `\k` separator variants; R1x executes the two eval consumers. Its
   current TSV/JSONL SHA-256 values are
-  `d8befca75b131842c564099071f3558aa08150102a87679b20f0ca2f83c1a1fd`
+  `60192320eef4ecb542e58f633a3505364d7d9c76aa2c0dd2b29f9f2968f3004f`
   and
-  `7039dfbd827a0db6465c8837372bf4b0419aa9f73119b2828aaced4cce749ae4`.
+  `a9a2403ff24e52a2ac64adfcef3cdcbbac8bc7bf9e7a947dbe78d9c691f0903c`.
 
   The exact R1d-to-R1e full join has only 90 `fail-runtime -> pass`
   transitions, moving the complete vector to 25,119 passes while leaving
@@ -396,7 +437,7 @@ claim full parity.
   `unicode_restricted_octal_escape.js` variants to pass while preserving typed
   Unsupported results until the reference executor landed. R1k completes that
   path, so the R1k RegExp-core gate moved from 430 at R1a to 434, with six
-  typed frontier outcomes. Later RegExp slices lead to the 438-pass current
+  typed frontier outcomes. Later RegExp slices and R1x lead to the 448-pass current
   vector summarized above.
 
   The exact R1e-to-R1f full join matches all 102,037 keys with no missing,
@@ -1349,8 +1390,8 @@ claim full parity.
   (`add_global_variables`), plus 36383-36942 (function declaration parsing,
   scoped lexical creation, Annex source writes, and argument/local hoist
   attachment)
-  in QuickJS 2026-06-04. Direct/indirect eval declaration environments,
-  async/generator declarations, `for-await`, general
+  in QuickJS 2026-06-04. Sloppy eval-created var/function declaration
+  environments, async/generator declarations, `for-await`, general
   assignment/object/default/rest/nested destructuring, single-statement
   lexical declarations, and catch/class scopes remain explicit boundaries
   rather than falling back to local or ordinary global storage.
@@ -2211,7 +2252,8 @@ claim full parity.
   vector reached 234 passes, four independent missing-global-`eval` runtime
   failures, eight adjacent feature outcomes, two IsHTMLDDA host outcomes and
   six typed parser frontiers. R1p resolves two Annex B `\k` variants, so the
-  current vector has 236 passes and four parser frontiers. Declaring
+  R1x executes the two eval consumers, so the current vector has 240 passes and
+  four parser frontiers. Declaring
   `Symbol.split` in the conservative
   capability profile originally meant only that the well-known symbol and
   generic/custom delegation were audited; R1e completes the currently
@@ -2833,7 +2875,7 @@ The language slice is intentionally narrow. Async/generator declarations,
 `for-await`, general assignment/object/default/rest/nested destructuring,
 other general assignment targets, module resolution, object method/accessor
 definitions and their home-object semantics, non-simple parameter lists,
-direct/indirect eval declaration environments, arrow/async/generator
+sloppy eval-created var/function declaration environments, arrow/async/generator
 functions, `with`, and callable Proxy classes are not yet implemented.
 Unsupported declaration contexts are rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` is currently
@@ -3064,8 +3106,12 @@ subsequent R1k-R1o wiring leaves the parent at 9,677 lines. R1p moves result
 construction into `runtime/intrinsics/regexp/result.rs`, so named captures add
 zero lines to `runtime.rs`. R1u keeps eval bootstrap and dispatch semantics in
 `runtime/intrinsics/eval.rs`; the parent receives only the two-line bootstrap
-call and remains 9,679 lines. The feature algorithms do not return to the
-parent monolith. The
+call and remains 9,679 lines. R1w's descriptor plumbing reached 9,692 lines;
+R1x keeps String-eval compilation, realm selection and closure instantiation in
+`runtime/intrinsics/eval.rs`, publication checks in
+`runtime/bytecode_publish.rs`, and frame capture in `runtime/vm_host.rs`. The
+parent is 9,701 lines rather than absorbing those algorithms. The feature
+algorithms do not return to the parent monolith. The
 RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage

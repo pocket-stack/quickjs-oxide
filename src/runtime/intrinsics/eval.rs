@@ -1,7 +1,23 @@
 use super::*;
+use crate::compiler::{EvalCompileContext, compile_unlinked_eval_with_filename};
+use crate::heap::{EvalKind, EvalRootBinding};
 use crate::vm::DirectEvalInvocation;
 
 impl Runtime {
+    /// Publish a synthetic eval root only after the eval-specific verifier has
+    /// matched every external closure slot against the invocation environment.
+    fn publish_unlinked_eval_function(
+        &self,
+        realm: ContextId,
+        function: UnlinkedFunction,
+        kind: EvalKind,
+        caller_strict: bool,
+        bindings: &[EvalRootBinding<JsString>],
+    ) -> Result<FunctionBytecodeRef, RuntimeError> {
+        bytecode_publish::verify_unlinked_eval_tree(&function, kind, caller_strict, bindings)?;
+        self.publish_verified_unlinked_function(realm, function)
+    }
+
     pub(in crate::runtime) fn initialize_eval_intrinsic(
         &self,
         realm: ContextId,
@@ -33,6 +49,7 @@ impl Runtime {
 
     pub(in crate::runtime) fn call_global_eval(
         &self,
+        realm: ContextId,
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
@@ -41,51 +58,67 @@ impl Runtime {
                 "global eval used an unexpected native invocation protocol",
             ));
         };
-        Self::evaluate_eval_argument(
-            arguments
-                .readable
-                .first()
-                .cloned()
-                .unwrap_or(Value::Undefined),
+        let input = arguments
+            .readable
+            .first()
+            .cloned()
+            .unwrap_or(Value::Undefined);
+        let Value::String(source) = input else {
+            return Ok(Completion::Return(input));
+        };
+        let global_object = self.global_object_for_realm(realm)?;
+        self.execute_string_eval(
+            realm,
+            &source,
+            EvalCompileContext::indirect(),
+            &[],
+            Value::Object(global_object),
         )
     }
 
     /// Execute the original-eval branch selected by QuickJS `OP_eval` after
     /// realm-local identity matching. This deliberately bypasses the native
-    /// `%eval%` call frame so future String execution can see the bytecode
-    /// caller's linked lexical environment.
-    pub(in crate::runtime) fn call_direct_eval_original(
+    /// `%eval%` call frame so String execution sees the bytecode caller's
+    /// linked lexical environment.
+    pub(in crate::runtime) fn call_direct_eval_original<F>(
         &self,
+        realm: ContextId,
         invocation: DirectEvalInvocation,
-        environment: Option<crate::runtime::vm_host::MaterializedEvalEnvironment>,
-    ) -> Result<Completion, RuntimeError> {
+        environment: Option<crate::runtime::vm_host::PreparedEvalEnvironment>,
+        materialize: F,
+    ) -> Result<Completion, RuntimeError>
+    where
+        F: FnOnce(
+            crate::runtime::vm_host::PreparedEvalEnvironment,
+        ) -> Result<crate::runtime::vm_host::MaterializedEvalEnvironment, Error>,
+    {
         let DirectEvalInvocation {
             input,
             environment: environment_index,
-            this_value: _,
+            this_value,
             new_target: _,
             caller_strict,
         } = invocation;
         if !matches!(input, Value::String(_)) {
             if environment.is_some() {
                 return Err(RuntimeError::Invariant(
-                    "non-String direct eval materialized a caller environment",
+                    "non-String direct eval prepared a caller environment",
                 ));
             }
             return Ok(Completion::Return(input));
         }
 
         let environment = environment.ok_or(RuntimeError::Invariant(
-            "String direct eval has no materialized caller environment",
+            "String direct eval has no prepared caller environment",
         ))?;
         if environment.index != environment_index {
             return Err(RuntimeError::Invariant(
-                "materialized eval environment has the wrong bytecode index",
+                "prepared eval environment has the wrong bytecode index",
             ));
         }
         if environment.descriptor.caller_strict != caller_strict {
             return Err(RuntimeError::Invariant(
-                "materialized eval environment has the wrong caller strictness",
+                "prepared eval environment has the wrong caller strictness",
             ));
         }
         let binding_count = environment
@@ -94,15 +127,44 @@ impl Runtime {
             .iter()
             .map(|scope| scope.bindings.len())
             .sum::<usize>();
+        let expected_descriptor = environment.descriptor.clone();
+        let source = Self::eval_source_text(match &input {
+            Value::String(source) => source,
+            _ => unreachable!("String direct eval was checked above"),
+        })?;
+        let bindings = self.direct_eval_root_bindings(realm, &environment)?;
+        let function = match self.compile_eval_in_realm(
+            realm,
+            &source,
+            DEFAULT_EVAL_FILENAME,
+            EvalCompileContext::direct(caller_strict, bindings.clone()),
+        )? {
+            Compilation::Published(function) => function,
+            Compilation::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        // QuickJS parses and publishes eval bytecode before `js_closure2`
+        // attaches it to caller VarRefs. Preserve that error/GC ordering by
+        // invoking the host's capture step only after successful compilation.
+        let environment = materialize(environment).map_err(RuntimeError::Engine)?;
+        if environment.index != environment_index || environment.descriptor != expected_descriptor {
+            return Err(RuntimeError::Invariant(
+                "materialized eval environment disagrees with its prepared descriptor",
+            ));
+        }
         if environment.roots.len() != binding_count {
             return Err(RuntimeError::Invariant(
                 "materialized eval roots disagree with the environment descriptor",
             ));
         }
-        Err(RuntimeError::Engine(Error::new(
-            ErrorKind::Unsupported,
-            "eval source execution is not implemented yet",
-        )))
+        let callable = self.new_eval_bytecode_closure(
+            realm,
+            &function,
+            EvalKind::Direct,
+            &bindings,
+            &environment.roots,
+        )?;
+        self.call_internal(realm, &callable, this_value, &[])
     }
 
     pub(in crate::runtime) fn is_original_eval(
@@ -131,13 +193,220 @@ impl Runtime {
         ))
     }
 
-    fn evaluate_eval_argument(value: Value) -> Result<Completion, RuntimeError> {
-        if matches!(value, Value::String(_)) {
+    fn direct_eval_root_bindings(
+        &self,
+        realm: ContextId,
+        environment: &crate::runtime::vm_host::PreparedEvalEnvironment,
+    ) -> Result<Vec<EvalRootBinding<JsString>>, RuntimeError> {
+        if !environment.caller_bytecode.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("direct eval caller bytecode"));
+        }
+        let caller_realm = self
+            .snapshot_function_bytecode(&environment.caller_bytecode)?
+            .realm;
+        if caller_realm != realm {
+            return Err(RuntimeError::Invariant(
+                "direct eval environment belongs to a different caller realm",
+            ));
+        }
+
+        let binding_count = environment
+            .descriptor
+            .scopes
+            .iter()
+            .map(|scope| scope.bindings.len())
+            .sum();
+        let mut bindings = Vec::with_capacity(binding_count);
+        let state = self.0.state.borrow();
+        for (scope_index, descriptor_scope) in environment.descriptor.scopes.iter().enumerate() {
+            let scope = u16::try_from(scope_index).map_err(|_| {
+                RuntimeError::Invariant("direct eval scope index exceeds bytecode range")
+            })?;
+            for binding in &descriptor_scope.bindings {
+                bindings.push(EvalRootBinding {
+                    name: state.atoms.to_js_string(binding.name)?,
+                    scope,
+                    is_lexical: binding.is_lexical,
+                    is_const: binding.is_const,
+                    kind: binding.kind,
+                });
+            }
+        }
+        Ok(bindings)
+    }
+
+    fn execute_string_eval(
+        &self,
+        realm: ContextId,
+        source: &JsString,
+        context: EvalCompileContext,
+        environment_roots: &[VarRefRoot],
+        this_value: Value,
+    ) -> Result<Completion, RuntimeError> {
+        let source = Self::eval_source_text(source)?;
+        let kind = context.kind;
+        let bindings = context.bindings.clone();
+        let function =
+            match self.compile_eval_in_realm(realm, &source, DEFAULT_EVAL_FILENAME, context)? {
+                Compilation::Published(function) => function,
+                Compilation::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+        let callable =
+            self.new_eval_bytecode_closure(realm, &function, kind, &bindings, environment_roots)?;
+        self.call_internal(realm, &callable, this_value, &[])
+    }
+
+    fn eval_source_text(source: &JsString) -> Result<String, RuntimeError> {
+        if !source.is_well_formed() {
             return Err(RuntimeError::Engine(Error::new(
                 ErrorKind::Unsupported,
-                "eval source execution is not implemented yet",
+                "eval source containing an unpaired UTF-16 surrogate is not implemented yet",
             )));
         }
-        Ok(Completion::Return(value))
+        // The well-formedness check makes this conversion exact despite the
+        // helper's historical name.
+        Ok(source.to_utf8_lossy())
+    }
+
+    fn compile_eval_in_realm(
+        &self,
+        realm: ContextId,
+        source: &str,
+        filename: &str,
+        context: EvalCompileContext,
+    ) -> Result<Compilation, RuntimeError> {
+        self.0.state.borrow().heap.context(realm)?;
+        let debug_info = self.debug_info_mode();
+        let kind = context.kind;
+        let caller_strict = context.caller_strict;
+        let bindings = context.bindings.clone();
+        let function =
+            match compile_unlinked_eval_with_filename(source, filename, debug_info, context) {
+                Ok(function) => function,
+                Err(error) => {
+                    let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
+                        return Err(RuntimeError::Engine(error));
+                    };
+                    let explicit_location = if error.kind() == ErrorKind::Syntax {
+                        if let Some(span) = error.span() {
+                            let position = QuickJsSourceLocator::new(source)
+                                .locate_byte_offset(span.start.byte_offset)
+                                .map_err(|_| {
+                                    RuntimeError::Invariant(
+                                        "eval syntax-error byte offset is invalid for its source",
+                                    )
+                                })?;
+                            Some(ExplicitBacktraceLocation {
+                                filename: JsString::try_from_utf8(filename)?,
+                                position,
+                            })
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    let exception = if error.kind() == ErrorKind::Syntax {
+                        self.new_native_error_without_backtrace_from_error(realm, kind, &error)?
+                    } else {
+                        self.new_native_error_from_error(realm, kind, &error)?
+                    };
+                    self.ensure_error_backtrace(&exception, false, explicit_location)?;
+                    return Ok(Compilation::Throw(exception));
+                }
+            };
+        Ok(Compilation::Published(
+            self.publish_unlinked_eval_function(realm, function, kind, caller_strict, &bindings)?,
+        ))
+    }
+
+    fn new_eval_bytecode_closure(
+        &self,
+        realm: ContextId,
+        function: &FunctionBytecodeRef,
+        kind: EvalKind,
+        bindings: &[EvalRootBinding<JsString>],
+        environment_roots: &[VarRefRoot],
+    ) -> Result<CallableRef, RuntimeError> {
+        let PublishedFunctionSnapshot {
+            closure_variables,
+            metadata,
+            realm: function_realm,
+            ..
+        } = self.snapshot_function_bytecode(function)?;
+        if function_realm != realm || metadata.eval_kind != kind {
+            return Err(RuntimeError::Invariant(
+                "published eval bytecode disagrees with its invocation realm or kind",
+            ));
+        }
+        match kind {
+            EvalKind::Direct if environment_roots.len() == bindings.len() => {}
+            EvalKind::Indirect if environment_roots.is_empty() && bindings.is_empty() => {}
+            EvalKind::None => {
+                return Err(RuntimeError::Invariant(
+                    "ordinary bytecode reached eval closure instantiation",
+                ));
+            }
+            EvalKind::Direct | EvalKind::Indirect => {
+                return Err(RuntimeError::Invariant(
+                    "eval invocation roots disagree with its compiler environment",
+                ));
+            }
+        }
+
+        let mut slots = Vec::with_capacity(closure_variables.len());
+        for descriptor in closure_variables.iter().copied() {
+            let ClosureVariableName::Atom(name) = descriptor.name else {
+                return Err(RuntimeError::Invariant(
+                    "published eval closure descriptor has no atom",
+                ));
+            };
+            let root = match descriptor.source {
+                ClosureSource::EvalEnvironment(index) => {
+                    if kind != EvalKind::Direct {
+                        return Err(RuntimeError::Invariant(
+                            "indirect eval retained a caller-environment descriptor",
+                        ));
+                    }
+                    let expected =
+                        bindings
+                            .get(usize::from(index))
+                            .ok_or(RuntimeError::Invariant(
+                                "eval environment closure index is out of bounds",
+                            ))?;
+                    let published_name = self.0.state.borrow().atoms.to_js_string(name)?;
+                    if published_name != expected.name
+                        || descriptor.is_lexical != expected.is_lexical
+                        || descriptor.is_const != expected.is_const
+                        || descriptor.kind != expected.kind
+                    {
+                        return Err(RuntimeError::Invariant(
+                            "published eval closure disagrees with its caller binding",
+                        ));
+                    }
+                    let root = environment_roots.get(usize::from(index)).ok_or(
+                        RuntimeError::Invariant("eval environment root index is out of bounds"),
+                    )?;
+                    self.validate_var_ref_metadata(root, descriptor)?;
+                    root.clone()
+                }
+                ClosureSource::Global => self.resolve_global_var(realm, name)?,
+                ClosureSource::GlobalDeclaration => {
+                    return Err(RuntimeError::Invariant(
+                        "R1x eval bytecode retained a global declaration descriptor",
+                    ));
+                }
+                ClosureSource::ParentLocal(_)
+                | ClosureSource::ParentArgument(_)
+                | ClosureSource::ParentClosure(_)
+                | ClosureSource::ParentGlobal(_) => {
+                    return Err(RuntimeError::Invariant(
+                        "eval root closure descriptor used a child source",
+                    ));
+                }
+            };
+            slots.push(root);
+        }
+        self.new_bytecode_closure_with_slots(realm, function, &slots)
     }
 }

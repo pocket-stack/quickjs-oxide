@@ -1,6 +1,5 @@
 # R1t freezes the complete U+180E slice after declaring only u180e and
-# auditing its single parse-negative path. Its five eval consumers now reach
-# the typed String-source execution frontier.
+# auditing its single parse-negative path. R1x executes all five eval consumers.
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
@@ -13,10 +12,10 @@ timeout_ms=30000
 paths=25
 variants=50
 runnable=50
-passes=40
+passes=50
 manifest_sha256=e7a63ec25704f7658780ab5e10fa24fcca834bc87dfb5557d0262cb296a4db85
 keys_sha256=b6f959d6eec974b063893fcdbb144707ae485cdc7bb8b870b2d982fefb4b29ad
-nonpass_sha256=05aa223831bf0a7a35e31b0bc93ff969151daefcd4cd6cc6843184ba34912574
-tsv_sha256=1103ac8e51327ed87c71f99bc64ba89401e3d78aa1d2d3aa2e9617eeeb31edd3
-jsonl_sha256=aecf496d2ef9121d609ec28ce98c628919b7f6c2d6d4acb1a9e6b3612cb1a6bb
-summary=pass=40 unsupported-runtime=10
+nonpass_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+tsv_sha256=730ef2b9f9c5fdec5cf9cd2ffa849ae47ae00473057f87611ba8acd1335da94b
+jsonl_sha256=1f7dcbb1d48fa14e84c77c0448938f2a4d5ffd10c083352e65008f60d1c22c2f
+summary=pass=50

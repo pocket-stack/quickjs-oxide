@@ -8,14 +8,26 @@ use crate::bytecode::ArgumentsKind;
 use crate::heap::{EvalBinding, EvalBindingSource, EvalVariableEnvironment};
 use crate::vm::{CallInput, DirectEvalInvocation, Vm, VmHost};
 
+/// Validated caller state retained while primitive-String eval is compiled.
+///
+/// No frame binding has been converted to a VarRef yet. This preserves
+/// QuickJS's ordering: parse/publish errors occur before closure capture.
+pub(in crate::runtime) struct PreparedEvalEnvironment {
+    pub(in crate::runtime) index: u16,
+    pub(in crate::runtime) caller_bytecode: FunctionBytecodeRef,
+    pub(in crate::runtime) descriptor: EvalEnvironment<Atom>,
+}
+
 /// Live cells paired with one immutable caller-environment descriptor.
 ///
 /// Roots are flattened in the descriptor's scope/binding order. The
 /// descriptor itself preserves the lexical boundaries and declaration target
-/// needed by the future eval compiler, while the roots keep the caller's
-/// actual cells live for that compilation/execution interval.
+/// authenticated by the eval compiler, while the roots keep the caller's
+/// actual cells live for the instantiation/execution interval.
 pub(in crate::runtime) struct MaterializedEvalEnvironment {
     pub(in crate::runtime) index: u16,
+    /// Retain the owner of descriptor atoms through final instantiation.
+    pub(in crate::runtime) _caller_bytecode: FunctionBytecodeRef,
     pub(in crate::runtime) descriptor: EvalEnvironment<Atom>,
     pub(in crate::runtime) roots: Box<[VarRefRoot]>,
 }
@@ -126,6 +138,7 @@ pub(super) struct RuntimeVmHost {
     runtime: Runtime,
     active_frame_token: ActiveFrameToken,
     current_realm: ContextId,
+    current_bytecode: Option<FunctionBytecodeRef>,
     /// Current callee retained for sloppy mapped `arguments.callee`.
     /// Detached host-only tests do not execute the arguments opcode.
     current_function: Option<ObjectRef>,
@@ -159,6 +172,7 @@ impl RuntimeVmHost {
             runtime,
             active_frame_token: ActiveFrameToken(0),
             current_realm,
+            current_bytecode: None,
             current_function: None,
             actual_argument_count: 0,
             constants: Rc::from([]),
@@ -183,7 +197,7 @@ impl RuntimeVmHost {
         locals: Vec<Value>,
     ) -> Result<Self, RuntimeError> {
         let PublishedFunctionSnapshot {
-            root: _,
+            root,
             code: _,
             constants,
             argument_definitions,
@@ -211,6 +225,7 @@ impl RuntimeVmHost {
             runtime,
             active_frame_token: ActiveFrameToken(0),
             current_realm,
+            current_bytecode: Some(root),
             current_function: None,
             actual_argument_count: arguments.len(),
             constants,
@@ -432,21 +447,38 @@ impl RuntimeVmHost {
         Ok(())
     }
 
-    fn materialize_direct_eval_environment(
-        &mut self,
+    fn prepare_direct_eval_environment(
+        &self,
         index: u16,
         caller_strict: bool,
-    ) -> Result<MaterializedEvalEnvironment, Error> {
+    ) -> Result<PreparedEvalEnvironment, Error> {
         let descriptor = self
             .eval_environments
             .get(usize::from(index))
             .cloned()
             .ok_or_else(|| Error::internal("eval environment index is out of bounds"))?;
-        // Validate every immutable source before converting any direct frame
-        // slot to a VarRef. Corrupt published bytecode therefore cannot leave
-        // a partially captured frame behind.
+        // Authenticate every immutable source before compilation. Corrupt
+        // published bytecode must fail without compiling attacker-selected
+        // names or converting any frame binding to a VarRef.
         self.validate_eval_environment(&descriptor, caller_strict)?;
+        Ok(PreparedEvalEnvironment {
+            index,
+            caller_bytecode: self.current_bytecode.clone().ok_or_else(|| {
+                Error::internal("direct eval frame did not retain its caller bytecode")
+            })?,
+            descriptor,
+        })
+    }
 
+    fn materialize_direct_eval_environment(
+        &mut self,
+        prepared: PreparedEvalEnvironment,
+    ) -> Result<MaterializedEvalEnvironment, Error> {
+        let PreparedEvalEnvironment {
+            index,
+            caller_bytecode,
+            descriptor,
+        } = prepared;
         let binding_count = descriptor
             .scopes
             .iter()
@@ -487,6 +519,7 @@ impl RuntimeVmHost {
         }
         Ok(MaterializedEvalEnvironment {
             index,
+            _caller_bytecode: caller_bytecode,
             descriptor,
             roots: roots.into_boxed_slice(),
         })
@@ -933,7 +966,7 @@ impl Runtime {
         let callee_global = self.global_object_for_realm(realm)?;
         let active_frame = self.push_bytecode_active_frame(
             callable.as_object().clone(),
-            root,
+            root.clone(),
             realm,
             metadata.strict,
         )?;
@@ -965,6 +998,7 @@ impl Runtime {
             runtime: self.clone(),
             active_frame_token: active_frame.token(),
             current_realm: realm,
+            current_bytecode: Some(root),
             current_function: Some(callable.as_object().clone()),
             actual_argument_count: arguments.len(),
             constants,
@@ -1425,6 +1459,11 @@ impl VmHost for RuntimeVmHost {
                 ClosureSource::GlobalDeclaration | ClosureSource::Global => {
                     return Err(Error::internal(
                         "child closure attempted to resolve a root global descriptor",
+                    ));
+                }
+                ClosureSource::EvalEnvironment(_) => {
+                    return Err(Error::internal(
+                        "child closure attempted to resolve an eval-root descriptor",
                     ));
                 }
             };
@@ -2060,15 +2099,18 @@ impl VmHost for RuntimeVmHost {
 
     fn direct_eval(&mut self, invocation: DirectEvalInvocation) -> Result<Completion, Error> {
         let environment = if matches!(invocation.input, Value::String(_)) {
-            Some(self.materialize_direct_eval_environment(
+            Some(self.prepare_direct_eval_environment(
                 invocation.environment,
                 invocation.caller_strict,
             )?)
         } else {
             None
         };
-        self.runtime
-            .call_direct_eval_original(invocation, environment)
+        let runtime = self.runtime.clone();
+        runtime
+            .call_direct_eval_original(self.current_realm, invocation, environment, |prepared| {
+                self.materialize_direct_eval_environment(prepared)
+            })
             .map_err(runtime_error_to_vm_error)
     }
 
