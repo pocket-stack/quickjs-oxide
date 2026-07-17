@@ -7,15 +7,16 @@ use crate::function::{
 };
 use crate::heap::{
     ArrayJoinKind, ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName,
-    ConstructorKind, DynamicFunctionKind, FunctionDebugPosition, FunctionMetadata, NativeCProto,
-    NativeFunctionId, ObjectPayload, PrimitiveKind, PrimitiveObjectData,
+    ConstructorKind, DynamicFunctionKind, EvalBinding, EvalBindingSource, EvalEnvironment,
+    EvalScope, EvalScopeKind, EvalVariableEnvironment, FunctionDebugPosition, FunctionMetadata,
+    NativeCProto, NativeFunctionId, ObjectPayload, PrimitiveKind, PrimitiveObjectData,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField,
     OrdinaryPropertyDescriptor, PropertyKey, WellKnownSymbol,
 };
 use crate::value::{JsString, JsStringError, Value};
-use crate::vm::{Completion, IteratorCloseOutcome, Vm, VmHost};
+use crate::vm::{Completion, DirectEvalInvocation, IteratorCloseOutcome, Vm, VmHost};
 
 use super::vm_host::RuntimeVmHost;
 use super::{
@@ -351,6 +352,172 @@ fn direct_eval_identity_is_realm_local_and_independent_of_the_global_property() 
         .unwrap()
     );
     assert!(VmHost::is_original_eval(&mut second_host, &second_value).unwrap());
+}
+
+#[test]
+fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy() {
+    let runtime = Runtime::new();
+    let context = runtime.new_context();
+    let environment = EvalEnvironment {
+        scopes: vec![
+            EvalScope {
+                kind: EvalScopeKind::Block,
+                bindings: vec![EvalBinding {
+                    name: JsString::from_static("localBinding"),
+                    source: EvalBindingSource::Local(0),
+                    is_lexical: true,
+                    is_const: false,
+                    kind: ClosureVariableKind::Normal,
+                }]
+                .into_boxed_slice(),
+            },
+            EvalScope {
+                kind: EvalScopeKind::FunctionBody,
+                bindings: Box::new([]),
+            },
+            EvalScope {
+                kind: EvalScopeKind::FunctionRoot,
+                bindings: vec![EvalBinding {
+                    name: JsString::from_static("argumentBinding"),
+                    source: EvalBindingSource::Argument(0),
+                    is_lexical: false,
+                    is_const: false,
+                    kind: ClosureVariableKind::Normal,
+                }]
+                .into_boxed_slice(),
+            },
+            EvalScope {
+                kind: EvalScopeKind::ProgramBody,
+                bindings: vec![EvalBinding {
+                    name: JsString::from_static("outerBinding"),
+                    source: EvalBindingSource::Closure(0),
+                    is_lexical: false,
+                    is_const: false,
+                    kind: ClosureVariableKind::Normal,
+                }]
+                .into_boxed_slice(),
+            },
+            EvalScope {
+                kind: EvalScopeKind::FunctionRoot,
+                bindings: Box::new([]),
+            },
+        ]
+        .into_boxed_slice(),
+        variable_environment: EvalVariableEnvironment::Scope(2),
+        caller_strict: false,
+    };
+    let child = UnlinkedFunction::new_with_closure_variables(
+        vec![
+            Instruction::Undefined,
+            Instruction::Eval {
+                argument_count: 0,
+                environment: 0,
+            },
+            Instruction::Return,
+        ],
+        vec![
+            UnlinkedConstant::primitive(Value::String(JsString::from_static("outerBinding")))
+                .unwrap(),
+        ],
+        FunctionMetadata {
+            argument_count: 1,
+            local_count: 1,
+            closure_count: 1,
+            max_stack: 1,
+            ..FunctionMetadata::default()
+        },
+        vec![ClosureVariable {
+            source: ClosureSource::ParentLocal(0),
+            name: ClosureVariableName::Constant(0),
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+        }],
+    )
+    .with_variable_definitions(
+        vec![UnlinkedVariableDefinition::ordinary(Some(
+            JsString::from_static("argumentBinding"),
+        ))],
+        vec![UnlinkedVariableDefinition::lexical(
+            Some(JsString::from_static("localBinding")),
+            false,
+        )],
+    )
+    .with_eval_environments(vec![environment]);
+    let parent = UnlinkedFunction::new(
+        vec![Instruction::Undefined, Instruction::Return],
+        vec![UnlinkedConstant::child(child)],
+        FunctionMetadata {
+            local_count: 1,
+            max_stack: 1,
+            ..FunctionMetadata::default()
+        },
+    )
+    .with_variable_definitions(
+        Vec::new(),
+        vec![UnlinkedVariableDefinition::ordinary(Some(
+            JsString::from_static("outerBinding"),
+        ))],
+    );
+    let parent = runtime
+        .publish_unlinked_function(context.realm, parent)
+        .unwrap();
+    let child = runtime.test_child_function_bytecode(&parent, 0).unwrap();
+    let closure = runtime
+        .new_var_ref(Value::Int(30), false, false, ClosureVariableKind::Normal)
+        .unwrap();
+
+    let mut non_string = RuntimeVmHost::eval_frame_for_test(
+        runtime.clone(),
+        context.realm,
+        &child,
+        vec![closure.clone()],
+        vec![Value::Int(10)],
+        vec![Value::Int(20)],
+    )
+    .unwrap();
+    assert_eq!(
+        VmHost::direct_eval(
+            &mut non_string,
+            DirectEvalInvocation {
+                input: Value::Int(42),
+                environment: u16::MAX,
+                this_value: Value::Int(1),
+                new_target: Value::Int(2),
+                caller_strict: false,
+            },
+        )
+        .unwrap(),
+        Completion::Return(Value::Int(42))
+    );
+    assert!(!non_string.eval_binding_is_captured_for_test(EvalBindingSource::Local(0)));
+    assert!(!non_string.eval_binding_is_captured_for_test(EvalBindingSource::Argument(0)));
+
+    let mut string = RuntimeVmHost::eval_frame_for_test(
+        runtime.clone(),
+        context.realm,
+        &child,
+        vec![closure.clone()],
+        vec![Value::Int(10)],
+        vec![Value::Int(20)],
+    )
+    .unwrap();
+    let error = VmHost::direct_eval(
+        &mut string,
+        DirectEvalInvocation {
+            input: Value::String(JsString::from_static("40 + 2")),
+            environment: 0,
+            this_value: Value::Int(1),
+            new_target: Value::Int(2),
+            caller_strict: false,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(string.eval_binding_is_captured_for_test(EvalBindingSource::Local(0)));
+    assert!(string.eval_binding_is_captured_for_test(EvalBindingSource::Argument(0)));
+    assert!(string.eval_binding_is_captured_for_test(EvalBindingSource::Closure(0)));
+    assert_eq!(runtime.read_var_ref(&closure).unwrap(), Value::Int(30));
 }
 
 #[test]
@@ -11850,7 +12017,7 @@ fn function_closures_share_runtime_rooted_var_ref_cells() {
             ..FunctionMetadata::default()
         },
         vec![ClosureVariable {
-            source: ClosureSource::ParentClosure(0),
+            source: ClosureSource::ParentLocal(0),
             name: ClosureVariableName::None,
             is_lexical: false,
             is_const: false,
@@ -11860,27 +12027,18 @@ fn function_closures_share_runtime_rooted_var_ref_cells() {
     let root = runtime
         .publish_unlinked_function(
             context.realm,
-            UnlinkedFunction::new_with_closure_variables(
+            UnlinkedFunction::new(
                 vec![Instruction::Undefined, Instruction::Return],
-                vec![
-                    UnlinkedConstant::child(child),
-                    UnlinkedConstant::primitive(Value::String(JsString::from_static(
-                        "sharedCellRoot",
-                    )))
-                    .unwrap(),
-                ],
+                vec![UnlinkedConstant::child(child)],
                 FunctionMetadata {
-                    closure_count: 1,
+                    local_count: 1,
                     max_stack: 1,
                     ..FunctionMetadata::default()
                 },
-                vec![ClosureVariable {
-                    source: ClosureSource::Global,
-                    name: ClosureVariableName::Constant(1),
-                    is_lexical: false,
-                    is_const: false,
-                    kind: ClosureVariableKind::Normal,
-                }],
+            )
+            .with_variable_definitions(
+                Vec::new(),
+                vec![UnlinkedVariableDefinition::ordinary(None)],
             ),
         )
         .unwrap();

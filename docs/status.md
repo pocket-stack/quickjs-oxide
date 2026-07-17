@@ -130,6 +130,21 @@ claim full parity.
   optional-call boundaries. Both the focused
   55-variant report and the complete 102,037-variant Test262 reports are
   byte-identical to R1u, as required for this semantic-path milestone.
+  R1w links each direct-eval instruction to an immutable caller-environment
+  descriptor modeled on QuickJS's live scope chain. The compiler walks from
+  the call scope through every lexical parent and function-definition scope,
+  records current-frame Local/Argument sources and named ancestor Closure
+  relays, forces `arguments` and private function-name bindings, deduplicates
+  equal call-site descriptors, and marks eval-visible locals captured so their
+  existing `CloseLocal` lifecycle is used. Publication owns every retained
+  name atom and rejects unreferenced tables, malformed function segments,
+  source-kind crossings, global relay disguises, and name/flag/source
+  mismatches against the parent function tree. The VM validates the complete
+  descriptor before turning String-call sources into live VarRef roots;
+  non-String eval remains identity-returning and does not inspect scopes or
+  normalize `this`. Primitive String execution deliberately remains the same
+  typed `Unsupported` frontier, so both Test262 vectors are byte-identical to
+  R1v.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -917,6 +932,52 @@ claim full parity.
   There are zero outcome, complete-row, detail-only, key, or pass-count
   changes. `runtime.rs` remains 9,679 lines; all new eval behavior stays in
   the compiler, typed VM boundary, and `runtime/intrinsics/eval.rs`.
+
+  R1w replaces the retained parser scope with a published immutable
+  `EvalEnvironment` table. Each descriptor is ordered inner-to-outer and
+  segmented by function roots: the current function contributes only exact
+  Local/Argument definitions, while every ancestor contributes named Closure
+  relays through its definition scope, ending at the script Program body.
+  Repeated eval sites in the same scope share one descriptor. Ordinary relays
+  allocated by earlier identifier resolution are upgraded in place to retain
+  their semantic name, including under StripDebug, without changing the
+  closure slot or VarRef identity. Eval-visible locals join the existing
+  capture analysis and block-lifetime `CloseLocal` path.
+
+  The publication boundary now checks that descriptor count matches exact
+  function-tree depth, every segment has the QuickJS-shaped Body/Root
+  topology, current versus ancestor source kinds cannot cross, all indices and
+  flags match authoritative definitions, and named ParentClosure relays trace
+  back to a same-name local or argument rather than a disguised global. Each
+  eval-name atom owns one bytecode metadata reference with exact multiplicity.
+  The VM performs a two-phase validation before capturing any frame cell, then
+  materializes Local/Argument cells and clones existing Closure VarRefs only
+  for primitive String input. Non-String input stays fully lazy and returns
+  the original value; String input still ends at the exact typed Unsupported
+  boundary after the environment has been materialized.
+
+  Pinned QuickJS environment probes cover sloppy/strict direct and indirect
+  eval, lexical/var declarations and conflicts, `this`, `arguments`, and
+  `new.target`. The focused report remains 55/55 with TSV/JSONL SHA-256
+  `9d364c24169423efa49ecfa384c86280f94011b430fa787f72a8214fe867a6f6`
+  and
+  `63d5717d85f57c19705196aee0333c18cc270242b37e431622a035a8c34cf2fd`;
+  the complete report remains 27,641/102,037 with 34,849 runnable jobs and
+  hashes
+  `59736a4a4f63122a458a33374d2afd873a706aeb7ff271b52f9fa4aa2aa71fbe`
+  and
+  `c4849aecc54afcc7c73bb182cd240bc9cf35634bc74bc4d5558d6951898af2f2`.
+  `runtime.rs` is 9,692 lines, only 13 above R1v; publication logic lives in
+  `runtime/bytecode_publish.rs`, and frame integration lives in
+  `runtime/vm_host.rs`.
+
+  Opening String execution requires three explicit follow-ups from the pinned
+  QuickJS audit: a persistent sloppy dynamic variable environment for newly
+  introduced `var` bindings, an explicit defining realm at the eval runtime
+  boundary, and an EvalRoot publication mode (or equivalent synthetic parent)
+  for compiled eval bytecode. Exact per-block descriptor provenance and an
+  owned bytecode root are also required before environments may escape the
+  current synchronous call. R1w does not claim any of those later semantics.
 
   Advanced grammar still fails closed: Unicode set/string properties, all
   `v`-mode execution, and unported Annex-B control escapes return typed

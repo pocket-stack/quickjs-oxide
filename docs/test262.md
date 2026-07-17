@@ -929,6 +929,33 @@ This zero movement is the acceptance result for R1v, not a claim that direct
 String eval is complete. Spread arguments (`OP_apply_eval`), optional calls,
 and the immutable eval-environment descriptor table remain later milestones.
 
+R1w adds that immutable direct-eval caller-environment descriptor table without
+opening String source execution. Descriptors walk the exact inner-to-outer
+scope chain, divide it into current and ancestor function segments, retain
+authoritative names on Local/Argument/Closure sources, force eval-visible
+`arguments` and private function-name bindings, and reuse existing closure
+slots. Publication checks the segment count against function-tree depth,
+Body/Root topology, source partition, bounds, flags, parent-relay names, global
+exclusion, and atom ownership. For primitive String input the VM validates the
+complete descriptor and materializes live caller VarRefs before returning the
+existing typed Unsupported error; non-String input still returns before scope
+inspection or `this` normalization.
+
+The R1w focused run remains 55/55 and is byte-identical to R1v, with TSV/JSONL
+SHA-256
+`9d364c24169423efa49ecfa384c86280f94011b430fa787f72a8214fe867a6f6`
+and
+`63d5717d85f57c19705196aee0333c18cc270242b37e431622a035a8c34cf2fd`.
+The complete report also remains byte-identical: 27,641 passes among 102,037
+variants, 34,849 runnable jobs, and TSV/JSONL SHA-256
+`59736a4a4f63122a458a33374d2afd873a706aeb7ff271b52f9fa4aa2aa71fbe`
+and
+`c4849aecc54afcc7c73bb182cd240bc9cf35634bc74bc4d5558d6951898af2f2`.
+That zero movement is the required result: the next compiler/runtime milestone
+must add QuickJS-shaped eval bytecode publication, persistent sloppy dynamic
+variables, and explicit defining-realm ownership before String execution can
+be enabled.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -1011,8 +1038,9 @@ and U+180E are now measured separately in
 R1b/R1c/R1d/R1e/R1f/R1g/R1h/R1j/R1k/R1l/R1m/R1n/R1o/R1p/R1q/R1r/R1s/R1t;
 R1u separately measures the eval intrinsic shell and its typed String-source
 frontier; R1v establishes its syntactic opcode and realm-identity path with a
-byte-identical scoreboard. R1i completes the direct standard-RegExp replacement
-route without changing that scoreboard.
+byte-identical scoreboard; R1w adds the immutable caller-environment table and
+live-cell materialization with the same zero-movement result. R1i completes the
+direct standard-RegExp replacement route without changing that scoreboard.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

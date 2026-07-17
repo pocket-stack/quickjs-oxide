@@ -5,7 +5,20 @@
 
 use super::*;
 use crate::bytecode::ArgumentsKind;
-use crate::vm::{CallInput, Vm, VmHost};
+use crate::heap::{EvalBinding, EvalBindingSource, EvalVariableEnvironment};
+use crate::vm::{CallInput, DirectEvalInvocation, Vm, VmHost};
+
+/// Live cells paired with one immutable caller-environment descriptor.
+///
+/// Roots are flattened in the descriptor's scope/binding order. The
+/// descriptor itself preserves the lexical boundaries and declaration target
+/// needed by the future eval compiler, while the roots keep the caller's
+/// actual cells live for that compilation/execution interval.
+pub(in crate::runtime) struct MaterializedEvalEnvironment {
+    pub(in crate::runtime) index: u16,
+    pub(in crate::runtime) descriptor: EvalEnvironment<Atom>,
+    pub(in crate::runtime) roots: Box<[VarRefRoot]>,
+}
 
 enum FrameBinding {
     Direct(Value),
@@ -123,6 +136,7 @@ pub(super) struct RuntimeVmHost {
     argument_definitions: Rc<[VariableDefinition]>,
     local_definitions: Rc<[VariableDefinition]>,
     closure_variables: Rc<[ClosureVariable]>,
+    eval_environments: Rc<[EvalEnvironment<Atom>]>,
     closure_slots: Vec<VarRefRoot>,
     arguments: Vec<FrameBinding>,
     locals: Vec<FrameBinding>,
@@ -151,10 +165,80 @@ impl RuntimeVmHost {
             argument_definitions: Rc::from([]),
             local_definitions: Rc::from([]),
             closure_variables: Rc::from([]),
+            eval_environments: Rc::from([]),
             closure_slots: Vec::new(),
             arguments: Vec::new(),
             locals: Vec::new(),
             reusable_captured_locals: Vec::new(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn eval_frame_for_test(
+        runtime: Runtime,
+        current_realm: ContextId,
+        bytecode: &FunctionBytecodeRef,
+        closure_slots: Vec<VarRefRoot>,
+        arguments: Vec<Value>,
+        locals: Vec<Value>,
+    ) -> Result<Self, RuntimeError> {
+        let PublishedFunctionSnapshot {
+            root: _,
+            code: _,
+            constants,
+            argument_definitions,
+            local_definitions,
+            closure_variables,
+            eval_environments,
+            metadata: _,
+            realm,
+        } = runtime.snapshot_function_bytecode(bytecode)?;
+        if realm != current_realm {
+            return Err(RuntimeError::Invariant(
+                "test eval frame realm disagrees with its bytecode",
+            ));
+        }
+        if arguments.len() != argument_definitions.len()
+            || locals.len() != local_definitions.len()
+            || closure_slots.len() != closure_variables.len()
+        {
+            return Err(RuntimeError::Invariant(
+                "test eval frame slots disagree with bytecode metadata",
+            ));
+        }
+        let frame_local_count = locals.len();
+        Ok(Self {
+            runtime,
+            active_frame_token: ActiveFrameToken(0),
+            current_realm,
+            current_function: None,
+            actual_argument_count: arguments.len(),
+            constants,
+            argument_definitions,
+            local_definitions,
+            closure_variables,
+            eval_environments,
+            closure_slots,
+            arguments: arguments.into_iter().map(FrameBinding::Direct).collect(),
+            locals: locals.into_iter().map(FrameBinding::Direct).collect(),
+            reusable_captured_locals: vec![false; frame_local_count],
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn eval_binding_is_captured_for_test(&self, source: EvalBindingSource) -> bool {
+        match source {
+            EvalBindingSource::Local(index) => self
+                .locals
+                .get(usize::from(index))
+                .is_some_and(|binding| matches!(binding, FrameBinding::Captured(_))),
+            EvalBindingSource::Argument(index) => self
+                .arguments
+                .get(usize::from(index))
+                .is_some_and(|binding| matches!(binding, FrameBinding::Captured(_))),
+            EvalBindingSource::Closure(index) => {
+                self.closure_slots.get(usize::from(index)).is_some()
+            }
         }
     }
 
@@ -213,15 +297,199 @@ impl RuntimeVmHost {
         };
         let flags_match = (definition.is_lexical, definition.is_const, definition.kind)
             == (descriptor.is_lexical, descriptor.is_const, descriptor.kind);
-        let name_matches = (!definition.is_lexical
-            && definition.kind != ClosureVariableKind::FunctionName)
-            || definition.name == descriptor_name;
+        let name_matches = if definition.is_lexical
+            || definition.kind == ClosureVariableKind::FunctionName
+            || descriptor_name.is_some()
+        {
+            definition.name == descriptor_name
+        } else {
+            true
+        };
         if !flags_match || !name_matches {
             return Err(Error::internal(
                 "closure descriptor disagrees with its parent variable definition",
             ));
         }
         Ok(())
+    }
+
+    fn eval_capture_descriptor(binding: &EvalBinding<Atom>) -> ClosureVariable {
+        let source = match binding.source {
+            EvalBindingSource::Local(index) => ClosureSource::ParentLocal(index),
+            EvalBindingSource::Argument(index) => ClosureSource::ParentArgument(index),
+            EvalBindingSource::Closure(index) => ClosureSource::ParentClosure(index),
+        };
+        ClosureVariable {
+            source,
+            name: ClosureVariableName::Atom(binding.name),
+            is_lexical: binding.is_lexical,
+            is_const: binding.is_const,
+            kind: binding.kind,
+        }
+    }
+
+    fn validate_eval_definition(
+        definition: VariableDefinition,
+        binding: &EvalBinding<Atom>,
+    ) -> Result<(), Error> {
+        if definition.name != Some(binding.name)
+            || definition.is_lexical != binding.is_lexical
+            || definition.is_const != binding.is_const
+            || definition.kind != binding.kind
+        {
+            return Err(Error::internal(
+                "eval binding disagrees with its caller variable definition",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_eval_closure(
+        descriptor: ClosureVariable,
+        binding: &EvalBinding<Atom>,
+    ) -> Result<(), Error> {
+        if matches!(
+            descriptor.source,
+            ClosureSource::GlobalDeclaration
+                | ClosureSource::Global
+                | ClosureSource::ParentGlobal(_)
+        ) {
+            return Err(Error::internal(
+                "eval environment retained a global closure binding",
+            ));
+        }
+        let name_matches =
+            matches!(descriptor.name, ClosureVariableName::Atom(name) if name == binding.name);
+        if !name_matches
+            || descriptor.is_lexical != binding.is_lexical
+            || descriptor.is_const != binding.is_const
+            || descriptor.kind != binding.kind
+        {
+            return Err(Error::internal(
+                "eval binding disagrees with its caller closure descriptor",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_eval_environment(
+        &self,
+        environment: &EvalEnvironment<Atom>,
+        caller_strict: bool,
+    ) -> Result<(), Error> {
+        if environment.caller_strict != caller_strict {
+            return Err(Error::internal(
+                "eval environment caller strictness disagrees with its bytecode frame",
+            ));
+        }
+        if let EvalVariableEnvironment::Scope(scope) = environment.variable_environment {
+            let Some(scope) = environment.scopes.get(usize::from(scope)) else {
+                return Err(Error::internal(
+                    "eval variable-environment scope is out of bounds",
+                ));
+            };
+            if scope.kind != crate::heap::EvalScopeKind::FunctionRoot {
+                return Err(Error::internal(
+                    "eval variable environment did not select a function root",
+                ));
+            }
+        }
+        for scope in &environment.scopes {
+            for binding in &scope.bindings {
+                match binding.source {
+                    EvalBindingSource::Local(index) => {
+                        let definition = self.local_definition(index)?;
+                        Self::validate_eval_definition(definition, binding)?;
+                        self.locals.get(usize::from(index)).ok_or_else(|| {
+                            Error::internal("eval local binding index is out of bounds")
+                        })?;
+                    }
+                    EvalBindingSource::Argument(index) => {
+                        let definition = self.argument_definition(index)?;
+                        Self::validate_eval_definition(definition, binding)?;
+                        self.arguments.get(usize::from(index)).ok_or_else(|| {
+                            Error::internal("eval argument binding index is out of bounds")
+                        })?;
+                    }
+                    EvalBindingSource::Closure(index) => {
+                        let descriptor = *self
+                            .closure_variables
+                            .get(usize::from(index))
+                            .ok_or_else(|| {
+                                Error::internal("eval closure binding index is out of bounds")
+                            })?;
+                        Self::validate_eval_closure(descriptor, binding)?;
+                        let root = self.closure_slots.get(usize::from(index)).ok_or_else(|| {
+                            Error::internal("eval closure slot index is out of bounds")
+                        })?;
+                        self.runtime
+                            .validate_var_ref_metadata(root, descriptor)
+                            .map_err(|error| Error::internal(error.to_string()))?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn materialize_direct_eval_environment(
+        &mut self,
+        index: u16,
+        caller_strict: bool,
+    ) -> Result<MaterializedEvalEnvironment, Error> {
+        let descriptor = self
+            .eval_environments
+            .get(usize::from(index))
+            .cloned()
+            .ok_or_else(|| Error::internal("eval environment index is out of bounds"))?;
+        // Validate every immutable source before converting any direct frame
+        // slot to a VarRef. Corrupt published bytecode therefore cannot leave
+        // a partially captured frame behind.
+        self.validate_eval_environment(&descriptor, caller_strict)?;
+
+        let binding_count = descriptor
+            .scopes
+            .iter()
+            .map(|scope| scope.bindings.len())
+            .sum();
+        let mut roots = Vec::with_capacity(binding_count);
+        for scope in &descriptor.scopes {
+            for eval_binding in &scope.bindings {
+                let root = match eval_binding.source {
+                    EvalBindingSource::Local(binding_index) => {
+                        let descriptor = Self::eval_capture_descriptor(eval_binding);
+                        let binding =
+                            self.locals
+                                .get_mut(usize::from(binding_index))
+                                .ok_or_else(|| {
+                                    Error::internal("eval local binding index is out of bounds")
+                                })?;
+                        capture_frame_binding(&self.runtime, binding, descriptor)?
+                    }
+                    EvalBindingSource::Argument(binding_index) => {
+                        let descriptor = Self::eval_capture_descriptor(eval_binding);
+                        let binding = self
+                            .arguments
+                            .get_mut(usize::from(binding_index))
+                            .ok_or_else(|| {
+                                Error::internal("eval argument binding index is out of bounds")
+                            })?;
+                        capture_frame_binding(&self.runtime, binding, descriptor)?
+                    }
+                    EvalBindingSource::Closure(binding_index) => self
+                        .closure_slots
+                        .get(usize::from(binding_index))
+                        .ok_or_else(|| Error::internal("eval closure slot index is out of bounds"))?
+                        .clone(),
+                };
+                roots.push(root);
+            }
+        }
+        Ok(MaterializedEvalEnvironment {
+            index,
+            descriptor,
+            roots: roots.into_boxed_slice(),
+        })
     }
 
     fn lexical_uninitialized_error(&self, name: Option<Atom>) -> Result<Error, Error> {
@@ -658,6 +926,7 @@ impl Runtime {
             argument_definitions,
             local_definitions,
             closure_variables,
+            eval_environments,
             metadata,
             realm,
         } = self.snapshot_function_bytecode(&bytecode)?;
@@ -702,6 +971,7 @@ impl Runtime {
             argument_definitions,
             local_definitions,
             closure_variables,
+            eval_environments,
             closure_slots,
             arguments: frame_arguments,
             locals: frame_locals,
@@ -1788,9 +2058,17 @@ impl VmHost for RuntimeVmHost {
             .map_err(runtime_error_to_vm_error)
     }
 
-    fn direct_eval(&mut self, input: Value) -> Result<Completion, Error> {
+    fn direct_eval(&mut self, invocation: DirectEvalInvocation) -> Result<Completion, Error> {
+        let environment = if matches!(invocation.input, Value::String(_)) {
+            Some(self.materialize_direct_eval_environment(
+                invocation.environment,
+                invocation.caller_strict,
+            )?)
+        } else {
+            None
+        };
         self.runtime
-            .call_direct_eval_original(input)
+            .call_direct_eval_original(invocation, environment)
             .map_err(runtime_error_to_vm_error)
     }
 

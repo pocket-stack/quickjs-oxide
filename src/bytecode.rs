@@ -247,9 +247,13 @@ pub enum Instruction {
     /// QuickJS `OP_eval`: a syntactic direct-eval call site. The runtime first
     /// compares the resolved callee with the executing realm's original
     /// `%eval%`; a replacement callee falls back to an ordinary call with an
-    /// undefined receiver. A linked lexical-environment descriptor will be
-    /// added when String-source direct evaluation is implemented.
-    Eval(u16),
+    /// undefined receiver. `environment` selects the immutable linked lexical
+    /// environment published beside this function's bytecode; it is retained
+    /// even while String-source direct evaluation remains unsupported.
+    Eval {
+        argument_count: u16,
+        environment: u16,
+    },
     CallMethod(u16),
     /// QuickJS `OP_call_constructor`: `func new.target args -> result`.
     Construct(u16),
@@ -312,7 +316,7 @@ impl Instruction {
             Self::SetNameComputed => (2, 2),
             Self::SetProto | Self::CopyDataProperties => (2, 1),
             Self::Delete => (2, 1),
-            Self::Call(argument_count) | Self::Eval(argument_count) => {
+            Self::Call(argument_count) | Self::Eval { argument_count, .. } => {
                 (*argument_count as usize + 1, 1)
             }
             Self::CallMethod(argument_count) => (*argument_count as usize + 2, 1),
@@ -1012,7 +1016,10 @@ mod tests {
                 0,
                 vec![
                     Instruction::Undefined,
-                    Instruction::Eval(0),
+                    Instruction::Eval {
+                        argument_count: 0,
+                        environment: 0,
+                    },
                     Instruction::Return,
                 ],
                 1,
@@ -1023,7 +1030,10 @@ mod tests {
                     Instruction::Undefined,
                     Instruction::PushI32(1),
                     Instruction::PushI32(2),
-                    Instruction::Eval(2),
+                    Instruction::Eval {
+                        argument_count: 2,
+                        environment: 0,
+                    },
                     Instruction::Return,
                 ],
                 3,
@@ -1044,11 +1054,20 @@ mod tests {
         }
 
         for code in [
-            vec![Instruction::Eval(0), Instruction::Return],
+            vec![
+                Instruction::Eval {
+                    argument_count: 0,
+                    environment: 0,
+                },
+                Instruction::Return,
+            ],
             vec![
                 Instruction::Undefined,
                 Instruction::PushI32(1),
-                Instruction::Eval(2),
+                Instruction::Eval {
+                    argument_count: 2,
+                    environment: 0,
+                },
                 Instruction::Return,
             ],
         ] {
@@ -1071,7 +1090,10 @@ mod tests {
                 Instruction::Undefined,
                 Instruction::PushI32(1),
                 Instruction::PushI32(2),
-                Instruction::Eval(2),
+                Instruction::Eval {
+                    argument_count: 2,
+                    environment: 0,
+                },
                 Instruction::Return,
             ],
             constants: vec![],

@@ -21,7 +21,8 @@ use std::rc::Rc;
 use crate::bytecode::Instruction;
 use crate::debug::Pc2LineTable;
 use crate::heap::{
-    ClosureVariable, ClosureVariableKind, FunctionBytecodeId, FunctionMetadata, HeapError,
+    ClosureVariable, ClosureVariableKind, EvalEnvironment, FunctionBytecodeId, FunctionMetadata,
+    HeapError,
 };
 use crate::regexp::CompiledRegExp;
 use crate::runtime::Runtime;
@@ -313,6 +314,7 @@ pub(crate) struct UnlinkedFunction {
     argument_definitions: Vec<UnlinkedVariableDefinition>,
     local_definitions: Vec<UnlinkedVariableDefinition>,
     closure_variables: Vec<ClosureVariable>,
+    eval_environments: Vec<EvalEnvironment<JsString>>,
     debug: Option<UnlinkedFunctionDebug>,
 }
 
@@ -384,6 +386,7 @@ pub(crate) struct UnlinkedFunctionParts {
     pub(crate) argument_definitions: Vec<UnlinkedVariableDefinition>,
     pub(crate) local_definitions: Vec<UnlinkedVariableDefinition>,
     pub(crate) closure_variables: Vec<ClosureVariable>,
+    pub(crate) eval_environments: Vec<EvalEnvironment<JsString>>,
     pub(crate) debug: Option<UnlinkedFunctionDebug>,
 }
 
@@ -424,6 +427,7 @@ impl UnlinkedFunction {
             argument_definitions,
             local_definitions,
             closure_variables: Vec::new(),
+            eval_environments: Vec::new(),
             debug: None,
         }
     }
@@ -451,8 +455,20 @@ impl UnlinkedFunction {
             argument_definitions,
             local_definitions,
             closure_variables,
+            eval_environments: Vec::new(),
             debug: None,
         }
+    }
+
+    /// Attach the compiler-produced lexical-environment descriptors used by
+    /// syntactic direct-eval instructions in this function.
+    #[must_use]
+    pub(crate) fn with_eval_environments(
+        mut self,
+        eval_environments: Vec<EvalEnvironment<JsString>>,
+    ) -> Self {
+        self.eval_environments = eval_environments;
+        self
     }
 
     /// Attach the source-level intrinsic name of a function expression.
@@ -532,6 +548,11 @@ impl UnlinkedFunction {
     }
 
     #[must_use]
+    pub(crate) fn eval_environments(&self) -> &[EvalEnvironment<JsString>] {
+        &self.eval_environments
+    }
+
+    #[must_use]
     pub(crate) const fn debug(&self) -> Option<&UnlinkedFunctionDebug> {
         self.debug.as_ref()
     }
@@ -547,6 +568,7 @@ impl UnlinkedFunction {
             argument_definitions: self.argument_definitions,
             local_definitions: self.local_definitions,
             closure_variables: self.closure_variables,
+            eval_environments: self.eval_environments,
             debug: self.debug,
         }
     }
@@ -559,7 +581,10 @@ mod tests {
     };
     use crate::bigint::JsBigInt;
     use crate::bytecode::Instruction;
-    use crate::heap::{ClosureSource, ClosureVariable, ClosureVariableKind, FunctionMetadata};
+    use crate::heap::{
+        ClosureSource, ClosureVariable, ClosureVariableKind, EvalEnvironment, EvalScope,
+        EvalScopeKind, EvalVariableEnvironment, FunctionMetadata,
+    };
     use crate::value::{JsString, Value};
 
     #[test]
@@ -660,6 +685,35 @@ mod tests {
         assert_eq!(parts.code.len(), 2);
         assert_eq!(parts.constants.len(), 1);
         assert!(parts.closure_variables.is_empty());
+        assert!(parts.eval_environments.is_empty());
+    }
+
+    #[test]
+    fn eval_environments_stay_attached_across_the_publication_boundary() {
+        let environment = EvalEnvironment {
+            scopes: vec![EvalScope {
+                kind: EvalScopeKind::FunctionRoot,
+                bindings: Box::new([]),
+            }]
+            .into_boxed_slice(),
+            variable_environment: EvalVariableEnvironment::Scope(0),
+            caller_strict: true,
+        };
+        let function = UnlinkedFunction::new(
+            vec![Instruction::Undefined, Instruction::Return],
+            Vec::new(),
+            FunctionMetadata {
+                strict: true,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_eval_environments(vec![environment.clone()]);
+
+        assert_eq!(
+            function.eval_environments(),
+            std::slice::from_ref(&environment)
+        );
+        assert_eq!(function.into_parts().eval_environments, vec![environment]);
     }
 
     #[test]

@@ -164,6 +164,95 @@ const DIRECTNESS_ORACLE_PROBE: &str = r#"
 
 const EXPECTED_DIRECTNESS: &str = "L|L|L|L|L|G|G|G|G|G|G|G|TypeError|R:x:7|R:x:8|L|G";
 
+// This remains oracle-only until String execution opens. It freezes the
+// environment contract which the Oxide descriptor/materialization milestone
+// now represents without pretending that source compilation is complete.
+const ENVIRONMENT_ORACLE_PROBE: &str = r#"
+(function () {
+    var observations = [];
+    function sloppy(argument) {
+        var local = 2;
+        {
+            let block = 3;
+            observations.push("direct=" +
+                eval("[argument,local,block,this.tag,arguments[0]].join(',')"));
+            eval("local=4; var added=5; let hidden=6");
+        }
+        observations.push("sloppy=" + [local, added, typeof hidden].join(","));
+    }
+    sloppy.call({ tag: "T" }, 1);
+
+    function strict() {
+        "use strict";
+        var outer = 1;
+        var within = eval(
+            "outer=2; var onlyVar=3; let onlyLex=4; [onlyVar,onlyLex].join(',')"
+        );
+        observations.push(
+            "strict=" + [within, outer, typeof onlyVar, typeof onlyLex].join("|")
+        );
+    }
+    strict();
+
+    function redeclaration() {
+        let conflict = 1;
+        globalThis.evalTouch = 0;
+        try {
+            eval("evalTouch=1; var conflict");
+        } catch (error) {
+            observations.push(
+                "redeclare=" + [error.name, evalTouch, conflict].join(",")
+            );
+        }
+        delete globalThis.evalTouch;
+    }
+    redeclaration();
+
+    function C(argument) {
+        observations.push(
+            "special=" +
+            eval("[new.target===C,arguments[0],this instanceof C].join(',')")
+        );
+    }
+    new C(7);
+
+    observations.push(
+        "indirect=" +
+        (0, eval)(
+            "var indirectVar=8; let indirectLex=9; " +
+            "[this===globalThis,indirectVar,typeof indirectLex].join(',')"
+        )
+    );
+    observations.push(
+        "indirectAfter=" +
+        [globalThis.indirectVar, typeof indirectLex, delete globalThis.indirectVar].join(",")
+    );
+    observations.push(
+        "indirectStrict=" +
+        (0, eval)(
+            "'use strict'; var strictVar=10; let strictLex=11; " +
+            "[this===globalThis,strictVar,typeof strictLex].join(',')"
+        )
+    );
+    observations.push(
+        "indirectStrictAfter=" + [typeof strictVar, typeof strictLex].join(",")
+    );
+    return observations.join("\n");
+})()
+"#;
+
+const EXPECTED_ENVIRONMENT: &[&str] = &[
+    "direct=1,2,3,T,1",
+    "sloppy=4,5,undefined",
+    "strict=3,4|2|undefined|undefined",
+    "redeclare=SyntaxError,0,1",
+    "special=true,7,true",
+    "indirect=true,8,number",
+    "indirectAfter=8,undefined,true",
+    "indirectStrict=true,10,number",
+    "indirectStrictAfter=undefined,undefined",
+];
+
 #[test]
 fn eval_shell_matches_pinned_quickjs() {
     let rust = rust_observations();
@@ -190,6 +279,21 @@ fn pinned_quickjs_direct_eval_syntax_contract_is_frozen() {
         oracle_value(&oracle, DIRECTNESS_ORACLE_PROBE),
         EXPECTED_DIRECTNESS,
         "pinned QuickJS direct/indirect eval classification drifted"
+    );
+}
+
+#[test]
+fn pinned_quickjs_eval_environment_contract_is_frozen() {
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!("SKIP eval environment differential: set QJS_ORACLE to pinned upstream qjs");
+        return;
+    };
+    assert_eq!(
+        oracle_value(&oracle, ENVIRONMENT_ORACLE_PROBE)
+            .lines()
+            .collect::<Vec<_>>(),
+        EXPECTED_ENVIRONMENT,
+        "pinned QuickJS eval environment contract drifted"
     );
 }
 
@@ -351,6 +455,9 @@ fn primitive_string_eval_stays_a_typed_uncatchable_frontier() {
         r#"globalThis.eval("40 + 2")"#,
         r#"eval.call(null, "40 + 2")"#,
         r#"eval.apply(null, ["40 + 2"])"#,
+        r#"(function (argument) { var local = 1; { let block = 2; return eval("argument + local + block"); } })(3)"#,
+        r#"(function (argument) { "use strict"; let local = 1; return eval("argument + local"); })(3)"#,
+        r#"new (function EvalConstructor(argument) { eval("[new.target, arguments[0], this]"); })(3)"#,
     ] {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();

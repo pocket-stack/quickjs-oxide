@@ -1,4 +1,5 @@
 use super::*;
+use crate::vm::DirectEvalInvocation;
 
 impl Runtime {
     pub(in crate::runtime) fn initialize_eval_intrinsic(
@@ -55,9 +56,53 @@ impl Runtime {
     /// caller's linked lexical environment.
     pub(in crate::runtime) fn call_direct_eval_original(
         &self,
-        input: Value,
+        invocation: DirectEvalInvocation,
+        environment: Option<crate::runtime::vm_host::MaterializedEvalEnvironment>,
     ) -> Result<Completion, RuntimeError> {
-        Self::evaluate_eval_argument(input)
+        let DirectEvalInvocation {
+            input,
+            environment: environment_index,
+            this_value: _,
+            new_target: _,
+            caller_strict,
+        } = invocation;
+        if !matches!(input, Value::String(_)) {
+            if environment.is_some() {
+                return Err(RuntimeError::Invariant(
+                    "non-String direct eval materialized a caller environment",
+                ));
+            }
+            return Ok(Completion::Return(input));
+        }
+
+        let environment = environment.ok_or(RuntimeError::Invariant(
+            "String direct eval has no materialized caller environment",
+        ))?;
+        if environment.index != environment_index {
+            return Err(RuntimeError::Invariant(
+                "materialized eval environment has the wrong bytecode index",
+            ));
+        }
+        if environment.descriptor.caller_strict != caller_strict {
+            return Err(RuntimeError::Invariant(
+                "materialized eval environment has the wrong caller strictness",
+            ));
+        }
+        let binding_count = environment
+            .descriptor
+            .scopes
+            .iter()
+            .map(|scope| scope.bindings.len())
+            .sum::<usize>();
+        if environment.roots.len() != binding_count {
+            return Err(RuntimeError::Invariant(
+                "materialized eval roots disagree with the environment descriptor",
+            ));
+        }
+        Err(RuntimeError::Engine(Error::new(
+            ErrorKind::Unsupported,
+            "eval source execution is not implemented yet",
+        )))
     }
 
     pub(in crate::runtime) fn is_original_eval(

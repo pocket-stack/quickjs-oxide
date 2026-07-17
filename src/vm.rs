@@ -28,6 +28,23 @@ pub(crate) enum Completion {
     Throw(Value),
 }
 
+/// Caller state attached to one original direct-eval invocation.
+///
+/// The VM constructs this only after the realm-local original-eval identity
+/// gate succeeds. `this_value` is the caller-visible binding: primitive String
+/// input therefore triggers the caller frame's lazy sloppy-`this`
+/// normalization before crossing the runtime boundary, while non-String input
+/// retains the raw call value and cannot allocate a wrapper merely to be
+/// returned unchanged.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DirectEvalInvocation {
+    pub input: Value,
+    pub environment: u16,
+    pub this_value: Value,
+    pub new_target: Value,
+    pub caller_strict: bool,
+}
+
 /// ECMAScript ToPrimitive hint crossing the VM/runtime host boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToPrimitiveHint {
@@ -245,7 +262,7 @@ pub(crate) trait VmHost {
     fn is_original_eval(&mut self, function: &Value) -> Result<bool, Error>;
     /// Enter original direct eval without creating a native `%eval%` frame.
     /// Arguments have already been evaluated; only the first input survives.
-    fn direct_eval(&mut self, input: Value) -> Result<Completion, Error>;
+    fn direct_eval(&mut self, invocation: DirectEvalInvocation) -> Result<Completion, Error>;
     fn construct(
         &mut self,
         function: Value,
@@ -317,7 +334,11 @@ struct DetachedHost<'a> {
     #[cfg(test)]
     direct_eval_results: VecDeque<Result<Completion, Error>>,
     #[cfg(test)]
-    direct_eval_inputs: Vec<Value>,
+    direct_eval_inputs: Vec<DirectEvalInvocation>,
+    #[cfg(test)]
+    box_primitive_results: VecDeque<Result<Value, Error>>,
+    #[cfg(test)]
+    box_primitive_inputs: Vec<Value>,
     #[cfg(test)]
     call_results: VecDeque<Result<Completion, Error>>,
     #[cfg(test)]
@@ -373,6 +394,10 @@ impl<'a> DetachedHost<'a> {
             direct_eval_results: VecDeque::new(),
             #[cfg(test)]
             direct_eval_inputs: Vec::new(),
+            #[cfg(test)]
+            box_primitive_results: VecDeque::new(),
+            #[cfg(test)]
+            box_primitive_inputs: Vec::new(),
             #[cfg(test)]
             call_results: VecDeque::new(),
             #[cfg(test)]
@@ -486,6 +511,13 @@ impl VmHost for DetachedHost<'_> {
     }
 
     fn box_primitive(&mut self, _value: Value) -> Result<Value, Error> {
+        #[cfg(test)]
+        {
+            self.box_primitive_inputs.push(_value);
+            if let Some(result) = self.box_primitive_results.pop_front() {
+                return result;
+            }
+        }
         Err(Error::internal(
             "detached VM has no primitive wrapper intrinsics",
         ))
@@ -755,10 +787,10 @@ impl VmHost for DetachedHost<'_> {
         ))
     }
 
-    fn direct_eval(&mut self, _input: Value) -> Result<Completion, Error> {
+    fn direct_eval(&mut self, _invocation: DirectEvalInvocation) -> Result<Completion, Error> {
         #[cfg(test)]
         {
-            self.direct_eval_inputs.push(_input);
+            self.direct_eval_inputs.push(_invocation);
             if let Some(result) = self.direct_eval_results.pop_front() {
                 return result;
             }
@@ -1133,12 +1165,30 @@ impl CallFrame {
                 let function = self.pop()?;
                 host.call(function, Value::Undefined, arguments)?
             }
-            Instruction::Eval(argument_count) => {
+            Instruction::Eval {
+                argument_count,
+                environment,
+            } => {
                 let arguments = self.take_call_arguments(*argument_count, 1)?;
                 let function = self.pop()?;
                 if host.is_original_eval(&function)? {
                     let input = arguments.first().cloned().unwrap_or(Value::Undefined);
-                    host.direct_eval(input)?
+                    // QuickJS only enters the compiler for primitive String
+                    // input. Preserve that lazy boundary for sloppy `this`:
+                    // non-String eval must return its input without allocating
+                    // a primitive wrapper or touching caller bindings.
+                    let this_value = if matches!(input, Value::String(_)) {
+                        self.normalized_this(host)?
+                    } else {
+                        self.this_value.clone()
+                    };
+                    host.direct_eval(DirectEvalInvocation {
+                        input,
+                        environment: *environment,
+                        this_value,
+                        new_target: self.new_target.clone(),
+                        caller_strict: self.strict,
+                    })?
                 } else {
                     host.call(function, Value::Undefined, arguments)?
                 }
@@ -1419,7 +1469,7 @@ impl CallFrame {
             if matches!(
                 instruction,
                 Instruction::Call(_)
-                    | Instruction::Eval(_)
+                    | Instruction::Eval { .. }
                     | Instruction::CallMethod(_)
                     | Instruction::Construct(_)
             ) {
@@ -2038,7 +2088,7 @@ impl CallFrame {
                     }
                 }
                 Instruction::Call(_)
-                | Instruction::Eval(_)
+                | Instruction::Eval { .. }
                 | Instruction::CallMethod(_)
                 | Instruction::Construct(_) => {
                     unreachable!("call dispatch was bypassed")
@@ -2694,7 +2744,10 @@ mod tests {
     use crate::error::ErrorKind;
     use crate::value::{JsString, Value};
 
-    use super::{CallFrame, Completion, DetachedHost, Vm, number_to_int32, number_to_uint32};
+    use super::{
+        CallFrame, Completion, DetachedHost, DirectEvalInvocation, Vm, number_to_int32,
+        number_to_uint32,
+    };
 
     #[test]
     fn executes_arithmetic_stack_bytecode() {
@@ -2722,7 +2775,10 @@ mod tests {
                 Instruction::PushI32(7),
                 Instruction::PushI32(11),
                 Instruction::PushI32(12),
-                Instruction::Eval(2),
+                Instruction::Eval {
+                    argument_count: 2,
+                    environment: 17,
+                },
                 Instruction::Return,
             ],
             constants: vec![],
@@ -2742,7 +2798,16 @@ mod tests {
                 .unwrap(),
             Completion::Return(Value::Int(42))
         );
-        assert_eq!(original.direct_eval_inputs, [Value::Int(11)]);
+        assert_eq!(
+            original.direct_eval_inputs,
+            [DirectEvalInvocation {
+                input: Value::Int(11),
+                environment: 17,
+                this_value: Value::Undefined,
+                new_target: Value::Undefined,
+                caller_strict: true,
+            }]
+        );
         assert_eq!(original.eval_identity_inputs, [Value::Int(7)]);
         assert!(original.call_inputs.is_empty());
 
@@ -2772,7 +2837,10 @@ mod tests {
             name: None,
             code: vec![
                 Instruction::Undefined,
-                Instruction::Eval(0),
+                Instruction::Eval {
+                    argument_count: 0,
+                    environment: 29,
+                },
                 Instruction::Return,
             ],
             constants: vec![],
@@ -2790,8 +2858,93 @@ mod tests {
                 .unwrap(),
             Completion::Return(Value::Undefined)
         );
-        assert_eq!(original.direct_eval_inputs, [Value::Undefined]);
+        assert_eq!(
+            original.direct_eval_inputs,
+            [DirectEvalInvocation {
+                input: Value::Undefined,
+                environment: 29,
+                this_value: Value::Undefined,
+                new_target: Value::Undefined,
+                caller_strict: true,
+            }]
+        );
         assert_eq!(original.eval_identity_inputs, [Value::Undefined]);
+    }
+
+    #[test]
+    fn string_direct_eval_forwards_environment_and_lazily_normalizes_this() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(7),
+                Instruction::PushConst(0),
+                Instruction::Eval {
+                    argument_count: 1,
+                    environment: 23,
+                },
+                Instruction::Return,
+            ],
+            constants: vec![Value::String(JsString::from_static("40 + 2"))],
+            local_count: 0,
+            max_stack: 2,
+        };
+        function.verify().unwrap();
+
+        let mut host = DetachedHost::new(&function);
+        host.eval_identity_results.push_back(Ok(true));
+        host.box_primitive_results.push_back(Ok(Value::Int(99)));
+        host.direct_eval_results
+            .push_back(Ok(Completion::Return(Value::Int(42))));
+        let mut frame = CallFrame::new(2);
+        frame.this_value = Value::Int(8);
+        frame.new_target = Value::Int(9);
+        frame.strict = false;
+        assert_eq!(
+            frame.execute(&function.code, &mut host).unwrap(),
+            Completion::Return(Value::Int(42))
+        );
+        assert_eq!(host.box_primitive_inputs, [Value::Int(8)]);
+        assert_eq!(
+            host.direct_eval_inputs,
+            [DirectEvalInvocation {
+                input: Value::String(JsString::from_static("40 + 2")),
+                environment: 23,
+                this_value: Value::Int(99),
+                new_target: Value::Int(9),
+                caller_strict: false,
+            }]
+        );
+
+        let non_string = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(7),
+                Instruction::PushI32(42),
+                Instruction::Eval {
+                    argument_count: 1,
+                    environment: u16::MAX,
+                },
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        non_string.verify().unwrap();
+        let mut host = DetachedHost::new(&non_string);
+        host.eval_identity_results.push_back(Ok(true));
+        host.direct_eval_results
+            .push_back(Ok(Completion::Return(Value::Int(42))));
+        let mut frame = CallFrame::new(2);
+        frame.this_value = Value::Int(8);
+        frame.strict = false;
+        assert_eq!(
+            frame.execute(&non_string.code, &mut host).unwrap(),
+            Completion::Return(Value::Int(42))
+        );
+        assert!(host.box_primitive_inputs.is_empty());
+        assert_eq!(host.direct_eval_inputs[0].this_value, Value::Int(8));
+        assert_eq!(host.direct_eval_inputs[0].environment, u16::MAX);
     }
 
     #[test]

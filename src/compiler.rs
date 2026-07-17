@@ -23,7 +23,8 @@ use crate::function::{
 };
 use crate::heap::{
     ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
-    FunctionKind as BytecodeFunctionKind, FunctionMetadata,
+    EvalBinding, EvalBindingSource, EvalEnvironment, EvalScope, EvalScopeKind,
+    EvalVariableEnvironment, FunctionKind as BytecodeFunctionKind, FunctionMetadata,
 };
 use crate::lexer::{
     Identifier, Keyword, LexError, LexErrorKind, Lexer, LexicalGoal, NumberKind, NumericRadix,
@@ -399,6 +400,7 @@ enum IrOp {
     EvalCall {
         argument_count: u16,
         scope: ScopeId,
+        environment: Option<u16>,
     },
     PushConstant(u32),
     MakeClosure(u32),
@@ -557,6 +559,9 @@ struct FunctionIr {
     last_identifier_reference: Option<usize>,
     constants: Vec<IrConstant>,
     closure_variables: Vec<ClosureVariable>,
+    /// Immutable QuickJS-shaped scope chains linked for syntactic direct-eval
+    /// call sites. Multiple calls from the same parser scope share one entry.
+    eval_environments: Vec<EvalEnvironment<JsString>>,
     break_controls: Vec<BreakControlContext>,
     stack_depth: usize,
     strict: bool,
@@ -649,6 +654,7 @@ impl FunctionIr {
             last_identifier_reference: None,
             constants: Vec::new(),
             closure_variables: Vec::new(),
+            eval_environments: Vec::new(),
             break_controls: Vec::new(),
             stack_depth: 0,
             strict,
@@ -3593,6 +3599,7 @@ impl<'source> Parser<'source> {
                         IrOp::EvalCall {
                             argument_count,
                             scope,
+                            environment: None,
                         },
                         source_offset(call_span)?,
                     )?;
@@ -6766,9 +6773,271 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
             tree.functions[function_id].ops[operation_index].op = operation;
         }
     }
+    // QuickJS links every OP_eval scope after ordinary identifier resolution,
+    // while the complete parser scope graph is still available and before
+    // entry hoists are installed. Linking here may force lazy `arguments` and
+    // named-function self bindings, as well as closure relays for every outer
+    // binding visible to the call site.
+    link_eval_environments(tree)?;
     install_global_function_hoists(tree)?;
     install_function_body_hoists(tree)?;
     validate_scope_graph(tree)
+}
+
+const fn eval_scope_kind(kind: ScopeKind) -> EvalScopeKind {
+    match kind {
+        ScopeKind::FunctionRoot => EvalScopeKind::FunctionRoot,
+        ScopeKind::FunctionBody => EvalScopeKind::FunctionBody,
+        ScopeKind::ProgramBody => EvalScopeKind::ProgramBody,
+        ScopeKind::Block => EvalScopeKind::Block,
+        ScopeKind::If => EvalScopeKind::If,
+        ScopeKind::For => EvalScopeKind::For,
+        ScopeKind::Switch => EvalScopeKind::Switch,
+        ScopeKind::Catch => EvalScopeKind::Catch,
+    }
+}
+
+/// Publish one immutable scope chain per distinct parser scope containing a
+/// syntactic direct-eval candidate. The chain deliberately owns source names:
+/// unlike ordinary debug metadata they remain semantically required even in
+/// `StripDebug` mode so a later String compiler can resolve against the live
+/// caller frame.
+fn link_eval_environments(tree: &mut FunctionTree) -> Result<(), Error> {
+    let functions_with_eval = tree
+        .functions
+        .iter()
+        .map(|function| {
+            function
+                .ops
+                .iter()
+                .any(|operation| matches!(operation.op, IrOp::EvalCall { .. }))
+        })
+        .collect::<Vec<_>>();
+
+    // Lazy pseudo-bindings must exist before any descriptor snapshots a scope.
+    // The current ordinary function always owns `arguments`; named-expression
+    // self bindings from every enclosing function are also part of the visible
+    // lexical chain even when no ordinary identifier opcode forced them first.
+    for (function_id, has_eval) in functions_with_eval.iter().copied().enumerate() {
+        if !has_eval {
+            continue;
+        }
+        ensure_eval_visible_pseudo_bindings(tree, function_id)?;
+    }
+
+    for (function_id, has_eval) in functions_with_eval.into_iter().enumerate() {
+        if !has_eval {
+            continue;
+        }
+        let sites = tree.functions[function_id]
+            .ops
+            .iter()
+            .enumerate()
+            .filter_map(|(operation_index, operation)| match operation.op {
+                IrOp::EvalCall {
+                    scope,
+                    environment: None,
+                    ..
+                } => Some((operation_index, scope)),
+                IrOp::EvalCall {
+                    environment: Some(_),
+                    ..
+                } => None,
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut by_scope = HashMap::<ScopeId, u16>::new();
+        let mut linked_sites = Vec::with_capacity(sites.len());
+        for (operation_index, scope) in sites {
+            let environment = if let Some(&environment) = by_scope.get(&scope) {
+                environment
+            } else {
+                let environment = u16::try_from(
+                    tree.functions[function_id].eval_environments.len(),
+                )
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many eval environments"))?;
+                let descriptor = link_eval_environment(tree, function_id, scope)?;
+                tree.functions[function_id]
+                    .eval_environments
+                    .push(descriptor);
+                by_scope.insert(scope, environment);
+                environment
+            };
+            linked_sites.push((operation_index, environment));
+        }
+        for (operation_index, environment) in linked_sites {
+            let Some(operation) = tree.functions[function_id].ops.get_mut(operation_index) else {
+                return Err(Error::internal("eval operation moved while linking scopes"));
+            };
+            let IrOp::EvalCall {
+                environment: linked,
+                ..
+            } = &mut operation.op
+            else {
+                return Err(Error::internal(
+                    "eval operation changed while linking scopes",
+                ));
+            };
+            if linked.replace(environment).is_some() {
+                return Err(Error::internal("eval operation was linked more than once"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_eval_visible_pseudo_bindings(
+    tree: &mut FunctionTree,
+    consuming_function: FunctionId,
+) -> Result<(), Error> {
+    if matches!(
+        tree.functions[consuming_function].kind,
+        FunctionKind::Ordinary
+    ) {
+        let span = tree.functions[consuming_function].source.span;
+        find_or_create_own_binding(tree, consuming_function, ScopeId(0), "arguments", span)?;
+    }
+
+    let mut cursor = Some(consuming_function);
+    while let Some(function_id) = cursor {
+        let (name, span, parent) = {
+            let function = &tree.functions[function_id];
+            (
+                if function.private_name_binding {
+                    function.function_name.clone()
+                } else {
+                    None
+                },
+                function.source.span,
+                function.parent,
+            )
+        };
+        if let Some(name) = name {
+            find_or_create_own_binding(tree, function_id, ScopeId(0), &name, span)?;
+        }
+        cursor = parent.map(|parent| parent.function);
+    }
+    Ok(())
+}
+
+fn link_eval_environment(
+    tree: &mut FunctionTree,
+    consuming_function: FunctionId,
+    call_scope: ScopeId,
+) -> Result<EvalEnvironment<JsString>, Error> {
+    let caller_strict = tree.functions[consuming_function].strict;
+    let caller_kind = tree.functions[consuming_function].kind;
+    let mut scope_path = Vec::<(FunctionId, ScopeId)>::new();
+    let mut owner = consuming_function;
+    let mut scope = call_scope;
+    loop {
+        loop {
+            let ir_scope = tree.functions[owner]
+                .scopes
+                .get(scope.0)
+                .ok_or_else(|| Error::internal("eval call scope is out of bounds"))?;
+            scope_path.push((owner, scope));
+            let Some(parent) = ir_scope.parent else {
+                break;
+            };
+            scope = parent;
+        }
+        let Some(parent) = tree.functions[owner].parent else {
+            break;
+        };
+        owner = parent.function;
+        scope = parent.definition_scope;
+    }
+
+    let mut scopes = Vec::with_capacity(scope_path.len());
+    let mut current_function_root = None;
+    for (owner, scope) in scope_path {
+        let scope_ordinal = u16::try_from(scopes.len())
+            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many eval scopes"))?;
+        let (kind, binding_snapshots) = {
+            let function = &tree.functions[owner];
+            let ir_scope = function
+                .scopes
+                .get(scope.0)
+                .ok_or_else(|| Error::internal("eval scope path is out of bounds"))?;
+            let bindings = ir_scope
+                .bindings
+                .iter()
+                .rev()
+                .map(|binding| {
+                    function
+                        .bindings
+                        .get(binding.0)
+                        .map(|binding| (binding.name.clone(), binding.storage, binding.kind))
+                        .ok_or_else(|| Error::internal("eval binding is out of bounds"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            (ir_scope.kind, bindings)
+        };
+        if owner == consuming_function && kind == ScopeKind::FunctionRoot {
+            current_function_root = Some(scope_ordinal);
+        }
+
+        let mut bindings = Vec::with_capacity(binding_snapshots.len());
+        for (name, storage, binding_kind) in binding_snapshots {
+            let source = if owner == consuming_function {
+                match storage {
+                    BindingStorage::Argument(index) => EvalBindingSource::Argument(index),
+                    BindingStorage::Local(index) => EvalBindingSource::Local(index),
+                    BindingStorage::Global => continue,
+                }
+            } else {
+                if storage == BindingStorage::Global {
+                    continue;
+                }
+                let (index, resolved_kind) = capture_binding_path(
+                    tree,
+                    owner,
+                    consuming_function,
+                    ResolvedBinding {
+                        storage,
+                        kind: binding_kind,
+                    },
+                    &name,
+                    true,
+                )?;
+                if resolved_kind != binding_kind {
+                    return Err(Error::internal(
+                        "eval closure relay changed binding metadata",
+                    ));
+                }
+                EvalBindingSource::Closure(index)
+            };
+            bindings.push(EvalBinding {
+                name: JsString::try_from_utf8(&name)?,
+                source,
+                is_lexical: matches!(binding_kind, BindingKind::Lexical { .. }),
+                is_const: matches!(
+                    binding_kind,
+                    BindingKind::Lexical { is_const: true }
+                        | BindingKind::FunctionName { is_const: true }
+                ),
+                kind: closure_kind(binding_kind),
+            });
+        }
+        scopes.push(EvalScope {
+            kind: eval_scope_kind(kind),
+            bindings: bindings.into_boxed_slice(),
+        });
+    }
+
+    let variable_environment = match caller_kind {
+        FunctionKind::Script => EvalVariableEnvironment::Global,
+        FunctionKind::Ordinary => EvalVariableEnvironment::Scope(
+            current_function_root
+                .ok_or_else(|| Error::internal("eval environment has no current function root"))?,
+        ),
+    };
+    Ok(EvalEnvironment {
+        scopes: scopes.into_boxed_slice(),
+        variable_environment,
+        caller_strict,
+    })
 }
 
 /// QuickJS adds every Program declaration to the root GLOBAL_DECL list in
@@ -7364,7 +7633,7 @@ fn resolve_identifier(
         return global_declaration_operation(tree, function_id, binding.kind, access, name);
     }
     let (closure_index, kind) =
-        capture_binding_path(tree, defining_function, function_id, binding, name)?;
+        capture_binding_path(tree, defining_function, function_id, binding, name, false)?;
     closure_binding_operation(
         &mut tree.functions[function_id],
         closure_index,
@@ -7771,6 +8040,7 @@ fn capture_binding_path(
     consuming_function: FunctionId,
     binding: ResolvedBinding,
     name: &str,
+    retain_name: bool,
 ) -> Result<(u16, BindingKind), Error> {
     let mut path = Vec::new();
     let mut cursor = consuming_function;
@@ -7796,10 +8066,11 @@ fn capture_binding_path(
     let mut final_index = None;
     for function_id in path {
         let function = &mut tree.functions[function_id];
-        let descriptor_name = if matches!(
-            kind,
-            BindingKind::Lexical { .. } | BindingKind::FunctionName { .. }
-        ) {
+        let descriptor_name = if retain_name
+            || matches!(
+                kind,
+                BindingKind::Lexical { .. } | BindingKind::FunctionName { .. }
+            ) {
             ClosureVariableName::Constant(ensure_string_constant(function, name)?)
         } else {
             ClosureVariableName::None
@@ -7815,13 +8086,54 @@ fn capture_binding_path(
             ),
             kind: closure_kind(kind),
         };
-        let index = ensure_closure_variable(function, descriptor)?;
+        let index = if retain_name {
+            ensure_eval_closure_variable(function, descriptor)?
+        } else {
+            ensure_closure_variable(function, descriptor)?
+        };
         source = ClosureSource::ParentClosure(index);
         final_index = Some(index);
     }
     final_index
         .map(|index| (index, kind))
         .ok_or_else(|| Error::internal("closure path did not cross a function boundary"))
+}
+
+/// Preserve the semantic name on every relay used by a direct-eval scope
+/// descriptor. Ordinary identifier resolution may already have allocated the
+/// same storage slot without its optional name; in that case the eval linker
+/// upgrades the existing slot instead of manufacturing a second VarRef.
+fn ensure_eval_closure_variable(
+    function: &mut FunctionIr,
+    descriptor: ClosureVariable,
+) -> Result<u16, Error> {
+    if let Some((index, candidate)) = function
+        .closure_variables
+        .iter_mut()
+        .enumerate()
+        .find(|(_, candidate)| same_closure_storage(candidate, &descriptor))
+    {
+        if *candidate == descriptor {
+            return u16::try_from(index)
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"));
+        }
+        let same_metadata = candidate.source == descriptor.source
+            && candidate.is_lexical == descriptor.is_lexical
+            && candidate.is_const == descriptor.is_const
+            && candidate.kind == descriptor.kind;
+        if same_metadata
+            && candidate.name == ClosureVariableName::None
+            && matches!(descriptor.name, ClosureVariableName::Constant(_))
+        {
+            candidate.name = descriptor.name;
+            return u16::try_from(index)
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"));
+        }
+        return Err(Error::internal(
+            "closure storage source has conflicting eval binding metadata",
+        ));
+    }
+    push_closure_variable(function, descriptor)
 }
 
 fn ensure_closure_variable(
@@ -7910,6 +8222,25 @@ fn captured_locals_by_function(functions: &[FunctionIr]) -> Result<Vec<Vec<bool>
             return Err(Error::internal(
                 "function parent must precede its child while lowering",
             ));
+        }
+    }
+    for (function_id, function) in functions.iter().enumerate() {
+        let function_captured = captured
+            .get_mut(function_id)
+            .ok_or_else(|| Error::internal("eval captured-local function is out of bounds"))?;
+        for binding in function
+            .eval_environments
+            .iter()
+            .flat_map(|environment| environment.scopes.iter())
+            .flat_map(|scope| scope.bindings.iter())
+        {
+            let EvalBindingSource::Local(index) = binding.source else {
+                continue;
+            };
+            let captured = function_captured
+                .get_mut(usize::from(index))
+                .ok_or_else(|| Error::internal("eval captures an out-of-bounds local"))?;
+            *captured = true;
         }
     }
     Ok(captured)
@@ -8041,6 +8372,27 @@ fn lower_unlinked_tree(
     } = tree;
     let function_count = tree_functions.len();
     let captured_locals = captured_locals_by_function(&tree_functions)?;
+    // A descendant eval descriptor names bindings owned by each ancestor and
+    // by every intervening closure relay. Those names are semantic linker
+    // metadata, not optional debug labels, so StripDebug must retain them all
+    // the way QuickJS retains vardef names on an eval-visible function chain.
+    let mut retains_eval_names = tree_functions
+        .iter()
+        .map(|function| !function.eval_environments.is_empty())
+        .collect::<Vec<_>>();
+    for function_id in (1..function_count).rev() {
+        if !retains_eval_names[function_id] {
+            continue;
+        }
+        let parent = tree_functions[function_id]
+            .parent
+            .ok_or_else(|| Error::internal("eval-visible function has no parent"))?
+            .function;
+        let retained = retains_eval_names
+            .get_mut(parent)
+            .ok_or_else(|| Error::internal("eval-visible parent is out of bounds"))?;
+        *retained = true;
+    }
     let mut functions = tree_functions.into_iter().map(Some).collect::<Vec<_>>();
     let mut lowered = (0..function_count).map(|_| None).collect::<Vec<_>>();
 
@@ -8048,7 +8400,8 @@ fn lower_unlinked_tree(
         let mut function = functions[function_id]
             .take()
             .ok_or_else(|| Error::internal("function IR was lowered more than once"))?;
-        if debug_info == DebugInfoMode::StripDebug {
+        let retain_eval_names = retains_eval_names[function_id];
+        if debug_info == DebugInfoMode::StripDebug && !retain_eval_names {
             for descriptor in &mut function.closure_variables {
                 if descriptor.is_lexical
                     && descriptor.kind == ClosureVariableKind::Normal
@@ -8083,6 +8436,7 @@ fn lower_unlinked_tree(
                 .get_mut(usize::from(index))
                 .ok_or_else(|| Error::internal("local binding definition is out of bounds"))?;
             let name = if debug_info == DebugInfoMode::StripDebug
+                && !retain_eval_names
                 && matches!(binding.kind, BindingKind::Lexical { .. })
             {
                 None
@@ -8174,6 +8528,7 @@ fn lower_unlinked_tree(
             )
         };
         let unlinked = unlinked
+            .with_eval_environments(function.eval_environments)
             .with_name(func_name)
             .with_variable_definitions(argument_definitions, local_definitions);
         lowered[function_id] = Some(match debug {
@@ -8323,14 +8678,19 @@ fn lower_ops(operations: Vec<SpannedIrOp>, scopes: &[ScopeLifecycle]) -> Result<
             IrOp::EvalCall {
                 argument_count,
                 scope,
+                environment,
             } => {
-                // Validate the retained parser scope before deliberately
-                // discarding it for the non-String shell. String execution
-                // will publish a linked environment descriptor here instead.
+                // Retain the parser scope as an IR invariant until lowering,
+                // but publish only its immutable linked descriptor ordinal.
                 scopes
                     .get(scope.0)
                     .ok_or_else(|| Error::internal("eval call scope is out of bounds"))?;
-                code.push(Instruction::Eval(argument_count));
+                let environment = environment
+                    .ok_or_else(|| Error::internal("eval call has no linked environment"))?;
+                code.push(Instruction::Eval {
+                    argument_count,
+                    environment,
+                });
                 pc_sites.push(pc_site);
             }
             IrOp::PushConstant(index) => {
@@ -8622,6 +8982,7 @@ mod tests {
     use crate::error::ErrorKind;
     use crate::heap::{
         ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
+        EvalBindingSource, EvalScopeKind, EvalVariableEnvironment,
     };
     use crate::lexer::{LexError, LexErrorKind, Position, Span};
     use crate::object::{
@@ -12174,7 +12535,15 @@ mod tests {
             let code = runtime.test_function_code(&root).unwrap();
             assert_eq!(
                 code.iter()
-                    .filter(|instruction| matches!(instruction, Instruction::Eval(1)))
+                    .filter(|instruction| {
+                        matches!(
+                            instruction,
+                            Instruction::Eval {
+                                argument_count: 1,
+                                ..
+                            }
+                        )
+                    })
                     .count(),
                 1,
                 "direct source: {source}"
@@ -12190,7 +12559,15 @@ mod tests {
                 .test_function_code(&local)
                 .unwrap()
                 .iter()
-                .any(|instruction| matches!(instruction, Instruction::Eval(1)))
+                .any(|instruction| {
+                    matches!(
+                        instruction,
+                        Instruction::Eval {
+                            argument_count: 1,
+                            ..
+                        }
+                    )
+                })
         );
 
         for source in [
@@ -12207,10 +12584,259 @@ mod tests {
             assert!(
                 !code
                     .iter()
-                    .any(|instruction| matches!(instruction, Instruction::Eval(_))),
+                    .any(|instruction| matches!(instruction, Instruction::Eval { .. })),
                 "indirect/non-call source: {source}"
             );
         }
+    }
+
+    #[test]
+    fn compiler_links_and_deduplicates_direct_eval_scope_descriptors() {
+        let source = r#"
+            (function outer(outerArg) {
+                let outerLex = 1;
+                return function middle() {
+                    return function inner(local) {
+                        outerArg;
+                        {
+                            let outerLex = 2;
+                            let blockOnly = 3;
+                            eval(0);
+                            eval(1);
+                        }
+                        eval(2);
+                    };
+                };
+            })
+        "#;
+        let script = compile_unlinked_script(source).unwrap();
+        let outer = script.constants()[0].as_child().unwrap();
+        let middle = outer.constants()[0].as_child().unwrap();
+        let inner = middle.constants()[0].as_child().unwrap();
+
+        let instructions = inner
+            .code()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::Eval {
+                    argument_count,
+                    environment,
+                } => Some((*argument_count, *environment)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(instructions, [(1, 0), (1, 0), (1, 1)]);
+        assert_eq!(inner.eval_environments().len(), 2);
+
+        let block = &inner.eval_environments()[0];
+        assert_eq!(
+            block.variable_environment,
+            EvalVariableEnvironment::Scope(2)
+        );
+        assert!(!block.caller_strict);
+        assert_eq!(block.scopes[0].kind, EvalScopeKind::Block);
+        assert_eq!(block.scopes[1].kind, EvalScopeKind::FunctionBody);
+        assert_eq!(block.scopes[2].kind, EvalScopeKind::FunctionRoot);
+        assert_eq!(block.scopes[3].kind, EvalScopeKind::FunctionBody);
+        assert_eq!(block.scopes[4].kind, EvalScopeKind::FunctionRoot);
+        assert_eq!(block.scopes[5].kind, EvalScopeKind::FunctionBody);
+        assert_eq!(block.scopes[6].kind, EvalScopeKind::FunctionRoot);
+        assert_eq!(block.scopes[7].kind, EvalScopeKind::ProgramBody);
+        assert_eq!(block.scopes[8].kind, EvalScopeKind::FunctionRoot);
+
+        let names = |environment: &crate::heap::EvalEnvironment<JsString>| {
+            environment
+                .scopes
+                .iter()
+                .flat_map(|scope| scope.bindings.iter())
+                .map(|binding| {
+                    (
+                        binding.name.to_utf8_lossy(),
+                        binding.source,
+                        binding.is_lexical,
+                        binding.kind,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let block_names = names(block);
+        assert_eq!(block_names[0].0, "blockOnly");
+        assert_eq!(block_names[1].0, "outerLex");
+        assert!(matches!(block_names[0].1, EvalBindingSource::Local(_)));
+        assert!(matches!(block_names[1].1, EvalBindingSource::Local(_)));
+        assert!(block_names[0].2 && block_names[1].2);
+        assert!(block_names.iter().any(|binding| {
+            binding.0 == "outerLex" && matches!(binding.1, EvalBindingSource::Closure(_))
+        }));
+        assert!(block_names.iter().any(|binding| {
+            binding.0 == "outerArg" && matches!(binding.1, EvalBindingSource::Closure(_))
+        }));
+        assert!(block_names.iter().any(|binding| {
+            binding.0 == "outer"
+                && matches!(binding.1, EvalBindingSource::Closure(_))
+                && binding.3 == ClosureVariableKind::FunctionName
+        }));
+        assert!(block_names.iter().any(|binding| {
+            binding.0 == "middle"
+                && matches!(binding.1, EvalBindingSource::Closure(_))
+                && binding.3 == ClosureVariableKind::FunctionName
+        }));
+        assert!(block_names.iter().any(|binding| {
+            binding.0 == "inner"
+                && matches!(binding.1, EvalBindingSource::Local(_))
+                && binding.3 == ClosureVariableKind::FunctionName
+        }));
+        assert!(block_names.iter().any(|binding| {
+            binding.0 == "arguments" && matches!(binding.1, EvalBindingSource::Local(_))
+        }));
+        assert!(block_names.iter().any(|binding| {
+            binding.0 == "local" && matches!(binding.1, EvalBindingSource::Argument(0))
+        }));
+
+        let body_names = names(&inner.eval_environments()[1]);
+        assert!(!body_names.iter().any(|binding| binding.0 == "blockOnly"));
+        let first_outer_lex = body_names
+            .iter()
+            .find(|binding| binding.0 == "outerLex")
+            .unwrap();
+        assert!(matches!(first_outer_lex.1, EvalBindingSource::Closure(_)));
+        assert_eq!(
+            inner.eval_environments()[1].variable_environment,
+            EvalVariableEnvironment::Scope(1)
+        );
+
+        let block_only = inner
+            .local_definitions()
+            .iter()
+            .position(|definition| {
+                definition
+                    .name
+                    .as_ref()
+                    .is_some_and(|name| name.to_utf8_lossy() == "blockOnly")
+            })
+            .and_then(|index| u16::try_from(index).ok())
+            .unwrap();
+        assert!(inner.code().iter().any(
+            |instruction| matches!(instruction, Instruction::CloseLocal(index) if *index == block_only)
+        ));
+        assert!(outer.metadata().function_name_local.is_some());
+        assert!(middle.metadata().function_name_local.is_some());
+        assert!(inner.metadata().function_name_local.is_some());
+        let outer_lex_closure = block_names
+            .iter()
+            .find_map(|binding| match (binding.0.as_str(), binding.1) {
+                ("outerLex", EvalBindingSource::Closure(index)) => Some(index),
+                _ => None,
+            })
+            .unwrap();
+        let ClosureSource::ParentClosure(relay) =
+            inner.closure_variables()[usize::from(outer_lex_closure)].source
+        else {
+            panic!("outer eval binding did not cross the intermediate function relay");
+        };
+        assert!(matches!(
+            middle.closure_variables()[usize::from(relay)].source,
+            ClosureSource::ParentLocal(_)
+        ));
+
+        // The ordinary reference above allocates unnamed relay slots before
+        // eval linking. Direct eval upgrades that exact chain in place so its
+        // semantic name can be authenticated against the defining argument.
+        let outer_arg_closure = block_names
+            .iter()
+            .find_map(|binding| match (binding.0.as_str(), binding.1) {
+                ("outerArg", EvalBindingSource::Closure(index)) => Some(index),
+                _ => None,
+            })
+            .unwrap();
+        let inner_outer_arg = inner.closure_variables()[usize::from(outer_arg_closure)];
+        assert!(inner.code().iter().any(
+            |instruction| matches!(instruction, Instruction::GetVarRef(index) if *index == outer_arg_closure)
+        ));
+        let ClosureVariableName::Constant(inner_name) = inner_outer_arg.name else {
+            panic!("eval-visible ordinary closure did not retain its name");
+        };
+        assert!(matches!(
+            inner.constants()[usize::try_from(inner_name).unwrap()].as_primitive(),
+            Some(Value::String(name)) if name.to_utf8_lossy() == "outerArg"
+        ));
+        let ClosureSource::ParentClosure(middle_outer_arg) = inner_outer_arg.source else {
+            panic!("outer argument did not cross the intermediate relay");
+        };
+        assert_eq!(
+            inner
+                .closure_variables()
+                .iter()
+                .filter(|descriptor| descriptor.source == inner_outer_arg.source)
+                .count(),
+            1,
+            "eval name retention must upgrade the existing inner slot"
+        );
+        let middle_outer_arg = middle.closure_variables()[usize::from(middle_outer_arg)];
+        assert_eq!(
+            middle
+                .closure_variables()
+                .iter()
+                .filter(|descriptor| descriptor.source == middle_outer_arg.source)
+                .count(),
+            1,
+            "eval name retention must upgrade the existing relay slot"
+        );
+        let ClosureVariableName::Constant(middle_name) = middle_outer_arg.name else {
+            panic!("intermediate eval relay did not retain its ordinary name");
+        };
+        assert!(matches!(
+            middle.constants()[usize::try_from(middle_name).unwrap()].as_primitive(),
+            Some(Value::String(name)) if name.to_utf8_lossy() == "outerArg"
+        ));
+    }
+
+    #[test]
+    fn eval_scope_descriptors_are_semantic_metadata_in_strip_debug_mode() {
+        let source = r#"
+            (function outer(argument) {
+                let captured = 1;
+                return function inner() {
+                    { let local = 2; eval(0); }
+                    return captured;
+                };
+            })
+        "#;
+        let full = compile_unlinked_script_with_filename(
+            source,
+            "eval-descriptor.js",
+            DebugInfoMode::Full,
+        )
+        .unwrap();
+        let stripped = compile_unlinked_script_with_filename(
+            source,
+            "eval-descriptor.js",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        let full_outer = full.constants()[0].as_child().unwrap();
+        let stripped_outer = stripped.constants()[0].as_child().unwrap();
+        let full_inner = full_outer.constants()[0].as_child().unwrap();
+        let stripped_inner = stripped_outer.constants()[0].as_child().unwrap();
+
+        assert_eq!(
+            full_inner.eval_environments(),
+            stripped_inner.eval_environments()
+        );
+        assert_eq!(
+            full_inner.closure_variables(),
+            stripped_inner.closure_variables()
+        );
+        assert!(stripped_inner.local_definitions().iter().any(|definition| {
+            definition
+                .name
+                .as_ref()
+                .is_some_and(|name| name.to_utf8_lossy() == "local")
+        }));
+
+        let runtime = Runtime::new();
+        runtime.set_debug_info_mode(DebugInfoMode::StripDebug);
+        runtime.new_context().compile(source).unwrap();
     }
 
     #[test]

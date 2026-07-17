@@ -633,6 +633,68 @@ pub struct VariableDefinition {
     pub kind: ClosureVariableKind,
 }
 
+/// Storage occupied by a binding visible to one syntactic direct-eval site.
+///
+/// Unlike [`ClosureSource`], these sources always refer to the function whose
+/// bytecode contains the eval instruction.  Publication verifies the source
+/// against that function's authoritative argument/local/closure metadata.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EvalBindingSource {
+    Local(u16),
+    Argument(u16),
+    Closure(u16),
+}
+
+/// Syntactic scope represented in a direct-eval environment descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EvalScopeKind {
+    FunctionRoot,
+    FunctionBody,
+    ProgramBody,
+    Block,
+    If,
+    For,
+    Switch,
+    Catch,
+}
+
+/// Variable-environment destination used for declarations introduced by eval.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EvalVariableEnvironment {
+    Global,
+    Scope(u16),
+}
+
+/// One named binding visible from a syntactic direct-eval call site.
+///
+/// Compiler drafts use [`JsString`] names. Runtime publication interns each
+/// name and stores the corresponding [`Atom`] while the owning bytecode node
+/// retains that atom through `auxiliary_atoms`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalBinding<Name> {
+    pub name: Name,
+    pub source: EvalBindingSource,
+    pub is_lexical: bool,
+    pub is_const: bool,
+    pub kind: ClosureVariableKind,
+}
+
+/// One lexical scope visible from a syntactic direct-eval call site.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalScope<Name> {
+    pub kind: EvalScopeKind,
+    pub bindings: Box<[EvalBinding<Name>]>,
+}
+
+/// Immutable description of the bindings and declaration destination visible
+/// to one syntactic direct-eval call site.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalEnvironment<Name> {
+    pub scopes: Box<[EvalScope<Name>]>,
+    pub variable_environment: EvalVariableEnvironment,
+    pub caller_strict: bool,
+}
+
 /// Runtime-owned immutable bytecode, constant pool, and function realm.
 ///
 /// `code` is an `Rc` leaf with no runtime edges.  The VM may cheaply clone it
@@ -650,6 +712,7 @@ pub struct FunctionBytecodeData {
     pub argument_definitions: Rc<[VariableDefinition]>,
     pub local_definitions: Rc<[VariableDefinition]>,
     pub closure_variables: Rc<[ClosureVariable]>,
+    pub eval_environments: Rc<[EvalEnvironment<Atom>]>,
     pub debug: Option<FunctionDebugInfo>,
     /// Atom references owned by bytecode metadata/opcode operands.
     ///
@@ -3407,7 +3470,14 @@ impl Heap {
                     | ClosureSource::Global
                     | ClosureSource::ParentGlobal(_)
             ) || descriptor.kind == ClosureVariableKind::FunctionName;
-            let allows_name = requires_name || descriptor.is_lexical;
+            let allows_name = requires_name
+                || descriptor.is_lexical
+                || matches!(
+                    descriptor.source,
+                    ClosureSource::ParentLocal(_)
+                        | ClosureSource::ParentArgument(_)
+                        | ClosureSource::ParentClosure(_)
+                );
             if descriptor.source == ClosureSource::GlobalDeclaration
                 && let ClosureVariableName::Atom(atom) = descriptor.name
             {
@@ -3475,6 +3545,27 @@ impl Heap {
                     ));
                 }
             }
+        }
+        for binding in bytecode
+            .eval_environments
+            .iter()
+            .flat_map(|environment| environment.scopes.iter())
+            .flat_map(|scope| scope.bindings.iter())
+        {
+            if binding.name.is_null() {
+                return Err(HeapError::Invariant("eval binding name is the null atom"));
+            }
+            let Some(count) = owned_name_atoms.get_mut(&binding.name) else {
+                return Err(HeapError::Invariant(
+                    "eval binding name atom is not owned by bytecode metadata",
+                ));
+            };
+            if *count == 0 {
+                return Err(HeapError::Invariant(
+                    "eval binding name atom ownership multiplicity is too small",
+                ));
+            }
+            *count -= 1;
         }
         let (index, generation) = self.reserve(HeapNodeKind::FunctionBytecode)?;
         let id = FunctionBytecodeId { index, generation };
@@ -7245,6 +7336,7 @@ mod tests {
             argument_definitions: Rc::from([]),
             local_definitions: Rc::from([]),
             closure_variables: Rc::from([]),
+            eval_environments: Rc::from([]),
             debug: None,
             auxiliary_atoms: auxiliary_atoms.into_boxed_slice(),
         }
@@ -7423,6 +7515,66 @@ mod tests {
         assert_eq!(
             heap.release_function_bytecode(published).unwrap().atoms,
             vec![name]
+        );
+        heap.release_context(context).unwrap();
+        heap.release_shape(shape).unwrap();
+    }
+
+    #[test]
+    fn bytecode_allocation_requires_one_atom_reference_per_eval_binding_name() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let prototype = leaf(&mut heap, shape);
+        let context = heap
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+                prototype,
+            ))
+            .unwrap();
+        heap.release_object(prototype).unwrap();
+
+        let code: Rc<[Instruction]> = Rc::from([]);
+        let name = Atom::from_raw(53);
+        let make_bytecode = |owned_names: Vec<Atom>| {
+            let mut bytecode = bytecode(&code, context, Vec::new(), owned_names);
+            bytecode.metadata.local_count = 1;
+            bytecode.local_definitions = Rc::from([VariableDefinition {
+                name: Some(name),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }]);
+            bytecode.eval_environments = Rc::from([EvalEnvironment {
+                scopes: vec![EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: vec![EvalBinding {
+                        name,
+                        source: EvalBindingSource::Local(0),
+                        is_lexical: false,
+                        is_const: false,
+                        kind: ClosureVariableKind::Normal,
+                    }]
+                    .into_boxed_slice(),
+                }]
+                .into_boxed_slice(),
+                variable_environment: EvalVariableEnvironment::Scope(0),
+                caller_strict: false,
+            }]);
+            bytecode
+        };
+
+        assert_eq!(
+            heap.allocate_function_bytecode(make_bytecode(vec![name])),
+            Err(HeapError::Invariant(
+                "eval binding name atom ownership multiplicity is too small"
+            ))
+        );
+        let published = heap
+            .allocate_function_bytecode(make_bytecode(vec![name, name]))
+            .unwrap();
+        assert_eq!(
+            heap.release_function_bytecode(published).unwrap().atoms,
+            vec![name, name]
         );
         heap.release_context(context).unwrap();
         heap.release_shape(shape).unwrap();

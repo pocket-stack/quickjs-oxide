@@ -38,17 +38,17 @@ use crate::heap::{
     AutoInitProperty, BigIntAsNKind, BytecodeConstant, ClosureSource, ClosureVariable,
     ClosureVariableKind, ClosureVariableName, ConstructorKind, ContextData, ContextId,
     DateGetFieldKind, DateNativeKind, DateSetFieldKind, DateStringMethod, DynamicFunctionKind,
-    ErrorConstructorKind, ForInCandidate, ForInIteratorData, ForInProperty, FunctionBytecodeData,
-    FunctionBytecodeId, FunctionDebugInfo, FunctionDebugPosition, FunctionKind, FunctionMetadata,
-    GcStats, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts,
-    HeapError, MathBinaryKind, MathMinMaxKind, MathUnaryKind, NativeCProto, NativeFunctionId,
-    NumberFormatKind, NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData,
-    ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind, ObjectKeysKind, ObjectKind,
-    ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot,
-    RawValue, ReflectKind, RegExpNativeKind, ShapeId, StringCaseKind, StringCharAtKind,
-    StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind, StringReplaceKind,
-    StringStaticKind, StringSubrangeKind, StringTrimKind, StringWellFormedKind, SymbolRegistryKind,
-    VarRefData, VarRefId, VariableDefinition,
+    ErrorConstructorKind, EvalEnvironment, ForInCandidate, ForInIteratorData, ForInProperty,
+    FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo, FunctionDebugPosition,
+    FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap,
+    HeapCleanup, HeapCounts, HeapError, MathBinaryKind, MathMinMaxKind, MathUnaryKind,
+    NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
+    ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind,
+    ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind,
+    PrimitiveObjectData, PropertySlot, RawValue, ReflectKind, RegExpNativeKind, ShapeId,
+    StringCaseKind, StringCharAtKind, StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind,
+    StringPadKind, StringReplaceKind, StringStaticKind, StringSubrangeKind, StringTrimKind,
+    StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -356,6 +356,7 @@ struct PublishedFunctionSnapshot {
     argument_definitions: Rc<[VariableDefinition]>,
     local_definitions: Rc<[VariableDefinition]>,
     closure_variables: Rc<[ClosureVariable]>,
+    eval_environments: Rc<[EvalEnvironment<Atom>]>,
     metadata: FunctionMetadata,
     realm: ContextId,
 }
@@ -437,6 +438,7 @@ struct FlatFunction {
     argument_definitions: Vec<UnlinkedVariableDefinition>,
     local_definitions: Vec<UnlinkedVariableDefinition>,
     closure_variables: Vec<ClosureVariable>,
+    eval_environments: Vec<EvalEnvironment<JsString>>,
     debug: Option<UnlinkedFunctionDebug>,
 }
 
@@ -449,6 +451,7 @@ struct FlattenFrame {
     argument_definitions: Vec<UnlinkedVariableDefinition>,
     local_definitions: Vec<UnlinkedVariableDefinition>,
     closure_variables: Vec<ClosureVariable>,
+    eval_environments: Vec<EvalEnvironment<JsString>>,
     debug: Option<UnlinkedFunctionDebug>,
 }
 
@@ -464,6 +467,7 @@ impl FlattenFrame {
             argument_definitions: parts.argument_definitions,
             local_definitions: parts.local_definitions,
             closure_variables: parts.closure_variables,
+            eval_environments: parts.eval_environments,
             debug: parts.debug,
         }
     }
@@ -4019,10 +4023,12 @@ impl Runtime {
             }
 
             let mut closure_variables = function.closure_variables;
+            let eval_environments = function.eval_environments;
             let argument_definitions = function.argument_definitions;
             let local_definitions = function.local_definitions;
             let mut linked_argument_definitions = Vec::with_capacity(argument_definitions.len());
             let mut linked_local_definitions = Vec::with_capacity(local_definitions.len());
+            let mut linked_eval_environments = Vec::with_capacity(eval_environments.len());
             let mut unlinked_debug = function.debug;
             let mut linked_debug = None;
             let mut auxiliary_atoms = Vec::new();
@@ -4110,6 +4116,11 @@ impl Runtime {
                             kind: definition.kind,
                         });
                     }
+                    linked_eval_environments = bytecode_publish::link_eval_environments(
+                        &mut state,
+                        eval_environments,
+                        &mut auxiliary_atoms,
+                    )?;
                     Ok(())
                 })();
                 if let Err(error) = linking {
@@ -4127,6 +4138,7 @@ impl Runtime {
                     argument_definitions: linked_argument_definitions.into(),
                     local_definitions: linked_local_definitions.into(),
                     closure_variables: closure_variables.into(),
+                    eval_environments: linked_eval_environments.into(),
                     debug: linked_debug,
                     auxiliary_atoms: auxiliary_atoms.into_boxed_slice(),
                 };
@@ -4235,6 +4247,7 @@ impl Runtime {
             argument_definitions: bytecode.argument_definitions.clone(),
             local_definitions: bytecode.local_definitions.clone(),
             closure_variables: bytecode.closure_variables.clone(),
+            eval_environments: bytecode.eval_environments.clone(),
             metadata: bytecode.metadata,
             realm: bytecode.realm,
         })
