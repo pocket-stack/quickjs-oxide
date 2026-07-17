@@ -1,0 +1,22 @@
+# R1r freezes the complete RegExp match-indices slice after declaring only
+# regexp-match-indices. Independent dotAll, v-mode, host, parser, and harness
+# requirements remain gated.
+quickjs=2026-06-04
+test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
+test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
+test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
+oxide_profile_sha256=b39bee15a2aaa88e00c8f7ca6cb0736313456d43a77e176a8c5cf7844e9ea718
+schema=test262-canonical-classified-v2
+mode=both
+timeout_ms=30000
+paths=31
+variants=62
+runnable=50
+passes=38
+manifest_sha256=42718ed958cfbd5fe5a70876274f369fc84bd066910fea474f345fdc96d3aa33
+keys_sha256=fd36b6d7b2f0d62b61a6a7b292716295c5317947e4213e493c397625b4494460
+nonpass_sha256=7e5cce9d1743f3fe2ec8a61fd14db1616456f7cdb813f2bd8bc784a180d37c17
+tsv_sha256=b626f453c4a22402c9bf35f0b6a95ad3cf54cb2095ff21c023a150ec6904a230
+jsonl_sha256=edc7cb06eb9d18596202ae4d6f9faa4e56c1e2c4a6a81b51a54a26b0b34cd31f
+summary=fail-parse=2 harness-error=4 pass=38 unsupported-feature=10 unsupported-host-create-realm=2 unsupported-parser=6

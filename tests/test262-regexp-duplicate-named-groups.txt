@@ -1,8 +1,8 @@
 # Frozen duplicate-named-capture measurement slice for the pinned Test262 checkout.
 #
 # This is the complete bytewise-sorted set of all 19 paths tagged with
-# regexp-duplicate-named-groups. The three regexp-match-indices co-tagged paths
-# remain governed by that independent capability.
+# regexp-duplicate-named-groups. R1r admits the independent match-indices
+# capability exercised by three co-tagged paths.
 #
 # Exactly 19 unique paths expand to 38 sloppy/strict variants.
 #

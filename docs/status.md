@@ -10,13 +10,13 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 27 reviewed feature tags and 307 exact audited
+  capability profile now admits 28 reviewed feature tags and 307 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 27,531 passes: 26.98% raw, a 32.95% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 84.86% among the 32,443 variants with a
+  has 27,569 passes: 27.02% raw, a 32.99% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 84.86% among the 32,487 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -85,9 +85,16 @@ claim full parity.
   resolve as expected.
   R1q audits and declares duplicate named captures without changing the
   already-compatible engine. It adds 26 passes and 32 admitted jobs; all 38
-  complete-row changes stay inside the frozen 19-path set, while six arrow
-  variants reach the existing parser frontier and six match-indices variants
-  remain independently gated.
+  complete-row changes stay inside the frozen 19-path set. At that landing,
+  six arrow variants reached the existing parser frontier and six
+  match-indices variants remained independently gated. R1r likewise needs no
+  production engine change: a pinned QuickJS source-and-probe audit confirms
+  that the existing `d` flag, `hasIndices`, UTF-16 range, unmatched capture,
+  named `indices.groups`, construction, and descriptor behavior already have
+  target parity. Declaring `regexp-match-indices` adds 38 passes and 50
+  admitted jobs. All 50 outcome changes and ten detail-only changes stay
+  inside its frozen 31-path set, for 60 complete-row changes and no
+  previous-pass regression.
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -652,11 +659,11 @@ claim full parity.
   grammar and diagnostics, escaped Unicode/surrogate pairs, Annex B fallback,
   forward references, QuickJS's 8-bit alternative-scope wrap and forward-scan
   cursor quirk, lookbehind references, result descriptors/order, indices,
-  replacement, construction, copy, and legacy compile. The frozen
-  101-path/202-variant gate admits 184 variants and passes 158; its six parse
-  failures and 20 typed parser frontiers expose pre-existing arrow, class,
-  object-method, and destructuring gaps, while 18 variants retain honest
-  adjacent gates. Current focused TSV/JSONL hashes are
+  replacement, construction, copy, and legacy compile. At the R1p landing,
+  the frozen 101-path/202-variant gate admits 184 variants and passes 158; its
+  six parse failures and 20 typed parser frontiers expose pre-existing arrow,
+  class, object-method, and destructuring gaps, while 18 variants retain
+  honest adjacent gates. R1p focused TSV/JSONL hashes are
   `505845ba54ec78ae1a636f91f7285e447444d3ffca8b66a03592591573a15d26`
   and
   `5daec58cf49af34cdf2ad8e70d5a945513e6490180ab4c74e9e996f39d4fa234`.
@@ -680,9 +687,10 @@ claim full parity.
   multi-capture backreference selection, capture reset, result ordering, and
   defined-value replacement behavior. No production engine change is needed.
   The frozen 19-path/38-variant duplicate-name gate admits 32 variants and
-  passes 26. Six variants in three callback-heavy tests reach the existing
-  arrow parser frontier; six co-tagged variants remain behind
-  `regexp-match-indices`. Focused TSV/JSONL hashes are
+  passes 26 at the R1q landing. Six variants in three callback-heavy tests
+  reach the existing arrow parser frontier; the six co-tagged match-indices
+  variants remain gated in that historical report and are admitted by R1r.
+  Focused TSV/JSONL hashes are
   `bd55aacd10c14cf1f0f7a38e11a610ad3763bce8c4f326c9a6ae3ad548a8ef30`
   and
   `1b9dc971d9c965910b7e0bd88573e80553d17b74651c0ef4762dd34d998cc666`.
@@ -699,6 +707,42 @@ claim full parity.
   The profile now contains 27 reviewed features and 307 audited negative
   paths, with SHA-256
   `8b78e178e2c433f5c9f40b101482a74cb3c5dc61967aa9ab9ee523479e132aa8`.
+  `runtime.rs` remains 9,677 lines.
+
+  R1r audits and declares `regexp-match-indices` after pinned QuickJS source
+  review and focused probes confirm that the existing production engine
+  already matches the target's `d` flag and canonical flag order,
+  `hasIndices`, UTF-16 match ranges, unmatched-capture `undefined` values,
+  null-prototype named `indices.groups`, duplicate-name selection,
+  construction/legacy-compile behavior, and observable descriptors. No
+  production engine change is needed. Seven dedicated differential tests lock
+  result/pair descriptors, low-surrogate `lastIndex`, protocol propagation,
+  replacement non-observation, and nested defining realms against the pinned
+  oracle.
+
+  The frozen 31-path/62-variant gate admits 50 variants and passes 38. Two
+  variants expose the existing arrow-function parse frontier, four stop in the
+  existing `deepEqual.js` harness frontier, and six reach the typed
+  object-setter parser frontier. Ten variants remain behind the independently
+  gated `regexp-dotall` feature, and two retain the missing `$262.createRealm`
+  host requirement. Focused TSV/JSONL hashes are
+  `b626f453c4a22402c9bf35f0b6a95ad3cf54cb2095ff21c023a150ec6904a230`
+  and
+  `edc7cb06eb9d18596202ae4d6f9faa4e56c1e2c4a6a81b51a54a26b0b34cd31f`.
+
+  The exact R1q/R1r join matches all 102,037 keys. It records 38
+  `unsupported-feature -> pass`, two `unsupported-feature -> fail-parse`, four
+  `unsupported-feature -> harness-error`, and six `unsupported-feature ->
+  unsupported-parser` transitions. All 50 outcome changes and ten detail-only
+  changes stay inside the focused manifest, for 60 complete-row changes and no
+  previous-pass regression. The vector reaches 27,569 passes and 34,773
+  admitted jobs. Full TSV/JSONL hashes are
+  `e09478accaf05c27e39555c5a4c1889617c97ce5c1454ddf945c7f675ea3d2ef`
+  and
+  `95ea74491558035ac02af4f60c3a2d202120798fc2ab08c41c7050a6031e950b`.
+  The profile now contains 28 reviewed features and 307 audited negative
+  paths, with SHA-256
+  `b39bee15a2aaa88e00c8f7ca6cb0736313456d43a77e176a8c5cf7844e9ea718`.
   `runtime.rs` remains 9,677 lines.
 
   Advanced grammar still fails closed: Unicode set/string properties, all
@@ -2990,6 +3034,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/run-test262-regexp-unicode-properties.sh
 ./scripts/run-test262-regexp-named-groups.sh
 ./scripts/run-test262-regexp-duplicate-named-groups.sh
+./scripts/run-test262-regexp-match-indices.sh
 ./scripts/test-test262-full.sh
 ```
 

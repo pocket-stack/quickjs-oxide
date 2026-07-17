@@ -1,0 +1,39 @@
+# Frozen RegExp match-indices measurement slice for the pinned Test262 checkout.
+#
+# This is the complete bytewise-sorted set of all 31 paths tagged with
+# regexp-match-indices. Independent dotAll, v-mode, and host requirements
+# remain authoritative.
+#
+# Exactly 31 unique paths expand to 62 sloppy/strict variants.
+#
+test/built-ins/RegExp/duplicate-flags.js
+test/built-ins/RegExp/match-indices/indices-array-element.js
+test/built-ins/RegExp/match-indices/indices-array-matched.js
+test/built-ins/RegExp/match-indices/indices-array-non-unicode-match.js
+test/built-ins/RegExp/match-indices/indices-array-properties.js
+test/built-ins/RegExp/match-indices/indices-array-unicode-match.js
+test/built-ins/RegExp/match-indices/indices-array-unicode-property-names.js
+test/built-ins/RegExp/match-indices/indices-array-unmatched.js
+test/built-ins/RegExp/match-indices/indices-array.js
+test/built-ins/RegExp/match-indices/indices-groups-object-undefined.js
+test/built-ins/RegExp/match-indices/indices-groups-object-unmatched.js
+test/built-ins/RegExp/match-indices/indices-groups-object.js
+test/built-ins/RegExp/match-indices/indices-groups-properties.js
+test/built-ins/RegExp/match-indices/indices-property.js
+test/built-ins/RegExp/match-indices/no-indices-array.js
+test/built-ins/RegExp/named-groups/duplicate-names-match-indices.js
+test/built-ins/RegExp/prototype/exec/duplicate-named-indices-groups-properties.js
+test/built-ins/RegExp/prototype/flags/coercion-hasIndices.js
+test/built-ins/RegExp/prototype/flags/get-order.js
+test/built-ins/RegExp/prototype/flags/rethrow.js
+test/built-ins/RegExp/prototype/flags/return-order.js
+test/built-ins/RegExp/prototype/flags/this-val-regexp.js
+test/built-ins/RegExp/prototype/hasIndices/cross-realm.js
+test/built-ins/RegExp/prototype/hasIndices/length.js
+test/built-ins/RegExp/prototype/hasIndices/name.js
+test/built-ins/RegExp/prototype/hasIndices/prop-desc.js
+test/built-ins/RegExp/prototype/hasIndices/this-val-invalid-obj.js
+test/built-ins/RegExp/prototype/hasIndices/this-val-non-obj.js
+test/built-ins/RegExp/prototype/hasIndices/this-val-regexp-prototype.js
+test/built-ins/RegExp/prototype/hasIndices/this-val-regexp.js
+test/built-ins/String/prototype/match/duplicate-named-indices-groups-properties.js

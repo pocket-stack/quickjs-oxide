@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Reproduce the complete classified outcome vector for numbered backreferences.
+# Reproduce the complete classified outcome vector for RegExp match indices.
 
 set -euo pipefail
 export TZ=America/Los_Angeles
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$script_dir/.." && pwd)
-baseline=tests/test262-regexp-backreferences-baseline.txt
-manifest=tests/test262-regexp-backreferences.txt
-report=target/test262-regexp-backreferences.tsv
-json_report=target/test262-regexp-backreferences.jsonl
+baseline=tests/test262-regexp-match-indices-baseline.txt
+manifest=tests/test262-regexp-match-indices.txt
+report=target/test262-regexp-match-indices.tsv
+json_report=target/test262-regexp-match-indices.jsonl
 workers=${TEST262_WORKERS:-8}
 
 read_value() {
@@ -55,7 +55,7 @@ expected_keys() {
 
 cd -- "$root"
 if [[ ! -f "$baseline" ]]; then
-    echo "error: numbered-backreference Test262 baseline is missing: $baseline" >&2
+    echo "error: match-indices Test262 baseline is missing: $baseline" >&2
     exit 1
 fi
 suite=$("$script_dir/prepare-test262.sh")
@@ -75,11 +75,8 @@ expected_variants=$(read_value variants)
 expected_runnable=$(read_value runnable)
 expected_passes=$(read_value passes)
 expected_manifest=$(read_value manifest_sha256)
-expected_r1k_full_tsv=$(read_value r1k_full_tsv_sha256)
-expected_r1k_keys=$(read_value r1k_keys_sha256)
-expected_r1k_selected=$(read_value r1k_selected_sha256)
-expected_r1k_variants=$(read_value r1k_variants)
-expected_r1k_summary=$(read_value r1k_summary)
+expected_keys_hash=$(read_value keys_sha256)
+expected_nonpass=$(read_value nonpass_sha256)
 expected_tsv=$(read_value tsv_sha256)
 expected_jsonl=$(read_value jsonl_sha256)
 expected_summary=$(read_value summary)
@@ -93,17 +90,11 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_schema" != "test262-canonical-classified-v2" \
     || "$expected_mode" != "both" \
     || "$timeout_ms" != "30000" \
-    || "$expected_paths" != "49" \
-    || "$expected_variants" != "98" \
-    || "$expected_runnable" != "98" \
-    || "$expected_passes" != "94" \
-    || "$expected_manifest" != "80b226f4d12eaf8f3f87a3188051b05cc66e623b7e24a081652dbe4370b5e1ce" \
-    || "$expected_r1k_full_tsv" != "5f0e4601ce6b0212dacdd5c98fc1ba4cb2c8c217e3f0eb6c91411ad6e3f243fa" \
-    || "$expected_r1k_keys" != "88327e165201d7d7d9d6a4e8059d115a828d73cf616f00bee91c3fca45277bbf" \
-    || "$expected_r1k_selected" != "b70d7aaede4f9061b147f8190c757271d1deccf580eb6e8cd9c93f98f52e9609" \
-    || "$expected_r1k_variants" != "98" \
-    || "$expected_r1k_summary" != "pass=6 unsupported-feature=20 unsupported-negative-provenance=4 unsupported-parser=66 unsupported-runtime=2" ]]; then
-    echo "error: numbered-backreference R1k provenance metadata drifted" >&2
+    || "$expected_paths" != "31" \
+    || "$expected_variants" != "62" \
+    || "$expected_runnable" != "50" \
+    || "$expected_passes" != "38" ]]; then
+    echo "error: match-indices baseline metadata drifted" >&2
     exit 1
 fi
 
@@ -111,26 +102,18 @@ actual_manifest_paths=$(awk 'NF && $1 !~ /^#/ { count++ } END { print count + 0 
 unique_manifest_paths=$(awk 'NF && $1 !~ /^#/ { print }' "$manifest" | LC_ALL=C sort -u | wc -l | tr -d '[:space:]')
 if [[ "$actual_manifest_paths" != "$expected_paths" \
     || "$unique_manifest_paths" != "$expected_paths" ]]; then
-    echo "error: numbered-backreference manifest cardinality drifted" >&2
-    echo "paths expected/actual/unique: $expected_paths / $actual_manifest_paths / $unique_manifest_paths" >&2
+    echo "error: match-indices manifest cardinality drifted" >&2
     exit 1
 fi
 if ! awk 'NF && $1 !~ /^#/ { print }' "$manifest" | LC_ALL=C sort -c; then
-    echo "error: numbered-backreference manifest is not bytewise sorted" >&2
+    echo "error: match-indices manifest is not bytewise sorted" >&2
     exit 1
 fi
 actual_manifest=$(awk 'NF && $1 !~ /^#/ { print }' "$manifest" | sha256_stream)
-if [[ "$actual_manifest" != "$expected_manifest" ]]; then
-    echo "error: numbered-backreference manifest content drifted" >&2
-    echo "expected: $expected_manifest" >&2
-    echo "actual:   $actual_manifest" >&2
-    exit 1
-fi
-actual_keys=$(expected_keys | LC_ALL=C sort | sha256_stream)
-if [[ "$actual_keys" != "$expected_r1k_keys" ]]; then
-    echo "error: numbered-backreference manifest variant keys drifted" >&2
-    echo "expected: $expected_r1k_keys" >&2
-    echo "actual:   $actual_keys" >&2
+actual_keys_hash=$(expected_keys | LC_ALL=C sort | sha256_stream)
+if [[ "$actual_manifest" != "$expected_manifest" \
+    || "$actual_keys_hash" != "$expected_keys_hash" ]]; then
+    echo "error: match-indices manifest content drifted" >&2
     exit 1
 fi
 
@@ -170,54 +153,38 @@ if [[ "$actual_quickjs" != "$expected_quickjs" \
     || "$actual_mode" != "$expected_mode" \
     || "$actual_variants" != "$expected_variants" \
     || "$actual_runnable" != "$expected_runnable" ]]; then
-    echo "error: numbered-backreference Test262 baseline metadata drifted" >&2
-    echo "quickjs expected/actual:  $expected_quickjs / $actual_quickjs" >&2
-    echo "test262 expected/actual:  $expected_test262 / $actual_test262" >&2
-    echo "patch expected/actual:    $expected_patch / $actual_patch" >&2
-    echo "config expected/actual:   $expected_config / $actual_config" >&2
-    echo "metadata expected/actual: $expected_metadata / $actual_metadata" >&2
-    echo "profile expected/actual:  $expected_profile / $actual_profile" >&2
-    echo "schema expected/actual:   $expected_schema / $actual_schema" >&2
-    echo "mode expected/actual:     $expected_mode / $actual_mode" >&2
-    echo "variants expected/actual: $expected_variants / $actual_variants" >&2
-    echo "runnable expected/actual: $expected_runnable / $actual_runnable" >&2
+    echo "error: match-indices Test262 baseline metadata drifted" >&2
     exit 1
 fi
 
 if ! diff -u \
     <(expected_keys | LC_ALL=C sort) \
     <(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") { print $1 "\t" $2 }' "$report" | LC_ALL=C sort); then
-    echo "error: numbered-backreference report keys drifted from the frozen manifest" >&2
+    echo "error: match-indices report keys drifted from the frozen manifest" >&2
     exit 1
 fi
 
 actual_summary=$(tail -n 1 "$report")
-if [[ "$actual_summary" != "# summary $expected_summary" ]]; then
-    echo "error: numbered-backreference classified summary drifted" >&2
-    echo "expected: # summary $expected_summary" >&2
-    echo "actual:   $actual_summary" >&2
-    exit 1
-fi
-if [[ "$expected_passes" == 0 ]]; then
-    if [[ " $expected_summary " == *" pass="* ]]; then
-        echo "error: zero-pass numbered-backreference baseline records a pass outcome" >&2
-        exit 1
-    fi
-elif [[ " $expected_summary " != *" pass=$expected_passes "* ]]; then
-    echo "error: numbered-backreference pass count is inconsistent with the pinned summary" >&2
+actual_passes=$(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") && $7 == "pass" { count++ } END { print count + 0 }' "$report")
+actual_nonpass=$(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") && $7 != "pass" { print $1 "\t" $2 "\t" $7 "\t" $8 "\t" $9 "\t" $10 }' "$report" | sha256_stream)
+if [[ "$actual_summary" != "# summary $expected_summary" \
+    || "$actual_passes" != "$expected_passes" \
+    || "$actual_nonpass" != "$expected_nonpass" ]]; then
+    echo "error: match-indices classified outcomes drifted" >&2
     exit 1
 fi
 
+actual_jsonl_lines=$(wc -l < "$json_report" | tr -d '[:space:]')
+expected_jsonl_lines=$((expected_variants + 2))
 actual_tsv=$(sha256_file "$report")
 actual_jsonl=$(sha256_file "$json_report")
-if [[ "$actual_tsv" != "$expected_tsv" || "$actual_jsonl" != "$expected_jsonl" ]]; then
-    echo "error: numbered-backreference classified vector drifted" >&2
-    echo "TSV expected:   $expected_tsv" >&2
-    echo "TSV actual:     $actual_tsv" >&2
-    echo "JSONL expected: $expected_jsonl" >&2
-    echo "JSONL actual:   $actual_jsonl" >&2
+if [[ "$actual_jsonl_lines" != "$expected_jsonl_lines" \
+    || "$actual_tsv" != "$expected_tsv" \
+    || "$actual_jsonl" != "$expected_jsonl" ]]; then
+    echo "error: match-indices classified TSV/JSONL vector drifted" >&2
     exit 1
 fi
 
-printf 'numbered-backreference Test262 vector matches: %s pass of %s variants across %s paths\n' \
+"$script_dir/check-rust-only.sh"
+printf 'match-indices Test262 vector matches: %s pass of %s variants across %s paths\n' \
     "$expected_passes" "$expected_variants" "$expected_paths"
