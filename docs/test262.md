@@ -50,11 +50,11 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 29,013 pass;
+- 29,211 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 51,107 are classified as unsupported feature, mode, host capability, parser
+- 50,902 are classified as unsupported feature, mode, host capability, parser
   frontier, harness frontier, or unaudited negative-test provenance;
-- 1,009 fail to parse, 2,219 fail at runtime, 210 fail in the harness, and four
+- 1,014 fail to parse, 2,221 fail at runtime, 210 fail in the harness, and four
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 34,849 variants to execution. That count includes variants
@@ -63,14 +63,14 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 28.43% (`29,013 / 102,037`);
-- conservative target-scope lower bound: 34.72%
-  (`29,013 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 89.39%
-  (`29,013 / 32,455`).
+- raw suite pass rate: 28.63% (`29,211 / 102,037`);
+- conservative target-scope lower bound: 34.96%
+  (`29,211 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 89.44%
+  (`29,211 / 32,660`).
 
-The 34.72% figure is the useful whole-project progress floor, not a claim that
-the engine is 34.72% conformant. The 89.39% conditional rate measures quality
+The 34.96% figure is the useful whole-project progress floor, not a claim that
+the engine is 34.96% conformant. The 89.44% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion; R1u also demonstrates that this conditional rate can rise when
 previously ambiguous failures move to a more honest typed unsupported class.
@@ -88,9 +88,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`2ba53703827155be4ce36f11a52b48c3ac1bb4efc8f61da9cc31b6b1ca8e125a`
+`8eba52564839d3a11a92ac28c883494cfc51d1f49785b07e7d3ac62ec867965c`
 and
-`c9369e14acb1469b20aea4caab2c0a880cb7f040a72718d629f38e1301582650`.
+`54122f8b86f8cdbea6f3de6aa9532f770b72df1f6bf28bdc7cd62ec665b32ca1`.
 
 ## Milestone policy
 
@@ -1068,40 +1068,52 @@ the TSV/JSONL hashes remain
 and
 `c9369e14acb1469b20aea4caab2c0a880cb7f040a72718d629f38e1301582650`.
 
-## Frozen `with` frontier
+## R2b `with` statement gate
 
-The next dynamic-environment queue is now reproducible independently of the
-full vector. `tests/test262-with.txt` freezes every R2a path whose execution
-stops at the exact typed frontier
+The dynamic-environment cohort remains reproducible independently of the full
+vector. `tests/test262-with.txt` preserves every R2a path whose execution
+stopped at the exact typed frontier
 `with statements are not implemented yet`: 203 bytewise-sorted paths expand
-to 205 positive, synchronous script variants. The current vector contains 179
-`unsupported-parser` and 26 `unsupported-runtime` outcomes. It contains no
-feature, host, module, async, skipped, or negative-provenance classification;
-the runtime rows are String-source eval consumers of the same compiler
-boundary rather than a second semantic gap.
+to 205 positive, synchronous script variants. R2b removes that parser/runtime
+frontier completely. The focused result is 198 passes, five parse failures and
+two runtime failures. The five parse failures all reach the existing arrow
+function grammar gap; one runtime failure reaches generator syntax through
+String-source eval and the other reaches arrow syntax through direct eval.
+They remain in the stable cohort so later adjacent milestones can turn them
+into passes without rewriting this evidence boundary.
 
 The manifest and `(path, variant)` key-set SHA-256 values are
 `8f43b8f924d127814ea157637acebbb4e37fc89f97e6a76789e5e329d10250d6`
 and
 `1c04aebebd7c6e575113ca1466832c92096fef90af088aa1f3d317561aed0d4e`.
-The current focused TSV/JSONL SHA-256 values are
-`9946618dc7ca899af10ec391a77e32e1b76257896678ba62e83092f4d1330c46`
+The R2b focused TSV/JSONL SHA-256 values are
+`e22e130dfd23e5509aab68cf4ac244ecb6f5a827067c3622dc34014f9cf9d65d`
 and
-`271c868b72bfd867a671c0750d294600ff1191a4e40d6751560ddd9703e04169`.
-Five- and eight-worker focused reports are byte-identical.
+`cfc1aeeaf7fd6cc8ab1a3741cdbfe17db50b8a2817a054bf182838108cf22129`.
 Reproduce and validate the complete vector with
 `scripts/run-test262-with.sh`; the entry point derives the repository root and
 pinned suite location at runtime and does not encode a workstation path.
 
-This is an implementation queue, not a support claim. Matching QuickJS
-requires the hidden with-object scope binding and its closure/eval relay,
+This is a focused progress gate, not a full-parity claim. The implementation
+uses the hidden with-object scope binding and its closure/eval relay,
 `ToObject`, prototype-aware `HasProperty`, `Symbol.unscopables`, and the
 get/put/delete/make-reference/get-reference paths which preserve the implicit
 receiver of a call. The relevant upstream anchors are
 `quickjs.c::resolve_scope_var`, `var_object_test`, the `TOK_WITH` statement
-case, and `OP_with_*`; the existing eval-variable object is not a substitute
-because it has different ownership, lookup, unscopables, and Reference
-semantics.
+case, `JS_GetGlobalVarRef`, and `OP_with_*`. The eval-variable object remains a
+distinct environment source with different ownership and Reference timing.
+
+The exact R2a/R2b full join retains all 102,037 unique keys and changes only
+the 205 frozen rows. It records 173 `unsupported-parser -> pass`, five
+`unsupported-parser -> fail-parse`, one `unsupported-parser -> fail-runtime`,
+25 `unsupported-runtime -> pass`, and one `unsupported-runtime ->
+fail-runtime` transition. There are no missing, extra, duplicate,
+detail-only, outside-manifest, or previous-pass changes. The complete vector
+therefore rises by 198 passes to 29,211 while runnable remains 34,849. Full
+TSV/JSONL SHA-256 values are
+`8eba52564839d3a11a92ac28c883494cfc51d1f49785b07e7d3ac62ec867965c`
+and
+`54122f8b86f8cdbea6f3de6aa9532f770b72df1f6bf28bdc7cd62ec665b32ca1`.
 
 ## Runner contract
 

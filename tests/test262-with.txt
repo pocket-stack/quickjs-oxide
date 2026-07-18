@@ -1,9 +1,11 @@
-# Frozen `with` statement frontier for the pinned Test262 checkout.
+# Frozen `with` statement implementation cohort for the pinned Test262 checkout.
 #
-# This is the complete bytewise-sorted set of paths whose R2a full-vector
-# result stops at the typed `with statements are not implemented yet`
-# compiler/runtime boundary. All rows are positive, synchronous script cases;
-# module, async, host-only, and negative-provenance cohorts are absent.
+# This is the complete bytewise-sorted set of paths whose pre-R2b full-vector
+# result stopped at the typed `with statements are not implemented yet`
+# compiler/runtime boundary. R2b keeps the cohort stable as a progress gate:
+# 198 variants pass and seven expose independent arrow/generator grammar gaps.
+# All rows are positive, synchronous script cases; module, async, host-only,
+# and negative-provenance cohorts are absent.
 #
 # Exactly 203 unique paths expand to 205 variants.
 

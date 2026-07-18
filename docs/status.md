@@ -1,6 +1,6 @@
 # Implementation status
 
-Last audited: 2026-07-18. The completion definition remains
+Last audited: 2026-07-19. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
@@ -15,8 +15,8 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 29,013 passes: 28.43% raw, a 34.72% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 89.39% among the 32,455 variants with a
+  has 29,211 passes: 28.63% raw, a 34.96% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 89.44% among the 32,660 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -268,8 +268,35 @@ claim full parity.
   descriptor compatibility and publication checks stay in the existing
   split runtime modules.
 
-  `with`, generator/async and destructuring eval declarations, direct
-  `new.target`, and ill-formed UTF-16 source stay explicit frontiers.
+  R2b ports sloppy `with` through QuickJS-shaped scope and Reference
+  machinery. Each authored statement owns an authenticated hidden `<with>`
+  Object binding; resolver order interleaves lexical scopes, with objects and
+  eval variable objects, while `Symbol.unscopables`, repeated `HasProperty`,
+  delete, call receivers, for-in/of writes and captured lifetimes retain their
+  distinct paths. Typed VM operations keep environment sources out of ordinary
+  JavaScript values. `GlobalReference` mirrors `OP_make_var_ref`: it snapshots
+  a global property or unresolved sentinel before the RHS and consults the
+  current realm's live lexical VarRef object for TDZ/readonly checks, including
+  lexicals declared after a function's bytecode was published. Direct eval
+  imports dynamic lookup but deliberately retains QuickJS's later assignment
+  resolution and undefined call receiver.
+
+  A 26-case single-script differential plus two cross-script sequences match
+  QuickJS 2026-06-04. The frozen 203-path / 205-variant `with` cohort moves
+  from zero to 198 passes with no remaining `with` parser/runtime frontier.
+  Five rows expose the existing arrow parser gap, one direct-eval row exposes
+  the same gap at runtime, and one mixed staging row first reaches generator
+  syntax. The exact full join changes only those 205 rows, has no previous-pass
+  regression, and raises the complete vector to 29,211 passes; full TSV/JSONL
+  hashes are
+  `8eba52564839d3a11a92ac28c883494cfc51d1f49785b07e7d3ac62ec867965c`
+  and
+  `54122f8b86f8cdbea6f3de6aa9532f770b72df1f6bf28bdc7cd62ec665b32ca1`.
+  `runtime.rs` is 9,732 lines; the new dynamic-environment implementation is
+  in `runtime/vm_host/dynamic_environment.rs`.
+
+  Arrow functions, generator/async and destructuring eval declarations,
+  direct `new.target`, and ill-formed UTF-16 source stay explicit frontiers.
   QuickJS also allocates the callable and VarRef
   array before capturing caller cells, while this Rust slice materializes the
   roots first and then allocates the callable; only successful-compilation

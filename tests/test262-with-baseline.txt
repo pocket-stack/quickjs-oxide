@@ -1,7 +1,7 @@
-# R2b freezes the complete synchronous `with` statement implementation queue.
-# Every row is a positive test which currently reaches the typed parser or
-# runtime frontier; no feature, host, module, async, or negative-provenance
-# classification contributes to this vector.
+# R2b preserves the complete synchronous cohort which reached the old `with`
+# frontier. The implementation makes 198 variants pass; the remaining seven
+# expose independent arrow-function or generator syntax gaps after `with`
+# itself succeeds. No row remains at a `with` parser/runtime frontier.
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
@@ -14,10 +14,10 @@ timeout_ms=30000
 paths=203
 variants=205
 runnable=205
-passes=0
+passes=198
 manifest_sha256=8f43b8f924d127814ea157637acebbb4e37fc89f97e6a76789e5e329d10250d6
 keys_sha256=1c04aebebd7c6e575113ca1466832c92096fef90af088aa1f3d317561aed0d4e
-nonpass_sha256=56bcfe6aa0716b5fb1e5177f47f2fd6666eb80cb227f4d9ef64545df0163ae81
-tsv_sha256=9946618dc7ca899af10ec391a77e32e1b76257896678ba62e83092f4d1330c46
-jsonl_sha256=271c868b72bfd867a671c0750d294600ff1191a4e40d6751560ddd9703e04169
-summary=unsupported-parser=179 unsupported-runtime=26
+nonpass_sha256=01b5d3672e69eca7d79a583c5e0db752ad3c7f07c1828b27a259759f745c47ab
+tsv_sha256=e22e130dfd23e5509aab68cf4ac244ecb6f5a827067c3622dc34014f9cf9d65d
+jsonl_sha256=cfc1aeeaf7fd6cc8ab1a3741cdbfe17db50b8a2817a054bf182838108cf22129
+summary=fail-parse=5 fail-runtime=2 pass=198

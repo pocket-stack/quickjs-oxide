@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproduce the complete classified `with` statement frontier.
+# Reproduce the focused classified `with` statement vector.
 
 set -euo pipefail
 export TZ=America/Los_Angeles
@@ -88,9 +88,13 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$timeout_ms" != "30000" \
     || "$expected_paths" != "203" \
     || "$expected_variants" != "205" \
-    || "$expected_runnable" != "205" \
-    || "$expected_passes" != "0" ]]; then
+    || "$expected_runnable" != "205" ]]; then
     echo "error: with-statement baseline metadata drifted" >&2
+    exit 1
+fi
+if ! [[ "$expected_passes" =~ ^[0-9]+$ ]] \
+    || (( expected_passes > expected_runnable )); then
+    echo "error: with-statement pass baseline is invalid" >&2
     exit 1
 fi
 
@@ -173,18 +177,6 @@ if [[ "$actual_keys_hash" != "$expected_keys_hash" \
     echo "error: with-statement classified outcomes drifted" >&2
     exit 1
 fi
-if ! awk -F'\t' '
-    /^#/ || ($1 == "path" && $2 == "variant") { next }
-    $5 != "normal" || $6 != "" || $9 != "Unsupported" ||
-        $10 != "with statements are not implemented yet" { exit 1 }
-    $7 == "unsupported-parser" && $8 == "parse" { next }
-    $7 == "unsupported-runtime" && $8 == "runtime" { next }
-    { exit 1 }
-' "$report"; then
-    echo "error: with-statement frontier provenance drifted" >&2
-    exit 1
-fi
-
 actual_jsonl_lines=$(wc -l < "$json_report" | tr -d '[:space:]')
 expected_jsonl_lines=$((expected_variants + 2))
 actual_tsv=$(sha256_file "$report")
@@ -197,5 +189,5 @@ if [[ "$actual_jsonl_lines" != "$expected_jsonl_lines" \
 fi
 
 "$script_dir/check-rust-only.sh"
-printf 'with-statement Test262 vector matches: %s typed frontier variants across %s paths\n' \
-    "$expected_variants" "$expected_paths"
+printf 'with-statement Test262 vector matches: %s pass of %s variants across %s paths\n' \
+    "$expected_passes" "$expected_variants" "$expected_paths"
