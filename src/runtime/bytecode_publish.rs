@@ -3,7 +3,9 @@
 use super::*;
 
 use crate::bytecode::{EvalVariableSource, MAX_LOCAL_SLOTS, verify_parts};
-use crate::heap::{EvalBinding, EvalKind, EvalRootBinding, EvalScope};
+use crate::heap::{
+    EvalBinding, EvalCallerProfile, EvalCallerVariableTarget, EvalKind, EvalRootBinding, EvalScope,
+};
 
 /// Intern every semantically retained direct-eval binding name while keeping
 /// the parent publication routine's atom transaction authoritative. The
@@ -118,6 +120,9 @@ fn verify_eval_variable_source(
 fn verify_eval_scope_topology(
     environment: &EvalEnvironment<JsString>,
     function_depth: usize,
+    synthetic_eval_tree: bool,
+    imported_segment_count: usize,
+    imported_scope_start: usize,
 ) -> Result<usize, RuntimeError> {
     if environment.scopes.is_empty() {
         return Err(RuntimeError::Engine(Error::internal(
@@ -141,17 +146,32 @@ fn verify_eval_scope_topology(
         first_function_root.get_or_insert(function_root);
 
         let final_segment = function_root + 1 == environment.scopes.len();
-        let expected_body = if final_segment {
+        let synthetic_root_segment = synthetic_eval_tree && segment_count == function_depth;
+        let imported_segment = synthetic_eval_tree
+            && function_root
+                .checked_sub(1)
+                .is_some_and(|body_scope| body_scope >= imported_scope_start);
+        let expected_body = if final_segment || synthetic_root_segment {
             crate::heap::EvalScopeKind::ProgramBody
         } else {
             crate::heap::EvalScopeKind::FunctionBody
         };
         if function_root == segment_start
-            || environment.scopes[function_root - 1].kind != expected_body
+            || (!imported_segment && environment.scopes[function_root - 1].kind != expected_body)
+            || (imported_segment
+                && !matches!(
+                    environment.scopes[function_root - 1].kind,
+                    crate::heap::EvalScopeKind::FunctionBody
+                        | crate::heap::EvalScopeKind::ProgramBody
+                ))
         {
-            return Err(RuntimeError::Engine(Error::internal(
-                "eval scope segment has the wrong body scope",
-            )));
+            return Err(RuntimeError::Engine(Error::internal(format!(
+                "eval scope segment {segment_count} has the wrong body scope {:?}, expected {expected_body:?} at function depth {function_depth}",
+                function_root
+                    .checked_sub(1)
+                    .and_then(|index| environment.scopes.get(index))
+                    .map(|scope| scope.kind),
+            ))));
         }
         if environment.scopes[segment_start..function_root - 1]
             .iter()
@@ -192,11 +212,14 @@ fn verify_eval_scope_topology(
         segment_count += 1;
         segment_start = function_root + 1;
     }
-    let expected_segments = function_depth.checked_add(1).ok_or_else(|| {
-        RuntimeError::Engine(Error::internal(
-            "eval environment function depth overflowed",
-        ))
-    })?;
+    let expected_segments = function_depth
+        .checked_add(1)
+        .and_then(|count| count.checked_add(imported_segment_count))
+        .ok_or_else(|| {
+            RuntimeError::Engine(Error::internal(
+                "eval environment function depth overflowed",
+            ))
+        })?;
     if segment_count != expected_segments {
         return Err(RuntimeError::Engine(Error::internal(
             "eval environment segment count disagrees with its function-tree depth",
@@ -209,24 +232,170 @@ fn verify_eval_scope_topology(
     })
 }
 
+fn verify_eval_imported_suffix(
+    environment: &EvalEnvironment<JsString>,
+    closure_origins: &[Option<u16>],
+    expected_bindings: &[EvalRootBinding<JsString>],
+    expected_profile: &EvalCallerProfile,
+) -> Result<(usize, usize), RuntimeError> {
+    let suffix_start = environment
+        .scopes
+        .len()
+        .checked_sub(expected_profile.scope_kinds.len())
+        .ok_or_else(|| {
+            RuntimeError::Engine(Error::internal(
+                "eval environment is shorter than its imported caller profile",
+            ))
+        })?;
+    for (scope_index, (&expected_kind, actual_scope)) in expected_profile
+        .scope_kinds
+        .iter()
+        .zip(&environment.scopes[suffix_start..])
+        .enumerate()
+    {
+        if actual_scope.kind != expected_kind {
+            return Err(RuntimeError::Engine(Error::internal(
+                "eval imported scope kind disagrees with its caller profile",
+            )));
+        }
+        let scope_index = u16::try_from(scope_index).map_err(|_| {
+            RuntimeError::Engine(Error::internal(
+                "eval imported scope index exceeds bytecode range",
+            ))
+        })?;
+        let expected = expected_bindings
+            .iter()
+            .enumerate()
+            .filter(|(_, binding)| binding.scope == scope_index)
+            .collect::<Vec<_>>();
+        if actual_scope.bindings.len() != expected.len() {
+            return Err(RuntimeError::Engine(Error::internal(
+                "eval imported scope binding count disagrees with its caller profile",
+            )));
+        }
+        for (actual, (expected_index, expected)) in actual_scope.bindings.iter().zip(expected) {
+            if actual.name != expected.name
+                || actual.is_lexical != expected.is_lexical
+                || actual.is_const != expected.is_const
+                || actual.kind != expected.kind
+                || actual.is_catch_parameter != expected.is_catch_parameter
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "eval imported binding metadata disagrees with its caller profile",
+                )));
+            }
+            let crate::heap::EvalBindingSource::Closure(closure) = actual.source else {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "eval imported binding did not use a closure relay",
+                )));
+            };
+            let expected_index = u16::try_from(expected_index).map_err(|_| {
+                RuntimeError::Engine(Error::internal(
+                    "eval imported binding index exceeds bytecode range",
+                ))
+            })?;
+            if closure_origins.get(usize::from(closure)).copied().flatten() != Some(expected_index)
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "eval imported binding closure has the wrong caller origin",
+                )));
+            }
+        }
+    }
+    Ok((
+        expected_profile
+            .scope_kinds
+            .iter()
+            .filter(|kind| **kind == crate::heap::EvalScopeKind::FunctionRoot)
+            .count(),
+        suffix_start,
+    ))
+}
+
 fn verify_eval_environments(
     function: &UnlinkedFunction,
     function_depth: usize,
     captured_locals: &mut [bool],
+    synthetic_eval_tree: bool,
+    closure_origins: &[Option<u16>],
+    expected_bindings: &[EvalRootBinding<JsString>],
+    expected_profile: Option<&EvalCallerProfile>,
 ) -> Result<(), RuntimeError> {
     let is_root = function_depth == 0;
+    let synthetic_eval_root = is_root && function.metadata().eval_kind != EvalKind::None;
     for environment in function.eval_environments() {
         if environment.caller_strict != function.metadata().strict {
             return Err(RuntimeError::Engine(Error::internal(
                 "eval environment strictness disagrees with bytecode metadata",
             )));
         }
-        let first_function_root = verify_eval_scope_topology(environment, function_depth)?;
+        let (imported_segment_count, imported_scope_start) =
+            if let Some(expected_profile) = expected_profile {
+                verify_eval_imported_suffix(
+                    environment,
+                    closure_origins,
+                    expected_bindings,
+                    expected_profile,
+                )?
+            } else {
+                (0, environment.scopes.len())
+            };
+        let first_function_root = verify_eval_scope_topology(
+            environment,
+            function_depth,
+            synthetic_eval_tree,
+            imported_segment_count,
+            imported_scope_start,
+        )?;
+        if synthetic_eval_root {
+            let expected_profile = expected_profile.ok_or_else(|| {
+                RuntimeError::Engine(Error::internal("synthetic eval root has no caller profile"))
+            })?;
+            let variable_target_matches = if function.metadata().strict {
+                environment.variable_environment
+                    == crate::heap::EvalVariableEnvironment::Scope(
+                        u16::try_from(first_function_root).map_err(|_| {
+                            RuntimeError::Engine(Error::internal(
+                                "eval function root index exceeds bytecode range",
+                            ))
+                        })?,
+                    )
+            } else {
+                match (
+                    expected_profile.variable_target,
+                    environment.variable_environment,
+                ) {
+                    (
+                        EvalCallerVariableTarget::Global,
+                        crate::heap::EvalVariableEnvironment::Global,
+                    ) => true,
+                    (
+                        EvalCallerVariableTarget::ExternalBinding(expected),
+                        crate::heap::EvalVariableEnvironment::Closure(actual),
+                    ) => {
+                        closure_origins.get(usize::from(actual)).copied().flatten()
+                            == Some(expected)
+                    }
+                    (EvalCallerVariableTarget::StrictLocal, _) => false,
+                    _ => false,
+                }
+            };
+            if !variable_target_matches {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "nested eval variable target disagrees with its caller profile",
+                )));
+            }
+        }
         match environment.variable_environment {
             crate::heap::EvalVariableEnvironment::Global => {
                 if !is_root {
                     return Err(RuntimeError::Engine(Error::internal(
                         "non-root eval environment used the global variable environment",
+                    )));
+                }
+                if synthetic_eval_root && function.metadata().strict {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "strict eval root used the global variable environment",
                     )));
                 }
                 if environment.scopes[..first_function_root]
@@ -246,14 +415,50 @@ fn verify_eval_environments(
                 }
             }
             crate::heap::EvalVariableEnvironment::Scope(index) => {
-                if is_root {
+                if is_root && (!synthetic_eval_root || !function.metadata().strict) {
                     return Err(RuntimeError::Engine(Error::internal(
-                        "root eval environment used a function variable scope",
+                        "root eval environment used an invalid local variable scope",
                     )));
                 }
                 if usize::from(index) != first_function_root {
                     return Err(RuntimeError::Engine(Error::internal(
                         "eval variable environment did not reference its current function root scope",
+                    )));
+                }
+            }
+            crate::heap::EvalVariableEnvironment::Closure(index) => {
+                if !synthetic_eval_root
+                    || function.metadata().strict
+                    || function.metadata().eval_kind != EvalKind::Direct
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "non-sloppy-direct eval environment used a closure variable environment",
+                    )));
+                }
+                let descriptor = function
+                    .closure_variables()
+                    .get(usize::from(index))
+                    .ok_or_else(|| {
+                        RuntimeError::Engine(Error::internal(
+                            "eval closure variable environment is out of bounds",
+                        ))
+                    })?;
+                if descriptor.source != ClosureSource::EvalEnvironment(index)
+                    || descriptor.kind != ClosureVariableKind::EvalVariableObject
+                    || descriptor.is_lexical
+                    || descriptor.is_const
+                    || !environment.scopes.iter().any(|scope| {
+                        scope.bindings.iter().any(|binding| {
+                            binding.source == crate::heap::EvalBindingSource::Closure(index)
+                                && binding.kind == ClosureVariableKind::EvalVariableObject
+                                && !binding.is_lexical
+                                && !binding.is_const
+                                && !binding.is_catch_parameter
+                        })
+                    })
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "eval closure variable environment is not authenticated",
                     )));
                 }
             }
@@ -363,6 +568,7 @@ enum RootPublication<'a> {
         kind: EvalKind,
         caller_strict: bool,
         expected_bindings: &'a [EvalRootBinding<JsString>],
+        expected_profile: &'a EvalCallerProfile,
     },
 }
 
@@ -375,11 +581,52 @@ pub(super) fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), Ru
 /// deliberately separate from ordinary script publication: accepting these
 /// sources without the live caller descriptor would make a forged bytecode
 /// root indistinguishable from a compiler-produced direct eval.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(in crate::runtime) fn verify_unlinked_eval_tree(
     function: &UnlinkedFunction,
     kind: EvalKind,
     caller_strict: bool,
     expected_bindings: &[EvalRootBinding<JsString>],
+) -> Result<(), RuntimeError> {
+    let scope_count = expected_bindings
+        .iter()
+        .map(|binding| usize::from(binding.scope) + 1)
+        .max()
+        .unwrap_or(0);
+    let mut scope_kinds = vec![crate::heap::EvalScopeKind::FunctionRoot; scope_count];
+    for binding in expected_bindings {
+        if binding.is_catch_parameter {
+            scope_kinds[usize::from(binding.scope)] = crate::heap::EvalScopeKind::Catch;
+        }
+    }
+    let variable_target = if caller_strict {
+        EvalCallerVariableTarget::StrictLocal
+    } else {
+        expected_bindings
+            .iter()
+            .position(|binding| binding.kind == ClosureVariableKind::EvalVariableObject)
+            .and_then(|index| u16::try_from(index).ok())
+            .map(EvalCallerVariableTarget::ExternalBinding)
+            .unwrap_or(EvalCallerVariableTarget::Global)
+    };
+    verify_unlinked_eval_tree_with_profile(
+        function,
+        kind,
+        caller_strict,
+        expected_bindings,
+        &EvalCallerProfile {
+            scope_kinds: scope_kinds.into_boxed_slice(),
+            variable_target,
+        },
+    )
+}
+
+pub(in crate::runtime) fn verify_unlinked_eval_tree_with_profile(
+    function: &UnlinkedFunction,
+    kind: EvalKind,
+    caller_strict: bool,
+    expected_bindings: &[EvalRootBinding<JsString>],
+    expected_profile: &EvalCallerProfile,
 ) -> Result<(), RuntimeError> {
     if kind == EvalKind::None {
         return Err(RuntimeError::Engine(Error::internal(
@@ -396,7 +643,24 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree(
             "indirect eval publication received caller strictness",
         )));
     }
+    if kind == EvalKind::Indirect
+        && (!expected_profile.scope_kinds.is_empty()
+            || expected_profile.variable_target != EvalCallerVariableTarget::Global)
+    {
+        return Err(RuntimeError::Engine(Error::internal(
+            "indirect eval publication received a caller scope profile",
+        )));
+    }
     for binding in expected_bindings {
+        if usize::from(binding.scope) >= expected_profile.scope_kinds.len()
+            || binding.is_catch_parameter
+                != (expected_profile.scope_kinds[usize::from(binding.scope)]
+                    == crate::heap::EvalScopeKind::Catch)
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "eval root binding disagrees with its caller scope profile",
+            )));
+        }
         if binding.name.is_empty() {
             return Err(RuntimeError::Engine(Error::internal(
                 "eval root binding has an empty name",
@@ -424,12 +688,34 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree(
             )));
         }
     }
+    let has_variable_object = expected_bindings
+        .iter()
+        .any(|binding| binding.kind == ClosureVariableKind::EvalVariableObject);
+    match (caller_strict, expected_profile.variable_target) {
+        (false, EvalCallerVariableTarget::Global) if !has_variable_object => {}
+        (true, EvalCallerVariableTarget::StrictLocal) if kind == EvalKind::Direct => {}
+        (false, EvalCallerVariableTarget::ExternalBinding(index))
+            if expected_bindings
+                .get(usize::from(index))
+                .is_some_and(|binding| {
+                    binding.kind == ClosureVariableKind::EvalVariableObject
+                        && !binding.is_lexical
+                        && !binding.is_const
+                        && !binding.is_catch_parameter
+                }) => {}
+        _ => {
+            return Err(RuntimeError::Engine(Error::internal(
+                "eval caller variable target is not authenticated",
+            )));
+        }
+    }
     verify_unlinked_tree_with_root(
         function,
         RootPublication::Eval {
             kind,
             caller_strict,
             expected_bindings,
+            expected_profile,
         },
     )
 }
@@ -438,8 +724,25 @@ fn verify_unlinked_tree_with_root(
     function: &UnlinkedFunction,
     root_publication: RootPublication<'_>,
 ) -> Result<(), RuntimeError> {
-    let mut pending = vec![(function, 0_usize)];
-    while let Some((function, function_depth)) = pending.pop() {
+    let (synthetic_eval_tree, tree_expected_bindings, tree_expected_profile) =
+        match root_publication {
+            RootPublication::Script => (false, &[][..], None),
+            RootPublication::Eval {
+                expected_bindings,
+                expected_profile,
+                ..
+            } => (true, expected_bindings, Some(expected_profile)),
+        };
+    let root_origins = function
+        .closure_variables()
+        .iter()
+        .map(|descriptor| match descriptor.source {
+            ClosureSource::EvalEnvironment(index) => Some(index),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut pending = vec![(function, 0_usize, root_origins)];
+    while let Some((function, function_depth, closure_origins)) = pending.pop() {
         let is_root = function_depth == 0;
         let expected_eval_kind = if is_root {
             match root_publication {
@@ -481,11 +784,6 @@ fn verify_unlinked_tree_with_root(
         } else {
             None
         };
-        if expected_eval_bindings.is_some() && !function.eval_environments().is_empty() {
-            return Err(RuntimeError::Engine(Error::internal(
-                "eval root retained a nested direct-eval environment",
-            )));
-        }
         if function.metadata().local_count > MAX_LOCAL_SLOTS {
             return Err(RuntimeError::Engine(Error::internal(
                 "bytecode local count exceeds QuickJS JS_MAX_LOCAL_VARS",
@@ -657,6 +955,7 @@ fn verify_unlinked_tree_with_root(
                     kind,
                     caller_strict,
                     expected_bindings,
+                    ..
                 } => {
                     !function.metadata().strict
                         && !caller_strict
@@ -1010,7 +1309,15 @@ fn verify_unlinked_tree_with_root(
                 }
             }
         }
-        verify_eval_environments(function, function_depth, &mut captured_locals)?;
+        verify_eval_environments(
+            function,
+            function_depth,
+            &mut captured_locals,
+            synthetic_eval_tree,
+            &closure_origins,
+            tree_expected_bindings,
+            tree_expected_profile,
+        )?;
 
         for (pc, instruction) in function.code().iter().enumerate() {
             if let Some((source, name)) = match instruction {
@@ -1498,7 +1805,17 @@ fn verify_unlinked_tree_with_root(
                         "function-tree depth overflowed during publication",
                     ))
                 })?;
-                pending.push((child, child_depth));
+                let child_origins = child
+                    .closure_variables()
+                    .iter()
+                    .map(|descriptor| match descriptor.source {
+                        ClosureSource::ParentClosure(index) => {
+                            closure_origins.get(usize::from(index)).copied().flatten()
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                pending.push((child, child_depth, child_origins));
             } else if constant.as_primitive().is_none() && constant.as_regexp().is_none() {
                 return Err(RuntimeError::Invariant(
                     "unlinked constant did not contain exactly one payload",
@@ -1810,6 +2127,81 @@ mod tests {
         )
     }
 
+    fn recursive_eval_root(
+        imported_body_kind: EvalScopeKind,
+        binding_sources: [u16; 2],
+        variable_target: u16,
+    ) -> UnlinkedFunction {
+        let names = ["<var:outer>", "<var:inner>"];
+        let constants = names
+            .iter()
+            .map(|name| {
+                UnlinkedConstant::primitive(Value::String(JsString::from_static(name))).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let descriptors = names
+            .iter()
+            .enumerate()
+            .map(|(index, _)| ClosureVariable {
+                source: ClosureSource::EvalEnvironment(
+                    u16::try_from(index).expect("test closure index fits u16"),
+                ),
+                name: ClosureVariableName::Constant(
+                    u32::try_from(index).expect("test constant index fits u32"),
+                ),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::EvalVariableObject,
+            })
+            .collect::<Vec<_>>();
+        let imported_bindings = names
+            .iter()
+            .zip(binding_sources)
+            .map(|(name, source)| EvalBinding {
+                name: JsString::from_static(name),
+                source: EvalBindingSource::Closure(source),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::EvalVariableObject,
+                is_catch_parameter: false,
+            })
+            .collect::<Vec<_>>();
+        UnlinkedFunction::new_with_closure_variables(
+            eval_code(0, false),
+            constants,
+            FunctionMetadata {
+                closure_count: 2,
+                max_stack: 1,
+                eval_kind: EvalKind::Direct,
+                ..FunctionMetadata::default()
+            },
+            descriptors,
+        )
+        .with_eval_environments(vec![EvalEnvironment {
+            scopes: vec![
+                EvalScope {
+                    kind: EvalScopeKind::ProgramBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: imported_body_kind,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: imported_bindings.into_boxed_slice(),
+                },
+            ]
+            .into_boxed_slice(),
+            variable_environment: EvalVariableEnvironment::Closure(variable_target),
+            caller_strict: false,
+        }])
+    }
+
     #[test]
     fn eval_root_authenticates_ordered_caller_bindings_and_globals() {
         let expected = [
@@ -1844,6 +2236,136 @@ mod tests {
         );
 
         verify_unlinked_eval_tree(&root, EvalKind::Direct, false, &expected).unwrap();
+    }
+
+    #[test]
+    fn eval_root_rejects_incoherent_caller_variable_profiles() {
+        let strict = eval_root_with_descriptors_and_strict(EvalKind::Direct, true, Vec::new());
+        let global_profile = EvalCallerProfile {
+            scope_kinds: Box::new([]),
+            variable_target: EvalCallerVariableTarget::Global,
+        };
+        assert!(
+            verify_unlinked_eval_tree_with_profile(
+                &strict,
+                EvalKind::Direct,
+                true,
+                &[],
+                &global_profile,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("variable target is not authenticated")
+        );
+
+        let expected = [eval_root_binding(
+            "<var>",
+            0,
+            false,
+            false,
+            ClosureVariableKind::EvalVariableObject,
+        )];
+        let imported = eval_root_with_descriptors(
+            EvalKind::Direct,
+            vec![(
+                ClosureSource::EvalEnvironment(0),
+                "<var>",
+                false,
+                false,
+                ClosureVariableKind::EvalVariableObject,
+            )],
+        );
+        let forged_global = EvalCallerProfile {
+            scope_kinds: vec![EvalScopeKind::FunctionRoot].into_boxed_slice(),
+            variable_target: EvalCallerVariableTarget::Global,
+        };
+        assert!(
+            verify_unlinked_eval_tree_with_profile(
+                &imported,
+                EvalKind::Direct,
+                false,
+                &expected,
+                &forged_global,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("variable target is not authenticated")
+        );
+    }
+
+    #[test]
+    fn recursive_eval_root_authenticates_imported_suffix_origins_and_target() {
+        let expected = [
+            eval_root_binding(
+                "<var:outer>",
+                1,
+                false,
+                false,
+                ClosureVariableKind::EvalVariableObject,
+            ),
+            eval_root_binding(
+                "<var:inner>",
+                1,
+                false,
+                false,
+                ClosureVariableKind::EvalVariableObject,
+            ),
+        ];
+        let profile = EvalCallerProfile {
+            scope_kinds: vec![EvalScopeKind::FunctionBody, EvalScopeKind::FunctionRoot]
+                .into_boxed_slice(),
+            variable_target: EvalCallerVariableTarget::ExternalBinding(1),
+        };
+        verify_unlinked_eval_tree_with_profile(
+            &recursive_eval_root(EvalScopeKind::FunctionBody, [0, 1], 1),
+            EvalKind::Direct,
+            false,
+            &expected,
+            &profile,
+        )
+        .unwrap();
+
+        let wrong_kind = recursive_eval_root(EvalScopeKind::Catch, [0, 1], 1);
+        assert!(
+            verify_unlinked_eval_tree_with_profile(
+                &wrong_kind,
+                EvalKind::Direct,
+                false,
+                &expected,
+                &profile,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("imported scope kind")
+        );
+
+        let wrong_origin = recursive_eval_root(EvalScopeKind::FunctionBody, [1, 0], 1);
+        assert!(
+            verify_unlinked_eval_tree_with_profile(
+                &wrong_origin,
+                EvalKind::Direct,
+                false,
+                &expected,
+                &profile,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("wrong caller origin")
+        );
+
+        let wrong_target = recursive_eval_root(EvalScopeKind::FunctionBody, [0, 1], 0);
+        assert!(
+            verify_unlinked_eval_tree_with_profile(
+                &wrong_target,
+                EvalKind::Direct,
+                false,
+                &expected,
+                &profile,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("variable target disagrees")
+        );
     }
 
     #[test]
@@ -2597,6 +3119,24 @@ mod tests {
             },
         )
         .with_eval_environments(vec![environment]);
+        assert!(
+            verify_unlinked_tree(&script_with_child(function))
+                .unwrap_err()
+                .to_string()
+                .contains("wrong body scope")
+        );
+
+        let mut missing_body = ordinary_environment(None);
+        missing_body.scopes[0].kind = EvalScopeKind::FunctionRoot;
+        let function = UnlinkedFunction::new(
+            eval_code(0, false),
+            Vec::new(),
+            FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_eval_environments(vec![missing_body]);
         assert!(
             verify_unlinked_tree(&script_with_child(function))
                 .unwrap_err()

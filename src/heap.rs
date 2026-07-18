@@ -691,6 +691,36 @@ pub enum EvalScopeKind {
 pub enum EvalVariableEnvironment {
     Global,
     Scope(u16),
+    /// Synthetic direct-eval roots do not own the sloppy caller's variable
+    /// environment.  The exact imported closure slot which carries QuickJS's
+    /// hidden `<var>` object remains the declaration destination for a nested
+    /// direct eval compiled from that root.
+    Closure(u16),
+}
+
+/// Caller-side provenance retained while compiling one synthetic eval root.
+///
+/// `ExternalBinding` names the exact flattened caller binding which owns the
+/// variable environment.  It is deliberately not a closure-vector guess:
+/// the runtime derives it from the authenticated call-site descriptor before
+/// the compiler can relay that binding into nested eval bytecode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EvalCallerVariableTarget {
+    Global,
+    ExternalBinding(u16),
+    StrictLocal,
+}
+
+/// Shape of the caller scope chain imported by a synthetic eval root.
+///
+/// Bindings themselves remain in the root's ordered `EvalRootBinding` prefix;
+/// their `scope` ordinals index this exact kind vector.  Keeping empty scopes
+/// here is required to reproduce catch/block/function topology when that eval
+/// source later contains another direct eval.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalCallerProfile {
+    pub scope_kinds: Box<[EvalScopeKind]>,
+    pub variable_target: EvalCallerVariableTarget,
 }
 
 /// One named binding visible from a syntactic direct-eval call site.

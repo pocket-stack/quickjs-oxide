@@ -15,8 +15,8 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 28,984 passes: 28.41% raw, a 34.69% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 89.39% among the 32,426 variants with a
+  has 29,013 passes: 28.43% raw, a 34.72% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 89.39% among the 32,455 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -186,7 +186,7 @@ claim full parity.
   and typed has/get/put/delete/define operations. Source-ordered `var` and
   ordinary FunctionDeclaration records preserve repeated-eval overwrite,
   function/var order, deletion fallback, catch-parameter reuse, caller lexical
-  conflicts, implicit `arguments` and private function-name precedence.
+  conflicts, and implicit `arguments` precedence.
   Strict eval keeps declarations local; indirect and global direct eval use
   configurable global declarations; sloppy function eval resolves the nearest
   current or ancestor variable object. The same path covers Annex B block,
@@ -210,9 +210,36 @@ claim full parity.
   and
   `348e25af619fcf81ef534b82f57571889c1d2ab7f06cad3d5233e7d49fae240f`.
 
-  Nested syntactic direct eval, `with`, generator/async and destructuring eval
-  declarations, direct `new.target`, and ill-formed UTF-16 source stay explicit
-  frontiers. QuickJS also allocates the callable and VarRef
+  R1z recursively relays QuickJS-shaped direct-eval caller environments. A
+  synthetic eval root now retains the exact imported scope-kind sequence,
+  including empty catch/block/function scopes, and an authenticated global,
+  strict-local, or external `<var>` declaration target. Nested eval bytecode
+  relays every imported descriptor through intervening closures; publication
+  traces each closure slot back to its exact caller-binding ordinal and rejects
+  wrong-scope, wrong-cell, or wrong-variable-target drafts. Pinned QuickJS
+  probes cover three nested levels, catch reuse across direct versus ordinary
+  function boundaries, strict non-leakage, lexical conflicts, and escaped
+  closures after the caller frame detaches.
+
+  The independent R1z gate freezes the complete former frontier: 25 paths / 30
+  variants. Twenty-nine pass; the remaining SpiderMonkey staging variant now
+  stops at the independent `with` statement parser frontier. The complete
+  102,037-key join records 29 `unsupported-runtime -> pass` transitions and one
+  detail-only refinement, all inside that manifest, with no missing, extra,
+  duplicate, or previous-pass row. The current vector has 29,013 passes and
+  34,849 runnable jobs. Focused TSV/JSONL SHA-256 values are
+  `3a6dd32c7f3d0154b36946c6894f9cdba79a12d7086bf5602a210360b90f5248`
+  and
+  `23f4e2115b5a1ed322eac39faa51517912825562e71965a73261b3f4ad86a1fb`;
+  full-vector values are
+  `2ba53703827155be4ce36f11a52b48c3ac1bb4efc8f61da9cc31b6b1ca8e125a`
+  and
+  `c9369e14acb1469b20aea4caab2c0a880cb7f040a72718d629f38e1301582650`.
+
+  `with`, generator/async and destructuring eval declarations, direct
+  `new.target`, ill-formed UTF-16 source, and eval-`var` precedence against a
+  named function expression's private self binding stay explicit frontiers.
+  QuickJS also allocates the callable and VarRef
   array before capturing caller cells, while this Rust slice materializes the
   roots first and then allocates the callable; only successful-compilation
   OOM/GC priority is affected, but exact allocation-order parity remains a
@@ -1329,9 +1356,10 @@ claim full parity.
   the Annex root write. The implemented global Script/`Context::eval`
   ProgramBody path is QuickJS's special exception: a labelled function
   allocates no lexical slot and evaluates one closure at its source position,
-  then performs both global writes. Direct and indirect JavaScript eval
-  environments remain a separate frontier and instead create an eval-local
-  lexical entry. The global-path duplicate write is observable
+  then performs both global writes. Direct and indirect eval roots now use the
+  same ProgramBody exception through their dedicated declaration environments;
+  strict direct eval instead keeps its declarations local. The global-path
+  duplicate write is observable
   through an existing accessor setter. QuickJS spells the second operation
   `OP_put_var_init`; the Rust VM lowers it to a declaration-bound `PutVar` because
   a raw VarRef initialization in this runtime would bypass that accessor. This
@@ -1421,8 +1449,7 @@ claim full parity.
   (`add_global_variables`), plus 36383-36942 (function declaration parsing,
   scoped lexical creation, Annex source writes, and argument/local hoist
   attachment)
-  in QuickJS 2026-06-04. Sloppy eval-created var/function declaration
-  environments, async/generator declarations, `for-await`, general
+  in QuickJS 2026-06-04. Async/generator eval declarations, `for-await`, general
   assignment/object/default/rest/nested destructuring, single-statement
   lexical declarations, and catch/class scopes remain explicit boundaries
   rather than falling back to local or ordinary global storage.
@@ -2906,8 +2933,11 @@ The language slice is intentionally narrow. Async/generator declarations,
 `for-await`, general assignment/object/default/rest/nested destructuring,
 other general assignment targets, module resolution, object method/accessor
 definitions and their home-object semantics, non-simple parameter lists,
-sloppy eval-created var/function declaration environments, arrow/async/generator
-functions, `with`, and callable Proxy classes are not yet implemented.
+arrow/async/generator functions, `with`, and callable Proxy classes are not yet
+implemented.
+Eval `var` declarations also still shadow a named function expression's private
+self binding, while QuickJS preserves that binding; this predates R1z and is
+tracked as a separate declaration-resolution slice.
 Unsupported declaration contexts are rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` is currently
 limited to simple identifier lists in direct Program code, authored
@@ -3146,6 +3176,10 @@ algorithms do not return to the parent monolith. R1y keeps declaration
 compilation in `compiler.rs`, publication in `runtime/bytecode_publish.rs`, and
 variable-object operations in `runtime/vm_host.rs`; `runtime.rs` grows only to
 9,730 lines for the host dispatch boundary and redeclaration materialization.
+R1z keeps recursive caller-profile linking in `compiler.rs`, provenance checks
+in `runtime/bytecode_publish.rs`, and live descriptor validation in
+`runtime/intrinsics/eval.rs` plus `runtime/vm_host.rs`; `runtime.rs` remains
+9,730 lines.
 The
 RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
@@ -3360,6 +3394,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/run-test262-unicode-u180e.sh
 ./scripts/run-test262-eval-intrinsic.sh
 ./scripts/run-test262-eval-declarations.sh
+./scripts/run-test262-nested-direct-eval.sh
 ./scripts/test-test262-full.sh
 ```
 

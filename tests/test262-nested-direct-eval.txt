@@ -1,0 +1,28 @@
+# R1z freezes the exact full-vector cohort which previously stopped at the
+# typed `direct eval nested inside eval source` frontier.
+# Pinned QuickJS 2026-06-04 reports 0/30 errors across these 25 sorted paths.
+test/language/eval-code/direct/global-env-rec-eval.js
+test/language/statements/do-while/S12.6.1_A7.js
+test/language/statements/while/S12.6.2_A7.js
+test/staging/sm/eval/exhaustive-fun-normalcaller-direct-normalcode.js
+test/staging/sm/eval/exhaustive-fun-normalcaller-direct-strictcode.js
+test/staging/sm/eval/exhaustive-fun-normalcaller-indirect-normalcode.js
+test/staging/sm/eval/exhaustive-fun-normalcaller-indirect-strictcode.js
+test/staging/sm/eval/exhaustive-fun-strictcaller-direct-normalcode.js
+test/staging/sm/eval/exhaustive-fun-strictcaller-direct-strictcode.js
+test/staging/sm/eval/exhaustive-fun-strictcaller-indirect-normalcode.js
+test/staging/sm/eval/exhaustive-fun-strictcaller-indirect-strictcode.js
+test/staging/sm/eval/exhaustive-global-normalcaller-direct-normalcode.js
+test/staging/sm/eval/exhaustive-global-normalcaller-direct-strictcode.js
+test/staging/sm/eval/exhaustive-global-normalcaller-indirect-normalcode.js
+test/staging/sm/eval/exhaustive-global-normalcaller-indirect-strictcode.js
+test/staging/sm/eval/exhaustive-global-strictcaller-direct-normalcode.js
+test/staging/sm/eval/exhaustive-global-strictcaller-direct-strictcode.js
+test/staging/sm/eval/exhaustive-global-strictcaller-indirect-normalcode.js
+test/staging/sm/eval/exhaustive-global-strictcaller-indirect-strictcode.js
+test/staging/sm/eval/undeclared-name-in-nested-strict-eval.js
+test/staging/sm/global/eval-01.js
+test/staging/sm/global/eval-in-strict-eval-in-normal-function.js
+test/staging/sm/lexical-environment/block-scoped-functions-annex-b-label.js
+test/staging/sm/strict/10.4.2.js
+test/staging/sm/strict/eval-variable-environment.js

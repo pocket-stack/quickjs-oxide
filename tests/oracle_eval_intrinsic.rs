@@ -1,9 +1,7 @@
 use std::ffi::OsStr;
 use std::process::Command;
 
-use quickjs_oxide::{
-    CallableRef, Context, DebugInfoMode, ErrorKind, JsString, Runtime, RuntimeError, Value,
-};
+use quickjs_oxide::{CallableRef, Context, DebugInfoMode, JsString, Runtime, RuntimeError, Value};
 
 // This probe deliberately isolates the non-String shell from source execution.
 // It freezes the realm-local %eval% callable and identity semantics separately
@@ -594,6 +592,121 @@ const EXPECTED_R1Y_LABELLED_FUNCTIONS: &[&str] = &[
     "global=function|42|false|number|9|42|true",
 ];
 
+// R1z freezes QuickJS's recursive OP_eval environment relay.  The two catch
+// cases deliberately differ only by an eval-created ordinary-function
+// boundary: the direct case reuses the caller catch cell, while the child owns
+// a nearer `<var>` object and must leave that catch cell unchanged.
+const R1Z_NESTED_DIRECT_EVAL_PROBE: &str = r#"
+(function () {
+    var observations = [];
+    observations.push("simple=" + eval("eval('40+2')"));
+    observations.push(
+        "triple=" + eval("let x=40;eval('eval(\"x+=2\")');x")
+    );
+
+    function dynamic() {
+        eval("eval('var x=42')");
+        return x;
+    }
+    observations.push("dynamic=" + dynamic());
+
+    function offsetDynamic() {
+        var authored = 1;
+        return eval("let pad=0;pad;eval('var x=42;x')");
+    }
+    observations.push("offset=" + offsetDynamic());
+
+    function strictOuter() {
+        return eval("'use strict';var x=40;eval('x+=2');x");
+    }
+    function strictNonLeak() {
+        return eval("'use strict';eval('var x=42');typeof x");
+    }
+    observations.push(
+        "strict=" + strictOuter() + "|" + strictNonLeak()
+    );
+
+    function catchDirect() {
+        try { throw 1; }
+        catch (x) {
+            var result = eval("eval('var x=2;x')");
+            return [result, x].join("|");
+        }
+    }
+    function catchChild() {
+        try { throw 1; }
+        catch (x) {
+            var result = eval(
+                "(function(){return eval('var x=2;x')})()"
+            );
+            return [result, x].join("|");
+        }
+    }
+    observations.push(
+        "catch=" + catchDirect() + "|" + catchChild()
+    );
+
+    function lexicalChild() {
+        let x = 1;
+        var result = eval(
+            "(function(){return eval('var x=2;x')})()"
+        );
+        return [result, x].join("|");
+    }
+    function lexicalConflict() {
+        let x = 1;
+        try {
+            eval("eval('var x=2;x')");
+            return "none";
+        } catch (error) {
+            return error.name + "|" + x;
+        }
+    }
+    observations.push(
+        "lexical=" + lexicalChild() + "|" + lexicalConflict()
+    );
+
+    function relay() {
+        let x = 42;
+        return eval("(function(){return eval('x')})()");
+    }
+    function escapedCaller() {
+        let x = 42;
+        var closure = eval(
+            "(function(){return function(){return eval('x')}})()"
+        );
+        return closure();
+    }
+    function escapedEval() {
+        var closure = eval(
+            "let x=42;(function(){return function(){return eval('x')}})()"
+        );
+        return closure();
+    }
+    function paddedChild() {
+        return eval(
+            "let pad=0;(function(){pad;return eval('var x=42;x')})()"
+        );
+    }
+    observations.push(
+        "relay=" + relay() + "|" + escapedCaller() + "|" + escapedEval()
+            + "|" + paddedChild()
+    );
+    return observations.join("\n");
+})()
+"#;
+
+const EXPECTED_R1Z_NESTED_DIRECT_EVAL: &[&str] = &[
+    "simple=42",
+    "triple=42",
+    "dynamic=42",
+    "offset=42",
+    "strict=42|undefined",
+    "catch=2|2|2|1",
+    "lexical=2|1|SyntaxError|1",
+    "relay=42|42|42|42",
+];
+
 #[test]
 fn eval_shell_matches_pinned_quickjs() {
     let rust = rust_observations();
@@ -1064,20 +1177,23 @@ fn eval_syntax_errors_are_catchable_and_direct_eval_inherits_strictness() {
 }
 
 #[test]
-fn nested_direct_eval_stays_a_typed_frontier() {
-    let source = r#"(function () { return eval("eval('40 + 2')"); })()"#;
-    let runtime = Runtime::new();
-    let mut context = runtime.new_context();
-    assert_unsupported(
-        context.eval(source),
-        source,
-        "direct eval nested inside eval source is not implemented yet",
+fn nested_direct_eval_environment_relay_matches_pinned_quickjs() {
+    let rust = rust_value(R1Z_NESTED_DIRECT_EVAL_PROBE);
+    assert_eq!(
+        rust.lines().collect::<Vec<_>>(),
+        EXPECTED_R1Z_NESTED_DIRECT_EVAL,
+        "Rust nested direct-eval environment relay drifted",
     );
-    assert!(
-        !context.has_exception(),
-        "typed Unsupported leaked into the JavaScript exception slot: {source}",
+
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!("SKIP nested direct-eval differential: set QJS_ORACLE to pinned upstream qjs");
+        return;
+    };
+    assert_eq!(
+        rust,
+        oracle_value(&oracle, R1Z_NESTED_DIRECT_EVAL_PROBE),
+        "nested direct-eval environment relay differed from pinned QuickJS",
     );
-    assert_eq!(context.take_exception().unwrap(), None, "{source}");
 }
 
 #[test]
@@ -1205,12 +1321,4 @@ fn eval_object(context: &mut Context, source: &str) -> quickjs_oxide::ObjectRef 
         panic!("{source} did not evaluate to an object");
     };
     object
-}
-
-fn assert_unsupported(result: Result<Value, RuntimeError>, boundary: &str, expected_message: &str) {
-    let Err(RuntimeError::Engine(error)) = result else {
-        panic!("eval frontier was not an engine error at {boundary}: {result:?}");
-    };
-    assert_eq!(error.kind(), ErrorKind::Unsupported, "{boundary}");
-    assert_eq!(error.message(), expected_message, "{boundary}");
 }

@@ -402,16 +402,57 @@ impl RuntimeVmHost {
                 "eval environment caller strictness disagrees with its bytecode frame",
             ));
         }
-        if let EvalVariableEnvironment::Scope(scope) = environment.variable_environment {
-            let Some(scope) = environment.scopes.get(usize::from(scope)) else {
-                return Err(Error::internal(
-                    "eval variable-environment scope is out of bounds",
-                ));
-            };
-            if scope.kind != crate::heap::EvalScopeKind::FunctionRoot {
-                return Err(Error::internal(
-                    "eval variable environment did not select a function root",
-                ));
+        match environment.variable_environment {
+            EvalVariableEnvironment::Global => {}
+            EvalVariableEnvironment::Scope(scope) => {
+                let Some(scope) = environment.scopes.get(usize::from(scope)) else {
+                    return Err(Error::internal(
+                        "eval variable-environment scope is out of bounds",
+                    ));
+                };
+                if scope.kind != crate::heap::EvalScopeKind::FunctionRoot {
+                    return Err(Error::internal(
+                        "eval variable environment did not select a function root",
+                    ));
+                }
+            }
+            EvalVariableEnvironment::Closure(index) => {
+                if caller_strict
+                    || !environment.scopes.iter().any(|scope| {
+                        scope.bindings.iter().any(|binding| {
+                            binding.source == EvalBindingSource::Closure(index)
+                                && binding.kind == ClosureVariableKind::EvalVariableObject
+                                && !binding.is_lexical
+                                && !binding.is_const
+                                && !binding.is_catch_parameter
+                        })
+                    })
+                {
+                    return Err(Error::internal(
+                        "eval closure variable environment is not authentic",
+                    ));
+                }
+                let descriptor =
+                    *self
+                        .closure_variables
+                        .get(usize::from(index))
+                        .ok_or_else(|| {
+                            Error::internal("eval closure variable environment is out of bounds")
+                        })?;
+                if descriptor.kind != ClosureVariableKind::EvalVariableObject
+                    || descriptor.is_lexical
+                    || descriptor.is_const
+                {
+                    return Err(Error::internal(
+                        "eval closure variable environment descriptor is malformed",
+                    ));
+                }
+                let root = self.closure_slots.get(usize::from(index)).ok_or_else(|| {
+                    Error::internal("eval closure variable environment slot is out of bounds")
+                })?;
+                self.runtime
+                    .validate_var_ref_metadata(root, descriptor)
+                    .map_err(|error| Error::internal(error.to_string()))?;
             }
         }
         for scope in &environment.scopes {

@@ -1,6 +1,8 @@
 use super::*;
 use crate::compiler::{EvalCompileContext, compile_unlinked_eval_with_filename};
-use crate::heap::{EvalKind, EvalRootBinding};
+use crate::heap::{
+    EvalCallerProfile, EvalCallerVariableTarget, EvalKind, EvalRootBinding, EvalVariableEnvironment,
+};
 use crate::vm::DirectEvalInvocation;
 
 impl Runtime {
@@ -13,8 +15,15 @@ impl Runtime {
         kind: EvalKind,
         caller_strict: bool,
         bindings: &[EvalRootBinding<JsString>],
+        caller_profile: &EvalCallerProfile,
     ) -> Result<FunctionBytecodeRef, RuntimeError> {
-        bytecode_publish::verify_unlinked_eval_tree(&function, kind, caller_strict, bindings)?;
+        bytecode_publish::verify_unlinked_eval_tree_with_profile(
+            &function,
+            kind,
+            caller_strict,
+            bindings,
+            caller_profile,
+        )?;
         self.publish_verified_unlinked_function(realm, function)
     }
 
@@ -132,12 +141,16 @@ impl Runtime {
             Value::String(source) => source,
             _ => unreachable!("String direct eval was checked above"),
         })?;
-        let bindings = self.direct_eval_root_bindings(realm, &environment)?;
+        let (bindings, caller_profile) = self.direct_eval_root_bindings(realm, &environment)?;
         let function = match self.compile_eval_in_realm(
             realm,
             &source,
             DEFAULT_EVAL_FILENAME,
-            EvalCompileContext::direct(caller_strict, bindings.clone()),
+            EvalCompileContext::direct_with_profile(
+                caller_strict,
+                bindings.clone(),
+                caller_profile,
+            ),
         )? {
             Compilation::Published(function) => function,
             Compilation::Throw(value) => return Ok(Completion::Throw(value)),
@@ -197,7 +210,7 @@ impl Runtime {
         &self,
         realm: ContextId,
         environment: &crate::runtime::vm_host::PreparedEvalEnvironment,
-    ) -> Result<Vec<EvalRootBinding<JsString>>, RuntimeError> {
+    ) -> Result<(Vec<EvalRootBinding<JsString>>, EvalCallerProfile), RuntimeError> {
         if !environment.caller_bytecode.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("direct eval caller bytecode"));
         }
@@ -217,6 +230,7 @@ impl Runtime {
             .map(|scope| scope.bindings.len())
             .sum();
         let mut bindings = Vec::with_capacity(binding_count);
+        let mut variable_target = None;
         let state = self.0.state.borrow();
         for (scope_index, descriptor_scope) in environment.descriptor.scopes.iter().enumerate() {
             let scope = u16::try_from(scope_index).map_err(|_| {
@@ -234,6 +248,27 @@ impl Runtime {
                         "direct eval catch binding metadata is not authentic",
                     ));
                 }
+                let external_index = u16::try_from(bindings.len()).map_err(|_| {
+                    RuntimeError::Invariant("direct eval binding index exceeds bytecode range")
+                })?;
+                let targets_variable_environment = match environment.descriptor.variable_environment
+                {
+                    EvalVariableEnvironment::Global => false,
+                    EvalVariableEnvironment::Scope(target_scope) => {
+                        target_scope == scope
+                            && binding.kind == ClosureVariableKind::EvalVariableObject
+                    }
+                    EvalVariableEnvironment::Closure(target_closure) => {
+                        binding.source == crate::heap::EvalBindingSource::Closure(target_closure)
+                            && binding.kind == ClosureVariableKind::EvalVariableObject
+                    }
+                };
+                if targets_variable_environment && variable_target.replace(external_index).is_some()
+                {
+                    return Err(RuntimeError::Invariant(
+                        "direct eval variable environment has multiple target bindings",
+                    ));
+                }
                 bindings.push(EvalRootBinding {
                     name: state.atoms.to_js_string(binding.name)?,
                     scope,
@@ -244,7 +279,38 @@ impl Runtime {
                 });
             }
         }
-        Ok(bindings)
+        let variable_target = if environment.descriptor.caller_strict {
+            EvalCallerVariableTarget::StrictLocal
+        } else {
+            match environment.descriptor.variable_environment {
+                EvalVariableEnvironment::Global if variable_target.is_none() => {
+                    EvalCallerVariableTarget::Global
+                }
+                EvalVariableEnvironment::Scope(_) | EvalVariableEnvironment::Closure(_) => {
+                    EvalCallerVariableTarget::ExternalBinding(variable_target.ok_or(
+                        RuntimeError::Invariant(
+                            "direct eval variable environment has no target binding",
+                        ),
+                    )?)
+                }
+                EvalVariableEnvironment::Global => {
+                    return Err(RuntimeError::Invariant(
+                        "global eval environment unexpectedly selected a binding target",
+                    ));
+                }
+            }
+        };
+        let caller_profile = EvalCallerProfile {
+            scope_kinds: environment
+                .descriptor
+                .scopes
+                .iter()
+                .map(|scope| scope.kind)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            variable_target,
+        };
+        Ok((bindings, caller_profile))
     }
 
     fn execute_string_eval(
@@ -292,6 +358,7 @@ impl Runtime {
         let kind = context.kind;
         let caller_strict = context.caller_strict;
         let bindings = context.bindings.clone();
+        let caller_profile = context.caller_profile.clone();
         let function =
             match compile_unlinked_eval_with_filename(source, filename, debug_info, context) {
                 Ok(function) => function,
@@ -328,7 +395,14 @@ impl Runtime {
                 }
             };
         Ok(Compilation::Published(
-            self.publish_unlinked_eval_function(realm, function, kind, caller_strict, &bindings)?,
+            self.publish_unlinked_eval_function(
+                realm,
+                function,
+                kind,
+                caller_strict,
+                &bindings,
+                &caller_profile,
+            )?,
         ))
     }
 

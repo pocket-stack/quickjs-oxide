@@ -50,9 +50,9 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 28,984 pass;
+- 29,013 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 51,136 are classified as unsupported feature, mode, host capability, parser
+- 51,107 are classified as unsupported feature, mode, host capability, parser
   frontier, harness frontier, or unaudited negative-test provenance;
 - 1,009 fail to parse, 2,219 fail at runtime, 210 fail in the harness, and four
   time out; there are no crashes or runner/engine infrastructure faults.
@@ -63,14 +63,14 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 28.41% (`28,984 / 102,037`);
-- conservative target-scope lower bound: 34.69%
-  (`28,984 / (102,037 - 18,475)`);
+- raw suite pass rate: 28.43% (`29,013 / 102,037`);
+- conservative target-scope lower bound: 34.72%
+  (`29,013 / (102,037 - 18,475)`);
 - pass rate among variants with a non-unsupported observed outcome: 89.39%
-  (`28,984 / 32,426`).
+  (`29,013 / 32,455`).
 
-The 34.69% figure is the useful whole-project progress floor, not a claim that
-the engine is 34.69% conformant. The 89.39% conditional rate measures quality
+The 34.72% figure is the useful whole-project progress floor, not a claim that
+the engine is 34.72% conformant. The 89.39% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion; R1u also demonstrates that this conditional rate can rise when
 previously ambiguous failures move to a more honest typed unsupported class.
@@ -88,9 +88,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`cca9eadc35c3c5f9acdf24b00cb9d65b0a2ca20a65860e137185f4f7fa48c4e4`
+`2ba53703827155be4ce36f11a52b48c3ac1bb4efc8f61da9cc31b6b1ca8e125a`
 and
-`348e25af619fcf81ef534b82f57571889c1d2ab7f06cad3d5233e7d49fae240f`.
+`c9369e14acb1469b20aea4caab2c0a880cb7f040a72718d629f38e1301582650`.
 
 ## Milestone policy
 
@@ -1029,6 +1029,27 @@ TSV/JSONL SHA-256 values are
 and
 `348e25af619fcf81ef534b82f57571889c1d2ab7f06cad3d5233e7d49fae240f`.
 
+R1z removes the recursive direct-eval environment frontier without broadening
+the capability profile or runnable set. Its bytewise-sorted manifest freezes
+all 25 formerly blocked paths / 30 variants. Twenty-nine pass; the remaining
+`staging/sm/global/eval-in-strict-eval-in-normal-function.js` sloppy variant
+reaches the independent `with statements are not implemented yet` frontier.
+The manifest, focused TSV and JSONL SHA-256 values are
+`0b5e9ab5d51376e66a3b5b28614803fc32843649bbf6494747892de20c9032fc`,
+`3a6dd32c7f3d0154b36946c6894f9cdba79a12d7086bf5602a210360b90f5248`
+and
+`23f4e2115b5a1ed322eac39faa51517912825562e71965a73261b3f4ad86a1fb`.
+
+The exact R1y/R1z full join retains all 102,037 unique keys. It records 29
+`unsupported-runtime -> pass` transitions and one detail-only refinement,
+strictly inside the frozen manifest, with no missing, extra, duplicate, or
+previous-pass row. Passes rise from 28,984 to 29,013; runnable remains 34,849
+and `unsupported-runtime` falls from 135 to 106. Full TSV/JSONL SHA-256 values
+are
+`2ba53703827155be4ce36f11a52b48c3ac1bb4efc8f61da9cc31b6b1ca8e125a`
+and
+`c9369e14acb1469b20aea4caab2c0a880cb7f040a72718d629f38e1301582650`.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -1091,6 +1112,7 @@ canonical progress report.
 ./scripts/run-test262-unicode-u180e.sh
 ./scripts/run-test262-eval-intrinsic.sh
 ./scripts/run-test262-eval-declarations.sh
+./scripts/run-test262-nested-direct-eval.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -1115,7 +1137,8 @@ frontier; R1v establishes its syntactic opcode and realm-identity path with a
 byte-identical scoreboard; R1w adds the immutable caller-environment table and
 live-cell materialization with the same zero-movement result; R1x opens the
 bounded independent String-eval root and adds 575 full-vector passes; R1y adds
-QuickJS-shaped eval declaration environments and another 768 passes. R1i
+QuickJS-shaped eval declaration environments and another 768 passes; R1z adds
+recursive direct-eval caller-environment relay and another 29 passes. R1i
 completes the direct standard-RegExp replacement route without changing that
 scoreboard.
 The generated Unicode code-point property corpus now passes; properties of
