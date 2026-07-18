@@ -10163,8 +10163,15 @@ fn resolve_identifier_path(
 ) -> Result<ResolvedIdentifierPath, Error> {
     let mut sources = Vec::new();
     let pseudo = PseudoBinding::from_name(name);
-    if pseudo.is_some() && access != IdentifierAccess::Get {
-        return Err(Error::internal("pseudo binding received a write operation"));
+    if pseudo.is_some()
+        && !matches!(
+            access,
+            IdentifierAccess::Get | IdentifierAccess::GetOrUndefined
+        )
+    {
+        return Err(Error::internal(
+            "pseudo binding received a non-read operation",
+        ));
     }
     let mut owner = consuming_function;
     let mut scope = use_scope;

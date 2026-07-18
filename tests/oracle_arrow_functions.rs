@@ -353,6 +353,18 @@ const CASES: &[Case] = &[
     },
     Case {
         group: "direct-eval",
+        description: "strict direct eval preserves typeof this as an authenticated pseudo read",
+        source: r#"
+            (function () {
+                "use strict";
+                return eval("typeof this") + "|" +
+                    (eval("this") === undefined);
+            })()
+        "#,
+        expected: "return|string|undefined|true",
+    },
+    Case {
+        group: "direct-eval",
         description: "direct eval in an arrow observes the outer new target",
         source: r#"
             (function () {
