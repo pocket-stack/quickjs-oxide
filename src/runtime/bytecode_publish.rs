@@ -1,6 +1,7 @@
 //! Validation and iterative flattening for unlinked bytecode publication.
 
 use super::*;
+use std::collections::HashSet;
 
 use crate::bytecode::{EvalVariableSource, MAX_LOCAL_SLOTS, verify_parts};
 use crate::heap::{
@@ -741,8 +742,28 @@ fn verify_unlinked_tree_with_root(
             _ => None,
         })
         .collect::<Vec<_>>();
-    let mut pending = vec![(function, 0_usize, root_origins)];
-    while let Some((function, function_depth, closure_origins)) = pending.pop() {
+    // Synthetic Eval roots authenticate imported descriptors directly and do
+    // not expose the ordinary-function `add_eval_variables` metadata quirk.
+    let root_function_name_origins = vec![None; function.closure_variables().len()];
+    let mut next_function_id = 1_usize;
+    let mut erased_function_name_slots = HashSet::<(usize, u16)>::new();
+    let mut eval_consumed_erased_slots = HashSet::<(usize, u16)>::new();
+    let mut erased_parent_by_child = HashMap::<(usize, u16), (usize, u16)>::new();
+    let mut pending = vec![(
+        function,
+        0_usize,
+        root_origins,
+        root_function_name_origins,
+        0_usize,
+    )];
+    while let Some((
+        function,
+        function_depth,
+        closure_origins,
+        function_name_origins,
+        function_id,
+    )) = pending.pop()
+    {
         let is_root = function_depth == 0;
         let expected_eval_kind = if is_root {
             match root_publication {
@@ -828,6 +849,14 @@ fn verify_unlinked_tree_with_root(
         {
             return Err(RuntimeError::Engine(Error::internal(
                 "eval variable-object local escaped a sloppy ordinary function",
+            )));
+        }
+        if is_root
+            && function.metadata().eval_kind != EvalKind::None
+            && function.metadata().function_name_local.is_some()
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "function-name local escaped into a synthetic eval root",
             )));
         }
         if function.metadata().function_name_local.is_some()
@@ -943,6 +972,34 @@ fn verify_unlinked_tree_with_root(
             return Err(RuntimeError::Engine(Error::internal(
                 "a const closure descriptor must also be lexical",
             )));
+        }
+        if function_name_origins.len() != function.closure_variables().len() {
+            return Err(RuntimeError::Invariant(
+                "function-name provenance count disagrees with closure descriptors",
+            ));
+        }
+        for (index, (descriptor, origin)) in function
+            .closure_variables()
+            .iter()
+            .zip(&function_name_origins)
+            .enumerate()
+        {
+            let Some(is_const) = origin else {
+                continue;
+            };
+            if !function_name_view_matches_origin(*descriptor, *is_const) {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "closure descriptor lost its ordinary FunctionName provenance",
+                )));
+            }
+            if is_erased_function_name_view(*descriptor) {
+                let index = u16::try_from(index).map_err(|_| {
+                    RuntimeError::Engine(Error::internal(
+                        "closure descriptor index exceeds bytecode range",
+                    ))
+                })?;
+                erased_function_name_slots.insert((function_id, index));
+            }
         }
         let mut global_declaration_names = HashMap::new();
         let mut first_global_declaration_indices = HashMap::new();
@@ -1318,6 +1375,64 @@ fn verify_unlinked_tree_with_root(
             tree_expected_bindings,
             tree_expected_profile,
         )?;
+        for binding in function
+            .eval_environments()
+            .iter()
+            .flat_map(|environment| environment.scopes.iter())
+            .flat_map(|scope| scope.bindings.iter())
+        {
+            let crate::heap::EvalBindingSource::Closure(index) = binding.source else {
+                continue;
+            };
+            if function_name_origins
+                .get(usize::from(index))
+                .is_some_and(Option::is_some)
+                && function
+                    .closure_variables()
+                    .get(usize::from(index))
+                    .is_some_and(|descriptor| is_erased_function_name_view(*descriptor))
+                && !binding.is_lexical
+                && !binding.is_const
+                && binding.kind == ClosureVariableKind::Normal
+            {
+                eval_consumed_erased_slots.insert((function_id, index));
+            }
+        }
+        for (index, (descriptor, origin)) in function
+            .closure_variables()
+            .iter()
+            .zip(&function_name_origins)
+            .enumerate()
+        {
+            if origin.is_none() || !is_erased_function_name_view(*descriptor) {
+                continue;
+            }
+            let index = u16::try_from(index).map_err(|_| {
+                RuntimeError::Engine(Error::internal(
+                    "closure descriptor index exceeds bytecode range",
+                ))
+            })?;
+            if eval_consumed_erased_slots.contains(&(function_id, index)) {
+                // A function's own eval prepass runs before every child.
+                continue;
+            }
+            let first_child_view = function
+                .constants()
+                .iter()
+                .filter_map(UnlinkedConstant::as_child)
+                .find_map(|child| {
+                    child
+                        .closure_variables()
+                        .iter()
+                        .find(|candidate| candidate.source == ClosureSource::ParentClosure(index))
+                        .copied()
+                });
+            if first_child_view.is_none_or(|view| !is_erased_function_name_view(view)) {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "erased FunctionName closure was not the first source request",
+                )));
+            }
+        }
 
         for (pc, instruction) in function.code().iter().enumerate() {
             if let Some((source, name)) = match instruction {
@@ -1641,8 +1756,30 @@ fn verify_unlinked_tree_with_root(
         let mut argument_flags = vec![None; usize::from(function.metadata().argument_count)];
         for constant in function.constants() {
             if let Some(child) = constant.as_child() {
-                for descriptor in child.closure_variables() {
+                let child_id = next_function_id;
+                next_function_id = next_function_id.checked_add(1).ok_or_else(|| {
+                    RuntimeError::Engine(Error::internal(
+                        "function publication identity overflowed",
+                    ))
+                })?;
+                let mut child_function_name_origins =
+                    Vec::with_capacity(child.closure_variables().len());
+                let mut child_physical_sources = HashSet::new();
+                for (descriptor_index, descriptor) in child.closure_variables().iter().enumerate() {
+                    if matches!(
+                        descriptor.source,
+                        ClosureSource::ParentLocal(_)
+                            | ClosureSource::ParentArgument(_)
+                            | ClosureSource::ParentClosure(_)
+                            | ClosureSource::ParentGlobal(_)
+                    ) && !child_physical_sources.insert(descriptor.source)
+                    {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "child closure table duplicated one physical parent source",
+                        )));
+                    }
                     let flags = (descriptor.is_lexical, descriptor.is_const, descriptor.kind);
+                    let mut function_name_origin = None;
                     match descriptor.source {
                         ClosureSource::ParentLocal(index) => {
                             let slot =
@@ -1659,9 +1796,15 @@ fn verify_unlinked_tree_with_root(
                                     "child closure descriptor source is out of parent definitions",
                                 ))
                             })?;
-                            if flags
-                                != (definition.is_lexical, definition.is_const, definition.kind)
-                            {
+                            let definition_flags =
+                                (definition.is_lexical, definition.is_const, definition.kind);
+                            function_name_origin = (definition.kind
+                                == ClosureVariableKind::FunctionName)
+                                .then_some(definition.is_const);
+                            let flags_match = function_name_origin.is_some_and(|is_const| {
+                                function_name_view_matches_origin(*descriptor, is_const)
+                            }) || flags == definition_flags;
+                            if !flags_match {
                                 return Err(RuntimeError::Engine(Error::internal(
                                     "child closure descriptor flags disagree with its parent local definition",
                                 )));
@@ -1680,7 +1823,12 @@ fn verify_unlinked_tree_with_root(
                                     "child closure descriptor name disagrees with its parent local definition",
                                 )));
                             }
-                            verify_capture_flags(slot, flags)?;
+                            // Siblings may legitimately observe either the
+                            // original FunctionName flags or QuickJS's
+                            // direct-eval-child erasure. Compare their common
+                            // authenticated parent definition, not that
+                            // observable child-local representation quirk.
+                            verify_capture_flags(slot, definition_flags)?;
                         }
                         ClosureSource::ParentArgument(index) => {
                             let slot =
@@ -1723,7 +1871,15 @@ fn verify_unlinked_tree_with_root(
                                         "child closure descriptor source is out of parent bounds",
                                     ))
                                 })?;
-                            if (parent.is_lexical, parent.is_const, parent.kind) != flags {
+                            let parent_flags = (parent.is_lexical, parent.is_const, parent.kind);
+                            function_name_origin = function_name_origins
+                                .get(usize::from(index))
+                                .copied()
+                                .flatten();
+                            let flags_match = function_name_origin.is_some_and(|is_const| {
+                                function_name_view_matches_origin(*descriptor, is_const)
+                            }) || parent_flags == flags;
+                            if !flags_match {
                                 return Err(RuntimeError::Engine(Error::internal(
                                     "transitive closure descriptor flags do not match the parent slot",
                                 )));
@@ -1739,7 +1895,8 @@ fn verify_unlinked_tree_with_root(
                                 )));
                             }
                             let descriptor_name = unlinked_closure_name(child, descriptor)?;
-                            if (descriptor.is_lexical
+                            if (function_name_origin.is_some()
+                                || descriptor.is_lexical
                                 || matches!(
                                     descriptor.kind,
                                     ClosureVariableKind::FunctionName
@@ -1799,6 +1956,35 @@ fn verify_unlinked_tree_with_root(
                             )));
                         }
                     }
+                    let descriptor_index = u16::try_from(descriptor_index).map_err(|_| {
+                        RuntimeError::Engine(Error::internal(
+                            "child closure descriptor index exceeds bytecode range",
+                        ))
+                    })?;
+                    if function_name_origin.is_some() && is_erased_function_name_view(*descriptor) {
+                        if let ClosureSource::ParentClosure(parent_index) = descriptor.source {
+                            let parent_is_erased = function_name_origins
+                                .get(usize::from(parent_index))
+                                .is_some_and(Option::is_some)
+                                && function
+                                    .closure_variables()
+                                    .get(usize::from(parent_index))
+                                    .is_some_and(|parent| is_erased_function_name_view(*parent));
+                            if parent_is_erased
+                                && erased_parent_by_child
+                                    .insert(
+                                        (child_id, descriptor_index),
+                                        (function_id, parent_index),
+                                    )
+                                    .is_some()
+                            {
+                                return Err(RuntimeError::Invariant(
+                                    "erased FunctionName slot acquired two parents",
+                                ));
+                            }
+                        }
+                    }
+                    child_function_name_origins.push(function_name_origin);
                 }
                 let child_depth = function_depth.checked_add(1).ok_or_else(|| {
                     RuntimeError::Engine(Error::internal(
@@ -1815,13 +2001,37 @@ fn verify_unlinked_tree_with_root(
                         _ => None,
                     })
                     .collect::<Vec<_>>();
-                pending.push((child, child_depth, child_origins));
+                pending.push((
+                    child,
+                    child_depth,
+                    child_origins,
+                    child_function_name_origins,
+                    child_id,
+                ));
             } else if constant.as_primitive().is_none() && constant.as_regexp().is_none() {
                 return Err(RuntimeError::Invariant(
                     "unlinked constant did not contain exactly one payload",
                 ));
             }
         }
+    }
+    let mut authenticated_erased_slots = HashSet::new();
+    let mut lineage = eval_consumed_erased_slots.into_iter().collect::<Vec<_>>();
+    while let Some(slot) = lineage.pop() {
+        if !authenticated_erased_slots.insert(slot) {
+            continue;
+        }
+        if let Some(parent) = erased_parent_by_child.get(&slot).copied() {
+            lineage.push(parent);
+        }
+    }
+    if erased_function_name_slots
+        .iter()
+        .any(|slot| !authenticated_erased_slots.contains(slot))
+    {
+        return Err(RuntimeError::Engine(Error::internal(
+            "erased FunctionName closure has no direct-eval lineage",
+        )));
     }
     Ok(())
 }
@@ -1870,6 +2080,17 @@ fn verify_unlinked_debug(function: &UnlinkedFunction) -> Result<(), RuntimeError
         previous_pc = Some(entry.pc);
     }
     Ok(())
+}
+
+fn function_name_view_matches_origin(descriptor: ClosureVariable, origin_is_const: bool) -> bool {
+    (descriptor.is_lexical, descriptor.is_const, descriptor.kind)
+        == (false, origin_is_const, ClosureVariableKind::FunctionName)
+        || is_erased_function_name_view(descriptor)
+}
+
+fn is_erased_function_name_view(descriptor: ClosureVariable) -> bool {
+    (descriptor.is_lexical, descriptor.is_const, descriptor.kind)
+        == (false, false, ClosureVariableKind::Normal)
 }
 
 fn verify_capture_flags(
@@ -3302,6 +3523,340 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("parent local definition")
+        );
+    }
+
+    #[test]
+    fn function_name_metadata_erasure_requires_a_direct_eval_child() {
+        let child = UnlinkedFunction::new_with_closure_variables(
+            vec![Instruction::GetVarRef(0), Instruction::Return],
+            Vec::new(),
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentLocal(0),
+                name: ClosureVariableName::None,
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        );
+        let named_parent = UnlinkedFunction::new(
+            vec![
+                Instruction::FClosure(0),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(child)],
+            FunctionMetadata {
+                local_count: 1,
+                function_name_local: Some(0),
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_name(Some(JsString::from_static("named")));
+        let script = UnlinkedFunction::new(
+            vec![
+                Instruction::FClosure(0),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(named_parent)],
+            FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+
+        assert!(
+            verify_unlinked_tree(&script)
+                .unwrap_err()
+                .to_string()
+                .contains("parent local definition"),
+            "a child without direct eval erased FunctionName metadata",
+        );
+    }
+
+    #[test]
+    fn erased_function_name_view_cannot_stick_into_a_plain_descendant() {
+        let name = JsString::from_static("named");
+        let leaf = UnlinkedFunction::new_with_closure_variables(
+            vec![Instruction::GetVarRef(0), Instruction::Return],
+            vec![UnlinkedConstant::primitive(Value::String(name.clone())).unwrap()],
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentClosure(0),
+                name: ClosureVariableName::Constant(0),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        );
+        let environment = EvalEnvironment {
+            scopes: vec![
+                EvalScope {
+                    kind: EvalScopeKind::FunctionBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: vec![EvalBinding {
+                        name: name.clone(),
+                        source: EvalBindingSource::Closure(0),
+                        is_lexical: false,
+                        is_const: false,
+                        kind: ClosureVariableKind::Normal,
+                        is_catch_parameter: false,
+                    }]
+                    .into_boxed_slice(),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::ProgramBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+            ]
+            .into_boxed_slice(),
+            variable_environment: EvalVariableEnvironment::Scope(1),
+            caller_strict: false,
+        };
+        let middle = UnlinkedFunction::new_with_closure_variables(
+            vec![
+                Instruction::Undefined,
+                Instruction::Eval {
+                    argument_count: 0,
+                    environment: 0,
+                },
+                Instruction::Drop,
+                Instruction::FClosure(1),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![
+                UnlinkedConstant::primitive(Value::String(name.clone())).unwrap(),
+                UnlinkedConstant::child(leaf),
+            ],
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentLocal(0),
+                name: ClosureVariableName::Constant(0),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        )
+        .with_eval_environments(vec![environment]);
+        let named_parent = UnlinkedFunction::new(
+            vec![
+                Instruction::FClosure(0),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(middle)],
+            FunctionMetadata {
+                local_count: 1,
+                function_name_local: Some(0),
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_name(Some(name));
+        let script = UnlinkedFunction::new(
+            vec![
+                Instruction::FClosure(0),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(named_parent)],
+            FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+
+        assert!(
+            verify_unlinked_tree(&script)
+                .unwrap_err()
+                .to_string()
+                .contains("not the first source request"),
+            "a plain descendant retained an erased FunctionName view",
+        );
+    }
+
+    #[test]
+    fn later_eval_child_cannot_rewrite_an_earlier_function_name_request() {
+        let name = JsString::from_static("named");
+        let plain_child = UnlinkedFunction::new_with_closure_variables(
+            vec![Instruction::GetVarRef(0), Instruction::Return],
+            vec![UnlinkedConstant::primitive(Value::String(name.clone())).unwrap()],
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentClosure(0),
+                name: ClosureVariableName::Constant(0),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::FunctionName,
+            }],
+        );
+        let eval_environment = EvalEnvironment {
+            scopes: vec![
+                EvalScope {
+                    kind: EvalScopeKind::FunctionBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: vec![EvalBinding {
+                        name: name.clone(),
+                        source: EvalBindingSource::Closure(0),
+                        is_lexical: false,
+                        is_const: false,
+                        kind: ClosureVariableKind::Normal,
+                        is_catch_parameter: false,
+                    }]
+                    .into_boxed_slice(),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::ProgramBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+            ]
+            .into_boxed_slice(),
+            variable_environment: EvalVariableEnvironment::Scope(1),
+            caller_strict: false,
+        };
+        let eval_child = UnlinkedFunction::new_with_closure_variables(
+            eval_code(0, false),
+            vec![UnlinkedConstant::primitive(Value::String(name.clone())).unwrap()],
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentClosure(0),
+                name: ClosureVariableName::Constant(0),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        )
+        .with_eval_environments(vec![eval_environment]);
+        let middle = UnlinkedFunction::new_with_closure_variables(
+            vec![
+                Instruction::FClosure(1),
+                Instruction::Drop,
+                Instruction::FClosure(2),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![
+                UnlinkedConstant::primitive(Value::String(name.clone())).unwrap(),
+                UnlinkedConstant::child(plain_child),
+                UnlinkedConstant::child(eval_child),
+            ],
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentLocal(0),
+                name: ClosureVariableName::Constant(0),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        );
+        let named_parent = UnlinkedFunction::new(
+            vec![
+                Instruction::FClosure(0),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(middle)],
+            FunctionMetadata {
+                local_count: 1,
+                function_name_local: Some(0),
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_name(Some(name));
+        let script = UnlinkedFunction::new(
+            vec![
+                Instruction::FClosure(0),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(named_parent)],
+            FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+
+        assert!(
+            verify_unlinked_tree(&script)
+                .unwrap_err()
+                .to_string()
+                .contains("not the first source request"),
+            "a later eval child authenticated an impossible parent Normal view",
         );
     }
 

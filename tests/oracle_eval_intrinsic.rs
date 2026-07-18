@@ -471,6 +471,341 @@ const EXPECTED_R1Y_CALLER_BINDINGS: &[&str] = &[
     "special=7|2|1|2|true|true|7|function",
 ];
 
+// QuickJS gives authored code in a named function expression static access to
+// its private self binding before consulting that function's hidden sloppy
+// eval variable object. The eval compilation unit deliberately has the inverse
+// lookup order, so same-named var/function declarations remain visible inside
+// eval and to later eval calls without replacing the caller's self reference.
+const R2A_PRIVATE_NAME_DECLARATION_PROBE: &str = r#"
+(function () {
+    var observations = [];
+
+    var direct = function named() {
+        eval("var named=42");
+        return [typeof named, named === direct, eval("named")].join("|");
+    };
+    observations.push("direct=" + direct());
+
+    var hoist = function named() {
+        var inside = eval("function named(){return 43}; named()");
+        return [inside, typeof named, named === hoist, eval("named()")].join("|");
+    };
+    observations.push("function=" + hoist());
+
+    var nested = function named() {
+        var inside = eval(
+            "eval(\"var named=44\"); " +
+            "[typeof named,named].join(\"|\")"
+        );
+        return [inside, typeof named, named === nested, eval("named")].join("|");
+    };
+    observations.push("nested=" + nested());
+
+    var strictCaller = function named() {
+        "use strict";
+        var inside = eval("var named=45; named");
+        return [
+            inside,
+            typeof named,
+            named === strictCaller,
+            eval("typeof named")
+        ].join("|");
+    };
+    observations.push("strictCaller=" + strictCaller());
+
+    var strictSource = function named() {
+        var inside = eval("\"use strict\"; var named=46; named");
+        return [
+            inside,
+            typeof named,
+            named === strictSource,
+            eval("named===strictSource")
+        ].join("|");
+    };
+    observations.push("strictSource=" + strictSource());
+
+    var parent = function named() {
+        eval("var named=47");
+        return function () {
+            return [typeof named, named === parent].join("|");
+        };
+    };
+    observations.push("plainChild=" + parent()());
+
+    var childParent = function named() {
+        return function () {
+            eval("var named=48");
+            return [
+                typeof named,
+                named === childParent,
+                eval("named")
+            ].join("|");
+        };
+    };
+    observations.push("childOwn=" + childParent()());
+
+    var sourceView = function named() {
+        var inside = eval(
+            "var named=49; " +
+            "[typeof named,named===sourceView].join(\"|\")"
+        );
+        return [inside, typeof named, named === sourceView].join("|");
+    };
+    observations.push("sourceView=" + sourceView());
+
+    var deleted = function named() {
+        var result = eval("var named=50; delete named");
+        return [result, eval("named===deleted"), named === deleted].join("|");
+    };
+    observations.push("delete=" + deleted());
+
+    var assigned = function named() {
+        var result = eval("named=51; named===assigned");
+        return [result, named === assigned].join("|");
+    };
+    observations.push("assignment=" + assigned());
+
+    var bareVar = function named() {
+        eval("var named=52");
+        var before = eval("named");
+        eval("var named");
+        return [
+            before,
+            eval("typeof named"),
+            typeof named,
+            named === bareVar
+        ].join("|");
+    };
+    observations.push("bareVar=" + bareVar());
+
+    var plainChildWrite = function named() {
+        return function () {
+            named = 8;
+            return [typeof named, named === plainChildWrite].join("|");
+        };
+    };
+    observations.push("plainChildWrite=" + plainChildWrite()());
+
+    // QuickJS's ordinary direct-eval closure prepass intentionally loses the
+    // FunctionName/is_const flags copied from an ancestor unscoped binding.
+    // Freeze that implementation quirk in both sloppy and strict children.
+    var childWrite = function named() {
+        return function () {
+            eval("0");
+            named = 9;
+            return [named, named === childWrite].join("|");
+        };
+    };
+    observations.push("childWrite=" + childWrite()());
+
+    var strictChildWrite = function named() {
+        "use strict";
+        return function () {
+            eval("0");
+            named = 10;
+            return [named, named === strictChildWrite].join("|");
+        };
+    };
+    observations.push("strictChildWrite=" + strictChildWrite()());
+
+    var strictEvalWrite = function named() {
+        "use strict";
+        return function () {
+            return eval(
+                "named=11; " +
+                "[named,named===strictEvalWrite].join(\"|\")"
+            );
+        };
+    };
+    observations.push("strictEvalWrite=" + strictEvalWrite()());
+
+    // A child created inside eval uses Eval-root closure copying, which keeps
+    // the FunctionName metadata and therefore remains immutable.
+    var evalChild = function named() {
+        return eval(
+            "(function(){named=12;return " +
+            "[typeof named,named===evalChild].join(\"|\")})"
+        );
+    };
+    observations.push("evalChild=" + evalChild()());
+
+    // The metadata loss belongs only to the ordinary function that contains
+    // direct eval. A plain descendant resolves the original FunctionName and
+    // may use a second, immutable relay through that same parent frame.
+    var directThenPlain = function named() {
+        return function () {
+            eval("0");
+            return function () {
+                named = 13;
+                return [
+                    typeof named,
+                    named === directThenPlain
+                ].join("|");
+            };
+        };
+    };
+    observations.push("directThenPlain=" + directThenPlain()()());
+
+    // A descendant that itself contains direct eval gets its own erased view.
+    var directThenDirect = function named() {
+        return function () {
+            eval("0");
+            return function () {
+                eval("0");
+                named = 14;
+                return [named, named === directThenDirect].join("|");
+            };
+        };
+    };
+    observations.push("directThenDirect=" + directThenDirect()()());
+
+    var doubleDirectThenPlain = function named() {
+        return function () {
+            eval("0");
+            return function () {
+                eval("0");
+                return function () {
+                    named = 15;
+                    return [
+                        typeof named,
+                        named === doubleDirectThenPlain
+                    ].join("|");
+                };
+            };
+        };
+    };
+    observations.push(
+        "doubleDirectThenPlain=" + doubleDirectThenPlain()()()()
+    );
+
+    // Synthetic Eval roots copy imported closure flags exactly. They neither
+    // erase an imported FunctionName nor restore an already-erased Normal view.
+    var evalRootFunctionName = function named() {
+        return eval(
+            "(function(){eval('0');named=16;return " +
+            "[typeof named,named===evalRootFunctionName].join('|')})"
+        );
+    };
+    observations.push("evalRootFunctionName=" + evalRootFunctionName()());
+
+    var evalRootErasedNormal = function named() {
+        return function () {
+            eval("0");
+            return eval(
+                "(function(){eval('0');named=17;return " +
+                "[named,named===evalRootErasedNormal].join('|')})"
+            );
+        };
+    };
+    observations.push("evalRootErasedNormal=" + evalRootErasedNormal()()());
+
+    // QuickJS creates a child's direct-eval closure table before resolving
+    // identifiers in its plain parent. That descendant can therefore claim
+    // the parent's physical relay first and make the parent's later view Normal.
+    var descendantSeedsParent = function named() {
+        return function () {
+            var seed = function () { eval("0"); };
+            named = 18;
+            return [
+                typeof named,
+                named === descendantSeedsParent
+            ].join("|");
+        };
+    };
+    observations.push("descendantSeedsParent=" + descendantSeedsParent()());
+
+    var evalFirstThenPlain = function named() {
+        return function () {
+            var seed = function () { eval("0"); };
+            var leaf = function () {
+                named = 19;
+                return named === evalFirstThenPlain;
+            };
+            var leafResult = leaf();
+            named = 20;
+            return [
+                leafResult,
+                named,
+                named === evalFirstThenPlain
+            ].join("|");
+        };
+    };
+    observations.push("evalFirstThenPlain=" + evalFirstThenPlain()());
+
+    // Reversing the two children lets the plain leaf claim the parent relay
+    // with FunctionName metadata before the later eval prepass reaches it.
+    var earlierPlainWins = function named() {
+        return function () {
+            var first = function () {
+                named = 21;
+                return named === earlierPlainWins;
+            };
+            var seed = function () { eval("0"); };
+            var firstResult = first();
+            named = 22;
+            return [
+                firstResult,
+                typeof named,
+                named === earlierPlainWins
+            ].join("|");
+        };
+    };
+    observations.push("earlierPlainWins=" + earlierPlainWins()());
+
+    var strictDirectThenPlain = function named() {
+        "use strict";
+        return function () {
+            eval("0");
+            return function () {
+                try {
+                    named = 23;
+                    return "none";
+                } catch (error) {
+                    return [
+                        error.name,
+                        typeof named,
+                        named === strictDirectThenPlain
+                    ].join("|");
+                }
+            };
+        };
+    };
+    observations.push(
+        "strictDirectThenPlain=" + strictDirectThenPlain()()()
+    );
+
+    return observations.join("\n");
+})()
+"#;
+
+const EXPECTED_R2A_PRIVATE_NAME_DECLARATIONS: &[&str] = &[
+    "direct=function|true|42",
+    "function=43|function|true|43",
+    "nested=number|44|function|true|44",
+    "strictCaller=45|function|true|function",
+    "strictSource=46|function|true|true",
+    "plainChild=function|true",
+    "childOwn=number|false|48",
+    "sourceView=number|false|function|true",
+    "delete=true|true|true",
+    "assignment=true|true",
+    "bareVar=52|undefined|function|true",
+    "plainChildWrite=function|true",
+    "childWrite=9|false",
+    "strictChildWrite=10|false",
+    "strictEvalWrite=11|false",
+    "evalChild=function|true",
+    "directThenPlain=function|true",
+    "directThenDirect=14|false",
+    "doubleDirectThenPlain=function|true",
+    "evalRootFunctionName=function|true",
+    "evalRootErasedNormal=17|false",
+    "descendantSeedsParent=number|false",
+    "evalFirstThenPlain=true|20|false",
+    "earlierPlainWins=true|function|true",
+    "strictDirectThenPlain=TypeError|function|true",
+];
+
 const R1Y_DECLARATION_CONFLICT_PROBE: &str = r#"
 var observations = [];
 {
@@ -817,6 +1152,28 @@ fn eval_declarations_respect_catch_lexicals_and_implicit_bindings() {
         rust,
         oracle_value(&oracle, R1Y_CALLER_BINDING_PROBE),
         "eval caller-binding precedence differed from pinned QuickJS",
+    );
+}
+
+#[test]
+fn eval_declarations_do_not_replace_private_function_expression_names() {
+    let rust = rust_value(R2A_PRIVATE_NAME_DECLARATION_PROBE);
+    assert_eq!(
+        rust.lines().collect::<Vec<_>>(),
+        EXPECTED_R2A_PRIVATE_NAME_DECLARATIONS,
+        "Rust private function-name/eval declaration precedence drifted",
+    );
+
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!(
+            "SKIP private function-name/eval differential: set QJS_ORACLE to pinned upstream qjs"
+        );
+        return;
+    };
+    assert_eq!(
+        rust,
+        oracle_value(&oracle, R2A_PRIVATE_NAME_DECLARATION_PROBE),
+        "private function-name/eval declaration precedence differed from pinned QuickJS",
     );
 }
 

@@ -1050,6 +1050,24 @@ are
 and
 `c9369e14acb1469b20aea4caab2c0a880cb7f040a72718d629f38e1301582650`.
 
+R2a fixes QuickJS-specific precedence between a named function expression's
+private self binding and same-named direct/nested eval declarations. Authored
+caller code keeps the private FunctionName binding, while eval's ordered
+external scan still sees the nearest `<var>` property first. The accompanying
+pinned-QuickJS differential also freezes the target's `add_eval_variables`
+metadata-loss quirk, including entry-before-children ordering with source-keyed
+first-flags/kind-wins closure slots, plain-leaf FunctionName restoration, and
+the contrasting Eval-root relay behavior.
+
+The pinned Test262 tree contains no exact instance of this declaration shape:
+that declaration-shape cohort is 0 paths / 0 variants. R2a therefore adds no
+empty manifest and records no Test262 progress increase. The full gate remains
+byte-identical across all 102,037 keys: 29,013 pass, 34,849 are runnable, and
+the TSV/JSONL hashes remain
+`2ba53703827155be4ce36f11a52b48c3ac1bb4efc8f61da9cc31b6b1ca8e125a`
+and
+`c9369e14acb1469b20aea4caab2c0a880cb7f040a72718d629f38e1301582650`.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -1138,7 +1156,9 @@ byte-identical scoreboard; R1w adds the immutable caller-environment table and
 live-cell materialization with the same zero-movement result; R1x opens the
 bounded independent String-eval root and adds 575 full-vector passes; R1y adds
 QuickJS-shaped eval declaration environments and another 768 passes; R1z adds
-recursive direct-eval caller-environment relay and another 29 passes. R1i
+recursive direct-eval caller-environment relay and another 29 passes; R2a fixes
+private FunctionName/eval declaration precedence with a byte-identical full
+vector. R1i
 completes the direct standard-RegExp replacement route without changing that
 scoreboard.
 The generated Unicode code-point property corpus now passes; properties of

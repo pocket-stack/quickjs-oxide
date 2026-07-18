@@ -3903,10 +3903,10 @@ impl Runtime {
         }
         let var_ref = self.0.state.borrow();
         let var_ref = var_ref.heap.var_ref(root.id())?;
-        if var_ref.is_lexical != descriptor.is_lexical
-            || var_ref.is_const != descriptor.is_const
-            || var_ref.kind != descriptor.kind
-        {
+        if !vm_host::closure_view_matches_cell(
+            (var_ref.is_lexical, var_ref.is_const, var_ref.kind),
+            descriptor,
+        ) {
             return Err(RuntimeError::Invariant(
                 "closure descriptor metadata does not match the shared variable cell",
             ));

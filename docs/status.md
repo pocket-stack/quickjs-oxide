@@ -236,9 +236,40 @@ claim full parity.
   and
   `c9369e14acb1469b20aea4caab2c0a880cb7f040a72718d629f38e1301582650`.
 
+  R2a closes the named-function-expression/eval declaration precedence gap by
+  preserving QuickJS's two distinct lookup orders. Already-authored ordinary
+  code resolves its private FunctionName before its own hidden `<var>` object;
+  a synthetic eval root keeps the ordered external chain with `<var>` before
+  that private name, so same-named `var`/FunctionDeclaration values remain
+  visible inside eval and to later eval calls without replacing the caller's
+  recursive self binding. The same compiler path reproduces QuickJS's pinned
+  `add_eval_variables` quirk and creation order: eval closure tables are seeded
+  when the compiler enters each function, before source-ordered children and
+  the parent's own name resolution. Physical parent sources are source-keyed;
+  the first request fixes flags/kind while a missing semantic name may still be
+  retained later. An ordinary eval descendant can therefore establish a
+  mutable Normal view in a plain parent, while a later plain leaf restores
+  FunctionName metadata on its own descriptor; Eval-root-origin bindings keep
+  their imported flags. Publication propagates the underlying ordinary
+  FunctionName provenance and accepts an erased Normal view only when it is
+  consumed by an authenticated, referenced eval environment or is an erased
+  ParentClosure ancestor of such a slot. Shared VarRefs then admit only the
+  corresponding FunctionName-cell/Normal-view pair. A 25-row
+  Rust/pinned-QuickJS differential freezes direct and recursive declarations,
+  caller/source strictness, delete/write fallback, both source-order outcomes,
+  deep ordinary/eval relays, and FunctionName/erased-Normal Eval-root controls.
+
+  The pinned Test262 snapshot has no exact test for a named function
+  expression whose direct or nested eval declares the private self name: that
+  declaration-shape cohort is 0 paths / 0 variants, so R2a deliberately adds no
+  empty manifest and claims no coverage increase. The complete 102,037-variant gate
+  remains byte-identical at 29,013 passes and 34,849 runnable jobs, including
+  the same TSV/JSONL hashes above. `runtime.rs` remains 9,730 lines; the
+  descriptor compatibility and publication checks stay in the existing
+  split runtime modules.
+
   `with`, generator/async and destructuring eval declarations, direct
-  `new.target`, ill-formed UTF-16 source, and eval-`var` precedence against a
-  named function expression's private self binding stay explicit frontiers.
+  `new.target`, and ill-formed UTF-16 source stay explicit frontiers.
   QuickJS also allocates the callable and VarRef
   array before capturing caller cells, while this Rust slice materializes the
   roots first and then allocates the callable; only successful-compilation
@@ -2935,9 +2966,6 @@ other general assignment targets, module resolution, object method/accessor
 definitions and their home-object semantics, non-simple parameter lists,
 arrow/async/generator functions, `with`, and callable Proxy classes are not yet
 implemented.
-Eval `var` declarations also still shadow a named function expression's private
-self binding, while QuickJS preserves that binding; this predates R1z and is
-tracked as a separate declaration-resolution slice.
 Unsupported declaration contexts are rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` is currently
 limited to simple identifier lists in direct Program code, authored

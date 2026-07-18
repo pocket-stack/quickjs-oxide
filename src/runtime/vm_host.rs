@@ -38,6 +38,22 @@ enum FrameBinding {
     Captured(VarRefRoot),
 }
 
+/// QuickJS keeps access flags on each closure descriptor rather than on the
+/// shared VarRef. Its ordinary direct-eval prepass may therefore expose one
+/// FunctionName cell through a mutable Normal descriptor. Publication
+/// authenticates where this one-way erasure enters the closure chain.
+pub(super) fn closure_view_matches_cell(
+    cell: (bool, bool, ClosureVariableKind),
+    descriptor: ClosureVariable,
+) -> bool {
+    cell == (descriptor.is_lexical, descriptor.is_const, descriptor.kind)
+        || (cell.0 == descriptor.is_lexical
+            && !cell.0
+            && cell.2 == ClosureVariableKind::FunctionName
+            && !descriptor.is_const
+            && descriptor.kind == ClosureVariableKind::Normal)
+}
+
 fn read_frame_binding(runtime: &Runtime, binding: &FrameBinding) -> Result<Value, Error> {
     match binding {
         FrameBinding::Direct(value) => Ok(value.clone()),
@@ -315,8 +331,12 @@ impl RuntimeVmHost {
                 ));
             }
         };
-        let flags_match = (definition.is_lexical, definition.is_const, definition.kind)
-            == (descriptor.is_lexical, descriptor.is_const, descriptor.kind);
+        let definition_flags = (definition.is_lexical, definition.is_const, definition.kind);
+        // Publication has already proven that any erased FunctionName view
+        // reaches a real direct-eval descriptor through its ParentClosure
+        // lineage. Runtime instantiation only needs to match that authenticated
+        // view against the canonical shared cell.
+        let flags_match = closure_view_matches_cell(definition_flags, descriptor);
         let name_matches = if definition.is_lexical
             || definition.kind == ClosureVariableKind::FunctionName
             || descriptor_name.is_some()
@@ -1556,16 +1576,14 @@ impl VmHost for RuntimeVmHost {
             ));
         };
         let child_id = *bytecode;
-        let closure_variables = self
-            .runtime
-            .0
-            .state
-            .borrow()
-            .heap
-            .function_bytecode(child_id)
-            .map_err(|error| Error::internal(error.to_string()))?
-            .closure_variables
-            .clone();
+        let closure_variables = {
+            let state = self.runtime.0.state.borrow();
+            let child = state
+                .heap
+                .function_bytecode(child_id)
+                .map_err(|error| Error::internal(error.to_string()))?;
+            child.closure_variables.clone()
+        };
         let bytecode = FunctionBytecodeRef::from_borrowed_handle(self.runtime.clone(), child_id)
             .map_err(|error| Error::internal(error.to_string()))?;
         let mut captured = Vec::with_capacity(closure_variables.len());
@@ -1578,7 +1596,16 @@ impl VmHost for RuntimeVmHost {
                         .locals
                         .get_mut(usize::from(index))
                         .ok_or_else(|| Error::internal("captured local index is out of bounds"))?;
-                    capture_frame_binding(&self.runtime, binding, descriptor)?
+                    capture_frame_binding(
+                        &self.runtime,
+                        binding,
+                        ClosureVariable {
+                            is_lexical: definition.is_lexical,
+                            is_const: definition.is_const,
+                            kind: definition.kind,
+                            ..descriptor
+                        },
+                    )?
                 }
                 ClosureSource::ParentArgument(index) => {
                     let definition = self.argument_definition(index)?;

@@ -6681,7 +6681,13 @@ struct ResolvedBinding {
     kind: BindingKind,
 }
 
-fn function_resolution_order(tree: &FunctionTree) -> Result<Vec<FunctionId>, Error> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FunctionResolutionEvent {
+    Enter(FunctionId),
+    Resolve(FunctionId),
+}
+
+fn function_resolution_events(tree: &FunctionTree) -> Result<Vec<FunctionResolutionEvent>, Error> {
     if tree.functions.is_empty() {
         return Err(Error::internal("compiler produced no root function"));
     }
@@ -6705,22 +6711,23 @@ fn function_resolution_order(tree: &FunctionTree) -> Result<Vec<FunctionId>, Err
         return Err(Error::internal("root function unexpectedly has a parent"));
     }
 
-    let mut order = Vec::with_capacity(tree.functions.len());
+    let mut events = Vec::with_capacity(tree.functions.len().saturating_mul(2));
     let mut stack = vec![(0_usize, false)];
     while let Some((function_id, visited)) = stack.pop() {
         if visited {
-            order.push(function_id);
+            events.push(FunctionResolutionEvent::Resolve(function_id));
             continue;
         }
+        events.push(FunctionResolutionEvent::Enter(function_id));
         stack.push((function_id, true));
         for &child in children[function_id].iter().rev() {
             stack.push((child, false));
         }
     }
-    if order.len() != tree.functions.len() {
+    if events.len() != tree.functions.len().saturating_mul(2) {
         return Err(Error::internal("function arena is not one rooted tree"));
     }
-    Ok(order)
+    Ok(events)
 }
 
 fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
@@ -7865,36 +7872,40 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
     install_eval_variable_objects(tree)?;
     validate_scope_graph(tree)?;
     seed_global_declarations(tree)?;
-    // QuickJS creates and resolves children depth-first in source order before
-    // resolving their parent. A plain reverse arena walk reverses sibling
-    // capture insertion, so derive the exact stable postorder explicitly.
-    for function_id in function_resolution_order(tree)? {
-        let unresolved = tree.functions[function_id]
-            .ops
-            .iter()
-            .enumerate()
-            .filter_map(|(index, operation)| match &operation.op {
-                IrOp::Identifier {
-                    name,
-                    span,
-                    scope,
-                    access,
-                } => Some((index, name.clone(), *span, *scope, *access)),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+    // QuickJS enters each function by pre-populating its direct-eval closure
+    // table, then creates children depth-first in source order, and only then
+    // resolves the parent's ordinary identifiers. The entry event matters:
+    // `get_closure_var` is first-slot-wins, so a descendant eval can establish
+    // an ancestor relay before that ancestor's own bytecode is resolved.
+    for event in function_resolution_events(tree)? {
+        match event {
+            FunctionResolutionEvent::Enter(function_id) => {
+                link_eval_environments(tree, function_id)?;
+            }
+            FunctionResolutionEvent::Resolve(function_id) => {
+                let unresolved = tree.functions[function_id]
+                    .ops
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, operation)| match &operation.op {
+                        IrOp::Identifier {
+                            name,
+                            span,
+                            scope,
+                            access,
+                        } => Some((index, name.clone(), *span, *scope, *access)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
 
-        for (operation_index, name, span, scope, access) in unresolved {
-            let operation = resolve_identifier(tree, function_id, scope, &name, span, access)?;
-            tree.functions[function_id].ops[operation_index].op = operation;
+                for (operation_index, name, span, scope, access) in unresolved {
+                    let operation =
+                        resolve_identifier(tree, function_id, scope, &name, span, access)?;
+                    tree.functions[function_id].ops[operation_index].op = operation;
+                }
+            }
         }
     }
-    // QuickJS links every OP_eval scope after ordinary identifier resolution,
-    // while the complete parser scope graph is still available and before
-    // entry hoists are installed. Linking here may force lazy `arguments` and
-    // named-function self bindings, as well as closure relays for every outer
-    // binding visible to the call site.
-    link_eval_environments(tree)?;
     install_global_function_hoists(tree)?;
     install_eval_declaration_hoists(tree)?;
     install_function_body_hoists(tree)?;
@@ -7963,90 +7974,74 @@ const fn eval_scope_kind(kind: ScopeKind) -> EvalScopeKind {
     }
 }
 
-/// Publish one immutable scope chain per distinct parser scope containing a
-/// syntactic direct-eval candidate. The chain deliberately owns source names:
-/// unlike ordinary debug metadata they remain semantically required even in
-/// `StripDebug` mode so a later String compiler can resolve against the live
-/// caller frame.
-fn link_eval_environments(tree: &mut FunctionTree) -> Result<(), Error> {
-    let functions_with_eval = tree
-        .functions
+/// Publish the immutable scope chains for one function at its QuickJS
+/// creation-entry event. Besides retaining names for later String compilation,
+/// this deliberately pre-populates closure slots before children and ordinary
+/// identifier resolution so source-order first-slot-wins behavior is stable.
+fn link_eval_environments(tree: &mut FunctionTree, function_id: FunctionId) -> Result<(), Error> {
+    let has_eval = tree.functions[function_id]
+        .ops
         .iter()
-        .map(|function| {
-            function
-                .ops
-                .iter()
-                .any(|operation| matches!(operation.op, IrOp::EvalCall { .. }))
-        })
-        .collect::<Vec<_>>();
+        .any(|operation| matches!(operation.op, IrOp::EvalCall { .. }));
+    if !has_eval {
+        return Ok(());
+    }
 
     // Lazy pseudo-bindings must exist before any descriptor snapshots a scope.
     // The current ordinary function always owns `arguments`; named-expression
     // self bindings from every enclosing function are also part of the visible
     // lexical chain even when no ordinary identifier opcode forced them first.
-    for (function_id, has_eval) in functions_with_eval.iter().copied().enumerate() {
-        if !has_eval {
-            continue;
-        }
-        ensure_eval_visible_pseudo_bindings(tree, function_id)?;
-    }
+    ensure_eval_visible_pseudo_bindings(tree, function_id)?;
 
-    for (function_id, has_eval) in functions_with_eval.into_iter().enumerate() {
-        if !has_eval {
-            continue;
-        }
-        let sites = tree.functions[function_id]
-            .ops
-            .iter()
-            .enumerate()
-            .filter_map(|(operation_index, operation)| match operation.op {
-                IrOp::EvalCall {
-                    scope,
-                    environment: None,
-                    ..
-                } => Some((operation_index, scope)),
-                IrOp::EvalCall {
-                    environment: Some(_),
-                    ..
-                } => None,
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let mut by_scope = HashMap::<ScopeId, u16>::new();
-        let mut linked_sites = Vec::with_capacity(sites.len());
-        for (operation_index, scope) in sites {
-            let environment = if let Some(&environment) = by_scope.get(&scope) {
-                environment
-            } else {
-                let environment = u16::try_from(
-                    tree.functions[function_id].eval_environments.len(),
-                )
-                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many eval environments"))?;
-                let descriptor = link_eval_environment(tree, function_id, scope)?;
-                tree.functions[function_id]
-                    .eval_environments
-                    .push(descriptor);
-                by_scope.insert(scope, environment);
-                environment
-            };
-            linked_sites.push((operation_index, environment));
-        }
-        for (operation_index, environment) in linked_sites {
-            let Some(operation) = tree.functions[function_id].ops.get_mut(operation_index) else {
-                return Err(Error::internal("eval operation moved while linking scopes"));
-            };
-            let IrOp::EvalCall {
-                environment: linked,
+    let sites = tree.functions[function_id]
+        .ops
+        .iter()
+        .enumerate()
+        .filter_map(|(operation_index, operation)| match operation.op {
+            IrOp::EvalCall {
+                scope,
+                environment: None,
                 ..
-            } = &mut operation.op
-            else {
-                return Err(Error::internal(
-                    "eval operation changed while linking scopes",
-                ));
-            };
-            if linked.replace(environment).is_some() {
-                return Err(Error::internal("eval operation was linked more than once"));
-            }
+            } => Some((operation_index, scope)),
+            IrOp::EvalCall {
+                environment: Some(_),
+                ..
+            } => None,
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut by_scope = HashMap::<ScopeId, u16>::new();
+    let mut linked_sites = Vec::with_capacity(sites.len());
+    for (operation_index, scope) in sites {
+        let environment = if let Some(&environment) = by_scope.get(&scope) {
+            environment
+        } else {
+            let environment = u16::try_from(tree.functions[function_id].eval_environments.len())
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many eval environments"))?;
+            let descriptor = link_eval_environment(tree, function_id, scope)?;
+            tree.functions[function_id]
+                .eval_environments
+                .push(descriptor);
+            by_scope.insert(scope, environment);
+            environment
+        };
+        linked_sites.push((operation_index, environment));
+    }
+    for (operation_index, environment) in linked_sites {
+        let Some(operation) = tree.functions[function_id].ops.get_mut(operation_index) else {
+            return Err(Error::internal("eval operation moved while linking scopes"));
+        };
+        let IrOp::EvalCall {
+            environment: linked,
+            ..
+        } = &mut operation.op
+        else {
+            return Err(Error::internal(
+                "eval operation changed while linking scopes",
+            ));
+        };
+        if linked.replace(environment).is_some() {
+            return Err(Error::internal("eval operation was linked more than once"));
         }
     }
     Ok(())
@@ -8184,10 +8179,12 @@ fn link_eval_environment(
             if matches!(storage, BindingStorage::External(_)) {
                 continue;
             }
-            let source = if owner == consuming_function {
+            let (source, resolved_kind) = if owner == consuming_function {
                 match storage {
-                    BindingStorage::Argument(index) => EvalBindingSource::Argument(index),
-                    BindingStorage::Local(index) => EvalBindingSource::Local(index),
+                    BindingStorage::Argument(index) => {
+                        (EvalBindingSource::Argument(index), binding_kind)
+                    }
+                    BindingStorage::Local(index) => (EvalBindingSource::Local(index), binding_kind),
                     BindingStorage::External(_) => unreachable!("filtered above"),
                     BindingStorage::Global => continue,
                 }
@@ -8205,24 +8202,30 @@ fn link_eval_environment(
                     },
                     &name,
                     true,
+                    true,
                 )?;
-                if resolved_kind != binding_kind {
+                if resolved_kind != binding_kind
+                    && !matches!(
+                        (binding_kind, resolved_kind),
+                        (BindingKind::FunctionName { .. }, BindingKind::Normal)
+                    )
+                {
                     return Err(Error::internal(
                         "eval closure relay changed binding metadata",
                     ));
                 }
-                EvalBindingSource::Closure(index)
+                (EvalBindingSource::Closure(index), resolved_kind)
             };
             bindings.push(EvalBinding {
                 name: JsString::try_from_utf8(&name)?,
                 source,
-                is_lexical: matches!(binding_kind, BindingKind::Lexical { .. }),
+                is_lexical: matches!(resolved_kind, BindingKind::Lexical { .. }),
                 is_const: matches!(
-                    binding_kind,
+                    resolved_kind,
                     BindingKind::Lexical { is_const: true }
                         | BindingKind::FunctionName { is_const: true }
                 ),
-                kind: closure_kind(binding_kind),
+                kind: closure_kind(resolved_kind),
                 is_catch_parameter,
             });
         }
@@ -8289,6 +8292,7 @@ fn link_eval_environment(
                     },
                     &name,
                     true,
+                    false,
                 )?;
                 if relayed_kind != binding_kind {
                     return Err(Error::internal(
@@ -9059,18 +9063,12 @@ fn resolve_identifier(
                     );
                 }
             } else {
-                // QuickJS places the hidden variable object before a private
-                // function-expression name, but ordinary authored bindings
-                // (including the caller's implicit arguments object) retain
-                // static priority in already-compiled caller code.
-                if matches!(binding.kind, BindingKind::FunctionName { .. }) {
-                    push_owned_eval_variable_source(
-                        tree,
-                        owner,
-                        function_id,
-                        &mut dynamic_sources,
-                    )?;
-                }
+                // QuickJS resolves an authored binding before probing that
+                // function's hidden eval variable object. In particular, a
+                // private function-expression name keeps static priority in
+                // caller code. Eval source still sees its own declaration
+                // first because its ordered external chain contains `<var>`
+                // before the imported private name.
                 let fallback =
                     resolved_binding_operation(tree, owner, function_id, binding, access, name)?;
                 return wrap_dynamic_identifier(
@@ -9169,6 +9167,7 @@ fn resolved_binding_operation(
         binding,
         name,
         false,
+        false,
     )?;
     closure_binding_operation(
         &mut tree.functions[consuming_function],
@@ -9201,6 +9200,7 @@ fn push_owned_eval_variable_source(
             },
             EVAL_VARIABLE_OBJECT_LOCAL_NAME,
             true,
+            false,
         )?;
         if kind != BindingKind::EvalVariableObject {
             return Err(Error::internal(
@@ -9238,6 +9238,7 @@ fn resolve_eval_external_chain(
                     },
                     EVAL_VARIABLE_OBJECT_LOCAL_NAME,
                     true,
+                    false,
                 )?;
                 if kind != BindingKind::EvalVariableObject {
                     return Err(Error::internal(
@@ -9717,6 +9718,7 @@ fn capture_binding_path(
     binding: ResolvedBinding,
     name: &str,
     retain_name: bool,
+    erase_function_name: bool,
 ) -> Result<(u16, BindingKind), Error> {
     let mut path = Vec::new();
     let mut cursor = consuming_function;
@@ -9729,7 +9731,24 @@ fn capture_binding_path(
     }
     path.reverse();
 
-    let kind = binding.kind;
+    // QuickJS's `add_eval_variables` requests ordinary metadata for an
+    // ancestor's unscoped FunctionName. `get_closure_var` recursively carries
+    // that request unchanged but de-duplicates each hop solely by physical
+    // source, so the first descriptor already occupying a slot wins. A later
+    // plain descendant may therefore restore FunctionName on its own final
+    // descriptor while relaying through an erased parent view. Synthetic Eval
+    // roots use a different copy branch and never request this erasure.
+    let may_lose_function_name = matches!(binding.kind, BindingKind::FunctionName { .. })
+        && matches!(
+            tree.functions[defining_function].kind,
+            FunctionKind::Ordinary
+        );
+    let original_kind = binding.kind;
+    let requested_kind = if erase_function_name && may_lose_function_name {
+        BindingKind::Normal
+    } else {
+        original_kind
+    };
     let mut source = match binding.storage {
         BindingStorage::Argument(index) => ClosureSource::ParentArgument(index),
         BindingStorage::Local(index) => ClosureSource::ParentLocal(index),
@@ -9741,11 +9760,12 @@ fn capture_binding_path(
         }
     };
     let mut final_index = None;
+    let mut final_kind = None;
     for function_id in path {
         let function = &mut tree.functions[function_id];
         let descriptor_name = if retain_name
             || matches!(
-                kind,
+                original_kind,
                 BindingKind::Lexical { .. } | BindingKind::FunctionName { .. }
             ) {
             ClosureVariableName::Constant(ensure_string_constant(function, name)?)
@@ -9755,62 +9775,95 @@ fn capture_binding_path(
         let descriptor = ClosureVariable {
             source,
             name: descriptor_name,
-            is_lexical: matches!(kind, BindingKind::Lexical { .. }),
+            is_lexical: matches!(requested_kind, BindingKind::Lexical { .. }),
             is_const: matches!(
-                kind,
+                requested_kind,
                 BindingKind::Lexical { is_const: true }
                     | BindingKind::FunctionName { is_const: true }
             ),
-            kind: closure_kind(kind),
+            kind: closure_kind(requested_kind),
         };
-        let index = if retain_name {
-            ensure_eval_closure_variable(function, descriptor)?
-        } else {
-            ensure_closure_variable(function, descriptor)?
-        };
+        let (index, actual_kind) =
+            ensure_captured_closure_variable(function, descriptor, requested_kind)?;
         source = ClosureSource::ParentClosure(index);
         final_index = Some(index);
+        final_kind = Some(actual_kind);
     }
     final_index
-        .map(|index| (index, kind))
+        .zip(final_kind)
         .ok_or_else(|| Error::internal("closure path did not cross a function boundary"))
 }
 
-/// Preserve the semantic name on every relay used by a direct-eval scope
-/// descriptor. Ordinary identifier resolution may already have allocated the
-/// same storage slot without its optional name; in that case the eval linker
-/// upgrades the existing slot instead of manufacturing a second VarRef.
-fn ensure_eval_closure_variable(
+/// Mirror QuickJS `get_closure_var`: the physical parent source, rather than
+/// the requested flags, identifies a closure slot. The first request wins its
+/// observable metadata. Later eval linking may still upgrade an omitted Rust
+/// name because the source compiler always retained the corresponding atom.
+fn ensure_captured_closure_variable(
     function: &mut FunctionIr,
     descriptor: ClosureVariable,
-) -> Result<u16, Error> {
+    requested_kind: BindingKind,
+) -> Result<(u16, BindingKind), Error> {
     if let Some((index, candidate)) = function
         .closure_variables
         .iter_mut()
         .enumerate()
-        .find(|(_, candidate)| same_closure_storage(candidate, &descriptor))
+        .find(|(_, candidate)| candidate.source == descriptor.source)
     {
-        if *candidate == descriptor {
-            return u16::try_from(index)
-                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"));
+        let actual_kind = binding_kind_from_closure_descriptor(*candidate)?;
+        let function_name_erasure = matches!(
+            (actual_kind, requested_kind),
+            (BindingKind::FunctionName { .. }, BindingKind::Normal)
+                | (BindingKind::Normal, BindingKind::FunctionName { .. })
+        );
+        if actual_kind != requested_kind && !function_name_erasure {
+            return Err(Error::internal(
+                "closure storage source has conflicting binding metadata",
+            ));
         }
-        let same_metadata = candidate.source == descriptor.source
-            && candidate.is_lexical == descriptor.is_lexical
-            && candidate.is_const == descriptor.is_const
-            && candidate.kind == descriptor.kind;
-        if same_metadata
-            && candidate.name == ClosureVariableName::None
-            && matches!(descriptor.name, ClosureVariableName::Constant(_))
-        {
-            candidate.name = descriptor.name;
-            return u16::try_from(index)
-                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"));
+        match (candidate.name, descriptor.name) {
+            (ClosureVariableName::None, ClosureVariableName::Constant(_)) => {
+                candidate.name = descriptor.name;
+            }
+            (ClosureVariableName::Constant(left), ClosureVariableName::Constant(right))
+                if left != right =>
+            {
+                return Err(Error::internal(
+                    "closure storage source has conflicting binding names",
+                ));
+            }
+            _ => {}
         }
-        return Err(Error::internal(
-            "closure storage source has conflicting eval binding metadata",
-        ));
+        let index = u16::try_from(index)
+            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"))?;
+        return Ok((index, actual_kind));
     }
-    push_closure_variable(function, descriptor)
+    let index = push_closure_variable(function, descriptor)?;
+    Ok((index, requested_kind))
+}
+
+fn binding_kind_from_closure_descriptor(descriptor: ClosureVariable) -> Result<BindingKind, Error> {
+    match descriptor.kind {
+        ClosureVariableKind::Normal if descriptor.is_lexical => Ok(BindingKind::Lexical {
+            is_const: descriptor.is_const,
+        }),
+        ClosureVariableKind::Normal if !descriptor.is_const => Ok(BindingKind::Normal),
+        ClosureVariableKind::FunctionName if !descriptor.is_lexical => {
+            Ok(BindingKind::FunctionName {
+                is_const: descriptor.is_const,
+            })
+        }
+        ClosureVariableKind::EvalVariableObject
+            if !descriptor.is_lexical && !descriptor.is_const =>
+        {
+            Ok(BindingKind::EvalVariableObject)
+        }
+        ClosureVariableKind::Normal
+        | ClosureVariableKind::FunctionName
+        | ClosureVariableKind::GlobalFunction
+        | ClosureVariableKind::EvalVariableObject => Err(Error::internal(
+            "captured closure descriptor has inconsistent binding metadata",
+        )),
+    }
 }
 
 fn ensure_closure_variable(
@@ -14682,11 +14735,36 @@ mod tests {
         assert!(authored < object);
         assert!(object < arguments);
         assert!(object < private_name);
+        let function_name_local = function
+            .metadata()
+            .function_name_local
+            .expect("direct eval did not materialize the private function name");
         assert!(
             function
                 .code()
                 .iter()
-                .any(|instruction| matches!(instruction, Instruction::HasEvalVariable { .. }))
+                .any(|instruction| matches!(instruction, Instruction::GetLocal(local) if *local == function_name_local)),
+            "authored code did not read the private function name statically",
+        );
+        let dynamically_resolves_private_name = function
+            .code()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::HasEvalVariable { name, .. }
+                | Instruction::GetEvalVariable { name, .. }
+                | Instruction::PutEvalVariable { name, .. }
+                | Instruction::DeleteEvalVariable { name, .. } => Some(*name),
+                _ => None,
+            })
+            .any(|name| {
+                matches!(
+                    function.constants()[usize::try_from(name).unwrap()].as_primitive(),
+                    Some(Value::String(value)) if value == &JsString::from_static("named")
+                )
+            });
+        assert!(
+            !dynamically_resolves_private_name,
+            "authored private name was incorrectly wrapped by the eval variable object",
         );
     }
 
@@ -14976,12 +15054,12 @@ mod tests {
         assert!(block_names.iter().any(|binding| {
             binding.0 == "outer"
                 && matches!(binding.1, EvalBindingSource::Closure(_))
-                && binding.3 == ClosureVariableKind::FunctionName
+                && binding.3 == ClosureVariableKind::Normal
         }));
         assert!(block_names.iter().any(|binding| {
             binding.0 == "middle"
                 && matches!(binding.1, EvalBindingSource::Closure(_))
-                && binding.3 == ClosureVariableKind::FunctionName
+                && binding.3 == ClosureVariableKind::Normal
         }));
         assert!(block_names.iter().any(|binding| {
             binding.0 == "inner"
@@ -15041,9 +15119,9 @@ mod tests {
             ClosureSource::ParentLocal(_)
         ));
 
-        // The ordinary reference above allocates unnamed relay slots before
-        // eval linking. Direct eval upgrades that exact chain in place so its
-        // semantic name can be authenticated against the defining argument.
+        // The eval entry prepass allocates and names this exact relay chain
+        // before ordinary identifier resolution; the later reference reuses
+        // the first-slot-wins descriptors without creating duplicates.
         let outer_arg_closure = block_names
             .iter()
             .find_map(|binding| match (binding.0.as_str(), binding.1) {
@@ -15072,7 +15150,7 @@ mod tests {
                 .filter(|descriptor| descriptor.source == inner_outer_arg.source)
                 .count(),
             1,
-            "eval name retention must upgrade the existing inner slot"
+            "ordinary resolution must reuse the eval-created inner slot"
         );
         let middle_outer_arg = middle.closure_variables()[usize::from(middle_outer_arg)];
         assert_eq!(
@@ -15082,7 +15160,7 @@ mod tests {
                 .filter(|descriptor| descriptor.source == middle_outer_arg.source)
                 .count(),
             1,
-            "eval name retention must upgrade the existing relay slot"
+            "ordinary resolution must reuse the eval-created relay slot"
         );
         let ClosureVariableName::Constant(middle_name) = middle_outer_arg.name else {
             panic!("intermediate eval relay did not retain its ordinary name");
