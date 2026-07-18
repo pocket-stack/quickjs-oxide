@@ -1,5 +1,7 @@
 use crate::bigint::{BigIntError, JsBigInt};
-use crate::bytecode::{ArgumentsKind, BytecodeFunction, EvalVariableSource, Instruction};
+use crate::bytecode::{
+    ArgumentsKind, BytecodeFunction, DynamicEnvironmentSource, EvalVariableSource, Instruction,
+};
 use crate::error::{Error, ErrorKind, NativeErrorKind};
 use crate::heap::{ContextId, FunctionMetadata};
 use crate::object::ObjectRef;
@@ -208,6 +210,74 @@ pub(crate) trait VmHost {
         name: u32,
         value: Value,
     ) -> Result<Completion, Error>;
+    fn has_dynamic_binding(
+        &mut self,
+        _source: DynamicEnvironmentSource,
+        _name: u32,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "VM host does not support dynamic environment lookup",
+        ))
+    }
+    fn get_dynamic_binding(
+        &mut self,
+        _source: DynamicEnvironmentSource,
+        _name: u32,
+        _strict: bool,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "VM host does not support dynamic environment lookup",
+        ))
+    }
+    fn put_dynamic_binding(
+        &mut self,
+        _source: DynamicEnvironmentSource,
+        _name: u32,
+        _value: Value,
+        _strict: bool,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "VM host does not support dynamic environment mutation",
+        ))
+    }
+    fn delete_dynamic_binding(
+        &mut self,
+        _source: DynamicEnvironmentSource,
+        _name: u32,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "VM host does not support dynamic environment deletion",
+        ))
+    }
+    fn dynamic_environment_object(
+        &mut self,
+        _source: DynamicEnvironmentSource,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "VM host cannot expose dynamic environment objects",
+        ))
+    }
+    fn get_ref_value(
+        &mut self,
+        _environment: Value,
+        _name: u32,
+        _strict: bool,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "VM host does not support dynamic reference reads",
+        ))
+    }
+    fn put_ref_value(
+        &mut self,
+        _environment: Value,
+        _name: u32,
+        _value: Value,
+        _strict: bool,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "VM host does not support dynamic reference writes",
+        ))
+    }
     /// Instantiate a compile-time RegExp constant in the executing bytecode's
     /// realm, bypassing observable constructor and prototype reads.
     fn create_regexp(&mut self, index: u32) -> Result<Completion, Error>;
@@ -334,6 +404,18 @@ enum DetachedEvalVariableOperation {
     Define(EvalVariableSource, u32, Value),
 }
 
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq)]
+enum DetachedDynamicEnvironmentOperation {
+    Has(DynamicEnvironmentSource, u32),
+    Get(DynamicEnvironmentSource, u32, bool),
+    Put(DynamicEnvironmentSource, u32, Value, bool),
+    Delete(DynamicEnvironmentSource, u32),
+    Object(DynamicEnvironmentSource),
+    GetRef(Value, u32, bool),
+    PutRef(Value, u32, Value, bool),
+}
+
 struct DetachedHost<'a> {
     function: &'a BytecodeFunction,
     locals: Vec<DetachedLocal>,
@@ -367,6 +449,10 @@ struct DetachedHost<'a> {
     eval_variable_results: VecDeque<Completion>,
     #[cfg(test)]
     eval_variable_operations: Vec<DetachedEvalVariableOperation>,
+    #[cfg(test)]
+    dynamic_environment_results: VecDeque<Completion>,
+    #[cfg(test)]
+    dynamic_environment_operations: Vec<DetachedDynamicEnvironmentOperation>,
     #[cfg(test)]
     arguments_results: VecDeque<(ArgumentsKind, Completion)>,
     #[cfg(test)]
@@ -432,6 +518,10 @@ impl<'a> DetachedHost<'a> {
             eval_variable_results: VecDeque::new(),
             #[cfg(test)]
             eval_variable_operations: Vec::new(),
+            #[cfg(test)]
+            dynamic_environment_results: VecDeque::new(),
+            #[cfg(test)]
+            dynamic_environment_operations: Vec::new(),
             #[cfg(test)]
             arguments_results: VecDeque::new(),
             #[cfg(test)]
@@ -759,6 +849,160 @@ impl VmHost for DetachedHost<'_> {
         let _ = (source, name, value);
         Err(Error::internal(
             "detached VM cannot define eval variable bindings",
+        ))
+    }
+
+    fn has_dynamic_binding(
+        &mut self,
+        source: DynamicEnvironmentSource,
+        name: u32,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        {
+            self.dynamic_environment_operations
+                .push(DetachedDynamicEnvironmentOperation::Has(source, name));
+            if let Some(outcome) = self.dynamic_environment_results.pop_front() {
+                return Ok(outcome);
+            }
+        }
+        let _ = (source, name);
+        Err(Error::internal(
+            "detached VM cannot inspect dynamic environments",
+        ))
+    }
+
+    fn get_dynamic_binding(
+        &mut self,
+        source: DynamicEnvironmentSource,
+        name: u32,
+        strict: bool,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        {
+            self.dynamic_environment_operations
+                .push(DetachedDynamicEnvironmentOperation::Get(
+                    source, name, strict,
+                ));
+            if let Some(outcome) = self.dynamic_environment_results.pop_front() {
+                return Ok(outcome);
+            }
+        }
+        let _ = (source, name, strict);
+        Err(Error::internal(
+            "detached VM cannot inspect dynamic environments",
+        ))
+    }
+
+    fn put_dynamic_binding(
+        &mut self,
+        source: DynamicEnvironmentSource,
+        name: u32,
+        value: Value,
+        strict: bool,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        {
+            self.dynamic_environment_operations
+                .push(DetachedDynamicEnvironmentOperation::Put(
+                    source,
+                    name,
+                    value.clone(),
+                    strict,
+                ));
+            if let Some(outcome) = self.dynamic_environment_results.pop_front() {
+                return Ok(outcome);
+            }
+        }
+        let _ = (source, name, value, strict);
+        Err(Error::internal(
+            "detached VM cannot mutate dynamic environments",
+        ))
+    }
+
+    fn delete_dynamic_binding(
+        &mut self,
+        source: DynamicEnvironmentSource,
+        name: u32,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        {
+            self.dynamic_environment_operations
+                .push(DetachedDynamicEnvironmentOperation::Delete(source, name));
+            if let Some(outcome) = self.dynamic_environment_results.pop_front() {
+                return Ok(outcome);
+            }
+        }
+        let _ = (source, name);
+        Err(Error::internal(
+            "detached VM cannot delete dynamic environment bindings",
+        ))
+    }
+
+    fn dynamic_environment_object(
+        &mut self,
+        source: DynamicEnvironmentSource,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        {
+            self.dynamic_environment_operations
+                .push(DetachedDynamicEnvironmentOperation::Object(source));
+            if let Some(outcome) = self.dynamic_environment_results.pop_front() {
+                return Ok(outcome);
+            }
+        }
+        let _ = source;
+        Err(Error::internal(
+            "detached VM cannot expose dynamic environment objects",
+        ))
+    }
+
+    fn get_ref_value(
+        &mut self,
+        environment: Value,
+        name: u32,
+        strict: bool,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        {
+            self.dynamic_environment_operations
+                .push(DetachedDynamicEnvironmentOperation::GetRef(
+                    environment.clone(),
+                    name,
+                    strict,
+                ));
+            if let Some(outcome) = self.dynamic_environment_results.pop_front() {
+                return Ok(outcome);
+            }
+        }
+        let _ = (environment, name, strict);
+        Err(Error::internal(
+            "detached VM cannot read dynamic reference values",
+        ))
+    }
+
+    fn put_ref_value(
+        &mut self,
+        environment: Value,
+        name: u32,
+        value: Value,
+        strict: bool,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        {
+            self.dynamic_environment_operations
+                .push(DetachedDynamicEnvironmentOperation::PutRef(
+                    environment.clone(),
+                    name,
+                    value.clone(),
+                    strict,
+                ));
+            if let Some(outcome) = self.dynamic_environment_results.pop_front() {
+                return Ok(outcome);
+            }
+        }
+        let _ = (environment, name, value, strict);
+        Err(Error::internal(
+            "detached VM cannot write dynamic reference values",
         ))
     }
 
@@ -1296,6 +1540,68 @@ impl CallFrame {
                     return Ok(Some(Completion::Throw(value)));
                 }
             }
+            Instruction::ToObject => {
+                let value = self.pop()?;
+                match value {
+                    value @ Value::Object(_) => self.stack.push(value),
+                    Value::Null | Value::Undefined => {
+                        return Err(Error::new(ErrorKind::Type, "cannot convert to object"));
+                    }
+                    primitive => self.stack.push(host.box_primitive(primitive)?),
+                }
+            }
+            Instruction::HasDynamicBinding { source, name } => {
+                match host.has_dynamic_binding(*source, *name)? {
+                    Completion::Return(value) => self.stack.push(value),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::GetDynamicBinding { source, name } => {
+                match host.get_dynamic_binding(*source, *name, self.strict)? {
+                    Completion::Return(value) => self.stack.push(value),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::PutDynamicBinding { source, name } => {
+                let value = self.pop()?;
+                if let Completion::Throw(value) =
+                    host.put_dynamic_binding(*source, *name, value, self.strict)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::DeleteDynamicBinding { source, name } => {
+                match host.delete_dynamic_binding(*source, *name)? {
+                    Completion::Return(value) => self.stack.push(value),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::DynamicEnvironmentObject(source) => {
+                match host.dynamic_environment_object(*source)? {
+                    Completion::Return(value) => self.stack.push(value),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::GetRefValue(name) | Instruction::GetRefValueUndef(name) => {
+                let environment = self.pop()?;
+                let retained_environment = environment.clone();
+                let strict = matches!(instruction, Instruction::GetRefValue(_)) && self.strict;
+                match host.get_ref_value(environment, *name, strict)? {
+                    Completion::Return(value) => {
+                        self.stack.push(retained_environment);
+                        self.stack.push(value);
+                    }
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::PutRefValue(name) => {
+                let (environment, value) = self.pop_pair()?;
+                if let Completion::Throw(value) =
+                    host.put_ref_value(environment, *name, value, self.strict)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
             Instruction::Object => match host.object()? {
                 Completion::Return(object) => self.stack.push(object),
                 Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
@@ -1677,6 +1983,15 @@ impl CallFrame {
                     | Instruction::PutEvalVariable { .. }
                     | Instruction::DeleteEvalVariable { .. }
                     | Instruction::DefineEvalVariable { .. }
+                    | Instruction::ToObject
+                    | Instruction::HasDynamicBinding { .. }
+                    | Instruction::GetDynamicBinding { .. }
+                    | Instruction::PutDynamicBinding { .. }
+                    | Instruction::DeleteDynamicBinding { .. }
+                    | Instruction::DynamicEnvironmentObject(_)
+                    | Instruction::GetRefValue(_)
+                    | Instruction::GetRefValueUndef(_)
+                    | Instruction::PutRefValue(_)
                     | Instruction::Object
                     | Instruction::RegExp(_)
                     | Instruction::SetNameComputed
@@ -1773,7 +2088,16 @@ impl CallFrame {
                 | Instruction::GetEvalVariable { .. }
                 | Instruction::PutEvalVariable { .. }
                 | Instruction::DeleteEvalVariable { .. }
-                | Instruction::DefineEvalVariable { .. } => {
+                | Instruction::DefineEvalVariable { .. }
+                | Instruction::ToObject
+                | Instruction::HasDynamicBinding { .. }
+                | Instruction::GetDynamicBinding { .. }
+                | Instruction::PutDynamicBinding { .. }
+                | Instruction::DeleteDynamicBinding { .. }
+                | Instruction::DynamicEnvironmentObject(_)
+                | Instruction::GetRefValue(_)
+                | Instruction::GetRefValueUndef(_)
+                | Instruction::PutRefValue(_) => {
                     unreachable!("eval variable-object dispatch was bypassed")
                 }
                 Instruction::Object => unreachable!("object literal dispatch was bypassed"),
@@ -2976,13 +3300,16 @@ fn bigint_error(error: BigIntError) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use crate::bytecode::{ArgumentsKind, BytecodeFunction, EvalVariableSource, Instruction};
+    use crate::bytecode::{
+        ArgumentsKind, BytecodeFunction, DynamicEnvironmentSource, EvalVariableSource, Instruction,
+        WithObjectSource,
+    };
     use crate::error::ErrorKind;
     use crate::value::{JsString, Value};
 
     use super::{
-        CallFrame, Completion, DetachedEvalVariableOperation, DetachedHost, DirectEvalInvocation,
-        Vm, VmHost, number_to_int32, number_to_uint32,
+        CallFrame, Completion, DetachedDynamicEnvironmentOperation, DetachedEvalVariableOperation,
+        DetachedHost, DirectEvalInvocation, Vm, VmHost, number_to_int32, number_to_uint32,
     };
 
     #[test]
@@ -3283,6 +3610,128 @@ mod tests {
                 DetachedEvalVariableOperation::Put(source, 0, Value::Int(7)),
                 DetachedEvalVariableOperation::Delete(source, 0),
                 DetachedEvalVariableOperation::Define(source, 0, Value::Int(11)),
+            ]
+        );
+    }
+
+    #[test]
+    fn to_object_boxes_primitives_and_rejects_nullish_values() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(7),
+                Instruction::ToObject,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        function.verify().unwrap();
+        let mut host = DetachedHost::new(&function);
+        host.box_primitive_results.push_back(Ok(Value::Int(42)));
+        assert_eq!(
+            CallFrame::new(1)
+                .execute(&function.code, &mut host)
+                .unwrap(),
+            Completion::Return(Value::Int(42))
+        );
+        assert_eq!(host.box_primitive_inputs, [Value::Int(7)]);
+
+        for nullish in [Instruction::Null, Instruction::Undefined] {
+            let function = BytecodeFunction {
+                name: None,
+                code: vec![nullish, Instruction::ToObject, Instruction::Return],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 1,
+            };
+            function.verify().unwrap();
+            let mut host = DetachedHost::new(&function);
+            let error = CallFrame::new(1)
+                .execute(&function.code, &mut host)
+                .unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Type);
+            assert_eq!(error.message(), "cannot convert to object");
+            assert!(host.box_primitive_inputs.is_empty());
+        }
+    }
+
+    #[test]
+    fn dynamic_environment_opcodes_forward_sources_strictness_and_stack_values() {
+        let source = DynamicEnvironmentSource::With(WithObjectSource::Local(0));
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::HasDynamicBinding { source, name: 0 },
+                Instruction::Drop,
+                Instruction::GetDynamicBinding { source, name: 0 },
+                Instruction::Drop,
+                Instruction::PushI32(7),
+                Instruction::PutDynamicBinding { source, name: 0 },
+                Instruction::DeleteDynamicBinding { source, name: 0 },
+                Instruction::Drop,
+                Instruction::DynamicEnvironmentObject(source),
+                Instruction::GetRefValue(0),
+                Instruction::PutRefValue(0),
+                Instruction::DynamicEnvironmentObject(source),
+                Instruction::GetRefValueUndef(0),
+                Instruction::PutRefValue(0),
+                Instruction::PushI32(42),
+                Instruction::Return,
+            ],
+            constants: vec![Value::String(JsString::from_static("binding"))],
+            local_count: 1,
+            max_stack: 2,
+        };
+        function.verify().unwrap();
+
+        let first_environment = Value::String(JsString::from_static("first environment"));
+        let second_environment = Value::String(JsString::from_static("second environment"));
+        let mut host = DetachedHost::new(&function);
+        for completion in [
+            Completion::Return(Value::Bool(true)),
+            Completion::Return(Value::Int(3)),
+            Completion::Return(Value::Undefined),
+            Completion::Return(Value::Bool(true)),
+            Completion::Return(first_environment.clone()),
+            Completion::Return(Value::Int(11)),
+            Completion::Return(Value::Undefined),
+            Completion::Return(second_environment.clone()),
+            Completion::Return(Value::Undefined),
+            Completion::Return(Value::Undefined),
+        ] {
+            host.dynamic_environment_results.push_back(completion);
+        }
+        assert_eq!(
+            CallFrame::new(2)
+                .execute(&function.code, &mut host)
+                .unwrap(),
+            Completion::Return(Value::Int(42))
+        );
+        assert_eq!(
+            host.dynamic_environment_operations,
+            [
+                DetachedDynamicEnvironmentOperation::Has(source, 0),
+                DetachedDynamicEnvironmentOperation::Get(source, 0, true),
+                DetachedDynamicEnvironmentOperation::Put(source, 0, Value::Int(7), true),
+                DetachedDynamicEnvironmentOperation::Delete(source, 0),
+                DetachedDynamicEnvironmentOperation::Object(source),
+                DetachedDynamicEnvironmentOperation::GetRef(first_environment.clone(), 0, true,),
+                DetachedDynamicEnvironmentOperation::PutRef(
+                    first_environment,
+                    0,
+                    Value::Int(11),
+                    true,
+                ),
+                DetachedDynamicEnvironmentOperation::Object(source),
+                DetachedDynamicEnvironmentOperation::GetRef(second_environment.clone(), 0, false,),
+                DetachedDynamicEnvironmentOperation::PutRef(
+                    second_environment,
+                    0,
+                    Value::Undefined,
+                    true,
+                ),
             ]
         );
     }

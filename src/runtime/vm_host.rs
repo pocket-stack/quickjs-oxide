@@ -4,9 +4,11 @@
 //! runtime's object, call, iterator, realm and captured-variable machinery.
 
 use super::*;
-use crate::bytecode::{ArgumentsKind, EvalVariableSource};
+use crate::bytecode::{ArgumentsKind, DynamicEnvironmentSource, EvalVariableSource};
 use crate::heap::{EvalBinding, EvalBindingSource, EvalVariableEnvironment};
 use crate::vm::{CallInput, DirectEvalInvocation, Vm, VmHost};
+
+mod dynamic_environment;
 
 /// Validated caller state retained while primitive-String eval is compiled.
 ///
@@ -730,16 +732,14 @@ impl RuntimeVmHost {
             .heap
             .object(object.object_id())
             .map_err(|error| Error::internal(error.to_string()))?;
-        if !matches!(&object_data.payload, ObjectPayload::Ordinary)
-            || state
-                .heap
-                .shape(object_data.shape)
-                .map_err(|error| Error::internal(error.to_string()))?
-                .prototype()
-                .is_some()
-        {
+        // Creation and publication authenticate an ordinary null-prototype
+        // object. Once a syntactic-with method call exposes that receiver,
+        // QuickJS lets user code mutate its prototype; later eval lookup must
+        // therefore retain Ordinary branding without reasserting the initial
+        // prototype shape.
+        if !matches!(&object_data.payload, ObjectPayload::Ordinary) {
             return Err(Error::internal(
-                "eval variable-object binding did not contain a null-prototype ordinary Object",
+                "eval variable-object binding did not contain an ordinary Object",
             ));
         }
         drop(state);
@@ -1770,7 +1770,7 @@ impl VmHost for RuntimeVmHost {
         let object = self.eval_variable_object(source)?;
         let key = self.constant_property_key(name)?;
         self.runtime
-            .has_own_property(&object, &key)
+            .has_property(&object, &key)
             .map(|exists| Completion::Return(Value::Bool(exists)))
             .map_err(runtime_error_to_vm_error)
     }
@@ -1827,6 +1827,67 @@ impl VmHost for RuntimeVmHost {
             },
         );
         self.finish_property_define(result)
+    }
+
+    fn has_dynamic_binding(
+        &mut self,
+        source: DynamicEnvironmentSource,
+        name: u32,
+    ) -> Result<Completion, Error> {
+        self.has_dynamic_binding_impl(source, name)
+    }
+
+    fn get_dynamic_binding(
+        &mut self,
+        source: DynamicEnvironmentSource,
+        name: u32,
+        strict: bool,
+    ) -> Result<Completion, Error> {
+        self.get_dynamic_binding_impl(source, name, strict)
+    }
+
+    fn put_dynamic_binding(
+        &mut self,
+        source: DynamicEnvironmentSource,
+        name: u32,
+        value: Value,
+        strict: bool,
+    ) -> Result<Completion, Error> {
+        self.put_dynamic_binding_impl(source, name, value, strict)
+    }
+
+    fn delete_dynamic_binding(
+        &mut self,
+        source: DynamicEnvironmentSource,
+        name: u32,
+    ) -> Result<Completion, Error> {
+        self.delete_dynamic_binding_impl(source, name)
+    }
+
+    fn dynamic_environment_object(
+        &mut self,
+        source: DynamicEnvironmentSource,
+    ) -> Result<Completion, Error> {
+        self.dynamic_environment_object_impl(source)
+    }
+
+    fn get_ref_value(
+        &mut self,
+        environment: Value,
+        name: u32,
+        strict: bool,
+    ) -> Result<Completion, Error> {
+        self.get_ref_value_impl(environment, name, strict)
+    }
+
+    fn put_ref_value(
+        &mut self,
+        environment: Value,
+        name: u32,
+        value: Value,
+        strict: bool,
+    ) -> Result<Completion, Error> {
+        self.put_ref_value_impl(environment, name, value, strict)
     }
 
     fn create_regexp(&mut self, index: u32) -> Result<Completion, Error> {
@@ -2384,7 +2445,13 @@ impl VmHost for RuntimeVmHost {
     }
 
     fn get_local(&mut self, index: u16) -> Result<Value, Error> {
-        if self.local_definition(index)?.is_lexical {
+        let definition = self.local_definition(index)?;
+        if definition.kind == ClosureVariableKind::WithObject {
+            return Err(Error::internal(
+                "ordinary local read referenced a private with object",
+            ));
+        }
+        if definition.is_lexical {
             return Err(Error::internal(
                 "unchecked local read referenced a lexical definition",
             ));
@@ -2397,7 +2464,13 @@ impl VmHost for RuntimeVmHost {
     }
 
     fn put_local(&mut self, index: u16, value: Value) -> Result<(), Error> {
-        if self.local_definition(index)?.is_lexical {
+        let definition = self.local_definition(index)?;
+        if definition.kind == ClosureVariableKind::WithObject {
+            return Err(Error::internal(
+                "ordinary local write referenced a private with object",
+            ));
+        }
+        if definition.is_lexical {
             return Err(Error::internal(
                 "unchecked local write referenced a lexical definition",
             ));
@@ -2489,6 +2562,18 @@ impl VmHost for RuntimeVmHost {
             return Err(Error::internal(
                 "local initialization referenced an ordinary local definition",
             ));
+        }
+        if definition.kind == ClosureVariableKind::WithObject {
+            let Value::Object(object) = &value else {
+                return Err(Error::internal(
+                    "with-object initialization did not receive an Object",
+                ));
+            };
+            if !object.belongs_to(&self.runtime) {
+                return Err(Error::internal(
+                    "with-object initialization received a cross-runtime Object",
+                ));
+            }
         }
         let binding = self
             .locals
@@ -2873,6 +2958,7 @@ mod tests {
     fn with_object_local_allows_initialization_and_captured_close() {
         let runtime = Runtime::new();
         let context = runtime.new_context();
+        let with_object = runtime.new_object(None).unwrap();
         let root = runtime
             .new_var_ref(
                 Value::Undefined,
@@ -2888,16 +2974,31 @@ mod tests {
             is_const: false,
             kind: ClosureVariableKind::WithObject,
         }]);
-        host.locals = vec![FrameBinding::Captured(root)];
+        host.locals = vec![FrameBinding::Captured(root.clone())];
         host.reusable_captured_locals = vec![false];
 
-        host.initialize_local(0, Value::Int(42)).unwrap();
-        assert_eq!(host.get_local(0).unwrap(), Value::Int(42));
+        host.initialize_local(0, Value::Object(with_object.clone()))
+            .unwrap();
+        assert_eq!(
+            host.runtime.read_var_ref(&root).unwrap(),
+            Value::Object(with_object.clone())
+        );
+        assert_eq!(
+            host.get_local(0).unwrap_err().message(),
+            "ordinary local read referenced a private with object"
+        );
         host.close_local(0).unwrap();
         assert!(matches!(
-            host.locals[0],
-            FrameBinding::Direct(Value::Int(42))
+            &host.locals[0],
+            FrameBinding::Direct(Value::Object(object)) if object == &with_object
         ));
+
+        assert_eq!(
+            host.initialize_local(0, Value::Int(42))
+                .unwrap_err()
+                .message(),
+            "with-object initialization did not receive an Object"
+        );
 
         host.local_definitions = Rc::from([VariableDefinition {
             name: None,

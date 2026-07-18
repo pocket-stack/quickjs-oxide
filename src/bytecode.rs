@@ -30,6 +30,35 @@ pub enum EvalVariableSource {
     Closure(u16),
 }
 
+/// Storage which owns one hidden sloppy-`with` object.
+///
+/// Like [`EvalVariableSource`], this is compiler-authenticated frame state and
+/// cannot be supplied by JavaScript through the operand stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WithObjectSource {
+    Local(u16),
+    Closure(u16),
+}
+
+/// One ordered object-environment record consulted by dynamic name lookup.
+///
+/// Keeping eval-variable and `with` sources distinct lets the host apply the
+/// latter's `Symbol.unscopables` rules without weakening either source type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DynamicEnvironmentSource {
+    Eval(EvalVariableSource),
+    With(WithObjectSource),
+}
+
+const fn dynamic_environment_local(source: DynamicEnvironmentSource) -> Option<u16> {
+    match source {
+        DynamicEnvironmentSource::Eval(EvalVariableSource::Local(index))
+        | DynamicEnvironmentSource::With(WithObjectSource::Local(index)) => Some(index),
+        DynamicEnvironmentSource::Eval(EvalVariableSource::Closure(_))
+        | DynamicEnvironmentSource::With(WithObjectSource::Closure(_)) => None,
+    }
+}
+
 /// Stack-machine operations deliberately use the names and stack behavior of
 /// their `QuickJS` counterparts. This typed form is the current compiler IR and
 /// verified execution format; a future compact encoder must share this opcode
@@ -97,6 +126,41 @@ pub enum Instruction {
         source: EvalVariableSource,
         name: u32,
     },
+    /// ECMAScript `ToObject`: preserve Objects, reject nullish values, and box
+    /// all other primitives in the executing realm.
+    ToObject,
+    /// Test whether an ordered hidden environment exposes one dynamic name.
+    HasDynamicBinding {
+        source: DynamicEnvironmentSource,
+        name: u32,
+    },
+    /// Read one dynamic binding using the current frame's strictness.
+    GetDynamicBinding {
+        source: DynamicEnvironmentSource,
+        name: u32,
+    },
+    /// Consume and write one dynamic binding using the current frame's
+    /// strictness.
+    PutDynamicBinding {
+        source: DynamicEnvironmentSource,
+        name: u32,
+    },
+    /// Delete one dynamic binding and push the Boolean result.
+    DeleteDynamicBinding {
+        source: DynamicEnvironmentSource,
+        name: u32,
+    },
+    /// Push the authenticated object behind one dynamic environment source.
+    DynamicEnvironmentObject(DynamicEnvironmentSource),
+    /// Preserve an environment Object and append its named reference value.
+    /// A missing property observes the current frame's strictness.
+    GetRefValue(u32),
+    /// Preserve an environment Object and append its named reference value,
+    /// producing `undefined` when the property is missing.
+    GetRefValueUndef(u32),
+    /// Consume an environment Object and value and write the named reference
+    /// using the current frame's strictness.
+    PutRefValue(u32),
     GetLocal(u16),
     PutLocal(u16),
     SetLocal(u16),
@@ -341,6 +405,10 @@ impl Instruction {
             | Self::HasEvalVariable { .. }
             | Self::GetEvalVariable { .. }
             | Self::DeleteEvalVariable { .. }
+            | Self::HasDynamicBinding { .. }
+            | Self::GetDynamicBinding { .. }
+            | Self::DeleteDynamicBinding { .. }
+            | Self::DynamicEnvironmentObject(_)
             | Self::GetLocal(_)
             | Self::GetLocalCheck(_)
             | Self::GetArg(_)
@@ -349,7 +417,8 @@ impl Instruction {
             | Self::GetVar(_)
             | Self::GetVarUndef(_)
             | Self::DeleteVar(_) => (0, 1),
-            Self::SetName(_) => (1, 1),
+            Self::SetName(_) | Self::ToObject => (1, 1),
+            Self::GetRefValue(_) | Self::GetRefValueUndef(_) => (1, 2),
             Self::GetField(_) => (1, 1),
             Self::GetField2(_) => (1, 2),
             Self::GetArrayEl => (2, 1),
@@ -377,6 +446,7 @@ impl Instruction {
             Self::Drop
             | Self::PutEvalVariable { .. }
             | Self::DefineEvalVariable { .. }
+            | Self::PutDynamicBinding { .. }
             | Self::PutLocal(_)
             | Self::InitializeLocal(_)
             | Self::PutLocalCheck(_)
@@ -392,6 +462,7 @@ impl Instruction {
             | Self::IfTrue(_)
             | Self::Return
             | Self::Throw => (1, 0),
+            Self::PutRefValue(_) => (2, 0),
             Self::Nip => (2, 1),
             // The verifier replaces this nominal value-preserving effect with
             // the active handler's recorded entry depth.
@@ -488,7 +559,14 @@ impl BytecodeFunction {
             | Instruction::GetEvalVariable { name: index, .. }
             | Instruction::PutEvalVariable { name: index, .. }
             | Instruction::DeleteEvalVariable { name: index, .. }
-            | Instruction::DefineEvalVariable { name: index, .. } = instruction
+            | Instruction::DefineEvalVariable { name: index, .. }
+            | Instruction::HasDynamicBinding { name: index, .. }
+            | Instruction::GetDynamicBinding { name: index, .. }
+            | Instruction::PutDynamicBinding { name: index, .. }
+            | Instruction::DeleteDynamicBinding { name: index, .. }
+            | Instruction::GetRefValue(index)
+            | Instruction::GetRefValueUndef(index)
+            | Instruction::PutRefValue(index) = instruction
                 && !matches!(self.constant(*index), Some(Value::String(_)))
             {
                 return Err(Error::internal(
@@ -532,6 +610,22 @@ impl BytecodeFunction {
             {
                 return Err(Error::internal(
                     "eval variable-object local operand is out of bounds",
+                ));
+            }
+            let dynamic_source = match instruction {
+                Instruction::HasDynamicBinding { source, .. }
+                | Instruction::GetDynamicBinding { source, .. }
+                | Instruction::PutDynamicBinding { source, .. }
+                | Instruction::DeleteDynamicBinding { source, .. }
+                | Instruction::DynamicEnvironmentObject(source) => Some(*source),
+                _ => None,
+            };
+            if dynamic_source
+                .and_then(dynamic_environment_local)
+                .is_some_and(|index| index >= self.local_count)
+            {
+                return Err(Error::internal(
+                    "dynamic environment local operand is out of bounds",
                 ));
             }
         }
@@ -579,7 +673,14 @@ pub(crate) fn verify_parts(
             | Instruction::GetEvalVariable { name: index, .. }
             | Instruction::PutEvalVariable { name: index, .. }
             | Instruction::DeleteEvalVariable { name: index, .. }
-            | Instruction::DefineEvalVariable { name: index, .. } => {
+            | Instruction::DefineEvalVariable { name: index, .. }
+            | Instruction::HasDynamicBinding { name: index, .. }
+            | Instruction::GetDynamicBinding { name: index, .. }
+            | Instruction::PutDynamicBinding { name: index, .. }
+            | Instruction::DeleteDynamicBinding { name: index, .. }
+            | Instruction::GetRefValue(index)
+            | Instruction::GetRefValueUndef(index)
+            | Instruction::PutRefValue(index) => {
                 let is_valid = usize::try_from(*index)
                     .ok()
                     .is_some_and(|index| index < constant_count);
@@ -1052,7 +1153,8 @@ fn enqueue_fallthrough(
 #[cfg(test)]
 mod tests {
     use super::{
-        ArgumentsKind, BytecodeFunction, EvalVariableSource, Instruction, MAX_LOCAL_SLOTS,
+        ArgumentsKind, BytecodeFunction, DynamicEnvironmentSource, EvalVariableSource, Instruction,
+        MAX_LOCAL_SLOTS, WithObjectSource,
     };
     use crate::{JsString, Value};
 
@@ -1291,6 +1393,109 @@ mod tests {
             bad_local.verify().unwrap_err().message(),
             "eval variable-object local operand is out of bounds"
         );
+    }
+
+    #[test]
+    fn verifier_models_typed_dynamic_environment_stack_and_operands() {
+        let eval = DynamicEnvironmentSource::Eval(EvalVariableSource::Local(0));
+        let with = DynamicEnvironmentSource::With(WithObjectSource::Local(1));
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::VariableEnvironment,
+                Instruction::PutLocal(0),
+                Instruction::PushI32(1),
+                Instruction::ToObject,
+                Instruction::PutLocal(1),
+                Instruction::HasDynamicBinding {
+                    source: eval,
+                    name: 0,
+                },
+                Instruction::Drop,
+                Instruction::GetDynamicBinding {
+                    source: with,
+                    name: 0,
+                },
+                Instruction::Drop,
+                Instruction::PushI32(2),
+                Instruction::PutDynamicBinding {
+                    source: eval,
+                    name: 0,
+                },
+                Instruction::DeleteDynamicBinding {
+                    source: with,
+                    name: 0,
+                },
+                Instruction::Drop,
+                Instruction::DynamicEnvironmentObject(eval),
+                Instruction::GetRefValue(0),
+                Instruction::PutRefValue(0),
+                Instruction::DynamicEnvironmentObject(with),
+                Instruction::GetRefValueUndef(0),
+                Instruction::PutRefValue(0),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            constants: vec![Value::String(JsString::from_static("binding"))],
+            local_count: 2,
+            max_stack: 2,
+        };
+        assert_eq!(function.verify().unwrap().max_stack, 2);
+
+        for instruction in [
+            Instruction::HasDynamicBinding {
+                source: eval,
+                name: 0,
+            },
+            Instruction::GetDynamicBinding {
+                source: eval,
+                name: 0,
+            },
+            Instruction::PutDynamicBinding {
+                source: eval,
+                name: 0,
+            },
+            Instruction::DeleteDynamicBinding {
+                source: eval,
+                name: 0,
+            },
+            Instruction::GetRefValue(0),
+            Instruction::GetRefValueUndef(0),
+            Instruction::PutRefValue(0),
+        ] {
+            let malformed = BytecodeFunction {
+                name: None,
+                code: vec![Instruction::Undefined, Instruction::Return, instruction],
+                constants: vec![Value::Int(0)],
+                local_count: 2,
+                max_stack: 1,
+            };
+            assert_eq!(
+                malformed.verify().unwrap_err().message(),
+                "string-key opcode referenced a non-string constant"
+            );
+        }
+
+        for source in [
+            DynamicEnvironmentSource::Eval(EvalVariableSource::Local(2)),
+            DynamicEnvironmentSource::With(WithObjectSource::Local(2)),
+        ] {
+            let malformed = BytecodeFunction {
+                name: None,
+                code: vec![
+                    Instruction::Undefined,
+                    Instruction::Return,
+                    Instruction::DynamicEnvironmentObject(source),
+                ],
+                constants: vec![],
+                local_count: 2,
+                max_stack: 1,
+            };
+            assert_eq!(
+                malformed.verify().unwrap_err().message(),
+                "dynamic environment local operand is out of bounds"
+            );
+        }
     }
 
     #[test]

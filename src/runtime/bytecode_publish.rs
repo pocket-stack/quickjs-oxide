@@ -3,7 +3,9 @@
 use super::*;
 use std::collections::HashSet;
 
-use crate::bytecode::{EvalVariableSource, MAX_LOCAL_SLOTS, verify_parts};
+use crate::bytecode::{
+    DynamicEnvironmentSource, EvalVariableSource, MAX_LOCAL_SLOTS, WithObjectSource, verify_parts,
+};
 use crate::heap::{
     EvalBinding, EvalCallerProfile, EvalCallerVariableTarget, EvalKind, EvalRootBinding, EvalScope,
 };
@@ -114,6 +116,92 @@ fn verify_eval_variable_source(
                 )));
             }
         }
+    }
+    Ok(())
+}
+
+fn verify_with_object_source(
+    function: &UnlinkedFunction,
+    source: WithObjectSource,
+) -> Result<(), RuntimeError> {
+    match source {
+        WithObjectSource::Local(index) => {
+            let definition = function
+                .local_definitions()
+                .get(usize::from(index))
+                .ok_or_else(|| {
+                    RuntimeError::Engine(Error::internal(
+                        "with-object dynamic source local is out of bounds",
+                    ))
+                })?;
+            if definition.kind != ClosureVariableKind::WithObject
+                || definition.is_lexical
+                || definition.is_const
+                || definition
+                    .name
+                    .as_ref()
+                    .is_none_or(|name| name.utf16_units().ne("<with>".encode_utf16()))
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "with-object dynamic source did not reference the authenticated local",
+                )));
+            }
+        }
+        WithObjectSource::Closure(index) => {
+            let descriptor = function
+                .closure_variables()
+                .get(usize::from(index))
+                .ok_or_else(|| {
+                    RuntimeError::Engine(Error::internal(
+                        "with-object dynamic source closure is out of bounds",
+                    ))
+                })?;
+            if descriptor.kind != ClosureVariableKind::WithObject
+                || descriptor.is_lexical
+                || descriptor.is_const
+                || !matches!(
+                    descriptor.source,
+                    ClosureSource::ParentLocal(_)
+                        | ClosureSource::ParentClosure(_)
+                        | ClosureSource::EvalEnvironment(_)
+                )
+                || unlinked_closure_name(function, descriptor)?
+                    .is_none_or(|name| name.utf16_units().ne("<with>".encode_utf16()))
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "with-object dynamic source did not reference an authenticated closure",
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verify_dynamic_environment_source(
+    function: &UnlinkedFunction,
+    source: DynamicEnvironmentSource,
+) -> Result<(), RuntimeError> {
+    match source {
+        DynamicEnvironmentSource::Eval(source) => verify_eval_variable_source(function, source),
+        DynamicEnvironmentSource::With(source) => verify_with_object_source(function, source),
+    }
+}
+
+fn verify_unlinked_string_constant(
+    function: &UnlinkedFunction,
+    index: u32,
+    diagnostic: &'static str,
+) -> Result<(), RuntimeError> {
+    let index = usize::try_from(index)
+        .map_err(|_| RuntimeError::Invariant("constant index did not fit usize"))?;
+    if !matches!(
+        function
+            .constants()
+            .get(index)
+            .and_then(UnlinkedConstant::as_primitive),
+        Some(Value::String(_))
+    ) {
+        return Err(RuntimeError::Engine(Error::internal(diagnostic)));
     }
     Ok(())
 }
@@ -1549,6 +1637,39 @@ fn verify_unlinked_tree_with_root(
                         "eval variable opcode referenced a non-string name constant",
                     )));
                 }
+            }
+            if let Some((source, name)) = match instruction {
+                crate::bytecode::Instruction::HasDynamicBinding { source, name }
+                | crate::bytecode::Instruction::GetDynamicBinding { source, name }
+                | crate::bytecode::Instruction::PutDynamicBinding { source, name }
+                | crate::bytecode::Instruction::DeleteDynamicBinding { source, name } => {
+                    Some((*source, Some(*name)))
+                }
+                crate::bytecode::Instruction::DynamicEnvironmentObject(source) => {
+                    Some((*source, None))
+                }
+                _ => None,
+            } {
+                verify_dynamic_environment_source(function, source)?;
+                if let Some(name) = name {
+                    verify_unlinked_string_constant(
+                        function,
+                        name,
+                        "dynamic binding opcode referenced a non-string name constant",
+                    )?;
+                }
+            }
+            if let Some(name) = match instruction {
+                crate::bytecode::Instruction::GetRefValue(name)
+                | crate::bytecode::Instruction::GetRefValueUndef(name)
+                | crate::bytecode::Instruction::PutRefValue(name) => Some(*name),
+                _ => None,
+            } {
+                verify_unlinked_string_constant(
+                    function,
+                    name,
+                    "reference opcode referenced a non-string name constant",
+                )?;
             }
             match instruction {
                 crate::bytecode::Instruction::PushConst(index) => {
@@ -3312,6 +3433,73 @@ mod tests {
                 .to_string()
                 .contains("authenticated local")
         );
+    }
+
+    #[test]
+    fn dynamic_sources_and_reference_names_are_authenticated() {
+        let forged_with = UnlinkedFunction::new(
+            vec![
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::DynamicEnvironmentObject(DynamicEnvironmentSource::With(
+                    WithObjectSource::Local(0),
+                )),
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                local_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(
+            verify_unlinked_tree(&script_with_child(forged_with))
+                .unwrap_err()
+                .to_string()
+                .contains("authenticated local")
+        );
+
+        let out_of_bounds = UnlinkedFunction::new(
+            vec![
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::DynamicEnvironmentObject(DynamicEnvironmentSource::With(
+                    WithObjectSource::Closure(0),
+                )),
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(
+            verify_unlinked_tree(&script_with_child(out_of_bounds))
+                .unwrap_err()
+                .to_string()
+                .contains("source closure is out of bounds")
+        );
+
+        for instruction in [
+            Instruction::GetRefValue(0),
+            Instruction::GetRefValueUndef(0),
+            Instruction::PutRefValue(0),
+        ] {
+            let non_string_name = UnlinkedFunction::new(
+                vec![Instruction::Undefined, Instruction::Return, instruction],
+                vec![UnlinkedConstant::primitive(Value::Int(0)).unwrap()],
+                FunctionMetadata {
+                    max_stack: 1,
+                    ..FunctionMetadata::default()
+                },
+            );
+            assert!(
+                verify_unlinked_tree(&script_with_child(non_string_name))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("reference opcode referenced a non-string name constant")
+            );
+        }
     }
 
     #[test]
