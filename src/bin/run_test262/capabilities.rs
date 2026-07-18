@@ -208,7 +208,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 30] = [
+    const EXPECTED_FEATURES: [&str; 31] = [
         "BigInt",
         "Math.sumPrecise",
         "Reflect",
@@ -227,6 +227,7 @@ mod tests {
         "Symbol.search",
         "Symbol.split",
         "__proto__",
+        "arrow-function",
         "change-array-by-copy",
         "exponentiation",
         "for-in-order",

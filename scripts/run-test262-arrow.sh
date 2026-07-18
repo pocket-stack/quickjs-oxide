@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproduce the focused pre-ArrowFunction Test262 outcome vector.
+# Reproduce the focused synchronous ArrowFunction conformance vector.
 
 set -euo pipefail
 export TZ=America/Los_Angeles
@@ -82,12 +82,14 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_patch" != "f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3" \
     || "$expected_config" != "79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b" \
     || "$expected_metadata" != "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a" \
-    || "$expected_profile" != "3c5dee6fa18c428a45556488873ab216dd99e9f8859875ce2e4d1475d307aca6" \
+    || "$expected_profile" != "5c3c11f7c7c81fd54b706d6d50b5f28f6dddbd915c7b3543af9e5e6b5fb08aae" \
     || "$expected_schema" != "test262-canonical-classified-v2" \
     || "$expected_mode" != "both" \
     || "$timeout_ms" != "30000" \
     || "$expected_paths" != "40" \
-    || "$expected_variants" != "66" ]]; then
+    || "$expected_variants" != "66" \
+    || "$expected_runnable" != "66" \
+    || "$expected_passes" != "66" ]]; then
     echo "error: ArrowFunction baseline metadata drifted" >&2
     exit 1
 fi
@@ -200,5 +202,5 @@ if [[ "$actual_jsonl_lines" != "$expected_jsonl_lines" \
 fi
 
 "$script_dir/check-rust-only.sh"
-printf 'pre-ArrowFunction Test262 vector matches: %s pass of %s variants across %s paths; %s runnable and 2 profile-gated\n' \
+printf 'ArrowFunction Test262 conformance vector matches: %s pass of %s variants across %s paths; all %s runnable\n' \
     "$expected_passes" "$expected_variants" "$expected_paths" "$expected_runnable"

@@ -10,13 +10,13 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 30 reviewed feature tags and 308 exact audited
+  capability profile now admits 31 reviewed feature tags and 308 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 29,211 passes: 28.63% raw, a 34.96% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 89.44% among the 32,660 variants with a
+  has 30,254 passes: 29.65% raw, a 36.21% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 91.49% among the 33,069 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -295,8 +295,38 @@ claim full parity.
   `runtime.rs` is 9,732 lines; the new dynamic-environment implementation is
   in `runtime/vm_host/dynamic_environment.rs`.
 
-  Arrow functions, generator/async and destructuring eval declarations,
-  direct `new.target`, and ill-formed UTF-16 source stay explicit frontiers.
+  R2c ports synchronous ArrowFunction parsing and lexical-environment behavior
+  from QuickJS. Simple identifier parameter lists, expression/block bodies,
+  strictness, source/name/length metadata and non-constructability now share
+  the ordinary bytecode-function path without publishing a prototype.
+  Hidden `this` and `new.target` pseudo bindings relay through Arrow and direct
+  eval frames to their nearest owning frame; `arguments` remains ordinary name
+  resolution, including `with` and eval variable environments. Thirty-four
+  pinned QuickJS cases freeze lookahead, reserved-word diagnostics, metadata,
+  nested closures, `with`, direct eval, `typeof this`, and construction.
+
+  The 40-path focused gate expands to 66 variants and passes 66/66. Declaring
+  `arrow-function` admits 575 more full-suite jobs, while Arrow syntax also
+  unblocks untagged consumers. The exact 102,037-key join adds 1,043 passes:
+  474 `fail-parse -> pass`, five `fail-runtime -> pass`, 30 `harness-error ->
+  pass`, and 534 `unsupported-feature -> pass`. Every one of the previous
+  29,211 passes remains a pass. The complete vector reaches 30,254 passes and
+  35,424 runnable jobs; full TSV/JSONL SHA-256 values are
+  `c28acb10ae63e46e8aad1372f679c3be3b283322c2f690e0296bf0a77e243345`
+  and
+  `e82fbff1bdd49b300ea561d7ad21b9c3d62ed4d640f7080c3375bc9044bf32f9`.
+
+  This is not the complete Arrow grammar. Async Arrow, default/rest/
+  destructuring parameters, class/`super`, and method/accessor adjacency stay
+  typed frontiers. The compiler's prepend passes also publish
+  var-object/arguments/hoist setup before the lazily selected `this`/
+  `new.target` locals, whereas QuickJS fixes the opposite bytecode prefix
+  order. Closures capture cells and all observable probes agree, so no semantic
+  divergence is known; structural prefix alignment remains explicit follow-up
+  work.
+
+  Generator/async and destructuring eval declarations, class/`super`, and
+  ill-formed UTF-16 source stay explicit frontiers.
   QuickJS also allocates the callable and VarRef
   array before capturing caller cells, while this Rust slice materializes the
   roots first and then allocates the callable; only successful-compilation
@@ -3234,7 +3264,11 @@ variable-object operations in `runtime/vm_host.rs`; `runtime.rs` grows only to
 R1z keeps recursive caller-profile linking in `compiler.rs`, provenance checks
 in `runtime/bytecode_publish.rs`, and live descriptor validation in
 `runtime/intrinsics/eval.rs` plus `runtime/vm_host.rs`; `runtime.rs` remains
-9,730 lines.
+9,730 lines. R2b's dispatch wiring leaves it at 9,732 lines, and R2c changes no
+runtime facade code. The Arrow parser, cover-grammar scanner and pseudo-binding
+resolver currently take `compiler.rs` to 20,560 lines. Their semantic freeze is
+complete, but the next structural checkpoint should extract those seams before
+another broad grammar slice extends the compiler monolith.
 The
 RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
@@ -3422,6 +3456,10 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_unicode_u180e -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_eval_intrinsic -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_with -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_arrow_functions -- --nocapture
 
 ./scripts/test-parity-slice.sh
 ./scripts/test-test262-smoke.sh
@@ -3450,6 +3488,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/run-test262-eval-intrinsic.sh
 ./scripts/run-test262-eval-declarations.sh
 ./scripts/run-test262-nested-direct-eval.sh
+./scripts/run-test262-with.sh
+./scripts/run-test262-arrow.sh
 ./scripts/test-test262-full.sh
 ```
 

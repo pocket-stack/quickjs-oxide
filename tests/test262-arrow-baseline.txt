@@ -1,28 +1,23 @@
-# R2c freezes the pre-ArrowFunction focused Test262 vector.
-# The 40-path gate expands to 66 variants: 64 reach the engine and expose the
-# missing parser/runtime surface, while two explicit arrow-function variants
-# remain fail-closed behind the shared capability profile.
-#
-# This is a transition baseline, not a conformance claim. The implementation
-# milestone should update the same frozen path/key set toward 66 passes, then
-# intentionally enable `arrow-function` in the shared profile and refresh the
-# profile/report hashes without broadening this focused gate.
+# R2c freezes the synchronous simple-parameter ArrowFunction conformance gate.
+# The 40-path manifest expands to 66 variants; all are admitted by the shared
+# profile and pass without broadening into async, class/super, or complex
+# parameter frontiers.
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
 test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
 test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
-oxide_profile_sha256=3c5dee6fa18c428a45556488873ab216dd99e9f8859875ce2e4d1475d307aca6
+oxide_profile_sha256=5c3c11f7c7c81fd54b706d6d50b5f28f6dddbd915c7b3543af9e5e6b5fb08aae
 schema=test262-canonical-classified-v2
 mode=both
 timeout_ms=30000
 paths=40
 variants=66
-runnable=64
-passes=0
+runnable=66
+passes=66
 manifest_sha256=75c1e7e8c12a493eb1b2f38b662ca51c2a20bbe68434900b2a890573ad8d4360
 keys_sha256=52684eee5c0df05893b6f6d00376669f2b845ec35a7f01ac0c4bea96cc324384
-nonpass_sha256=34974c56f30a91d96246c62ba6e3e097eda24f7aed3c419bf1ac2b855f2f0832
-tsv_sha256=8d7e6c04d6753f59379c256d0681ac6036ddf10f4eff174e334d42d1f824afed
-jsonl_sha256=1ea900ea73f9fd681f63694c4c1b5019b5b6e0ad3614c927ad95e46528a790ec
-summary=fail-parse=62 fail-runtime=2 unsupported-feature=2
+nonpass_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+tsv_sha256=fd5b76fb8cb81bcebe786abc6c7992e318b0b7bf8ce9e5b7b58c2a75111b5108
+jsonl_sha256=d363b03a69f71bf760d8366e4b565b743d85a7f3127ea401e45aeb51b0aa50e4
+summary=pass=66

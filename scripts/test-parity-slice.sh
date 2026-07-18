@@ -56,6 +56,7 @@ cargo fmt --all -- --check
 QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/test-test262-smoke.sh
 ./scripts/test-test262-provenance.sh
+./scripts/run-test262-arrow.sh
 ./scripts/test-test262-reflect.sh
 ./scripts/test-test262-date.sh
 ./scripts/test-test262-string-split.sh

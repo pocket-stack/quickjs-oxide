@@ -10,7 +10,7 @@ differentials still decide exact behavior inside each implemented slice.
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
 - quickjs-oxide capability profile SHA-256:
-  `3c5dee6fa18c428a45556488873ab216dd99e9f8859875ce2e4d1475d307aca6`
+  `5c3c11f7c7c81fd54b706d6d50b5f28f6dddbd915c7b3543af9e5e6b5fb08aae`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -50,31 +50,31 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 29,211 pass;
+- 30,254 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 50,902 are classified as unsupported feature, mode, host capability, parser
+- 50,493 are classified as unsupported feature, mode, host capability, parser
   frontier, harness frontier, or unaudited negative-test provenance;
-- 1,014 fail to parse, 2,221 fail at runtime, 210 fail in the harness, and four
+- 398 fail to parse, 2,296 fail at runtime, 117 fail in the harness, and four
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 34,849 variants to execution. That count includes variants
+The runner admitted 35,424 variants to execution. That count includes variants
 which then report a typed parser or harness frontier rather than an observed
 non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 28.63% (`29,211 / 102,037`);
-- conservative target-scope lower bound: 34.96%
-  (`29,211 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 89.44%
-  (`29,211 / 32,660`).
+- raw suite pass rate: 29.65% (`30,254 / 102,037`);
+- conservative target-scope lower bound: 36.21%
+  (`30,254 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 91.49%
+  (`30,254 / 33,069`).
 
-The 34.96% figure is the useful whole-project progress floor, not a claim that
-the engine is 34.96% conformant. The 89.44% conditional rate measures quality
+The 36.21% figure is the useful whole-project progress floor, not a claim that
+the engine is 36.21% conformant. The 91.49% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion; R1u also demonstrates that this conditional rate can rise when
 previously ambiguous failures move to a more honest typed unsupported class.
-The capability profile currently admits 30 reviewed Test262
+The capability profile currently admits 31 reviewed Test262
 feature tags and 308 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
 lands can only make the measurement more representative. Focused QuickJS
@@ -88,9 +88,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`8eba52564839d3a11a92ac28c883494cfc51d1f49785b07e7d3ac62ec867965c`
+`c28acb10ae63e46e8aad1372f679c3be3b283322c2f690e0296bf0a77e243345`
 and
-`54122f8b86f8cdbea6f3de6aa9532f770b72df1f6bf28bdc7cd62ec665b32ca1`.
+`e82fbff1bdd49b300ea561d7ad21b9c3d62ed4d640f7080c3375bc9044bf32f9`.
 
 ## Milestone policy
 
@@ -1115,6 +1115,56 @@ TSV/JSONL SHA-256 values are
 and
 `54122f8b86f8cdbea6f3de6aa9532f770b72df1f6bf28bdc7cd62ec665b32ca1`.
 
+## R2c synchronous ArrowFunction gate
+
+R2c implements the synchronous, simple-parameter ArrowFunction slice on the
+QuickJS compiler path. The frozen differential covers 34 cases: identifier and
+parenthesized heads, line-terminator lookahead, reserved-word errors,
+expression and block bodies, strictness, `name`/`length`/source metadata,
+lexical `this`/`arguments`/`new.target`, nested closures, `with`, direct and
+nested eval, `typeof this`, missing `prototype`, and non-constructability.
+Async Arrow, default/rest/destructuring parameters, class/`super`, and
+method/accessor adjacency remain typed independent frontiers.
+
+The focused manifest fixes 40 paths / 66 positive synchronous variants. All 66
+are admitted and pass. Its manifest and key-set SHA-256 values are
+`75c1e7e8c12a493eb1b2f38b662ca51c2a20bbe68434900b2a890573ad8d4360`
+and
+`52684eee5c0df05893b6f6d00376669f2b845ec35a7f01ac0c4bea96cc324384`;
+focused TSV/JSONL SHA-256 values are
+`fd5b76fb8cb81bcebe786abc6c7992e318b0b7bf8ce9e5b7b58c2a75111b5108`
+and
+`d363b03a69f71bf760d8366e4b565b743d85a7f3127ea401e45aeb51b0aa50e4`.
+Reproduce it with `scripts/run-test262-arrow.sh`.
+
+Declaring `arrow-function` changes the shared capability-profile SHA-256 to
+`5c3c11f7c7c81fd54b706d6d50b5f28f6dddbd915c7b3543af9e5e6b5fb08aae`
+and admits 575 more full-suite jobs. Of those, 534 pass, two fail to parse, 28
+reach runtime failures, and 11 stop at typed parser frontiers. The explicit
+feature-tag cohort contains 1,800 variants in total: another 522 remain gated
+by other feature tags, 496 are excluded by the pinned QuickJS configuration,
+195 are async, and 12 require detach-array-buffer host support. The profile
+declaration therefore exposes the broad queue; it does not claim the remaining
+Arrow-adjacent grammar or dependencies are implemented.
+
+Arrow syntax also appears in untagged tests. The exact R2b/R2c join retains all
+102,037 keys and every previous pass while adding 1,043 passes:
+
+- 474 `fail-parse -> pass`;
+- 5 `fail-runtime -> pass`;
+- 30 `harness-error -> pass`;
+- 534 `unsupported-feature -> pass`.
+
+The first full run caught one old-pass regression in strict direct eval:
+`typeof this` had promoted the authenticated pseudo read to
+`GetOrUndefined`, which the new resolver initially rejected as a non-read.
+The dedicated QuickJS differential and the original Test262 path now pin that
+case. The final join has zero previous-pass regressions, 30,254 passes and
+35,424 runnable variants. Full TSV/JSONL SHA-256 values are
+`c28acb10ae63e46e8aad1372f679c3be3b283322c2f690e0296bf0a77e243345`
+and
+`e82fbff1bdd49b300ea561d7ad21b9c3d62ed4d640f7080c3375bc9044bf32f9`.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -1178,6 +1228,8 @@ canonical progress report.
 ./scripts/run-test262-eval-intrinsic.sh
 ./scripts/run-test262-eval-declarations.sh
 ./scripts/run-test262-nested-direct-eval.sh
+./scripts/run-test262-with.sh
+./scripts/run-test262-arrow.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -1205,7 +1257,9 @@ bounded independent String-eval root and adds 575 full-vector passes; R1y adds
 QuickJS-shaped eval declaration environments and another 768 passes; R1z adds
 recursive direct-eval caller-environment relay and another 29 passes; R2a fixes
 private FunctionName/eval declaration precedence with a byte-identical full
-vector. R1i
+vector; R2b adds the `with` environment and 198 passes; R2c adds synchronous
+simple-parameter ArrowFunctions, declares their shared feature tag, and adds
+1,043 passes with zero previous-pass regressions. R1i
 completes the direct standard-RegExp replacement route without changing that
 scoreboard.
 The generated Unicode code-point property corpus now passes; properties of

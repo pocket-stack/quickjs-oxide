@@ -8,13 +8,13 @@ test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 timeout_ms=30000
 paths=127
 variants=254
-runnable=244
-passes=240
+runnable=248
+passes=242
 manifest_sha256=de13f656ba1237660233f8b47c5b638424415f902f991eeda6e5c482fe342714
 r1d_full_tsv_sha256=a695d6299b44e4298b553c28c12983b6b12fc9d8522f1216e18e16a6bad28012
 r1d_selected_sha256=c471c60bb73b7cd9cc05c1c9793de646d46539fdea4b8e50ada3716b8142306e
 r1d_variants=254
 r1d_summary=fail-runtime=52 pass=186 unsupported-feature=8 unsupported-host-is-html-dda=2 unsupported-parser=6
-tsv_sha256=60192320eef4ecb542e58f633a3505364d7d9c76aa2c0dd2b29f9f2968f3004f
-jsonl_sha256=a9a2403ff24e52a2ac64adfcef3cdcbbac8bc7bf9e7a947dbe78d9c691f0903c
-summary=pass=240 unsupported-feature=8 unsupported-host-is-html-dda=2 unsupported-parser=4
+tsv_sha256=ae777431a154199c56f707cc18a4ea09372deffdef7dfb290e01218b288accca
+jsonl_sha256=cf70aa43ced78c95174c257b3ab6a24b35d3ec64d92faef13a1d592f016737be
+summary=pass=242 unsupported-feature=4 unsupported-host-is-html-dda=2 unsupported-parser=6

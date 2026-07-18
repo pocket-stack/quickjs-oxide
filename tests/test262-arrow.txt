@@ -1,16 +1,20 @@
 # R2c focused ArrowFunction gate.
 #
 # Pinned full-suite inventory (target/test262-full.tsv): explicit
-# `feature: arrow-function` covers 949 paths / 1,800 variants. Its current
-# classified outcomes are 1,097 unsupported-feature, 496 skipped-feature,
-# 195 unsupported-async, and 12 unsupported-host-detach-array-buffer; only
-# 575 variants are blocked solely by the missing arrow-function profile tag.
+# `feature: arrow-function` covers 949 paths / 1,800 variants. R2c admits the
+# 575 variants which were blocked only by that tag: 534 pass, 2 fail parse, 28
+# fail at runtime, and 11 stop at typed parser frontiers. The remaining cohort
+# has 522 variants gated by other features, 496 pinned configuration skips,
+# 195 unsupported async variants, and 12 detach-array-buffer host variants.
 # The core arrow-function directory contains 343 paths / 643 variants, but
-# only 52 paths carry explicit arrow-function metadata. A source/report join
-# additionally finds 381 no-metadata paths / 692 variants that contain a code
-# `=>` token and currently fail parse with SyntaxError, plus 7 paths / 10
-# variants whose arrow source is hidden in eval strings/templates and fails at
-# runtime with SyntaxError.
+# only 52 paths carry explicit arrow-function metadata. Its current classified
+# vector is 73 pass, 494 unsupported-feature, 47
+# unsupported-negative-provenance, and 29 unsupported-parser. The pre-R2c
+# source/report join also
+# found 381 no-metadata paths / 692 variants with a code `=>` token plus 7
+# paths / 10 variants whose arrow source is hidden in eval strings/templates;
+# the final full-vector join gains 509 passes outside the explicit feature-tag
+# cohort.
 #
 # This main gate deliberately selects only simple, synchronous, expected-normal
 # consumers with no unsupported adjacent Test262 feature. It covers basic
