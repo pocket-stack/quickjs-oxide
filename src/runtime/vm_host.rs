@@ -2484,9 +2484,10 @@ impl VmHost for RuntimeVmHost {
     }
 
     fn initialize_local(&mut self, index: u16, value: Value) -> Result<(), Error> {
-        if !self.local_definition(index)?.is_lexical {
+        let definition = self.local_definition(index)?;
+        if !definition.is_lexical && definition.kind != ClosureVariableKind::WithObject {
             return Err(Error::internal(
-                "lexical initialization referenced an ordinary local definition",
+                "local initialization referenced an ordinary local definition",
             ));
         }
         let binding = self
@@ -2553,7 +2554,8 @@ impl VmHost for RuntimeVmHost {
     }
 
     fn close_local(&mut self, index: u16) -> Result<(), Error> {
-        if !self.local_definition(index)?.is_lexical {
+        let definition = self.local_definition(index)?;
+        if !definition.is_lexical && definition.kind != ClosureVariableKind::WithObject {
             return Err(Error::internal(
                 "CloseLocal referenced an ordinary local definition",
             ));
@@ -2864,6 +2866,50 @@ mod tests {
                 .get_eval_variable(EvalVariableSource::Closure(0), 0)
                 .unwrap(),
             Completion::Return(Value::Int(42))
+        );
+    }
+
+    #[test]
+    fn with_object_local_allows_initialization_and_captured_close() {
+        let runtime = Runtime::new();
+        let context = runtime.new_context();
+        let root = runtime
+            .new_var_ref(
+                Value::Undefined,
+                false,
+                false,
+                ClosureVariableKind::WithObject,
+            )
+            .unwrap();
+        let mut host = RuntimeVmHost::empty_for_test(runtime, context.realm);
+        host.local_definitions = Rc::from([VariableDefinition {
+            name: Some(Atom::from_raw(71)),
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::WithObject,
+        }]);
+        host.locals = vec![FrameBinding::Captured(root)];
+        host.reusable_captured_locals = vec![false];
+
+        host.initialize_local(0, Value::Int(42)).unwrap();
+        assert_eq!(host.get_local(0).unwrap(), Value::Int(42));
+        host.close_local(0).unwrap();
+        assert!(matches!(
+            host.locals[0],
+            FrameBinding::Direct(Value::Int(42))
+        ));
+
+        host.local_definitions = Rc::from([VariableDefinition {
+            name: None,
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+        }]);
+        assert_eq!(
+            host.initialize_local(0, Value::Undefined)
+                .unwrap_err()
+                .message(),
+            "local initialization referenced an ordinary local definition"
         );
     }
 }

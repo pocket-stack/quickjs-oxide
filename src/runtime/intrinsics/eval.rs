@@ -233,6 +233,13 @@ impl Runtime {
         let mut variable_target = None;
         let state = self.0.state.borrow();
         for (scope_index, descriptor_scope) in environment.descriptor.scopes.iter().enumerate() {
+            if descriptor_scope.kind == crate::heap::EvalScopeKind::With
+                && descriptor_scope.bindings.len() != 1
+            {
+                return Err(RuntimeError::Invariant(
+                    "direct eval with scope does not contain exactly one object binding",
+                ));
+            }
             let scope = u16::try_from(scope_index).map_err(|_| {
                 RuntimeError::Invariant("direct eval scope index exceeds bytecode range")
             })?;
@@ -246,6 +253,23 @@ impl Runtime {
                 {
                     return Err(RuntimeError::Invariant(
                         "direct eval catch binding metadata is not authentic",
+                    ));
+                }
+                let is_with_scope = descriptor_scope.kind == crate::heap::EvalScopeKind::With;
+                let name = state.atoms.to_js_string(binding.name)?;
+                if (binding.kind == ClosureVariableKind::WithObject) != is_with_scope
+                    || (binding.kind == ClosureVariableKind::WithObject
+                        && (binding.is_lexical
+                            || binding.is_const
+                            || binding.is_catch_parameter
+                            || name.utf16_units().ne("<with>".encode_utf16())
+                            || matches!(
+                                binding.source,
+                                crate::heap::EvalBindingSource::Argument(_)
+                            )))
+                {
+                    return Err(RuntimeError::Invariant(
+                        "direct eval with-object binding metadata is not authentic",
                     ));
                 }
                 let external_index = u16::try_from(bindings.len()).map_err(|_| {
@@ -270,7 +294,7 @@ impl Runtime {
                     ));
                 }
                 bindings.push(EvalRootBinding {
-                    name: state.atoms.to_js_string(binding.name)?,
+                    name,
                     scope,
                     is_lexical: binding.is_lexical,
                     is_const: binding.is_const,
@@ -480,7 +504,8 @@ impl Runtime {
                         ClosureVariableKind::Normal
                         | ClosureVariableKind::FunctionName
                         | ClosureVariableKind::GlobalFunction
-                        | ClosureVariableKind::EvalVariableObject => {
+                        | ClosureVariableKind::EvalVariableObject
+                        | ClosureVariableKind::WithObject => {
                             return Err(RuntimeError::Invariant(
                                 "eval global declaration has non-global binding metadata",
                             ));
@@ -547,6 +572,16 @@ impl Runtime {
                     "eval variable-object binding has invalid binding metadata",
                 ));
             }
+            if expected.kind == ClosureVariableKind::WithObject
+                && (expected.is_lexical
+                    || expected.is_const
+                    || expected.is_catch_parameter
+                    || expected.name.utf16_units().ne("<with>".encode_utf16()))
+            {
+                return Err(RuntimeError::Invariant(
+                    "eval with-object binding has invalid binding metadata",
+                ));
+            }
             let published_name = self.0.state.borrow().atoms.to_js_string(name)?;
             if published_name != expected.name
                 || descriptor.is_lexical != expected.is_lexical
@@ -600,7 +635,8 @@ impl Runtime {
                         ClosureVariableKind::Normal
                         | ClosureVariableKind::FunctionName
                         | ClosureVariableKind::GlobalFunction
-                        | ClosureVariableKind::EvalVariableObject => {
+                        | ClosureVariableKind::EvalVariableObject
+                        | ClosureVariableKind::WithObject => {
                             return Err(RuntimeError::Invariant(
                                 "eval global declaration has non-global binding metadata",
                             ));

@@ -636,6 +636,11 @@ pub enum ClosureVariableKind {
     /// this binding; eval-created names are properties of that object rather
     /// than fabricated ordinary locals.
     EvalVariableObject,
+    /// QuickJS's hidden `<with>` binding. The binding carries the object
+    /// environment introduced by one sloppy `with` statement and is relayed
+    /// through closures and direct-eval environment descriptors without ever
+    /// becoming a source-visible lexical or variable binding.
+    WithObject,
 }
 
 /// Runtime-independent closure metadata stored beside child bytecode.
@@ -684,6 +689,7 @@ pub enum EvalScopeKind {
     For,
     Switch,
     Catch,
+    With,
 }
 
 /// Variable-environment destination used for declarations introduced by eval.
@@ -3437,6 +3443,16 @@ impl Heap {
                         "eval variable-object definition disagrees with bytecode metadata",
                     ));
                 }
+            } else if definition.kind == ClosureVariableKind::WithObject {
+                if bytecode.metadata.strict
+                    || definition.is_lexical
+                    || definition.is_const
+                    || definition.name.is_none()
+                {
+                    return Err(HeapError::Invariant(
+                        "strict or malformed bytecode contains a with-object local",
+                    ));
+                }
             } else if definition.kind != ClosureVariableKind::Normal {
                 return Err(HeapError::Invariant(
                     "ordinary local definition uses a non-local binding kind",
@@ -3560,6 +3576,20 @@ impl Heap {
                     "eval variable-object descriptor has invalid binding metadata",
                 ));
             }
+            if descriptor.kind == ClosureVariableKind::WithObject
+                && (descriptor.is_lexical
+                    || descriptor.is_const
+                    || !matches!(
+                        descriptor.source,
+                        ClosureSource::ParentLocal(_)
+                            | ClosureSource::ParentClosure(_)
+                            | ClosureSource::EvalEnvironment(_)
+                    ))
+            {
+                return Err(HeapError::Invariant(
+                    "with-object descriptor has invalid binding metadata",
+                ));
+            }
             if descriptor.is_const
                 && !descriptor.is_lexical
                 && descriptor.kind != ClosureVariableKind::FunctionName
@@ -3603,7 +3633,9 @@ impl Heap {
                     | ClosureSource::EvalEnvironment(_)
             ) || matches!(
                 descriptor.kind,
-                ClosureVariableKind::FunctionName | ClosureVariableKind::EvalVariableObject
+                ClosureVariableKind::FunctionName
+                    | ClosureVariableKind::EvalVariableObject
+                    | ClosureVariableKind::WithObject
             );
             let allows_name = requires_name
                 || descriptor.is_lexical
@@ -3686,7 +3718,36 @@ impl Heap {
             .iter()
             .flat_map(|environment| environment.scopes.iter())
         {
+            if scope.kind == EvalScopeKind::With && scope.bindings.len() != 1 {
+                return Err(HeapError::Invariant(
+                    "eval with scope does not contain exactly one object binding",
+                ));
+            }
             for binding in &scope.bindings {
+                if binding.name.is_null() {
+                    return Err(HeapError::Invariant("eval binding name is the null atom"));
+                }
+                let source_name_matches = match binding.source {
+                    EvalBindingSource::Local(index) => bytecode
+                        .local_definitions
+                        .get(usize::from(index))
+                        .is_some_and(|definition| definition.name == Some(binding.name)),
+                    EvalBindingSource::Argument(index) => bytecode
+                        .argument_definitions
+                        .get(usize::from(index))
+                        .is_some_and(|definition| definition.name == Some(binding.name)),
+                    EvalBindingSource::Closure(index) => bytecode
+                        .closure_variables
+                        .get(usize::from(index))
+                        .is_some_and(|descriptor| {
+                            descriptor.name == ClosureVariableName::Atom(binding.name)
+                        }),
+                };
+                if !source_name_matches {
+                    return Err(HeapError::Invariant(
+                        "eval binding name atom disagrees with its source metadata",
+                    ));
+                }
                 if binding.is_catch_parameter != (scope.kind == EvalScopeKind::Catch)
                     || (binding.is_catch_parameter
                         && (!binding.is_lexical
@@ -3695,6 +3756,18 @@ impl Heap {
                 {
                     return Err(HeapError::Invariant(
                         "eval catch binding metadata disagrees with its scope",
+                    ));
+                }
+                if (binding.kind == ClosureVariableKind::WithObject)
+                    != (scope.kind == EvalScopeKind::With)
+                    || (binding.kind == ClosureVariableKind::WithObject
+                        && (binding.is_lexical
+                            || binding.is_const
+                            || binding.is_catch_parameter
+                            || matches!(binding.source, EvalBindingSource::Argument(_))))
+                {
+                    return Err(HeapError::Invariant(
+                        "eval with-object binding metadata disagrees with its scope",
                     ));
                 }
                 if binding.kind == ClosureVariableKind::EvalVariableObject {
@@ -3727,8 +3800,31 @@ impl Heap {
                         ));
                     }
                 }
-                if binding.name.is_null() {
-                    return Err(HeapError::Invariant("eval binding name is the null atom"));
+                if binding.kind == ClosureVariableKind::WithObject {
+                    let authenticated = match binding.source {
+                        EvalBindingSource::Local(index) => bytecode
+                            .local_definitions
+                            .get(usize::from(index))
+                            .is_some_and(|definition| {
+                                definition.kind == ClosureVariableKind::WithObject
+                                    && !definition.is_lexical
+                                    && !definition.is_const
+                            }),
+                        EvalBindingSource::Closure(index) => bytecode
+                            .closure_variables
+                            .get(usize::from(index))
+                            .is_some_and(|descriptor| {
+                                descriptor.kind == ClosureVariableKind::WithObject
+                                    && !descriptor.is_lexical
+                                    && !descriptor.is_const
+                            }),
+                        EvalBindingSource::Argument(_) => false,
+                    };
+                    if !authenticated {
+                        return Err(HeapError::Invariant(
+                            "eval with-object binding source is not authenticated",
+                        ));
+                    }
                 }
                 let Some(count) = owned_name_atoms.get_mut(&binding.name) else {
                     return Err(HeapError::Invariant(
@@ -7686,6 +7782,153 @@ mod tests {
             heap.release_function_bytecode(published).unwrap().atoms,
             vec![name]
         );
+        heap.release_context(context).unwrap();
+        heap.release_shape(shape).unwrap();
+    }
+
+    #[test]
+    fn with_object_metadata_is_fail_closed_at_the_heap_boundary() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let prototype = leaf(&mut heap, shape);
+        let context = heap
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+                prototype,
+            ))
+            .unwrap();
+        heap.release_object(prototype).unwrap();
+
+        let code: Rc<[Instruction]> = Rc::from([]);
+        let name = Atom::from_raw(45);
+        let mut local = bytecode(&code, context, Vec::new(), vec![name]);
+        local.metadata.local_count = 1;
+        local.local_definitions = Rc::from([VariableDefinition {
+            name: Some(name),
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::WithObject,
+        }]);
+        let published = heap.allocate_function_bytecode(local).unwrap();
+        assert_eq!(
+            heap.release_function_bytecode(published).unwrap().atoms,
+            vec![name]
+        );
+
+        let mut lexical = bytecode(&code, context, Vec::new(), vec![name]);
+        lexical.metadata.local_count = 1;
+        lexical.local_definitions = Rc::from([VariableDefinition {
+            name: Some(name),
+            is_lexical: true,
+            is_const: false,
+            kind: ClosureVariableKind::WithObject,
+        }]);
+        assert_eq!(
+            heap.allocate_function_bytecode(lexical),
+            Err(HeapError::Invariant(
+                "strict or malformed bytecode contains a with-object local"
+            ))
+        );
+
+        let mut strict = bytecode(&code, context, Vec::new(), vec![name]);
+        strict.metadata.local_count = 1;
+        strict.metadata.strict = true;
+        strict.local_definitions = Rc::from([VariableDefinition {
+            name: Some(name),
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::WithObject,
+        }]);
+        assert_eq!(
+            heap.allocate_function_bytecode(strict),
+            Err(HeapError::Invariant(
+                "strict or malformed bytecode contains a with-object local"
+            ))
+        );
+
+        let mut argument_source = bytecode(&code, context, Vec::new(), vec![name]);
+        argument_source.metadata.argument_count = 1;
+        argument_source.argument_definitions = Rc::from([VariableDefinition {
+            name: Some(name),
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+        }]);
+        argument_source.eval_environments = Rc::from([EvalEnvironment {
+            scopes: Box::new([EvalScope {
+                kind: EvalScopeKind::With,
+                bindings: Box::new([EvalBinding {
+                    name,
+                    source: EvalBindingSource::Argument(0),
+                    is_lexical: false,
+                    is_const: false,
+                    kind: ClosureVariableKind::WithObject,
+                    is_catch_parameter: false,
+                }]),
+            }]),
+            variable_environment: EvalVariableEnvironment::Global,
+            caller_strict: false,
+        }]);
+        assert_eq!(
+            heap.allocate_function_bytecode(argument_source),
+            Err(HeapError::Invariant(
+                "eval with-object binding metadata disagrees with its scope"
+            ))
+        );
+
+        let other_name = Atom::from_raw(46);
+        let with_scope = |source| {
+            Rc::from([EvalEnvironment {
+                scopes: Box::new([EvalScope {
+                    kind: EvalScopeKind::With,
+                    bindings: Box::new([EvalBinding {
+                        name: other_name,
+                        source,
+                        is_lexical: false,
+                        is_const: false,
+                        kind: ClosureVariableKind::WithObject,
+                        is_catch_parameter: false,
+                    }]),
+                }]),
+                variable_environment: EvalVariableEnvironment::Global,
+                caller_strict: false,
+            }])
+        };
+
+        let mut local_name_mismatch = bytecode(&code, context, Vec::new(), vec![name, other_name]);
+        local_name_mismatch.metadata.local_count = 1;
+        local_name_mismatch.local_definitions = Rc::from([VariableDefinition {
+            name: Some(name),
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::WithObject,
+        }]);
+        local_name_mismatch.eval_environments = with_scope(EvalBindingSource::Local(0));
+        assert_eq!(
+            heap.allocate_function_bytecode(local_name_mismatch),
+            Err(HeapError::Invariant(
+                "eval binding name atom disagrees with its source metadata"
+            ))
+        );
+
+        let mut closure_name_mismatch =
+            bytecode(&code, context, Vec::new(), vec![name, other_name]);
+        closure_name_mismatch.metadata.closure_count = 1;
+        closure_name_mismatch.closure_variables = Rc::from([ClosureVariable {
+            source: ClosureSource::ParentLocal(0),
+            name: ClosureVariableName::Atom(name),
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::WithObject,
+        }]);
+        closure_name_mismatch.eval_environments = with_scope(EvalBindingSource::Closure(0));
+        assert_eq!(
+            heap.allocate_function_bytecode(closure_name_mismatch),
+            Err(HeapError::Invariant(
+                "eval binding name atom disagrees with its source metadata"
+            ))
+        );
+
         heap.release_context(context).unwrap();
         heap.release_shape(shape).unwrap();
     }

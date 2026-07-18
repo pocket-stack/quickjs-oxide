@@ -372,6 +372,15 @@ impl UnlinkedVariableDefinition {
             kind: ClosureVariableKind::EvalVariableObject,
         }
     }
+
+    pub(crate) fn with_object() -> Self {
+        Self {
+            name: Some(crate::value::JsString::from_static("<with>")),
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::WithObject,
+        }
+    }
 }
 
 /// Runtime-independent debug payload produced by the compiler.

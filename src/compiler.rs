@@ -86,7 +86,9 @@ impl EvalCompileContext {
             .unwrap_or(0);
         let mut scope_kinds = vec![EvalScopeKind::FunctionRoot; scope_count];
         for binding in &bindings {
-            if binding.is_catch_parameter {
+            if binding.kind == ClosureVariableKind::WithObject {
+                scope_kinds[usize::from(binding.scope)] = EvalScopeKind::With;
+            } else if binding.is_catch_parameter {
                 scope_kinds[usize::from(binding.scope)] = EvalScopeKind::Catch;
             }
         }
@@ -217,6 +219,9 @@ const EVAL_RET_LOCAL_NAME: &str = "<ret>";
 // QuickJS `JS_ATOM__var_`: the null-prototype variable object used by sloppy
 // direct eval. Source text cannot spell this binding identity.
 const EVAL_VARIABLE_OBJECT_LOCAL_NAME: &str = "<var>";
+// QuickJS `JS_ATOM__with_`: the object-environment binding owned by one
+// sloppy `with` scope. Source text cannot spell this binding identity.
+const WITH_OBJECT_LOCAL_NAME: &str = "<with>";
 // A finally clause in script code must preserve the incoming completion value
 // when it terminates normally. Keep those implementation-only save slots in
 // the same explicit metadata domain as `<ret>` rather than letting an unbound
@@ -277,6 +282,7 @@ enum ScopeKind {
     For,
     Switch,
     Catch,
+    With,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -313,6 +319,7 @@ enum BindingKind {
     Lexical { is_const: bool },
     FunctionName { is_const: bool },
     EvalVariableObject,
+    WithObject,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -975,10 +982,25 @@ fn install_eval_external_bindings(
         ));
     }
     if bindings.iter().any(|binding| {
-        usize::from(binding.scope) >= caller_profile.scope_kinds.len()
-            || binding.is_catch_parameter
-                != (caller_profile.scope_kinds[usize::from(binding.scope)] == EvalScopeKind::Catch)
-    }) {
+        let Some(&scope_kind) = caller_profile.scope_kinds.get(usize::from(binding.scope)) else {
+            return true;
+        };
+        binding.is_catch_parameter != (scope_kind == EvalScopeKind::Catch)
+            || (binding.kind == ClosureVariableKind::WithObject)
+                != (scope_kind == EvalScopeKind::With)
+    }) || caller_profile
+        .scope_kinds
+        .iter()
+        .enumerate()
+        .any(|(scope, kind)| {
+            *kind == EvalScopeKind::With
+                && bindings
+                    .iter()
+                    .filter(|binding| usize::from(binding.scope) == scope)
+                    .count()
+                    != 1
+        })
+    {
         return Err(Error::internal(
             "eval caller bindings disagree with their scope profile",
         ));
@@ -1044,6 +1066,14 @@ fn install_eval_external_bindings(
                 "eval variable object binding metadata is malformed",
             ));
         }
+        if binding.kind == ClosureVariableKind::WithObject
+            && (binding.is_lexical
+                || binding.is_const
+                || binding.is_catch_parameter
+                || binding.name.to_utf8_lossy() != WITH_OBJECT_LOCAL_NAME)
+        {
+            return Err(Error::internal("with object binding metadata is malformed"));
+        }
         let name = String::from_utf16(&binding.name.utf16_units().collect::<Vec<_>>())
             .map_err(|_| Error::internal("eval caller binding name is not well formed"))?;
         let kind = match binding.kind {
@@ -1057,10 +1087,14 @@ fn install_eval_external_bindings(
             ClosureVariableKind::EvalVariableObject if !binding.is_lexical && !binding.is_const => {
                 BindingKind::EvalVariableObject
             }
+            ClosureVariableKind::WithObject if !binding.is_lexical && !binding.is_const => {
+                BindingKind::WithObject
+            }
             ClosureVariableKind::Normal
             | ClosureVariableKind::FunctionName
             | ClosureVariableKind::GlobalFunction
-            | ClosureVariableKind::EvalVariableObject => {
+            | ClosureVariableKind::EvalVariableObject
+            | ClosureVariableKind::WithObject => {
                 return Err(Error::internal(
                     "eval caller binding flags are inconsistent",
                 ));
@@ -3218,7 +3252,8 @@ impl<'source> Parser<'source> {
                 ClosureVariableKind::Normal
                 | ClosureVariableKind::FunctionName
                 | ClosureVariableKind::GlobalFunction
-                | ClosureVariableKind::EvalVariableObject => {
+                | ClosureVariableKind::EvalVariableObject
+                | ClosureVariableKind::WithObject => {
                     return Err(Error::internal(
                         "eval caller binding flags are inconsistent",
                     ));
@@ -3445,6 +3480,11 @@ impl<'source> Parser<'source> {
                     ""
                 }
                 (BindingStorage::Local(_), BindingKind::EvalVariableObject) => "",
+                (BindingStorage::Local(_), BindingKind::WithObject) => {
+                    return Err(Error::internal(
+                        "with object binding leaked into the function var scope",
+                    ));
+                }
                 (BindingStorage::Local(_), BindingKind::Lexical { .. }) => {
                     return Err(Error::internal(
                         "lexical binding leaked into the function var scope",
@@ -6774,12 +6814,31 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                     ));
                 }
                 if function.external_bindings.iter().any(|binding| {
-                    usize::from(binding.scope) >= function.eval_caller_profile.scope_kinds.len()
-                        || binding.is_catch_parameter
-                            != (function.eval_caller_profile.scope_kinds
-                                [usize::from(binding.scope)]
-                                == EvalScopeKind::Catch)
-                }) {
+                    let Some(&scope_kind) = function
+                        .eval_caller_profile
+                        .scope_kinds
+                        .get(usize::from(binding.scope))
+                    else {
+                        return true;
+                    };
+                    binding.is_catch_parameter != (scope_kind == EvalScopeKind::Catch)
+                        || (binding.kind == ClosureVariableKind::WithObject)
+                            != (scope_kind == EvalScopeKind::With)
+                }) || function
+                    .eval_caller_profile
+                    .scope_kinds
+                    .iter()
+                    .enumerate()
+                    .any(|(scope, kind)| {
+                        *kind == EvalScopeKind::With
+                            && function
+                                .external_bindings
+                                .iter()
+                                .filter(|binding| usize::from(binding.scope) == scope)
+                                .count()
+                                != 1
+                    })
+                {
                     return Err(Error::internal(
                         "direct eval bindings disagree with the caller scope profile",
                     ));
@@ -6882,6 +6941,16 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                     "eval variable object local metadata is malformed",
                 ));
             }
+        }
+        if function.strict
+            && function.bindings.iter().any(|binding| {
+                binding.kind == BindingKind::WithObject
+                    && matches!(binding.storage, BindingStorage::Local(_))
+            })
+        {
+            return Err(Error::internal(
+                "strict function retained a local with object binding",
+            ));
         }
         let mut seen_hoisted_bindings = vec![false; function.bindings.len()];
         for hoist in &function.hoisted_functions {
@@ -7451,31 +7520,48 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         let mut seen_locals = vec![false; function.locals.len()];
         let mut seen_external = vec![false; function.external_bindings.len()];
         for (index, external) in function.external_bindings.iter().enumerate() {
-            if external.kind != ClosureVariableKind::EvalVariableObject {
-                continue;
-            }
+            let sentinel = match external.kind {
+                ClosureVariableKind::EvalVariableObject => EVAL_VARIABLE_OBJECT_LOCAL_NAME,
+                ClosureVariableKind::WithObject => WITH_OBJECT_LOCAL_NAME,
+                ClosureVariableKind::Normal
+                | ClosureVariableKind::FunctionName
+                | ClosureVariableKind::GlobalFunction => continue,
+            };
             let descriptor = function
                 .closure_variables
                 .get(index)
-                .ok_or_else(|| Error::internal("eval variable object closure is out of bounds"))?;
+                .ok_or_else(|| Error::internal("eval hidden object closure is out of bounds"))?;
             if external.is_lexical
                 || external.is_const
                 || external.is_catch_parameter
-                || external.name.to_utf8_lossy() != EVAL_VARIABLE_OBJECT_LOCAL_NAME
+                || external.name.to_utf8_lossy() != sentinel
                 || descriptor.source
                     != ClosureSource::EvalEnvironment(u16::try_from(index).map_err(|_| {
                         Error::new(ErrorKind::JsInternal, "too many closure variables")
                     })?)
-                || descriptor.kind != ClosureVariableKind::EvalVariableObject
+                || descriptor.kind != external.kind
                 || descriptor.is_lexical
                 || descriptor.is_const
             {
                 return Err(Error::internal(
-                    "eval variable object external metadata is malformed",
+                    "eval hidden object external metadata is malformed",
                 ));
             }
         }
         for (scope_index, scope) in function.scopes.iter().enumerate() {
+            if scope.kind == ScopeKind::With
+                && (scope.bindings.len() != 1
+                    || scope.bindings.first().is_none_or(|binding| {
+                        function.bindings.get(binding.0).is_none_or(|binding| {
+                            binding.kind != BindingKind::WithObject
+                                || !matches!(binding.storage, BindingStorage::Local(_))
+                        })
+                    }))
+            {
+                return Err(Error::internal(
+                    "with scope does not own exactly one hidden object binding",
+                ));
+            }
             for &binding_id in &scope.bindings {
                 let binding = function
                     .bindings
@@ -7546,6 +7632,16 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         if binding.is_catch_parameter != catch_parameter_metadata {
                             return Err(Error::internal(
                                 "catch parameter binding metadata is malformed",
+                            ));
+                        }
+                        if binding.kind == BindingKind::WithObject
+                            && (binding.name != WITH_OBJECT_LOCAL_NAME
+                                || binding.storage_scope != binding.declaration_scope
+                                || function.scopes[binding.storage_scope.0].kind != ScopeKind::With
+                                || binding.is_catch_parameter)
+                        {
+                            return Err(Error::internal(
+                                "with object local binding metadata is malformed",
                             ));
                         }
                         if matches!(binding.kind, BindingKind::Lexical { .. }) {
@@ -7627,10 +7723,16 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                             {
                                 BindingKind::EvalVariableObject
                             }
+                            ClosureVariableKind::WithObject
+                                if !external.is_lexical && !external.is_const =>
+                            {
+                                BindingKind::WithObject
+                            }
                             ClosureVariableKind::Normal
                             | ClosureVariableKind::FunctionName
                             | ClosureVariableKind::GlobalFunction
-                            | ClosureVariableKind::EvalVariableObject => {
+                            | ClosureVariableKind::EvalVariableObject
+                            | ClosureVariableKind::WithObject => {
                                 return Err(Error::internal(
                                     "eval external binding flags are inconsistent",
                                 ));
@@ -7971,6 +8073,7 @@ const fn eval_scope_kind(kind: ScopeKind) -> EvalScopeKind {
         ScopeKind::For => EvalScopeKind::For,
         ScopeKind::Switch => EvalScopeKind::Switch,
         ScopeKind::Catch => EvalScopeKind::Catch,
+        ScopeKind::With => EvalScopeKind::With,
     }
 }
 
@@ -8142,7 +8245,9 @@ fn link_eval_environment(
                         {
                             2
                         }
-                        BindingKind::Normal | BindingKind::Lexical { .. } => 0,
+                        BindingKind::Normal
+                        | BindingKind::Lexical { .. }
+                        | BindingKind::WithObject => 0,
                     }
                 });
             }
@@ -8269,10 +8374,14 @@ fn link_eval_environment(
                 {
                     BindingKind::EvalVariableObject
                 }
+                ClosureVariableKind::WithObject if !binding.is_lexical && !binding.is_const => {
+                    BindingKind::WithObject
+                }
                 ClosureVariableKind::Normal
                 | ClosureVariableKind::FunctionName
                 | ClosureVariableKind::GlobalFunction
-                | ClosureVariableKind::EvalVariableObject => {
+                | ClosureVariableKind::EvalVariableObject
+                | ClosureVariableKind::WithObject => {
                     return Err(Error::internal(
                         "imported eval binding flags are inconsistent",
                     ));
@@ -9250,6 +9359,12 @@ fn resolve_eval_external_chain(
             sources.push(source);
             continue;
         }
+        // R2b.1 authenticates and relays the hidden object environment, but
+        // identifier execution remains intentionally on the existing eval
+        // variable-object path until the with-aware Reference IR lands.
+        if binding.kind == ClosureVariableKind::WithObject {
+            continue;
+        }
         if binding.name.to_utf8_lossy() != name {
             continue;
         }
@@ -9264,7 +9379,8 @@ fn resolve_eval_external_chain(
             ClosureVariableKind::Normal
             | ClosureVariableKind::FunctionName
             | ClosureVariableKind::GlobalFunction
-            | ClosureVariableKind::EvalVariableObject => {
+            | ClosureVariableKind::EvalVariableObject
+            | ClosureVariableKind::WithObject => {
                 return Err(Error::internal(
                     "eval caller binding flags are inconsistent",
                 ));
@@ -9323,6 +9439,11 @@ fn global_declaration_operation(
         BindingKind::EvalVariableObject => {
             return Err(Error::internal(
                 "eval variable object reached global declaration resolution",
+            ));
+        }
+        BindingKind::WithObject => {
+            return Err(Error::internal(
+                "with object reached global declaration resolution",
             ));
         }
     };
@@ -9551,8 +9672,12 @@ fn binding_instruction(
         (BindingStorage::External(_), _, _) => Err(Error::internal(
             "eval external binding reached local instruction selection",
         )),
-        (BindingStorage::Local(_), BindingKind::EvalVariableObject, _) => Err(Error::internal(
-            "eval variable object reached source binding instruction selection",
+        (
+            BindingStorage::Local(_),
+            BindingKind::EvalVariableObject | BindingKind::WithObject,
+            _,
+        ) => Err(Error::internal(
+            "hidden object binding reached source binding instruction selection",
         )),
         (
             BindingStorage::Argument(index),
@@ -9636,8 +9761,8 @@ fn closure_binding_operation(
     name: &str,
 ) -> Result<IrOp, Error> {
     match (kind, access) {
-        (BindingKind::EvalVariableObject, _) => Err(Error::internal(
-            "eval variable object reached source closure operation selection",
+        (BindingKind::EvalVariableObject | BindingKind::WithObject, _) => Err(Error::internal(
+            "hidden object binding reached source closure operation selection",
         )),
         (
             BindingKind::Normal | BindingKind::FunctionName { .. },
@@ -9708,6 +9833,7 @@ const fn closure_kind(kind: BindingKind) -> ClosureVariableKind {
         BindingKind::Normal | BindingKind::Lexical { .. } => ClosureVariableKind::Normal,
         BindingKind::FunctionName { .. } => ClosureVariableKind::FunctionName,
         BindingKind::EvalVariableObject => ClosureVariableKind::EvalVariableObject,
+        BindingKind::WithObject => ClosureVariableKind::WithObject,
     }
 }
 
@@ -9766,7 +9892,10 @@ fn capture_binding_path(
         let descriptor_name = if retain_name
             || matches!(
                 original_kind,
-                BindingKind::Lexical { .. } | BindingKind::FunctionName { .. }
+                BindingKind::Lexical { .. }
+                    | BindingKind::FunctionName { .. }
+                    | BindingKind::EvalVariableObject
+                    | BindingKind::WithObject
             ) {
             ClosureVariableName::Constant(ensure_string_constant(function, name)?)
         } else {
@@ -9857,10 +9986,14 @@ fn binding_kind_from_closure_descriptor(descriptor: ClosureVariable) -> Result<B
         {
             Ok(BindingKind::EvalVariableObject)
         }
+        ClosureVariableKind::WithObject if !descriptor.is_lexical && !descriptor.is_const => {
+            Ok(BindingKind::WithObject)
+        }
         ClosureVariableKind::Normal
         | ClosureVariableKind::FunctionName
         | ClosureVariableKind::GlobalFunction
-        | ClosureVariableKind::EvalVariableObject => Err(Error::internal(
+        | ClosureVariableKind::EvalVariableObject
+        | ClosureVariableKind::WithObject => Err(Error::internal(
             "captured closure descriptor has inconsistent binding metadata",
         )),
     }
@@ -10008,7 +10141,9 @@ fn build_scope_lifecycles(
                     .bindings
                     .get(binding_id.0)
                     .ok_or_else(|| Error::internal("scope binding is out of bounds"))?;
-                if !matches!(binding.kind, BindingKind::Lexical { .. }) {
+                let is_lexical = matches!(binding.kind, BindingKind::Lexical { .. });
+                let is_with_object = binding.kind == BindingKind::WithObject;
+                if !is_lexical && !is_with_object {
                     continue;
                 }
                 let index = match binding.storage {
@@ -10016,17 +10151,19 @@ fn build_scope_lifecycles(
                     BindingStorage::External(_) | BindingStorage::Global => continue,
                     BindingStorage::Argument(_) => {
                         return Err(Error::internal(
-                            "lexical scope lifecycle referenced an argument",
+                            "scoped binding lifecycle referenced an argument",
                         ));
                     }
                 };
-                if let Some(constant) = scoped_constants[binding_id.0] {
-                    lifecycle.function_entries.push(ScopedFunctionEntry {
-                        constant,
-                        local: index,
-                    });
-                } else {
-                    lifecycle.tdz_locals.push(index);
+                if is_lexical {
+                    if let Some(constant) = scoped_constants[binding_id.0] {
+                        lifecycle.function_entries.push(ScopedFunctionEntry {
+                            constant,
+                            local: index,
+                        });
+                    } else {
+                        lifecycle.tdz_locals.push(index);
+                    }
                 }
                 if captured_locals[usize::from(index)] {
                     lifecycle.close_locals.push(index);
@@ -10190,6 +10327,7 @@ fn lower_unlinked_tree(
                     is_const: false,
                     kind: ClosureVariableKind::EvalVariableObject,
                 },
+                BindingKind::WithObject => UnlinkedVariableDefinition::with_object(),
             };
         }
         let scope_lifecycles = build_scope_lifecycles(
@@ -10902,11 +11040,12 @@ mod tests {
 
     use super::{
         BindingKind, BindingStorage, EVAL_VARIABLE_OBJECT_LOCAL_NAME, EvalCompileContext,
-        FunctionIr, FunctionKind, FunctionSourceInfo, MAX_BYTECODE_STACK, MAX_CALL_ARGUMENTS,
-        MAX_LOCAL_VARIABLES, Parser, ScopeKind, SourceOffset, compile_script,
+        FunctionIr, FunctionKind, FunctionSourceInfo, FunctionTree, IrScope, MAX_BYTECODE_STACK,
+        MAX_CALL_ARGUMENTS, MAX_LOCAL_VARIABLES, Parser, ScopeId, ScopeKind, SourceOffset,
+        WITH_OBJECT_LOCAL_NAME, build_scope_lifecycles, compile_script,
         compile_unlinked_eval_with_filename, compile_unlinked_script,
         compile_unlinked_script_with_filename, ensure_closure_variable, lex_error,
-        resolve_identifiers,
+        resolve_identifiers, validate_scope_graph,
     };
 
     #[test]
@@ -11469,6 +11608,62 @@ mod tests {
             window,
             [Instruction::GetVarRefCheck(0), Instruction::Return]
         )));
+    }
+
+    #[test]
+    fn captured_with_object_has_close_lifetime_without_lexical_tdz() {
+        let make_function = |strict| {
+            let span = Span::new(Position::new(0, 1, 1), Position::new(0, 1, 1));
+            let mut function = FunctionIr::new(
+                None,
+                FunctionKind::Ordinary,
+                FunctionSourceInfo {
+                    span,
+                    definition: SourceOffset::try_from_usize(0).unwrap(),
+                    range: None,
+                },
+                None,
+                false,
+                Vec::new(),
+                strict,
+            )
+            .unwrap();
+            let scope = ScopeId(function.scopes.len());
+            function.scopes.push(IrScope {
+                parent: Some(function.body_scope),
+                kind: ScopeKind::With,
+                bindings: Vec::new(),
+            });
+            function.locals.push(WITH_OBJECT_LOCAL_NAME.to_owned());
+            function.add_binding(
+                scope,
+                scope,
+                WITH_OBJECT_LOCAL_NAME.to_owned(),
+                BindingStorage::Local(0),
+                BindingKind::WithObject,
+                None,
+            );
+            (function, scope)
+        };
+
+        let (function, scope) = make_function(false);
+        let lifecycles = build_scope_lifecycles(&function, &[true]).unwrap();
+        assert!(lifecycles[scope.0].tdz_locals.is_empty());
+        assert!(lifecycles[scope.0].function_entries.is_empty());
+        assert_eq!(lifecycles[scope.0].close_locals, [0]);
+
+        let (strict, _) = make_function(true);
+        let tree = FunctionTree {
+            functions: vec![strict],
+            source: "".into(),
+            filename: JsString::from_static("<strict-with-metadata>"),
+        };
+        assert!(
+            validate_scope_graph(&tree)
+                .unwrap_err()
+                .message()
+                .contains("strict function retained a local with object")
+        );
     }
 
     #[test]
@@ -14574,6 +14769,79 @@ mod tests {
     }
 
     #[test]
+    fn compiler_preserves_authenticated_with_environment_relays() {
+        let with_object = EvalRootBinding {
+            name: JsString::from_static(WITH_OBJECT_LOCAL_NAME),
+            scope: 0,
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::WithObject,
+            is_catch_parameter: false,
+        };
+        let root = compile_unlinked_eval_with_filename(
+            "(function relay() { eval('value'); })",
+            "<eval>",
+            DebugInfoMode::StripDebug,
+            EvalCompileContext::direct_with_profile(
+                false,
+                vec![with_object.clone()],
+                EvalCallerProfile {
+                    scope_kinds: vec![
+                        EvalScopeKind::With,
+                        EvalScopeKind::ProgramBody,
+                        EvalScopeKind::FunctionRoot,
+                    ]
+                    .into_boxed_slice(),
+                    variable_target: EvalCallerVariableTarget::Global,
+                },
+            ),
+        )
+        .unwrap();
+
+        let root_descriptor = root
+            .closure_variables()
+            .first()
+            .expect("eval root lost its with object external");
+        assert_eq!(root_descriptor.source, ClosureSource::EvalEnvironment(0));
+        assert_eq!(root_descriptor.kind, ClosureVariableKind::WithObject);
+        assert!(!root_descriptor.is_lexical);
+        assert!(!root_descriptor.is_const);
+        let ClosureVariableName::Constant(name) = root_descriptor.name else {
+            panic!("eval root lost its with object sentinel name");
+        };
+        assert!(matches!(
+            root.constants()[name as usize].as_primitive(),
+            Some(Value::String(name)) if name == &with_object.name
+        ));
+
+        let relay = root
+            .constants()
+            .iter()
+            .find_map(|constant| constant.as_child())
+            .expect("eval root lost its relay function");
+        let relay_descriptor = relay
+            .closure_variables()
+            .iter()
+            .find(|descriptor| descriptor.kind == ClosureVariableKind::WithObject)
+            .expect("nested eval did not relay the with object");
+        assert_eq!(relay_descriptor.source, ClosureSource::ParentClosure(0));
+        let with_scope = relay.eval_environments()[0]
+            .scopes
+            .iter()
+            .find(|scope| scope.kind == EvalScopeKind::With)
+            .expect("nested eval profile lost its with scope");
+        let [binding] = with_scope.bindings.as_ref() else {
+            panic!("with scope did not retain exactly one binding");
+        };
+        assert_eq!(binding.name, with_object.name);
+        assert_eq!(binding.kind, ClosureVariableKind::WithObject);
+        assert!(matches!(binding.source, EvalBindingSource::Closure(_)));
+        assert!(!binding.is_lexical);
+        assert!(!binding.is_const);
+        assert!(!binding.is_catch_parameter);
+    }
+
+    #[test]
     fn eval_compiler_rejects_incoherent_caller_variable_profiles() {
         let strict_global = EvalCompileContext::direct_with_profile(
             true,
@@ -14617,6 +14885,34 @@ mod tests {
                 "<eval>",
                 DebugInfoMode::StripDebug,
                 sloppy_global,
+            )
+            .unwrap_err()
+            .message()
+            .contains("variable target is not authenticated")
+        );
+
+        let with_object = EvalRootBinding {
+            name: JsString::from_static(WITH_OBJECT_LOCAL_NAME),
+            scope: 0,
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::WithObject,
+            is_catch_parameter: false,
+        };
+        let with_as_variable_target = EvalCompileContext::direct_with_profile(
+            false,
+            vec![with_object],
+            EvalCallerProfile {
+                scope_kinds: vec![EvalScopeKind::With].into_boxed_slice(),
+                variable_target: EvalCallerVariableTarget::ExternalBinding(0),
+            },
+        );
+        assert!(
+            compile_unlinked_eval_with_filename(
+                "42",
+                "<eval>",
+                DebugInfoMode::StripDebug,
+                with_as_variable_target,
             )
             .unwrap_err()
             .message()

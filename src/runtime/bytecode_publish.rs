@@ -466,6 +466,11 @@ fn verify_eval_environments(
         }
 
         for scope in &environment.scopes {
+            if scope.kind == crate::heap::EvalScopeKind::With && scope.bindings.len() != 1 {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "eval with scope does not contain exactly one object binding",
+                )));
+            }
             for binding in &scope.bindings {
                 if binding.name.is_empty() {
                     return Err(RuntimeError::Engine(Error::internal(
@@ -473,6 +478,7 @@ fn verify_eval_environments(
                     )));
                 }
                 let is_catch_scope = scope.kind == crate::heap::EvalScopeKind::Catch;
+                let is_with_scope = scope.kind == crate::heap::EvalScopeKind::With;
                 if binding.is_catch_parameter != is_catch_scope
                     || (binding.is_catch_parameter
                         && (!binding.is_lexical
@@ -481,6 +487,21 @@ fn verify_eval_environments(
                 {
                     return Err(RuntimeError::Engine(Error::internal(
                         "eval catch binding metadata disagrees with its scope",
+                    )));
+                }
+                if (binding.kind == ClosureVariableKind::WithObject) != is_with_scope
+                    || (binding.kind == ClosureVariableKind::WithObject
+                        && (binding.is_lexical
+                            || binding.is_const
+                            || binding.is_catch_parameter
+                            || binding.name.utf16_units().ne("<with>".encode_utf16())
+                            || matches!(
+                                binding.source,
+                                crate::heap::EvalBindingSource::Argument(_)
+                            )))
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "eval with-object binding metadata disagrees with its scope",
                     )));
                 }
                 let expected = match binding.source {
@@ -596,7 +617,9 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree(
         .unwrap_or(0);
     let mut scope_kinds = vec![crate::heap::EvalScopeKind::FunctionRoot; scope_count];
     for binding in expected_bindings {
-        if binding.is_catch_parameter {
+        if binding.kind == ClosureVariableKind::WithObject {
+            scope_kinds[usize::from(binding.scope)] = crate::heap::EvalScopeKind::With;
+        } else if binding.is_catch_parameter {
             scope_kinds[usize::from(binding.scope)] = crate::heap::EvalScopeKind::Catch;
         }
     }
@@ -653,10 +676,14 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree_with_profile(
         )));
     }
     for binding in expected_bindings {
-        if usize::from(binding.scope) >= expected_profile.scope_kinds.len()
-            || binding.is_catch_parameter
-                != (expected_profile.scope_kinds[usize::from(binding.scope)]
-                    == crate::heap::EvalScopeKind::Catch)
+        let Some(&scope_kind) = expected_profile.scope_kinds.get(usize::from(binding.scope)) else {
+            return Err(RuntimeError::Engine(Error::internal(
+                "eval root binding disagrees with its caller scope profile",
+            )));
+        };
+        if binding.is_catch_parameter != (scope_kind == crate::heap::EvalScopeKind::Catch)
+            || (binding.kind == ClosureVariableKind::WithObject)
+                != (scope_kind == crate::heap::EvalScopeKind::With)
         {
             return Err(RuntimeError::Engine(Error::internal(
                 "eval root binding disagrees with its caller scope profile",
@@ -683,11 +710,38 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree_with_profile(
                 "eval root variable-object binding has invalid binding metadata",
             )));
         }
+        if binding.kind == ClosureVariableKind::WithObject
+            && (binding.is_lexical
+                || binding.is_const
+                || binding.is_catch_parameter
+                || binding.name.utf16_units().ne("<with>".encode_utf16()))
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "eval root with-object binding has invalid binding metadata",
+            )));
+        }
         if binding.kind == ClosureVariableKind::GlobalFunction {
             return Err(RuntimeError::Engine(Error::internal(
                 "eval root imported a declaration-only global binding kind",
             )));
         }
+    }
+    if expected_profile
+        .scope_kinds
+        .iter()
+        .enumerate()
+        .any(|(scope, kind)| {
+            *kind == crate::heap::EvalScopeKind::With
+                && expected_bindings
+                    .iter()
+                    .filter(|binding| usize::from(binding.scope) == scope)
+                    .count()
+                    != 1
+        })
+    {
+        return Err(RuntimeError::Engine(Error::internal(
+            "eval root with scope does not contain exactly one object binding",
+        )));
     }
     let has_variable_object = expected_bindings
         .iter()
@@ -915,6 +969,19 @@ fn verify_unlinked_tree_with_root(
                         "eval variable-object definition disagrees with bytecode metadata",
                     )));
                 }
+            } else if definition.kind == ClosureVariableKind::WithObject {
+                if function.metadata().strict
+                    || definition.is_lexical
+                    || definition.is_const
+                    || definition
+                        .name
+                        .as_ref()
+                        .is_none_or(|name| name.utf16_units().ne("<with>".encode_utf16()))
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "strict or malformed bytecode contains a with-object local",
+                    )));
+                }
             } else if definition.kind != ClosureVariableKind::Normal {
                 return Err(RuntimeError::Engine(Error::internal(
                     "ordinary local definition uses a non-local binding kind",
@@ -1072,9 +1139,25 @@ fn verify_unlinked_tree_with_root(
                     "eval variable-object descriptor has invalid binding metadata",
                 )));
             }
+            if descriptor.kind == ClosureVariableKind::WithObject
+                && (descriptor.is_lexical
+                    || descriptor.is_const
+                    || !matches!(
+                        descriptor.source,
+                        ClosureSource::ParentLocal(_)
+                            | ClosureSource::ParentClosure(_)
+                            | ClosureSource::EvalEnvironment(_)
+                    ))
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "with-object descriptor has invalid binding metadata",
+                )));
+            }
             let requires_name = matches!(
                 descriptor.kind,
-                ClosureVariableKind::FunctionName | ClosureVariableKind::EvalVariableObject
+                ClosureVariableKind::FunctionName
+                    | ClosureVariableKind::EvalVariableObject
+                    | ClosureVariableKind::WithObject
             ) || matches!(
                 descriptor.source,
                 ClosureSource::GlobalDeclaration
@@ -1083,6 +1166,13 @@ fn verify_unlinked_tree_with_root(
                     | ClosureSource::EvalEnvironment(_)
             );
             let name = unlinked_closure_name(function, descriptor)?;
+            if descriptor.kind == ClosureVariableKind::WithObject
+                && name.is_none_or(|name| name.utf16_units().ne("<with>".encode_utf16()))
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "with-object descriptor lost its sentinel name",
+                )));
+            }
             if descriptor.source == ClosureSource::GlobalDeclaration {
                 let name = name.ok_or_else(|| {
                     RuntimeError::Engine(Error::internal(
@@ -1549,6 +1639,20 @@ fn verify_unlinked_tree_with_root(
                     if function
                         .local_definitions()
                         .get(usize::from(*index))
+                        .is_some_and(|definition| {
+                            definition.kind == ClosureVariableKind::WithObject
+                        }) =>
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "ordinary local opcode referenced a private with object",
+                    )));
+                }
+                crate::bytecode::Instruction::GetLocal(index)
+                | crate::bytecode::Instruction::PutLocal(index)
+                | crate::bytecode::Instruction::SetLocal(index)
+                    if function
+                        .local_definitions()
+                        .get(usize::from(*index))
                         .is_some_and(|definition| definition.is_lexical) =>
                 {
                     return Err(RuntimeError::Engine(Error::internal(
@@ -1557,10 +1661,8 @@ fn verify_unlinked_tree_with_root(
                 }
                 crate::bytecode::Instruction::SetLocalUninitialized(index)
                 | crate::bytecode::Instruction::GetLocalCheck(index)
-                | crate::bytecode::Instruction::InitializeLocal(index)
                 | crate::bytecode::Instruction::PutLocalCheck(index)
                 | crate::bytecode::Instruction::SetLocalCheck(index)
-                | crate::bytecode::Instruction::CloseLocal(index)
                     if function
                         .local_definitions()
                         .get(usize::from(*index))
@@ -1568,6 +1670,20 @@ fn verify_unlinked_tree_with_root(
                 {
                     return Err(RuntimeError::Engine(Error::internal(
                         "checked lexical-local opcode referenced an ordinary definition",
+                    )));
+                }
+                crate::bytecode::Instruction::InitializeLocal(index)
+                | crate::bytecode::Instruction::CloseLocal(index)
+                    if function
+                        .local_definitions()
+                        .get(usize::from(*index))
+                        .is_some_and(|definition| {
+                            !definition.is_lexical
+                                && definition.kind != ClosureVariableKind::WithObject
+                        }) =>
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "lifetime opcode referenced an ordinary local definition",
                     )));
                 }
                 crate::bytecode::Instruction::PutLocalCheck(index)
@@ -1612,11 +1728,15 @@ fn verify_unlinked_tree_with_root(
                         .closure_variables()
                         .get(usize::from(*index))
                         .is_some_and(|descriptor| {
-                            descriptor.kind == ClosureVariableKind::EvalVariableObject
+                            matches!(
+                                descriptor.kind,
+                                ClosureVariableKind::EvalVariableObject
+                                    | ClosureVariableKind::WithObject
+                            )
                         }) =>
                 {
                     return Err(RuntimeError::Engine(Error::internal(
-                        "ordinary closure opcode referenced the private eval variable object",
+                        "ordinary closure opcode referenced a hidden object binding",
                     )));
                 }
                 crate::bytecode::Instruction::GetVarRef(index)
@@ -2272,6 +2392,99 @@ mod tests {
         .with_eval_environments(vec![environment])
     }
 
+    fn local_with_environment(
+        binding: EvalBinding<JsString>,
+        definition_name: &'static str,
+    ) -> UnlinkedFunction {
+        let environment = EvalEnvironment {
+            scopes: vec![
+                EvalScope {
+                    kind: EvalScopeKind::With,
+                    bindings: vec![binding].into_boxed_slice(),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::ProgramBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+            ]
+            .into_boxed_slice(),
+            variable_environment: EvalVariableEnvironment::Scope(2),
+            caller_strict: false,
+        };
+        UnlinkedFunction::new(
+            eval_code(0, false),
+            Vec::new(),
+            FunctionMetadata {
+                local_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_variable_definitions(
+            Vec::new(),
+            vec![UnlinkedVariableDefinition {
+                name: Some(JsString::from_static(definition_name)),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::WithObject,
+            }],
+        )
+        .with_eval_environments(vec![environment])
+    }
+
+    fn captured_with_object_function(strict: bool) -> UnlinkedFunction {
+        let relay = UnlinkedFunction::new_with_closure_variables(
+            vec![Instruction::Undefined, Instruction::Return],
+            vec![
+                UnlinkedConstant::primitive(Value::String(JsString::from_static("<with>")))
+                    .unwrap(),
+            ],
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentLocal(0),
+                name: ClosureVariableName::Constant(0),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::WithObject,
+            }],
+        );
+        UnlinkedFunction::new(
+            vec![
+                Instruction::Undefined,
+                Instruction::InitializeLocal(0),
+                Instruction::FClosure(0),
+                Instruction::Drop,
+                Instruction::CloseLocal(0),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(relay)],
+            FunctionMetadata {
+                local_count: 1,
+                max_stack: 1,
+                strict,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_variable_definitions(Vec::new(), vec![UnlinkedVariableDefinition::with_object()])
+    }
+
     fn script_with_child(child: UnlinkedFunction) -> UnlinkedFunction {
         UnlinkedFunction::new(
             vec![Instruction::Undefined, Instruction::Return],
@@ -2457,6 +2670,70 @@ mod tests {
         );
 
         verify_unlinked_eval_tree(&root, EvalKind::Direct, false, &expected).unwrap();
+    }
+
+    #[test]
+    fn eval_root_authenticates_with_object_metadata_and_keeps_it_out_of_variable_targets() {
+        let expected = [eval_root_binding(
+            "<with>",
+            0,
+            false,
+            false,
+            ClosureVariableKind::WithObject,
+        )];
+        let root = eval_root_with_descriptors(
+            EvalKind::Direct,
+            vec![(
+                ClosureSource::EvalEnvironment(0),
+                "<with>",
+                false,
+                false,
+                ClosureVariableKind::WithObject,
+            )],
+        );
+        let profile = EvalCallerProfile {
+            scope_kinds: vec![EvalScopeKind::With].into_boxed_slice(),
+            variable_target: EvalCallerVariableTarget::Global,
+        };
+        verify_unlinked_eval_tree_with_profile(&root, EvalKind::Direct, false, &expected, &profile)
+            .unwrap();
+
+        let forged_target = EvalCallerProfile {
+            scope_kinds: vec![EvalScopeKind::With].into_boxed_slice(),
+            variable_target: EvalCallerVariableTarget::ExternalBinding(0),
+        };
+        assert!(
+            verify_unlinked_eval_tree_with_profile(
+                &root,
+                EvalKind::Direct,
+                false,
+                &expected,
+                &forged_target,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("variable target is not authenticated")
+        );
+
+        let wrong_name = [eval_root_binding(
+            "ordinary",
+            0,
+            false,
+            false,
+            ClosureVariableKind::WithObject,
+        )];
+        assert!(
+            verify_unlinked_eval_tree_with_profile(
+                &root,
+                EvalKind::Direct,
+                false,
+                &wrong_name,
+                &profile,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("with-object binding has invalid")
+        );
     }
 
     #[test]
@@ -3229,6 +3506,140 @@ mod tests {
             let function =
                 lexical_local_function(ordinary_environment(Some(binding)), eval_code(0, false));
             assert!(verify_unlinked_tree(&script_with_child(function)).is_err());
+        }
+    }
+
+    #[test]
+    fn eval_environment_authenticates_local_with_object_metadata() {
+        let binding = EvalBinding {
+            name: JsString::from_static("<with>"),
+            source: EvalBindingSource::Local(0),
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::WithObject,
+            is_catch_parameter: false,
+        };
+        verify_unlinked_tree(&script_with_child(local_with_environment(
+            binding.clone(),
+            "<with>",
+        )))
+        .unwrap();
+
+        assert!(
+            verify_unlinked_tree(&script_with_child(local_with_environment(
+                binding.clone(),
+                "ordinary",
+            )))
+            .unwrap_err()
+            .to_string()
+            .contains("with-object local")
+        );
+
+        let mut lexical = binding.clone();
+        lexical.is_lexical = true;
+        assert!(
+            verify_unlinked_tree(&script_with_child(local_with_environment(
+                lexical, "<with>",
+            )))
+            .unwrap_err()
+            .to_string()
+            .contains("with-object binding metadata")
+        );
+
+        let mut argument = binding;
+        argument.source = EvalBindingSource::Argument(0);
+        assert!(
+            verify_unlinked_tree(&script_with_child(local_with_environment(
+                argument, "<with>",
+            )))
+            .unwrap_err()
+            .to_string()
+            .contains("with-object binding metadata")
+        );
+    }
+
+    #[test]
+    fn captured_with_object_uses_only_initialize_and_close_local_lifecycle_ops() {
+        verify_unlinked_tree(&script_with_child(captured_with_object_function(false))).unwrap();
+
+        for instruction in [
+            Instruction::GetLocal(0),
+            Instruction::PutLocal(0),
+            Instruction::SetLocal(0),
+        ] {
+            let code = match instruction {
+                Instruction::GetLocal(_) => vec![instruction, Instruction::Return],
+                Instruction::PutLocal(_) => vec![
+                    Instruction::Undefined,
+                    instruction,
+                    Instruction::Undefined,
+                    Instruction::Return,
+                ],
+                Instruction::SetLocal(_) => {
+                    vec![Instruction::Undefined, instruction, Instruction::Return]
+                }
+                _ => unreachable!(),
+            };
+            let forged = UnlinkedFunction::new(
+                code,
+                Vec::new(),
+                FunctionMetadata {
+                    local_count: 1,
+                    max_stack: 1,
+                    ..FunctionMetadata::default()
+                },
+            )
+            .with_variable_definitions(Vec::new(), vec![UnlinkedVariableDefinition::with_object()]);
+            assert!(
+                verify_unlinked_tree(&script_with_child(forged))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("ordinary local opcode referenced a private with object")
+            );
+        }
+    }
+
+    #[test]
+    fn strict_bytecode_cannot_publish_a_local_with_object() {
+        assert!(
+            verify_unlinked_tree(&script_with_child(captured_with_object_function(true)))
+                .unwrap_err()
+                .to_string()
+                .contains("strict or malformed bytecode contains a with-object local")
+        );
+    }
+
+    #[test]
+    fn with_object_closure_descriptor_rejects_non_local_sources() {
+        for (source, diagnostic) in [
+            (ClosureSource::ParentArgument(0), "with-object descriptor"),
+            (ClosureSource::Global, "non-global binding metadata"),
+        ] {
+            let child = UnlinkedFunction::new_with_closure_variables(
+                vec![Instruction::Undefined, Instruction::Return],
+                vec![
+                    UnlinkedConstant::primitive(Value::String(JsString::from_static("<with>")))
+                        .unwrap(),
+                ],
+                FunctionMetadata {
+                    closure_count: 1,
+                    max_stack: 1,
+                    ..FunctionMetadata::default()
+                },
+                vec![ClosureVariable {
+                    source,
+                    name: ClosureVariableName::Constant(0),
+                    is_lexical: false,
+                    is_const: false,
+                    kind: ClosureVariableKind::WithObject,
+                }],
+            );
+            assert!(
+                verify_unlinked_tree(&child)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(diagnostic)
+            );
         }
     }
 
