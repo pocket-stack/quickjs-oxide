@@ -1068,6 +1068,41 @@ the TSV/JSONL hashes remain
 and
 `c9369e14acb1469b20aea4caab2c0a880cb7f040a72718d629f38e1301582650`.
 
+## Frozen `with` frontier
+
+The next dynamic-environment queue is now reproducible independently of the
+full vector. `tests/test262-with.txt` freezes every R2a path whose execution
+stops at the exact typed frontier
+`with statements are not implemented yet`: 203 bytewise-sorted paths expand
+to 205 positive, synchronous script variants. The current vector contains 179
+`unsupported-parser` and 26 `unsupported-runtime` outcomes. It contains no
+feature, host, module, async, skipped, or negative-provenance classification;
+the runtime rows are String-source eval consumers of the same compiler
+boundary rather than a second semantic gap.
+
+The manifest and `(path, variant)` key-set SHA-256 values are
+`8f43b8f924d127814ea157637acebbb4e37fc89f97e6a76789e5e329d10250d6`
+and
+`1c04aebebd7c6e575113ca1466832c92096fef90af088aa1f3d317561aed0d4e`.
+The current focused TSV/JSONL SHA-256 values are
+`9946618dc7ca899af10ec391a77e32e1b76257896678ba62e83092f4d1330c46`
+and
+`271c868b72bfd867a671c0750d294600ff1191a4e40d6751560ddd9703e04169`.
+Five- and eight-worker focused reports are byte-identical.
+Reproduce and validate the complete vector with
+`scripts/run-test262-with.sh`; the entry point derives the repository root and
+pinned suite location at runtime and does not encode a workstation path.
+
+This is an implementation queue, not a support claim. Matching QuickJS
+requires the hidden with-object scope binding and its closure/eval relay,
+`ToObject`, prototype-aware `HasProperty`, `Symbol.unscopables`, and the
+get/put/delete/make-reference/get-reference paths which preserve the implicit
+receiver of a call. The relevant upstream anchors are
+`quickjs.c::resolve_scope_var`, `var_object_test`, the `TOK_WITH` statement
+case, and `OP_with_*`; the existing eval-variable object is not a substitute
+because it has different ownership, lookup, unscopables, and Reference
+semantics.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
