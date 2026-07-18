@@ -223,6 +223,12 @@ const EVAL_VARIABLE_OBJECT_LOCAL_NAME: &str = "<var>";
 // QuickJS `JS_ATOM__with_`: the object-environment binding owned by one
 // sloppy `with` scope. Source text cannot spell this binding identity.
 const WITH_OBJECT_LOCAL_NAME: &str = "<with>";
+// QuickJS `JS_ATOM_this` and `JS_ATOM_new_target` pseudo variables. Arrow
+// functions never own these bindings: the resolver lazily creates the local
+// in the nearest non-arrow frame and relays it through ordinary closure slots.
+// Source text cannot spell either identity as an IdentifierName.
+const THIS_LOCAL_NAME: &str = "<this>";
+const NEW_TARGET_LOCAL_NAME: &str = "<new.target>";
 // A finally clause in script code must preserve the incoming completion value
 // when it terminates normally. Keep those implementation-only save slots in
 // the same explicit metadata domain as `<ret>` rather than letting an unbound
@@ -234,6 +240,32 @@ enum FunctionKind {
     Script,
     Eval(EvalKind),
     Ordinary,
+    /// Compiler-only parse/binding kind. QuickJS publishes synchronous arrow
+    /// bytecode as a normal function with no prototype or constructor bit.
+    Arrow,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PseudoBinding {
+    This,
+    NewTarget,
+}
+
+impl PseudoBinding {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::This => THIS_LOCAL_NAME,
+            Self::NewTarget => NEW_TARGET_LOCAL_NAME,
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            THIS_LOCAL_NAME => Some(Self::This),
+            NEW_TARGET_LOCAL_NAME => Some(Self::NewTarget),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -531,6 +563,12 @@ enum ForIterationKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArrowHead {
+    Identifier,
+    Parenthesized,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ForAssignmentDeclaration {
     Assignment,
     Var,
@@ -729,6 +767,10 @@ struct FunctionIr {
     /// resolution (or a function-scoped `var`/function declaration) needs the
     /// implicit binding. An explicit `arguments` parameter suppresses it.
     arguments_local: Option<u16>,
+    /// Lazily materialized QuickJS pseudo variables captured by descendant
+    /// arrows or exposed to direct eval. Arrow frames never own these locals.
+    this_local: Option<u16>,
+    new_target_local: Option<u16>,
     /// Hidden null-prototype variable object for a sloppy ordinary function
     /// containing syntactic direct eval. Its identity is explicit rather than
     /// inferred from local allocation order.
@@ -847,7 +889,10 @@ impl FunctionIr {
         ];
         let current_scope = body;
         let var_scope = function_root;
-        let ops = if matches!(kind, FunctionKind::Ordinary | FunctionKind::Eval(_)) {
+        let ops = if matches!(
+            kind,
+            FunctionKind::Ordinary | FunctionKind::Arrow | FunctionKind::Eval(_)
+        ) {
             vec![SpannedIrOp {
                 op: IrOp::EnterScope(body),
                 pc_site: None,
@@ -863,6 +908,8 @@ impl FunctionIr {
             private_name_binding,
             function_name_local: None,
             arguments_local: None,
+            this_local: None,
+            new_target_local: None,
             eval_variable_object_local: None,
             parameters,
             locals,
@@ -1404,8 +1451,10 @@ impl<'source> Parser<'source> {
                     && position == StatementPosition::ProgramBody
                 {
                     self.parse_eval_program_function_declaration()
-                } else if matches!(self.current_ir().kind, FunctionKind::Ordinary)
-                    && position == StatementPosition::FunctionBody
+                } else if matches!(
+                    self.current_ir().kind,
+                    FunctionKind::Ordinary | FunctionKind::Arrow
+                ) && position == StatementPosition::FunctionBody
                 {
                     self.parse_function_body_declaration()
                 } else if matches!(
@@ -3558,7 +3607,7 @@ impl<'source> Parser<'source> {
                     | ScopeKind::Catch
             )
             || (matches!(scope_kind, ScopeKind::FunctionBody)
-                && matches!(function.kind, FunctionKind::Ordinary)
+                && matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Arrow)
                 && scope == function.body_scope);
         if !supported_scope {
             return Err(Error::internal(
@@ -3738,11 +3787,169 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
+    fn parse_arrow_function(&mut self, head: ArrowHead) -> Result<(), Error> {
+        let function_span = self.current().span;
+        let parent = self.current_function;
+        let parent_strict = self.functions[parent].strict;
+        let mut parameters = Vec::new();
+        let mut parameter_tokens = Vec::new();
+
+        match head {
+            ArrowHead::Identifier => {
+                let token = self.current().clone();
+                let TokenKind::Identifier(identifier) = token.kind else {
+                    return Err(Error::internal(
+                        "identifier arrow lookahead lost its parameter token",
+                    ));
+                };
+                validate_identifier(&identifier, token.span, false, IdentifierContext::Argument)?;
+                parameters.push(identifier.value.clone());
+                parameter_tokens.push((identifier, token.span));
+                self.advance()?;
+            }
+            ArrowHead::Parenthesized => {
+                self.expect_punctuator(Punctuator::LeftParen)?;
+                if !self.consume_punctuator(Punctuator::RightParen)? {
+                    loop {
+                        if self.is_punctuator(Punctuator::Ellipsis) {
+                            return Err(self.unsupported_here(
+                                "arrow rest parameters are not implemented yet",
+                            ));
+                        }
+                        if matches!(
+                            self.current().kind,
+                            TokenKind::Punctuator(Punctuator::LeftBracket | Punctuator::LeftBrace)
+                        ) {
+                            return Err(self.unsupported_here(
+                                "arrow destructuring parameters are not implemented yet",
+                            ));
+                        }
+                        let token = self.current().clone();
+                        let TokenKind::Identifier(identifier) = token.kind else {
+                            return Err(self.syntax_here("missing formal parameter"));
+                        };
+                        validate_identifier(
+                            &identifier,
+                            token.span,
+                            false,
+                            IdentifierContext::Argument,
+                        )?;
+                        if parameters.contains(&identifier.value) {
+                            return Err(Error::syntax(
+                                "duplicate argument names not allowed in this context",
+                                source_span(token.span),
+                            ));
+                        }
+                        if parameters.len() >= MAX_LOCAL_VARIABLES {
+                            return Err(Error::new(ErrorKind::JsInternal, "too many arguments")
+                                .with_span(source_span(token.span)));
+                        }
+                        parameters.push(identifier.value.clone());
+                        parameter_tokens.push((identifier, token.span));
+                        self.advance()?;
+                        if self.is_punctuator(Punctuator::Equal) {
+                            return Err(self.unsupported_here(
+                                "arrow default parameters are not implemented yet",
+                            ));
+                        }
+                        if self.consume_punctuator(Punctuator::RightParen)? {
+                            break;
+                        }
+                        self.expect_punctuator(Punctuator::Comma)?;
+                        if self.consume_punctuator(Punctuator::RightParen)? {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !self.is_punctuator(Punctuator::Arrow) || self.current().line_terminator_before {
+            return Err(self.syntax_here("expecting '=>'"));
+        }
+        self.advance_expression_start()?;
+        let block_body = self.is_punctuator(Punctuator::LeftBrace);
+        if block_body {
+            self.advance()?;
+        }
+        let has_use_strict = if block_body {
+            self.directive_prologue_has_use_strict(self.cursor, parent_strict)?
+        } else {
+            false
+        };
+        let strict = parent_strict || has_use_strict;
+        if block_body {
+            self.relex_current_with_strict(strict)?;
+        }
+        if strict {
+            for (identifier, span) in &parameter_tokens {
+                validate_identifier(identifier, *span, true, IdentifierContext::Argument)?;
+            }
+        }
+
+        let child = self.functions.len();
+        let parent_scope = self.functions[parent].current_scope;
+        self.functions.push(FunctionIr::new(
+            Some(ParentLink {
+                function: parent,
+                definition_scope: parent_scope,
+            }),
+            FunctionKind::Arrow,
+            FunctionSourceInfo {
+                span: function_span,
+                definition: source_offset(function_span)?,
+                range: None,
+            },
+            None,
+            false,
+            parameters,
+            strict,
+        )?);
+        self.current_function = child;
+
+        let range_end = if block_body {
+            self.parse_function_body()?;
+            let closing_brace = self.current().span;
+            let mut parent_context = self.lexer.context();
+            parent_context.strict = parent_strict;
+            self.lexer.set_context(parent_context);
+            self.expect_punctuator(Punctuator::RightBrace)?;
+            closing_brace.end.byte_offset
+        } else {
+            self.parse_assignment()?;
+            self.emit_instruction(Instruction::Return)?;
+            self.tokens
+                .get(self.cursor.saturating_sub(1))
+                .map_or(self.current().span.start.byte_offset, |token| {
+                    token.span.end.byte_offset
+                })
+        };
+        self.functions[child].source.range = Some(
+            source_offset(function_span)?
+                ..SourceOffset::try_from_usize(range_end)
+                    .map_err(|error| Error::internal(error.to_string()))?,
+        );
+        self.current_function = parent;
+        let constant = self.add_constant(IrConstant::Child(child))?;
+        self.emit(IrOp::MakeClosure(constant))?;
+        self.anonymous_function_definition = Some(child);
+        Ok(())
+    }
+
     /// Parse assignment targets through typed unresolved References. Keeping
     /// identifier writes unresolved lets the late resolver select argument,
     /// local, closure, global and private-function-name behavior after the
     /// complete nested scope tree is known.
     fn parse_assignment(&mut self) -> Result<(), Error> {
+        if self.async_arrow_ahead() {
+            return Err(self.unsupported_here("async arrow functions are not implemented yet"));
+        }
+        if self.reserved_arrow_head_ahead() {
+            return Err(self.syntax_here("invalid arrow function parameter"));
+        }
+        if let Some(head) = self.arrow_head_ahead() {
+            return self.parse_arrow_function(head);
+        }
         // QuickJS's `name0` is captured only when the AssignmentExpression
         // starts with the identifier token itself. Parenthesized lvalues are
         // valid References but intentionally do not trigger NamedEvaluation.
@@ -4909,26 +5116,28 @@ impl<'source> Parser<'source> {
             if identifier.value != "target" || identifier.has_escape {
                 return Err(self.syntax_here("expecting target"));
             }
-            match self.current_ir().kind {
-                FunctionKind::Script | FunctionKind::Eval(EvalKind::Indirect) => {
-                    return Err(Error::syntax(
-                        "new.target only allowed within functions",
-                        source_span(new_span),
-                    ));
-                }
-                FunctionKind::Eval(EvalKind::Direct) => {
-                    return Err(Error::unsupported(
-                        "direct eval new.target capability is not implemented yet",
-                        source_span(new_span),
-                    ));
-                }
-                FunctionKind::Eval(EvalKind::None) => {
-                    return Err(Error::internal("eval root has no eval kind"));
-                }
-                FunctionKind::Ordinary => {}
+            if matches!(self.current_ir().kind, FunctionKind::Eval(EvalKind::None)) {
+                return Err(Error::internal("eval root has no eval kind"));
+            }
+            if !self.current_new_target_allowed() {
+                return Err(Error::syntax(
+                    "new.target only allowed within functions",
+                    source_span(new_span),
+                ));
             }
             self.advance()?;
-            self.emit_instruction(Instruction::PushNewTarget)?;
+            if matches!(
+                self.current_ir().kind,
+                FunctionKind::Arrow | FunctionKind::Eval(EvalKind::Direct)
+            ) {
+                self.emit_identifier(
+                    NEW_TARGET_LOCAL_NAME.to_owned(),
+                    new_span,
+                    IdentifierAccess::Get,
+                )?;
+            } else {
+                self.emit_instruction(Instruction::PushNewTarget)?;
+            }
             self.anonymous_function_definition = None;
             return Ok(());
         }
@@ -4985,7 +5194,18 @@ impl<'source> Parser<'source> {
             }
             TokenKind::Keyword(Keyword::This) => {
                 self.advance()?;
-                self.emit_instruction(Instruction::PushThis)?;
+                if matches!(
+                    self.current_ir().kind,
+                    FunctionKind::Arrow | FunctionKind::Eval(EvalKind::Direct)
+                ) {
+                    self.emit_identifier(
+                        THIS_LOCAL_NAME.to_owned(),
+                        token.span,
+                        IdentifierAccess::Get,
+                    )?;
+                } else {
+                    self.emit_instruction(Instruction::PushThis)?;
+                }
             }
             TokenKind::Number(number) => {
                 if self.current_ir().strict
@@ -5787,7 +6007,10 @@ impl<'source> Parser<'source> {
         let (name, declaration_span) = parsed
             .name
             .ok_or_else(|| Error::internal("required function declaration lost its name"))?;
-        if !matches!(self.current_ir().kind, FunctionKind::Ordinary) {
+        if !matches!(
+            self.current_ir().kind,
+            FunctionKind::Ordinary | FunctionKind::Arrow
+        ) {
             return Err(Error::internal(
                 "function-body declaration escaped its ordinary function",
             ));
@@ -6000,9 +6223,9 @@ impl<'source> Parser<'source> {
         if function.strict {
             return false;
         }
-        if matches!(function.kind, FunctionKind::Ordinary)
-            && (name == "arguments"
-                || function
+        if (matches!(function.kind, FunctionKind::Ordinary) && name == "arguments")
+            || (matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Arrow)
+                && function
                     .parameters
                     .iter()
                     .any(|parameter| parameter == name))
@@ -6172,7 +6395,7 @@ impl<'source> Parser<'source> {
                     binding.name == name
                         && match (function.kind, eval_mode) {
                             (FunctionKind::Script, _) => binding.storage == BindingStorage::Global,
-                            (FunctionKind::Ordinary, _) => {
+                            (FunctionKind::Ordinary | FunctionKind::Arrow, _) => {
                                 matches!(binding.storage, BindingStorage::Local(_))
                             }
                             (FunctionKind::Eval(_), Some(EvalDeclarationMode::Global)) => {
@@ -6426,6 +6649,181 @@ impl<'source> Parser<'source> {
             TokenKind::Identifier(identifier)
                 if identifier.value == "of" && !identifier.has_escape
         )
+    }
+
+    /// Non-committing QuickJS-style ArrowParameters probe. The scanner owns
+    /// no IR or scope state: it balances the cover grammar, respects template
+    /// substitutions and RegExp lexical goals, and accepts `=>` only when no
+    /// LineTerminator separates it from the closing parenthesis.
+    fn parenthesized_arrow_ahead(&self, opening: Span) -> bool {
+        let mut lexer = self.lexer.clone();
+        lexer.seek(opening.start);
+        let Ok(first) = lexer.next_token_with_goal(LexicalGoal::Div) else {
+            return false;
+        };
+        if !matches!(first.kind, TokenKind::Punctuator(Punctuator::LeftParen)) {
+            return false;
+        }
+
+        let mut delimiters = vec![ForHeadDelimiter::Parenthesis];
+        let mut goal = LexicalGoal::Div;
+        let mut regexp_allowed = true;
+        loop {
+            let requested_goal = goal;
+            goal = LexicalGoal::Div;
+            let Ok(mut token) = lexer.next_token_with_goal(requested_goal) else {
+                return false;
+            };
+            if requested_goal == LexicalGoal::Div
+                && regexp_allowed
+                && matches!(
+                    token.kind,
+                    TokenKind::Punctuator(Punctuator::Divide | Punctuator::DivideAssign)
+                )
+            {
+                lexer.seek(token.span.start);
+                let Ok(regexp) = lexer.next_token_with_goal(LexicalGoal::RegExp) else {
+                    return false;
+                };
+                token = regexp;
+            }
+
+            match &token.kind {
+                TokenKind::Punctuator(Punctuator::LeftParen) => {
+                    if delimiters.len() >= 255 {
+                        return false;
+                    }
+                    delimiters.push(ForHeadDelimiter::Parenthesis);
+                }
+                TokenKind::Punctuator(Punctuator::LeftBracket) => {
+                    if delimiters.len() >= 255 {
+                        return false;
+                    }
+                    delimiters.push(ForHeadDelimiter::Bracket);
+                }
+                TokenKind::Punctuator(Punctuator::LeftBrace) => {
+                    if delimiters.len() >= 255 {
+                        return false;
+                    }
+                    delimiters.push(ForHeadDelimiter::Brace);
+                }
+                TokenKind::Punctuator(Punctuator::RightParen) => {
+                    if delimiters.pop() != Some(ForHeadDelimiter::Parenthesis) {
+                        return false;
+                    }
+                    if delimiters.is_empty() {
+                        let Ok(arrow) = lexer.next_token_with_goal(LexicalGoal::Div) else {
+                            return false;
+                        };
+                        return !arrow.line_terminator_before
+                            && matches!(arrow.kind, TokenKind::Punctuator(Punctuator::Arrow));
+                    }
+                }
+                TokenKind::Punctuator(Punctuator::RightBracket) => {
+                    if delimiters.pop() != Some(ForHeadDelimiter::Bracket) {
+                        return false;
+                    }
+                }
+                TokenKind::Punctuator(Punctuator::RightBrace) => {
+                    if delimiters.last() == Some(&ForHeadDelimiter::Template) {
+                        goal = LexicalGoal::TemplateContinuation;
+                        regexp_allowed = true;
+                        continue;
+                    }
+                    if delimiters.pop() != Some(ForHeadDelimiter::Brace) {
+                        return false;
+                    }
+                }
+                TokenKind::Template(part) => match part.kind {
+                    TemplatePartKind::Head => {
+                        if delimiters.len() >= 255 {
+                            return false;
+                        }
+                        delimiters.push(ForHeadDelimiter::Template);
+                    }
+                    TemplatePartKind::Middle => {
+                        if delimiters.last() != Some(&ForHeadDelimiter::Template) {
+                            return false;
+                        }
+                    }
+                    TemplatePartKind::Tail => {
+                        if delimiters.pop() != Some(ForHeadDelimiter::Template) {
+                            return false;
+                        }
+                    }
+                    TemplatePartKind::NoSubstitution => {}
+                },
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            regexp_allowed = for_head_regexp_allowed_after(&token.kind);
+        }
+    }
+
+    fn arrow_head_ahead(&self) -> Option<ArrowHead> {
+        match &self.current().kind {
+            TokenKind::Identifier(_) => {
+                let mut lexer = self.lexer.clone();
+                lexer.seek(self.current().span.end);
+                let next = lexer.next_token_with_goal(LexicalGoal::Div).ok()?;
+                (!next.line_terminator_before
+                    && matches!(next.kind, TokenKind::Punctuator(Punctuator::Arrow)))
+                .then_some(ArrowHead::Identifier)
+            }
+            TokenKind::Punctuator(Punctuator::LeftParen)
+                if self.parenthesized_arrow_ahead(self.current().span) =>
+            {
+                Some(ArrowHead::Parenthesized)
+            }
+            _ => None,
+        }
+    }
+
+    /// A reserved word followed by `=>` is an attempted ArrowFunction head,
+    /// not an unimplemented statement/expression form. Preserve that syntax
+    /// error identity before the primary-expression frontier can classify the
+    /// keyword as a missing feature.
+    fn reserved_arrow_head_ahead(&self) -> bool {
+        if !matches!(self.current().kind, TokenKind::Keyword(_)) {
+            return false;
+        }
+        let mut lexer = self.lexer.clone();
+        lexer.seek(self.current().span.end);
+        let Ok(arrow) = lexer.next_token_with_goal(LexicalGoal::Div) else {
+            return false;
+        };
+        !arrow.line_terminator_before
+            && matches!(arrow.kind, TokenKind::Punctuator(Punctuator::Arrow))
+    }
+
+    fn async_arrow_ahead(&self) -> bool {
+        let TokenKind::Identifier(identifier) = &self.current().kind else {
+            return false;
+        };
+        if identifier.value != "async" || identifier.has_escape {
+            return false;
+        }
+        let mut lexer = self.lexer.clone();
+        lexer.seek(self.current().span.end);
+        let Ok(parameter) = lexer.next_token_with_goal(LexicalGoal::Div) else {
+            return false;
+        };
+        if parameter.line_terminator_before {
+            return false;
+        }
+        match parameter.kind {
+            TokenKind::Identifier(_) => {
+                let Ok(arrow) = lexer.next_token_with_goal(LexicalGoal::Div) else {
+                    return false;
+                };
+                !arrow.line_terminator_before
+                    && matches!(arrow.kind, TokenKind::Punctuator(Punctuator::Arrow))
+            }
+            TokenKind::Punctuator(Punctuator::LeftParen) => {
+                self.parenthesized_arrow_ahead(parameter.span)
+            }
+            _ => false,
+        }
     }
 
     /// Non-committing delimiter probe for a semicolon-free for head. It selects
@@ -6721,6 +7119,32 @@ impl<'source> Parser<'source> {
 
     fn at_eof(&self) -> bool {
         matches!(self.current().kind, TokenKind::Eof)
+    }
+
+    /// QuickJS arrows inherit the `new.target` capability through parse
+    /// parents. A direct-eval root authenticates the inherited capability by
+    /// carrying the hidden imported binding in its root environment.
+    fn current_new_target_allowed(&self) -> bool {
+        let mut function_id = self.current_function;
+        loop {
+            let function = &self.functions[function_id];
+            match function.kind {
+                FunctionKind::Ordinary => return true,
+                FunctionKind::Script | FunctionKind::Eval(EvalKind::Indirect) => return false,
+                FunctionKind::Eval(EvalKind::Direct) => {
+                    return function
+                        .binding_from_scope(function.var_scope, NEW_TARGET_LOCAL_NAME)
+                        .is_some();
+                }
+                FunctionKind::Eval(EvalKind::None) => return false,
+                FunctionKind::Arrow => {
+                    let Some(parent) = function.parent else {
+                        return false;
+                    };
+                    function_id = parent.function;
+                }
+            }
+        }
     }
 
     fn current(&self) -> &Token<'source> {
@@ -7202,7 +7626,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             FunctionKind::Eval(EvalKind::None) => {
                 return Err(Error::internal("eval root has no eval kind"));
             }
-            FunctionKind::Script | FunctionKind::Ordinary => {
+            FunctionKind::Script | FunctionKind::Ordinary | FunctionKind::Arrow => {
                 if !function.external_bindings.is_empty()
                     || !function.eval_caller_profile.scope_kinds.is_empty()
                     || function.eval_caller_profile.variable_target
@@ -7235,6 +7659,64 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 ));
             }
         }
+        for (pseudo, local) in [
+            (PseudoBinding::This, function.this_local),
+            (PseudoBinding::NewTarget, function.new_target_local),
+        ] {
+            let local_bindings = function
+                .bindings
+                .iter()
+                .filter(|binding| {
+                    binding.name == pseudo.name()
+                        && matches!(binding.storage, BindingStorage::Local(_))
+                })
+                .collect::<Vec<_>>();
+            match (local, local_bindings.as_slice()) {
+                (Some(index), [binding])
+                    if function_owns_pseudo_binding(function.kind, pseudo)
+                        && usize::from(index) < function.locals.len()
+                        && function.locals[usize::from(index)] == pseudo.name()
+                        && binding.storage == BindingStorage::Local(index)
+                        && binding.kind == BindingKind::Normal
+                        && binding.storage_scope == function.var_scope
+                        && binding.declaration_scope == function.var_scope
+                        && binding.declaration_span.is_none() =>
+                {
+                    let initialized = function
+                        .ops
+                        .windows(2)
+                        .filter(|window| {
+                            matches!(
+                                (&window[0].op, &window[1].op, pseudo),
+                                (
+                                    IrOp::Bytecode(Instruction::PushThis),
+                                    IrOp::Bytecode(Instruction::PutLocal(target)),
+                                    PseudoBinding::This,
+                                ) if *target == index
+                            ) || matches!(
+                                (&window[0].op, &window[1].op, pseudo),
+                                (
+                                    IrOp::Bytecode(Instruction::PushNewTarget),
+                                    IrOp::Bytecode(Instruction::PutLocal(target)),
+                                    PseudoBinding::NewTarget,
+                                ) if *target == index
+                            )
+                        })
+                        .count();
+                    if initialized != 1 {
+                        return Err(Error::internal(
+                            "pseudo local entry initialization is malformed",
+                        ));
+                    }
+                }
+                (None, []) => {}
+                _ => {
+                    return Err(Error::internal(
+                        "pseudo local binding metadata is malformed",
+                    ));
+                }
+            }
+        }
         let eval_variable_object_bindings = function
             .bindings
             .iter()
@@ -7248,7 +7730,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             eval_variable_object_bindings.as_slice(),
         ) {
             (Some(index), [binding])
-                if matches!(function.kind, FunctionKind::Ordinary)
+                if matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Arrow)
                     && !function.strict
                     && binding.name == EVAL_VARIABLE_OBJECT_LOCAL_NAME
                     && binding.storage == BindingStorage::Local(index)
@@ -7816,8 +8298,9 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                     }
                 }
             }
-            FunctionKind::Ordinary if function.global_declarations.is_empty() => {}
-            FunctionKind::Ordinary => {
+            FunctionKind::Ordinary | FunctionKind::Arrow
+                if function.global_declarations.is_empty() => {}
+            FunctionKind::Ordinary | FunctionKind::Arrow => {
                 return Err(Error::internal(
                     "ordinary function contains Program global declarations",
                 ));
@@ -7979,7 +8462,10 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                                         | ScopeKind::Switch
                                         | ScopeKind::Catch
                                 ) || (matches!(scope_kind, ScopeKind::FunctionBody)
-                                    && matches!(function.kind, FunctionKind::Ordinary)
+                                    && matches!(
+                                        function.kind,
+                                        FunctionKind::Ordinary | FunctionKind::Arrow
+                                    )
                                     && binding.storage_scope == function.body_scope)
                                     || (scope_kind == ScopeKind::ProgramBody
                                         && matches!(function.kind, FunctionKind::Eval(_))
@@ -8159,7 +8645,8 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         .locals
                         .first()
                         .is_some_and(|name| name == EVAL_RET_LOCAL_NAME) => {}
-            FunctionKind::Ordinary if eval_ret_index.is_none() && synthetic_eval_ret.is_none() => {}
+            FunctionKind::Ordinary | FunctionKind::Arrow
+                if eval_ret_index.is_none() && synthetic_eval_ret.is_none() => {}
             _ => {
                 return Err(Error::internal(
                     "eval completion slot metadata is malformed",
@@ -8222,7 +8709,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             } else if scope_index == function.body_scope.0 {
                 match function.kind {
                     FunctionKind::Script if entries == 0 && leaves == 0 => {}
-                    FunctionKind::Ordinary | FunctionKind::Eval(_)
+                    FunctionKind::Ordinary | FunctionKind::Arrow | FunctionKind::Eval(_)
                         if entries == 1
                             && leaves == 0
                             && function.ops.iter().any(|operation| {
@@ -8269,6 +8756,15 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 (None, []) => {}
                 _ => return Err(Error::internal("function-name binding metadata disagrees")),
             },
+            FunctionKind::Arrow
+                if function.function_name_local.is_none()
+                    && !function.private_name_binding
+                    && function_name_bindings.is_empty() => {}
+            FunctionKind::Arrow => {
+                return Err(Error::internal(
+                    "arrow function retained private function-name metadata",
+                ));
+            }
             FunctionKind::Eval(EvalKind::Direct)
                 if function.function_name_local.is_none()
                     && !function.private_name_binding
@@ -8349,6 +8845,7 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
             }
         }
     }
+    install_pseudo_binding_prologues(tree)?;
     install_global_function_hoists(tree)?;
     install_eval_declaration_hoists(tree)?;
     install_function_body_hoists(tree)?;
@@ -8361,7 +8858,7 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
 /// children authored before the eval call must resolve through the same object.
 fn install_eval_variable_objects(tree: &mut FunctionTree) -> Result<(), Error> {
     for function in &mut tree.functions {
-        let needs_object = matches!(function.kind, FunctionKind::Ordinary)
+        let needs_object = matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Arrow)
             && !function.strict
             && function
                 .ops
@@ -8495,12 +8992,39 @@ fn ensure_eval_visible_pseudo_bindings(
     tree: &mut FunctionTree,
     consuming_function: FunctionId,
 ) -> Result<(), Error> {
-    if matches!(
-        tree.functions[consuming_function].kind,
-        FunctionKind::Ordinary
-    ) {
-        let span = tree.functions[consuming_function].source.span;
-        find_or_create_own_binding(tree, consuming_function, ScopeId(0), "arguments", span)?;
+    let span = tree.functions[consuming_function].source.span;
+    if !ensure_pseudo_binding_path(tree, consuming_function, PseudoBinding::This, span)? {
+        return Err(Error::internal(
+            "direct eval environment has no authenticated this binding",
+        ));
+    }
+    if function_allows_new_target(tree, consuming_function)
+        && !ensure_pseudo_binding_path(tree, consuming_function, PseudoBinding::NewTarget, span)?
+    {
+        return Err(Error::internal(
+            "direct eval environment lost its new.target capability",
+        ));
+    }
+
+    // Arrow functions do not own `arguments`. Force the lazy binding in the
+    // nearest ordinary parent so the eval descriptor can relay it through the
+    // same closure chain used by an authored arrow reference.
+    let mut arguments_owner = Some(consuming_function);
+    while let Some(function_id) = arguments_owner {
+        let function = &tree.functions[function_id];
+        if matches!(function.kind, FunctionKind::Ordinary) {
+            let span = function.source.span;
+            find_or_create_own_binding(tree, function_id, ScopeId(0), "arguments", span)?;
+            break;
+        }
+        if matches!(function.kind, FunctionKind::Eval(EvalKind::Direct))
+            && function
+                .binding_from_scope(function.var_scope, "arguments")
+                .is_some()
+        {
+            break;
+        }
+        arguments_owner = function.parent.map(|parent| parent.function);
     }
 
     let mut cursor = Some(consuming_function);
@@ -8523,6 +9047,45 @@ fn ensure_eval_visible_pseudo_bindings(
         cursor = parent.map(|parent| parent.function);
     }
     Ok(())
+}
+
+fn function_allows_new_target(tree: &FunctionTree, mut function_id: FunctionId) -> bool {
+    loop {
+        let function = &tree.functions[function_id];
+        match function.kind {
+            FunctionKind::Ordinary => return true,
+            FunctionKind::Script | FunctionKind::Eval(EvalKind::Indirect) => return false,
+            FunctionKind::Eval(EvalKind::Direct) => {
+                return function
+                    .binding_from_scope(function.var_scope, NEW_TARGET_LOCAL_NAME)
+                    .is_some();
+            }
+            FunctionKind::Eval(EvalKind::None) => return false,
+            FunctionKind::Arrow => {
+                let Some(parent) = function.parent else {
+                    return false;
+                };
+                function_id = parent.function;
+            }
+        }
+    }
+}
+
+fn ensure_pseudo_binding_path(
+    tree: &mut FunctionTree,
+    mut function_id: FunctionId,
+    pseudo: PseudoBinding,
+    span: Span,
+) -> Result<bool, Error> {
+    loop {
+        if find_or_create_own_pseudo_binding(tree, function_id, pseudo, span)?.is_some() {
+            return Ok(true);
+        }
+        let Some(parent) = tree.functions[function_id].parent else {
+            return Ok(false);
+        };
+        function_id = parent.function;
+    }
 }
 
 fn link_eval_environment(
@@ -8768,7 +9331,7 @@ fn link_eval_environment(
 
     let variable_environment = match caller_kind {
         FunctionKind::Script => EvalVariableEnvironment::Global,
-        FunctionKind::Ordinary => EvalVariableEnvironment::Scope(
+        FunctionKind::Ordinary | FunctionKind::Arrow => EvalVariableEnvironment::Scope(
             current_function_root
                 .ok_or_else(|| Error::internal("eval environment has no current function root"))?,
         ),
@@ -8984,6 +9547,41 @@ fn install_eval_declaration_hoists(tree: &mut FunctionTree) -> Result<(), Error>
     }
     prepend_hoist_prefix(function, prefix)?;
     function.eval_declarations_installed = true;
+    Ok(())
+}
+
+/// Initialize QuickJS's lazily selected `new.target` and `this` pseudo locals
+/// before authored body code can publish or invoke descendant closures.
+fn install_pseudo_binding_prologues(tree: &mut FunctionTree) -> Result<(), Error> {
+    for function in &mut tree.functions {
+        let mut prefix = Vec::with_capacity(
+            usize::from(function.new_target_local.is_some()) * 2
+                + usize::from(function.this_local.is_some()) * 2,
+        );
+        if let Some(local) = function.new_target_local {
+            prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::PushNewTarget),
+                pc_site: None,
+            });
+            prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::PutLocal(local)),
+                pc_site: None,
+            });
+        }
+        if let Some(local) = function.this_local {
+            prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::PushThis),
+                pc_site: None,
+            });
+            prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::PutLocal(local)),
+                pc_site: None,
+            });
+        }
+        if !prefix.is_empty() {
+            prepend_hoist_prefix(function, prefix)?;
+        }
+    }
     Ok(())
 }
 
@@ -9564,6 +10162,10 @@ fn resolve_identifier_path(
     access: IdentifierAccess,
 ) -> Result<ResolvedIdentifierPath, Error> {
     let mut sources = Vec::new();
+    let pseudo = PseudoBinding::from_name(name);
+    if pseudo.is_some() && access != IdentifierAccess::Get {
+        return Err(Error::internal("pseudo binding received a write operation"));
+    }
     let mut owner = consuming_function;
     let mut scope = use_scope;
     loop {
@@ -9580,13 +10182,14 @@ fn resolve_identifier_path(
                 let exact = current.bindings.iter().rev().find_map(|binding| {
                     let binding = function.bindings.get(binding.0)?;
                     (binding.name == name
-                        && !matches!(binding.storage, BindingStorage::External(_)))
+                        && (pseudo.is_some()
+                            || !matches!(binding.storage, BindingStorage::External(_))))
                     .then_some(ResolvedBinding {
                         storage: binding.storage,
                         kind: binding.kind,
                     })
                 });
-                let with_binding = (current.kind == ScopeKind::With)
+                let with_binding = (pseudo.is_none() && current.kind == ScopeKind::With)
                     .then(|| {
                         current
                             .bindings
@@ -9643,22 +10246,30 @@ fn resolve_identifier_path(
             scope = parent;
         }
 
-        // `arguments` and a private function-expression name are logically
-        // rooted before the function's own eval variable object. A sloppy
-        // delete of implicit `arguments` is false without materializing it.
-        if name == "arguments"
-            && access == IdentifierAccess::Delete
-            && matches!(tree.functions[owner].kind, FunctionKind::Ordinary)
-        {
-            return Ok(ResolvedIdentifierPath {
-                sources,
-                fallback: IrOp::Bytecode(Instruction::PushFalse),
-                fallback_readonly: false,
-            });
-        }
-        if !matches!(tree.functions[owner].kind, FunctionKind::Eval(_))
-            && let Some(binding) = find_or_create_own_binding(tree, owner, ScopeId(0), name, span)?
-        {
+        let own_binding = if let Some(pseudo) = pseudo {
+            find_or_create_own_pseudo_binding(tree, owner, pseudo, span)?
+        } else {
+            // `arguments` and a private function-expression name are
+            // logically rooted before the function's own eval variable
+            // object. A sloppy delete of implicit `arguments` is false
+            // without materializing it.
+            if name == "arguments"
+                && access == IdentifierAccess::Delete
+                && matches!(tree.functions[owner].kind, FunctionKind::Ordinary)
+            {
+                return Ok(ResolvedIdentifierPath {
+                    sources,
+                    fallback: IrOp::Bytecode(Instruction::PushFalse),
+                    fallback_readonly: false,
+                });
+            }
+            if matches!(tree.functions[owner].kind, FunctionKind::Eval(_)) {
+                None
+            } else {
+                find_or_create_own_binding(tree, owner, ScopeId(0), name, span)?
+            }
+        };
+        if let Some(binding) = own_binding {
             let fallback_readonly = binding_is_readonly(binding.kind);
             let fallback =
                 resolved_binding_operation(tree, owner, consuming_function, binding, access, name)?;
@@ -9688,7 +10299,7 @@ fn resolve_identifier_path(
                     fallback_readonly,
                 });
             }
-        } else {
+        } else if pseudo.is_none() {
             push_owned_eval_variable_source(tree, owner, consuming_function, &mut sources)?;
         }
 
@@ -9699,6 +10310,11 @@ fn resolve_identifier_path(
         scope = parent.definition_scope;
     }
 
+    if pseudo.is_some() {
+        return Err(Error::internal(
+            "pseudo binding escaped every authenticated function owner",
+        ));
+    }
     let closure_index = capture_global_path(tree, consuming_function, name)?;
     let fallback = match access {
         IdentifierAccess::Get => IrOp::Bytecode(Instruction::GetVar(closure_index)),
@@ -10108,6 +10724,85 @@ fn ensure_string_constant(function: &mut FunctionIr, name: &str) -> Result<u32, 
         .constants
         .push(IrConstant::Primitive(Value::String(name)));
     Ok(index)
+}
+
+const fn function_owns_pseudo_binding(kind: FunctionKind, pseudo: PseudoBinding) -> bool {
+    match (kind, pseudo) {
+        (
+            FunctionKind::Script | FunctionKind::Ordinary | FunctionKind::Eval(EvalKind::Indirect),
+            PseudoBinding::This,
+        ) => true,
+        (FunctionKind::Ordinary, PseudoBinding::NewTarget) => true,
+        (
+            FunctionKind::Arrow
+            | FunctionKind::Eval(EvalKind::Direct)
+            | FunctionKind::Eval(EvalKind::None),
+            _,
+        )
+        | (
+            FunctionKind::Script | FunctionKind::Eval(EvalKind::Indirect),
+            PseudoBinding::NewTarget,
+        ) => false,
+    }
+}
+
+/// QuickJS `resolve_pseudo_var`: materialize a hidden frame local only in a
+/// function which owns the corresponding binding. Arrow functions and direct
+/// eval roots instead continue through their parent/imported closure chain.
+fn find_or_create_own_pseudo_binding(
+    tree: &mut FunctionTree,
+    function_id: FunctionId,
+    pseudo: PseudoBinding,
+    span: Span,
+) -> Result<Option<ResolvedBinding>, Error> {
+    let name = pseudo.name();
+    let function = tree
+        .functions
+        .get(function_id)
+        .ok_or_else(|| Error::internal("pseudo-binding owner is out of bounds"))?;
+    if let Some(binding) = function.binding_from_scope(function.var_scope, name) {
+        if binding.kind != BindingKind::Normal {
+            return Err(Error::internal(
+                "pseudo binding has non-ordinary binding metadata",
+            ));
+        }
+        return Ok(Some(binding));
+    }
+    if !function_owns_pseudo_binding(function.kind, pseudo) {
+        return Ok(None);
+    }
+
+    let function = &mut tree.functions[function_id];
+    if function.locals.len() >= MAX_LOCAL_VARIABLES {
+        return Err(
+            Error::new(ErrorKind::JsInternal, "too many local variables")
+                .with_span(source_span(span)),
+        );
+    }
+    let index = u16::try_from(function.locals.len())
+        .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+    let slot = match pseudo {
+        PseudoBinding::This => &mut function.this_local,
+        PseudoBinding::NewTarget => &mut function.new_target_local,
+    };
+    if slot.replace(index).is_some() {
+        return Err(Error::internal(
+            "pseudo local metadata was allocated more than once",
+        ));
+    }
+    function.locals.push(name.to_owned());
+    function.add_binding(
+        function.var_scope,
+        function.var_scope,
+        name.to_owned(),
+        BindingStorage::Local(index),
+        BindingKind::Normal,
+        None,
+    );
+    Ok(Some(ResolvedBinding {
+        storage: BindingStorage::Local(index),
+        kind: BindingKind::Normal,
+    }))
 }
 
 fn find_or_create_own_binding(
@@ -10898,7 +11593,9 @@ fn lower_unlinked_tree(
             strict: function.strict,
             eval_kind: match function.kind {
                 FunctionKind::Eval(kind) => kind,
-                FunctionKind::Script | FunctionKind::Ordinary => EvalKind::None,
+                FunctionKind::Script | FunctionKind::Ordinary | FunctionKind::Arrow => {
+                    EvalKind::None
+                }
             },
             function_kind: BytecodeFunctionKind::Normal,
             has_prototype: matches!(function.kind, FunctionKind::Ordinary),
