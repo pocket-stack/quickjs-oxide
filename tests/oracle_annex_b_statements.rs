@@ -426,7 +426,7 @@ fn annex_b_statement_parser_diagnostics_match_pinned_quickjs() {
 }
 
 #[test]
-fn unsupported_with_annex_boundaries_remain_explicit() {
+fn with_annex_boundaries_match_pinned_quickjs() {
     let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
         eprintln!("SKIP with/Annex B boundaries: set QJS_ORACLE to upstream qjs");
         return;
@@ -442,9 +442,9 @@ fn unsupported_with_annex_boundaries_remain_explicit() {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
         let rust = observe_rust_eval(&runtime, &mut context, source, description);
-        assert!(
-            rust.starts_with("throw|object|SyntaxError|with statements are not implemented yet"),
-            "with boundary was not rejected explicitly: {rust}"
+        assert_eq!(
+            rust, quickjs,
+            "with/Annex B boundary drifted for {description}: {source:?}"
         );
     }
 }

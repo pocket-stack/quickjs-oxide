@@ -1919,6 +1919,7 @@ fn verify_unlinked_tree_with_root(
                 | crate::bytecode::Instruction::DeleteVar(index)
                 | crate::bytecode::Instruction::PutVar(index)
                 | crate::bytecode::Instruction::PutVarInit(index)
+                | crate::bytecode::Instruction::GlobalReference(index)
                     if function
                         .closure_variables()
                         .get(usize::from(*index))
@@ -1984,6 +1985,7 @@ fn verify_unlinked_tree_with_root(
                 | crate::bytecode::Instruction::DeleteVar(index)
                 | crate::bytecode::Instruction::PutVar(index)
                 | crate::bytecode::Instruction::PutVarInit(index)
+                | crate::bytecode::Instruction::GlobalReference(index)
                     if *index >= function.metadata().closure_count =>
                 {
                     return Err(RuntimeError::Engine(Error::internal(
@@ -3500,6 +3502,94 @@ mod tests {
                     .contains("reference opcode referenced a non-string name constant")
             );
         }
+    }
+
+    #[test]
+    fn global_reference_operand_accepts_only_named_global_closures() {
+        let name = JsString::from_static("globalName");
+        let valid = UnlinkedFunction::new_with_closure_variables(
+            vec![
+                Instruction::GlobalReference(0),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::primitive(Value::String(name.clone())).unwrap()],
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::Global,
+                name: ClosureVariableName::Constant(0),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        );
+        verify_unlinked_tree(&valid).unwrap();
+
+        let local_child = UnlinkedFunction::new_with_closure_variables(
+            vec![
+                Instruction::GlobalReference(0),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::primitive(Value::String(name.clone())).unwrap()],
+            FunctionMetadata {
+                closure_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentLocal(0),
+                name: ClosureVariableName::Constant(0),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            }],
+        );
+        let local_parent = UnlinkedFunction::new(
+            vec![
+                Instruction::FClosure(0),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(local_child)],
+            FunctionMetadata {
+                local_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_variable_definitions(
+            Vec::new(),
+            vec![UnlinkedVariableDefinition::ordinary(Some(name))],
+        );
+        assert!(
+            verify_unlinked_tree(&local_parent)
+                .unwrap_err()
+                .to_string()
+                .contains("global closure opcode referenced a non-global closure descriptor")
+        );
+
+        let out_of_bounds = UnlinkedFunction::new(
+            vec![Instruction::GlobalReference(0), Instruction::Return],
+            Vec::new(),
+            FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(
+            verify_unlinked_tree(&out_of_bounds)
+                .unwrap_err()
+                .to_string()
+                .contains("closure variable bytecode operand is out of bounds")
+        );
     }
 
     #[test]

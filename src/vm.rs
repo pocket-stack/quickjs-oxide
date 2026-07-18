@@ -257,6 +257,11 @@ pub(crate) trait VmHost {
             "VM host cannot expose dynamic environment objects",
         ))
     }
+    fn global_reference(&mut self, _index: u16) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "VM host cannot resolve global reference objects",
+        ))
+    }
     fn get_ref_value(
         &mut self,
         _environment: Value,
@@ -412,6 +417,7 @@ enum DetachedDynamicEnvironmentOperation {
     Put(DynamicEnvironmentSource, u32, Value, bool),
     Delete(DynamicEnvironmentSource, u32),
     Object(DynamicEnvironmentSource),
+    GlobalReference(u16),
     GetRef(Value, u32, bool),
     PutRef(Value, u32, Value, bool),
 }
@@ -953,6 +959,21 @@ impl VmHost for DetachedHost<'_> {
         let _ = source;
         Err(Error::internal(
             "detached VM cannot expose dynamic environment objects",
+        ))
+    }
+
+    fn global_reference(&mut self, index: u16) -> Result<Completion, Error> {
+        #[cfg(test)]
+        {
+            self.dynamic_environment_operations
+                .push(DetachedDynamicEnvironmentOperation::GlobalReference(index));
+            if let Some(outcome) = self.dynamic_environment_results.pop_front() {
+                return Ok(outcome);
+            }
+        }
+        let _ = index;
+        Err(Error::internal(
+            "detached VM cannot resolve global reference objects",
         ))
     }
 
@@ -1582,6 +1603,10 @@ impl CallFrame {
                     Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
                 }
             }
+            Instruction::GlobalReference(index) => match host.global_reference(*index)? {
+                Completion::Return(value) => self.stack.push(value),
+                Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+            },
             Instruction::GetRefValue(name) | Instruction::GetRefValueUndef(name) => {
                 let environment = self.pop()?;
                 let retained_environment = environment.clone();
@@ -1989,6 +2014,7 @@ impl CallFrame {
                     | Instruction::PutDynamicBinding { .. }
                     | Instruction::DeleteDynamicBinding { .. }
                     | Instruction::DynamicEnvironmentObject(_)
+                    | Instruction::GlobalReference(_)
                     | Instruction::GetRefValue(_)
                     | Instruction::GetRefValueUndef(_)
                     | Instruction::PutRefValue(_)
@@ -2095,6 +2121,7 @@ impl CallFrame {
                 | Instruction::PutDynamicBinding { .. }
                 | Instruction::DeleteDynamicBinding { .. }
                 | Instruction::DynamicEnvironmentObject(_)
+                | Instruction::GlobalReference(_)
                 | Instruction::GetRefValue(_)
                 | Instruction::GetRefValueUndef(_)
                 | Instruction::PutRefValue(_) => {
@@ -3677,6 +3704,8 @@ mod tests {
                 Instruction::DynamicEnvironmentObject(source),
                 Instruction::GetRefValueUndef(0),
                 Instruction::PutRefValue(0),
+                Instruction::GlobalReference(7),
+                Instruction::Drop,
                 Instruction::PushI32(42),
                 Instruction::Return,
             ],
@@ -3700,6 +3729,7 @@ mod tests {
             Completion::Return(second_environment.clone()),
             Completion::Return(Value::Undefined),
             Completion::Return(Value::Undefined),
+            Completion::Return(Value::String(JsString::from_static("global reference"))),
         ] {
             host.dynamic_environment_results.push_back(completion);
         }
@@ -3732,7 +3762,31 @@ mod tests {
                     Value::Undefined,
                     true,
                 ),
+                DetachedDynamicEnvironmentOperation::GlobalReference(7),
             ]
+        );
+
+        let throwing_reference = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::GlobalReference(3), Instruction::Return],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        throwing_reference.verify().unwrap();
+        let thrown = Value::String(JsString::from_static("global reference throw"));
+        let mut host = DetachedHost::new(&throwing_reference);
+        host.dynamic_environment_results
+            .push_back(Completion::Throw(thrown.clone()));
+        assert_eq!(
+            CallFrame::new(1)
+                .execute(&throwing_reference.code, &mut host)
+                .unwrap(),
+            Completion::Throw(thrown)
+        );
+        assert_eq!(
+            host.dynamic_environment_operations,
+            [DetachedDynamicEnvironmentOperation::GlobalReference(3)]
         );
     }
 

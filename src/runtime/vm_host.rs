@@ -1871,6 +1871,10 @@ impl VmHost for RuntimeVmHost {
         self.dynamic_environment_object_impl(source)
     }
 
+    fn global_reference(&mut self, index: u16) -> Result<Completion, Error> {
+        self.global_reference_impl(index)
+    }
+
     fn get_ref_value(
         &mut self,
         environment: Value,

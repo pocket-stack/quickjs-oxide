@@ -14,7 +14,8 @@
 use crate::atom::AtomTable;
 use crate::bigint::JsBigInt;
 use crate::bytecode::{
-    ArgumentsKind, BytecodeFunction, EvalVariableSource, Instruction, MAX_LOCAL_SLOTS, verify_parts,
+    ArgumentsKind, BytecodeFunction, DynamicEnvironmentSource, EvalVariableSource, Instruction,
+    MAX_LOCAL_SLOTS, WithObjectSource, verify_parts,
 };
 use crate::debug::{DebugInfoMode, Pc2LineEntry, Pc2LineTable, QuickJsSourceLocator, SourceOffset};
 use crate::error::{Error, ErrorKind, NativeErrorMessage, SourceLocation, SourceSpan};
@@ -453,6 +454,27 @@ enum IdentifierAccess {
     Set,
 }
 
+/// Parser/linker form of the object-environment Reference which QuickJS keeps
+/// only when an authored `with` scope can be visible from the use site.  The
+/// parser uses the same stack shape for every identifier lvalue; resolution
+/// later decides whether the base is a selected object or the `undefined`
+/// sentinel used by the statically resolved fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IdentifierReferenceAccess {
+    /// Select and retain a base before evaluating a simple assignment RHS.
+    Prepare,
+    /// Select a base and append its current value for compound/update/call.
+    Get,
+    /// Select a method-call receiver and append the callee. If the selected
+    /// property disappears during the repeated HasProperty action, QuickJS's
+    /// `with_get_ref` supplies `undefined` even in strict code.
+    Call,
+    /// Consume `base, value`, perform the write, and preserve `value`.
+    Set,
+    /// Consume `base, old, value`, perform the write, and preserve `old`.
+    PostPut,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MemberReference {
     Field { key: u32, site: SourceOffset },
@@ -464,6 +486,7 @@ struct IdentifierReference {
     name: String,
     span: Span,
     scope: ScopeId,
+    object_environment: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -556,14 +579,32 @@ enum IrOp {
     DynamicIdentifier {
         name: u32,
         access: IdentifierAccess,
-        sources: Box<[EvalVariableSource]>,
+        sources: Box<[DynamicEnvironmentSource]>,
         fallback: Box<IrOp>,
+    },
+    /// Resolved identifier Reference. `sources` are selected once before the
+    /// RHS/call; `late_sources` are consulted only when no authored `with`
+    /// made QuickJS enter Reference mode (notably an imported eval `<with>`).
+    DynamicIdentifierReference {
+        name: u32,
+        access: IdentifierReferenceAccess,
+        sources: Box<[DynamicEnvironmentSource]>,
+        late_sources: Box<[DynamicEnvironmentSource]>,
+        fallback: Box<IrOp>,
+        syntactic_with: bool,
+        fallback_readonly: bool,
     },
     Identifier {
         name: String,
         span: Span,
         scope: ScopeId,
         access: IdentifierAccess,
+    },
+    IdentifierReference {
+        name: String,
+        span: Span,
+        scope: ScopeId,
+        access: IdentifierReferenceAccess,
     },
 }
 
@@ -639,6 +680,13 @@ impl IrOp {
                 | IdentifierAccess::Put
                 | IdentifierAccess::AnnexBPut => (1, 0),
                 IdentifierAccess::Set => (1, 1),
+            },
+            Self::DynamicIdentifierReference { access, .. }
+            | Self::IdentifierReference { access, .. } => match access {
+                IdentifierReferenceAccess::Prepare => (0, 1),
+                IdentifierReferenceAccess::Get | IdentifierReferenceAccess::Call => (0, 2),
+                IdentifierReferenceAccess::Set => (2, 1),
+                IdentifierReferenceAccess::PostPut => (3, 1),
             },
             Self::Identifier {
                 access:
@@ -1344,9 +1392,7 @@ impl<'source> Parser<'source> {
             TokenKind::Keyword(Keyword::For) => self.parse_for_statement(completion, None),
             TokenKind::Keyword(Keyword::Switch) => self.parse_switch_statement(completion),
             TokenKind::Keyword(Keyword::Try) => self.parse_try_statement(completion),
-            TokenKind::Keyword(Keyword::With) => {
-                Err(self.unsupported_here("with statements are not implemented yet"))
-            }
+            TokenKind::Keyword(Keyword::With) => self.parse_with_statement(completion),
             TokenKind::Keyword(Keyword::Break) => self.parse_loop_jump_statement(false),
             TokenKind::Keyword(Keyword::Continue) => self.parse_loop_jump_statement(true),
             TokenKind::Keyword(Keyword::Function) => {
@@ -1465,6 +1511,54 @@ impl<'source> Parser<'source> {
             self.parse_statement_or_decl(completion, StatementPosition::NestedList)?;
         }
         self.advance()?;
+        self.pop_scope(scope)
+    }
+
+    /// QuickJS `js_parse_statement_or_decl(TOK_WITH)`: the object expression
+    /// is evaluated outside the new scope, then its `ToObject` result is stored
+    /// in one unspellable local owned by that scope.  Keeping the binding typed
+    /// is what lets publication reject forged dynamic-environment operands.
+    fn parse_with_statement(&mut self, completion: StatementCompletion) -> Result<(), Error> {
+        let with_span = self.current().span;
+        if self.current_ir().strict {
+            return Err(Error::syntax(
+                "invalid keyword: with",
+                source_span(with_span),
+            ));
+        }
+        self.advance()?;
+        self.expect_punctuator(Punctuator::LeftParen)?;
+        self.parse_expression()?;
+        self.expect_punctuator(Punctuator::RightParen)?;
+
+        let scope = self.push_scope(ScopeKind::With);
+        let local = {
+            let function = self.current_ir_mut();
+            if function.locals.len() >= MAX_LOCAL_VARIABLES {
+                return Err(
+                    Error::new(ErrorKind::JsInternal, "too many local variables")
+                        .with_span(source_span(with_span)),
+                );
+            }
+            let local = u16::try_from(function.locals.len())
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+            function.locals.push(WITH_OBJECT_LOCAL_NAME.to_owned());
+            function.add_binding(
+                scope,
+                scope,
+                WITH_OBJECT_LOCAL_NAME.to_owned(),
+                BindingStorage::Local(local),
+                BindingKind::WithObject,
+                None,
+            );
+            local
+        };
+        self.emit_instruction(Instruction::ToObject)?;
+        self.emit_instruction(Instruction::InitializeLocal(local))?;
+        if matches!(completion, StatementCompletion::Eval) {
+            self.set_eval_ret_undefined()?;
+        }
+        self.parse_statement_or_decl(completion, StatementPosition::Single)?;
         self.pop_scope(scope)
     }
 
@@ -2034,6 +2128,7 @@ impl<'source> Parser<'source> {
                 name: name.clone(),
                 span: token.span,
                 scope: self.current_ir().current_scope,
+                object_environment: false,
             };
             self.emit_identifier_at(
                 name,
@@ -2068,6 +2163,25 @@ impl<'source> Parser<'source> {
         }
         if let Some(target) = self.take_tail_identifier_reference()? {
             self.validate_identifier_assignment_target(&target)?;
+            if target.object_environment {
+                let function = self.current_ir_mut();
+                let Some(SpannedIrOp {
+                    op:
+                        IrOp::IdentifierReference {
+                            access: IdentifierReferenceAccess::Prepare,
+                            ..
+                        },
+                    ..
+                }) = function.ops.pop()
+                else {
+                    return Err(Error::internal(
+                        "for-in/of identifier target lost its prepared Reference",
+                    ));
+                };
+                function.stack_depth = function.stack_depth.checked_sub(1).ok_or_else(|| {
+                    Error::internal("for-in/of identifier Reference underflowed the stack")
+                })?;
+            }
             self.emit_identifier_inherited(
                 target.name,
                 target.span,
@@ -3043,6 +3157,20 @@ impl<'source> Parser<'source> {
 
             let initializer_span = self.current().span;
             if self.consume_punctuator(Punctuator::Equal)? {
+                let initializer_scope = self.current_ir().current_scope;
+                let object_environment =
+                    self.parser_scope_has_authored_with(self.current_function, initializer_scope)?;
+                if object_environment {
+                    self.emit_at(
+                        IrOp::IdentifierReference {
+                            name: name.clone(),
+                            span: token.span,
+                            scope: initializer_scope,
+                            access: IdentifierReferenceAccess::Prepare,
+                        },
+                        source_offset(token.span)?,
+                    )?;
+                }
                 self.parse_assignment()?;
                 if self.anonymous_function_definition.take().is_some() {
                     // QuickJS emits a dummy OP_set_name after an anonymous
@@ -3054,12 +3182,25 @@ impl<'source> Parser<'source> {
                     )))?;
                     self.emit_instruction(Instruction::SetName(name_constant))?;
                 }
-                self.emit_identifier_at(
-                    name,
-                    token.span,
-                    IdentifierAccess::Put,
-                    source_offset(initializer_span)?,
-                )?;
+                if object_environment {
+                    self.emit_at(
+                        IrOp::IdentifierReference {
+                            name,
+                            span: token.span,
+                            scope: initializer_scope,
+                            access: IdentifierReferenceAccess::Set,
+                        },
+                        source_offset(initializer_span)?,
+                    )?;
+                    self.emit_instruction(Instruction::Drop)?;
+                } else {
+                    self.emit_identifier_at(
+                        name,
+                        token.span,
+                        IdentifierAccess::Put,
+                        source_offset(initializer_span)?,
+                    )?;
+                }
             }
 
             if !self.consume_punctuator(Punctuator::Comma)? {
@@ -3617,7 +3758,9 @@ impl<'source> Parser<'source> {
             _ => None,
         };
         if let Some(logical) = logical {
-            if let Some(target) = self.promote_tail_identifier_get()? {
+            if let Some(target) =
+                self.promote_tail_identifier_get(IdentifierReferenceAccess::Get)?
+            {
                 let infer_name = direct_identifier_name.as_deref() == Some(target.name.as_str());
                 return self.parse_logical_identifier_assignment(target, logical, infer_name);
             }
@@ -3643,18 +3786,29 @@ impl<'source> Parser<'source> {
         };
 
         if let Some(operation) = compound {
-            if let Some(target) = self.promote_tail_identifier_get()? {
+            if let Some(target) =
+                self.promote_tail_identifier_get(IdentifierReferenceAccess::Get)?
+            {
                 self.advance()?;
                 self.validate_identifier_assignment_target(&target)?;
                 self.parse_assignment()?;
                 self.emit_instruction_at(operation, source_offset(assignment_span)?)?;
                 self.anonymous_function_definition = None;
-                self.emit_identifier_inherited(
-                    target.name,
-                    target.span,
-                    target.scope,
-                    IdentifierAccess::Set,
-                )?;
+                if target.object_environment {
+                    self.emit_identifier_reference_inherited(
+                        target.name,
+                        target.span,
+                        target.scope,
+                        IdentifierReferenceAccess::Set,
+                    )?;
+                } else {
+                    self.emit_identifier_inherited(
+                        target.name,
+                        target.span,
+                        target.scope,
+                        IdentifierAccess::Set,
+                    )?;
+                }
                 return Ok(());
             }
             let Some(target) = self.promote_tail_member_get_for_compound()? else {
@@ -3684,12 +3838,21 @@ impl<'source> Parser<'source> {
             // QuickJS emits no source position for ordinary `=`. The Set
             // inherits the LHS marker for an unmarked RHS or the last marker
             // produced while evaluating the RHS.
-            self.emit_identifier_inherited(
-                target.name,
-                target.span,
-                target.scope,
-                IdentifierAccess::Set,
-            )?;
+            if target.object_environment {
+                self.emit_identifier_reference_inherited(
+                    target.name,
+                    target.span,
+                    target.scope,
+                    IdentifierReferenceAccess::Set,
+                )?;
+            } else {
+                self.emit_identifier_inherited(
+                    target.name,
+                    target.span,
+                    target.scope,
+                    IdentifierAccess::Set,
+                )?;
+            }
             self.anonymous_function_definition = None;
             return Ok(());
         }
@@ -3742,23 +3905,36 @@ impl<'source> Parser<'source> {
             )))?;
             self.emit_instruction(Instruction::SetName(name_constant))?;
         }
-        self.emit_identifier_inherited(
-            target.name,
-            target.span,
-            target.scope,
-            IdentifierAccess::Set,
-        )?;
+        if target.object_environment {
+            self.emit_identifier_reference_inherited(
+                target.name,
+                target.span,
+                target.scope,
+                IdentifierReferenceAccess::Set,
+            )?;
+        } else {
+            self.emit_identifier_inherited(
+                target.name,
+                target.span,
+                target.scope,
+                IdentifierAccess::Set,
+            )?;
+        }
         let end = self.emit_instruction(Instruction::Goto(u32::MAX))?;
         let joined_depth = self.current_ir().stack_depth;
-        if short_circuit_depth != joined_depth {
+
+        let short_target = self.current_ir().ops.len();
+        self.patch_jump(short_circuit, short_target)?;
+        if target.object_environment {
+            self.current_ir_mut().stack_depth = short_circuit_depth;
+            self.emit_instruction(Instruction::Nip)?;
+        }
+        if self.current_ir().stack_depth != joined_depth {
             return Err(Error::internal(
                 "identifier logical assignment branches have unequal stack depth",
             ));
         }
-
-        let target = self.current_ir().ops.len();
-        self.patch_jump(short_circuit, target)?;
-        self.patch_jump(end, target)?;
+        self.patch_jump(end, self.current_ir().ops.len())?;
         self.anonymous_function_definition = None;
         self.current_ir_mut().last_member_reference = None;
         self.current_ir_mut().last_identifier_reference = None;
@@ -4228,18 +4404,26 @@ impl<'source> Parser<'source> {
 
             if self.is_punctuator(Punctuator::LeftParen) {
                 let call_span = self.current().span;
-                let is_method = self.promote_last_member_get_for_call()?;
+                let member_method = self.promote_last_member_get_for_call()?;
                 // QuickJS selects OP_eval from the syntactic callee before
                 // binding resolution. Parentheses preserve IdentifierReference,
                 // while comma/member/other composed expressions have already
                 // cleared this marker. Runtime identity still decides whether
                 // this is original eval or an ordinary replacement call.
-                let direct_eval_scope = if is_method {
+                let direct_eval_scope = if member_method {
                     None
                 } else {
-                    self.promote_tail_identifier_get()?
-                        .filter(|reference| reference.name == "eval")
-                        .map(|reference| reference.scope)
+                    self.take_direct_eval_scope()?
+                };
+                // An authored `with` may turn an identifier call into a method
+                // call whose receiver is the selected object environment. The
+                // unresolved Reference keeps the same two-slot call shape even
+                // when resolution later proves the receiver is `undefined`.
+                let identifier_method = if member_method || direct_eval_scope.is_some() {
+                    false
+                } else {
+                    self.promote_tail_identifier_get(IdentifierReferenceAccess::Call)?
+                        .is_some_and(|reference| reference.object_environment)
                 };
                 self.advance()?;
                 let argument_count = self.parse_call_arguments()?;
@@ -4253,7 +4437,7 @@ impl<'source> Parser<'source> {
                         source_offset(call_span)?,
                     )?;
                 } else {
-                    let instruction = if is_method {
+                    let instruction = if member_method || identifier_method {
                         Instruction::CallMethod(argument_count)
                     } else {
                         Instruction::Call(argument_count)
@@ -4290,19 +4474,32 @@ impl<'source> Parser<'source> {
             (true, false) => Instruction::PostDec,
         };
 
-        if let Some(target) = self.promote_tail_identifier_get()? {
+        if let Some(target) = self.promote_tail_identifier_get(IdentifierReferenceAccess::Get)? {
             self.validate_identifier_assignment_target(&target)?;
             self.emit_instruction_at(operation, source_offset(operator_span)?)?;
-            self.emit_identifier_inherited(
-                target.name,
-                target.span,
-                target.scope,
-                if postfix {
-                    IdentifierAccess::Put
-                } else {
-                    IdentifierAccess::Set
-                },
-            )?;
+            if target.object_environment {
+                self.emit_identifier_reference_inherited(
+                    target.name,
+                    target.span,
+                    target.scope,
+                    if postfix {
+                        IdentifierReferenceAccess::PostPut
+                    } else {
+                        IdentifierReferenceAccess::Set
+                    },
+                )?;
+            } else {
+                self.emit_identifier_inherited(
+                    target.name,
+                    target.span,
+                    target.scope,
+                    if postfix {
+                        IdentifierAccess::Put
+                    } else {
+                        IdentifierAccess::Set
+                    },
+                )?;
+            }
             self.anonymous_function_definition = None;
             return Ok(());
         }
@@ -4397,12 +4594,15 @@ impl<'source> Parser<'source> {
     /// binding metadata to compound-assignment lowering. Parentheses preserve
     /// this marker; every operation that turns the Reference into a value
     /// clears it through `emit_with_site` or the composing parser level.
-    fn promote_tail_identifier_get(&mut self) -> Result<Option<IdentifierReference>, Error> {
-        let function = self.current_ir_mut();
+    fn promote_tail_identifier_get(
+        &mut self,
+        reference_access: IdentifierReferenceAccess,
+    ) -> Result<Option<IdentifierReference>, Error> {
+        let function_id = self.current_function;
+        let function = self.current_ir();
         if function.last_identifier_reference != function.ops.len().checked_sub(1) {
             return Ok(None);
         }
-        function.last_identifier_reference = None;
         let Some(SpannedIrOp {
             op:
                 IrOp::Identifier {
@@ -4418,41 +4618,150 @@ impl<'source> Parser<'source> {
                 "identifier Reference marker did not point to a getter",
             ));
         };
-        Ok(Some(IdentifierReference {
+        let object_environment = self.parser_scope_has_authored_with(function_id, *scope)?;
+        let reference = IdentifierReference {
             name: name.clone(),
             span: *span,
             scope: *scope,
-        }))
+            object_environment,
+        };
+        let function = self.current_ir_mut();
+        function.last_identifier_reference = None;
+        if object_environment {
+            let Some(SpannedIrOp { op, .. }) = function.ops.last_mut() else {
+                return Err(Error::internal(
+                    "identifier Reference marker did not point to a getter",
+                ));
+            };
+            *op = IrOp::IdentifierReference {
+                name: reference.name.clone(),
+                span: reference.span,
+                scope: reference.scope,
+                access: reference_access,
+            };
+            function.stack_depth = function
+                .stack_depth
+                .checked_add(1)
+                .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+        }
+        Ok(Some(reference))
     }
 
-    /// Remove the final identifier getter for ordinary `=` while retaining
-    /// its unresolved binding identity for the later Set operation.
-    fn take_tail_identifier_reference(&mut self) -> Result<Option<IdentifierReference>, Error> {
+    fn parser_scope_has_authored_with(
+        &self,
+        mut function_id: FunctionId,
+        mut scope: ScopeId,
+    ) -> Result<bool, Error> {
+        loop {
+            loop {
+                let current = self.functions[function_id]
+                    .scopes
+                    .get(scope.0)
+                    .ok_or_else(|| Error::internal("identifier use scope is out of bounds"))?;
+                if current.kind == ScopeKind::With {
+                    return Ok(true);
+                }
+                let Some(parent) = current.parent else {
+                    break;
+                };
+                scope = parent;
+            }
+            let Some(parent) = self.functions[function_id].parent else {
+                return Ok(false);
+            };
+            function_id = parent.function;
+            scope = parent.definition_scope;
+        }
+    }
+
+    /// Consume only the parser marker for a syntactic direct-eval callee. The
+    /// getter itself deliberately remains an ordinary Identifier operation so
+    /// `EvalCall` retains QuickJS's undefined-receiver fallback when the
+    /// resolved function is not the realm's original `%eval%`.
+    fn take_direct_eval_scope(&mut self) -> Result<Option<ScopeId>, Error> {
         let function = self.current_ir_mut();
         if function.last_identifier_reference != function.ops.len().checked_sub(1) {
             return Ok(None);
         }
-        function.last_identifier_reference = None;
-        let operation = function
-            .ops
-            .pop()
-            .ok_or_else(|| Error::internal("identifier Reference operation disappeared"))?;
-        let IrOp::Identifier {
-            name,
-            span,
-            scope,
-            access: IdentifierAccess::Get,
-        } = operation.op
+        let Some(SpannedIrOp {
+            op:
+                IrOp::Identifier {
+                    name,
+                    scope,
+                    access: IdentifierAccess::Get,
+                    ..
+                },
+            ..
+        }) = function.ops.last()
         else {
             return Err(Error::internal(
                 "identifier Reference marker did not point to a getter",
             ));
         };
-        function.stack_depth = function
-            .stack_depth
-            .checked_sub(1)
-            .ok_or_else(|| Error::internal("identifier lvalue removal underflowed the stack"))?;
-        Ok(Some(IdentifierReference { name, span, scope }))
+        if name != "eval" {
+            return Ok(None);
+        }
+        let scope = *scope;
+        function.last_identifier_reference = None;
+        Ok(Some(scope))
+    }
+
+    /// Turn the final getter into a base-only Reference preparation for `=`.
+    /// Both operations push one abstract value, so no stack-depth correction
+    /// is needed while the late resolver decides whether that value is a
+    /// selected object or the static `undefined` sentinel.
+    fn take_tail_identifier_reference(&mut self) -> Result<Option<IdentifierReference>, Error> {
+        let function_id = self.current_function;
+        let function = self.current_ir();
+        if function.last_identifier_reference != function.ops.len().checked_sub(1) {
+            return Ok(None);
+        }
+        let Some(SpannedIrOp {
+            op:
+                IrOp::Identifier {
+                    name,
+                    span,
+                    scope,
+                    access: IdentifierAccess::Get,
+                },
+            ..
+        }) = function.ops.last()
+        else {
+            return Err(Error::internal(
+                "identifier Reference operation disappeared",
+            ));
+        };
+        let object_environment = self.parser_scope_has_authored_with(function_id, *scope)?;
+        let reference = IdentifierReference {
+            name: name.clone(),
+            span: *span,
+            scope: *scope,
+            object_environment,
+        };
+        let function = self.current_ir_mut();
+        function.last_identifier_reference = None;
+        if object_environment {
+            let Some(SpannedIrOp { op, .. }) = function.ops.last_mut() else {
+                return Err(Error::internal(
+                    "identifier Reference operation disappeared",
+                ));
+            };
+            *op = IrOp::IdentifierReference {
+                name: reference.name.clone(),
+                span: reference.span,
+                scope: reference.scope,
+                access: IdentifierReferenceAccess::Prepare,
+            };
+        } else {
+            function
+                .ops
+                .pop()
+                .ok_or_else(|| Error::internal("identifier Reference operation disappeared"))?;
+            function.stack_depth = function.stack_depth.checked_sub(1).ok_or_else(|| {
+                Error::internal("identifier lvalue removal underflowed the stack")
+            })?;
+        }
+        Ok(Some(reference))
     }
 
     /// Remove the final getter while leaving its already-evaluated base/key
@@ -5990,6 +6299,21 @@ impl<'source> Parser<'source> {
         access: IdentifierAccess,
     ) -> Result<usize, Error> {
         self.emit(IrOp::Identifier {
+            name,
+            span,
+            scope,
+            access,
+        })
+    }
+
+    fn emit_identifier_reference_inherited(
+        &mut self,
+        name: String,
+        span: Span,
+        scope: ScopeId,
+        access: IdentifierReferenceAccess,
+    ) -> Result<usize, Error> {
+        self.emit(IrOp::IdentifierReference {
             name,
             span,
             scope,
@@ -7995,14 +8319,31 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
                             span,
                             scope,
                             access,
-                        } => Some((index, name.clone(), *span, *scope, *access)),
+                        } => Some((index, name.clone(), *span, *scope, Ok(*access))),
+                        IrOp::IdentifierReference {
+                            name,
+                            span,
+                            scope,
+                            access,
+                        } => Some((index, name.clone(), *span, *scope, Err(*access))),
                         _ => None,
                     })
                     .collect::<Vec<_>>();
 
                 for (operation_index, name, span, scope, access) in unresolved {
-                    let operation =
-                        resolve_identifier(tree, function_id, scope, &name, span, access)?;
+                    let operation = match access {
+                        Ok(access) => {
+                            resolve_identifier(tree, function_id, scope, &name, span, access)?
+                        }
+                        Err(access) => resolve_identifier_reference(
+                            tree,
+                            function_id,
+                            scope,
+                            &name,
+                            span,
+                            access,
+                        )?,
+                    };
                     tree.functions[function_id].ops[operation_index].op = operation;
                 }
             }
@@ -9130,80 +9471,225 @@ fn resolve_identifier(
         )
         .map(IrOp::Bytecode);
     }
-    if access == IdentifierAccess::Delete
-        && name == "arguments"
-        && matches!(tree.functions[function_id].kind, FunctionKind::Ordinary)
-    {
-        // Every ordinary function has an own arguments binding. Sloppy direct
-        // delete is statically false and must not force the lazily selected
-        // object to exist merely to reject deletion.
-        return Ok(IrOp::Bytecode(Instruction::PushFalse));
-    }
-    let mut dynamic_sources = Vec::new();
+    let path = resolve_identifier_path(tree, function_id, use_scope, name, span, access)?;
+    wrap_dynamic_identifier(
+        &mut tree.functions[function_id],
+        name,
+        access,
+        path.sources,
+        path.fallback,
+    )
+}
+
+#[derive(Debug)]
+struct ResolvedIdentifierPath {
+    sources: Vec<DynamicEnvironmentSource>,
+    fallback: IrOp,
+    fallback_readonly: bool,
+}
+
+fn resolve_identifier_reference(
+    tree: &mut FunctionTree,
+    function_id: FunctionId,
+    use_scope: ScopeId,
+    name: &str,
+    span: Span,
+    access: IdentifierReferenceAccess,
+) -> Result<IrOp, Error> {
+    let fallback_access = match access {
+        IdentifierReferenceAccess::Prepare | IdentifierReferenceAccess::Set => {
+            IdentifierAccess::Set
+        }
+        IdentifierReferenceAccess::Get | IdentifierReferenceAccess::Call => IdentifierAccess::Get,
+        IdentifierReferenceAccess::PostPut => IdentifierAccess::Put,
+    };
+    let path = resolve_identifier_path(tree, function_id, use_scope, name, span, fallback_access)?;
+    let syntactic_with = has_authored_with_scope(tree, function_id, use_scope)?;
+    let (sources, late_sources) = if syntactic_with {
+        (path.sources, Vec::new())
+    } else {
+        (Vec::new(), path.sources)
+    };
+    let name = ensure_string_constant(&mut tree.functions[function_id], name)?;
+    Ok(IrOp::DynamicIdentifierReference {
+        name,
+        access,
+        sources: sources.into_boxed_slice(),
+        late_sources: late_sources.into_boxed_slice(),
+        fallback: Box::new(path.fallback),
+        syntactic_with,
+        fallback_readonly: path.fallback_readonly,
+    })
+}
+
+fn has_authored_with_scope(
+    tree: &FunctionTree,
+    function_id: FunctionId,
+    use_scope: ScopeId,
+) -> Result<bool, Error> {
     let mut owner = function_id;
     let mut scope = use_scope;
     loop {
-        let found = find_or_create_own_binding(tree, owner, scope, name, span)?;
-        if let Some(binding) = found {
-            if matches!(tree.functions[owner].kind, FunctionKind::Eval(_))
-                && matches!(binding.storage, BindingStorage::External(_))
-            {
-                if let Some(binding) = resolve_eval_external_chain(
+        loop {
+            let current = tree.functions[owner]
+                .scopes
+                .get(scope.0)
+                .ok_or_else(|| Error::internal("identifier use scope is out of bounds"))?;
+            if current.kind == ScopeKind::With {
+                return Ok(true);
+            }
+            let Some(parent) = current.parent else {
+                break;
+            };
+            scope = parent;
+        }
+        let Some(parent) = tree.functions[owner].parent else {
+            return Ok(false);
+        };
+        owner = parent.function;
+        scope = parent.definition_scope;
+    }
+}
+
+/// Resolve one identifier scope-by-scope.  An exact authored binding wins in
+/// its scope; otherwise that scope's hidden `with` record is appended before
+/// continuing outward. Synthetic eval roots replay their imported descriptors
+/// in the original inner-to-outer order, including `<var>` and `<with>`.
+fn resolve_identifier_path(
+    tree: &mut FunctionTree,
+    consuming_function: FunctionId,
+    use_scope: ScopeId,
+    name: &str,
+    span: Span,
+    access: IdentifierAccess,
+) -> Result<ResolvedIdentifierPath, Error> {
+    let mut sources = Vec::new();
+    let mut owner = consuming_function;
+    let mut scope = use_scope;
+    loop {
+        loop {
+            let (scope_kind, parent, exact, with_binding) = {
+                let function = tree
+                    .functions
+                    .get(owner)
+                    .ok_or_else(|| Error::internal("identifier owner is out of bounds"))?;
+                let current = function
+                    .scopes
+                    .get(scope.0)
+                    .ok_or_else(|| Error::internal("identifier use scope is out of bounds"))?;
+                let exact = current.bindings.iter().rev().find_map(|binding| {
+                    let binding = function.bindings.get(binding.0)?;
+                    (binding.name == name
+                        && !matches!(binding.storage, BindingStorage::External(_)))
+                    .then_some(ResolvedBinding {
+                        storage: binding.storage,
+                        kind: binding.kind,
+                    })
+                });
+                let with_binding = (current.kind == ScopeKind::With)
+                    .then(|| {
+                        current
+                            .bindings
+                            .iter()
+                            .find_map(|binding| {
+                                let binding = function.bindings.get(binding.0)?;
+                                (binding.kind == BindingKind::WithObject).then_some(
+                                    ResolvedBinding {
+                                        storage: binding.storage,
+                                        kind: binding.kind,
+                                    },
+                                )
+                            })
+                            .ok_or_else(|| {
+                                Error::internal("with scope lost its hidden object binding")
+                            })
+                    })
+                    .transpose()?;
+                (current.kind, current.parent, exact, with_binding)
+            };
+
+            if let Some(binding) = exact {
+                let fallback_readonly = binding_is_readonly(binding.kind);
+                let fallback = resolved_binding_operation(
                     tree,
                     owner,
-                    function_id,
-                    name,
-                    &mut dynamic_sources,
-                )? {
-                    let fallback = resolved_binding_operation(
-                        tree,
-                        owner,
-                        function_id,
-                        binding,
-                        access,
-                        name,
-                    )?;
-                    return wrap_dynamic_identifier(
-                        &mut tree.functions[function_id],
-                        name,
-                        access,
-                        dynamic_sources,
-                        fallback,
-                    );
-                }
-            } else {
-                // QuickJS resolves an authored binding before probing that
-                // function's hidden eval variable object. In particular, a
-                // private function-expression name keeps static priority in
-                // caller code. Eval source still sees its own declaration
-                // first because its ordered external chain contains `<var>`
-                // before the imported private name.
-                let fallback =
-                    resolved_binding_operation(tree, owner, function_id, binding, access, name)?;
-                return wrap_dynamic_identifier(
-                    &mut tree.functions[function_id],
-                    name,
+                    consuming_function,
+                    binding,
                     access,
-                    dynamic_sources,
+                    name,
+                )?;
+                return Ok(ResolvedIdentifierPath {
+                    sources,
                     fallback,
-                );
+                    fallback_readonly,
+                });
             }
-        } else if matches!(tree.functions[owner].kind, FunctionKind::Eval(_)) {
+
+            if let Some(binding) = with_binding {
+                push_dynamic_environment_source(
+                    tree,
+                    owner,
+                    consuming_function,
+                    binding,
+                    WITH_OBJECT_LOCAL_NAME,
+                    &mut sources,
+                )?;
+            }
+
+            let Some(parent) = parent else {
+                debug_assert_eq!(scope_kind, ScopeKind::FunctionRoot);
+                break;
+            };
+            scope = parent;
+        }
+
+        // `arguments` and a private function-expression name are logically
+        // rooted before the function's own eval variable object. A sloppy
+        // delete of implicit `arguments` is false without materializing it.
+        if name == "arguments"
+            && access == IdentifierAccess::Delete
+            && matches!(tree.functions[owner].kind, FunctionKind::Ordinary)
+        {
+            return Ok(ResolvedIdentifierPath {
+                sources,
+                fallback: IrOp::Bytecode(Instruction::PushFalse),
+                fallback_readonly: false,
+            });
+        }
+        if !matches!(tree.functions[owner].kind, FunctionKind::Eval(_))
+            && let Some(binding) = find_or_create_own_binding(tree, owner, ScopeId(0), name, span)?
+        {
+            let fallback_readonly = binding_is_readonly(binding.kind);
+            let fallback =
+                resolved_binding_operation(tree, owner, consuming_function, binding, access, name)?;
+            return Ok(ResolvedIdentifierPath {
+                sources,
+                fallback,
+                fallback_readonly,
+            });
+        }
+
+        if matches!(tree.functions[owner].kind, FunctionKind::Eval(_)) {
             if let Some(binding) =
-                resolve_eval_external_chain(tree, owner, function_id, name, &mut dynamic_sources)?
+                resolve_eval_external_chain(tree, owner, consuming_function, name, &mut sources)?
             {
-                let fallback =
-                    resolved_binding_operation(tree, owner, function_id, binding, access, name)?;
-                return wrap_dynamic_identifier(
-                    &mut tree.functions[function_id],
-                    name,
+                let fallback_readonly = binding_is_readonly(binding.kind);
+                let fallback = resolved_binding_operation(
+                    tree,
+                    owner,
+                    consuming_function,
+                    binding,
                     access,
-                    dynamic_sources,
+                    name,
+                )?;
+                return Ok(ResolvedIdentifierPath {
+                    sources,
                     fallback,
-                );
+                    fallback_readonly,
+                });
             }
         } else {
-            push_owned_eval_variable_source(tree, owner, function_id, &mut dynamic_sources)?;
+            push_owned_eval_variable_source(tree, owner, consuming_function, &mut sources)?;
         }
 
         let Some(parent) = tree.functions[owner].parent else {
@@ -9213,7 +9699,7 @@ fn resolve_identifier(
         scope = parent.definition_scope;
     }
 
-    let closure_index = capture_global_path(tree, function_id, name)?;
+    let closure_index = capture_global_path(tree, consuming_function, name)?;
     let fallback = match access {
         IdentifierAccess::Get => IrOp::Bytecode(Instruction::GetVar(closure_index)),
         IdentifierAccess::GetOrUndefined => IrOp::Bytecode(Instruction::GetVarUndef(closure_index)),
@@ -9231,12 +9717,17 @@ fn resolve_identifier(
         }
         IdentifierAccess::Set => IrOp::GlobalSet(closure_index),
     };
-    wrap_dynamic_identifier(
-        &mut tree.functions[function_id],
-        name,
-        access,
-        dynamic_sources,
+    Ok(ResolvedIdentifierPath {
+        sources,
         fallback,
+        fallback_readonly: false,
+    })
+}
+
+const fn binding_is_readonly(kind: BindingKind) -> bool {
+    matches!(
+        kind,
+        BindingKind::Lexical { is_const: true } | BindingKind::FunctionName { is_const: true }
     )
 }
 
@@ -9291,32 +9782,73 @@ fn push_owned_eval_variable_source(
     tree: &mut FunctionTree,
     defining_function: FunctionId,
     consuming_function: FunctionId,
-    sources: &mut Vec<EvalVariableSource>,
+    sources: &mut Vec<DynamicEnvironmentSource>,
 ) -> Result<(), Error> {
     let Some(index) = tree.functions[defining_function].eval_variable_object_local else {
         return Ok(());
     };
-    let source = if defining_function == consuming_function {
-        EvalVariableSource::Local(index)
+    push_dynamic_environment_source(
+        tree,
+        defining_function,
+        consuming_function,
+        ResolvedBinding {
+            storage: BindingStorage::Local(index),
+            kind: BindingKind::EvalVariableObject,
+        },
+        EVAL_VARIABLE_OBJECT_LOCAL_NAME,
+        sources,
+    )
+}
+
+fn push_dynamic_environment_source(
+    tree: &mut FunctionTree,
+    defining_function: FunctionId,
+    consuming_function: FunctionId,
+    binding: ResolvedBinding,
+    sentinel: &str,
+    sources: &mut Vec<DynamicEnvironmentSource>,
+) -> Result<(), Error> {
+    let storage = if defining_function == consuming_function {
+        binding.storage
     } else {
         let (closure, kind) = capture_binding_path(
             tree,
             defining_function,
             consuming_function,
-            ResolvedBinding {
-                storage: BindingStorage::Local(index),
-                kind: BindingKind::EvalVariableObject,
-            },
-            EVAL_VARIABLE_OBJECT_LOCAL_NAME,
+            binding,
+            sentinel,
             true,
             false,
         )?;
-        if kind != BindingKind::EvalVariableObject {
+        if kind != binding.kind {
             return Err(Error::internal(
-                "eval variable object closure relay changed kind",
+                "dynamic environment closure relay changed kind",
             ));
         }
-        EvalVariableSource::Closure(closure)
+        BindingStorage::External(closure)
+    };
+    let source = match (binding.kind, storage) {
+        (BindingKind::EvalVariableObject, BindingStorage::Local(index)) => {
+            DynamicEnvironmentSource::Eval(EvalVariableSource::Local(index))
+        }
+        (BindingKind::EvalVariableObject, BindingStorage::External(index)) => {
+            DynamicEnvironmentSource::Eval(EvalVariableSource::Closure(index))
+        }
+        (BindingKind::WithObject, BindingStorage::Local(index)) => {
+            DynamicEnvironmentSource::With(WithObjectSource::Local(index))
+        }
+        (BindingKind::WithObject, BindingStorage::External(index)) => {
+            DynamicEnvironmentSource::With(WithObjectSource::Closure(index))
+        }
+        (
+            BindingKind::Normal | BindingKind::Lexical { .. } | BindingKind::FunctionName { .. },
+            _,
+        )
+        | (_, BindingStorage::Argument(_) | BindingStorage::Global) => {
+            return Err(Error::internal(
+                "ordinary binding reached dynamic environment selection",
+            ));
+        }
     };
     sources.push(source);
     Ok(())
@@ -9327,42 +9859,37 @@ fn resolve_eval_external_chain(
     defining_function: FunctionId,
     consuming_function: FunctionId,
     name: &str,
-    sources: &mut Vec<EvalVariableSource>,
+    sources: &mut Vec<DynamicEnvironmentSource>,
 ) -> Result<Option<ResolvedBinding>, Error> {
     let external = tree.functions[defining_function].external_bindings.clone();
     for (index, binding) in external.into_iter().enumerate() {
         let index = u16::try_from(index)
             .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"))?;
-        if binding.kind == ClosureVariableKind::EvalVariableObject {
-            let source = if defining_function == consuming_function {
-                EvalVariableSource::Closure(index)
-            } else {
-                let (closure, kind) = capture_binding_path(
-                    tree,
-                    defining_function,
-                    consuming_function,
-                    ResolvedBinding {
-                        storage: BindingStorage::External(index),
-                        kind: BindingKind::EvalVariableObject,
-                    },
+        if matches!(
+            binding.kind,
+            ClosureVariableKind::EvalVariableObject | ClosureVariableKind::WithObject
+        ) {
+            let (kind, sentinel) = match binding.kind {
+                ClosureVariableKind::EvalVariableObject => (
+                    BindingKind::EvalVariableObject,
                     EVAL_VARIABLE_OBJECT_LOCAL_NAME,
-                    true,
-                    false,
-                )?;
-                if kind != BindingKind::EvalVariableObject {
-                    return Err(Error::internal(
-                        "external eval variable object relay changed kind",
-                    ));
+                ),
+                ClosureVariableKind::WithObject => {
+                    (BindingKind::WithObject, WITH_OBJECT_LOCAL_NAME)
                 }
-                EvalVariableSource::Closure(closure)
+                _ => unreachable!(),
             };
-            sources.push(source);
-            continue;
-        }
-        // R2b.1 authenticates and relays the hidden object environment, but
-        // identifier execution remains intentionally on the existing eval
-        // variable-object path until the with-aware Reference IR lands.
-        if binding.kind == ClosureVariableKind::WithObject {
+            push_dynamic_environment_source(
+                tree,
+                defining_function,
+                consuming_function,
+                ResolvedBinding {
+                    storage: BindingStorage::External(index),
+                    kind,
+                },
+                sentinel,
+                sources,
+            )?;
             continue;
         }
         if binding.name.to_utf8_lossy() != name {
@@ -9398,7 +9925,7 @@ fn wrap_dynamic_identifier(
     function: &mut FunctionIr,
     name: &str,
     access: IdentifierAccess,
-    sources: Vec<EvalVariableSource>,
+    sources: Vec<DynamicEnvironmentSource>,
     fallback: IrOp,
 ) -> Result<IrOp, Error> {
     if sources.is_empty() {
@@ -9409,7 +9936,7 @@ fn wrap_dynamic_identifier(
         IdentifierAccess::Initialize | IdentifierAccess::AnnexBPut
     ) {
         return Err(Error::internal(
-            "declaration-only identifier access crossed an eval variable object",
+            "declaration-only identifier access crossed a dynamic environment",
         ));
     }
     let name = ensure_string_constant(function, name)?;
@@ -10458,7 +10985,7 @@ fn resolved_operation_len(operation: &IrOp) -> Result<usize, Error> {
 
 fn dynamic_identifier_len(
     access: IdentifierAccess,
-    sources: &[EvalVariableSource],
+    sources: &[DynamicEnvironmentSource],
     fallback: &IrOp,
 ) -> Result<usize, Error> {
     let action_len = match access {
@@ -10478,6 +11005,75 @@ fn dynamic_identifier_len(
         .checked_mul(action_len.saturating_add(3))
         .and_then(|length| length.checked_add(resolved_operation_len(fallback).ok()?))
         .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))
+}
+
+fn dynamic_identifier_reference_len(
+    access: IdentifierReferenceAccess,
+    sources: &[DynamicEnvironmentSource],
+    late_sources: &[DynamicEnvironmentSource],
+    fallback: &IrOp,
+    syntactic_with: bool,
+    fallback_readonly: bool,
+) -> Result<usize, Error> {
+    let global_reference = global_reference_index(access, fallback);
+    let fallback_access = match access {
+        IdentifierReferenceAccess::Prepare | IdentifierReferenceAccess::Set => {
+            IdentifierAccess::Set
+        }
+        IdentifierReferenceAccess::Get | IdentifierReferenceAccess::Call => IdentifierAccess::Get,
+        IdentifierReferenceAccess::PostPut => IdentifierAccess::Put,
+    };
+    let fallback_len = if syntactic_with {
+        resolved_operation_len(fallback)?
+    } else {
+        dynamic_identifier_len(fallback_access, late_sources, fallback)?
+    };
+    match access {
+        IdentifierReferenceAccess::Prepare => sources
+            .len()
+            .checked_mul(4)
+            .and_then(|length| {
+                length.checked_add(if syntactic_with && fallback_readonly {
+                    2
+                } else {
+                    1
+                })
+            })
+            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow")),
+        IdentifierReferenceAccess::Get | IdentifierReferenceAccess::Call => sources
+            .len()
+            .checked_mul(5)
+            .and_then(|length| length.checked_add(1))
+            .and_then(|length| length.checked_add(fallback_len))
+            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow")),
+        IdentifierReferenceAccess::Set | IdentifierReferenceAccess::PostPut
+            if global_reference.is_some() =>
+        {
+            Ok(6)
+        }
+        IdentifierReferenceAccess::Set | IdentifierReferenceAccess::PostPut => 11_usize
+            .checked_add(fallback_len)
+            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow")),
+    }
+}
+
+/// QuickJS keeps an unresolved global assignment as `OP_make_var_ref` when an
+/// authored `with` can intercept the name.  The runtime operation snapshots
+/// the global reference before the RHS, including TDZ/readonly checks and the
+/// missing-global sentinel.  Calls deliberately keep the ordinary
+/// `undefined, GetVar` shape because `OP_scope_get_ref` is not an lvalue.
+fn global_reference_index(access: IdentifierReferenceAccess, fallback: &IrOp) -> Option<u16> {
+    match (access, fallback) {
+        (
+            IdentifierReferenceAccess::Prepare | IdentifierReferenceAccess::Set,
+            IrOp::GlobalSet(index),
+        )
+        | (IdentifierReferenceAccess::Get, IrOp::Bytecode(Instruction::GetVar(index)))
+        | (IdentifierReferenceAccess::PostPut, IrOp::Bytecode(Instruction::PutVar(index))) => {
+            Some(*index)
+        }
+        _ => None,
+    }
 }
 
 fn emit_resolved_operation(
@@ -10532,6 +11128,275 @@ fn emit_resolved_operation(
     Ok(())
 }
 
+fn emit_dynamic_identifier_operation(
+    name: u32,
+    access: IdentifierAccess,
+    sources: &[DynamicEnvironmentSource],
+    fallback: IrOp,
+    site: Option<SourceOffset>,
+    code: &mut Vec<Instruction>,
+    pc_sites: &mut Vec<Option<SourceOffset>>,
+) -> Result<(), Error> {
+    let emitted = dynamic_identifier_len(access, sources, &fallback)?;
+    let end = code
+        .len()
+        .checked_add(emitted)
+        .and_then(|target| u32::try_from(target).ok())
+        .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+    let action_len = if access == IdentifierAccess::Set {
+        2_usize
+    } else {
+        1
+    };
+    let mut first = true;
+    for &source in sources {
+        let next = code
+            .len()
+            .checked_add(action_len.saturating_add(3))
+            .and_then(|target| u32::try_from(target).ok())
+            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+        code.push(Instruction::HasDynamicBinding { source, name });
+        pc_sites.push(if first { site } else { None });
+        first = false;
+        code.push(Instruction::IfFalse(next));
+        pc_sites.push(None);
+        match access {
+            IdentifierAccess::Get | IdentifierAccess::GetOrUndefined => {
+                code.push(Instruction::GetDynamicBinding { source, name });
+                pc_sites.push(None);
+            }
+            IdentifierAccess::Put => {
+                code.push(Instruction::PutDynamicBinding { source, name });
+                pc_sites.push(None);
+            }
+            IdentifierAccess::Set => {
+                code.push(Instruction::Dup);
+                pc_sites.push(None);
+                code.push(Instruction::PutDynamicBinding { source, name });
+                pc_sites.push(None);
+            }
+            IdentifierAccess::Delete => {
+                code.push(Instruction::DeleteDynamicBinding { source, name });
+                pc_sites.push(None);
+            }
+            IdentifierAccess::Initialize | IdentifierAccess::AnnexBPut => {
+                return Err(Error::internal(
+                    "declaration-only access reached dynamic identifier lowering",
+                ));
+            }
+        }
+        code.push(Instruction::Goto(end));
+        pc_sites.push(None);
+    }
+    emit_resolved_operation(fallback, if first { site } else { None }, code, pc_sites)?;
+    if u32::try_from(code.len()).ok() != Some(end) {
+        return Err(Error::internal(
+            "dynamic identifier lowering length changed",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_dynamic_identifier_reference(
+    name: u32,
+    access: IdentifierReferenceAccess,
+    sources: &[DynamicEnvironmentSource],
+    late_sources: &[DynamicEnvironmentSource],
+    fallback: IrOp,
+    syntactic_with: bool,
+    fallback_readonly: bool,
+    site: Option<SourceOffset>,
+    code: &mut Vec<Instruction>,
+    pc_sites: &mut Vec<Option<SourceOffset>>,
+) -> Result<(), Error> {
+    let emitted = dynamic_identifier_reference_len(
+        access,
+        sources,
+        late_sources,
+        &fallback,
+        syntactic_with,
+        fallback_readonly,
+    )?;
+    let start = code.len();
+    let end = start
+        .checked_add(emitted)
+        .and_then(|target| u32::try_from(target).ok())
+        .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+    let global_reference = global_reference_index(access, &fallback);
+    let mut first = true;
+
+    match access {
+        IdentifierReferenceAccess::Prepare
+        | IdentifierReferenceAccess::Get
+        | IdentifierReferenceAccess::Call => {
+            let action_len = if access == IdentifierReferenceAccess::Prepare {
+                2_usize
+            } else {
+                3
+            };
+            for &source in sources {
+                let next = code
+                    .len()
+                    .checked_add(action_len.saturating_add(2))
+                    .and_then(|target| u32::try_from(target).ok())
+                    .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+                code.push(Instruction::HasDynamicBinding { source, name });
+                pc_sites.push(if first { site } else { None });
+                first = false;
+                code.push(Instruction::IfFalse(next));
+                pc_sites.push(None);
+                code.push(Instruction::DynamicEnvironmentObject(source));
+                pc_sites.push(None);
+                if matches!(
+                    access,
+                    IdentifierReferenceAccess::Get | IdentifierReferenceAccess::Call
+                ) {
+                    code.push(if access == IdentifierReferenceAccess::Call {
+                        Instruction::GetRefValueUndef(name)
+                    } else {
+                        Instruction::GetRefValue(name)
+                    });
+                    pc_sites.push(None);
+                }
+                code.push(Instruction::Goto(end));
+                pc_sites.push(None);
+            }
+
+            if access == IdentifierReferenceAccess::Prepare {
+                if syntactic_with && fallback_readonly {
+                    code.push(Instruction::Undefined);
+                    pc_sites.push(if first { site } else { None });
+                    code.push(Instruction::ThrowReadOnly(name));
+                    pc_sites.push(None);
+                } else if let Some(index) = global_reference {
+                    code.push(Instruction::GlobalReference(index));
+                    pc_sites.push(if first { site } else { None });
+                } else {
+                    code.push(Instruction::Undefined);
+                    pc_sites.push(if first { site } else { None });
+                }
+            } else if access == IdentifierReferenceAccess::Get
+                && syntactic_with
+                && fallback_readonly
+            {
+                code.push(Instruction::Undefined);
+                pc_sites.push(if first { site } else { None });
+                code.push(Instruction::ThrowReadOnly(name));
+                pc_sites.push(None);
+            } else if access == IdentifierReferenceAccess::Get
+                && let Some(index) = global_reference
+            {
+                code.push(Instruction::GlobalReference(index));
+                pc_sites.push(if first { site } else { None });
+                code.push(Instruction::GetRefValue(name));
+                pc_sites.push(None);
+            } else if syntactic_with {
+                code.push(Instruction::Undefined);
+                pc_sites.push(if first { site } else { None });
+                emit_resolved_operation(fallback, None, code, pc_sites)?;
+            } else {
+                code.push(Instruction::Undefined);
+                pc_sites.push(if first { site } else { None });
+                emit_dynamic_identifier_operation(
+                    name,
+                    IdentifierAccess::Get,
+                    late_sources,
+                    fallback,
+                    None,
+                    code,
+                    pc_sites,
+                )?;
+            }
+        }
+        IdentifierReferenceAccess::Set | IdentifierReferenceAccess::PostPut => {
+            if access == IdentifierReferenceAccess::PostPut {
+                code.push(Instruction::Perm3);
+                pc_sites.push(site);
+            } else {
+                code.push(Instruction::Insert2);
+                pc_sites.push(site);
+                code.push(Instruction::Drop);
+                pc_sites.push(None);
+            }
+            // Put the candidate base on top while retaining the result value
+            // below it, then branch to the object-reference write when it is
+            // not the static `undefined` sentinel.
+            if access == IdentifierReferenceAccess::PostPut {
+                code.push(Instruction::Insert2);
+                pc_sites.push(None);
+                code.push(Instruction::Drop);
+                pc_sites.push(None);
+            }
+            if global_reference.is_some() {
+                code.push(Instruction::Insert2);
+                pc_sites.push(None);
+                code.push(Instruction::Drop);
+                pc_sites.push(None);
+                if access == IdentifierReferenceAccess::Set {
+                    code.push(Instruction::Insert2);
+                    pc_sites.push(None);
+                }
+                code.push(Instruction::PutRefValue(name));
+                pc_sites.push(None);
+            } else {
+                code.push(Instruction::Dup);
+                pc_sites.push(None);
+                code.push(Instruction::IsUndefinedOrNull);
+                pc_sites.push(None);
+                let dynamic_target_index = code.len();
+                code.push(Instruction::IfFalse(u32::MAX));
+                pc_sites.push(None);
+
+                code.push(Instruction::Drop);
+                pc_sites.push(None);
+                if syntactic_with {
+                    emit_resolved_operation(fallback, None, code, pc_sites)?;
+                } else {
+                    emit_dynamic_identifier_operation(
+                        name,
+                        if access == IdentifierReferenceAccess::Set {
+                            IdentifierAccess::Set
+                        } else {
+                            IdentifierAccess::Put
+                        },
+                        late_sources,
+                        fallback,
+                        None,
+                        code,
+                        pc_sites,
+                    )?;
+                }
+                code.push(Instruction::Goto(end));
+                pc_sites.push(None);
+
+                let dynamic_target = u32::try_from(code.len())
+                    .map_err(|_| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+                let Some(Instruction::IfFalse(target)) = code.get_mut(dynamic_target_index) else {
+                    return Err(Error::internal("reference branch instruction disappeared"));
+                };
+                *target = dynamic_target;
+                code.push(Instruction::Insert2);
+                pc_sites.push(None);
+                code.push(Instruction::Drop);
+                pc_sites.push(None);
+                if access == IdentifierReferenceAccess::Set {
+                    code.push(Instruction::Insert2);
+                    pc_sites.push(None);
+                }
+                code.push(Instruction::PutRefValue(name));
+                pc_sites.push(None);
+            }
+        }
+    }
+    if u32::try_from(code.len()).ok() != Some(end) {
+        return Err(Error::internal(
+            "dynamic identifier Reference lowering length changed",
+        ));
+    }
+    Ok(())
+}
+
 fn lower_ops(operations: Vec<SpannedIrOp>, scopes: &[ScopeLifecycle]) -> Result<LoweredOps, Error> {
     let mut offsets = Vec::with_capacity(operations.len() + 1);
     let mut code_len = 0_usize;
@@ -10564,6 +11429,22 @@ fn lower_ops(operations: Vec<SpannedIrOp>, scopes: &[ScopeLifecycle]) -> Result<
                 fallback,
                 ..
             } => dynamic_identifier_len(*access, sources, fallback)?,
+            IrOp::DynamicIdentifierReference {
+                access,
+                sources,
+                late_sources,
+                fallback,
+                syntactic_with,
+                fallback_readonly,
+                ..
+            } => dynamic_identifier_reference_len(
+                *access,
+                sources,
+                late_sources,
+                fallback,
+                *syntactic_with,
+                *fallback_readonly,
+            )?,
             _ => 1,
         };
         code_len = code_len
@@ -10694,70 +11575,39 @@ fn lower_ops(operations: Vec<SpannedIrOp>, scopes: &[ScopeLifecycle]) -> Result<
                 sources,
                 fallback,
             } => {
-                let emitted = dynamic_identifier_len(access, &sources, &fallback)?;
-                let end = code
-                    .len()
-                    .checked_add(emitted)
-                    .and_then(|target| u32::try_from(target).ok())
-                    .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
-                let action_len = if access == IdentifierAccess::Set {
-                    2_usize
-                } else {
-                    1
-                };
-                let mut first = true;
-                for source in sources {
-                    let next = code
-                        .len()
-                        .checked_add(action_len.saturating_add(3))
-                        .and_then(|target| u32::try_from(target).ok())
-                        .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
-                    code.push(Instruction::HasEvalVariable { source, name });
-                    pc_sites.push(if first { pc_site } else { None });
-                    first = false;
-                    code.push(Instruction::IfFalse(next));
-                    pc_sites.push(None);
-                    match access {
-                        IdentifierAccess::Get | IdentifierAccess::GetOrUndefined => {
-                            code.push(Instruction::GetEvalVariable { source, name });
-                            pc_sites.push(None);
-                        }
-                        IdentifierAccess::Put => {
-                            code.push(Instruction::PutEvalVariable { source, name });
-                            pc_sites.push(None);
-                        }
-                        IdentifierAccess::Set => {
-                            code.push(Instruction::Dup);
-                            pc_sites.push(None);
-                            code.push(Instruction::PutEvalVariable { source, name });
-                            pc_sites.push(None);
-                        }
-                        IdentifierAccess::Delete => {
-                            code.push(Instruction::DeleteEvalVariable { source, name });
-                            pc_sites.push(None);
-                        }
-                        IdentifierAccess::Initialize | IdentifierAccess::AnnexBPut => {
-                            return Err(Error::internal(
-                                "declaration-only access reached dynamic identifier lowering",
-                            ));
-                        }
-                    }
-                    code.push(Instruction::Goto(end));
-                    pc_sites.push(None);
-                }
-                emit_resolved_operation(
+                emit_dynamic_identifier_operation(
+                    name,
+                    access,
+                    &sources,
                     *fallback,
-                    if first { pc_site } else { None },
+                    pc_site,
                     &mut code,
                     &mut pc_sites,
                 )?;
-                if u32::try_from(code.len()).ok() != Some(end) {
-                    return Err(Error::internal(
-                        "dynamic identifier lowering length changed",
-                    ));
-                }
             }
-            IrOp::Identifier { .. } => {
+            IrOp::DynamicIdentifierReference {
+                name,
+                access,
+                sources,
+                late_sources,
+                fallback,
+                syntactic_with,
+                fallback_readonly,
+            } => {
+                emit_dynamic_identifier_reference(
+                    name,
+                    access,
+                    &sources,
+                    &late_sources,
+                    *fallback,
+                    syntactic_with,
+                    fallback_readonly,
+                    pc_site,
+                    &mut code,
+                    &mut pc_sites,
+                )?;
+            }
+            IrOp::Identifier { .. } | IrOp::IdentifierReference { .. } => {
                 return Err(Error::internal(
                     "identifier reached bytecode lowering before resolution",
                 ));
@@ -11021,7 +11871,9 @@ const fn source_span(span: Span) -> SourceSpan {
 #[cfg(test)]
 mod tests {
     use crate::bigint::JsBigInt;
-    use crate::bytecode::{ArgumentsKind, EvalVariableSource, Instruction};
+    use crate::bytecode::{
+        ArgumentsKind, DynamicEnvironmentSource, EvalVariableSource, Instruction,
+    };
     use crate::debug::DebugInfoMode;
     use crate::error::ErrorKind;
     use crate::heap::{
@@ -14842,6 +15694,97 @@ mod tests {
     }
 
     #[test]
+    fn with_statements_execute_ordered_environment_and_reference_paths() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+
+        assert_eq!(
+            context
+                .eval("var withGet = { value: 42 }; with (withGet) value")
+                .unwrap(),
+            Value::Int(42),
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "var value = 7; var withHidden = { value: 42, [Symbol.unscopables]: { value: true } }; with (withHidden) value",
+                )
+                .unwrap(),
+            Value::Int(7),
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "var withWrite = { value: 1 }; with (withWrite) { value = 2; value += 3; value++; ++value; value ||= 99; } withWrite.value",
+                )
+                .unwrap(),
+            Value::Int(7),
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "var withCall = { value: 42, method: function(){ return this.value; } }; with (withCall) method()",
+                )
+                .unwrap(),
+            Value::Int(42),
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "var disappearingCall = { method: function(){} }; Object.defineProperty(disappearingCall, Symbol.unscopables, { get: function(){ delete disappearingCall.method; return {}; } }); var strictCaller; with (disappearingCall) strictCaller = function(){ 'use strict'; return method(); }; var disappearingError; try { strictCaller(); } catch (error) { disappearingError = error.name; } disappearingError",
+                )
+                .unwrap(),
+            Value::String(JsString::from_static("TypeError")),
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "var withDelete = { value: 1 }; var deleted; with (withDelete) deleted = delete value; deleted && !('value' in withDelete)",
+                )
+                .unwrap(),
+            Value::Bool(true),
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "var withCapture = { value: 42 }; var captured; with (withCapture) captured = function(){ return value; }; captured()",
+                )
+                .unwrap(),
+            Value::Int(42),
+        );
+
+        let strict = compile_unlinked_script("'use strict'; with ({}) 0").unwrap_err();
+        assert_eq!(strict.kind(), ErrorKind::Syntax);
+        assert_eq!(strict.message(), "invalid keyword: with");
+        assert_eq!(context.eval("with (null) 0"), Err(RuntimeError::Exception),);
+
+        assert_eq!(
+            context
+                .eval(
+                    "var withSideEffect = 0; const withReadonly = 1; try { with ({}) withReadonly = (withSideEffect = 1); } catch (error) {} withSideEffect",
+                )
+                .unwrap(),
+            Value::Int(0),
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "(function(){ var object = { value: 1 }; var value; with (object) { var value = (delete object.value, 2); } return object.value + '|' + ('value' in object) + '|' + value; })()",
+                )
+                .unwrap(),
+            Value::String(JsString::from_static("2|true|undefined")),
+        );
+        assert_eq!(
+            context
+                .eval(
+                    "if (false) { with ({}) let\n value = 1; } if (false) { with ({}) let\n {} } 'parsed'",
+                )
+                .unwrap(),
+            Value::String(JsString::from_static("parsed")),
+        );
+    }
+
+    #[test]
     fn eval_compiler_rejects_incoherent_caller_variable_profiles() {
         let strict_global = EvalCompileContext::direct_with_profile(
             true,
@@ -15229,12 +16172,13 @@ mod tests {
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::DefineEvalVariable { .. }))
         );
-        assert!(
-            direct
-                .code()
-                .iter()
-                .any(|instruction| matches!(instruction, Instruction::HasEvalVariable { .. }))
-        );
+        assert!(direct.code().iter().any(|instruction| matches!(
+            instruction,
+            Instruction::HasDynamicBinding {
+                source: DynamicEnvironmentSource::Eval(_),
+                ..
+            }
+        )));
 
         let catch_source = "f; try { throw null; } catch (f) {{ function f() {} }} typeof f;";
         let catch_direct = compile_unlinked_eval_with_filename(

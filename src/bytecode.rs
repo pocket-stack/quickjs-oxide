@@ -152,6 +152,12 @@ pub enum Instruction {
     },
     /// Push the authenticated object behind one dynamic environment source.
     DynamicEnvironmentObject(DynamicEnvironmentSource),
+    /// QuickJS `OP_make_var_ref`: resolve one authenticated global closure
+    /// name to the current realm's lexical storage object, global object, or
+    /// the unresolved-reference `undefined` sentinel. Lexical TDZ and
+    /// read-only checks happen while this reference is made, before a later
+    /// right-hand side can run.
+    GlobalReference(u16),
     /// Preserve an environment Object and append its named reference value.
     /// A missing property observes the current frame's strictness.
     GetRefValue(u32),
@@ -409,6 +415,7 @@ impl Instruction {
             | Self::GetDynamicBinding { .. }
             | Self::DeleteDynamicBinding { .. }
             | Self::DynamicEnvironmentObject(_)
+            | Self::GlobalReference(_)
             | Self::GetLocal(_)
             | Self::GetLocalCheck(_)
             | Self::GetArg(_)
@@ -1433,6 +1440,8 @@ mod tests {
                 Instruction::DynamicEnvironmentObject(with),
                 Instruction::GetRefValueUndef(0),
                 Instruction::PutRefValue(0),
+                Instruction::GlobalReference(0),
+                Instruction::Drop,
                 Instruction::Undefined,
                 Instruction::Return,
             ],
@@ -1441,6 +1450,18 @@ mod tests {
             max_stack: 2,
         };
         assert_eq!(function.verify().unwrap().max_stack, 2);
+
+        let undersized_global_reference = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::GlobalReference(0), Instruction::Return],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 0,
+        };
+        assert_eq!(
+            undersized_global_reference.verify().unwrap_err().message(),
+            "declared maximum stack is smaller than required"
+        );
 
         for instruction in [
             Instruction::HasDynamicBinding {
