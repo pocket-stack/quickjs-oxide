@@ -1,0 +1,61 @@
+# R2c focused ArrowFunction gate.
+#
+# Pinned full-suite inventory (target/test262-full.tsv): explicit
+# `feature: arrow-function` covers 949 paths / 1,800 variants. Its current
+# classified outcomes are 1,097 unsupported-feature, 496 skipped-feature,
+# 195 unsupported-async, and 12 unsupported-host-detach-array-buffer; only
+# 575 variants are blocked solely by the missing arrow-function profile tag.
+# The core arrow-function directory contains 343 paths / 643 variants, but
+# only 52 paths carry explicit arrow-function metadata. A source/report join
+# additionally finds 381 no-metadata paths / 692 variants that contain a code
+# `=>` token and currently fail parse with SyntaxError, plus 7 paths / 10
+# variants whose arrow source is hidden in eval strings/templates and fails at
+# runtime with SyntaxError.
+#
+# This main gate deliberately selects only simple, synchronous, expected-normal
+# consumers with no unsupported adjacent Test262 feature. It covers basic
+# parameter forms, expression/block bodies, closures, lexical this/arguments,
+# call/bind behavior, object identity, non-constructibility, strictness, and
+# direct-eval compilation. Negative/provenance, async/module/host, class/super,
+# default/rest/destructuring parameters, and built-in adjacency remain in the
+# full inventory instead of being charged to this focused gate.
+test/language/expressions/arrow-function/ArrowFunction_restricted-properties.js
+test/language/expressions/arrow-function/arrow/binding-tests-1.js
+test/language/expressions/arrow-function/arrow/binding-tests-2.js
+test/language/expressions/arrow-function/arrow/binding-tests-3.js
+test/language/expressions/arrow-function/arrow/capturing-closure-variables-1.js
+test/language/expressions/arrow-function/arrow/concisebody-lookahead-assignmentexpression-1.js
+test/language/expressions/arrow-function/arrow/concisebody-lookahead-assignmentexpression-2.js
+test/language/expressions/arrow-function/cannot-override-this-with-thisArg.js
+test/language/expressions/arrow-function/empty-function-body-returns-undefined.js
+test/language/expressions/arrow-function/expression-body-implicit-return.js
+test/language/expressions/arrow-function/extensibility.js
+test/language/expressions/arrow-function/forbidden-ext/b1/arrow-function-forbidden-ext-direct-access-prop-arguments.js
+test/language/expressions/arrow-function/forbidden-ext/b1/arrow-function-forbidden-ext-direct-access-prop-caller.js
+test/language/expressions/arrow-function/lexical-arguments.js
+test/language/expressions/arrow-function/lexical-bindings-overriden-by-formal-parameters-non-strict.js
+test/language/expressions/arrow-function/lexical-this.js
+test/language/expressions/arrow-function/low-precedence-expression-body-no-parens.js
+test/language/expressions/arrow-function/name.js
+test/language/expressions/arrow-function/non-strict.js
+test/language/expressions/arrow-function/object-literal-return-requires-body-parens.js
+test/language/expressions/arrow-function/prototype-rules.js
+test/language/expressions/arrow-function/statement-body-requires-braces-must-return-explicitly-missing.js
+test/language/expressions/arrow-function/statement-body-requires-braces-must-return-explicitly.js
+test/language/expressions/arrow-function/strict.js
+test/language/expressions/arrow-function/syntax/arrowparameters-bindingidentifier-arguments.js
+test/language/expressions/arrow-function/syntax/arrowparameters-bindingidentifier-concisebody-assignmentexpression.js
+test/language/expressions/arrow-function/syntax/arrowparameters-bindingidentifier-concisebody-functionbody.js
+test/language/expressions/arrow-function/syntax/arrowparameters-bindingidentifier-eval.js
+test/language/expressions/arrow-function/syntax/arrowparameters-bindingidentifier-lineterminator-concisebody-assignmentexpression.js
+test/language/expressions/arrow-function/syntax/arrowparameters-bindingidentifier-lineterminator-concisebody-functionbody.js
+test/language/expressions/arrow-function/syntax/arrowparameters-bindingidentifier-yield.js
+test/language/expressions/arrow-function/syntax/arrowparameters-cover-concisebody-assignmentexpression.js
+test/language/expressions/arrow-function/syntax/arrowparameters-cover-concisebody-functionbody.js
+test/language/expressions/arrow-function/syntax/arrowparameters-cover-formalparameters-arguments.js
+test/language/expressions/arrow-function/syntax/arrowparameters-cover-formalparameters-eval.js
+test/language/expressions/arrow-function/syntax/arrowparameters-cover-formalparameters-yield.js
+test/language/expressions/arrow-function/syntax/arrowparameters-cover-lineterminator-concisebody-assignmentexpression.js
+test/language/expressions/arrow-function/syntax/arrowparameters-cover-lineterminator-concisebody-functionbody.js
+test/language/expressions/arrow-function/syntax/variations.js
+test/language/expressions/arrow-function/throw-new.js
