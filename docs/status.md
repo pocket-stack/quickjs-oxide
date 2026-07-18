@@ -3265,10 +3265,13 @@ R1z keeps recursive caller-profile linking in `compiler.rs`, provenance checks
 in `runtime/bytecode_publish.rs`, and live descriptor validation in
 `runtime/intrinsics/eval.rs` plus `runtime/vm_host.rs`; `runtime.rs` remains
 9,730 lines. R2b's dispatch wiring leaves it at 9,732 lines, and R2c changes no
-runtime facade code. The Arrow parser, cover-grammar scanner and pseudo-binding
-resolver currently take `compiler.rs` to 20,560 lines. Their semantic freeze is
-complete, but the next structural checkpoint should extract those seams before
-another broad grammar slice extends the compiler monolith.
+runtime facade code. R2d-1 moves the 7,961-line compiler white-box test module
+to `compiler/tests.rs`; `compiler.rs` falls from 20,560 to 12,576 lines with
+production compiler code byte-for-byte unchanged. This is a reviewability
+split, not yet a production-phase extraction: the Arrow parser, cover-grammar
+scanner and pseudo-binding resolver still share the parent, and extracting
+those seams remains the next structural checkpoint before another broad
+grammar slice.
 The
 RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
