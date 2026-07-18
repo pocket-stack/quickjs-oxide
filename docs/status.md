@@ -3273,8 +3273,11 @@ production compiler code byte-for-byte unchanged. R2d-2a then moves the
 visibility and `compiler.rs` falls again to 12,248 lines. R2d-2b isolates the
 256-line `<this>`/`<new.target>` owner, eval-exposure and prologue resolver in
 `compiler/pseudo_binding.rs`; the parent reaches 12,012 lines without changing
-identifier-resolution events or entry-prefix ordering. Further production
-phase splits remain required before another broad grammar slice.
+identifier-resolution events or entry-prefix ordering. R2d-2c moves the
+178-line ordinary-function definition parser and its two transfer records to
+`compiler/function.rs`; the parser bodies are unchanged and `compiler.rs` now
+stands at 11,842 lines. Further production phase splits remain required before
+another broad grammar slice.
 The complete 102,037-variant Test262 report remains byte-for-byte identical to
 the R2c hashes above at 30,254 passes.
 The

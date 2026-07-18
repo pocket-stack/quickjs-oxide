@@ -1,0 +1,178 @@
+use super::{
+    Error, ErrorKind, FunctionId, FunctionIr, FunctionKind, FunctionSourceInfo, Identifier,
+    IdentifierContext, IrConstant, IrOp, MAX_LOCAL_VARIABLES, ParentLink, Parser, Punctuator,
+    SourceOffset, Span, TokenKind, source_offset, source_span, validate_identifier,
+};
+
+pub(super) struct ParsedFunctionDefinition {
+    pub(super) constant: u32,
+    pub(super) child: FunctionId,
+    pub(super) name: Option<(String, Span)>,
+}
+
+pub(super) struct FunctionDefinitionHeader<'source> {
+    pub(super) span: Span,
+    pub(super) name: Option<(Identifier<'source>, Span)>,
+}
+
+impl<'source> Parser<'source> {
+    pub(super) fn parse_function_expression(&mut self) -> Result<(), Error> {
+        let parsed = self.parse_function_definition(false, true)?;
+        self.emit(IrOp::MakeClosure(parsed.constant))?;
+        self.anonymous_function_definition = parsed.name.is_none().then_some(parsed.child);
+        Ok(())
+    }
+
+    /// Parse the common ordinary-function grammar and publish its child
+    /// constant in the defining function. The caller decides whether that
+    /// constant is evaluated in expression position or recorded for Program
+    /// declaration hoisting.
+    pub(super) fn parse_function_definition(
+        &mut self,
+        require_name: bool,
+        private_name_binding: bool,
+    ) -> Result<ParsedFunctionDefinition, Error> {
+        let header = self.parse_function_definition_header(require_name)?;
+        self.parse_function_definition_tail(header, private_name_binding)
+    }
+
+    pub(super) fn parse_function_definition_header(
+        &mut self,
+        require_name: bool,
+    ) -> Result<FunctionDefinitionHeader<'source>, Error> {
+        let span = self.current().span;
+        self.advance()?;
+        let name = if let TokenKind::Identifier(identifier) = self.current().kind.clone() {
+            let span = self.current().span;
+            validate_identifier(&identifier, span, false, IdentifierContext::FunctionName)?;
+            self.advance()?;
+            Some((identifier, span))
+        } else {
+            None
+        };
+        if require_name && name.is_none() {
+            return Err(self.syntax_here("function name expected"));
+        }
+        Ok(FunctionDefinitionHeader { span, name })
+    }
+
+    pub(super) fn parse_function_definition_tail(
+        &mut self,
+        header: FunctionDefinitionHeader<'source>,
+        private_name_binding: bool,
+    ) -> Result<ParsedFunctionDefinition, Error> {
+        let FunctionDefinitionHeader {
+            span: function_span,
+            name: function_name_token,
+        } = header;
+        self.expect_punctuator(Punctuator::LeftParen)?;
+
+        let mut parameters = Vec::new();
+        let mut parameter_tokens = Vec::new();
+        if !self.consume_punctuator(Punctuator::RightParen)? {
+            loop {
+                let token = self.current().clone();
+                let TokenKind::Identifier(identifier) = token.kind else {
+                    return Err(self.syntax_here("missing formal parameter"));
+                };
+                validate_identifier(&identifier, token.span, false, IdentifierContext::Argument)?;
+                parameter_tokens.push((identifier.clone(), token.span));
+                parameters.push(identifier.value);
+                if parameters.len() > MAX_LOCAL_VARIABLES {
+                    return Err(Error::new(ErrorKind::JsInternal, "too many arguments")
+                        .with_span(source_span(token.span)));
+                }
+                self.advance()?;
+                if !self.consume_punctuator(Punctuator::Comma)? {
+                    if !self.consume_punctuator(Punctuator::RightParen)? {
+                        return Err(Error::syntax(
+                            "expecting ','",
+                            source_span(self.current().span),
+                        ));
+                    }
+                    break;
+                }
+                if self.is_punctuator(Punctuator::RightParen) {
+                    return Err(self.unsupported_here(
+                        "a trailing comma in this simple parameter list is not implemented yet",
+                    ));
+                }
+            }
+        }
+        self.expect_punctuator(Punctuator::LeftBrace)?;
+
+        let parent = self.current_function;
+        let parent_strict = self.functions[parent].strict;
+        let has_use_strict = self.directive_prologue_has_use_strict(self.cursor, parent_strict)?;
+        let strict = self.functions[parent].strict || has_use_strict;
+        self.relex_current_with_strict(strict)?;
+        if strict {
+            let strict_validation_span = self.current().span;
+            if let Some((identifier, _)) = &function_name_token {
+                validate_identifier(
+                    identifier,
+                    strict_validation_span,
+                    true,
+                    IdentifierContext::FunctionName,
+                )?;
+            }
+            for (index, (identifier, _)) in parameter_tokens.iter().enumerate() {
+                validate_identifier(
+                    identifier,
+                    strict_validation_span,
+                    true,
+                    IdentifierContext::Argument,
+                )?;
+                let parameter = &identifier.value;
+                if parameters[..index].contains(parameter) {
+                    return Err(Error::syntax(
+                        "duplicate argument names not allowed in this context",
+                        source_span(self.current().span),
+                    ));
+                }
+            }
+        }
+
+        let function_name = function_name_token
+            .as_ref()
+            .map(|(identifier, _)| identifier.value.clone());
+        let child = self.functions.len();
+        let parent_scope = self.functions[parent].current_scope;
+        self.functions.push(FunctionIr::new(
+            Some(ParentLink {
+                function: parent,
+                definition_scope: parent_scope,
+            }),
+            FunctionKind::Ordinary,
+            FunctionSourceInfo {
+                span: function_span,
+                definition: source_offset(function_span)?,
+                range: None,
+            },
+            function_name,
+            private_name_binding && function_name_token.is_some(),
+            parameters,
+            strict,
+        )?);
+        self.current_function = child;
+        self.parse_function_body()?;
+        let closing_brace = self.current().span;
+        let mut parent_context = self.lexer.context();
+        parent_context.strict = self.functions[parent].strict;
+        self.lexer.set_context(parent_context);
+        self.expect_punctuator(Punctuator::RightBrace)?;
+        self.functions[child].source.range = Some(
+            source_offset(function_span)?
+                ..SourceOffset::try_from_usize(closing_brace.end.byte_offset)
+                    .map_err(|error| Error::internal(error.to_string()))?,
+        );
+        self.current_function = parent;
+
+        let constant = self.add_constant(IrConstant::Child(child))?;
+        Ok(ParsedFunctionDefinition {
+            constant,
+            child,
+            name: function_name_token.map(|(identifier, span)| (identifier.value, span)),
+        })
+    }
+}
