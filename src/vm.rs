@@ -1,5 +1,5 @@
 use crate::bigint::{BigIntError, JsBigInt};
-use crate::bytecode::{ArgumentsKind, BytecodeFunction, Instruction};
+use crate::bytecode::{ArgumentsKind, BytecodeFunction, EvalVariableSource, Instruction};
 use crate::error::{Error, ErrorKind, NativeErrorKind};
 use crate::heap::{ContextId, FunctionMetadata};
 use crate::object::ObjectRef;
@@ -160,6 +160,10 @@ pub(crate) trait VmHost {
     /// resolves the constant through its atom table; detached execution has no
     /// table and formats the verified String constant directly.
     fn read_only_error(&mut self, index: u32) -> Result<Error, Error>;
+    /// Build QuickJS's eval-time lexical-redeclaration SyntaxError. Keeping
+    /// this as bytecode execution (rather than a compile failure) lets direct
+    /// global eval instantiate its declaration records first, as QuickJS does.
+    fn redeclaration_error(&mut self, index: u32) -> Result<Error, Error>;
     fn type_of(&mut self, value: &Value) -> Result<&'static str, Error>;
     fn box_primitive(&mut self, value: Value) -> Result<Value, Error>;
     fn to_primitive(&mut self, value: Value, hint: ToPrimitiveHint) -> Result<Completion, Error>;
@@ -174,6 +178,36 @@ pub(crate) trait VmHost {
     fn create_arguments(&mut self, kind: ArgumentsKind) -> Result<Completion, Error>;
     /// Create a fresh ordinary Object in the executing bytecode's realm.
     fn object(&mut self) -> Result<Completion, Error>;
+    /// Create the null-prototype object which backs one sloppy direct-eval
+    /// variable environment.
+    fn create_variable_environment(&mut self) -> Result<Completion, Error>;
+    fn has_eval_variable(
+        &mut self,
+        source: EvalVariableSource,
+        name: u32,
+    ) -> Result<Completion, Error>;
+    fn get_eval_variable(
+        &mut self,
+        source: EvalVariableSource,
+        name: u32,
+    ) -> Result<Completion, Error>;
+    fn put_eval_variable(
+        &mut self,
+        source: EvalVariableSource,
+        name: u32,
+        value: Value,
+    ) -> Result<Completion, Error>;
+    fn delete_eval_variable(
+        &mut self,
+        source: EvalVariableSource,
+        name: u32,
+    ) -> Result<Completion, Error>;
+    fn define_eval_variable(
+        &mut self,
+        source: EvalVariableSource,
+        name: u32,
+        value: Value,
+    ) -> Result<Completion, Error>;
     /// Instantiate a compile-time RegExp constant in the executing bytecode's
     /// realm, bypassing observable constructor and prototype reads.
     fn create_regexp(&mut self, index: u32) -> Result<Completion, Error>;
@@ -290,6 +324,16 @@ enum DetachedLocal {
     Uninitialized,
 }
 
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq)]
+enum DetachedEvalVariableOperation {
+    Has(EvalVariableSource, u32),
+    Get(EvalVariableSource, u32),
+    Put(EvalVariableSource, u32, Value),
+    Delete(EvalVariableSource, u32),
+    Define(EvalVariableSource, u32, Value),
+}
+
 struct DetachedHost<'a> {
     function: &'a BytecodeFunction,
     locals: Vec<DetachedLocal>,
@@ -317,6 +361,12 @@ struct DetachedHost<'a> {
     defined_array_elements: Vec<(Value, Value, Value)>,
     #[cfg(test)]
     object_results: VecDeque<Completion>,
+    #[cfg(test)]
+    variable_environment_results: VecDeque<Completion>,
+    #[cfg(test)]
+    eval_variable_results: VecDeque<Completion>,
+    #[cfg(test)]
+    eval_variable_operations: Vec<DetachedEvalVariableOperation>,
     #[cfg(test)]
     arguments_results: VecDeque<(ArgumentsKind, Completion)>,
     #[cfg(test)]
@@ -376,6 +426,12 @@ impl<'a> DetachedHost<'a> {
             defined_array_elements: Vec::new(),
             #[cfg(test)]
             object_results: VecDeque::new(),
+            #[cfg(test)]
+            variable_environment_results: VecDeque::new(),
+            #[cfg(test)]
+            eval_variable_results: VecDeque::new(),
+            #[cfg(test)]
+            eval_variable_operations: Vec::new(),
             #[cfg(test)]
             arguments_results: VecDeque::new(),
             #[cfg(test)]
@@ -506,6 +562,18 @@ impl VmHost for DetachedHost<'_> {
         Ok(Error::from_native_message(ErrorKind::Type, message))
     }
 
+    fn redeclaration_error(&mut self, index: u32) -> Result<Error, Error> {
+        let Value::String(_) = self.load_constant(index)? else {
+            return Err(Error::internal(
+                "redeclaration opcode referenced a non-string constant",
+            ));
+        };
+        Ok(Error::new(
+            ErrorKind::Syntax,
+            "invalid redefinition of lexical identifier",
+        ))
+    }
+
     fn type_of(&mut self, value: &Value) -> Result<&'static str, Error> {
         Ok(value.type_of())
     }
@@ -576,6 +644,121 @@ impl VmHost for DetachedHost<'_> {
         }
         Err(Error::internal(
             "detached VM cannot create runtime-owned Object values",
+        ))
+    }
+
+    fn create_variable_environment(&mut self) -> Result<Completion, Error> {
+        #[cfg(test)]
+        if let Some(outcome) = self.variable_environment_results.pop_front() {
+            return Ok(outcome);
+        }
+        Err(Error::internal(
+            "detached VM cannot create runtime-owned eval variable environments",
+        ))
+    }
+
+    fn has_eval_variable(
+        &mut self,
+        source: EvalVariableSource,
+        name: u32,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        {
+            self.eval_variable_operations
+                .push(DetachedEvalVariableOperation::Has(source, name));
+            if let Some(outcome) = self.eval_variable_results.pop_front() {
+                return Ok(outcome);
+            }
+        }
+        let _ = (source, name);
+        Err(Error::internal(
+            "detached VM cannot inspect eval variable environments",
+        ))
+    }
+
+    fn get_eval_variable(
+        &mut self,
+        source: EvalVariableSource,
+        name: u32,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        {
+            self.eval_variable_operations
+                .push(DetachedEvalVariableOperation::Get(source, name));
+            if let Some(outcome) = self.eval_variable_results.pop_front() {
+                return Ok(outcome);
+            }
+        }
+        let _ = (source, name);
+        Err(Error::internal(
+            "detached VM cannot inspect eval variable environments",
+        ))
+    }
+
+    fn put_eval_variable(
+        &mut self,
+        source: EvalVariableSource,
+        name: u32,
+        value: Value,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        {
+            self.eval_variable_operations
+                .push(DetachedEvalVariableOperation::Put(
+                    source,
+                    name,
+                    value.clone(),
+                ));
+            if let Some(outcome) = self.eval_variable_results.pop_front() {
+                return Ok(outcome);
+            }
+        }
+        let _ = (source, name, value);
+        Err(Error::internal(
+            "detached VM cannot mutate eval variable environments",
+        ))
+    }
+
+    fn delete_eval_variable(
+        &mut self,
+        source: EvalVariableSource,
+        name: u32,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        {
+            self.eval_variable_operations
+                .push(DetachedEvalVariableOperation::Delete(source, name));
+            if let Some(outcome) = self.eval_variable_results.pop_front() {
+                return Ok(outcome);
+            }
+        }
+        let _ = (source, name);
+        Err(Error::internal(
+            "detached VM cannot delete eval variable bindings",
+        ))
+    }
+
+    fn define_eval_variable(
+        &mut self,
+        source: EvalVariableSource,
+        name: u32,
+        value: Value,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        {
+            self.eval_variable_operations
+                .push(DetachedEvalVariableOperation::Define(
+                    source,
+                    name,
+                    value.clone(),
+                ));
+            if let Some(outcome) = self.eval_variable_results.pop_front() {
+                return Ok(outcome);
+            }
+        }
+        let _ = (source, name, value);
+        Err(Error::internal(
+            "detached VM cannot define eval variable bindings",
         ))
     }
 
@@ -1077,6 +1260,42 @@ impl CallFrame {
                 Completion::Return(arguments) => self.stack.push(arguments),
                 Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
             },
+            Instruction::VariableEnvironment => match host.create_variable_environment()? {
+                Completion::Return(environment) => self.stack.push(environment),
+                Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+            },
+            Instruction::HasEvalVariable { source, name } => {
+                match host.has_eval_variable(*source, *name)? {
+                    Completion::Return(value) => self.stack.push(value),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::GetEvalVariable { source, name } => {
+                match host.get_eval_variable(*source, *name)? {
+                    Completion::Return(value) => self.stack.push(value),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::PutEvalVariable { source, name } => {
+                let value = self.pop()?;
+                if let Completion::Throw(value) = host.put_eval_variable(*source, *name, value)? {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::DeleteEvalVariable { source, name } => {
+                match host.delete_eval_variable(*source, *name)? {
+                    Completion::Return(value) => self.stack.push(value),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::DefineEvalVariable { source, name } => {
+                let value = self.pop()?;
+                if let Completion::Throw(value) =
+                    host.define_eval_variable(*source, *name, value)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
             Instruction::Object => match host.object()? {
                 Completion::Return(object) => self.stack.push(object),
                 Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
@@ -1452,6 +1671,12 @@ impl CallFrame {
             if matches!(
                 instruction,
                 Instruction::Arguments(_)
+                    | Instruction::VariableEnvironment
+                    | Instruction::HasEvalVariable { .. }
+                    | Instruction::GetEvalVariable { .. }
+                    | Instruction::PutEvalVariable { .. }
+                    | Instruction::DeleteEvalVariable { .. }
+                    | Instruction::DefineEvalVariable { .. }
                     | Instruction::Object
                     | Instruction::RegExp(_)
                     | Instruction::SetNameComputed
@@ -1543,6 +1768,14 @@ impl CallFrame {
                 Instruction::Arguments(_) => {
                     unreachable!("arguments-object dispatch was bypassed")
                 }
+                Instruction::VariableEnvironment
+                | Instruction::HasEvalVariable { .. }
+                | Instruction::GetEvalVariable { .. }
+                | Instruction::PutEvalVariable { .. }
+                | Instruction::DeleteEvalVariable { .. }
+                | Instruction::DefineEvalVariable { .. } => {
+                    unreachable!("eval variable-object dispatch was bypassed")
+                }
                 Instruction::Object => unreachable!("object literal dispatch was bypassed"),
                 Instruction::RegExp(_) => {
                     unreachable!("RegExp literal dispatch was bypassed")
@@ -1560,6 +1793,9 @@ impl CallFrame {
                 Instruction::ThrowReadOnly(index) => {
                     self.pop()?;
                     return Err(host.read_only_error(*index)?);
+                }
+                Instruction::ThrowRedeclaration(index) => {
+                    return Err(host.redeclaration_error(*index)?);
                 }
                 Instruction::Undefined => self.stack.push(Value::Undefined),
                 Instruction::Null => self.stack.push(Value::Null),
@@ -2740,13 +2976,13 @@ fn bigint_error(error: BigIntError) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use crate::bytecode::{ArgumentsKind, BytecodeFunction, Instruction};
+    use crate::bytecode::{ArgumentsKind, BytecodeFunction, EvalVariableSource, Instruction};
     use crate::error::ErrorKind;
     use crate::value::{JsString, Value};
 
     use super::{
-        CallFrame, Completion, DetachedHost, DirectEvalInvocation, Vm, number_to_int32,
-        number_to_uint32,
+        CallFrame, Completion, DetachedEvalVariableOperation, DetachedHost, DirectEvalInvocation,
+        Vm, VmHost, number_to_int32, number_to_uint32,
     };
 
     #[test]
@@ -2988,6 +3224,66 @@ mod tests {
                 .execute(&function.code, &mut host)
                 .unwrap(),
             Completion::Throw(thrown)
+        );
+    }
+
+    #[test]
+    fn eval_variable_object_opcodes_preserve_stack_and_host_operands() {
+        let source = EvalVariableSource::Local(0);
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::VariableEnvironment,
+                Instruction::PutLocal(0),
+                Instruction::HasEvalVariable { source, name: 0 },
+                Instruction::Drop,
+                Instruction::GetEvalVariable { source, name: 0 },
+                Instruction::Drop,
+                Instruction::PushI32(7),
+                Instruction::PutEvalVariable { source, name: 0 },
+                Instruction::DeleteEvalVariable { source, name: 0 },
+                Instruction::Drop,
+                Instruction::PushI32(11),
+                Instruction::DefineEvalVariable { source, name: 0 },
+                Instruction::PushI32(42),
+                Instruction::Return,
+            ],
+            constants: vec![Value::String(JsString::from_static("added"))],
+            local_count: 1,
+            max_stack: 1,
+        };
+        function.verify().unwrap();
+
+        let environment = Value::String(JsString::from_static("variable environment"));
+        let mut host = DetachedHost::new(&function);
+        host.variable_environment_results
+            .push_back(Completion::Return(environment.clone()));
+        for value in [
+            Value::Bool(true),
+            Value::Int(3),
+            Value::Undefined,
+            Value::Bool(true),
+            Value::Undefined,
+        ] {
+            host.eval_variable_results
+                .push_back(Completion::Return(value));
+        }
+        assert_eq!(
+            CallFrame::new(1)
+                .execute(&function.code, &mut host)
+                .unwrap(),
+            Completion::Return(Value::Int(42))
+        );
+        assert_eq!(host.get_local(0).unwrap(), environment);
+        assert_eq!(
+            host.eval_variable_operations,
+            [
+                DetachedEvalVariableOperation::Has(source, 0),
+                DetachedEvalVariableOperation::Get(source, 0),
+                DetachedEvalVariableOperation::Put(source, 0, Value::Int(7)),
+                DetachedEvalVariableOperation::Delete(source, 0),
+                DetachedEvalVariableOperation::Define(source, 0, Value::Int(11)),
+            ]
         );
     }
 

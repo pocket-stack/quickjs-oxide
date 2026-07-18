@@ -225,6 +225,22 @@ enum Compilation {
     Throw(Value),
 }
 
+/// Controls the property attributes used while instantiating declarations on
+/// a realm's global object. Ordinary Script declarations are permanent;
+/// QuickJS keeps properties first created or configurably replaced by direct
+/// or indirect eval configurable so a later `delete` can remove them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GlobalBindingCreationMode {
+    Script,
+    Eval,
+}
+
+impl GlobalBindingCreationMode {
+    const fn configurable(self) -> bool {
+        matches!(self, Self::Eval)
+    }
+}
+
 struct DynamicSourceBuilder {
     source: String,
     utf16_len: usize,
@@ -2848,7 +2864,9 @@ impl Runtime {
                     {
                         self.check_global_function_declaration(caller_realm, &key)?;
                     }
-                    ClosureVariableKind::FunctionName | ClosureVariableKind::GlobalFunction => {
+                    ClosureVariableKind::FunctionName
+                    | ClosureVariableKind::GlobalFunction
+                    | ClosureVariableKind::EvalVariableObject => {
                         return Err(RuntimeError::Invariant(
                             "global declaration has non-global binding metadata",
                         ));
@@ -2882,15 +2900,23 @@ impl Runtime {
                                 root
                             }
                         }
-                        ClosureVariableKind::Normal => {
-                            self.create_global_var_binding(caller_realm, &key)?
-                        }
+                        ClosureVariableKind::Normal => self.create_global_var_binding(
+                            caller_realm,
+                            &key,
+                            GlobalBindingCreationMode::Script,
+                        )?,
                         ClosureVariableKind::GlobalFunction
                             if !descriptor.is_lexical && !descriptor.is_const =>
                         {
-                            self.create_global_function_binding(caller_realm, &key)?
+                            self.create_global_function_binding(
+                                caller_realm,
+                                &key,
+                                GlobalBindingCreationMode::Script,
+                            )?
                         }
-                        ClosureVariableKind::FunctionName | ClosureVariableKind::GlobalFunction => {
+                        ClosureVariableKind::FunctionName
+                        | ClosureVariableKind::GlobalFunction
+                        | ClosureVariableKind::EvalVariableObject => {
                             return Err(RuntimeError::Invariant(
                                 "global declaration has non-global binding metadata",
                             ));
@@ -3200,6 +3226,7 @@ impl Runtime {
         &self,
         realm: ContextId,
         key: &PropertyKey,
+        mode: GlobalBindingCreationMode,
     ) -> Result<VarRefRoot, RuntimeError> {
         let (global_object, hidden) = {
             let state = self.0.state.borrow();
@@ -3244,7 +3271,7 @@ impl Runtime {
         self.store_property_slot(
             &global_object,
             key,
-            PropertyFlags::data(true, true, false),
+            PropertyFlags::data(true, true, mode.configurable()),
             PropertySlot::VarRef(root.id()),
         )?;
         Ok(root)
@@ -3254,6 +3281,7 @@ impl Runtime {
         &self,
         realm: ContextId,
         key: &PropertyKey,
+        mode: GlobalBindingCreationMode,
     ) -> Result<VarRefRoot, RuntimeError> {
         let (global_object, hidden) = {
             let state = self.0.state.borrow();
@@ -3299,16 +3327,17 @@ impl Runtime {
             self.store_property_slot(
                 &global_object,
                 key,
-                PropertyFlags::data(true, true, false),
+                PropertyFlags::data(true, true, mode.configurable()),
                 PropertySlot::VarRef(root.id()),
             )?;
             return Ok(root);
         }
 
-        // Existing configurable properties are strengthened to ordinary
-        // writable/enumerable/non-configurable data properties without
-        // invoking accessors. Fixed W/E data properties already have the
-        // required public attributes and keep their existing VarRef identity.
+        // Existing configurable properties are replaced with ordinary
+        // writable/enumerable data properties without invoking accessors.
+        // Script makes the replacement permanent while eval preserves
+        // configurability. Fixed W/E data properties keep their existing
+        // non-configurable attributes and VarRef identity.
         let (flags, slot) = {
             let state = self.0.state.borrow();
             let object = state.heap.object(global_object.object_id())?;
@@ -3383,7 +3412,7 @@ impl Runtime {
         }
 
         let function_flags = if flags.configurable {
-            PropertyFlags::data(true, true, false)
+            PropertyFlags::data(true, true, mode.configurable())
         } else {
             if !flags.writable || !flags.enumerable {
                 return Err(RuntimeError::Invariant(

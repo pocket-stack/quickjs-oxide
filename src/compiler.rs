@@ -14,7 +14,7 @@
 use crate::atom::AtomTable;
 use crate::bigint::JsBigInt;
 use crate::bytecode::{
-    ArgumentsKind, BytecodeFunction, Instruction, MAX_LOCAL_SLOTS, verify_parts,
+    ArgumentsKind, BytecodeFunction, EvalVariableSource, Instruction, MAX_LOCAL_SLOTS, verify_parts,
 };
 use crate::debug::{DebugInfoMode, Pc2LineEntry, Pc2LineTable, QuickJsSourceLocator, SourceOffset};
 use crate::error::{Error, ErrorKind, NativeErrorMessage, SourceLocation, SourceSpan};
@@ -181,6 +181,9 @@ const MAX_CALL_ARGUMENTS: usize = 65_535;
 // QuickJS `js_parse_program` allocates `JS_ATOM__ret_` as the first local of
 // every script. Source text cannot spell this sentinel as an IdentifierName.
 const EVAL_RET_LOCAL_NAME: &str = "<ret>";
+// QuickJS `JS_ATOM__var_`: the null-prototype variable object used by sloppy
+// direct eval. Source text cannot spell this binding identity.
+const EVAL_VARIABLE_OBJECT_LOCAL_NAME: &str = "<var>";
 // A finally clause in script code must preserve the incoming completion value
 // when it terminates normally. Keep those implementation-only save slots in
 // the same explicit metadata domain as `<ret>` rather than letting an unbound
@@ -276,6 +279,7 @@ enum BindingKind {
     Normal,
     Lexical { is_const: bool },
     FunctionName { is_const: bool },
+    EvalVariableObject,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -326,12 +330,47 @@ struct IrHoistedFunction {
     constant: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EvalDeclarationTarget {
+    /// A pre-existing caller cell which precedes the caller's `<var>` object.
+    External { index: u16, kind: BindingKind },
+    /// A novel name stored as a configurable property on the caller's `<var>`
+    /// object. Repeated records deliberately redefine the property.
+    Dynamic(EvalVariableSource),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EvalDeclarationValue {
+    Undefined,
+    Function(u32),
+}
+
+#[derive(Clone, Debug)]
+struct IrEvalDeclaration {
+    name: String,
+    target: EvalDeclarationTarget,
+    value: EvalDeclarationValue,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EvalDeclarationMode {
+    Local,
+    Global,
+    Dynamic(EvalVariableSource),
+}
+
 #[derive(Clone, Copy, Debug)]
 struct IrScopedFunction {
     binding: BindingId,
     constant: u32,
-    annex_binding: Option<BindingId>,
+    annex_binding: Option<IrAnnexBinding>,
     authored_closure: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IrAnnexBinding {
+    Static(BindingId),
+    Dynamic,
 }
 
 /// A sloppy labelled FunctionDeclaration in ProgramBody. QuickJS deliberately
@@ -472,6 +511,14 @@ enum IrOp {
     /// QuickJS has no value-preserving checked VarRef write. Keep the typed
     /// operation unresolved until lowering expands it to `dup; put_var_ref_check`.
     CapturedLexicalSet(u16),
+    /// One or more QuickJS `with_*`-shaped checks against hidden sloppy-eval
+    /// variable objects, followed by the statically resolved outer fallback.
+    DynamicIdentifier {
+        name: u32,
+        access: IdentifierAccess,
+        sources: Box<[EvalVariableSource]>,
+        fallback: Box<IrOp>,
+    },
     Identifier {
         name: String,
         span: Span,
@@ -544,6 +591,15 @@ impl IrOp {
             Self::EvalCall { argument_count, .. } => (usize::from(*argument_count) + 1, 1),
             Self::PushConstant(_) | Self::MakeClosure(_) => (0, 1),
             Self::GlobalSet(_) | Self::CapturedLexicalSet(_) => (1, 1),
+            Self::DynamicIdentifier { access, .. } => match access {
+                IdentifierAccess::Get
+                | IdentifierAccess::GetOrUndefined
+                | IdentifierAccess::Delete => (0, 1),
+                IdentifierAccess::Initialize
+                | IdentifierAccess::Put
+                | IdentifierAccess::AnnexBPut => (1, 0),
+                IdentifierAccess::Set => (1, 1),
+            },
             Self::Identifier {
                 access:
                     IdentifierAccess::Get | IdentifierAccess::GetOrUndefined | IdentifierAccess::Delete,
@@ -585,6 +641,10 @@ struct FunctionIr {
     /// resolution (or a function-scoped `var`/function declaration) needs the
     /// implicit binding. An explicit `arguments` parameter suppresses it.
     arguments_local: Option<u16>,
+    /// Hidden null-prototype variable object for a sloppy ordinary function
+    /// containing syntactic direct eval. Its identity is explicit rather than
+    /// inferred from local allocation order.
+    eval_variable_object_local: Option<u16>,
     parameters: Vec<String>,
     locals: Vec<String>,
     scopes: Vec<IrScope>,
@@ -593,6 +653,14 @@ struct FunctionIr {
     /// Last direct function declaration attached to each ordinary
     /// function-scoped argument/local binding.
     hoisted_functions: Vec<IrHoistedFunction>,
+    /// Source-ordered declaration records for sloppy direct eval targeting a
+    /// caller function's variable environment.
+    eval_declarations: Vec<IrEvalDeclaration>,
+    eval_declarations_installed: bool,
+    /// First caller lexical name which conflicts with an eval `var`/function.
+    /// The eval still compiles so global declaration instantiation can run
+    /// before this typed SyntaxError is thrown at bytecode entry.
+    eval_redeclaration: Option<String>,
     function_hoists_installed: bool,
     /// Scoped lexical function slots, including one slot per sloppy same-scope
     /// duplicate as in QuickJS `JS_VAR_FUNCTION_DECL`.
@@ -703,12 +771,16 @@ impl FunctionIr {
             private_name_binding,
             function_name_local: None,
             arguments_local: None,
+            eval_variable_object_local: None,
             parameters,
             locals,
             scopes,
             bindings: Vec::new(),
             global_declarations: Vec::new(),
             hoisted_functions: Vec::new(),
+            eval_declarations: Vec::new(),
+            eval_declarations_installed: false,
+            eval_redeclaration: None,
             function_hoists_installed: false,
             scoped_functions: Vec::new(),
             program_annex_functions: Vec::new(),
@@ -883,10 +955,20 @@ fn install_eval_external_bindings(
 
     // Scope bindings are searched newest-first. Install outer-to-inner so the
     // innermost exact descriptor wins for duplicate names while every closure
-    // slot remains available to the specialized publication verifier.
+    // slot remains available to the specialized publication verifier. The
+    // `<var>` descriptor is deliberately not a source binding: dynamic lookup
+    // consumes its retained external slot through `EvalVariableSource`.
     for (index, binding) in bindings.iter().enumerate().rev() {
         let index = u16::try_from(index)
             .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"))?;
+        if binding.kind == ClosureVariableKind::EvalVariableObject {
+            if binding.is_lexical || binding.is_const || binding.is_catch_parameter {
+                return Err(Error::internal(
+                    "eval variable object binding metadata is malformed",
+                ));
+            }
+            continue;
+        }
         let name = String::from_utf16(&binding.name.utf16_units().collect::<Vec<_>>())
             .map_err(|_| Error::internal("eval caller binding name is not well formed"))?;
         let kind = match binding.kind {
@@ -899,13 +981,14 @@ fn install_eval_external_bindings(
             },
             ClosureVariableKind::Normal
             | ClosureVariableKind::FunctionName
-            | ClosureVariableKind::GlobalFunction => {
+            | ClosureVariableKind::GlobalFunction
+            | ClosureVariableKind::EvalVariableObject => {
                 return Err(Error::internal(
                     "eval caller binding flags are inconsistent",
                 ));
             }
         };
-        function.add_binding(
+        let installed = function.add_binding(
             function.var_scope,
             function.var_scope,
             name,
@@ -913,6 +996,7 @@ fn install_eval_external_bindings(
             kind,
             None,
         );
+        function.bindings[installed.0].is_catch_parameter = binding.is_catch_parameter;
     }
     function.external_bindings = bindings.into_vec();
     Ok(())
@@ -1133,10 +1217,10 @@ impl<'source> Parser<'source> {
                     && position == StatementPosition::ProgramBody
                 {
                     self.parse_program_function_declaration()
-                } else if matches!(self.current_ir().kind, FunctionKind::Eval(_)) {
-                    Err(self.unsupported_here(
-                        "function declarations in eval source are not implemented yet",
-                    ))
+                } else if matches!(self.current_ir().kind, FunctionKind::Eval(_))
+                    && position == StatementPosition::ProgramBody
+                {
+                    self.parse_eval_program_function_declaration()
                 } else if matches!(self.current_ir().kind, FunctionKind::Ordinary)
                     && position == StatementPosition::FunctionBody
                 {
@@ -2854,14 +2938,8 @@ impl<'source> Parser<'source> {
         declaration_span: Span,
         conflict_span: Span,
     ) -> Result<(), Error> {
-        if matches!(
-            self.functions[self.current_function].kind,
-            FunctionKind::Eval(_)
-        ) {
-            return Err(Error::unsupported(
-                "var declarations in eval source require a dynamic variable environment",
-                source_span(declaration_span),
-            ));
+        if matches!(self.current_ir().kind, FunctionKind::Eval(_)) {
+            return self.register_eval_var_binding(name, declaration_span, conflict_span);
         }
         let function = &mut self.functions[self.current_function];
         let selects_arguments_object = matches!(function.kind, FunctionKind::Ordinary)
@@ -2957,6 +3035,201 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
+    fn current_eval_declaration_mode(&self) -> Result<EvalDeclarationMode, Error> {
+        let function = self.current_ir();
+        let FunctionKind::Eval(kind) = function.kind else {
+            return Err(Error::internal(
+                "eval declaration mode requested outside an eval root",
+            ));
+        };
+        if function.strict {
+            return Ok(EvalDeclarationMode::Local);
+        }
+        match kind {
+            EvalKind::Indirect => Ok(EvalDeclarationMode::Global),
+            EvalKind::Direct => function
+                .external_bindings
+                .iter()
+                .position(|binding| binding.kind == ClosureVariableKind::EvalVariableObject)
+                .map(|index| {
+                    u16::try_from(index)
+                        .map(EvalVariableSource::Closure)
+                        .map(EvalDeclarationMode::Dynamic)
+                        .map_err(|_| {
+                            Error::new(ErrorKind::JsInternal, "too many closure variables")
+                        })
+                })
+                .unwrap_or(Ok(EvalDeclarationMode::Global)),
+            EvalKind::None => Err(Error::internal("eval root has no eval kind")),
+        }
+    }
+
+    fn eval_dynamic_declaration_target(
+        &mut self,
+        name: &str,
+        object: EvalVariableSource,
+        _conflict_span: Span,
+    ) -> Result<EvalDeclarationTarget, Error> {
+        let EvalVariableSource::Closure(object_index) = object else {
+            return Err(Error::internal(
+                "eval root declaration targeted a non-external variable object",
+            ));
+        };
+        let external_bindings = self.current_ir().external_bindings.clone();
+        for (index, binding) in external_bindings.iter().enumerate() {
+            let index = u16::try_from(index)
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"))?;
+            if index == object_index {
+                if binding.kind != ClosureVariableKind::EvalVariableObject {
+                    return Err(Error::internal(
+                        "eval variable object external index changed",
+                    ));
+                }
+                return Ok(EvalDeclarationTarget::Dynamic(object));
+            }
+            if binding.name.to_utf8_lossy() != name {
+                continue;
+            }
+            if binding.is_lexical
+                && !binding.is_catch_parameter
+                && self.current_ir().eval_redeclaration.is_none()
+            {
+                self.current_ir_mut().eval_redeclaration = Some(name.to_owned());
+            }
+            let kind = match binding.kind {
+                ClosureVariableKind::Normal if binding.is_lexical => BindingKind::Lexical {
+                    is_const: binding.is_const,
+                },
+                ClosureVariableKind::Normal if !binding.is_const => BindingKind::Normal,
+                ClosureVariableKind::FunctionName if !binding.is_lexical => {
+                    BindingKind::FunctionName {
+                        is_const: binding.is_const,
+                    }
+                }
+                ClosureVariableKind::Normal
+                | ClosureVariableKind::FunctionName
+                | ClosureVariableKind::GlobalFunction
+                | ClosureVariableKind::EvalVariableObject => {
+                    return Err(Error::internal(
+                        "eval caller binding flags are inconsistent",
+                    ));
+                }
+            };
+            return Ok(EvalDeclarationTarget::External { index, kind });
+        }
+        Err(Error::internal(
+            "sloppy direct eval has no variable object external",
+        ))
+    }
+
+    fn register_eval_var_binding(
+        &mut self,
+        name: &str,
+        declaration_span: Span,
+        conflict_span: Span,
+    ) -> Result<(), Error> {
+        let mode = self.current_eval_declaration_mode()?;
+        let function = self.current_ir();
+        if let Some((_, binding)) = function.binding_id_from_scope(function.current_scope, name) {
+            let binding = &function.bindings[binding.0];
+            if matches!(binding.kind, BindingKind::Lexical { .. })
+                && !matches!(binding.storage, BindingStorage::External(_))
+                && !binding.is_catch_parameter
+            {
+                return Err(Error::syntax(
+                    "invalid redefinition of lexical identifier",
+                    source_span(conflict_span),
+                ));
+            }
+        }
+
+        match mode {
+            EvalDeclarationMode::Dynamic(object) => {
+                let target = self.eval_dynamic_declaration_target(name, object, conflict_span)?;
+                self.current_ir_mut()
+                    .eval_declarations
+                    .push(IrEvalDeclaration {
+                        name: name.to_owned(),
+                        target,
+                        value: EvalDeclarationValue::Undefined,
+                    });
+                Ok(())
+            }
+            EvalDeclarationMode::Local => {
+                let function = self.current_ir_mut();
+                let existing = function.scopes[function.var_scope.0]
+                    .bindings
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|binding| {
+                        let binding = &function.bindings[binding.0];
+                        binding.name == name
+                            && !matches!(binding.storage, BindingStorage::External(_))
+                    });
+                if existing.is_some() {
+                    return Ok(());
+                }
+                if function.locals.len() >= MAX_LOCAL_VARIABLES {
+                    return Err(
+                        Error::new(ErrorKind::JsInternal, "too many local variables")
+                            .with_span(source_span(declaration_span)),
+                    );
+                }
+                let index = u16::try_from(function.locals.len())
+                    .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+                function.locals.push(name.to_owned());
+                function.add_binding(
+                    function.var_scope,
+                    function.current_scope,
+                    name.to_owned(),
+                    BindingStorage::Local(index),
+                    BindingKind::Normal,
+                    Some(declaration_span),
+                );
+                Ok(())
+            }
+            EvalDeclarationMode::Global => {
+                let function = self.current_ir_mut();
+                function.global_declarations.push(IrGlobalDeclaration {
+                    name: name.to_owned(),
+                    is_lexical: false,
+                    is_const: false,
+                    function_constant: None,
+                    closure_index: None,
+                });
+                let caller_lexical_conflict = function
+                    .external_bindings
+                    .iter()
+                    .find(|binding| binding.name.to_utf8_lossy() == name)
+                    .is_some_and(|binding| binding.is_lexical && !binding.is_catch_parameter);
+                if caller_lexical_conflict && function.eval_redeclaration.is_none() {
+                    function.eval_redeclaration = Some(name.to_owned());
+                }
+                let existing = function.scopes[function.var_scope.0]
+                    .bindings
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|binding| {
+                        let binding = &function.bindings[binding.0];
+                        binding.name == name && binding.storage == BindingStorage::Global
+                    });
+                if existing.is_none() {
+                    function.add_binding(
+                        function.var_scope,
+                        function.current_scope,
+                        name.to_owned(),
+                        BindingStorage::Global,
+                        BindingKind::Normal,
+                        Some(declaration_span),
+                    );
+                }
+                Ok(())
+            }
+        }
+    }
+
     fn register_lexical_binding(
         &mut self,
         name: &str,
@@ -2974,6 +3247,21 @@ impl<'source> Parser<'source> {
         let is_eval_body = matches!(scope_kind, ScopeKind::ProgramBody)
             && matches!(function.kind, FunctionKind::Eval(_))
             && scope == function.body_scope;
+        if is_eval_body
+            && (function
+                .eval_declarations
+                .iter()
+                .any(|declaration| declaration.name == name)
+                || function
+                    .global_declarations
+                    .iter()
+                    .any(|declaration| !declaration.is_lexical && declaration.name == name))
+        {
+            return Err(Error::syntax(
+                "invalid redefinition of lexical identifier",
+                source_span(conflict_span),
+            ));
+        }
         let supported_scope = is_global
             || is_eval_body
             || matches!(
@@ -3047,6 +3335,7 @@ impl<'source> Parser<'source> {
                     // authored environments and may be shadowed there.
                     ""
                 }
+                (BindingStorage::Local(_), BindingKind::EvalVariableObject) => "",
                 (BindingStorage::Local(_), BindingKind::Lexical { .. }) => {
                     return Err(Error::internal(
                         "lexical binding leaked into the function var scope",
@@ -4928,6 +5217,113 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
+    fn parse_eval_program_function_declaration(&mut self) -> Result<(), Error> {
+        let parsed = self.parse_function_definition(true, false)?;
+        let (name, declaration_span) = parsed
+            .name
+            .ok_or_else(|| Error::internal("required eval function lost its name"))?;
+        if !matches!(self.current_ir().kind, FunctionKind::Eval(_)) {
+            return Err(Error::internal(
+                "eval function declaration escaped its synthetic root",
+            ));
+        }
+        let conflict_span = self.current().span;
+        if self
+            .current_ir()
+            .binding_id_in_scope(self.current_ir().body_scope, &name)
+            .is_some_and(|binding| {
+                matches!(
+                    self.current_ir().bindings[binding.0].kind,
+                    BindingKind::Lexical { .. }
+                )
+            })
+        {
+            return Err(Error::syntax(
+                "invalid redefinition of lexical identifier",
+                source_span(conflict_span),
+            ));
+        }
+
+        match self.current_eval_declaration_mode()? {
+            EvalDeclarationMode::Global => {
+                let function = self.current_ir_mut();
+                function.global_declarations.push(IrGlobalDeclaration {
+                    name: name.clone(),
+                    is_lexical: false,
+                    is_const: false,
+                    function_constant: Some(parsed.constant),
+                    closure_index: None,
+                });
+                let caller_lexical_conflict = function
+                    .external_bindings
+                    .iter()
+                    .find(|binding| binding.name.to_utf8_lossy() == name)
+                    .is_some_and(|binding| binding.is_lexical && !binding.is_catch_parameter);
+                if caller_lexical_conflict && function.eval_redeclaration.is_none() {
+                    function.eval_redeclaration = Some(name.clone());
+                }
+                let has_global = function.scopes[function.var_scope.0]
+                    .bindings
+                    .iter()
+                    .copied()
+                    .any(|binding| {
+                        let binding = &function.bindings[binding.0];
+                        binding.name == name && binding.storage == BindingStorage::Global
+                    });
+                if !has_global {
+                    function.add_binding(
+                        function.var_scope,
+                        function.current_scope,
+                        name,
+                        BindingStorage::Global,
+                        BindingKind::Normal,
+                        Some(declaration_span),
+                    );
+                }
+            }
+            EvalDeclarationMode::Local => {
+                self.register_eval_var_binding(&name, declaration_span, conflict_span)?;
+                let function = self.current_ir_mut();
+                let binding = function.scopes[function.var_scope.0]
+                    .bindings
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|binding| {
+                        let binding = &function.bindings[binding.0];
+                        binding.name == name
+                            && !matches!(binding.storage, BindingStorage::External(_))
+                    })
+                    .ok_or_else(|| {
+                        Error::internal("eval-local function binding was not registered")
+                    })?;
+                if let Some(existing) = function
+                    .hoisted_functions
+                    .iter_mut()
+                    .find(|hoist| hoist.binding == binding)
+                {
+                    existing.constant = parsed.constant;
+                } else {
+                    function.hoisted_functions.push(IrHoistedFunction {
+                        binding,
+                        constant: parsed.constant,
+                    });
+                }
+            }
+            EvalDeclarationMode::Dynamic(object) => {
+                let target = self.eval_dynamic_declaration_target(&name, object, conflict_span)?;
+                self.current_ir_mut()
+                    .eval_declarations
+                    .push(IrEvalDeclaration {
+                        name,
+                        target,
+                        value: EvalDeclarationValue::Function(parsed.constant),
+                    });
+            }
+        }
+        Ok(())
+    }
+
     fn parse_function_body_declaration(&mut self) -> Result<(), Error> {
         let parsed = self.parse_function_definition(true, false)?;
         let (name, declaration_span) = parsed
@@ -5039,7 +5435,13 @@ impl<'source> Parser<'source> {
         // QuickJS publishes this synthetic global only after the child has
         // parsed successfully. Deferred tree-wide identifier resolution still
         // lets the child capture the resulting recursive binding.
-        let binding = self.ensure_annex_b_binding(&name, declaration_span)?;
+        let IrAnnexBinding::Static(binding) =
+            self.ensure_annex_b_binding(&name, declaration_span)?
+        else {
+            return Err(Error::internal(
+                "Program Annex B declaration targeted dynamic eval storage",
+            ));
+        };
 
         let authored_closure = self.emit(IrOp::MakeClosure(parsed.constant))?;
         self.emit_instruction(Instruction::Dup)?;
@@ -5087,12 +5489,12 @@ impl<'source> Parser<'source> {
         if annex_binding.is_some() {
             self.emit_instruction(Instruction::Dup)?;
             let root_scope = self.current_ir().var_scope;
-            self.emit_identifier_inherited(
-                name,
-                declaration_span,
-                root_scope,
-                IdentifierAccess::AnnexBPut,
-            )?;
+            let access = if annex_binding == Some(IrAnnexBinding::Dynamic) {
+                IdentifierAccess::Put
+            } else {
+                IdentifierAccess::AnnexBPut
+            };
+            self.emit_identifier_inherited(name, declaration_span, root_scope, access)?;
         }
         self.emit_instruction(Instruction::Drop)?;
         self.current_ir_mut()
@@ -5111,11 +5513,16 @@ impl<'source> Parser<'source> {
         name: &str,
         declaration_span: Span,
     ) -> Result<PreparedScopedFunction, Error> {
-        let scope_kind = self.current_ir().scopes[self.current_ir().current_scope.0].kind;
+        let function = self.current_ir();
+        let scope_kind = function.scopes[function.current_scope.0].kind;
+        let eval_program_body = matches!(function.kind, FunctionKind::Eval(_))
+            && function.current_scope == function.body_scope
+            && matches!(scope_kind, ScopeKind::ProgramBody);
         if !matches!(
             scope_kind,
             ScopeKind::Block | ScopeKind::If | ScopeKind::Switch | ScopeKind::FunctionBody
-        ) {
+        ) && !eval_program_body
+        {
             return Err(Error::internal(
                 "scoped function escaped an Annex B declaration scope",
             ));
@@ -5147,10 +5554,30 @@ impl<'source> Parser<'source> {
 
         let mut scope = function.current_scope;
         loop {
-            if function
-                .binding_in_scope(scope, name)
-                .is_some_and(|binding| matches!(binding.kind, BindingKind::Lexical { .. }))
+            if let Some(binding) = function.binding_in_scope(scope, name)
+                && matches!(binding.kind, BindingKind::Lexical { .. })
             {
+                // Annex B.3.5 deliberately treats a simple catch parameter as
+                // compatible with the synthetic outer `var` introduced for a
+                // block FunctionDeclaration. The catch-local lexical remains
+                // the function's inner binding; only the eligibility scan
+                // skips it while looking for a blocking lexical declaration.
+                if binding.is_catch_parameter {
+                    let Some(parent) = function.scopes[scope.0].parent else {
+                        break;
+                    };
+                    scope = parent;
+                    continue;
+                }
+                if matches!(function.kind, FunctionKind::Eval(_))
+                    && matches!(binding.storage, BindingStorage::External(_))
+                {
+                    let Some(parent) = function.scopes[scope.0].parent else {
+                        break;
+                    };
+                    scope = parent;
+                    continue;
+                }
                 let masked_program_lexical = matches!(function.kind, FunctionKind::Script)
                     && scope == function.body_scope
                     && matches!(function.scopes[scope.0].kind, ScopeKind::ProgramBody)
@@ -5218,10 +5645,56 @@ impl<'source> Parser<'source> {
         &mut self,
         name: &str,
         declaration_span: Span,
-    ) -> Result<BindingId, Error> {
+    ) -> Result<IrAnnexBinding, Error> {
+        let eval_mode = if matches!(self.current_ir().kind, FunctionKind::Eval(_)) {
+            Some(self.current_eval_declaration_mode()?)
+        } else {
+            None
+        };
+
+        if let Some(EvalDeclarationMode::Dynamic(object)) = eval_mode {
+            let target = self.eval_dynamic_declaration_target(name, object, declaration_span)?;
+            self.current_ir_mut()
+                .eval_declarations
+                .push(IrEvalDeclaration {
+                    name: name.to_owned(),
+                    target,
+                    value: EvalDeclarationValue::Undefined,
+                });
+            return match target {
+                EvalDeclarationTarget::Dynamic(_) => Ok(IrAnnexBinding::Dynamic),
+                EvalDeclarationTarget::External { index, .. } => {
+                    let function = self.current_ir();
+                    let binding = function.scopes[function.var_scope.0]
+                        .bindings
+                        .iter()
+                        .copied()
+                        .find(|binding| {
+                            function.bindings[binding.0].storage == BindingStorage::External(index)
+                        })
+                        .ok_or_else(|| {
+                            Error::internal("Annex B external target has no binding identity")
+                        })?;
+                    Ok(IrAnnexBinding::Static(binding))
+                }
+            };
+        }
+
         let function = self.current_ir_mut();
         let root = function.var_scope;
-        if matches!(function.kind, FunctionKind::Script) {
+        let global = matches!(function.kind, FunctionKind::Script)
+            || eval_mode == Some(EvalDeclarationMode::Global);
+        if eval_mode == Some(EvalDeclarationMode::Global)
+            && function
+                .external_bindings
+                .iter()
+                .find(|binding| binding.name.to_utf8_lossy() == name)
+                .is_some_and(|binding| binding.is_lexical && !binding.is_catch_parameter)
+            && function.eval_redeclaration.is_none()
+        {
+            function.eval_redeclaration = Some(name.to_owned());
+        }
+        if global {
             function.global_declarations.push(IrGlobalDeclaration {
                 name: name.to_owned(),
                 is_lexical: false,
@@ -5230,52 +5703,62 @@ impl<'source> Parser<'source> {
                 closure_index: None,
             });
         }
-        if let Some(binding) = function.binding_id_in_scope(root, name) {
-            let metadata = &function.bindings[binding.0];
-            let valid = metadata.kind == BindingKind::Normal
-                && match function.kind {
-                    FunctionKind::Script => metadata.storage == BindingStorage::Global,
-                    FunctionKind::Ordinary => {
-                        matches!(metadata.storage, BindingStorage::Local(_))
-                    }
-                    FunctionKind::Eval(_) => false,
-                };
-            if !valid {
+        if let Some(binding) =
+            function.scopes[root.0]
+                .bindings
+                .iter()
+                .rev()
+                .copied()
+                .find(|binding| {
+                    let binding = &function.bindings[binding.0];
+                    binding.name == name
+                        && match (function.kind, eval_mode) {
+                            (FunctionKind::Script, _) => binding.storage == BindingStorage::Global,
+                            (FunctionKind::Ordinary, _) => {
+                                matches!(binding.storage, BindingStorage::Local(_))
+                            }
+                            (FunctionKind::Eval(_), Some(EvalDeclarationMode::Global)) => {
+                                binding.storage == BindingStorage::Global
+                            }
+                            (FunctionKind::Eval(_), Some(EvalDeclarationMode::Local)) => {
+                                matches!(binding.storage, BindingStorage::Local(_))
+                            }
+                            (FunctionKind::Eval(_), Some(EvalDeclarationMode::Dynamic(_)))
+                            | (FunctionKind::Eval(_), None) => false,
+                        }
+                })
+        {
+            if function.bindings[binding.0].kind != BindingKind::Normal {
                 return Err(Error::internal(
                     "Annex B declaration found a malformed function-root binding",
                 ));
             }
-            return Ok(binding);
+            return Ok(IrAnnexBinding::Static(binding));
         }
 
-        let storage = match function.kind {
-            FunctionKind::Script => BindingStorage::Global,
-            FunctionKind::Ordinary => {
-                if function.locals.len() >= MAX_LOCAL_VARIABLES {
-                    return Err(
-                        Error::new(ErrorKind::JsInternal, "too many local variables")
-                            .with_span(source_span(declaration_span)),
-                    );
-                }
-                let index = u16::try_from(function.locals.len())
-                    .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
-                function.locals.push(name.to_owned());
-                BindingStorage::Local(index)
+        let storage = if global {
+            BindingStorage::Global
+        } else {
+            if function.locals.len() >= MAX_LOCAL_VARIABLES {
+                return Err(
+                    Error::new(ErrorKind::JsInternal, "too many local variables")
+                        .with_span(source_span(declaration_span)),
+                );
             }
-            FunctionKind::Eval(_) => {
-                return Err(Error::internal(
-                    "Annex B declaration escaped the eval declaration frontier",
-                ));
-            }
+            let index = u16::try_from(function.locals.len())
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+            function.locals.push(name.to_owned());
+            BindingStorage::Local(index)
         };
-        Ok(function.add_binding(
+        let binding = function.add_binding(
             root,
             root,
             name.to_owned(),
             storage,
             BindingKind::Normal,
             Some(declaration_span),
-        ))
+        );
+        Ok(IrAnnexBinding::Static(binding))
     }
 
     fn emit_value(&mut self, value: Value) -> Result<(), Error> {
@@ -6160,7 +6643,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 "private function-name capability is malformed",
             ));
         }
-        if matches!(function.kind, FunctionKind::Script | FunctionKind::Eval(_))
+        if matches!(function.kind, FunctionKind::Script)
             && (!function.hoisted_functions.is_empty() || function.function_hoists_installed)
         {
             return Err(Error::internal(
@@ -6212,6 +6695,34 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 ));
             }
         }
+        let eval_variable_object_bindings = function
+            .bindings
+            .iter()
+            .filter(|binding| binding.kind == BindingKind::EvalVariableObject)
+            .collect::<Vec<_>>();
+        match (
+            function.eval_variable_object_local,
+            eval_variable_object_bindings.as_slice(),
+        ) {
+            (Some(index), [binding])
+                if matches!(function.kind, FunctionKind::Ordinary)
+                    && !function.strict
+                    && binding.name == EVAL_VARIABLE_OBJECT_LOCAL_NAME
+                    && binding.storage == BindingStorage::Local(index)
+                    && binding.storage_scope == function.var_scope
+                    && binding.declaration_scope == function.var_scope
+                    && binding.declaration_span.is_none()
+                    && function
+                        .ops
+                        .iter()
+                        .any(|operation| matches!(operation.op, IrOp::EvalCall { .. })) => {}
+            (None, []) => {}
+            _ => {
+                return Err(Error::internal(
+                    "eval variable object local metadata is malformed",
+                ));
+            }
+        }
         let mut seen_hoisted_bindings = vec![false; function.bindings.len()];
         for hoist in &function.hoisted_functions {
             let binding = function
@@ -6250,20 +6761,41 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             }
         }
         if function.function_hoists_installed {
-            let hoist_start = if let Some(local) = function.arguments_local {
+            let mut hoist_start = 0_usize;
+            if let Some(local) = function.eval_variable_object_local {
+                if !matches!(
+                    function.ops.first(),
+                    Some(SpannedIrOp {
+                        op: IrOp::Bytecode(Instruction::VariableEnvironment),
+                        pc_site: None,
+                    })
+                ) || !matches!(
+                    function.ops.get(1),
+                    Some(SpannedIrOp {
+                        op: IrOp::Bytecode(Instruction::PutLocal(target)),
+                        pc_site: None,
+                    }) if *target == local
+                ) {
+                    return Err(Error::internal(
+                        "installed eval-variable-object prologue is malformed",
+                    ));
+                }
+                hoist_start = 2;
+            }
+            if let Some(local) = function.arguments_local {
                 let expected_kind = if function.strict {
                     ArgumentsKind::Unmapped
                 } else {
                     ArgumentsKind::Mapped
                 };
                 if !matches!(
-                    function.ops.first(),
+                    function.ops.get(hoist_start),
                     Some(SpannedIrOp {
                         op: IrOp::Bytecode(Instruction::Arguments(kind)),
                         pc_site: None,
                     }) if *kind == expected_kind
                 ) || !matches!(
-                    function.ops.get(1),
+                    function.ops.get(hoist_start + 1),
                     Some(SpannedIrOp {
                         op: IrOp::Bytecode(Instruction::PutLocal(target)),
                         pc_site: None,
@@ -6273,10 +6805,8 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         "installed arguments-object prologue is malformed",
                     ));
                 }
-                2
-            } else {
-                0
-            };
+                hoist_start += 2;
+            }
             for (ordinal, hoist) in ordered_hoisted_functions(function)?.into_iter().enumerate() {
                 let closure_pc = ordinal
                     .checked_mul(2)
@@ -6331,10 +6861,12 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 || binding.kind != (BindingKind::Lexical { is_const: false })
                 || !binding.is_scoped_function
                 || !matches!(binding.storage, BindingStorage::Local(_))
-                || !matches!(
+                || !(matches!(
                     scope_kind,
                     ScopeKind::Block | ScopeKind::If | ScopeKind::Switch | ScopeKind::FunctionBody
-                )
+                ) || (matches!(scope_kind, ScopeKind::ProgramBody)
+                    && matches!(function.kind, FunctionKind::Eval(_))
+                    && binding.storage_scope == function.body_scope))
             {
                 return Err(Error::internal(
                     "scoped function has malformed lexical binding metadata",
@@ -6388,60 +6920,99 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         "Annex B function lost its duplicate outer value",
                     ));
                 }
-                let annex = function
-                    .bindings
-                    .get(annex_binding.0)
-                    .ok_or_else(|| Error::internal("Annex B function binding is out of bounds"))?;
-                if annex.storage_scope != function.var_scope
-                    || annex.kind != BindingKind::Normal
-                    || annex.name != binding.name
-                {
-                    return Err(Error::internal(
-                        "Annex B function has malformed root binding metadata",
-                    ));
-                }
                 let write = function.ops.get(scoped.authored_closure + 2);
-                let unresolved = matches!(
-                    write,
-                    Some(SpannedIrOp {
-                        op: IrOp::Identifier {
-                            name,
-                            scope,
-                            access: IdentifierAccess::AnnexBPut,
-                            ..
-                        },
-                        pc_site: None,
-                    }) if name == &binding.name && *scope == function.var_scope
-                );
-                let resolved = match annex.storage {
-                    BindingStorage::Local(index) => matches!(
-                        write,
-                        Some(SpannedIrOp {
-                            op: IrOp::Bytecode(Instruction::PutLocal(target)),
-                            pc_site: None,
-                        }) if *target == index
-                    ),
-                    BindingStorage::Global => matches!(
-                        write,
-                        Some(SpannedIrOp {
-                            op: IrOp::Bytecode(Instruction::PutVar(index)),
-                            pc_site: None,
-                        }) if function.closure_variables.get(usize::from(*index)).is_some_and(
-                            |descriptor| {
-                                descriptor.source == ClosureSource::Global
-                                    && match descriptor.name {
-                                        ClosureVariableName::Constant(name) => matches!(
-                                            function.constants.get(name as usize),
-                                            Some(IrConstant::Primitive(Value::String(found)))
-                                                if found.to_utf8_lossy() == annex.name
-                                        ),
-                                        _ => false,
+                let (unresolved, resolved) = match annex_binding {
+                    IrAnnexBinding::Static(annex_binding) => {
+                        let annex = function.bindings.get(annex_binding.0).ok_or_else(|| {
+                            Error::internal("Annex B function binding is out of bounds")
+                        })?;
+                        if annex.storage_scope != function.var_scope
+                            || (annex.kind != BindingKind::Normal
+                                && !matches!(annex.storage, BindingStorage::External(_)))
+                            || annex.name != binding.name
+                        {
+                            return Err(Error::internal(
+                                "Annex B function has malformed root binding metadata",
+                            ));
+                        }
+                        let unresolved = matches!(
+                            write,
+                            Some(SpannedIrOp {
+                                op: IrOp::Identifier {
+                                    name,
+                                    scope,
+                                    access: IdentifierAccess::AnnexBPut,
+                                    ..
+                                },
+                                pc_site: None,
+                            }) if name == &binding.name && *scope == function.var_scope
+                        );
+                        let resolved = match annex.storage {
+                            BindingStorage::Local(index) => matches!(
+                                write,
+                                Some(SpannedIrOp {
+                                    op: IrOp::Bytecode(Instruction::PutLocal(target)),
+                                    pc_site: None,
+                                }) if *target == index
+                            ),
+                            BindingStorage::Global => matches!(
+                                write,
+                                Some(SpannedIrOp {
+                                    op: IrOp::Bytecode(Instruction::PutVar(index)),
+                                    pc_site: None,
+                                }) if function.closure_variables.get(usize::from(*index)).is_some_and(
+                                    |descriptor| {
+                                        descriptor.source == ClosureSource::Global
+                                            && match descriptor.name {
+                                                ClosureVariableName::Constant(name) => matches!(
+                                                    function.constants.get(name as usize),
+                                                    Some(IrConstant::Primitive(Value::String(found)))
+                                                        if found.to_utf8_lossy() == annex.name
+                                                ),
+                                                _ => false,
+                                            }
                                     }
-                            }
-                        )
-                    ),
-                    BindingStorage::Argument(_) => false,
-                    BindingStorage::External(_) => false,
+                                )
+                            ),
+                            BindingStorage::External(index) => matches!(
+                                write,
+                                Some(SpannedIrOp {
+                                    op: IrOp::Bytecode(
+                                        Instruction::PutVarRef(target)
+                                            | Instruction::PutVarRefCheck(target)
+                                    ),
+                                    pc_site: None,
+                                }) if *target == index
+                            ),
+                            BindingStorage::Argument(_) => false,
+                        };
+                        (unresolved, resolved)
+                    }
+                    IrAnnexBinding::Dynamic => {
+                        let unresolved = matches!(
+                            write,
+                            Some(SpannedIrOp {
+                                op: IrOp::Identifier {
+                                    name,
+                                    scope,
+                                    access: IdentifierAccess::Put,
+                                    ..
+                                },
+                                pc_site: None,
+                            }) if name == &binding.name && *scope == function.var_scope
+                        );
+                        let resolved = matches!(
+                            write,
+                            Some(SpannedIrOp {
+                                op: IrOp::DynamicIdentifier {
+                                    access: IdentifierAccess::Put,
+                                    ..
+                                },
+                                pc_site: None,
+                            })
+                        );
+                        (unresolved, resolved)
+                    }
                 };
                 if !unresolved && !resolved {
                     return Err(Error::internal(
@@ -6611,13 +7182,22 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             }
         }
         match function.kind {
-            FunctionKind::Script => {
+            FunctionKind::Script | FunctionKind::Eval(_) => {
                 for declaration in &function.global_declarations {
-                    let binding = if declaration.is_lexical {
-                        function.binding_in_scope(function.body_scope, &declaration.name)
+                    let binding_scope = if declaration.is_lexical {
+                        function.body_scope
                     } else {
-                        function.binding_in_scope(function.var_scope, &declaration.name)
+                        function.var_scope
                     };
+                    let binding = function.scopes[binding_scope.0]
+                        .bindings
+                        .iter()
+                        .rev()
+                        .map(|binding| &function.bindings[binding.0])
+                        .find(|binding| {
+                            binding.name == declaration.name
+                                && binding.storage == BindingStorage::Global
+                        });
                     let expected_kind = if declaration.is_lexical {
                         BindingKind::Lexical {
                             is_const: declaration.is_const,
@@ -6683,11 +7263,10 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                     }
                 }
             }
-            FunctionKind::Ordinary | FunctionKind::Eval(_)
-                if function.global_declarations.is_empty() => {}
-            FunctionKind::Ordinary | FunctionKind::Eval(_) => {
+            FunctionKind::Ordinary if function.global_declarations.is_empty() => {}
+            FunctionKind::Ordinary => {
                 return Err(Error::internal(
-                    "non-Script function contains Program global declarations",
+                    "ordinary function contains Program global declarations",
                 ));
             }
         }
@@ -6710,7 +7289,38 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         let mut seen_bindings = vec![false; function.bindings.len()];
         let mut seen_arguments = vec![false; function.parameters.len()];
         let mut seen_locals = vec![false; function.locals.len()];
-        let mut seen_external = vec![false; function.external_bindings.len()];
+        // The special `<var>` external remains at its flattened closure index
+        // but intentionally has no source binding identity.
+        let mut seen_external = function
+            .external_bindings
+            .iter()
+            .map(|binding| binding.kind == ClosureVariableKind::EvalVariableObject)
+            .collect::<Vec<_>>();
+        for (index, external) in function.external_bindings.iter().enumerate() {
+            if external.kind != ClosureVariableKind::EvalVariableObject {
+                continue;
+            }
+            let descriptor = function
+                .closure_variables
+                .get(index)
+                .ok_or_else(|| Error::internal("eval variable object closure is out of bounds"))?;
+            if external.is_lexical
+                || external.is_const
+                || external.is_catch_parameter
+                || external.name.to_utf8_lossy() != EVAL_VARIABLE_OBJECT_LOCAL_NAME
+                || descriptor.source
+                    != ClosureSource::EvalEnvironment(u16::try_from(index).map_err(|_| {
+                        Error::new(ErrorKind::JsInternal, "too many closure variables")
+                    })?)
+                || descriptor.kind != ClosureVariableKind::EvalVariableObject
+                || descriptor.is_lexical
+                || descriptor.is_const
+            {
+                return Err(Error::internal(
+                    "eval variable object external metadata is malformed",
+                ));
+            }
+        }
         for (scope_index, scope) in function.scopes.iter().enumerate() {
             for &binding_id in &scope.bindings {
                 let binding = function
@@ -6823,7 +7433,8 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         let valid_var = binding.kind == BindingKind::Normal
                             && binding.storage_scope == function.var_scope;
                         if binding.is_catch_parameter
-                            || !matches!(function.kind, FunctionKind::Script)
+                            || (!matches!(function.kind, FunctionKind::Script)
+                                && !(matches!(function.kind, FunctionKind::Eval(_)) && valid_var))
                             || (!valid_lexical && !valid_var)
                         {
                             return Err(Error::internal("global binding metadata is malformed"));
@@ -6859,7 +7470,8 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                             }
                             ClosureVariableKind::Normal
                             | ClosureVariableKind::FunctionName
-                            | ClosureVariableKind::GlobalFunction => {
+                            | ClosureVariableKind::GlobalFunction
+                            | ClosureVariableKind::EvalVariableObject => {
                                 return Err(Error::internal(
                                     "eval external binding flags are inconsistent",
                                 ));
@@ -6870,7 +7482,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                             || binding.storage_scope != function.var_scope
                             || binding.declaration_scope != function.var_scope
                             || binding.declaration_span.is_some()
-                            || binding.is_catch_parameter
+                            || binding.is_catch_parameter != external.is_catch_parameter
                             || binding.name != external.name.to_utf8_lossy()
                             || binding.kind != expected_kind
                         {
@@ -7023,24 +7635,17 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                     ));
                 }
             } else if scope_index == function.body_scope.0 {
-                let body_entry = if function.function_hoists_installed {
-                    function
-                        .hoisted_functions
-                        .len()
-                        .saturating_mul(2)
-                        .saturating_add(usize::from(function.arguments_local.is_some()) * 2)
-                } else {
-                    0
-                };
                 match function.kind {
                     FunctionKind::Script if entries == 0 && leaves == 0 => {}
                     FunctionKind::Ordinary | FunctionKind::Eval(_)
                         if entries == 1
                             && leaves == 0
-                            && matches!(
-                                function.ops.get(body_entry).map(|operation| &operation.op),
-                                Some(IrOp::EnterScope(body)) if *body == function.body_scope
-                            ) => {}
+                            && function.ops.iter().any(|operation| {
+                                matches!(
+                                    operation.op,
+                                    IrOp::EnterScope(body) if body == function.body_scope
+                                )
+                            }) => {}
                     _ => {
                         return Err(Error::internal(
                             "function body scope lifecycle metadata is malformed",
@@ -7105,6 +7710,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
 }
 
 fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
+    install_eval_variable_objects(tree)?;
     validate_scope_graph(tree)?;
     seed_global_declarations(tree)?;
     // QuickJS creates and resolves children depth-first in source order before
@@ -7138,8 +7744,58 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
     // binding visible to the call site.
     link_eval_environments(tree)?;
     install_global_function_hoists(tree)?;
+    install_eval_declaration_hoists(tree)?;
     install_function_body_hoists(tree)?;
     validate_scope_graph(tree)
+}
+
+/// QuickJS `add_eval_variables` allocates one hidden `<var>` local before
+/// resolving any identifier in a sloppy ordinary function which contains a
+/// syntactic direct-eval site. Keeping this as a separate prepass is essential:
+/// children authored before the eval call must resolve through the same object.
+fn install_eval_variable_objects(tree: &mut FunctionTree) -> Result<(), Error> {
+    for function in &mut tree.functions {
+        let needs_object = matches!(function.kind, FunctionKind::Ordinary)
+            && !function.strict
+            && function
+                .ops
+                .iter()
+                .any(|operation| matches!(operation.op, IrOp::EvalCall { .. }));
+        if !needs_object {
+            if function.eval_variable_object_local.is_some() {
+                return Err(Error::internal(
+                    "function retained an unnecessary eval variable object",
+                ));
+            }
+            continue;
+        }
+        if function.eval_variable_object_local.is_some() {
+            return Err(Error::internal(
+                "eval variable object was installed more than once",
+            ));
+        }
+        if function.locals.len() >= MAX_LOCAL_VARIABLES {
+            return Err(Error::new(
+                ErrorKind::JsInternal,
+                "too many local variables",
+            ));
+        }
+        let index = u16::try_from(function.locals.len())
+            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+        function
+            .locals
+            .push(EVAL_VARIABLE_OBJECT_LOCAL_NAME.to_owned());
+        function.add_binding(
+            function.var_scope,
+            function.var_scope,
+            EVAL_VARIABLE_OBJECT_LOCAL_NAME.to_owned(),
+            BindingStorage::Local(index),
+            BindingKind::EvalVariableObject,
+            None,
+        );
+        function.eval_variable_object_local = Some(index);
+    }
+    Ok(())
 }
 
 const fn eval_scope_kind(kind: ScopeKind) -> EvalScopeKind {
@@ -7318,15 +7974,45 @@ fn link_eval_environment(
                 .scopes
                 .get(scope.0)
                 .ok_or_else(|| Error::internal("eval scope path is out of bounds"))?;
-            let bindings = ir_scope
-                .bindings
-                .iter()
-                .rev()
+            let mut ordered = ir_scope.bindings.iter().rev().copied().collect::<Vec<_>>();
+            if ir_scope.kind == ScopeKind::FunctionRoot
+                && function.eval_variable_object_local.is_some()
+            {
+                // Existing authored root bindings precede `<var>`. The lazy
+                // `arguments` object and private function name are the two
+                // QuickJS pseudo-bindings exposed after `<var>` to eval source.
+                ordered.sort_by_key(|binding| {
+                    let binding = &function.bindings[binding.0];
+                    match binding.kind {
+                        BindingKind::EvalVariableObject => 1_u8,
+                        BindingKind::FunctionName { .. } => 2,
+                        BindingKind::Normal
+                            if matches!(
+                                binding.storage,
+                                BindingStorage::Local(index)
+                                    if function.arguments_local == Some(index)
+                            ) =>
+                        {
+                            2
+                        }
+                        BindingKind::Normal | BindingKind::Lexical { .. } => 0,
+                    }
+                });
+            }
+            let bindings = ordered
+                .into_iter()
                 .map(|binding| {
                     function
                         .bindings
                         .get(binding.0)
-                        .map(|binding| (binding.name.clone(), binding.storage, binding.kind))
+                        .map(|binding| {
+                            (
+                                binding.name.clone(),
+                                binding.storage,
+                                binding.kind,
+                                binding.is_catch_parameter,
+                            )
+                        })
                         .ok_or_else(|| Error::internal("eval binding is out of bounds"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -7337,7 +8023,7 @@ fn link_eval_environment(
         }
 
         let mut bindings = Vec::with_capacity(binding_snapshots.len());
-        for (name, storage, binding_kind) in binding_snapshots {
+        for (name, storage, binding_kind, is_catch_parameter) in binding_snapshots {
             let source = if owner == consuming_function {
                 match storage {
                     BindingStorage::Argument(index) => EvalBindingSource::Argument(index),
@@ -7386,6 +8072,7 @@ fn link_eval_environment(
                         | BindingKind::FunctionName { is_const: true }
                 ),
                 kind: closure_kind(binding_kind),
+                is_catch_parameter,
             });
         }
         scopes.push(EvalScope {
@@ -7497,22 +8184,119 @@ fn install_global_function_hoists(tree: &mut FunctionTree) -> Result<(), Error> 
             pc_site: None,
         });
     }
-
     prepend_hoist_prefix(&mut tree.functions[0], prefix)
+}
+
+/// Install the source-ordered declaration prelude used by sloppy direct eval
+/// in an ordinary caller. Unlike ordinary function hoists, every novel `var`
+/// record is retained and writes `undefined`; this preserves QuickJS's
+/// observable overwrite behavior across repeated eval invocations.
+fn install_eval_declaration_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
+    let Some(function) = tree.functions.first_mut() else {
+        return Err(Error::internal("compiler produced no root function"));
+    };
+    if function.eval_declarations_installed {
+        return Err(Error::internal(
+            "eval declaration hoists were installed more than once",
+        ));
+    }
+    if function.eval_declarations.is_empty() && function.eval_redeclaration.is_none() {
+        function.eval_declarations_installed = true;
+        return Ok(());
+    }
+    if !matches!(function.kind, FunctionKind::Eval(EvalKind::Direct)) || function.strict {
+        return Err(Error::internal(
+            "dynamic eval declarations escaped sloppy direct eval",
+        ));
+    }
+
+    let declarations = function.eval_declarations.clone();
+    let mut prefix = Vec::with_capacity(
+        declarations
+            .len()
+            .saturating_mul(2)
+            .saturating_add(usize::from(function.eval_redeclaration.is_some())),
+    );
+    if let Some(name) = function.eval_redeclaration.clone() {
+        let name = ensure_string_constant(function, &name)?;
+        prefix.push(SpannedIrOp {
+            op: IrOp::Bytecode(Instruction::ThrowRedeclaration(name)),
+            pc_site: None,
+        });
+    }
+    for declaration in declarations {
+        match declaration.value {
+            EvalDeclarationValue::Undefined => {
+                if matches!(declaration.target, EvalDeclarationTarget::Dynamic(_)) {
+                    prefix.push(SpannedIrOp {
+                        op: IrOp::Bytecode(Instruction::Undefined),
+                        pc_site: None,
+                    });
+                }
+            }
+            EvalDeclarationValue::Function(constant) => prefix.push(SpannedIrOp {
+                op: IrOp::MakeClosure(constant),
+                pc_site: None,
+            }),
+        }
+
+        let write = match declaration.target {
+            EvalDeclarationTarget::Dynamic(source) => {
+                let name = ensure_string_constant(function, &declaration.name)?;
+                Some(IrOp::Bytecode(Instruction::DefineEvalVariable {
+                    source,
+                    name,
+                }))
+            }
+            EvalDeclarationTarget::External { index, kind } => match declaration.value {
+                EvalDeclarationValue::Undefined => None,
+                EvalDeclarationValue::Function(_) => Some(closure_binding_operation(
+                    function,
+                    index,
+                    kind,
+                    IdentifierAccess::Put,
+                    &declaration.name,
+                )?),
+            },
+        };
+        if let Some(write) = write {
+            prefix.push(SpannedIrOp {
+                op: write,
+                pc_site: None,
+            });
+        }
+    }
+    prepend_hoist_prefix(function, prefix)?;
+    function.eval_declarations_installed = true;
+    Ok(())
 }
 
 /// QuickJS initializes the lazily selected arguments binding before storing
 /// direct body function declarations into argument/root-local slots.
 fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
-    for function_id in 1..tree.functions.len() {
+    for function_id in 0..tree.functions.len() {
+        if matches!(tree.functions[function_id].kind, FunctionKind::Script) {
+            continue;
+        }
         let hoists = ordered_hoisted_functions(&tree.functions[function_id])?;
         let arguments_local = tree.functions[function_id].arguments_local;
+        let eval_variable_object_local = tree.functions[function_id].eval_variable_object_local;
         let mut prefix = Vec::with_capacity(
             hoists
                 .len()
                 .saturating_mul(2)
                 .saturating_add(usize::from(arguments_local.is_some()) * 2),
         );
+        if let Some(local) = eval_variable_object_local {
+            prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::VariableEnvironment),
+                pc_site: None,
+            });
+            prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::PutLocal(local)),
+                pc_site: None,
+            });
+        }
         if let Some(local) = arguments_local {
             let kind = if tree.functions[function_id].strict {
                 ArgumentsKind::Unmapped
@@ -7884,6 +8668,7 @@ fn apply_quickjs_late_throw_sites(
                     | Instruction::Throw
                     | Instruction::Ret
                     | Instruction::ThrowReadOnly(_)
+                    | Instruction::ThrowRedeclaration(_)
             );
         if !terminal {
             index += 1;
@@ -7916,7 +8701,10 @@ fn apply_quickjs_late_throw_sites(
             }
             dead_index += 1;
         }
-        if matches!(code[terminal_index], Instruction::ThrowReadOnly(_)) {
+        if matches!(
+            code[terminal_index],
+            Instruction::ThrowReadOnly(_) | Instruction::ThrowRedeclaration(_)
+        ) {
             late_throw_sites.push((terminal_index, current_site));
         }
         index = dead_index;
@@ -7939,7 +8727,9 @@ fn resolve_identifier(
     if access == IdentifierAccess::AnnexBPut {
         let binding = find_or_create_own_binding(tree, function_id, use_scope, name, span)?
             .ok_or_else(|| Error::internal("Annex B root binding was not registered"))?;
-        if binding.kind != BindingKind::Normal {
+        if binding.kind != BindingKind::Normal
+            && !matches!(binding.storage, BindingStorage::External(_))
+        {
             return Err(Error::internal(
                 "Annex B root write resolved to a non-ordinary binding",
             ));
@@ -7947,6 +8737,15 @@ fn resolve_identifier(
         if binding.storage == BindingStorage::Global {
             let closure_index = capture_global_path(tree, function_id, name)?;
             return Ok(IrOp::Bytecode(Instruction::PutVar(closure_index)));
+        }
+        if let BindingStorage::External(index) = binding.storage {
+            return closure_binding_operation(
+                &mut tree.functions[function_id],
+                index,
+                binding.kind,
+                IdentifierAccess::Put,
+                name,
+            );
         }
         return binding_instruction(
             &mut tree.functions[function_id],
@@ -7965,68 +8764,282 @@ fn resolve_identifier(
         // object to exist merely to reject deletion.
         return Ok(IrOp::Bytecode(Instruction::PushFalse));
     }
-    if let Some(binding) = find_or_create_own_binding(tree, function_id, use_scope, name, span)? {
-        if binding.storage == BindingStorage::Global {
-            return global_declaration_operation(tree, function_id, binding.kind, access, name);
+    let mut dynamic_sources = Vec::new();
+    let mut owner = function_id;
+    let mut scope = use_scope;
+    loop {
+        let found = find_or_create_own_binding(tree, owner, scope, name, span)?;
+        if let Some(binding) = found {
+            if matches!(tree.functions[owner].kind, FunctionKind::Eval(_))
+                && matches!(binding.storage, BindingStorage::External(_))
+            {
+                if let Some(binding) = resolve_eval_external_chain(
+                    tree,
+                    owner,
+                    function_id,
+                    name,
+                    &mut dynamic_sources,
+                )? {
+                    let fallback = resolved_binding_operation(
+                        tree,
+                        owner,
+                        function_id,
+                        binding,
+                        access,
+                        name,
+                    )?;
+                    return wrap_dynamic_identifier(
+                        &mut tree.functions[function_id],
+                        name,
+                        access,
+                        dynamic_sources,
+                        fallback,
+                    );
+                }
+            } else {
+                // QuickJS places the hidden variable object before a private
+                // function-expression name, but ordinary authored bindings
+                // (including the caller's implicit arguments object) retain
+                // static priority in already-compiled caller code.
+                if matches!(binding.kind, BindingKind::FunctionName { .. }) {
+                    push_owned_eval_variable_source(
+                        tree,
+                        owner,
+                        function_id,
+                        &mut dynamic_sources,
+                    )?;
+                }
+                let fallback =
+                    resolved_binding_operation(tree, owner, function_id, binding, access, name)?;
+                return wrap_dynamic_identifier(
+                    &mut tree.functions[function_id],
+                    name,
+                    access,
+                    dynamic_sources,
+                    fallback,
+                );
+            }
+        } else if matches!(tree.functions[owner].kind, FunctionKind::Eval(_)) {
+            if let Some(binding) =
+                resolve_eval_external_chain(tree, owner, function_id, name, &mut dynamic_sources)?
+            {
+                let fallback =
+                    resolved_binding_operation(tree, owner, function_id, binding, access, name)?;
+                return wrap_dynamic_identifier(
+                    &mut tree.functions[function_id],
+                    name,
+                    access,
+                    dynamic_sources,
+                    fallback,
+                );
+            }
+        } else {
+            push_owned_eval_variable_source(tree, owner, function_id, &mut dynamic_sources)?;
         }
+
+        let Some(parent) = tree.functions[owner].parent else {
+            break;
+        };
+        owner = parent.function;
+        scope = parent.definition_scope;
+    }
+
+    let closure_index = capture_global_path(tree, function_id, name)?;
+    let fallback = match access {
+        IdentifierAccess::Get => IrOp::Bytecode(Instruction::GetVar(closure_index)),
+        IdentifierAccess::GetOrUndefined => IrOp::Bytecode(Instruction::GetVarUndef(closure_index)),
+        IdentifierAccess::Delete => IrOp::Bytecode(Instruction::DeleteVar(closure_index)),
+        IdentifierAccess::Initialize => {
+            return Err(Error::internal(
+                "lexical initializer did not resolve to its owning local",
+            ));
+        }
+        IdentifierAccess::Put => IrOp::Bytecode(Instruction::PutVar(closure_index)),
+        IdentifierAccess::AnnexBPut => {
+            return Err(Error::internal(
+                "Annex B write escaped its dedicated resolver path",
+            ));
+        }
+        IdentifierAccess::Set => IrOp::GlobalSet(closure_index),
+    };
+    wrap_dynamic_identifier(
+        &mut tree.functions[function_id],
+        name,
+        access,
+        dynamic_sources,
+        fallback,
+    )
+}
+
+fn resolved_binding_operation(
+    tree: &mut FunctionTree,
+    defining_function: FunctionId,
+    consuming_function: FunctionId,
+    binding: ResolvedBinding,
+    access: IdentifierAccess,
+    name: &str,
+) -> Result<IrOp, Error> {
+    if binding.storage == BindingStorage::Global {
+        return global_declaration_operation(tree, consuming_function, binding.kind, access, name);
+    }
+    if defining_function == consuming_function {
         if let BindingStorage::External(index) = binding.storage {
             return closure_binding_operation(
-                &mut tree.functions[function_id],
+                &mut tree.functions[consuming_function],
                 index,
                 binding.kind,
                 access,
                 name,
             );
         }
-        return binding_instruction(&mut tree.functions[function_id], binding, access, name)
-            .map(IrOp::Bytecode);
+        return binding_instruction(
+            &mut tree.functions[consuming_function],
+            binding,
+            access,
+            name,
+        )
+        .map(IrOp::Bytecode);
     }
-
-    let mut defining_link = tree.functions[function_id].parent;
-    let (defining_function, binding) = loop {
-        let Some(link) = defining_link else {
-            let closure_index = capture_global_path(tree, function_id, name)?;
-            return Ok(match access {
-                IdentifierAccess::Get => IrOp::Bytecode(Instruction::GetVar(closure_index)),
-                IdentifierAccess::GetOrUndefined => {
-                    IrOp::Bytecode(Instruction::GetVarUndef(closure_index))
-                }
-                IdentifierAccess::Delete => IrOp::Bytecode(Instruction::DeleteVar(closure_index)),
-                IdentifierAccess::Initialize => {
-                    return Err(Error::internal(
-                        "lexical initializer did not resolve to its owning local",
-                    ));
-                }
-                IdentifierAccess::Put => IrOp::Bytecode(Instruction::PutVar(closure_index)),
-                IdentifierAccess::AnnexBPut => {
-                    return Err(Error::internal(
-                        "Annex B write escaped its dedicated resolver path",
-                    ));
-                }
-                IdentifierAccess::Set => IrOp::GlobalSet(closure_index),
-            });
-        };
-        let candidate = link.function;
-        let candidate_scope = link.definition_scope;
-        if let Some(binding) =
-            find_or_create_own_binding(tree, candidate, candidate_scope, name, span)?
-        {
-            break (candidate, binding);
-        }
-        defining_link = tree.functions[candidate].parent;
-    };
-    if binding.storage == BindingStorage::Global {
-        return global_declaration_operation(tree, function_id, binding.kind, access, name);
-    }
-    let (closure_index, kind) =
-        capture_binding_path(tree, defining_function, function_id, binding, name, false)?;
+    let (closure_index, kind) = capture_binding_path(
+        tree,
+        defining_function,
+        consuming_function,
+        binding,
+        name,
+        false,
+    )?;
     closure_binding_operation(
-        &mut tree.functions[function_id],
+        &mut tree.functions[consuming_function],
         closure_index,
         kind,
         access,
         name,
     )
+}
+
+fn push_owned_eval_variable_source(
+    tree: &mut FunctionTree,
+    defining_function: FunctionId,
+    consuming_function: FunctionId,
+    sources: &mut Vec<EvalVariableSource>,
+) -> Result<(), Error> {
+    let Some(index) = tree.functions[defining_function].eval_variable_object_local else {
+        return Ok(());
+    };
+    let source = if defining_function == consuming_function {
+        EvalVariableSource::Local(index)
+    } else {
+        let (closure, kind) = capture_binding_path(
+            tree,
+            defining_function,
+            consuming_function,
+            ResolvedBinding {
+                storage: BindingStorage::Local(index),
+                kind: BindingKind::EvalVariableObject,
+            },
+            EVAL_VARIABLE_OBJECT_LOCAL_NAME,
+            true,
+        )?;
+        if kind != BindingKind::EvalVariableObject {
+            return Err(Error::internal(
+                "eval variable object closure relay changed kind",
+            ));
+        }
+        EvalVariableSource::Closure(closure)
+    };
+    sources.push(source);
+    Ok(())
+}
+
+fn resolve_eval_external_chain(
+    tree: &mut FunctionTree,
+    defining_function: FunctionId,
+    consuming_function: FunctionId,
+    name: &str,
+    sources: &mut Vec<EvalVariableSource>,
+) -> Result<Option<ResolvedBinding>, Error> {
+    let external = tree.functions[defining_function].external_bindings.clone();
+    for (index, binding) in external.into_iter().enumerate() {
+        let index = u16::try_from(index)
+            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"))?;
+        if binding.kind == ClosureVariableKind::EvalVariableObject {
+            let source = if defining_function == consuming_function {
+                EvalVariableSource::Closure(index)
+            } else {
+                let (closure, kind) = capture_binding_path(
+                    tree,
+                    defining_function,
+                    consuming_function,
+                    ResolvedBinding {
+                        storage: BindingStorage::External(index),
+                        kind: BindingKind::EvalVariableObject,
+                    },
+                    EVAL_VARIABLE_OBJECT_LOCAL_NAME,
+                    true,
+                )?;
+                if kind != BindingKind::EvalVariableObject {
+                    return Err(Error::internal(
+                        "external eval variable object relay changed kind",
+                    ));
+                }
+                EvalVariableSource::Closure(closure)
+            };
+            sources.push(source);
+            continue;
+        }
+        if binding.name.to_utf8_lossy() != name {
+            continue;
+        }
+        let kind = match binding.kind {
+            ClosureVariableKind::Normal if binding.is_lexical => BindingKind::Lexical {
+                is_const: binding.is_const,
+            },
+            ClosureVariableKind::Normal if !binding.is_const => BindingKind::Normal,
+            ClosureVariableKind::FunctionName if !binding.is_lexical => BindingKind::FunctionName {
+                is_const: binding.is_const,
+            },
+            ClosureVariableKind::Normal
+            | ClosureVariableKind::FunctionName
+            | ClosureVariableKind::GlobalFunction
+            | ClosureVariableKind::EvalVariableObject => {
+                return Err(Error::internal(
+                    "eval caller binding flags are inconsistent",
+                ));
+            }
+        };
+        return Ok(Some(ResolvedBinding {
+            storage: BindingStorage::External(index),
+            kind,
+        }));
+    }
+    Ok(None)
+}
+
+fn wrap_dynamic_identifier(
+    function: &mut FunctionIr,
+    name: &str,
+    access: IdentifierAccess,
+    sources: Vec<EvalVariableSource>,
+    fallback: IrOp,
+) -> Result<IrOp, Error> {
+    if sources.is_empty() {
+        return Ok(fallback);
+    }
+    if matches!(
+        access,
+        IdentifierAccess::Initialize | IdentifierAccess::AnnexBPut
+    ) {
+        return Err(Error::internal(
+            "declaration-only identifier access crossed an eval variable object",
+        ));
+    }
+    let name = ensure_string_constant(function, name)?;
+    Ok(IrOp::DynamicIdentifier {
+        name,
+        access,
+        sources: sources.into_boxed_slice(),
+        fallback: Box::new(fallback),
+    })
 }
 
 fn global_declaration_operation(
@@ -8042,6 +9055,11 @@ fn global_declaration_operation(
         BindingKind::FunctionName { .. } => {
             return Err(Error::internal(
                 "global declaration has function-name binding metadata",
+            ));
+        }
+        BindingKind::EvalVariableObject => {
+            return Err(Error::internal(
+                "eval variable object reached global declaration resolution",
             ));
         }
     };
@@ -8270,6 +9288,9 @@ fn binding_instruction(
         (BindingStorage::External(_), _, _) => Err(Error::internal(
             "eval external binding reached local instruction selection",
         )),
+        (BindingStorage::Local(_), BindingKind::EvalVariableObject, _) => Err(Error::internal(
+            "eval variable object reached source binding instruction selection",
+        )),
         (
             BindingStorage::Argument(index),
             _,
@@ -8352,6 +9373,9 @@ fn closure_binding_operation(
     name: &str,
 ) -> Result<IrOp, Error> {
     match (kind, access) {
+        (BindingKind::EvalVariableObject, _) => Err(Error::internal(
+            "eval variable object reached source closure operation selection",
+        )),
         (
             BindingKind::Normal | BindingKind::FunctionName { .. },
             IdentifierAccess::Get | IdentifierAccess::GetOrUndefined,
@@ -8420,6 +9444,7 @@ const fn closure_kind(kind: BindingKind) -> ClosureVariableKind {
     match kind {
         BindingKind::Normal | BindingKind::Lexical { .. } => ClosureVariableKind::Normal,
         BindingKind::FunctionName { .. } => ClosureVariableKind::FunctionName,
+        BindingKind::EvalVariableObject => ClosureVariableKind::EvalVariableObject,
     }
 }
 
@@ -8844,6 +9869,12 @@ fn lower_unlinked_tree(
                 BindingKind::Normal | BindingKind::FunctionName { .. } => {
                     UnlinkedVariableDefinition::ordinary(name)
                 }
+                BindingKind::EvalVariableObject => UnlinkedVariableDefinition {
+                    name: Some(JsString::from_static(EVAL_VARIABLE_OBJECT_LOCAL_NAME)),
+                    is_lexical: false,
+                    is_const: false,
+                    kind: ClosureVariableKind::EvalVariableObject,
+                },
             };
         }
         let scope_lifecycles = build_scope_lifecycles(
@@ -8880,6 +9911,7 @@ fn lower_unlinked_tree(
             local_count: u16::try_from(function.locals.len())
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?,
             function_name_local: function.function_name_local,
+            eval_variable_object_local: function.eval_variable_object_local,
             closure_count: u16::try_from(function.closure_variables.len())
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"))?,
             max_stack,
@@ -8961,6 +9993,92 @@ struct LoweredOps {
     pc_sites: Vec<Option<SourceOffset>>,
 }
 
+fn resolved_operation_len(operation: &IrOp) -> Result<usize, Error> {
+    match operation {
+        IrOp::Bytecode(_) | IrOp::PushConstant(_) | IrOp::MakeClosure(_) => Ok(1),
+        IrOp::GlobalSet(_) | IrOp::CapturedLexicalSet(_) => Ok(2),
+        _ => Err(Error::internal(
+            "dynamic identifier retained a non-resolved fallback",
+        )),
+    }
+}
+
+fn dynamic_identifier_len(
+    access: IdentifierAccess,
+    sources: &[EvalVariableSource],
+    fallback: &IrOp,
+) -> Result<usize, Error> {
+    let action_len = match access {
+        IdentifierAccess::Get
+        | IdentifierAccess::GetOrUndefined
+        | IdentifierAccess::Put
+        | IdentifierAccess::Delete => 1_usize,
+        IdentifierAccess::Set => 2,
+        IdentifierAccess::Initialize | IdentifierAccess::AnnexBPut => {
+            return Err(Error::internal(
+                "declaration-only access reached dynamic identifier lowering",
+            ));
+        }
+    };
+    sources
+        .len()
+        .checked_mul(action_len.saturating_add(3))
+        .and_then(|length| length.checked_add(resolved_operation_len(fallback).ok()?))
+        .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))
+}
+
+fn emit_resolved_operation(
+    operation: IrOp,
+    site: Option<SourceOffset>,
+    code: &mut Vec<Instruction>,
+    pc_sites: &mut Vec<Option<SourceOffset>>,
+) -> Result<(), Error> {
+    match operation {
+        IrOp::Bytecode(instruction) => {
+            if matches!(
+                instruction,
+                Instruction::Goto(_)
+                    | Instruction::IfFalse(_)
+                    | Instruction::IfTrue(_)
+                    | Instruction::Catch(_)
+                    | Instruction::Gosub(_)
+            ) {
+                return Err(Error::internal(
+                    "dynamic identifier fallback retained a control-flow edge",
+                ));
+            }
+            code.push(instruction);
+            pc_sites.push(site);
+        }
+        IrOp::PushConstant(index) => {
+            code.push(Instruction::PushConst(index));
+            pc_sites.push(site);
+        }
+        IrOp::MakeClosure(index) => {
+            code.push(Instruction::FClosure(index));
+            pc_sites.push(site);
+        }
+        IrOp::GlobalSet(index) => {
+            code.push(Instruction::Dup);
+            pc_sites.push(site);
+            code.push(Instruction::PutVar(index));
+            pc_sites.push(None);
+        }
+        IrOp::CapturedLexicalSet(index) => {
+            code.push(Instruction::Dup);
+            pc_sites.push(site);
+            code.push(Instruction::PutVarRefCheck(index));
+            pc_sites.push(None);
+        }
+        _ => {
+            return Err(Error::internal(
+                "dynamic identifier retained a non-resolved fallback",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn lower_ops(operations: Vec<SpannedIrOp>, scopes: &[ScopeLifecycle]) -> Result<LoweredOps, Error> {
     let mut offsets = Vec::with_capacity(operations.len() + 1);
     let mut code_len = 0_usize;
@@ -8987,6 +10105,12 @@ fn lower_ops(operations: Vec<SpannedIrOp>, scopes: &[ScopeLifecycle]) -> Result<
                 .close_locals
                 .len(),
             IrOp::GlobalSet(_) | IrOp::CapturedLexicalSet(_) => 2,
+            IrOp::DynamicIdentifier {
+                access,
+                sources,
+                fallback,
+                ..
+            } => dynamic_identifier_len(*access, sources, fallback)?,
             _ => 1,
         };
         code_len = code_len
@@ -9110,6 +10234,75 @@ fn lower_ops(operations: Vec<SpannedIrOp>, scopes: &[ScopeLifecycle]) -> Result<
                 pc_sites.push(pc_site);
                 code.push(Instruction::PutVarRefCheck(index));
                 pc_sites.push(None);
+            }
+            IrOp::DynamicIdentifier {
+                name,
+                access,
+                sources,
+                fallback,
+            } => {
+                let emitted = dynamic_identifier_len(access, &sources, &fallback)?;
+                let end = code
+                    .len()
+                    .checked_add(emitted)
+                    .and_then(|target| u32::try_from(target).ok())
+                    .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+                let action_len = if access == IdentifierAccess::Set {
+                    2_usize
+                } else {
+                    1
+                };
+                let mut first = true;
+                for source in sources {
+                    let next = code
+                        .len()
+                        .checked_add(action_len.saturating_add(3))
+                        .and_then(|target| u32::try_from(target).ok())
+                        .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+                    code.push(Instruction::HasEvalVariable { source, name });
+                    pc_sites.push(if first { pc_site } else { None });
+                    first = false;
+                    code.push(Instruction::IfFalse(next));
+                    pc_sites.push(None);
+                    match access {
+                        IdentifierAccess::Get | IdentifierAccess::GetOrUndefined => {
+                            code.push(Instruction::GetEvalVariable { source, name });
+                            pc_sites.push(None);
+                        }
+                        IdentifierAccess::Put => {
+                            code.push(Instruction::PutEvalVariable { source, name });
+                            pc_sites.push(None);
+                        }
+                        IdentifierAccess::Set => {
+                            code.push(Instruction::Dup);
+                            pc_sites.push(None);
+                            code.push(Instruction::PutEvalVariable { source, name });
+                            pc_sites.push(None);
+                        }
+                        IdentifierAccess::Delete => {
+                            code.push(Instruction::DeleteEvalVariable { source, name });
+                            pc_sites.push(None);
+                        }
+                        IdentifierAccess::Initialize | IdentifierAccess::AnnexBPut => {
+                            return Err(Error::internal(
+                                "declaration-only access reached dynamic identifier lowering",
+                            ));
+                        }
+                    }
+                    code.push(Instruction::Goto(end));
+                    pc_sites.push(None);
+                }
+                emit_resolved_operation(
+                    *fallback,
+                    if first { pc_site } else { None },
+                    &mut code,
+                    &mut pc_sites,
+                )?;
+                if u32::try_from(code.len()).ok() != Some(end) {
+                    return Err(Error::internal(
+                        "dynamic identifier lowering length changed",
+                    ));
+                }
             }
             IrOp::Identifier { .. } => {
                 return Err(Error::internal(
@@ -9375,7 +10568,7 @@ const fn source_span(span: Span) -> SourceSpan {
 #[cfg(test)]
 mod tests {
     use crate::bigint::JsBigInt;
-    use crate::bytecode::{ArgumentsKind, Instruction};
+    use crate::bytecode::{ArgumentsKind, EvalVariableSource, Instruction};
     use crate::debug::DebugInfoMode;
     use crate::error::ErrorKind;
     use crate::heap::{
@@ -9392,11 +10585,12 @@ mod tests {
     use crate::vm::Vm;
 
     use super::{
-        BindingKind, BindingStorage, EvalCompileContext, FunctionIr, FunctionKind,
-        FunctionSourceInfo, MAX_BYTECODE_STACK, MAX_CALL_ARGUMENTS, MAX_LOCAL_VARIABLES, Parser,
-        ScopeKind, SourceOffset, compile_script, compile_unlinked_eval_with_filename,
-        compile_unlinked_script, compile_unlinked_script_with_filename, ensure_closure_variable,
-        lex_error, resolve_identifiers,
+        BindingKind, BindingStorage, EVAL_VARIABLE_OBJECT_LOCAL_NAME, EvalCompileContext,
+        FunctionIr, FunctionKind, FunctionSourceInfo, MAX_BYTECODE_STACK, MAX_CALL_ARGUMENTS,
+        MAX_LOCAL_VARIABLES, Parser, ScopeKind, SourceOffset, compile_script,
+        compile_unlinked_eval_with_filename, compile_unlinked_script,
+        compile_unlinked_script_with_filename, ensure_closure_variable, lex_error,
+        resolve_identifiers,
     };
 
     #[test]
@@ -12997,6 +14191,7 @@ mod tests {
                 is_lexical: true,
                 is_const: false,
                 kind: ClosureVariableKind::Normal,
+                is_catch_parameter: false,
             },
             EvalRootBinding {
                 name: JsString::from_static("outer"),
@@ -13004,6 +14199,7 @@ mod tests {
                 is_lexical: false,
                 is_const: false,
                 kind: ClosureVariableKind::Normal,
+                is_catch_parameter: false,
             },
         ];
 
@@ -13062,7 +14258,7 @@ mod tests {
     }
 
     #[test]
-    fn compiler_keeps_eval_lexicals_local_and_frontiers_dynamic_declarations() {
+    fn compiler_keeps_eval_lexicals_local_and_compiles_eval_declarations() {
         let root = compile_unlinked_eval_with_filename(
             "let answer = 40; const increment = 2; answer + increment",
             "<eval>",
@@ -13085,30 +14281,298 @@ mod tests {
         assert!(definitions.contains(&("answer".to_owned(), false)));
         assert!(definitions.contains(&("increment".to_owned(), true)));
 
-        for (source, message) in [
-            (
-                "var answer = 42",
-                "var declarations in eval source require a dynamic variable environment",
-            ),
-            (
-                "function answer() { return 42; }",
-                "function declarations in eval source are not implemented yet",
-            ),
-            (
-                "eval('40 + 2')",
-                "direct eval nested inside eval source is not implemented yet",
-            ),
-        ] {
-            let error = compile_unlinked_eval_with_filename(
-                source,
-                "<eval>",
-                DebugInfoMode::Full,
-                EvalCompileContext::indirect(),
-            )
-            .unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::Unsupported);
-            assert_eq!(error.message(), message);
-        }
+        let declarations = compile_unlinked_eval_with_filename(
+            "var answer = 42; function fortyTwo() { return answer; } fortyTwo()",
+            "<eval>",
+            DebugInfoMode::Full,
+            EvalCompileContext::indirect(),
+        )
+        .unwrap();
+        assert!(declarations.closure_variables().iter().any(|descriptor| {
+            descriptor.source == ClosureSource::GlobalDeclaration
+                && descriptor.kind == ClosureVariableKind::GlobalFunction
+        }));
+
+        let strict = compile_unlinked_eval_with_filename(
+            "'use strict'; var answer = 42; function fortyTwo() { return answer; }",
+            "<eval>",
+            DebugInfoMode::Full,
+            EvalCompileContext::indirect(),
+        )
+        .unwrap();
+        assert!(strict.metadata().strict);
+        assert!(strict.local_definitions().iter().any(|definition| {
+            definition
+                .name
+                .as_ref()
+                .is_some_and(|name| name.to_utf8_lossy() == "answer")
+        }));
+
+        let error = compile_unlinked_eval_with_filename(
+            "eval('40 + 2')",
+            "<eval>",
+            DebugInfoMode::Full,
+            EvalCompileContext::indirect(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+        assert_eq!(
+            error.message(),
+            "direct eval nested inside eval source is not implemented yet"
+        );
+    }
+
+    #[test]
+    fn sloppy_eval_function_owns_hidden_variable_object_and_orders_eval_pseudo_bindings() {
+        let script =
+            compile_unlinked_script("(function named(a) { eval(0); arguments; named; return a; })")
+                .unwrap();
+        let function = script.constants()[0].as_child().unwrap();
+        let object_local = function
+            .metadata()
+            .eval_variable_object_local
+            .expect("sloppy direct eval did not allocate <var>");
+        assert!(matches!(
+            function.code(),
+            [
+                Instruction::VariableEnvironment,
+                Instruction::PutLocal(local),
+                ..
+            ] if *local == object_local
+        ));
+        assert_eq!(
+            function.local_definitions()[usize::from(object_local)].kind,
+            ClosureVariableKind::EvalVariableObject
+        );
+
+        let root_scope = function.eval_environments()[0]
+            .scopes
+            .iter()
+            .find(|scope| scope.kind == EvalScopeKind::FunctionRoot)
+            .unwrap();
+        let names = root_scope
+            .bindings
+            .iter()
+            .map(|binding| binding.name.to_utf8_lossy())
+            .collect::<Vec<_>>();
+        let authored = names.iter().position(|name| name == "a").unwrap();
+        let object = names
+            .iter()
+            .position(|name| name == EVAL_VARIABLE_OBJECT_LOCAL_NAME)
+            .unwrap();
+        let arguments = names.iter().position(|name| name == "arguments").unwrap();
+        let private_name = names.iter().position(|name| name == "named").unwrap();
+        assert!(authored < object);
+        assert!(object < arguments);
+        assert!(object < private_name);
+        assert!(
+            function
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::HasEvalVariable { .. }))
+        );
+    }
+
+    #[test]
+    fn sloppy_direct_eval_keeps_source_ordered_dynamic_declarations() {
+        let bindings = vec![EvalRootBinding {
+            name: JsString::from_static(EVAL_VARIABLE_OBJECT_LOCAL_NAME),
+            scope: 0,
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::EvalVariableObject,
+            is_catch_parameter: false,
+        }];
+        let eval = compile_unlinked_eval_with_filename(
+            "var fresh; function f() {} var fresh;",
+            "<eval>",
+            DebugInfoMode::Full,
+            EvalCompileContext::direct(false, bindings),
+        )
+        .unwrap();
+        assert!(matches!(
+            eval.code(),
+            [
+                Instruction::Undefined,
+                Instruction::DefineEvalVariable {
+                    source: EvalVariableSource::Closure(0),
+                    ..
+                },
+                Instruction::FClosure(_),
+                Instruction::DefineEvalVariable {
+                    source: EvalVariableSource::Closure(0),
+                    ..
+                },
+                Instruction::Undefined,
+                Instruction::DefineEvalVariable {
+                    source: EvalVariableSource::Closure(0),
+                    ..
+                },
+                ..
+            ]
+        ));
+    }
+
+    #[test]
+    fn eval_redeclaration_throw_precedes_global_and_dynamic_value_writes() {
+        let caller_lexical = EvalRootBinding {
+            name: JsString::from_static("x"),
+            scope: 0,
+            is_lexical: true,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+            is_catch_parameter: false,
+        };
+        let global = compile_unlinked_eval_with_filename(
+            "function f() {} var y; var x;",
+            "<eval>",
+            DebugInfoMode::Full,
+            EvalCompileContext::direct(false, vec![caller_lexical.clone()]),
+        )
+        .unwrap();
+        assert!(matches!(
+            global.code(),
+            [
+                Instruction::ThrowRedeclaration(_),
+                Instruction::FClosure(_),
+                ..
+            ]
+        ));
+        assert_eq!(
+            global
+                .closure_variables()
+                .iter()
+                .filter(|descriptor| descriptor.source == ClosureSource::GlobalDeclaration)
+                .count(),
+            3
+        );
+
+        let object = EvalRootBinding {
+            name: JsString::from_static(EVAL_VARIABLE_OBJECT_LOCAL_NAME),
+            scope: 1,
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::EvalVariableObject,
+            is_catch_parameter: false,
+        };
+        let dynamic_conflict = compile_unlinked_eval_with_filename(
+            "var y; var x;",
+            "<eval>",
+            DebugInfoMode::Full,
+            EvalCompileContext::direct(false, vec![caller_lexical, object.clone()]),
+        )
+        .unwrap();
+        assert!(matches!(
+            dynamic_conflict.code(),
+            [
+                Instruction::ThrowRedeclaration(_),
+                Instruction::Undefined,
+                Instruction::DefineEvalVariable { .. },
+                ..
+            ]
+        ));
+
+        let outer_lexical = EvalRootBinding {
+            name: JsString::from_static("outer"),
+            scope: 2,
+            is_lexical: true,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+            is_catch_parameter: false,
+        };
+        let shadows_outer = compile_unlinked_eval_with_filename(
+            "var outer;",
+            "<eval>",
+            DebugInfoMode::Full,
+            EvalCompileContext::direct(false, vec![object, outer_lexical]),
+        )
+        .unwrap();
+        assert!(matches!(
+            shadows_outer.code(),
+            [
+                Instruction::Undefined,
+                Instruction::DefineEvalVariable { .. },
+                ..
+            ]
+        ));
+        assert!(
+            !shadows_outer
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::ThrowRedeclaration(_)))
+        );
+    }
+
+    #[test]
+    fn eval_annex_b_functions_target_global_or_dynamic_variable_environments() {
+        let indirect = compile_unlinked_eval_with_filename(
+            "{ function f() {} }",
+            "<eval>",
+            DebugInfoMode::Full,
+            EvalCompileContext::indirect(),
+        )
+        .unwrap();
+        assert!(indirect.closure_variables().iter().any(|descriptor| {
+            descriptor.source == ClosureSource::GlobalDeclaration
+                && descriptor.kind == ClosureVariableKind::Normal
+        }));
+
+        let object = EvalRootBinding {
+            name: JsString::from_static(EVAL_VARIABLE_OBJECT_LOCAL_NAME),
+            scope: 0,
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::EvalVariableObject,
+            is_catch_parameter: false,
+        };
+        let direct = compile_unlinked_eval_with_filename(
+            "{ function f() {} }",
+            "<eval>",
+            DebugInfoMode::Full,
+            EvalCompileContext::direct(false, vec![object.clone()]),
+        )
+        .unwrap();
+        assert!(
+            direct
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::DefineEvalVariable { .. }))
+        );
+        assert!(
+            direct
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::HasEvalVariable { .. }))
+        );
+
+        let catch_source = "f; try { throw null; } catch (f) {{ function f() {} }} typeof f;";
+        let catch_direct = compile_unlinked_eval_with_filename(
+            catch_source,
+            "<eval>",
+            DebugInfoMode::Full,
+            EvalCompileContext::direct(false, vec![object]),
+        )
+        .unwrap();
+        assert!(matches!(
+            catch_direct.code(),
+            [
+                Instruction::Undefined,
+                Instruction::DefineEvalVariable { .. },
+                ..
+            ]
+        ));
+
+        let catch_indirect = compile_unlinked_eval_with_filename(
+            catch_source,
+            "<eval>",
+            DebugInfoMode::Full,
+            EvalCompileContext::indirect(),
+        )
+        .unwrap();
+        assert!(catch_indirect.closure_variables().iter().any(|descriptor| {
+            descriptor.source == ClosureSource::GlobalDeclaration
+                && descriptor.kind == ClosureVariableKind::Normal
+        }));
     }
 
     #[test]

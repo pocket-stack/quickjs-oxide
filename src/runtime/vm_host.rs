@@ -4,7 +4,7 @@
 //! runtime's object, call, iterator, realm and captured-variable machinery.
 
 use super::*;
-use crate::bytecode::ArgumentsKind;
+use crate::bytecode::{ArgumentsKind, EvalVariableSource};
 use crate::heap::{EvalBinding, EvalBindingSource, EvalVariableEnvironment};
 use crate::vm::{CallInput, DirectEvalInvocation, Vm, VmHost};
 
@@ -150,6 +150,9 @@ pub(super) struct RuntimeVmHost {
     local_definitions: Rc<[VariableDefinition]>,
     closure_variables: Rc<[ClosureVariable]>,
     eval_environments: Rc<[EvalEnvironment<Atom>]>,
+    /// Exact local slot authenticated by bytecode metadata as this frame's
+    /// hidden sloppy-eval variable object.
+    eval_variable_object_local: Option<u16>,
     closure_slots: Vec<VarRefRoot>,
     arguments: Vec<FrameBinding>,
     locals: Vec<FrameBinding>,
@@ -180,6 +183,7 @@ impl RuntimeVmHost {
             local_definitions: Rc::from([]),
             closure_variables: Rc::from([]),
             eval_environments: Rc::from([]),
+            eval_variable_object_local: None,
             closure_slots: Vec::new(),
             arguments: Vec::new(),
             locals: Vec::new(),
@@ -204,7 +208,7 @@ impl RuntimeVmHost {
             local_definitions,
             closure_variables,
             eval_environments,
-            metadata: _,
+            metadata,
             realm,
         } = runtime.snapshot_function_bytecode(bytecode)?;
         if realm != current_realm {
@@ -233,6 +237,7 @@ impl RuntimeVmHost {
             local_definitions,
             closure_variables,
             eval_environments,
+            eval_variable_object_local: metadata.eval_variable_object_local,
             closure_slots,
             arguments: arguments.into_iter().map(FrameBinding::Direct).collect(),
             locals: locals.into_iter().map(FrameBinding::Direct).collect(),
@@ -588,6 +593,96 @@ impl RuntimeVmHost {
             .intern_property_key_js_string(&name)
             .map_err(|error| Error::internal(error.to_string()))?;
         Ok(key)
+    }
+
+    fn eval_variable_object(&self, source: EvalVariableSource) -> Result<ObjectRef, Error> {
+        let value = match source {
+            EvalVariableSource::Local(index) => {
+                if self.eval_variable_object_local != Some(index) {
+                    return Err(Error::internal(
+                        "eval variable opcode referenced an unauthenticated local",
+                    ));
+                }
+                let definition = self.local_definition(index)?;
+                if definition.kind != ClosureVariableKind::EvalVariableObject {
+                    return Err(Error::internal(
+                        "eval variable opcode referenced a non-variable-object local",
+                    ));
+                }
+                let binding = self.locals.get(usize::from(index)).ok_or_else(|| {
+                    Error::internal("eval variable-object local index is out of bounds")
+                })?;
+                if let FrameBinding::Captured(root) = binding {
+                    self.runtime
+                        .validate_var_ref_metadata(
+                            root,
+                            ClosureVariable {
+                                source: ClosureSource::ParentLocal(index),
+                                name: definition
+                                    .name
+                                    .map_or(ClosureVariableName::None, ClosureVariableName::Atom),
+                                is_lexical: definition.is_lexical,
+                                is_const: definition.is_const,
+                                kind: definition.kind,
+                            },
+                        )
+                        .map_err(runtime_error_to_vm_error)?;
+                }
+                read_frame_binding(&self.runtime, binding)?
+            }
+            EvalVariableSource::Closure(index) => {
+                let descriptor = self
+                    .closure_variables
+                    .get(usize::from(index))
+                    .copied()
+                    .ok_or_else(|| {
+                        Error::internal("eval variable-object closure index is out of bounds")
+                    })?;
+                if descriptor.kind != ClosureVariableKind::EvalVariableObject {
+                    return Err(Error::internal(
+                        "eval variable opcode referenced a non-variable-object closure",
+                    ));
+                }
+                let root = self.closure_slots.get(usize::from(index)).ok_or_else(|| {
+                    Error::internal("eval variable-object closure slot is out of bounds")
+                })?;
+                self.runtime
+                    .validate_var_ref_metadata(root, descriptor)
+                    .map_err(runtime_error_to_vm_error)?;
+                self.runtime
+                    .read_var_ref(root)
+                    .map_err(runtime_error_to_vm_error)?
+            }
+        };
+        let Value::Object(object) = value else {
+            return Err(Error::internal(
+                "eval variable-object binding did not contain an Object",
+            ));
+        };
+        if !object.belongs_to(&self.runtime) {
+            return Err(Error::internal(
+                "eval variable object belongs to another runtime",
+            ));
+        }
+        let state = self.runtime.0.state.borrow();
+        let object_data = state
+            .heap
+            .object(object.object_id())
+            .map_err(|error| Error::internal(error.to_string()))?;
+        if !matches!(&object_data.payload, ObjectPayload::Ordinary)
+            || state
+                .heap
+                .shape(object_data.shape)
+                .map_err(|error| Error::internal(error.to_string()))?
+                .prototype()
+                .is_some()
+        {
+            return Err(Error::internal(
+                "eval variable-object binding did not contain a null-prototype ordinary Object",
+            ));
+        }
+        drop(state);
+        Ok(object)
     }
 
     /// QuickJS `JS_ValueToAtom` / `JS_ToPropertyKey` at the VM/runtime
@@ -1006,6 +1101,7 @@ impl Runtime {
             local_definitions,
             closure_variables,
             eval_environments,
+            eval_variable_object_local: metadata.eval_variable_object_local,
             closure_slots,
             arguments: frame_arguments,
             locals: frame_locals,
@@ -1307,6 +1403,17 @@ impl VmHost for RuntimeVmHost {
             .map_err(runtime_error_to_vm_error)
     }
 
+    fn redeclaration_error(&mut self, index: u32) -> Result<Error, Error> {
+        // Resolve the verified constant through the runtime atom table so a
+        // malformed published operand cannot bypass the typed boundary. The
+        // pinned QuickJS diagnostic itself deliberately does not print it.
+        let _ = self.constant_property_key(index)?;
+        Ok(Error::new(
+            ErrorKind::Syntax,
+            "invalid redefinition of lexical identifier",
+        ))
+    }
+
     fn type_of(&mut self, value: &Value) -> Result<&'static str, Error> {
         let Value::Object(object) = value else {
             return Ok(value.type_of());
@@ -1573,6 +1680,85 @@ impl VmHost for RuntimeVmHost {
             .new_ordinary_object_in_realm(self.current_realm)
             .map(|object| Completion::Return(Value::Object(object)))
             .map_err(runtime_error_to_vm_error)
+    }
+
+    fn create_variable_environment(&mut self) -> Result<Completion, Error> {
+        if self.eval_variable_object_local.is_none() {
+            return Err(Error::internal(
+                "variable-environment creation has no authenticated local",
+            ));
+        }
+        self.runtime
+            .new_object(None)
+            .map(|object| Completion::Return(Value::Object(object)))
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn has_eval_variable(
+        &mut self,
+        source: EvalVariableSource,
+        name: u32,
+    ) -> Result<Completion, Error> {
+        let object = self.eval_variable_object(source)?;
+        let key = self.constant_property_key(name)?;
+        self.runtime
+            .has_own_property(&object, &key)
+            .map(|exists| Completion::Return(Value::Bool(exists)))
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn get_eval_variable(
+        &mut self,
+        source: EvalVariableSource,
+        name: u32,
+    ) -> Result<Completion, Error> {
+        let object = self.eval_variable_object(source)?;
+        let key = self.constant_property_key(name)?;
+        self.get_property_with_key(Value::Object(object), &key, true)
+    }
+
+    fn put_eval_variable(
+        &mut self,
+        source: EvalVariableSource,
+        name: u32,
+        value: Value,
+    ) -> Result<Completion, Error> {
+        let object = self.eval_variable_object(source)?;
+        let key = self.constant_property_key(name)?;
+        self.set_property_with_key(Value::Object(object), &key, value, false)
+    }
+
+    fn delete_eval_variable(
+        &mut self,
+        source: EvalVariableSource,
+        name: u32,
+    ) -> Result<Completion, Error> {
+        let object = self.eval_variable_object(source)?;
+        let key = self.constant_property_key(name)?;
+        self.delete_property_with_key(Value::Object(object), &key, false)
+    }
+
+    fn define_eval_variable(
+        &mut self,
+        source: EvalVariableSource,
+        name: u32,
+        value: Value,
+    ) -> Result<Completion, Error> {
+        let object = self.eval_variable_object(source)?;
+        let key = self.constant_property_key(name)?;
+        let result = self.runtime.define_own_property_in_realm(
+            Some(self.current_realm),
+            &object,
+            &key,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(value),
+                writable: DescriptorField::Present(true),
+                enumerable: DescriptorField::Present(true),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        );
+        self.finish_property_define(result)
     }
 
     fn create_regexp(&mut self, index: u32) -> Result<Completion, Error> {
@@ -2429,5 +2615,187 @@ impl VmHost for RuntimeVmHost {
         self.runtime
             .write_var_ref(root, value)
             .map_err(runtime_error_to_vm_error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bytecode::EvalVariableSource;
+    use crate::object::CompleteOrdinaryPropertyDescriptor;
+
+    fn local_variable_environment_host(
+        runtime: Runtime,
+        realm: ContextId,
+        kind: ClosureVariableKind,
+        authenticated_local: Option<u16>,
+    ) -> (RuntimeVmHost, ObjectRef) {
+        let object = runtime.new_object(None).unwrap();
+        let mut host = RuntimeVmHost::empty_for_test(runtime, realm);
+        host.constants = Rc::from([BytecodeConstant::Value(RawValue::String(
+            JsString::from_static("added"),
+        ))]);
+        host.local_definitions = Rc::from([VariableDefinition {
+            name: None,
+            is_lexical: false,
+            is_const: false,
+            kind,
+        }]);
+        host.eval_variable_object_local = authenticated_local;
+        host.locals = vec![FrameBinding::Direct(Value::Object(object.clone()))];
+        host.reusable_captured_locals = vec![false];
+        (host, object)
+    }
+
+    #[test]
+    fn local_eval_variable_environment_defines_overwrites_and_deletes_cwe_data() {
+        let runtime = Runtime::new();
+        let context = runtime.new_context();
+        let (mut host, object) = local_variable_environment_host(
+            runtime.clone(),
+            context.realm,
+            ClosureVariableKind::EvalVariableObject,
+            Some(0),
+        );
+        let source = EvalVariableSource::Local(0);
+
+        assert_eq!(
+            host.has_eval_variable(source, 0).unwrap(),
+            Completion::Return(Value::Bool(false))
+        );
+        assert_eq!(
+            host.define_eval_variable(source, 0, Value::Int(1)).unwrap(),
+            Completion::Return(Value::Undefined)
+        );
+        assert_eq!(
+            host.get_eval_variable(source, 0).unwrap(),
+            Completion::Return(Value::Int(1))
+        );
+
+        // Define is deliberately unconditional: the eval declaration plan
+        // uses it for QuickJS's repeated-var undefined overwrite.
+        host.define_eval_variable(source, 0, Value::Undefined)
+            .unwrap();
+        assert_eq!(
+            host.get_eval_variable(source, 0).unwrap(),
+            Completion::Return(Value::Undefined)
+        );
+        host.put_eval_variable(source, 0, Value::Int(42)).unwrap();
+        assert_eq!(
+            host.get_eval_variable(source, 0).unwrap(),
+            Completion::Return(Value::Int(42))
+        );
+
+        let key = runtime.intern_property_key("added").unwrap();
+        assert_eq!(
+            runtime.get_own_property(&object, &key).unwrap(),
+            Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: Value::Int(42),
+                writable: true,
+                enumerable: true,
+                configurable: true,
+            })
+        );
+        assert_eq!(
+            host.delete_eval_variable(source, 0).unwrap(),
+            Completion::Return(Value::Bool(true))
+        );
+        assert_eq!(
+            host.has_eval_variable(source, 0).unwrap(),
+            Completion::Return(Value::Bool(false))
+        );
+    }
+
+    #[test]
+    fn eval_variable_sources_require_authenticated_special_metadata() {
+        let runtime = Runtime::new();
+        let context = runtime.new_context();
+        let (mut unauthenticated, _) = local_variable_environment_host(
+            runtime.clone(),
+            context.realm,
+            ClosureVariableKind::EvalVariableObject,
+            None,
+        );
+        assert_eq!(
+            unauthenticated
+                .has_eval_variable(EvalVariableSource::Local(0), 0)
+                .unwrap_err()
+                .message(),
+            "eval variable opcode referenced an unauthenticated local"
+        );
+
+        let (mut ordinary, _) = local_variable_environment_host(
+            runtime.clone(),
+            context.realm,
+            ClosureVariableKind::Normal,
+            Some(0),
+        );
+        assert_eq!(
+            ordinary
+                .has_eval_variable(EvalVariableSource::Local(0), 0)
+                .unwrap_err()
+                .message(),
+            "eval variable opcode referenced a non-variable-object local"
+        );
+
+        let object = runtime.new_object(None).unwrap();
+        let root = runtime
+            .new_var_ref(
+                Value::Object(object),
+                false,
+                false,
+                ClosureVariableKind::Normal,
+            )
+            .unwrap();
+        let mut closure = RuntimeVmHost::empty_for_test(runtime, context.realm);
+        closure.constants = Rc::from([BytecodeConstant::Value(RawValue::String(
+            JsString::from_static("added"),
+        ))]);
+        closure.closure_variables = Rc::from([ClosureVariable {
+            source: ClosureSource::ParentClosure(0),
+            name: ClosureVariableName::None,
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+        }]);
+        closure.closure_slots = vec![root];
+        assert_eq!(
+            closure
+                .has_eval_variable(EvalVariableSource::Closure(0), 0)
+                .unwrap_err()
+                .message(),
+            "eval variable opcode referenced a non-variable-object closure"
+        );
+
+        let runtime = closure.runtime.clone();
+        let object = runtime.new_object(None).unwrap();
+        let root = runtime
+            .new_var_ref(
+                Value::Object(object),
+                false,
+                false,
+                ClosureVariableKind::EvalVariableObject,
+            )
+            .unwrap();
+        closure.closure_variables = Rc::from([ClosureVariable {
+            source: ClosureSource::ParentClosure(0),
+            name: ClosureVariableName::None,
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::EvalVariableObject,
+        }]);
+        closure.closure_slots = vec![root];
+        assert_eq!(
+            closure
+                .define_eval_variable(EvalVariableSource::Closure(0), 0, Value::Int(42))
+                .unwrap(),
+            Completion::Return(Value::Undefined)
+        );
+        assert_eq!(
+            closure
+                .get_eval_variable(EvalVariableSource::Closure(0), 0)
+                .unwrap(),
+            Completion::Return(Value::Int(42))
+        );
     }
 }

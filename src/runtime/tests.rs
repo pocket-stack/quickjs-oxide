@@ -368,6 +368,7 @@ fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy(
                     is_lexical: true,
                     is_const: false,
                     kind: ClosureVariableKind::Normal,
+                    is_catch_parameter: false,
                 }]
                 .into_boxed_slice(),
             },
@@ -377,13 +378,24 @@ fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy(
             },
             EvalScope {
                 kind: EvalScopeKind::FunctionRoot,
-                bindings: vec![EvalBinding {
-                    name: JsString::from_static("argumentBinding"),
-                    source: EvalBindingSource::Argument(0),
-                    is_lexical: false,
-                    is_const: false,
-                    kind: ClosureVariableKind::Normal,
-                }]
+                bindings: vec![
+                    EvalBinding {
+                        name: JsString::from_static("argumentBinding"),
+                        source: EvalBindingSource::Argument(0),
+                        is_lexical: false,
+                        is_const: false,
+                        kind: ClosureVariableKind::Normal,
+                        is_catch_parameter: false,
+                    },
+                    EvalBinding {
+                        name: JsString::from_static("<var>"),
+                        source: EvalBindingSource::Local(1),
+                        is_lexical: false,
+                        is_const: false,
+                        kind: ClosureVariableKind::EvalVariableObject,
+                        is_catch_parameter: false,
+                    },
+                ]
                 .into_boxed_slice(),
             },
             EvalScope {
@@ -394,6 +406,7 @@ fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy(
                     is_lexical: false,
                     is_const: false,
                     kind: ClosureVariableKind::Normal,
+                    is_catch_parameter: false,
                 }]
                 .into_boxed_slice(),
             },
@@ -408,6 +421,8 @@ fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy(
     };
     let child = UnlinkedFunction::new_with_closure_variables(
         vec![
+            Instruction::VariableEnvironment,
+            Instruction::PutLocal(1),
             Instruction::Undefined,
             Instruction::Eval {
                 argument_count: 0,
@@ -421,7 +436,8 @@ fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy(
         ],
         FunctionMetadata {
             argument_count: 1,
-            local_count: 1,
+            local_count: 2,
+            eval_variable_object_local: Some(1),
             closure_count: 1,
             max_stack: 1,
             ..FunctionMetadata::default()
@@ -438,10 +454,10 @@ fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy(
         vec![UnlinkedVariableDefinition::ordinary(Some(
             JsString::from_static("argumentBinding"),
         ))],
-        vec![UnlinkedVariableDefinition::lexical(
-            Some(JsString::from_static("localBinding")),
-            false,
-        )],
+        vec![
+            UnlinkedVariableDefinition::lexical(Some(JsString::from_static("localBinding")), false),
+            UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("<var>"))),
+        ],
     )
     .with_eval_environments(vec![environment]);
     let parent = UnlinkedFunction::new(
@@ -466,6 +482,7 @@ fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy(
     let closure = runtime
         .new_var_ref(Value::Int(30), false, false, ClosureVariableKind::Normal)
         .unwrap();
+    let eval_variable_object = runtime.new_object(None).unwrap();
 
     let mut non_string = RuntimeVmHost::eval_frame_for_test(
         runtime.clone(),
@@ -473,7 +490,7 @@ fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy(
         &child,
         vec![closure.clone()],
         vec![Value::Int(10)],
-        vec![Value::Int(20)],
+        vec![Value::Int(20), Value::Object(eval_variable_object.clone())],
     )
     .unwrap();
     assert_eq!(
@@ -499,7 +516,7 @@ fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy(
         &child,
         vec![closure.clone()],
         vec![Value::Int(10)],
-        vec![Value::Int(20)],
+        vec![Value::Int(20), Value::Object(eval_variable_object.clone())],
     )
     .unwrap();
     assert!(matches!(
@@ -519,29 +536,32 @@ fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy(
     assert!(!syntax_error.eval_binding_is_captured_for_test(EvalBindingSource::Local(0)));
     assert!(!syntax_error.eval_binding_is_captured_for_test(EvalBindingSource::Argument(0)));
 
-    let mut unsupported = RuntimeVmHost::eval_frame_for_test(
+    let mut declaration = RuntimeVmHost::eval_frame_for_test(
         runtime.clone(),
         context.realm,
         &child,
         vec![closure.clone()],
         vec![Value::Int(10)],
-        vec![Value::Int(20)],
+        vec![Value::Int(20), Value::Object(eval_variable_object.clone())],
     )
     .unwrap();
-    let error = VmHost::direct_eval(
-        &mut unsupported,
-        DirectEvalInvocation {
-            input: Value::String(JsString::from_static("var evalVar = 1")),
-            environment: 0,
-            this_value: Value::Int(1),
-            new_target: Value::Int(2),
-            caller_strict: false,
-        },
-    )
-    .unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Unsupported);
-    assert!(!unsupported.eval_binding_is_captured_for_test(EvalBindingSource::Local(0)));
-    assert!(!unsupported.eval_binding_is_captured_for_test(EvalBindingSource::Argument(0)));
+    assert_eq!(
+        VmHost::direct_eval(
+            &mut declaration,
+            DirectEvalInvocation {
+                input: Value::String(JsString::from_static("var evalVar = 1")),
+                environment: 0,
+                this_value: Value::Int(1),
+                new_target: Value::Int(2),
+                caller_strict: false,
+            },
+        )
+        .unwrap(),
+        Completion::Return(Value::Undefined),
+    );
+    assert!(declaration.eval_binding_is_captured_for_test(EvalBindingSource::Local(0)));
+    assert!(declaration.eval_binding_is_captured_for_test(EvalBindingSource::Local(1)));
+    assert!(declaration.eval_binding_is_captured_for_test(EvalBindingSource::Argument(0)));
 
     let mut string = RuntimeVmHost::eval_frame_for_test(
         runtime.clone(),
@@ -549,7 +569,7 @@ fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy(
         &child,
         vec![closure.clone()],
         vec![Value::Int(10)],
-        vec![Value::Int(20)],
+        vec![Value::Int(20), Value::Object(eval_variable_object.clone())],
     )
     .unwrap();
     assert_eq!(
@@ -567,6 +587,7 @@ fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy(
         Completion::Return(Value::Int(42))
     );
     assert!(string.eval_binding_is_captured_for_test(EvalBindingSource::Local(0)));
+    assert!(string.eval_binding_is_captured_for_test(EvalBindingSource::Local(1)));
     assert!(string.eval_binding_is_captured_for_test(EvalBindingSource::Argument(0)));
     assert!(string.eval_binding_is_captured_for_test(EvalBindingSource::Closure(0)));
     assert_eq!(runtime.read_var_ref(&closure).unwrap(), Value::Int(30));

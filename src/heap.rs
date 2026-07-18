@@ -537,6 +537,10 @@ pub struct FunctionMetadata {
     /// function expression. This is the typed equivalent of QuickJS's
     /// `func_var_idx` entry prologue.
     pub function_name_local: Option<u16>,
+    /// Synthetic local which owns QuickJS's hidden `<var>` object for one
+    /// sloppy ordinary-function activation containing syntactic direct eval.
+    /// Dynamic eval-name opcodes may name only this authenticated slot.
+    pub eval_variable_object_local: Option<u16>,
     pub closure_count: u16,
     pub max_stack: u16,
     pub strict: bool,
@@ -627,6 +631,11 @@ pub enum ClosureVariableKind {
     /// QuickJS `JS_VAR_GLOBAL_FUNCTION_DECL`: a Program function declaration
     /// whose global-property preflight and creation rules differ from `var`.
     GlobalFunction,
+    /// QuickJS's hidden `<var>` binding. A sloppy ordinary function with a
+    /// syntactic direct-eval site stores one null-prototype variable object in
+    /// this binding; eval-created names are properties of that object rather
+    /// than fabricated ordinary locals.
+    EvalVariableObject,
 }
 
 /// Runtime-independent closure metadata stored beside child bytecode.
@@ -696,6 +705,10 @@ pub struct EvalBinding<Name> {
     pub is_lexical: bool,
     pub is_const: bool,
     pub kind: ClosureVariableKind,
+    /// Declaration provenance needed when a direct eval imports this binding:
+    /// unlike ordinary lexical bindings, QuickJS permits a sloppy eval `var`
+    /// declaration to reuse the live catch-parameter cell.
+    pub is_catch_parameter: bool,
 }
 
 /// One lexical scope visible from a syntactic direct-eval call site.
@@ -727,6 +740,11 @@ pub struct EvalRootBinding<Name> {
     pub is_lexical: bool,
     pub is_const: bool,
     pub kind: ClosureVariableKind,
+    /// Catch parameters are represented as lexical locals by the Oxide IR,
+    /// but pinned QuickJS permits sloppy eval `var` to reuse their live cell.
+    /// Retain that declaration-only distinction without weakening ordinary
+    /// lexical reads, TDZ checks, or closure metadata.
+    pub is_catch_parameter: bool,
 }
 
 /// Runtime-owned immutable bytecode, constant pool, and function realm.
@@ -3328,6 +3346,22 @@ impl Heap {
                 "function-name local is outside bytecode local slots",
             ));
         }
+        if bytecode
+            .metadata
+            .eval_variable_object_local
+            .is_some_and(|index| index >= bytecode.metadata.local_count)
+        {
+            return Err(HeapError::Invariant(
+                "eval variable-object local is outside bytecode local slots",
+            ));
+        }
+        if bytecode.metadata.eval_variable_object_local.is_some()
+            && bytecode.metadata.eval_variable_object_local == bytecode.metadata.function_name_local
+        {
+            return Err(HeapError::Invariant(
+                "eval variable-object and function-name locals overlap",
+            ));
+        }
         if bytecode.argument_definitions.len() != usize::from(bytecode.metadata.argument_count) {
             return Err(HeapError::Invariant(
                 "argument definition count does not match bytecode metadata",
@@ -3351,6 +3385,8 @@ impl Heap {
         for (index, definition) in bytecode.local_definitions.iter().enumerate() {
             let is_function_name =
                 bytecode.metadata.function_name_local == u16::try_from(index).ok();
+            let is_eval_variable_object =
+                bytecode.metadata.eval_variable_object_local == u16::try_from(index).ok();
             if is_function_name {
                 if definition.kind != ClosureVariableKind::FunctionName
                     || definition.is_lexical
@@ -3359,6 +3395,16 @@ impl Heap {
                 {
                     return Err(HeapError::Invariant(
                         "function-name definition disagrees with bytecode metadata",
+                    ));
+                }
+            } else if is_eval_variable_object {
+                if definition.kind != ClosureVariableKind::EvalVariableObject
+                    || definition.is_lexical
+                    || definition.is_const
+                    || definition.name.is_none()
+                {
+                    return Err(HeapError::Invariant(
+                        "eval variable-object definition disagrees with bytecode metadata",
                     ));
                 }
             } else if definition.kind != ClosureVariableKind::Normal {
@@ -3470,6 +3516,20 @@ impl Heap {
                     "global function declaration descriptor has lexical metadata",
                 ));
             }
+            if descriptor.kind == ClosureVariableKind::EvalVariableObject
+                && (descriptor.is_lexical
+                    || descriptor.is_const
+                    || !matches!(
+                        descriptor.source,
+                        ClosureSource::ParentLocal(_)
+                            | ClosureSource::ParentClosure(_)
+                            | ClosureSource::EvalEnvironment(_)
+                    ))
+            {
+                return Err(HeapError::Invariant(
+                    "eval variable-object descriptor has invalid binding metadata",
+                ));
+            }
             if descriptor.is_const
                 && !descriptor.is_lexical
                 && descriptor.kind != ClosureVariableKind::FunctionName
@@ -3511,7 +3571,10 @@ impl Heap {
                     | ClosureSource::Global
                     | ClosureSource::ParentGlobal(_)
                     | ClosureSource::EvalEnvironment(_)
-            ) || descriptor.kind == ClosureVariableKind::FunctionName;
+            ) || matches!(
+                descriptor.kind,
+                ClosureVariableKind::FunctionName | ClosureVariableKind::EvalVariableObject
+            );
             let allows_name = requires_name
                 || descriptor.is_lexical
                 || matches!(
@@ -3588,26 +3651,67 @@ impl Heap {
                 }
             }
         }
-        for binding in bytecode
+        for scope in bytecode
             .eval_environments
             .iter()
             .flat_map(|environment| environment.scopes.iter())
-            .flat_map(|scope| scope.bindings.iter())
         {
-            if binding.name.is_null() {
-                return Err(HeapError::Invariant("eval binding name is the null atom"));
+            for binding in &scope.bindings {
+                if binding.is_catch_parameter != (scope.kind == EvalScopeKind::Catch)
+                    || (binding.is_catch_parameter
+                        && (!binding.is_lexical
+                            || binding.is_const
+                            || binding.kind != ClosureVariableKind::Normal))
+                {
+                    return Err(HeapError::Invariant(
+                        "eval catch binding metadata disagrees with its scope",
+                    ));
+                }
+                if binding.kind == ClosureVariableKind::EvalVariableObject {
+                    if binding.is_lexical || binding.is_const || binding.is_catch_parameter {
+                        return Err(HeapError::Invariant(
+                            "eval variable-object binding has invalid metadata",
+                        ));
+                    }
+                    let authenticated = match binding.source {
+                        EvalBindingSource::Local(index) => {
+                            bytecode.metadata.eval_variable_object_local == Some(index)
+                                && bytecode
+                                    .local_definitions
+                                    .get(usize::from(index))
+                                    .is_some_and(|definition| {
+                                        definition.kind == ClosureVariableKind::EvalVariableObject
+                                    })
+                        }
+                        EvalBindingSource::Closure(index) => bytecode
+                            .closure_variables
+                            .get(usize::from(index))
+                            .is_some_and(|descriptor| {
+                                descriptor.kind == ClosureVariableKind::EvalVariableObject
+                            }),
+                        EvalBindingSource::Argument(_) => false,
+                    };
+                    if !authenticated {
+                        return Err(HeapError::Invariant(
+                            "eval variable-object binding source is not authenticated",
+                        ));
+                    }
+                }
+                if binding.name.is_null() {
+                    return Err(HeapError::Invariant("eval binding name is the null atom"));
+                }
+                let Some(count) = owned_name_atoms.get_mut(&binding.name) else {
+                    return Err(HeapError::Invariant(
+                        "eval binding name atom is not owned by bytecode metadata",
+                    ));
+                };
+                if *count == 0 {
+                    return Err(HeapError::Invariant(
+                        "eval binding name atom ownership multiplicity is too small",
+                    ));
+                }
+                *count -= 1;
             }
-            let Some(count) = owned_name_atoms.get_mut(&binding.name) else {
-                return Err(HeapError::Invariant(
-                    "eval binding name atom is not owned by bytecode metadata",
-                ));
-            };
-            if *count == 0 {
-                return Err(HeapError::Invariant(
-                    "eval binding name atom ownership multiplicity is too small",
-                ));
-            }
-            *count -= 1;
         }
         let (index, generation) = self.reserve(HeapNodeKind::FunctionBytecode)?;
         let id = FunctionBytecodeId { index, generation };
@@ -7499,6 +7603,64 @@ mod tests {
     }
 
     #[test]
+    fn eval_variable_object_local_requires_exact_metadata_authentication() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let prototype = leaf(&mut heap, shape);
+        let context = heap
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+                prototype,
+            ))
+            .unwrap();
+        heap.release_object(prototype).unwrap();
+
+        let code: Rc<[Instruction]> = Rc::from([]);
+        let name = Atom::from_raw(43);
+        let make_bytecode = |metadata_slot, definition_kind| {
+            let mut bytecode = bytecode(&code, context, Vec::new(), vec![name]);
+            bytecode.metadata.local_count = 1;
+            bytecode.metadata.eval_variable_object_local = metadata_slot;
+            bytecode.local_definitions = Rc::from([VariableDefinition {
+                name: Some(name),
+                is_lexical: false,
+                is_const: false,
+                kind: definition_kind,
+            }]);
+            bytecode
+        };
+
+        assert_eq!(
+            heap.allocate_function_bytecode(make_bytecode(Some(0), ClosureVariableKind::Normal)),
+            Err(HeapError::Invariant(
+                "eval variable-object definition disagrees with bytecode metadata"
+            ))
+        );
+        assert_eq!(
+            heap.allocate_function_bytecode(make_bytecode(
+                None,
+                ClosureVariableKind::EvalVariableObject
+            )),
+            Err(HeapError::Invariant(
+                "ordinary local definition uses a non-local binding kind"
+            ))
+        );
+
+        let published = heap
+            .allocate_function_bytecode(make_bytecode(
+                Some(0),
+                ClosureVariableKind::EvalVariableObject,
+            ))
+            .unwrap();
+        assert_eq!(
+            heap.release_function_bytecode(published).unwrap().atoms,
+            vec![name]
+        );
+        heap.release_context(context).unwrap();
+        heap.release_shape(shape).unwrap();
+    }
+
+    #[test]
     fn bytecode_allocation_requires_published_closure_name_atom_ownership() {
         let mut heap = Heap::new();
         let shape = empty_shape(&mut heap);
@@ -7643,6 +7805,7 @@ mod tests {
                         is_lexical: false,
                         is_const: false,
                         kind: ClosureVariableKind::Normal,
+                        is_catch_parameter: false,
                     }]
                     .into_boxed_slice(),
                 }]

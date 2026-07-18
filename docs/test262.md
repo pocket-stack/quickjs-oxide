@@ -50,9 +50,9 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 28,216 pass;
+- 28,984 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 51,904 are classified as unsupported feature, mode, host capability, parser
+- 51,136 are classified as unsupported feature, mode, host capability, parser
   frontier, harness frontier, or unaudited negative-test provenance;
 - 1,009 fail to parse, 2,219 fail at runtime, 210 fail in the harness, and four
   time out; there are no crashes or runner/engine infrastructure faults.
@@ -63,14 +63,14 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 27.65% (`28,216 / 102,037`);
-- conservative target-scope lower bound: 33.77%
-  (`28,216 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 89.13%
-  (`28,216 / 31,658`).
+- raw suite pass rate: 28.41% (`28,984 / 102,037`);
+- conservative target-scope lower bound: 34.69%
+  (`28,984 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 89.39%
+  (`28,984 / 32,426`).
 
-The 33.77% figure is the useful whole-project progress floor, not a claim that
-the engine is 33.77% conformant. The 89.13% conditional rate measures quality
+The 34.69% figure is the useful whole-project progress floor, not a claim that
+the engine is 34.69% conformant. The 89.39% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion; R1u also demonstrates that this conditional rate can rise when
 previously ambiguous failures move to a more honest typed unsupported class.
@@ -88,9 +88,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`c62f104a2a3801c9b3eca38362fa5075f1fc21564395c58f45dfb23153ef1530`
+`cca9eadc35c3c5f9acdf24b00cb9d65b0a2ca20a65860e137185f4f7fa48c4e4`
 and
-`526c00942821ff5f153e08d3056627bbe35e7e12e4cde3702a55c220351bbd09`.
+`348e25af619fcf81ef534b82f57571889c1d2ab7f06cad3d5233e7d49fae240f`.
 
 ## Milestone policy
 
@@ -996,6 +996,39 @@ passes while runnable remains 34,849; TSV/JSONL SHA-256 values are
 and
 `526c00942821ff5f153e08d3056627bbe35e7e12e4cde3702a55c220351bbd09`.
 
+R1y opens QuickJS-shaped eval `var`, ordinary FunctionDeclaration, and Annex B
+declaration environments without broadening the Test262 capability profile.
+The new bytewise-sorted manifest freezes 497 paths: 54 core eval-declaration
+paths and 443 Annex B consumers. They expand to 519 runnable variants, all of
+which pass. Nested direct eval, `with`, generator/async declarations, and the
+shared-profile lexical-feature surface remain outside this focused vector.
+The manifest, TSV and JSONL SHA-256 values are
+`ecc3cb3b50f8b59cae548fa9c1017dfd1d71878644bf204146d4002015c2bd70`,
+`1b9cfacfe80671d5e2579865b7efb1478b5d7c1da70b240b71a1cccc3cf1c80a`
+and
+`0a0e7db1f1c80431302b14b66148f34efa998f38811e965f126c2d548ab6dd6d`.
+The gate also pins a separate 15-path hash for collateral Test262 failures
+which reproduce on QuickJS 2026-06-04, so target behavior is not mislabeled as
+an Oxide regression.
+
+The exact R1x/R1y join has the same 102,037 unique keys, with no missing,
+extra, duplicate, or previous-pass rows. Outcome movement is:
+
+- 752 `unsupported-runtime -> pass`;
+- 16 `fail-runtime -> pass`;
+- 16 `unsupported-runtime -> fail-runtime`.
+
+Fifteen of the newly exposed failures are the pinned QuickJS collateral set;
+the remaining test reaches the existing generator/async declaration frontier.
+One additional row remains `unsupported-runtime` but now stops at the narrower
+nested-direct-eval frontier after its preceding labelled FunctionDeclarations
+execute. Net growth is 768 passes. The complete report reaches 28,984 passes,
+keeps 34,849 runnable jobs, and contains no engine or runner fault. Full
+TSV/JSONL SHA-256 values are
+`cca9eadc35c3c5f9acdf24b00cb9d65b0a2ca20a65860e137185f4f7fa48c4e4`
+and
+`348e25af619fcf81ef534b82f57571889c1d2ab7f06cad3d5233e7d49fae240f`.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -1057,6 +1090,7 @@ canonical progress report.
 ./scripts/run-test262-regexp-dotall.sh
 ./scripts/run-test262-unicode-u180e.sh
 ./scripts/run-test262-eval-intrinsic.sh
+./scripts/run-test262-eval-declarations.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -1080,7 +1114,8 @@ R1u separately measures the eval intrinsic shell and its typed String-source
 frontier; R1v establishes its syntactic opcode and realm-identity path with a
 byte-identical scoreboard; R1w adds the immutable caller-environment table and
 live-cell materialization with the same zero-movement result; R1x opens the
-bounded independent String-eval root and adds 575 full-vector passes. R1i
+bounded independent String-eval root and adds 575 full-vector passes; R1y adds
+QuickJS-shaped eval declaration environments and another 768 passes. R1i
 completes the direct standard-RegExp replacement route without changing that
 scoreboard.
 The generated Unicode code-point property corpus now passes; properties of

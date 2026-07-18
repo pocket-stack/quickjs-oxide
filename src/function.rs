@@ -363,6 +363,15 @@ impl UnlinkedVariableDefinition {
             kind: ClosureVariableKind::FunctionName,
         }
     }
+
+    fn eval_variable_object() -> Self {
+        Self {
+            name: Some(crate::value::JsString::from_static("<var>")),
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::EvalVariableObject,
+        }
+    }
 }
 
 /// Runtime-independent debug payload produced by the compiler.
@@ -406,6 +415,11 @@ impl UnlinkedFunction {
         if let Some(index) = metadata.function_name_local {
             if let Some(definition) = locals.get_mut(usize::from(index)) {
                 *definition = UnlinkedVariableDefinition::function_name(None, metadata.strict);
+            }
+        }
+        if let Some(index) = metadata.eval_variable_object_local {
+            if let Some(definition) = locals.get_mut(usize::from(index)) {
+                *definition = UnlinkedVariableDefinition::eval_variable_object();
             }
         }
         (arguments, locals)
@@ -498,6 +512,11 @@ impl UnlinkedFunction {
                     self.func_name.clone(),
                     self.metadata.strict,
                 );
+            }
+        }
+        if let Some(index) = self.metadata.eval_variable_object_local {
+            if let Some(definition) = local_definitions.get_mut(usize::from(index)) {
+                *definition = UnlinkedVariableDefinition::eval_variable_object();
             }
         }
         self.argument_definitions = argument_definitions;
@@ -779,5 +798,30 @@ mod tests {
             function.local_definitions()[1].kind,
             ClosureVariableKind::FunctionName
         );
+    }
+
+    #[test]
+    fn constructors_authenticate_the_eval_variable_object_slot() {
+        let function = UnlinkedFunction::new(
+            vec![Instruction::VariableEnvironment, Instruction::PutLocal(0)],
+            Vec::new(),
+            FunctionMetadata {
+                local_count: 1,
+                eval_variable_object_local: Some(0),
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+
+        let [definition] = function.local_definitions() else {
+            panic!("eval variable-object function did not have one local")
+        };
+        assert_eq!(
+            definition.name.as_ref().map(JsString::to_utf8_lossy),
+            Some("<var>".to_owned())
+        );
+        assert!(!definition.is_lexical);
+        assert!(!definition.is_const);
+        assert_eq!(definition.kind, ClosureVariableKind::EvalVariableObject);
     }
 }

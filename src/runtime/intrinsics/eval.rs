@@ -223,12 +223,24 @@ impl Runtime {
                 RuntimeError::Invariant("direct eval scope index exceeds bytecode range")
             })?;
             for binding in &descriptor_scope.bindings {
+                let is_catch_scope = descriptor_scope.kind == crate::heap::EvalScopeKind::Catch;
+                if binding.is_catch_parameter != is_catch_scope
+                    || (binding.is_catch_parameter
+                        && (!binding.is_lexical
+                            || binding.is_const
+                            || binding.kind != ClosureVariableKind::Normal))
+                {
+                    return Err(RuntimeError::Invariant(
+                        "direct eval catch binding metadata is not authentic",
+                    ));
+                }
                 bindings.push(EvalRootBinding {
                     name: state.atoms.to_js_string(binding.name)?,
                     scope,
                     is_lexical: binding.is_lexical,
                     is_const: binding.is_const,
                     kind: binding.kind,
+                    is_catch_parameter: binding.is_catch_parameter,
                 });
             }
         }
@@ -354,46 +366,177 @@ impl Runtime {
             }
         }
 
-        let mut slots = Vec::with_capacity(closure_variables.len());
+        let allows_global_declarations = !metadata.strict
+            && match kind {
+                EvalKind::Direct => !bindings
+                    .iter()
+                    .any(|binding| binding.kind == ClosureVariableKind::EvalVariableObject),
+                EvalKind::Indirect => true,
+                EvalKind::None => false,
+            };
+
+        // QuickJS checks every GLOBAL_DECL before attaching or creating any
+        // binding. A later conflict must not leave earlier eval declarations
+        // installed on the global object.
         for descriptor in closure_variables.iter().copied() {
             let ClosureVariableName::Atom(name) = descriptor.name else {
                 return Err(RuntimeError::Invariant(
                     "published eval closure descriptor has no atom",
                 ));
             };
+            match descriptor.source {
+                ClosureSource::GlobalDeclaration => {
+                    if !allows_global_declarations {
+                        return Err(RuntimeError::Invariant(
+                            "eval bytecode retained a global declaration for a local variable environment",
+                        ));
+                    }
+                    let key = PropertyKey::from_borrowed_atom(self.clone(), name)?;
+                    match descriptor.kind {
+                        ClosureVariableKind::Normal
+                            if !descriptor.is_lexical && !descriptor.is_const =>
+                        {
+                            self.check_global_var_declaration(realm, &key)?;
+                        }
+                        ClosureVariableKind::GlobalFunction
+                            if !descriptor.is_lexical && !descriptor.is_const =>
+                        {
+                            self.check_global_function_declaration(realm, &key)?;
+                        }
+                        ClosureVariableKind::Normal
+                        | ClosureVariableKind::FunctionName
+                        | ClosureVariableKind::GlobalFunction
+                        | ClosureVariableKind::EvalVariableObject => {
+                            return Err(RuntimeError::Invariant(
+                                "eval global declaration has non-global binding metadata",
+                            ));
+                        }
+                    }
+                }
+                ClosureSource::Global => {
+                    if descriptor.kind != ClosureVariableKind::Normal {
+                        return Err(RuntimeError::Invariant(
+                            "resolved eval global has declaration-only binding metadata",
+                        ));
+                    }
+                }
+                ClosureSource::EvalEnvironment(_) => {}
+                ClosureSource::ParentLocal(_)
+                | ClosureSource::ParentArgument(_)
+                | ClosureSource::ParentClosure(_)
+                | ClosureSource::ParentGlobal(_) => {
+                    return Err(RuntimeError::Invariant(
+                        "eval root closure descriptor used a child source",
+                    ));
+                }
+            }
+        }
+
+        if closure_variables.len() < bindings.len() {
+            return Err(RuntimeError::Invariant(
+                "eval environment closure descriptor count is too small",
+            ));
+        }
+
+        // Caller roots form an exact authenticated prefix. Attach every root
+        // before global declaration creation so a forged late descriptor can
+        // never cause partial global state.
+        let mut slots = vec![None; closure_variables.len()];
+        for (index, (expected, root)) in bindings.iter().zip(environment_roots).enumerate() {
+            let descriptor = closure_variables[index];
+            let expected_index = u16::try_from(index).map_err(|_| {
+                RuntimeError::Invariant("eval environment closure index exceeds bytecode range")
+            })?;
+            if descriptor.source != ClosureSource::EvalEnvironment(expected_index) {
+                return Err(RuntimeError::Invariant(
+                    "eval environment closure descriptors are not an exact prefix",
+                ));
+            }
+            let ClosureVariableName::Atom(name) = descriptor.name else {
+                return Err(RuntimeError::Invariant(
+                    "published eval environment descriptor has no atom",
+                ));
+            };
+            if expected.is_catch_parameter
+                && (!expected.is_lexical
+                    || expected.is_const
+                    || expected.kind != ClosureVariableKind::Normal)
+            {
+                return Err(RuntimeError::Invariant(
+                    "eval catch binding has invalid binding metadata",
+                ));
+            }
+            if expected.kind == ClosureVariableKind::EvalVariableObject
+                && (expected.is_lexical || expected.is_const || expected.is_catch_parameter)
+            {
+                return Err(RuntimeError::Invariant(
+                    "eval variable-object binding has invalid binding metadata",
+                ));
+            }
+            let published_name = self.0.state.borrow().atoms.to_js_string(name)?;
+            if published_name != expected.name
+                || descriptor.is_lexical != expected.is_lexical
+                || descriptor.is_const != expected.is_const
+                || descriptor.kind != expected.kind
+            {
+                return Err(RuntimeError::Invariant(
+                    "published eval closure disagrees with its caller binding",
+                ));
+            }
+            self.validate_var_ref_metadata(root, descriptor)?;
+            slots[index] = Some(root.clone());
+        }
+
+        // Every caller root is now attached. Instantiate global slots in
+        // descriptor order, retaining QuickJS's eval-specific configurable
+        // property attributes for newly created/replaced bindings.
+        for (index, descriptor) in closure_variables
+            .iter()
+            .copied()
+            .enumerate()
+            .skip(bindings.len())
+        {
+            let ClosureVariableName::Atom(name) = descriptor.name else {
+                return Err(RuntimeError::Invariant(
+                    "published eval closure descriptor has no atom",
+                ));
+            };
             let root = match descriptor.source {
-                ClosureSource::EvalEnvironment(index) => {
-                    if kind != EvalKind::Direct {
-                        return Err(RuntimeError::Invariant(
-                            "indirect eval retained a caller-environment descriptor",
-                        ));
+                ClosureSource::GlobalDeclaration => {
+                    let key = PropertyKey::from_borrowed_atom(self.clone(), name)?;
+                    match descriptor.kind {
+                        ClosureVariableKind::Normal
+                            if !descriptor.is_lexical && !descriptor.is_const =>
+                        {
+                            self.create_global_var_binding(
+                                realm,
+                                &key,
+                                GlobalBindingCreationMode::Eval,
+                            )?
+                        }
+                        ClosureVariableKind::GlobalFunction
+                            if !descriptor.is_lexical && !descriptor.is_const =>
+                        {
+                            self.create_global_function_binding(
+                                realm,
+                                &key,
+                                GlobalBindingCreationMode::Eval,
+                            )?
+                        }
+                        ClosureVariableKind::Normal
+                        | ClosureVariableKind::FunctionName
+                        | ClosureVariableKind::GlobalFunction
+                        | ClosureVariableKind::EvalVariableObject => {
+                            return Err(RuntimeError::Invariant(
+                                "eval global declaration has non-global binding metadata",
+                            ));
+                        }
                     }
-                    let expected =
-                        bindings
-                            .get(usize::from(index))
-                            .ok_or(RuntimeError::Invariant(
-                                "eval environment closure index is out of bounds",
-                            ))?;
-                    let published_name = self.0.state.borrow().atoms.to_js_string(name)?;
-                    if published_name != expected.name
-                        || descriptor.is_lexical != expected.is_lexical
-                        || descriptor.is_const != expected.is_const
-                        || descriptor.kind != expected.kind
-                    {
-                        return Err(RuntimeError::Invariant(
-                            "published eval closure disagrees with its caller binding",
-                        ));
-                    }
-                    let root = environment_roots.get(usize::from(index)).ok_or(
-                        RuntimeError::Invariant("eval environment root index is out of bounds"),
-                    )?;
-                    self.validate_var_ref_metadata(root, descriptor)?;
-                    root.clone()
                 }
                 ClosureSource::Global => self.resolve_global_var(realm, name)?,
-                ClosureSource::GlobalDeclaration => {
+                ClosureSource::EvalEnvironment(_) => {
                     return Err(RuntimeError::Invariant(
-                        "R1x eval bytecode retained a global declaration descriptor",
+                        "eval environment closure descriptors are not an exact prefix",
                     ));
                 }
                 ClosureSource::ParentLocal(_)
@@ -405,8 +548,15 @@ impl Runtime {
                     ));
                 }
             };
-            slots.push(root);
+            slots[index] = Some(root);
         }
+        let slots =
+            slots
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .ok_or(RuntimeError::Invariant(
+                    "eval closure instantiation left an unattached slot",
+                ))?;
         self.new_bytecode_closure_with_slots(realm, function, &slots)
     }
 }

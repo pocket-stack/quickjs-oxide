@@ -19,6 +19,17 @@ pub enum ArgumentsKind {
     Unmapped,
 }
 
+/// Storage which owns one hidden sloppy-eval variable object.
+///
+/// The object itself lives in a compiler-authenticated local or closure
+/// `VarRef`. Keeping that source typed prevents the dynamic-name opcodes from
+/// accepting an arbitrary JavaScript-visible object from the operand stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EvalVariableSource {
+    Local(u16),
+    Closure(u16),
+}
+
 /// Stack-machine operations deliberately use the names and stack behavior of
 /// their `QuickJS` counterparts. This typed form is the current compiler IR and
 /// verified execution format; a future compact encoder must share this opcode
@@ -39,6 +50,11 @@ pub enum Instruction {
     /// QuickJS `OP_throw_error atom JS_THROW_VAR_RO` for a strict immutable
     /// function-expression name. Consumes the attempted value and terminates.
     ThrowReadOnly(u32),
+    /// QuickJS `OP_throw_error atom JS_THROW_VAR_REDECL`: throw the eval-time
+    /// SyntaxError used for a `var`/function declaration which crosses an
+    /// imported lexical scope. The verified String constant preserves the
+    /// conflicting binding identity even though QuickJS's message is generic.
+    ThrowRedeclaration(u32),
     Undefined,
     Null,
     PushFalse,
@@ -49,6 +65,38 @@ pub enum Instruction {
     /// arguments binding. Runtime creation still occurs in the entry prologue,
     /// before body function hoists.
     Arguments(ArgumentsKind),
+    /// QuickJS `OP_special_object` with `OP_SPECIAL_OBJECT_VAR_OBJECT`: create
+    /// the null-prototype object which stores names introduced by sloppy
+    /// direct eval in this activation.
+    VariableEnvironment,
+    /// Test whether the hidden variable object has an own property named by a
+    /// verified String constant.
+    HasEvalVariable {
+        source: EvalVariableSource,
+        name: u32,
+    },
+    /// Read one property from the hidden variable object.
+    GetEvalVariable {
+        source: EvalVariableSource,
+        name: u32,
+    },
+    /// Consume and assign one property on the hidden variable object.
+    PutEvalVariable {
+        source: EvalVariableSource,
+        name: u32,
+    },
+    /// Delete one configurable property from the hidden variable object and
+    /// push the Boolean result.
+    DeleteEvalVariable {
+        source: EvalVariableSource,
+        name: u32,
+    },
+    /// Consume a value and define an own configurable, writable, enumerable
+    /// data property on the hidden variable object.
+    DefineEvalVariable {
+        source: EvalVariableSource,
+        name: u32,
+    },
     GetLocal(u16),
     PutLocal(u16),
     SetLocal(u16),
@@ -268,6 +316,7 @@ impl Instruction {
             Self::Nop
             | Self::Goto(_)
             | Self::Gosub(_)
+            | Self::ThrowRedeclaration(_)
             | Self::SetLocalUninitialized(_)
             | Self::CloseLocal(_) => (0, 0),
             // The verifier models this marker in its conceptual stack even
@@ -288,6 +337,10 @@ impl Instruction {
             | Self::PushThis
             | Self::PushNewTarget
             | Self::Arguments(_)
+            | Self::VariableEnvironment
+            | Self::HasEvalVariable { .. }
+            | Self::GetEvalVariable { .. }
+            | Self::DeleteEvalVariable { .. }
             | Self::GetLocal(_)
             | Self::GetLocalCheck(_)
             | Self::GetArg(_)
@@ -322,6 +375,8 @@ impl Instruction {
             Self::CallMethod(argument_count) => (*argument_count as usize + 2, 1),
             Self::Construct(argument_count) => (*argument_count as usize + 2, 1),
             Self::Drop
+            | Self::PutEvalVariable { .. }
+            | Self::DefineEvalVariable { .. }
             | Self::PutLocal(_)
             | Self::InitializeLocal(_)
             | Self::PutLocalCheck(_)
@@ -424,10 +479,16 @@ impl BytecodeFunction {
             }
             if let Instruction::SetName(index)
             | Instruction::ThrowReadOnly(index)
+            | Instruction::ThrowRedeclaration(index)
             | Instruction::GetField(index)
             | Instruction::GetField2(index)
             | Instruction::PutField(index)
-            | Instruction::DefineField(index) = instruction
+            | Instruction::DefineField(index)
+            | Instruction::HasEvalVariable { name: index, .. }
+            | Instruction::GetEvalVariable { name: index, .. }
+            | Instruction::PutEvalVariable { name: index, .. }
+            | Instruction::DeleteEvalVariable { name: index, .. }
+            | Instruction::DefineEvalVariable { name: index, .. } = instruction
                 && !matches!(self.constant(*index), Some(Value::String(_)))
             {
                 return Err(Error::internal(
@@ -446,6 +507,32 @@ impl BytecodeFunction {
                 && *index >= self.local_count
             {
                 return Err(Error::internal("local bytecode operand is out of bounds"));
+            }
+            if let Instruction::HasEvalVariable {
+                source: EvalVariableSource::Local(index),
+                ..
+            }
+            | Instruction::GetEvalVariable {
+                source: EvalVariableSource::Local(index),
+                ..
+            }
+            | Instruction::PutEvalVariable {
+                source: EvalVariableSource::Local(index),
+                ..
+            }
+            | Instruction::DeleteEvalVariable {
+                source: EvalVariableSource::Local(index),
+                ..
+            }
+            | Instruction::DefineEvalVariable {
+                source: EvalVariableSource::Local(index),
+                ..
+            } = instruction
+                && *index >= self.local_count
+            {
+                return Err(Error::internal(
+                    "eval variable-object local operand is out of bounds",
+                ));
             }
         }
         verify_parts(&self.code, self.constants.len(), self.max_stack)
@@ -483,10 +570,16 @@ pub(crate) fn verify_parts(
             | Instruction::RegExp(index)
             | Instruction::SetName(index)
             | Instruction::ThrowReadOnly(index)
+            | Instruction::ThrowRedeclaration(index)
             | Instruction::GetField(index)
             | Instruction::GetField2(index)
             | Instruction::PutField(index)
-            | Instruction::DefineField(index) => {
+            | Instruction::DefineField(index)
+            | Instruction::HasEvalVariable { name: index, .. }
+            | Instruction::GetEvalVariable { name: index, .. }
+            | Instruction::PutEvalVariable { name: index, .. }
+            | Instruction::DeleteEvalVariable { name: index, .. }
+            | Instruction::DefineEvalVariable { name: index, .. } => {
                 let is_valid = usize::try_from(*index)
                     .ok()
                     .is_some_and(|index| index < constant_count);
@@ -746,7 +839,7 @@ pub(crate) fn verify_parts(
             // frame stack. A postfix update can legitimately retain its old
             // value below the attempted write when immutable-binding
             // resolution replaces that write with this instruction.
-            Instruction::ThrowReadOnly(_) => {}
+            Instruction::ThrowReadOnly(_) | Instruction::ThrowRedeclaration(_) => {}
             Instruction::Goto(target) => {
                 enqueue_target(
                     &mut worklist,
@@ -958,7 +1051,9 @@ fn enqueue_fallthrough(
 
 #[cfg(test)]
 mod tests {
-    use super::{ArgumentsKind, BytecodeFunction, Instruction, MAX_LOCAL_SLOTS};
+    use super::{
+        ArgumentsKind, BytecodeFunction, EvalVariableSource, Instruction, MAX_LOCAL_SLOTS,
+    };
     use crate::{JsString, Value};
 
     #[test]
@@ -1132,6 +1227,94 @@ mod tests {
             };
             assert!(underflow.verify().is_err());
         }
+    }
+
+    #[test]
+    fn verifier_models_eval_variable_object_stack_and_operands() {
+        let source = EvalVariableSource::Local(0);
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::VariableEnvironment,
+                Instruction::PutLocal(0),
+                Instruction::HasEvalVariable { source, name: 0 },
+                Instruction::Drop,
+                Instruction::GetEvalVariable { source, name: 0 },
+                Instruction::Drop,
+                Instruction::PushI32(1),
+                Instruction::PutEvalVariable { source, name: 0 },
+                Instruction::DeleteEvalVariable { source, name: 0 },
+                Instruction::Drop,
+                Instruction::PushI32(2),
+                Instruction::DefineEvalVariable { source, name: 0 },
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            constants: vec![Value::String(JsString::from_static("added"))],
+            local_count: 1,
+            max_stack: 1,
+        };
+        assert_eq!(function.verify().unwrap().max_stack, 1);
+
+        for instruction in [
+            Instruction::HasEvalVariable { source, name: 0 },
+            Instruction::GetEvalVariable { source, name: 0 },
+            Instruction::PutEvalVariable { source, name: 0 },
+            Instruction::DeleteEvalVariable { source, name: 0 },
+            Instruction::DefineEvalVariable { source, name: 0 },
+        ] {
+            let bad_name = BytecodeFunction {
+                name: None,
+                code: vec![Instruction::Undefined, Instruction::Return, instruction],
+                constants: vec![Value::Int(0)],
+                local_count: 1,
+                max_stack: 1,
+            };
+            assert_eq!(
+                bad_name.verify().unwrap_err().message(),
+                "string-key opcode referenced a non-string constant"
+            );
+        }
+
+        let bad_local = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::HasEvalVariable { source, name: 0 },
+            ],
+            constants: vec![Value::String(JsString::from_static("added"))],
+            local_count: 0,
+            max_stack: 1,
+        };
+        assert_eq!(
+            bad_local.verify().unwrap_err().message(),
+            "eval variable-object local operand is out of bounds"
+        );
+    }
+
+    #[test]
+    fn verifier_models_eval_redeclaration_as_a_zero_stack_terminal() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::ThrowRedeclaration(0)],
+            constants: vec![Value::String(JsString::from_static("conflict"))],
+            local_count: 0,
+            max_stack: 0,
+        };
+        assert_eq!(function.verify().unwrap().max_stack, 0);
+
+        let malformed = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::ThrowRedeclaration(0)],
+            constants: vec![Value::Int(0)],
+            local_count: 0,
+            max_stack: 0,
+        };
+        assert_eq!(
+            malformed.verify().unwrap_err().message(),
+            "string-key opcode referenced a non-string constant"
+        );
     }
 
     #[test]

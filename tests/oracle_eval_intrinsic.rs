@@ -286,6 +286,314 @@ const EXPECTED_ENVIRONMENT: &[&str] = &[
     "indirectStrictAfter=undefined,undefined",
 ];
 
+// R1y freezes QuickJS's hidden per-activation `<var>` object rather than
+// approximating novel sloppy direct-eval names as compiler-created locals.
+const R1Y_FUNCTION_DECLARATION_PROBE: &str = r#"
+(function () {
+    var observations = [];
+    function sloppy(parameter) {
+        var existing = 1;
+        function compiledBeforeEval() {
+            return [fresh, existing, parameter].join(",");
+        }
+        var completion = eval(
+            "var fresh=40; existing=2; parameter=3; fresh+2"
+        );
+        observations.push(
+            "sloppy=" + [
+                completion,
+                compiledBeforeEval(),
+                existing,
+                parameter,
+                delete fresh,
+                typeof fresh
+            ].join("|")
+        );
+    }
+    sloppy(9);
+
+    function retained() {
+        eval("var answer=42");
+        return function () { return answer; };
+    }
+    observations.push("closure=" + retained()());
+
+    function repeated() {
+        eval("var x=1");
+        eval("var x");
+        return typeof x + "|" + String(x);
+    }
+    observations.push("repeat=" + repeated());
+
+    function functionThenVar() {
+        return eval("function x(){}; var x; typeof x");
+    }
+    function varThenFunction() {
+        return eval("var x; function x(){}; typeof x");
+    }
+    observations.push(
+        "order=" + functionThenVar() + "|" + varThenFunction()
+    );
+    return observations.join("\n");
+})()
+"#;
+
+const EXPECTED_R1Y_FUNCTION_DECLARATIONS: &[&str] = &[
+    "sloppy=42|40,2,3|2|3|true|undefined",
+    "closure=42",
+    "repeat=undefined|undefined",
+    "order=undefined|function",
+];
+
+const R1Y_EVAL_KIND_DECLARATION_PROBE: &str = r#"
+(function () {
+    var observations = [];
+    function strictCaller() {
+        "use strict";
+        var value = eval(
+            "var strictVar=40; function strictFn(){return strictVar+2} strictFn()"
+        );
+        return [value, typeof strictVar, typeof strictFn].join("|");
+    }
+    function strictSource() {
+        var value = eval(
+            "'use strict'; var strictVar=40; " +
+            "function strictFn(){return strictVar+2} strictFn()"
+        );
+        return [value, typeof strictVar, typeof strictFn].join("|");
+    }
+    observations.push(
+        "strict=" + strictCaller() + "|" + strictSource()
+    );
+
+    var indirect = (0, eval)(
+        "var indirectVar=40; " +
+        "function indirectFn(){return indirectVar+2} indirectFn()"
+    );
+    var varFlags = Object.getOwnPropertyDescriptor(globalThis, "indirectVar");
+    var fnFlags = Object.getOwnPropertyDescriptor(globalThis, "indirectFn");
+    observations.push(
+        "indirect=" + [
+            indirect,
+            indirectFn(),
+            varFlags.configurable,
+            fnFlags.configurable,
+            delete globalThis.indirectVar,
+            delete globalThis.indirectFn
+        ].join("|")
+    );
+
+    var indirectStrict = (0, eval)(
+        "'use strict'; var strictVar=40; " +
+        "function strictFn(){return strictVar+2} strictFn()"
+    );
+    observations.push(
+        "indirectStrict=" + [
+            indirectStrict,
+            typeof strictVar,
+            typeof strictFn
+        ].join("|")
+    );
+    return observations.join("\n");
+})()
+"#;
+
+const EXPECTED_R1Y_EVAL_KIND_DECLARATIONS: &[&str] = &[
+    "strict=42|undefined|undefined|42|undefined|undefined",
+    "indirect=42|42|true|true|true|true",
+    "indirectStrict=42|undefined|undefined",
+];
+
+const R1Y_CALLER_BINDING_PROBE: &str = r#"
+(function () {
+    var observations = [];
+    function caught() {
+        try {
+            throw 1;
+        } catch (error) {
+            eval("var error=42");
+            return error;
+        }
+    }
+    observations.push("catch=" + caught());
+
+    function sourceCatch() {
+        var sloppy = eval("try{throw 1}catch(e){var e=2;e}");
+        var strict = eval(
+            "'use strict';try{throw 1}catch(e){var e=2;e}"
+        );
+        return sloppy + "|" + strict;
+    }
+    observations.push("sourceCatch=" + sourceCatch());
+
+    function outer() {
+        let value = 1;
+        var inner = (function () {
+            eval("var value=2");
+            return value;
+        })();
+        return inner + "|" + value;
+    }
+    observations.push("outer=" + outer());
+
+    function conflict() {
+        let value = 1;
+        try {
+            eval("var value=2");
+            return "none";
+        } catch (error) {
+            return error.name + "|" + value;
+        }
+    }
+    observations.push("conflict=" + conflict());
+
+    function named(argument) {
+        eval("var arguments=1; var named=2");
+        return [
+            arguments[0],
+            named,
+            eval("arguments"),
+            eval("named"),
+            eval("delete arguments"),
+            eval("delete named"),
+            arguments[0],
+            typeof named
+        ].join("|");
+    }
+    observations.push("special=" + named(7));
+    return observations.join("\n");
+})()
+"#;
+
+const EXPECTED_R1Y_CALLER_BINDINGS: &[&str] = &[
+    "catch=42",
+    "sourceCatch=2|2",
+    "outer=2|1",
+    "conflict=SyntaxError|1",
+    "special=7|2|1|2|true|true|7|function",
+];
+
+const R1Y_DECLARATION_CONFLICT_PROBE: &str = r#"
+var observations = [];
+{
+    let blockConflict = 1;
+    try {
+        eval(
+            "function functionBeforeThrow(){}; " +
+            "var createdBeforeThrow; var blockConflict"
+        );
+        observations.push("block=none");
+    } catch (error) {
+        observations.push(
+            "block=" + [
+                error.name,
+                Object.prototype.hasOwnProperty.call(
+                    globalThis,
+                    "createdBeforeThrow"
+                ),
+                Object.prototype.hasOwnProperty.call(globalThis, "blockConflict"),
+                Object.prototype.hasOwnProperty.call(
+                    globalThis,
+                    "functionBeforeThrow"
+                ),
+                String(globalThis.createdBeforeThrow),
+                String(globalThis.blockConflict),
+                typeof globalThis.functionBeforeThrow
+            ].join("|")
+        );
+    }
+}
+delete globalThis.createdBeforeThrow;
+delete globalThis.blockConflict;
+delete globalThis.functionBeforeThrow;
+
+let globalLocked = 1;
+try {
+    eval("var preflightMustNotExist; var globalLocked");
+    observations.push("global=none");
+} catch (error) {
+    observations.push(
+        "global=" + [
+            error.name,
+            Object.prototype.hasOwnProperty.call(
+                globalThis,
+                "preflightMustNotExist"
+            ),
+            Object.prototype.hasOwnProperty.call(globalThis, "globalLocked"),
+            globalLocked
+        ].join("|")
+    );
+}
+
+var scriptVar = 1;
+function scriptFn() {}
+eval("var evalVar=1; function evalFn(){}");
+observations.push(
+    "flags=" + [
+        Object.getOwnPropertyDescriptor(globalThis, "scriptVar").configurable,
+        Object.getOwnPropertyDescriptor(globalThis, "scriptFn").configurable,
+        Object.getOwnPropertyDescriptor(globalThis, "evalVar").configurable,
+        Object.getOwnPropertyDescriptor(globalThis, "evalFn").configurable,
+        delete globalThis.evalVar,
+        delete globalThis.evalFn
+    ].join("|")
+);
+observations.join("\n")
+"#;
+
+const EXPECTED_R1Y_DECLARATION_CONFLICTS: &[&str] = &[
+    "block=SyntaxError|true|true|true|undefined|undefined|undefined",
+    "global=SyntaxError|false|false|1",
+    "flags=false|false|true|true|true|true",
+];
+
+const R1Y_LABELLED_FUNCTION_PROBE: &str = r#"
+(function () {
+    var observations = [];
+    function direct() {
+        var lexicalClosure;
+        eval(
+            "label: function local(){return 42;} " +
+            "lexicalClosure=local"
+        );
+        return [
+            lexicalClosure === local,
+            lexicalClosure(),
+            local()
+        ].join("|");
+    }
+    observations.push("direct=" + direct());
+
+    globalThis.labelledClosure = undefined;
+    Object.defineProperty(globalThis, "labelled", {
+        configurable: true,
+        get: function () { return 9; },
+        set: function (value) { labelledClosure = value; }
+    });
+    var inside = (0, eval)(
+        "label: function labelled(){return 42;} " +
+        "[typeof labelled,labelled(),labelledClosure===labelled].join('|')"
+    );
+    observations.push(
+        "global=" + [
+            inside,
+            typeof labelled,
+            labelled,
+            labelledClosure(),
+            Object.getOwnPropertyDescriptor(globalThis, "labelled").configurable
+        ].join("|")
+    );
+    delete globalThis.labelled;
+    delete globalThis.labelledClosure;
+    return observations.join("\n");
+})()
+"#;
+
+const EXPECTED_R1Y_LABELLED_FUNCTIONS: &[&str] = &[
+    "direct=false|42|42",
+    "global=function|42|false|number|9|42|true",
+];
+
 #[test]
 fn eval_shell_matches_pinned_quickjs() {
     let rust = rust_observations();
@@ -336,6 +644,110 @@ fn pinned_quickjs_eval_environment_contract_is_frozen() {
             .collect::<Vec<_>>(),
         EXPECTED_ENVIRONMENT,
         "pinned QuickJS eval environment contract drifted"
+    );
+}
+
+#[test]
+fn eval_var_objects_and_source_order_match_pinned_quickjs() {
+    let rust = rust_value(R1Y_FUNCTION_DECLARATION_PROBE);
+    assert_eq!(
+        rust.lines().collect::<Vec<_>>(),
+        EXPECTED_R1Y_FUNCTION_DECLARATIONS,
+        "Rust sloppy eval declaration environment drifted",
+    );
+
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!("SKIP eval declaration differential: set QJS_ORACLE to pinned upstream qjs");
+        return;
+    };
+    assert_eq!(
+        rust,
+        oracle_value(&oracle, R1Y_FUNCTION_DECLARATION_PROBE),
+        "eval variable-object behavior differed from pinned QuickJS",
+    );
+}
+
+#[test]
+fn strict_and_indirect_eval_declarations_match_pinned_quickjs() {
+    let rust = rust_value(R1Y_EVAL_KIND_DECLARATION_PROBE);
+    assert_eq!(
+        rust.lines().collect::<Vec<_>>(),
+        EXPECTED_R1Y_EVAL_KIND_DECLARATIONS,
+        "Rust strict/indirect eval declaration environment drifted",
+    );
+
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!("SKIP eval-kind declaration differential: set QJS_ORACLE to pinned upstream qjs");
+        return;
+    };
+    assert_eq!(
+        rust,
+        oracle_value(&oracle, R1Y_EVAL_KIND_DECLARATION_PROBE),
+        "strict/indirect eval declarations differed from pinned QuickJS",
+    );
+}
+
+#[test]
+fn eval_declarations_respect_catch_lexicals_and_implicit_bindings() {
+    let rust = rust_value(R1Y_CALLER_BINDING_PROBE);
+    assert_eq!(
+        rust.lines().collect::<Vec<_>>(),
+        EXPECTED_R1Y_CALLER_BINDINGS,
+        "Rust caller-binding precedence for eval declarations drifted",
+    );
+
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!("SKIP eval caller-binding differential: set QJS_ORACLE to pinned upstream qjs");
+        return;
+    };
+    assert_eq!(
+        rust,
+        oracle_value(&oracle, R1Y_CALLER_BINDING_PROBE),
+        "eval caller-binding precedence differed from pinned QuickJS",
+    );
+}
+
+#[test]
+fn eval_declaration_conflicts_and_global_flags_match_pinned_quickjs() {
+    let rust = rust_value(R1Y_DECLARATION_CONFLICT_PROBE);
+    assert_eq!(
+        rust.lines().collect::<Vec<_>>(),
+        EXPECTED_R1Y_DECLARATION_CONFLICTS,
+        "Rust eval declaration preflight or global flags drifted",
+    );
+
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!(
+            "SKIP eval declaration-conflict differential: set QJS_ORACLE to pinned upstream qjs"
+        );
+        return;
+    };
+    assert_eq!(
+        rust,
+        oracle_value(&oracle, R1Y_DECLARATION_CONFLICT_PROBE),
+        "eval declaration conflicts differed from pinned QuickJS",
+    );
+}
+
+#[test]
+fn eval_labelled_functions_keep_lexical_and_annex_b_closures_distinct() {
+    let rust = rust_value(R1Y_LABELLED_FUNCTION_PROBE);
+    assert_eq!(
+        rust.lines().collect::<Vec<_>>(),
+        EXPECTED_R1Y_LABELLED_FUNCTIONS,
+        "Rust eval labelled-function environments drifted",
+    );
+
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!(
+            "SKIP eval labelled-function differential: set QJS_ORACLE to pinned upstream qjs"
+        );
+        return;
+    };
+    assert_eq!(
+        rust,
+        oracle_value(&oracle, R1Y_LABELLED_FUNCTION_PROBE),
+        "eval labelled-function environments differed from pinned QuickJS",
     );
 }
 
@@ -652,30 +1064,20 @@ fn eval_syntax_errors_are_catchable_and_direct_eval_inherits_strictness() {
 }
 
 #[test]
-fn eval_var_function_and_nested_direct_eval_stay_typed_frontiers() {
-    for (source, expected_message) in [
-        (
-            r#"(function () { return eval("var added = 42; added"); })()"#,
-            "var declarations in eval source require a dynamic variable environment",
-        ),
-        (
-            r#"(0, eval)("function answer() { return 42; } answer()")"#,
-            "function declarations in eval source are not implemented yet",
-        ),
-        (
-            r#"(function () { return eval("eval('40 + 2')"); })()"#,
-            "direct eval nested inside eval source is not implemented yet",
-        ),
-    ] {
-        let runtime = Runtime::new();
-        let mut context = runtime.new_context();
-        assert_unsupported(context.eval(source), source, expected_message);
-        assert!(
-            !context.has_exception(),
-            "typed Unsupported leaked into the JavaScript exception slot: {source}",
-        );
-        assert_eq!(context.take_exception().unwrap(), None, "{source}");
-    }
+fn nested_direct_eval_stays_a_typed_frontier() {
+    let source = r#"(function () { return eval("eval('40 + 2')"); })()"#;
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    assert_unsupported(
+        context.eval(source),
+        source,
+        "direct eval nested inside eval source is not implemented yet",
+    );
+    assert!(
+        !context.has_exception(),
+        "typed Unsupported leaked into the JavaScript exception slot: {source}",
+    );
+    assert_eq!(context.take_exception().unwrap(), None, "{source}");
 }
 
 #[test]

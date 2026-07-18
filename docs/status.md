@@ -15,8 +15,8 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 28,216 passes: 27.65% raw, a 33.77% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 89.13% among the 31,658 variants with a
+  has 28,984 passes: 28.41% raw, a 34.69% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 89.39% among the 32,426 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -174,14 +174,45 @@ claim full parity.
   visible runtime failures: ten stop at existing arrow/async/generator or
   non-simple-parameter grammar boundaries, while three are pinned QuickJS's
   already-recorded SpiderMonkey staging differences. The complete vector is
-  now 28,216 passes with 34,849 runnable jobs; TSV/JSONL SHA-256 values are
+  at the R1x landing 28,216 passes with 34,849 runnable jobs; TSV/JSONL
+  SHA-256 values are
   `c62f104a2a3801c9b3eca38362fa5075f1fc21564395c58f45dfb23153ef1530`
   and
   `526c00942821ff5f153e08d3056627bbe35e7e12e4cde3702a55c220351bbd09`.
 
-  Dynamic eval-created `var`, eval FunctionDeclaration instantiation, nested
-  syntactic direct eval, direct `new.target`, and ill-formed UTF-16 source stay
-  explicit typed frontiers. QuickJS also allocates the callable and VarRef
+  R1y ports QuickJS-shaped eval declaration environments. Every sloppy
+  direct-eval-capable activation owns a hidden null-prototype `<var>` object;
+  eval bytecode reaches it only through authenticated Local/Closure metadata
+  and typed has/get/put/delete/define operations. Source-ordered `var` and
+  ordinary FunctionDeclaration records preserve repeated-eval overwrite,
+  function/var order, deletion fallback, catch-parameter reuse, caller lexical
+  conflicts, implicit `arguments` and private function-name precedence.
+  Strict eval keeps declarations local; indirect and global direct eval use
+  configurable global declarations; sloppy function eval resolves the nearest
+  current or ancestor variable object. The same path covers Annex B block,
+  single-statement and labelled declarations, including QuickJS's distinct
+  lexical and outer-write closures.
+
+  The independent declaration gate freezes 497 paths / 519 variants and all
+  pass. Its manifest, TSV and JSONL SHA-256 values are
+  `ecc3cb3b50f8b59cae548fa9c1017dfd1d71878644bf204146d4002015c2bd70`,
+  `1b9cfacfe80671d5e2579865b7efb1478b5d7c1da70b240b71a1cccc3cf1c80a`
+  and
+  `0a0e7db1f1c80431302b14b66148f34efa998f38811e965f126c2d548ab6dd6d`.
+  The exact R1x/R1y full join retains all 102,037 unique keys and every prior
+  pass. It records 752 `unsupported-runtime -> pass`, 16
+  `fail-runtime -> pass`, and 16 `unsupported-runtime -> fail-runtime`
+  transitions: 15 are checksum-pinned Test262 failures also observed in the
+  target QuickJS release, and one reaches the existing generator/async grammar
+  frontier. Net growth is 768 passes. The final vector has 28,984 passes and
+  34,849 runnable jobs, no engine/runner fault, and TSV/JSONL SHA-256 values
+  `cca9eadc35c3c5f9acdf24b00cb9d65b0a2ca20a65860e137185f4f7fa48c4e4`
+  and
+  `348e25af619fcf81ef534b82f57571889c1d2ab7f06cad3d5233e7d49fae240f`.
+
+  Nested syntactic direct eval, `with`, generator/async and destructuring eval
+  declarations, direct `new.target`, and ill-formed UTF-16 source stay explicit
+  frontiers. QuickJS also allocates the callable and VarRef
   array before capturing caller cells, while this Rust slice materializes the
   roots first and then allocates the callable; only successful-compilation
   OOM/GC priority is affected, but exact allocation-order parity remains a
@@ -3111,7 +3142,11 @@ R1x keeps String-eval compilation, realm selection and closure instantiation in
 `runtime/intrinsics/eval.rs`, publication checks in
 `runtime/bytecode_publish.rs`, and frame capture in `runtime/vm_host.rs`. The
 parent is 9,701 lines rather than absorbing those algorithms. The feature
-algorithms do not return to the parent monolith. The
+algorithms do not return to the parent monolith. R1y keeps declaration
+compilation in `compiler.rs`, publication in `runtime/bytecode_publish.rs`, and
+variable-object operations in `runtime/vm_host.rs`; `runtime.rs` grows only to
+9,730 lines for the host dispatch boundary and redeclaration materialization.
+The
 RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -3324,6 +3359,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/run-test262-regexp-dotall.sh
 ./scripts/run-test262-unicode-u180e.sh
 ./scripts/run-test262-eval-intrinsic.sh
+./scripts/run-test262-eval-declarations.sh
 ./scripts/test-test262-full.sh
 ```
 
