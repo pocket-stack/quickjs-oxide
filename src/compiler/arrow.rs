@@ -1,0 +1,333 @@
+use super::*;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ArrowHead {
+    Identifier,
+    Parenthesized,
+}
+
+impl<'source> Parser<'source> {
+    pub(super) fn parse_arrow_function(&mut self, head: ArrowHead) -> Result<(), Error> {
+        let function_span = self.current().span;
+        let parent = self.current_function;
+        let parent_strict = self.functions[parent].strict;
+        let mut parameters = Vec::new();
+        let mut parameter_tokens = Vec::new();
+
+        match head {
+            ArrowHead::Identifier => {
+                let token = self.current().clone();
+                let TokenKind::Identifier(identifier) = token.kind else {
+                    return Err(Error::internal(
+                        "identifier arrow lookahead lost its parameter token",
+                    ));
+                };
+                validate_identifier(&identifier, token.span, false, IdentifierContext::Argument)?;
+                parameters.push(identifier.value.clone());
+                parameter_tokens.push((identifier, token.span));
+                self.advance()?;
+            }
+            ArrowHead::Parenthesized => {
+                self.expect_punctuator(Punctuator::LeftParen)?;
+                if !self.consume_punctuator(Punctuator::RightParen)? {
+                    loop {
+                        if self.is_punctuator(Punctuator::Ellipsis) {
+                            return Err(self.unsupported_here(
+                                "arrow rest parameters are not implemented yet",
+                            ));
+                        }
+                        if matches!(
+                            self.current().kind,
+                            TokenKind::Punctuator(Punctuator::LeftBracket | Punctuator::LeftBrace)
+                        ) {
+                            return Err(self.unsupported_here(
+                                "arrow destructuring parameters are not implemented yet",
+                            ));
+                        }
+                        let token = self.current().clone();
+                        let TokenKind::Identifier(identifier) = token.kind else {
+                            return Err(self.syntax_here("missing formal parameter"));
+                        };
+                        validate_identifier(
+                            &identifier,
+                            token.span,
+                            false,
+                            IdentifierContext::Argument,
+                        )?;
+                        if parameters.contains(&identifier.value) {
+                            return Err(Error::syntax(
+                                "duplicate argument names not allowed in this context",
+                                source_span(token.span),
+                            ));
+                        }
+                        if parameters.len() >= MAX_LOCAL_VARIABLES {
+                            return Err(Error::new(ErrorKind::JsInternal, "too many arguments")
+                                .with_span(source_span(token.span)));
+                        }
+                        parameters.push(identifier.value.clone());
+                        parameter_tokens.push((identifier, token.span));
+                        self.advance()?;
+                        if self.is_punctuator(Punctuator::Equal) {
+                            return Err(self.unsupported_here(
+                                "arrow default parameters are not implemented yet",
+                            ));
+                        }
+                        if self.consume_punctuator(Punctuator::RightParen)? {
+                            break;
+                        }
+                        self.expect_punctuator(Punctuator::Comma)?;
+                        if self.consume_punctuator(Punctuator::RightParen)? {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !self.is_punctuator(Punctuator::Arrow) || self.current().line_terminator_before {
+            return Err(self.syntax_here("expecting '=>'"));
+        }
+        self.advance_expression_start()?;
+        let block_body = self.is_punctuator(Punctuator::LeftBrace);
+        if block_body {
+            self.advance()?;
+        }
+        let has_use_strict = if block_body {
+            self.directive_prologue_has_use_strict(self.cursor, parent_strict)?
+        } else {
+            false
+        };
+        let strict = parent_strict || has_use_strict;
+        if block_body {
+            self.relex_current_with_strict(strict)?;
+        }
+        if strict {
+            for (identifier, span) in &parameter_tokens {
+                validate_identifier(identifier, *span, true, IdentifierContext::Argument)?;
+            }
+        }
+
+        let child = self.functions.len();
+        let parent_scope = self.functions[parent].current_scope;
+        self.functions.push(FunctionIr::new(
+            Some(ParentLink {
+                function: parent,
+                definition_scope: parent_scope,
+            }),
+            FunctionKind::Arrow,
+            FunctionSourceInfo {
+                span: function_span,
+                definition: source_offset(function_span)?,
+                range: None,
+            },
+            None,
+            false,
+            parameters,
+            strict,
+        )?);
+        self.current_function = child;
+
+        let range_end = if block_body {
+            self.parse_function_body()?;
+            let closing_brace = self.current().span;
+            let mut parent_context = self.lexer.context();
+            parent_context.strict = parent_strict;
+            self.lexer.set_context(parent_context);
+            self.expect_punctuator(Punctuator::RightBrace)?;
+            closing_brace.end.byte_offset
+        } else {
+            self.parse_assignment()?;
+            self.emit_instruction(Instruction::Return)?;
+            self.tokens
+                .get(self.cursor.saturating_sub(1))
+                .map_or(self.current().span.start.byte_offset, |token| {
+                    token.span.end.byte_offset
+                })
+        };
+        self.functions[child].source.range = Some(
+            source_offset(function_span)?
+                ..SourceOffset::try_from_usize(range_end)
+                    .map_err(|error| Error::internal(error.to_string()))?,
+        );
+        self.current_function = parent;
+        let constant = self.add_constant(IrConstant::Child(child))?;
+        self.emit(IrOp::MakeClosure(constant))?;
+        self.anonymous_function_definition = Some(child);
+        Ok(())
+    }
+
+    /// Non-committing QuickJS-style ArrowParameters probe. The scanner owns
+    /// no IR or scope state: it balances the cover grammar, respects template
+    /// substitutions and RegExp lexical goals, and accepts `=>` only when no
+    /// LineTerminator separates it from the closing parenthesis.
+    fn parenthesized_arrow_ahead(&self, opening: Span) -> bool {
+        let mut lexer = self.lexer.clone();
+        lexer.seek(opening.start);
+        let Ok(first) = lexer.next_token_with_goal(LexicalGoal::Div) else {
+            return false;
+        };
+        if !matches!(first.kind, TokenKind::Punctuator(Punctuator::LeftParen)) {
+            return false;
+        }
+
+        let mut delimiters = vec![ForHeadDelimiter::Parenthesis];
+        let mut goal = LexicalGoal::Div;
+        let mut regexp_allowed = true;
+        loop {
+            let requested_goal = goal;
+            goal = LexicalGoal::Div;
+            let Ok(mut token) = lexer.next_token_with_goal(requested_goal) else {
+                return false;
+            };
+            if requested_goal == LexicalGoal::Div
+                && regexp_allowed
+                && matches!(
+                    token.kind,
+                    TokenKind::Punctuator(Punctuator::Divide | Punctuator::DivideAssign)
+                )
+            {
+                lexer.seek(token.span.start);
+                let Ok(regexp) = lexer.next_token_with_goal(LexicalGoal::RegExp) else {
+                    return false;
+                };
+                token = regexp;
+            }
+
+            match &token.kind {
+                TokenKind::Punctuator(Punctuator::LeftParen) => {
+                    if delimiters.len() >= 255 {
+                        return false;
+                    }
+                    delimiters.push(ForHeadDelimiter::Parenthesis);
+                }
+                TokenKind::Punctuator(Punctuator::LeftBracket) => {
+                    if delimiters.len() >= 255 {
+                        return false;
+                    }
+                    delimiters.push(ForHeadDelimiter::Bracket);
+                }
+                TokenKind::Punctuator(Punctuator::LeftBrace) => {
+                    if delimiters.len() >= 255 {
+                        return false;
+                    }
+                    delimiters.push(ForHeadDelimiter::Brace);
+                }
+                TokenKind::Punctuator(Punctuator::RightParen) => {
+                    if delimiters.pop() != Some(ForHeadDelimiter::Parenthesis) {
+                        return false;
+                    }
+                    if delimiters.is_empty() {
+                        let Ok(arrow) = lexer.next_token_with_goal(LexicalGoal::Div) else {
+                            return false;
+                        };
+                        return !arrow.line_terminator_before
+                            && matches!(arrow.kind, TokenKind::Punctuator(Punctuator::Arrow));
+                    }
+                }
+                TokenKind::Punctuator(Punctuator::RightBracket) => {
+                    if delimiters.pop() != Some(ForHeadDelimiter::Bracket) {
+                        return false;
+                    }
+                }
+                TokenKind::Punctuator(Punctuator::RightBrace) => {
+                    if delimiters.last() == Some(&ForHeadDelimiter::Template) {
+                        goal = LexicalGoal::TemplateContinuation;
+                        regexp_allowed = true;
+                        continue;
+                    }
+                    if delimiters.pop() != Some(ForHeadDelimiter::Brace) {
+                        return false;
+                    }
+                }
+                TokenKind::Template(part) => match part.kind {
+                    TemplatePartKind::Head => {
+                        if delimiters.len() >= 255 {
+                            return false;
+                        }
+                        delimiters.push(ForHeadDelimiter::Template);
+                    }
+                    TemplatePartKind::Middle => {
+                        if delimiters.last() != Some(&ForHeadDelimiter::Template) {
+                            return false;
+                        }
+                    }
+                    TemplatePartKind::Tail => {
+                        if delimiters.pop() != Some(ForHeadDelimiter::Template) {
+                            return false;
+                        }
+                    }
+                    TemplatePartKind::NoSubstitution => {}
+                },
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            regexp_allowed = for_head_regexp_allowed_after(&token.kind);
+        }
+    }
+
+    pub(super) fn arrow_head_ahead(&self) -> Option<ArrowHead> {
+        match &self.current().kind {
+            TokenKind::Identifier(_) => {
+                let mut lexer = self.lexer.clone();
+                lexer.seek(self.current().span.end);
+                let next = lexer.next_token_with_goal(LexicalGoal::Div).ok()?;
+                (!next.line_terminator_before
+                    && matches!(next.kind, TokenKind::Punctuator(Punctuator::Arrow)))
+                .then_some(ArrowHead::Identifier)
+            }
+            TokenKind::Punctuator(Punctuator::LeftParen)
+                if self.parenthesized_arrow_ahead(self.current().span) =>
+            {
+                Some(ArrowHead::Parenthesized)
+            }
+            _ => None,
+        }
+    }
+
+    /// A reserved word followed by `=>` is an attempted ArrowFunction head,
+    /// not an unimplemented statement/expression form. Preserve that syntax
+    /// error identity before the primary-expression frontier can classify the
+    /// keyword as a missing feature.
+    pub(super) fn reserved_arrow_head_ahead(&self) -> bool {
+        if !matches!(self.current().kind, TokenKind::Keyword(_)) {
+            return false;
+        }
+        let mut lexer = self.lexer.clone();
+        lexer.seek(self.current().span.end);
+        let Ok(arrow) = lexer.next_token_with_goal(LexicalGoal::Div) else {
+            return false;
+        };
+        !arrow.line_terminator_before
+            && matches!(arrow.kind, TokenKind::Punctuator(Punctuator::Arrow))
+    }
+
+    pub(super) fn async_arrow_ahead(&self) -> bool {
+        let TokenKind::Identifier(identifier) = &self.current().kind else {
+            return false;
+        };
+        if identifier.value != "async" || identifier.has_escape {
+            return false;
+        }
+        let mut lexer = self.lexer.clone();
+        lexer.seek(self.current().span.end);
+        let Ok(parameter) = lexer.next_token_with_goal(LexicalGoal::Div) else {
+            return false;
+        };
+        if parameter.line_terminator_before {
+            return false;
+        }
+        match parameter.kind {
+            TokenKind::Identifier(_) => {
+                let Ok(arrow) = lexer.next_token_with_goal(LexicalGoal::Div) else {
+                    return false;
+                };
+                !arrow.line_terminator_before
+                    && matches!(arrow.kind, TokenKind::Punctuator(Punctuator::Arrow))
+            }
+            TokenKind::Punctuator(Punctuator::LeftParen) => {
+                self.parenthesized_arrow_ahead(parameter.span)
+            }
+            _ => false,
+        }
+    }
+}

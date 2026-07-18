@@ -3267,10 +3267,11 @@ in `runtime/bytecode_publish.rs`, and live descriptor validation in
 9,730 lines. R2b's dispatch wiring leaves it at 9,732 lines, and R2c changes no
 runtime facade code. R2d-1 moves the 7,961-line compiler white-box test module
 to `compiler/tests.rs`; `compiler.rs` falls from 20,560 to 12,576 lines with
-production compiler code byte-for-byte unchanged. This is a reviewability
-split, not yet a production-phase extraction: the Arrow parser, cover-grammar
-scanner and pseudo-binding resolver still share the parent, and extracting
-those seams remains the next structural checkpoint before another broad
+production compiler code byte-for-byte unchanged. R2d-2a then moves the
+333-line Arrow parser and non-committing cover-grammar scanner to
+`compiler/arrow.rs`; the moved method bodies are unchanged apart from module
+visibility and `compiler.rs` falls again to 12,248 lines. The pseudo-binding
+resolver remains the next production-phase extraction before another broad
 grammar slice.
 The
 RegExp kernel itself is isolated in
