@@ -60,6 +60,13 @@ pub(super) fn ensure_eval_visible_pseudo_bindings(
             "direct eval environment lost its new.target capability",
         ));
     }
+    if tree.functions[consuming_function].super_allowed
+        && !ensure_pseudo_binding_path(tree, consuming_function, PseudoBinding::HomeObject, span)?
+    {
+        return Err(Error::internal(
+            "direct eval environment lost its HomeObject capability",
+        ));
+    }
 
     // Arrow functions do not own `arguments`. Force the lazy binding in the
     // nearest ordinary-function or method owner so the eval descriptor can

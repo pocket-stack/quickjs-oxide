@@ -1,0 +1,12 @@
+test/language/eval-code/direct/super-call-arrow.js
+test/language/eval-code/direct/super-call-fn.js
+test/language/eval-code/direct/super-call-method.js
+test/language/eval-code/direct/super-call.js
+test/language/eval-code/direct/super-prop-arrow.js
+test/language/eval-code/direct/super-prop-dot-no-home.js
+test/language/eval-code/direct/super-prop-expr-no-home-no-eval.js
+test/language/eval-code/direct/super-prop-expr-no-home.js
+test/language/eval-code/direct/super-prop-method.js
+test/language/eval-code/direct/super-prop.js
+test/language/expressions/super/prop-dot-obj-val-from-eval.js
+test/language/expressions/super/prop-expr-obj-val-from-eval.js

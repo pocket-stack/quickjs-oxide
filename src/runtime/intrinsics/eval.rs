@@ -12,17 +12,16 @@ impl Runtime {
         &self,
         realm: ContextId,
         function: UnlinkedFunction,
-        kind: EvalKind,
-        caller_strict: bool,
-        bindings: &[EvalRootBinding<JsString>],
-        caller_profile: &EvalCallerProfile,
+        expected: &EvalCompileContext,
     ) -> Result<FunctionBytecodeRef, RuntimeError> {
         bytecode_publish::verify_unlinked_eval_tree_with_profile(
             &function,
-            kind,
-            caller_strict,
-            bindings,
-            caller_profile,
+            expected.kind,
+            expected.caller_strict,
+            &expected.bindings,
+            &expected.caller_profile,
+            expected.super_call_allowed,
+            expected.super_allowed,
         )?;
         self.publish_verified_unlinked_function(realm, function)
     }
@@ -150,6 +149,8 @@ impl Runtime {
                 caller_strict,
                 bindings.clone(),
                 caller_profile,
+                environment.descriptor.super_call_allowed,
+                environment.descriptor.super_allowed,
             ),
         )? {
             Compilation::Published(function) => function,
@@ -379,10 +380,7 @@ impl Runtime {
     ) -> Result<Compilation, RuntimeError> {
         self.0.state.borrow().heap.context(realm)?;
         let debug_info = self.debug_info_mode();
-        let kind = context.kind;
-        let caller_strict = context.caller_strict;
-        let bindings = context.bindings.clone();
-        let caller_profile = context.caller_profile.clone();
+        let expected = context.clone();
         let function =
             match compile_unlinked_eval_with_filename(source, filename, debug_info, context) {
                 Ok(function) => function,
@@ -419,14 +417,7 @@ impl Runtime {
                 }
             };
         Ok(Compilation::Published(
-            self.publish_unlinked_eval_function(
-                realm,
-                function,
-                kind,
-                caller_strict,
-                &bindings,
-                &caller_profile,
-            )?,
+            self.publish_unlinked_eval_function(realm, function, &expected)?,
         ))
     }
 

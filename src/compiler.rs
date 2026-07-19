@@ -86,6 +86,8 @@ pub(crate) struct EvalCompileContext {
     pub caller_strict: bool,
     pub bindings: Box<[EvalRootBinding<JsString>]>,
     pub caller_profile: EvalCallerProfile,
+    pub super_call_allowed: bool,
+    pub super_allowed: bool,
 }
 
 impl EvalCompileContext {
@@ -121,6 +123,8 @@ impl EvalCompileContext {
                 scope_kinds: scope_kinds.into_boxed_slice(),
                 variable_target,
             },
+            false,
+            false,
         )
     }
 
@@ -128,12 +132,16 @@ impl EvalCompileContext {
         caller_strict: bool,
         bindings: Vec<EvalRootBinding<JsString>>,
         caller_profile: EvalCallerProfile,
+        super_call_allowed: bool,
+        super_allowed: bool,
     ) -> Self {
         Self {
             kind: EvalKind::Direct,
             caller_strict,
             bindings: bindings.into_boxed_slice(),
             caller_profile,
+            super_call_allowed,
+            super_allowed,
         }
     }
 
@@ -146,6 +154,8 @@ impl EvalCompileContext {
                 scope_kinds: Box::new([]),
                 variable_target: EvalCallerVariableTarget::Global,
             },
+            super_call_allowed: false,
+            super_allowed: false,
         }
     }
 }
@@ -741,6 +751,9 @@ struct FunctionIr {
     /// invariant-preserving typed link.
     parent: Option<ParentLink>,
     kind: FunctionKind,
+    /// QuickJS parser authority copied independently from HomeObject storage.
+    super_call_allowed: bool,
+    super_allowed: bool,
     source: FunctionSourceInfo,
     /// Intrinsic function name, independent of contextual `SetName` inference
     /// for anonymous definitions.
@@ -839,16 +852,49 @@ struct FunctionSourceInfo {
     range: Option<Range<SourceOffset>>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SuperCapabilities {
+    super_call_allowed: bool,
+    super_allowed: bool,
+}
+
+impl SuperCapabilities {
+    const NONE: Self = Self {
+        super_call_allowed: false,
+        super_allowed: false,
+    };
+    const PROPERTY: Self = Self {
+        super_call_allowed: false,
+        super_allowed: true,
+    };
+
+    fn validated(self) -> Result<Self, Error> {
+        if self.super_call_allowed && !self.super_allowed {
+            return Err(Error::internal(
+                "function permits super() without SuperProperty",
+            ));
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FunctionIrOptions {
+    function_name: Option<String>,
+    private_name_binding: bool,
+    parameters: Vec<String>,
+    strict: bool,
+    super_capabilities: SuperCapabilities,
+}
+
 impl FunctionIr {
     fn new(
         parent: Option<ParentLink>,
         kind: FunctionKind,
         source: FunctionSourceInfo,
-        function_name: Option<String>,
-        private_name_binding: bool,
-        parameters: Vec<String>,
-        strict: bool,
+        options: FunctionIrOptions,
     ) -> Result<Self, Error> {
+        let super_capabilities = options.super_capabilities.validated()?;
         let (locals, eval_ret_local, synthetic_locals) =
             if matches!(kind, FunctionKind::Script | FunctionKind::Eval(_)) {
                 (
@@ -902,9 +948,11 @@ impl FunctionIr {
         let mut function = Self {
             parent,
             kind,
+            super_call_allowed: super_capabilities.super_call_allowed,
+            super_allowed: super_capabilities.super_allowed,
             source,
-            function_name,
-            private_name_binding,
+            function_name: options.function_name,
+            private_name_binding: options.private_name_binding,
             function_name_local: None,
             arguments_local: None,
             home_object_local: None,
@@ -912,7 +960,7 @@ impl FunctionIr {
             new_target_local: None,
             eval_variable_object_local: None,
             needs_home_object: false,
-            parameters,
+            parameters: options.parameters,
             locals,
             scopes,
             bindings: Vec::new(),
@@ -942,7 +990,7 @@ impl FunctionIr {
             eval_environments: Vec::new(),
             break_controls: Vec::new(),
             stack_depth: 0,
-            strict,
+            strict: options.strict,
         };
         for (index, name) in function.parameters.clone().into_iter().enumerate() {
             let index = u16::try_from(index)
@@ -1237,19 +1285,14 @@ struct Parser<'source> {
     anonymous_function_definition: Option<FunctionId>,
 }
 
+enum RootCompileContext {
+    Script,
+    Eval(EvalCompileContext),
+}
+
 impl<'source> Parser<'source> {
     fn parse(source: &'source str, filename: JsString) -> Result<FunctionTree, Error> {
-        Self::parse_root(
-            source,
-            filename,
-            FunctionKind::Script,
-            false,
-            Box::new([]),
-            EvalCallerProfile {
-                scope_kinds: Box::new([]),
-                variable_target: EvalCallerVariableTarget::Global,
-            },
-        )
+        Self::parse_root(source, filename, RootCompileContext::Script)
     }
 
     fn parse_eval(
@@ -1257,38 +1300,13 @@ impl<'source> Parser<'source> {
         filename: JsString,
         context: EvalCompileContext,
     ) -> Result<FunctionTree, Error> {
-        if !matches!(context.kind, EvalKind::Direct | EvalKind::Indirect) {
-            return Err(Error::internal(
-                "eval compiler received a non-eval root kind",
-            ));
-        }
-        if context.kind == EvalKind::Indirect
-            && (!context.bindings.is_empty()
-                || !context.caller_profile.scope_kinds.is_empty()
-                || context.caller_profile.variable_target != EvalCallerVariableTarget::Global)
-        {
-            return Err(Error::internal(
-                "indirect eval compiler received a caller environment",
-            ));
-        }
-        let inherited_strict = context.kind == EvalKind::Direct && context.caller_strict;
-        Self::parse_root(
-            source,
-            filename,
-            FunctionKind::Eval(context.kind),
-            inherited_strict,
-            context.bindings,
-            context.caller_profile,
-        )
+        Self::parse_root(source, filename, RootCompileContext::Eval(context))
     }
 
     fn parse_root(
         source: &'source str,
         filename: JsString,
-        root_kind: FunctionKind,
-        inherited_strict: bool,
-        external_bindings: Box<[EvalRootBinding<JsString>]>,
-        caller_profile: EvalCallerProfile,
+        context: RootCompileContext,
     ) -> Result<FunctionTree, Error> {
         if source.len() > i32::MAX as usize {
             return Err(Error::new(
@@ -1296,6 +1314,53 @@ impl<'source> Parser<'source> {
                 "source is too large for QuickJS debug metadata",
             ));
         }
+        let (root_kind, inherited_strict, external_bindings, caller_profile, super_capabilities) =
+            match context {
+                RootCompileContext::Script => (
+                    FunctionKind::Script,
+                    false,
+                    Vec::<EvalRootBinding<JsString>>::new().into_boxed_slice(),
+                    EvalCallerProfile {
+                        scope_kinds: Box::new([]),
+                        variable_target: EvalCallerVariableTarget::Global,
+                    },
+                    SuperCapabilities::NONE,
+                ),
+                RootCompileContext::Eval(context) => {
+                    if !matches!(context.kind, EvalKind::Direct | EvalKind::Indirect) {
+                        return Err(Error::internal(
+                            "eval compiler received a non-eval root kind",
+                        ));
+                    }
+                    if context.kind == EvalKind::Indirect
+                        && (!context.bindings.is_empty()
+                            || !context.caller_profile.scope_kinds.is_empty()
+                            || context.caller_profile.variable_target
+                                != EvalCallerVariableTarget::Global
+                            || context.super_call_allowed
+                            || context.super_allowed)
+                    {
+                        return Err(Error::internal(
+                            "indirect eval compiler received a caller environment",
+                        ));
+                    }
+                    let super_capabilities = SuperCapabilities {
+                        super_call_allowed: context.super_call_allowed,
+                        super_allowed: context.super_allowed,
+                    }
+                    .validated()
+                    .map_err(|_| {
+                        Error::internal("eval compiler permits super() without SuperProperty")
+                    })?;
+                    (
+                        FunctionKind::Eval(context.kind),
+                        context.kind == EvalKind::Direct && context.caller_strict,
+                        context.bindings,
+                        context.caller_profile,
+                        super_capabilities,
+                    )
+                }
+            };
         let mut lexer = Lexer::new(source);
         let first_token = lexer.next_token().map_err(lex_error)?;
         let source_span = first_token.span;
@@ -1315,10 +1380,13 @@ impl<'source> Parser<'source> {
                         .map_err(|error| Error::internal(error.to_string()))?,
                     range: None,
                 },
-                Some("<eval>".to_owned()),
-                false,
-                Vec::new(),
-                inherited_strict,
+                FunctionIrOptions {
+                    function_name: Some("<eval>".to_owned()),
+                    private_name_binding: false,
+                    parameters: Vec::new(),
+                    strict: inherited_strict,
+                    super_capabilities,
+                },
             )?],
         };
         if matches!(root_kind, FunctionKind::Eval(_)) {
@@ -1328,13 +1396,6 @@ impl<'source> Parser<'source> {
                 caller_profile,
                 inherited_strict,
             )?;
-        } else if !external_bindings.is_empty()
-            || !caller_profile.scope_kinds.is_empty()
-            || caller_profile.variable_target != EvalCallerVariableTarget::Global
-        {
-            return Err(Error::internal(
-                "ordinary script compiler received eval caller bindings",
-            ));
         }
         let strict =
             inherited_strict || parser.directive_prologue_has_use_strict(0, inherited_strict)?;
@@ -5081,8 +5142,14 @@ impl<'source> Parser<'source> {
     fn parse_super_property(&mut self, super_span: Span) -> Result<(), Error> {
         self.advance()?;
         if self.is_punctuator(Punctuator::LeftParen) {
-            return Err(Error::syntax(
-                "super() is only valid in a derived class constructor",
+            if !self.current_ir().super_call_allowed {
+                return Err(Error::syntax(
+                    "super() is only valid in a derived class constructor",
+                    source_span(super_span),
+                ));
+            }
+            return Err(Error::unsupported(
+                "derived constructor super() is not implemented yet",
                 source_span(super_span),
             ));
         }
@@ -5096,24 +5163,11 @@ impl<'source> Parser<'source> {
             ));
         }
 
-        if !matches!(self.current_ir().kind, FunctionKind::Method) {
-            let mut function_id = self.current_function;
-            let inherited_from_method = loop {
-                let function = &self.functions[function_id];
-                if !matches!(function.kind, FunctionKind::Arrow) {
-                    break matches!(function.kind, FunctionKind::Method);
-                }
-                let Some(parent) = function.parent else {
-                    break false;
-                };
-                function_id = parent.function;
-            };
-            if !inherited_from_method {
-                return Err(Error::syntax(
-                    "'super' is only valid in a method",
-                    source_span(super_span),
-                ));
-            }
+        if !self.current_ir().super_allowed {
+            return Err(Error::syntax(
+                "'super' is only valid in a method",
+                source_span(super_span),
+            ));
         }
 
         self.emit_identifier(
@@ -7039,6 +7093,43 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         if function.scopes[function.body_scope.0].kind != expected_body {
             return Err(Error::internal("function body scope kind is malformed"));
         }
+        if function.super_call_allowed && !function.super_allowed {
+            return Err(Error::internal(
+                "function permits super() without SuperProperty",
+            ));
+        }
+        match function.kind {
+            FunctionKind::Method if !function.super_call_allowed && function.super_allowed => {}
+            FunctionKind::Arrow => {
+                let parent = function
+                    .parent
+                    .and_then(|parent| tree.functions.get(parent.function))
+                    .ok_or_else(|| Error::internal("arrow function has no valid parent"))?;
+                if (function.super_call_allowed, function.super_allowed)
+                    != (parent.super_call_allowed, parent.super_allowed)
+                {
+                    return Err(Error::internal(
+                        "arrow super capability disagrees with its parent",
+                    ));
+                }
+            }
+            FunctionKind::Eval(EvalKind::Direct) => {}
+            FunctionKind::Script
+            | FunctionKind::Ordinary
+            | FunctionKind::Eval(EvalKind::Indirect)
+                if !function.super_call_allowed && !function.super_allowed => {}
+            FunctionKind::Eval(EvalKind::None) => {
+                return Err(Error::internal("eval root has no eval kind"));
+            }
+            FunctionKind::Method
+            | FunctionKind::Script
+            | FunctionKind::Ordinary
+            | FunctionKind::Eval(EvalKind::Indirect) => {
+                return Err(Error::internal(
+                    "function kind retained malformed super capability",
+                ));
+            }
+        }
         if function.private_name_binding
             && (!matches!(function.kind, FunctionKind::Ordinary)
                 || function.function_name.is_none())
@@ -7228,7 +7319,9 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 }
             }
         }
-        if function.home_object_local.is_some() && !function.needs_home_object {
+        if function.home_object_local.is_some()
+            && (!function.needs_home_object || !function.super_allowed)
+        {
             return Err(Error::internal(
                 "HomeObject pseudo local lacks publication metadata",
             ));
@@ -8524,6 +8617,8 @@ fn link_eval_environment(
 ) -> Result<EvalEnvironment<JsString>, Error> {
     let caller_strict = tree.functions[consuming_function].strict;
     let caller_kind = tree.functions[consuming_function].kind;
+    let super_call_allowed = tree.functions[consuming_function].super_call_allowed;
+    let super_allowed = tree.functions[consuming_function].super_allowed;
     let mut scope_path = Vec::<(FunctionId, ScopeId)>::new();
     let mut owner = consuming_function;
     let mut scope = call_scope;
@@ -8807,6 +8902,8 @@ fn link_eval_environment(
         scopes: scopes.into_boxed_slice(),
         variable_environment,
         caller_strict,
+        super_call_allowed,
+        super_allowed,
     })
 }
 
@@ -10920,6 +11017,8 @@ fn lower_unlinked_tree(
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"))?,
             max_stack,
             strict: function.strict,
+            super_call_allowed: function.super_call_allowed,
+            super_allowed: function.super_allowed,
             eval_kind: match function.kind {
                 FunctionKind::Eval(kind) => kind,
                 FunctionKind::Script

@@ -544,6 +544,14 @@ pub struct FunctionMetadata {
     pub closure_count: u16,
     pub max_stack: u16,
     pub strict: bool,
+    /// Whether `super()` is syntactically permitted in this bytecode. QuickJS
+    /// carries this independently from HomeObject storage so direct eval can
+    /// inherit constructor authority without inferring it from captured data.
+    pub super_call_allowed: bool,
+    /// Whether `super.` or `super[]` is syntactically permitted in this
+    /// bytecode. This is parser authority, distinct from `needs_home_object`,
+    /// which only controls whether closure publication retains an object edge.
+    pub super_allowed: bool,
     /// Whether closure publication must accept a method HomeObject. QuickJS
     /// derives this from `home_object_var_idx`/`need_home_object`; ordinary
     /// functions leave the flag clear and therefore retain no object edge.
@@ -765,6 +773,10 @@ pub struct EvalEnvironment<Name> {
     pub scopes: Box<[EvalScope<Name>]>,
     pub variable_environment: EvalVariableEnvironment,
     pub caller_strict: bool,
+    /// Exact caller-bytecode syntax capability copied into a direct eval root.
+    pub super_call_allowed: bool,
+    /// Exact caller-bytecode syntax capability copied into a direct eval root.
+    pub super_allowed: bool,
 }
 
 /// One exact caller binding imported by a synthetic direct-eval root.
@@ -7921,6 +7933,8 @@ mod tests {
             }]),
             variable_environment: EvalVariableEnvironment::Global,
             caller_strict: false,
+            super_call_allowed: false,
+            super_allowed: false,
         }]);
         assert_eq!(
             heap.allocate_function_bytecode(argument_source),
@@ -7945,6 +7959,8 @@ mod tests {
                 }]),
                 variable_environment: EvalVariableEnvironment::Global,
                 caller_strict: false,
+                super_call_allowed: false,
+                super_allowed: false,
             }])
         };
 
@@ -8138,6 +8154,8 @@ mod tests {
                 .into_boxed_slice(),
                 variable_environment: EvalVariableEnvironment::Scope(0),
                 caller_strict: false,
+                super_call_allowed: false,
+                super_allowed: false,
             }]);
             bytecode
         };

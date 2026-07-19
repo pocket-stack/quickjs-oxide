@@ -20,12 +20,12 @@ use crate::vm::Vm;
 
 use super::{
     BindingKind, BindingStorage, EVAL_VARIABLE_OBJECT_LOCAL_NAME, EvalCompileContext, FunctionIr,
-    FunctionKind, FunctionSourceInfo, FunctionTree, IrScope, MAX_BYTECODE_STACK,
-    MAX_CALL_ARGUMENTS, MAX_LOCAL_VARIABLES, Parser, ScopeId, ScopeKind, SourceOffset,
-    WITH_OBJECT_LOCAL_NAME, build_scope_lifecycles, compile_script,
-    compile_unlinked_eval_with_filename, compile_unlinked_script,
-    compile_unlinked_script_with_filename, ensure_closure_variable, lex_error, resolve_identifiers,
-    validate_scope_graph,
+    FunctionIrOptions, FunctionKind, FunctionSourceInfo, FunctionTree, HOME_OBJECT_LOCAL_NAME,
+    IrScope, MAX_BYTECODE_STACK, MAX_CALL_ARGUMENTS, MAX_LOCAL_VARIABLES, Parser, ScopeId,
+    ScopeKind, SourceOffset, SuperCapabilities, THIS_LOCAL_NAME, WITH_OBJECT_LOCAL_NAME,
+    build_scope_lifecycles, compile_script, compile_unlinked_eval_with_filename,
+    compile_unlinked_script, compile_unlinked_script_with_filename, ensure_closure_variable,
+    lex_error, resolve_identifiers, validate_scope_graph,
 };
 
 #[test]
@@ -290,10 +290,13 @@ fn closure_slots_deduplicate_by_storage_identity_and_reject_metadata_conflicts()
             definition: SourceOffset::try_from_usize(0).unwrap(),
             range: None,
         },
-        None,
-        false,
-        Vec::new(),
-        false,
+        FunctionIrOptions {
+            function_name: None,
+            private_name_binding: false,
+            parameters: Vec::new(),
+            strict: false,
+            super_capabilities: SuperCapabilities::NONE,
+        },
     )
     .unwrap();
     let local = ClosureVariable {
@@ -596,10 +599,13 @@ fn captured_with_object_has_close_lifetime_without_lexical_tdz() {
                 definition: SourceOffset::try_from_usize(0).unwrap(),
                 range: None,
             },
-            None,
-            false,
-            Vec::new(),
-            strict,
+            FunctionIrOptions {
+                function_name: None,
+                private_name_binding: false,
+                parameters: Vec::new(),
+                strict,
+                super_capabilities: SuperCapabilities::NONE,
+            },
         )
         .unwrap();
         let scope = ScopeId(function.scopes.len());
@@ -3734,6 +3740,192 @@ fn compiler_emits_independent_eval_root_and_external_relays() {
 }
 
 #[test]
+fn direct_eval_super_capability_is_explicit_and_independent_from_imports() {
+    let pseudo = |name: &'static str, scope| EvalRootBinding {
+        name: JsString::from_static(name),
+        scope,
+        is_lexical: false,
+        is_const: false,
+        kind: ClosureVariableKind::Normal,
+        is_catch_parameter: false,
+    };
+    let direct = |bindings: Vec<EvalRootBinding<JsString>>,
+                  scope_kinds: Vec<EvalScopeKind>,
+                  super_call_allowed,
+                  super_allowed| {
+        EvalCompileContext::direct_with_profile(
+            true,
+            bindings,
+            EvalCallerProfile {
+                scope_kinds: scope_kinds.into_boxed_slice(),
+                variable_target: EvalCallerVariableTarget::StrictLocal,
+            },
+            super_call_allowed,
+            super_allowed,
+        )
+    };
+    let method_bindings = || {
+        vec![
+            pseudo(THIS_LOCAL_NAME, 0),
+            pseudo(HOME_OBJECT_LOCAL_NAME, 0),
+        ]
+    };
+
+    let denied_despite_bindings = compile_unlinked_eval_with_filename(
+        "super.value",
+        "<eval>",
+        DebugInfoMode::StripDebug,
+        direct(
+            method_bindings(),
+            vec![EvalScopeKind::FunctionRoot],
+            false,
+            false,
+        ),
+    )
+    .expect_err("hidden bindings must not grant parser authority");
+    assert_eq!(denied_despite_bindings.kind(), ErrorKind::Syntax);
+    assert_eq!(
+        denied_despite_bindings.message(),
+        "'super' is only valid in a method"
+    );
+
+    let allowed = compile_unlinked_eval_with_filename(
+        "eval('super.value'); (() => super.value)",
+        "<eval>",
+        DebugInfoMode::StripDebug,
+        direct(
+            method_bindings(),
+            vec![EvalScopeKind::FunctionRoot],
+            false,
+            true,
+        ),
+    )
+    .expect("a method-owned direct eval retains SuperProperty capability");
+    assert_eq!(allowed.metadata().eval_kind, EvalKind::Direct);
+    assert!(allowed.metadata().super_allowed);
+    assert!(!allowed.metadata().super_call_allowed);
+    assert!(!allowed.metadata().needs_home_object);
+    assert!(
+        allowed
+            .code()
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::Eval { .. }))
+    );
+    let arrow = allowed
+        .constants()
+        .iter()
+        .find_map(|constant| constant.as_child())
+        .expect("direct eval lost its arrow child");
+    assert!(
+        arrow
+            .code()
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::GetSuperValue))
+    );
+    let nested_environment = &allowed.eval_environments()[0];
+    assert!(nested_environment.super_allowed);
+    assert!(!nested_environment.super_call_allowed);
+    let imported_owner = nested_environment
+        .scopes
+        .iter()
+        .rev()
+        .find(|scope| scope.kind == EvalScopeKind::FunctionRoot)
+        .expect("nested eval lost its imported method owner");
+    for expected in [THIS_LOCAL_NAME, HOME_OBJECT_LOCAL_NAME] {
+        assert!(
+            imported_owner
+                .bindings
+                .iter()
+                .any(|binding| binding.name == JsString::from_static(expected)),
+            "nested eval lost {expected}",
+        );
+    }
+
+    let ordinary_boundary = compile_unlinked_eval_with_filename(
+        "super.value",
+        "<eval>",
+        DebugInfoMode::StripDebug,
+        direct(
+            vec![
+                pseudo(THIS_LOCAL_NAME, 0),
+                pseudo(THIS_LOCAL_NAME, 1),
+                pseudo(HOME_OBJECT_LOCAL_NAME, 1),
+            ],
+            vec![EvalScopeKind::FunctionRoot, EvalScopeKind::FunctionRoot],
+            false,
+            false,
+        ),
+    )
+    .expect_err("an ordinary caller must truncate an outer method capability");
+    assert_eq!(ordinary_boundary.kind(), ErrorKind::Syntax);
+    assert_eq!(
+        ordinary_boundary.message(),
+        "'super' is only valid in a method"
+    );
+
+    let global = compile_unlinked_eval_with_filename(
+        "super.value",
+        "<eval>",
+        DebugInfoMode::StripDebug,
+        direct(
+            vec![pseudo(THIS_LOCAL_NAME, 0)],
+            vec![EvalScopeKind::FunctionRoot],
+            false,
+            false,
+        ),
+    )
+    .expect_err("a direct eval without a method owner must reject SuperProperty");
+    assert_eq!(global.kind(), ErrorKind::Syntax);
+    assert_eq!(global.message(), "'super' is only valid in a method");
+
+    let indirect = compile_unlinked_eval_with_filename(
+        "super.value",
+        "<eval>",
+        DebugInfoMode::StripDebug,
+        EvalCompileContext::indirect(),
+    )
+    .expect_err("indirect eval must reject SuperProperty");
+    assert_eq!(indirect.kind(), ErrorKind::Syntax);
+    assert_eq!(indirect.message(), "'super' is only valid in a method");
+
+    let super_call = compile_unlinked_eval_with_filename(
+        "super()",
+        "<eval>",
+        DebugInfoMode::StripDebug,
+        direct(
+            method_bindings(),
+            vec![EvalScopeKind::FunctionRoot],
+            false,
+            true,
+        ),
+    )
+    .expect_err("SuperProperty capability must not enable SuperCall");
+    assert_eq!(super_call.kind(), ErrorKind::Syntax);
+    assert_eq!(
+        super_call.message(),
+        "super() is only valid in a derived class constructor"
+    );
+
+    let enabled_super_call = compile_unlinked_eval_with_filename(
+        "super()",
+        "<eval>",
+        DebugInfoMode::StripDebug,
+        direct(
+            method_bindings(),
+            vec![EvalScopeKind::FunctionRoot],
+            true,
+            true,
+        ),
+    )
+    .expect_err("the typed capability reaches the unimplemented SuperCall frontier");
+    assert_eq!(enabled_super_call.kind(), ErrorKind::Unsupported);
+    assert_eq!(
+        enabled_super_call.message(),
+        "derived constructor super() is not implemented yet"
+    );
+}
+
+#[test]
 fn compiler_preserves_authenticated_with_environment_relays() {
     let with_object = EvalRootBinding {
         name: JsString::from_static(WITH_OBJECT_LOCAL_NAME),
@@ -3759,6 +3951,8 @@ fn compiler_preserves_authenticated_with_environment_relays() {
                 .into_boxed_slice(),
                 variable_target: EvalCallerVariableTarget::Global,
             },
+            false,
+            false,
         ),
     )
     .unwrap();
@@ -3906,6 +4100,8 @@ fn eval_compiler_rejects_incoherent_caller_variable_profiles() {
             scope_kinds: Box::new([]),
             variable_target: EvalCallerVariableTarget::Global,
         },
+        false,
+        false,
     );
     assert!(
         compile_unlinked_eval_with_filename(
@@ -3934,6 +4130,8 @@ fn eval_compiler_rejects_incoherent_caller_variable_profiles() {
             scope_kinds: vec![EvalScopeKind::FunctionRoot].into_boxed_slice(),
             variable_target: EvalCallerVariableTarget::Global,
         },
+        false,
+        false,
     );
     assert!(
         compile_unlinked_eval_with_filename(
@@ -3962,6 +4160,8 @@ fn eval_compiler_rejects_incoherent_caller_variable_profiles() {
             scope_kinds: vec![EvalScopeKind::With].into_boxed_slice(),
             variable_target: EvalCallerVariableTarget::ExternalBinding(0),
         },
+        false,
+        false,
     );
     assert!(
         compile_unlinked_eval_with_filename(
@@ -6899,10 +7099,13 @@ fn quickjs_closure_slot_limit_is_65534_and_uses_internal_error() {
             definition: SourceOffset::try_from_usize(0).unwrap(),
             range: None,
         },
-        None,
-        false,
-        Vec::new(),
-        false,
+        FunctionIrOptions {
+            function_name: None,
+            private_name_binding: false,
+            parameters: Vec::new(),
+            strict: false,
+            super_capabilities: SuperCapabilities::NONE,
+        },
     )
     .unwrap();
     function.closure_variables = (0..MAX_LOCAL_VARIABLES - 1)
@@ -7609,8 +7812,14 @@ fn object_literal_arrow_super_relays_lexical_this_and_home_object() {
         .expect("first arrow lost its nested arrow");
 
     assert!(method.metadata().needs_home_object);
+    assert!(method.metadata().super_allowed);
+    assert!(!method.metadata().super_call_allowed);
     assert!(!relay.metadata().needs_home_object);
+    assert!(relay.metadata().super_allowed);
+    assert!(!relay.metadata().super_call_allowed);
     assert!(!inner.metadata().needs_home_object);
+    assert!(inner.metadata().super_allowed);
+    assert!(!inner.metadata().super_call_allowed);
     assert_eq!(method.metadata().local_count, 2);
     assert_eq!(relay.metadata().local_count, 0);
     assert_eq!(inner.metadata().local_count, 0);
@@ -7714,6 +7923,206 @@ fn object_literal_arrow_super_relays_lexical_this_and_home_object() {
             .expect_err("ordinary functions must truncate inherited super capability");
     assert_eq!(error.kind(), ErrorKind::Syntax);
     assert_eq!(error.message(), "'super' is only valid in a method");
+}
+
+#[test]
+fn object_literal_direct_eval_super_relays_authenticated_home_object() {
+    let script = compile_unlinked_script(
+        "({method(){return eval('super.value')},get read(){return eval('super.value')},set write(value){eval('super.value=value')},arrow(){return()=>eval('super.value')}})",
+    )
+    .expect("ObjectLiteral methods with direct eval SuperProperty compile");
+    let methods = script
+        .constants()
+        .iter()
+        .filter_map(|constant| constant.as_child())
+        .collect::<Vec<_>>();
+    assert_eq!(methods.len(), 4);
+    assert!(!script.metadata().super_allowed);
+    assert!(!script.metadata().super_call_allowed);
+    assert!(methods.iter().all(|method| method.metadata().super_allowed));
+    assert!(
+        methods
+            .iter()
+            .all(|method| !method.metadata().super_call_allowed)
+    );
+    assert!(
+        methods
+            .iter()
+            .all(|method| method.metadata().needs_home_object)
+    );
+    for method in &methods {
+        let home_entries = method
+            .code()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, instruction)| {
+                matches!(instruction, Instruction::PushHomeObject).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let this_entries = method
+            .code()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, instruction)| {
+                matches!(instruction, Instruction::PushThis).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let ([home_entry], [this_entry]) = (home_entries.as_slice(), this_entries.as_slice())
+        else {
+            panic!("method did not have unique HomeObject/this entry operations");
+        };
+        assert!(home_entry < this_entry);
+        let Instruction::PutLocal(home_local) = method.code()[home_entry + 1] else {
+            panic!("HomeObject entry did not initialize its local");
+        };
+        let Instruction::PutLocal(this_local) = method.code()[this_entry + 1] else {
+            panic!("this entry did not initialize its local");
+        };
+        assert_ne!(home_local, this_local);
+    }
+
+    for direct_eval_owner in &methods[..3] {
+        let environment = &direct_eval_owner.eval_environments()[0];
+        assert!(environment.super_allowed);
+        assert!(!environment.super_call_allowed);
+        let function_root = environment
+            .scopes
+            .iter()
+            .find(|scope| scope.kind == EvalScopeKind::FunctionRoot)
+            .expect("method direct eval lost its function root");
+        for expected in [THIS_LOCAL_NAME, HOME_OBJECT_LOCAL_NAME] {
+            assert!(
+                function_root
+                    .bindings
+                    .iter()
+                    .any(|binding| binding.name == JsString::from_static(expected)),
+                "method direct eval lost {expected}",
+            );
+        }
+    }
+    let arrow = methods[3]
+        .constants()
+        .iter()
+        .find_map(|constant| constant.as_child())
+        .expect("method lost its eval-owning arrow");
+    assert!(arrow.metadata().super_allowed);
+    assert!(!arrow.metadata().super_call_allowed);
+    let named_parent_local = |expected: &'static str| {
+        arrow
+            .closure_variables()
+            .iter()
+            .find(|descriptor| {
+                let ClosureVariableName::Constant(name) = descriptor.name else {
+                    return false;
+                };
+                matches!(descriptor.source, ClosureSource::ParentLocal(_))
+                    && matches!(
+                        arrow.constants()[name as usize].as_primitive(),
+                        Some(Value::String(name)) if name == &JsString::from_static(expected)
+                    )
+            })
+            .expect("eval-visible arrow lost its named pseudo-binding relay")
+    };
+    let this_relay = named_parent_local(THIS_LOCAL_NAME);
+    let home_relay = named_parent_local(HOME_OBJECT_LOCAL_NAME);
+    assert_ne!(this_relay.source, home_relay.source);
+    let arrow_environment = &arrow.eval_environments()[0];
+    assert!(arrow_environment.super_allowed);
+    assert!(!arrow_environment.super_call_allowed);
+    let arrow_owner = arrow_environment
+        .scopes
+        .iter()
+        .find(|scope| {
+            scope.kind == EvalScopeKind::FunctionRoot
+                && scope
+                    .bindings
+                    .iter()
+                    .any(|binding| binding.name == JsString::from_static(HOME_OBJECT_LOCAL_NAME))
+        })
+        .expect("arrow direct eval lost its method owner");
+    for expected in [THIS_LOCAL_NAME, HOME_OBJECT_LOCAL_NAME] {
+        assert!(
+            arrow_owner
+                .bindings
+                .iter()
+                .any(|binding| binding.name == JsString::from_static(expected)),
+            "arrow direct eval lost {expected}",
+        );
+    }
+
+    let cutoff_script = compile_unlinked_script(
+        "({method(){super.value;return function ordinary(){return eval('super.value')}}})",
+    )
+    .expect("ordinary direct-eval cutoff compiles before runtime String parsing");
+    let cutoff_method = cutoff_script
+        .constants()
+        .iter()
+        .find_map(|constant| constant.as_child())
+        .expect("cutoff script lost its method");
+    let cutoff_ordinary = cutoff_method
+        .constants()
+        .iter()
+        .find_map(|constant| constant.as_child())
+        .expect("cutoff method lost its ordinary function");
+    assert!(cutoff_method.metadata().super_allowed);
+    assert!(!cutoff_ordinary.metadata().super_allowed);
+    assert!(!cutoff_ordinary.metadata().super_call_allowed);
+    assert!(!cutoff_ordinary.eval_environments()[0].super_allowed);
+    assert!(!cutoff_ordinary.eval_environments()[0].super_call_allowed);
+
+    assert_eq!(
+        evaluate_in_context(
+            r#"
+                (function () {
+                    var proto = {
+                        get value() { return this.base + 2; },
+                        set value(input) { this.base = input - 2; },
+                        call() { return this.base + 2; }
+                    };
+                    var home = {
+                        __proto__: proto,
+                        base: 40,
+                        method() { return eval("super.value"); },
+                        get read() { return eval("super.value"); },
+                        set write(value) { eval("super.value = value"); },
+                        arrow() { return (() => eval("super.call()"))(); },
+                        escaped() { return eval("() => super.value"); },
+                        nested() { return eval("eval('super.value')"); },
+                        cutoff() {
+                            super.value;
+                            return function ordinary() { return eval("super.value"); };
+                        },
+                        indirect() { return (0, eval)("super.value"); },
+                        superCall() { return eval("super(sideEffect = true)"); }
+                    };
+                    var initial = home.method();
+                    var getter = home.read;
+                    home.write = 44;
+                    var setter = home.base;
+                    var arrow = home.arrow();
+                    var receiver = { base: 40 };
+                    var escaped = home.escaped.call(receiver)();
+                    var nested = home.nested.call(receiver);
+                    var cutoff;
+                    try { home.cutoff()(); } catch (error) { cutoff = error.name; }
+                    var globalEval;
+                    try { eval("super.value"); } catch (error) { globalEval = error.name; }
+                    var indirect;
+                    try { home.indirect(); } catch (error) { indirect = error.name; }
+                    var sideEffect = false;
+                    var superCall;
+                    try { home.superCall(); } catch (error) { superCall = error.name; }
+                    return [
+                        initial, getter, setter, arrow, escaped, nested,
+                        cutoff, globalEval, indirect, superCall, sideEffect
+                    ].join("|");
+                })()
+            "#,
+        ),
+        Value::String(JsString::from_static(
+            "42|42|42|44|42|42|SyntaxError|SyntaxError|SyntaxError|SyntaxError|false"
+        ))
+    );
 }
 
 #[test]

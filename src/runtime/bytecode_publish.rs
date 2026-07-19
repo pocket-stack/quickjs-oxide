@@ -45,6 +45,8 @@ pub(super) fn link_eval_environments(
             scopes: linked_scopes.into_boxed_slice(),
             variable_environment: environment.variable_environment,
             caller_strict: environment.caller_strict,
+            super_call_allowed: environment.super_call_allowed,
+            super_allowed: environment.super_allowed,
         });
     }
     Ok(linked_environments)
@@ -418,6 +420,21 @@ fn verify_eval_environments(
                 "eval environment strictness disagrees with bytecode metadata",
             )));
         }
+        if environment.super_call_allowed && !environment.super_allowed {
+            return Err(RuntimeError::Engine(Error::internal(
+                "eval environment permits super() without SuperProperty",
+            )));
+        }
+        if (environment.super_call_allowed, environment.super_allowed)
+            != (
+                function.metadata().super_call_allowed,
+                function.metadata().super_allowed,
+            )
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "eval environment super capability disagrees with bytecode metadata",
+            )));
+        }
         let (imported_segment_count, imported_scope_start) =
             if let Some(expected_profile) = expected_profile {
                 verify_eval_imported_suffix(
@@ -679,6 +696,8 @@ enum RootPublication<'a> {
         caller_strict: bool,
         expected_bindings: &'a [EvalRootBinding<JsString>],
         expected_profile: &'a EvalCallerProfile,
+        expected_super_call_allowed: bool,
+        expected_super_allowed: bool,
     },
 }
 
@@ -691,12 +710,14 @@ pub(super) fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), Ru
 /// deliberately separate from ordinary script publication: accepting these
 /// sources without the live caller descriptor would make a forged bytecode
 /// root indistinguishable from a compiler-produced direct eval.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(in crate::runtime) fn verify_unlinked_eval_tree(
     function: &UnlinkedFunction,
     kind: EvalKind,
     caller_strict: bool,
     expected_bindings: &[EvalRootBinding<JsString>],
+    expected_super_call_allowed: bool,
+    expected_super_allowed: bool,
 ) -> Result<(), RuntimeError> {
     let scope_count = expected_bindings
         .iter()
@@ -730,6 +751,8 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree(
             scope_kinds: scope_kinds.into_boxed_slice(),
             variable_target,
         },
+        expected_super_call_allowed,
+        expected_super_allowed,
     )
 }
 
@@ -739,6 +762,8 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree_with_profile(
     caller_strict: bool,
     expected_bindings: &[EvalRootBinding<JsString>],
     expected_profile: &EvalCallerProfile,
+    expected_super_call_allowed: bool,
+    expected_super_allowed: bool,
 ) -> Result<(), RuntimeError> {
     if kind == EvalKind::None {
         return Err(RuntimeError::Engine(Error::internal(
@@ -753,6 +778,16 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree_with_profile(
     if kind == EvalKind::Indirect && caller_strict {
         return Err(RuntimeError::Engine(Error::internal(
             "indirect eval publication received caller strictness",
+        )));
+    }
+    if expected_super_call_allowed && !expected_super_allowed {
+        return Err(RuntimeError::Engine(Error::internal(
+            "eval publication permits super() without SuperProperty",
+        )));
+    }
+    if kind == EvalKind::Indirect && (expected_super_call_allowed || expected_super_allowed) {
+        return Err(RuntimeError::Engine(Error::internal(
+            "indirect eval publication received a super capability",
         )));
     }
     if kind == EvalKind::Indirect
@@ -859,6 +894,8 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree_with_profile(
             caller_strict,
             expected_bindings,
             expected_profile,
+            expected_super_call_allowed,
+            expected_super_allowed,
         },
     )
 }
@@ -921,6 +958,46 @@ fn verify_unlinked_tree_with_root(
             } else {
                 "non-root bytecode carried a synthetic eval kind"
             })));
+        }
+        if function.metadata().super_call_allowed && !function.metadata().super_allowed {
+            return Err(RuntimeError::Engine(Error::internal(
+                "bytecode permits super() without SuperProperty",
+            )));
+        }
+        if is_root {
+            match root_publication {
+                RootPublication::Script => {
+                    if function.metadata().super_call_allowed || function.metadata().super_allowed {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "script root retained a super capability",
+                        )));
+                    }
+                }
+                RootPublication::Eval {
+                    kind,
+                    expected_super_call_allowed,
+                    expected_super_allowed,
+                    ..
+                } => {
+                    if (
+                        function.metadata().super_call_allowed,
+                        function.metadata().super_allowed,
+                    ) != (expected_super_call_allowed, expected_super_allowed)
+                    {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "eval root super capability disagrees with its caller",
+                        )));
+                    }
+                    if kind == EvalKind::Indirect
+                        && (function.metadata().super_call_allowed
+                            || function.metadata().super_allowed)
+                    {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "indirect eval root retained a super capability",
+                        )));
+                    }
+                }
+            }
         }
         if is_root
             && matches!(
@@ -2484,6 +2561,8 @@ mod tests {
             .into_boxed_slice(),
             variable_environment: EvalVariableEnvironment::Scope(1),
             caller_strict: false,
+            super_call_allowed: false,
+            super_allowed: false,
         }
     }
 
@@ -2559,6 +2638,8 @@ mod tests {
             .into_boxed_slice(),
             variable_environment: EvalVariableEnvironment::Scope(2),
             caller_strict: false,
+            super_call_allowed: false,
+            super_allowed: false,
         };
         UnlinkedFunction::new(
             eval_code(0, false),
@@ -2770,6 +2851,8 @@ mod tests {
             .into_boxed_slice(),
             variable_environment: EvalVariableEnvironment::Closure(variable_target),
             caller_strict: false,
+            super_call_allowed: false,
+            super_allowed: false,
         }])
     }
 
@@ -2806,7 +2889,7 @@ mod tests {
             ],
         );
 
-        verify_unlinked_eval_tree(&root, EvalKind::Direct, false, &expected).unwrap();
+        verify_unlinked_eval_tree(&root, EvalKind::Direct, false, &expected, false, false).unwrap();
     }
 
     #[test]
@@ -2832,8 +2915,16 @@ mod tests {
             scope_kinds: vec![EvalScopeKind::With].into_boxed_slice(),
             variable_target: EvalCallerVariableTarget::Global,
         };
-        verify_unlinked_eval_tree_with_profile(&root, EvalKind::Direct, false, &expected, &profile)
-            .unwrap();
+        verify_unlinked_eval_tree_with_profile(
+            &root,
+            EvalKind::Direct,
+            false,
+            &expected,
+            &profile,
+            false,
+            false,
+        )
+        .unwrap();
 
         let forged_target = EvalCallerProfile {
             scope_kinds: vec![EvalScopeKind::With].into_boxed_slice(),
@@ -2846,6 +2937,8 @@ mod tests {
                 false,
                 &expected,
                 &forged_target,
+                false,
+                false,
             )
             .unwrap_err()
             .to_string()
@@ -2866,6 +2959,8 @@ mod tests {
                 false,
                 &wrong_name,
                 &profile,
+                false,
+                false,
             )
             .unwrap_err()
             .to_string()
@@ -2887,6 +2982,8 @@ mod tests {
                 true,
                 &[],
                 &global_profile,
+                false,
+                false,
             )
             .unwrap_err()
             .to_string()
@@ -2921,6 +3018,8 @@ mod tests {
                 false,
                 &expected,
                 &forged_global,
+                false,
+                false,
             )
             .unwrap_err()
             .to_string()
@@ -2957,6 +3056,8 @@ mod tests {
             false,
             &expected,
             &profile,
+            false,
+            false,
         )
         .unwrap();
 
@@ -2968,6 +3069,8 @@ mod tests {
                 false,
                 &expected,
                 &profile,
+                false,
+                false,
             )
             .unwrap_err()
             .to_string()
@@ -2982,6 +3085,8 @@ mod tests {
                 false,
                 &expected,
                 &profile,
+                false,
+                false,
             )
             .unwrap_err()
             .to_string()
@@ -2996,6 +3101,8 @@ mod tests {
                 false,
                 &expected,
                 &profile,
+                false,
+                false,
             )
             .unwrap_err()
             .to_string()
@@ -3015,12 +3122,15 @@ mod tests {
 
         let script_root = eval_root_with_descriptors(EvalKind::None, Vec::new());
         assert!(
-            verify_unlinked_eval_tree(&script_root, EvalKind::Direct, false, &[])
+            verify_unlinked_eval_tree(&script_root, EvalKind::Direct, false, &[], false, false)
                 .unwrap_err()
                 .to_string()
                 .contains("publication entry point")
         );
-        assert!(verify_unlinked_eval_tree(&script_root, EvalKind::None, false, &[]).is_err());
+        assert!(
+            verify_unlinked_eval_tree(&script_root, EvalKind::None, false, &[], false, false)
+                .is_err()
+        );
     }
 
     #[test]
@@ -3041,10 +3151,17 @@ mod tests {
             )],
         );
         assert!(
-            verify_unlinked_eval_tree(&wrong_name, EvalKind::Direct, false, &expected[..1])
-                .unwrap_err()
-                .to_string()
-                .contains("name disagrees")
+            verify_unlinked_eval_tree(
+                &wrong_name,
+                EvalKind::Direct,
+                false,
+                &expected[..1],
+                false,
+                false,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("name disagrees")
         );
 
         let wrong_flags = eval_root_with_descriptors(
@@ -3058,10 +3175,17 @@ mod tests {
             )],
         );
         assert!(
-            verify_unlinked_eval_tree(&wrong_flags, EvalKind::Direct, false, &expected[..1])
-                .unwrap_err()
-                .to_string()
-                .contains("flags disagree")
+            verify_unlinked_eval_tree(
+                &wrong_flags,
+                EvalKind::Direct,
+                false,
+                &expected[..1],
+                false,
+                false,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("flags disagree")
         );
 
         let wrong_kind = eval_root_with_descriptors(
@@ -3075,10 +3199,17 @@ mod tests {
             )],
         );
         assert!(
-            verify_unlinked_eval_tree(&wrong_kind, EvalKind::Direct, false, &expected[..1])
-                .unwrap_err()
-                .to_string()
-                .contains("flags disagree")
+            verify_unlinked_eval_tree(
+                &wrong_kind,
+                EvalKind::Direct,
+                false,
+                &expected[..1],
+                false,
+                false,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("flags disagree")
         );
 
         let wrong_order = eval_root_with_descriptors(
@@ -3101,10 +3232,17 @@ mod tests {
             ],
         );
         assert!(
-            verify_unlinked_eval_tree(&wrong_order, EvalKind::Direct, false, &expected)
-                .unwrap_err()
-                .to_string()
-                .contains("exact prefix")
+            verify_unlinked_eval_tree(
+                &wrong_order,
+                EvalKind::Direct,
+                false,
+                &expected,
+                false,
+                false,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("exact prefix")
         );
 
         let missing = eval_root_with_descriptors(
@@ -3118,7 +3256,7 @@ mod tests {
             )],
         );
         assert!(
-            verify_unlinked_eval_tree(&missing, EvalKind::Direct, false, &expected)
+            verify_unlinked_eval_tree(&missing, EvalKind::Direct, false, &expected, false, false,)
                 .unwrap_err()
                 .to_string()
                 .contains("descriptor count")
@@ -3137,7 +3275,8 @@ mod tests {
                 ClosureVariableKind::Normal,
             )],
         );
-        verify_unlinked_eval_tree(&direct_global, EvalKind::Direct, false, &[]).unwrap();
+        verify_unlinked_eval_tree(&direct_global, EvalKind::Direct, false, &[], false, false)
+            .unwrap();
 
         let indirect_global = eval_root_with_descriptors(
             EvalKind::Indirect,
@@ -3149,7 +3288,15 @@ mod tests {
                 ClosureVariableKind::Normal,
             )],
         );
-        verify_unlinked_eval_tree(&indirect_global, EvalKind::Indirect, false, &[]).unwrap();
+        verify_unlinked_eval_tree(
+            &indirect_global,
+            EvalKind::Indirect,
+            false,
+            &[],
+            false,
+            false,
+        )
+        .unwrap();
 
         for (kind, caller_strict) in [
             (EvalKind::Direct, false),
@@ -3168,7 +3315,7 @@ mod tests {
                 )],
             );
             assert!(
-                verify_unlinked_eval_tree(&strict, kind, caller_strict, &[])
+                verify_unlinked_eval_tree(&strict, kind, caller_strict, &[], false, false)
                     .unwrap_err()
                     .to_string()
                     .contains("illegal global declaration")
@@ -3186,7 +3333,7 @@ mod tests {
             )],
         );
         assert!(
-            verify_unlinked_eval_tree(&lexical, EvalKind::Direct, false, &[])
+            verify_unlinked_eval_tree(&lexical, EvalKind::Direct, false, &[], false, false)
                 .unwrap_err()
                 .to_string()
                 .contains("illegal global declaration")
@@ -3229,7 +3376,8 @@ mod tests {
                 kind: ClosureVariableKind::EvalVariableObject,
             }],
         );
-        verify_unlinked_eval_tree(&imported, EvalKind::Direct, false, &expected).unwrap();
+        verify_unlinked_eval_tree(&imported, EvalKind::Direct, false, &expected, false, false)
+            .unwrap();
 
         let root = eval_root_with_descriptors(
             EvalKind::Direct,
@@ -3251,7 +3399,7 @@ mod tests {
             ],
         );
         assert!(
-            verify_unlinked_eval_tree(&root, EvalKind::Direct, false, &expected)
+            verify_unlinked_eval_tree(&root, EvalKind::Direct, false, &expected, false, false,)
                 .unwrap_err()
                 .to_string()
                 .contains("illegal global declaration")
@@ -3287,7 +3435,7 @@ mod tests {
             ],
         );
         assert!(
-            verify_unlinked_eval_tree(&root, EvalKind::Direct, false, &expected)
+            verify_unlinked_eval_tree(&root, EvalKind::Direct, false, &expected, false, false,)
                 .unwrap_err()
                 .to_string()
                 .contains("exact prefix")
@@ -3307,7 +3455,7 @@ mod tests {
             )],
         );
         assert!(
-            verify_unlinked_eval_tree(&global_special, EvalKind::Direct, false, &[])
+            verify_unlinked_eval_tree(&global_special, EvalKind::Direct, false, &[], false, false,)
                 .unwrap_err()
                 .to_string()
                 .contains("non-global binding metadata")
@@ -3318,10 +3466,17 @@ mod tests {
             eval_root_binding("caught", 0, false, false, ClosureVariableKind::Normal);
         forged_catch.is_catch_parameter = true;
         assert!(
-            verify_unlinked_eval_tree(&root, EvalKind::Direct, false, &[forged_catch])
-                .unwrap_err()
-                .to_string()
-                .contains("catch binding")
+            verify_unlinked_eval_tree(
+                &root,
+                EvalKind::Direct,
+                false,
+                &[forged_catch],
+                false,
+                false,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("catch binding")
         );
     }
 
@@ -3347,7 +3502,7 @@ mod tests {
             },
         );
         assert!(
-            verify_unlinked_eval_tree(&root, EvalKind::Direct, false, &[])
+            verify_unlinked_eval_tree(&root, EvalKind::Direct, false, &[], false, false)
                 .unwrap_err()
                 .to_string()
                 .contains("child bytecode directly referenced")
@@ -3666,7 +3821,7 @@ mod tests {
             },
         );
         assert!(
-            verify_unlinked_eval_tree(&root, EvalKind::Direct, false, &[])
+            verify_unlinked_eval_tree(&root, EvalKind::Direct, false, &[], false, false)
                 .unwrap_err()
                 .to_string()
                 .contains("non-root bytecode")
@@ -3682,17 +3837,24 @@ mod tests {
                 ClosureVariableKind::Normal,
             )],
         );
-        verify_unlinked_eval_tree(&indirect, EvalKind::Indirect, false, &[]).unwrap();
+        verify_unlinked_eval_tree(&indirect, EvalKind::Indirect, false, &[], false, false).unwrap();
         let caller_binding =
             eval_root_binding("caller", 0, false, false, ClosureVariableKind::Normal);
         assert!(
-            verify_unlinked_eval_tree(&indirect, EvalKind::Indirect, false, &[caller_binding])
-                .unwrap_err()
-                .to_string()
-                .contains("received caller bindings")
+            verify_unlinked_eval_tree(
+                &indirect,
+                EvalKind::Indirect,
+                false,
+                &[caller_binding],
+                false,
+                false,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("received caller bindings")
         );
         assert!(
-            verify_unlinked_eval_tree(&indirect, EvalKind::Indirect, true, &[])
+            verify_unlinked_eval_tree(&indirect, EvalKind::Indirect, true, &[], false, false)
                 .unwrap_err()
                 .to_string()
                 .contains("received caller strictness")
@@ -3700,10 +3862,107 @@ mod tests {
 
         let sloppy_direct = eval_root_with_descriptors(EvalKind::Direct, Vec::new());
         assert!(
-            verify_unlinked_eval_tree(&sloppy_direct, EvalKind::Direct, true, &[])
+            verify_unlinked_eval_tree(&sloppy_direct, EvalKind::Direct, true, &[], false, false)
                 .unwrap_err()
                 .to_string()
                 .contains("lost inherited caller strictness")
+        );
+    }
+
+    #[test]
+    fn eval_super_capabilities_are_authenticated_at_publication() {
+        let malformed = UnlinkedFunction::new(
+            vec![Instruction::Undefined, Instruction::Return],
+            Vec::new(),
+            FunctionMetadata {
+                max_stack: 1,
+                super_call_allowed: true,
+                super_allowed: false,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(
+            verify_unlinked_tree(&malformed)
+                .unwrap_err()
+                .to_string()
+                .contains("without SuperProperty")
+        );
+
+        let mut environment = ordinary_environment(None);
+        environment.super_allowed = true;
+        let caller = UnlinkedFunction::new(
+            eval_code(0, false),
+            Vec::new(),
+            FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_eval_environments(vec![environment]);
+        assert!(
+            verify_unlinked_tree(&script_with_child(caller))
+                .unwrap_err()
+                .to_string()
+                .contains("super capability disagrees with bytecode metadata")
+        );
+
+        let profile = EvalCallerProfile {
+            scope_kinds: Box::new([]),
+            variable_target: EvalCallerVariableTarget::Global,
+        };
+        let capability_root = |kind| {
+            UnlinkedFunction::new(
+                vec![Instruction::Undefined, Instruction::Return],
+                Vec::new(),
+                FunctionMetadata {
+                    max_stack: 1,
+                    eval_kind: kind,
+                    super_allowed: true,
+                    ..FunctionMetadata::default()
+                },
+            )
+        };
+
+        let direct = capability_root(EvalKind::Direct);
+        verify_unlinked_eval_tree_with_profile(
+            &direct,
+            EvalKind::Direct,
+            false,
+            &[],
+            &profile,
+            false,
+            true,
+        )
+        .unwrap();
+        assert!(
+            verify_unlinked_eval_tree_with_profile(
+                &direct,
+                EvalKind::Direct,
+                false,
+                &[],
+                &profile,
+                false,
+                false,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("eval root super capability disagrees with its caller")
+        );
+
+        let indirect = capability_root(EvalKind::Indirect);
+        assert!(
+            verify_unlinked_eval_tree_with_profile(
+                &indirect,
+                EvalKind::Indirect,
+                false,
+                &[],
+                &profile,
+                false,
+                false,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("eval root super capability disagrees with its caller")
         );
     }
 
@@ -3971,6 +4230,8 @@ mod tests {
             .into_boxed_slice(),
             variable_environment: EvalVariableEnvironment::Scope(2),
             caller_strict: false,
+            super_call_allowed: false,
+            super_allowed: false,
         };
         verify_unlinked_tree(&script_with_child(lexical_local_function(
             environment.clone(),
@@ -4110,6 +4371,8 @@ mod tests {
             .into_boxed_slice(),
             variable_environment: EvalVariableEnvironment::Global,
             caller_strict: false,
+            super_call_allowed: false,
+            super_allowed: false,
         }]);
         assert!(
             verify_unlinked_tree(&global)
@@ -4343,6 +4606,8 @@ mod tests {
             .into_boxed_slice(),
             variable_environment: EvalVariableEnvironment::Scope(1),
             caller_strict: false,
+            super_call_allowed: false,
+            super_allowed: false,
         };
         let middle = UnlinkedFunction::new_with_closure_variables(
             vec![
@@ -4479,6 +4744,8 @@ mod tests {
             .into_boxed_slice(),
             variable_environment: EvalVariableEnvironment::Scope(1),
             caller_strict: false,
+            super_call_allowed: false,
+            super_allowed: false,
         };
         let eval_child = UnlinkedFunction::new_with_closure_variables(
             eval_code(0, false),
@@ -4683,6 +4950,8 @@ mod tests {
             .into_boxed_slice(),
             variable_environment: EvalVariableEnvironment::Global,
             caller_strict: false,
+            super_call_allowed: false,
+            super_allowed: false,
         }]);
         assert!(
             verify_unlinked_tree(&script_with_child(child_with_global))
@@ -4716,6 +4985,8 @@ mod tests {
             .into_boxed_slice(),
             variable_environment: EvalVariableEnvironment::Scope(1),
             caller_strict: false,
+            super_call_allowed: false,
+            super_allowed: false,
         };
         let function = UnlinkedFunction::new(
             eval_code(0, false),

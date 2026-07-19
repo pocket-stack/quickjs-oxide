@@ -1,7 +1,8 @@
 use super::{
-    Error, ErrorKind, FunctionId, FunctionIr, FunctionKind, FunctionSourceInfo, Identifier,
-    IdentifierContext, IrConstant, IrOp, MAX_LOCAL_VARIABLES, ParentLink, Parser, Punctuator,
-    SourceOffset, Span, TokenKind, source_offset, source_span, validate_identifier,
+    Error, ErrorKind, FunctionId, FunctionIr, FunctionIrOptions, FunctionKind, FunctionSourceInfo,
+    Identifier, IdentifierContext, IrConstant, IrOp, MAX_LOCAL_VARIABLES, ParentLink, Parser,
+    Punctuator, SourceOffset, Span, SuperCapabilities, TokenKind, source_offset, source_span,
+    validate_identifier,
 };
 use crate::bytecode::DefineMethodKind;
 
@@ -275,6 +276,15 @@ impl<'source> Parser<'source> {
             .map(|(identifier, _)| identifier.value.clone());
         let child = self.functions.len();
         let parent_scope = self.functions[parent].current_scope;
+        let super_capabilities = match options.kind {
+            FunctionKind::Method => SuperCapabilities::PROPERTY,
+            FunctionKind::Ordinary => SuperCapabilities::NONE,
+            _ => {
+                return Err(Error::internal(
+                    "ordinary function parser received an invalid function kind",
+                ));
+            }
+        };
         self.functions.push(FunctionIr::new(
             Some(ParentLink {
                 function: parent,
@@ -286,10 +296,13 @@ impl<'source> Parser<'source> {
                 definition: source_offset(function_span)?,
                 range: None,
             },
-            function_name,
-            options.private_name_binding && function_name_token.is_some(),
-            parameters,
-            strict,
+            FunctionIrOptions {
+                function_name,
+                private_name_binding: options.private_name_binding && function_name_token.is_some(),
+                parameters,
+                strict,
+                super_capabilities,
+            },
         )?);
         self.current_function = child;
         self.parse_function_body()?;

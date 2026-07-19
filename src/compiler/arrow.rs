@@ -109,6 +109,10 @@ impl<'source> Parser<'source> {
 
         let child = self.functions.len();
         let parent_scope = self.functions[parent].current_scope;
+        let super_capabilities = SuperCapabilities {
+            super_call_allowed: self.functions[parent].super_call_allowed,
+            super_allowed: self.functions[parent].super_allowed,
+        };
         self.functions.push(FunctionIr::new(
             Some(ParentLink {
                 function: parent,
@@ -120,10 +124,13 @@ impl<'source> Parser<'source> {
                 definition: source_offset(function_span)?,
                 range: None,
             },
-            None,
-            false,
-            parameters,
-            strict,
+            FunctionIrOptions {
+                function_name: None,
+                private_name_binding: false,
+                parameters,
+                strict,
+                super_capabilities,
+            },
         )?);
         self.current_function = child;
 

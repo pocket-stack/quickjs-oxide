@@ -726,6 +726,8 @@ mod tests {
             .into_boxed_slice(),
             variable_environment: EvalVariableEnvironment::Scope(0),
             caller_strict: true,
+            super_call_allowed: false,
+            super_allowed: false,
         };
         let function = UnlinkedFunction::new(
             vec![Instruction::Undefined, Instruction::Return],

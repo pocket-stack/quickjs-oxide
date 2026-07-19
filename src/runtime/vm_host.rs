@@ -421,10 +421,31 @@ impl RuntimeVmHost {
         &self,
         environment: &EvalEnvironment<Atom>,
         caller_strict: bool,
+        caller_metadata: FunctionMetadata,
     ) -> Result<(), Error> {
         if environment.caller_strict != caller_strict {
             return Err(Error::internal(
                 "eval environment caller strictness disagrees with its bytecode frame",
+            ));
+        }
+        if caller_metadata.super_call_allowed && !caller_metadata.super_allowed {
+            return Err(Error::internal(
+                "caller bytecode permits super() without SuperProperty",
+            ));
+        }
+        if environment.super_call_allowed && !environment.super_allowed {
+            return Err(Error::internal(
+                "eval environment permits super() without SuperProperty",
+            ));
+        }
+        if (environment.super_call_allowed, environment.super_allowed)
+            != (
+                caller_metadata.super_call_allowed,
+                caller_metadata.super_allowed,
+            )
+        {
+            return Err(Error::internal(
+                "eval environment super capability disagrees with caller bytecode",
             ));
         }
         match environment.variable_environment {
@@ -528,15 +549,21 @@ impl RuntimeVmHost {
             .get(usize::from(index))
             .cloned()
             .ok_or_else(|| Error::internal("eval environment index is out of bounds"))?;
+        let caller_bytecode = self.current_bytecode.clone().ok_or_else(|| {
+            Error::internal("direct eval frame did not retain its caller bytecode")
+        })?;
+        let caller_metadata = self
+            .runtime
+            .snapshot_function_bytecode(&caller_bytecode)
+            .map_err(runtime_error_to_vm_error)?
+            .metadata;
         // Authenticate every immutable source before compilation. Corrupt
         // published bytecode must fail without compiling attacker-selected
         // names or converting any frame binding to a VarRef.
-        self.validate_eval_environment(&descriptor, caller_strict)?;
+        self.validate_eval_environment(&descriptor, caller_strict, caller_metadata)?;
         Ok(PreparedEvalEnvironment {
             index,
-            caller_bytecode: self.current_bytecode.clone().ok_or_else(|| {
-                Error::internal("direct eval frame did not retain its caller bytecode")
-            })?,
+            caller_bytecode,
             descriptor,
         })
     }
@@ -3128,6 +3155,44 @@ mod tests {
                 .unwrap_err()
                 .message(),
             "local initialization referenced an ordinary local definition"
+        );
+    }
+
+    #[test]
+    fn direct_eval_environment_authenticates_super_capability_before_materialization() {
+        let runtime = Runtime::new();
+        let context = runtime.new_context();
+        let host = RuntimeVmHost::empty_for_test(runtime, context.realm);
+        let mut environment = EvalEnvironment::<Atom> {
+            scopes: Box::new([]),
+            variable_environment: EvalVariableEnvironment::Global,
+            caller_strict: false,
+            super_call_allowed: false,
+            super_allowed: false,
+        };
+
+        let error = host
+            .validate_eval_environment(
+                &environment,
+                false,
+                FunctionMetadata {
+                    super_allowed: true,
+                    ..FunctionMetadata::default()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.message(),
+            "eval environment super capability disagrees with caller bytecode"
+        );
+
+        environment.super_call_allowed = true;
+        let error = host
+            .validate_eval_environment(&environment, false, FunctionMetadata::default())
+            .unwrap_err();
+        assert_eq!(
+            error.message(),
+            "eval environment permits super() without SuperProperty"
         );
     }
 }
