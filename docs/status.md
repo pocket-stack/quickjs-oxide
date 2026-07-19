@@ -10,13 +10,13 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 54 reviewed feature tags and 423 exact audited
+  capability profile now admits 55 reviewed feature tags and 423 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 32,490 passes: 31.84% raw, a 38.88% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 91.56% among the 35,484 variants with a
+  has 32,573 passes: 31.92% raw, a 38.98% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 91.58% among the 35,567 variants with a
   non-unsupported observed outcome. The fixed smoke now has 191
   passes and two explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -529,6 +529,47 @@ claim full parity.
   `8a1633a0d527bc77926124f3a6e1fa5ef340e6e79626a22ed171f37dafb8c6e0`
   and
   `b904278dd9c8cc5d3cf54babd037723ec7e52d015a636fe0d19ef5a4b0f36cfb`.
+
+  R2k ports QuickJS tagged-template semantics without adding a global cache.
+  The parser records cooked/optional-undefined and raw UTF-16 segments as a
+  structural constant; runtime publication materializes the two frozen
+  realm-local Arrays once, and the bytecode constant edge preserves per-site
+  identity across closures, StripDebug mode, and cycle collection. Tagged
+  calls reuse ordinary Reference promotion for dot, computed, `with`, and
+  `super` receivers, while tagged `eval` remains indirect. Constructor
+  precedence, chained tags, invalid escapes, descriptor shape, evaluation and
+  abrupt order, dynamic eval/Function site separation, newline continuation,
+  and direct-eval HomeObject relay are pinned by 16 QuickJS differential
+  vectors. A separate Rust lifecycle test locks site identity across StripDebug
+  publication and cycle collection.
+
+  The focused gate freezes 48 paths and 89 variants. It executes 85: 83 pass
+  and two stop at the pre-existing PrivateName literal runtime frontier. Two
+  `create-realm` variants remain host-unsupported and two TCO variants remain
+  excluded by the pinned configuration. Its manifest/key-set/non-pass hashes
+  are
+  `d3a7e597a049e9a78830ee089a90db27c6b6b0b8b2d049cd76b30f5515e6d23a`,
+  `91852cd5c970debac2ef05af2715198736757b1276a34e6a73722df86bd80356`,
+  and
+  `981d8dba14c5cad2481e890d2dfc0925fd5ef03139aca7109d52891166a2c4aa`;
+  focused TSV/JSONL hashes are
+  `62322ceafcf309aedb8ee6a0b155fef9f24a67356a5408a496647a6f93ed353d`
+  and
+  `c91514b3d5b4500ec88d491e19719b139422bd7910876993fbb6a36a9cb70230`.
+
+  Declaring `template` moves the profile to 55 reviewed feature tags with
+  SHA-256
+  `d146a337c9bab8b171aaddfe31d404073a9d3cbb65fd7ac7d6ab46fdefe69ef7`.
+  The exact R2j/R2k join retains all 102,037 unique keys and records 79
+  `unsupported-parser -> pass`, two `unsupported-runtime -> pass`, two
+  `unsupported-feature -> pass`, and two
+  `unsupported-parser -> unsupported-runtime` transitions. There are no
+  missing, extra, duplicate, or detail-only rows and no previous-pass
+  regressions. Runnable jobs reach 36,827 and the
+  complete vector reaches 32,573 passes. Full TSV/JSONL SHA-256 values are
+  `96dfb48f8887e525ff2813e4f8ac9ab7cf191f9e0fedd0d8724ee52943ce60e9`
+  and
+  `799be95a11b86d2b1efdfa694cd88971a600c64992fd07b03d61d913377f2e23`.
 
   Parameter initializers and other non-simple parameters, classes/derived
   construction, and async/generator method/accessor forms stay typed frontiers.
@@ -3572,8 +3613,13 @@ authentication owners are `compiler.rs` at 11,998 lines,
 resident compiler expectation coverage puts `compiler/tests.rs` at 8,737.
 Keeping the runtime facade unchanged is intentional, while the compiler facade
 and its test file remain explicit monolith debt for a later phase-aligned split.
-The
-RegExp kernel itself is isolated in
+R2k moves all template-literal lowering into the new 191-line
+`compiler/template.rs`, reducing `compiler.rs` from 11,998 to 11,956 lines even
+after tagged calls are added. Realm-local template object publication lives in
+the new 111-line `runtime/template_object.rs`; `runtime.rs` grows only 16 lines
+from 9,734 to 9,750 for the constant-pool plumbing and module hook. This keeps
+the feature on bounded owners instead of resuming either monolith's growth.
+The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
 helpers, bytecode publication linking and call dispatch, runtime/root lifecycle,
@@ -3773,6 +3819,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_super_arrow -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_super_eval -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_tagged_templates -- --nocapture
 
 ./scripts/test-parity-slice.sh
 ./scripts/test-test262-smoke.sh
@@ -3808,6 +3856,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/run-test262-object-super.sh
 ./scripts/run-test262-object-super-arrow.sh
 ./scripts/run-test262-object-super-eval.sh
+./scripts/test-test262-tagged-template.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -3841,8 +3890,10 @@ nearest-loop jumps, per-function isolation, ASI/directive boundaries and exact
 diagnostics; the switch target locks case/default search, fallthrough,
 completion and cross-control cleanup; the template target locks raw/cooked
 UTF-16, continuation goals, concat lowering/order, diagnostics,
-tagged-template boundaries, and folded control-flow reachability at the
-65,534-slot stack limit. The full gate discovers every `tests/oracle_*.rs`
+and folded control-flow reachability at the 65,534-slot stack limit. The tagged
+template target separately locks frozen cooked/raw site objects, receiver and
+evaluation order, compilation-site identity, direct-eval/super composition,
+and GC lifetime. The full gate discovers every `tests/oracle_*.rs`
 integration target, reuses an executable `QJS_ORACLE` or checksum-verifies and
 builds the pinned test-only oracle, obtains and checksum-verifies the matching
 Unicode table source, then runs both generated-table drift checks, formatting,

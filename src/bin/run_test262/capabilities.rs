@@ -208,7 +208,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 54] = [
+    const EXPECTED_FEATURES: [&str; 55] = [
         "Array.prototype.at",
         "Array.prototype.includes",
         "BigInt",
@@ -262,6 +262,7 @@ mod tests {
         "regexp-unicode-property-escapes",
         "string-trimming",
         "super",
+        "template",
         "u180e",
     ];
     const EXPECTED_AUDITED_NEGATIVES: [&str; 281] = [

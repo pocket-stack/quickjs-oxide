@@ -10,7 +10,7 @@ differentials still decide exact behavior inside each implemented slice.
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
 - quickjs-oxide capability profile SHA-256:
-  `85cec5c2713df52c631ed38b96621e253baf9e1fafc06eceeea19e9eba64c6f9`
+  `d146a337c9bab8b171aaddfe31d404073a9d3cbb65fd7ac7d6ab46fdefe69ef7`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -50,32 +50,32 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 32,490 pass;
+- 32,573 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 48,078 are classified as unsupported because of a feature, mode, host
+- 47,995 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
 - 448 fail to parse, 2,425 fail at runtime, 117 fail in the harness, and four
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 36,825 variants to execution. That count includes variants
+The runner admitted 36,827 variants to execution. That count includes variants
 which then report a typed parser or harness frontier rather than an observed
 non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 31.84% (`32,490 / 102,037`);
-- conservative target-scope lower bound: 38.88%
-  (`32,490 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 91.56%
-  (`32,490 / 35,484`).
+- raw suite pass rate: 31.92% (`32,573 / 102,037`);
+- conservative target-scope lower bound: 38.98%
+  (`32,573 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 91.58%
+  (`32,573 / 35,567`).
 
-The 38.88% figure is the useful whole-project progress floor, not a claim that
-the engine is 38.88% conformant. The 91.56% conditional rate measures quality
+The 38.98% figure is the useful whole-project progress floor, not a claim that
+the engine is 38.98% conformant. The 91.58% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion; R1u also demonstrates that this conditional rate can rise when
 previously ambiguous failures move to a more honest typed unsupported class.
-The capability profile currently admits 54 reviewed Test262
+The capability profile currently admits 55 reviewed Test262
 feature tags and 423 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
 lands can only make the measurement more representative. Focused QuickJS
@@ -1461,6 +1461,50 @@ vector reaches 32,490 passes. Full TSV/JSONL SHA-256 values are
 and
 `b904278dd9c8cc5d3cf54babd037723ec7e52d015a636fe0d19ef5a4b0f36cfb`.
 
+## R2k tagged-template gate
+
+R2k ports tagged-template parsing and runtime publication from QuickJS
+2026-06-04. Each bytecode site owns one frozen cooked Array and one frozen
+`raw` Array in its compilation realm; the cooked constant retains that identity
+through repeated closure calls and GC. Invalid escapes become `undefined` only
+in the cooked Array, raw UTF-16 text is preserved, substitutions remain full
+comma expressions, and dot/computed/`with`/`super` tags keep the same Reference
+receiver as ordinary calls. Tagged `eval` is deliberately an ordinary call.
+Constructor precedence, chained tags, direct-eval HomeObject relay, dynamic
+eval/Function site separation, newline continuation, descriptors, abrupt order,
+and receiver behavior are pinned by 16 QuickJS differential vectors. A
+separate Rust lifecycle test locks site identity across StripDebug publication
+and cycle collection.
+
+The focused manifest freezes 48 paths and 89 variants. Of its 85 executed
+variants, 83 pass and two stop at the existing PrivateName literal runtime
+frontier. Two `create-realm` variants remain host-unsupported and two TCO
+variants remain excluded by the pinned QuickJS configuration. Manifest,
+key-set, and non-pass SHA-256 values are
+`d3a7e597a049e9a78830ee089a90db27c6b6b0b8b2d049cd76b30f5515e6d23a`,
+`91852cd5c970debac2ef05af2715198736757b1276a34e6a73722df86bd80356`,
+and
+`981d8dba14c5cad2481e890d2dfc0925fd5ef03139aca7109d52891166a2c4aa`.
+Focused TSV/JSONL SHA-256 values are
+`62322ceafcf309aedb8ee6a0b155fef9f24a67356a5408a496647a6f93ed353d`
+and
+`c91514b3d5b4500ec88d491e19719b139422bd7910876993fbb6a36a9cb70230`.
+Reproduce it with `scripts/test-test262-tagged-template.sh`.
+
+Declaring `template` moves the capability profile to 55 feature tags and 423
+audited negative paths, with SHA-256
+`d146a337c9bab8b171aaddfe31d404073a9d3cbb65fd7ac7d6ab46fdefe69ef7`.
+The exact R2j/R2k full join retains all 102,037 unique keys with no missing,
+extra, duplicate, or detail-only rows and no previous-pass regressions. It
+records 79 `unsupported-parser -> pass`, two `unsupported-runtime -> pass`,
+and two `unsupported-feature -> pass` transitions. Two PrivateName staging variants
+advance from the parser frontier to the existing typed runtime frontier. The
+complete vector reaches 32,573 passes and 36,827 runnable variants. Full
+TSV/JSONL SHA-256 values are
+`96dfb48f8887e525ff2813e4f8ac9ab7cf191f9e0fedd0d8724ee52943ce60e9`
+and
+`799be95a11b86d2b1efdfa694cd88971a600c64992fd07b03d61d913377f2e23`.
+
 Parameter initializers, classes and derived constructors, and async/generator
 methods remain explicit follow-up slices.
 
@@ -1534,6 +1578,7 @@ canonical progress report.
 ./scripts/run-test262-object-super.sh
 ./scripts/run-test262-object-super-arrow.sh
 ./scripts/run-test262-object-super-eval.sh
+./scripts/test-test262-tagged-template.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -1579,7 +1624,10 @@ its eight-variant focused gate, and adds four full-vector passes without
 changing the profile or runnable count; R2j authenticates the independent
 SuperCall and SuperProperty capabilities through ObjectLiteral direct eval,
 passes its 24-variant focused gate, and adds six full-vector passes with no
-previous-pass regression or runnable-count change.
+previous-pass regression or runnable-count change; R2k adds QuickJS-shaped
+tagged-template site objects and calls, declares `template`, passes all 83
+runnable non-frontier variants in its focused gate, and adds 83 full-vector
+passes with zero previous-pass regressions.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS
