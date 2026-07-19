@@ -7507,6 +7507,73 @@ fn object_literal_accessors_lower_fixed_and_computed_zero_one_arity_functions() 
 }
 
 #[test]
+fn object_literal_super_references_authenticate_home_object_and_quickjs_stack_forms() {
+    let script = compile_unlinked_script(
+        "({get read(){return super.value},set write(value){super.value=value},call(key){return super[key]()},update(){return super.value++},remove(){return delete super.value},iterate(values){for(super.value of values){}}})",
+    )
+    .expect("direct object-method super properties compile");
+    let methods = script
+        .constants()
+        .iter()
+        .filter_map(|constant| constant.as_child())
+        .collect::<Vec<_>>();
+    assert_eq!(methods.len(), 6);
+    assert!(
+        methods
+            .iter()
+            .all(|method| method.metadata().needs_home_object)
+    );
+    assert!(methods.iter().all(|method| {
+        method.code().windows(3).any(|window| {
+            matches!(
+                window,
+                [
+                    Instruction::PushThis,
+                    Instruction::PushHomeObject,
+                    Instruction::GetSuper
+                ]
+            )
+        })
+    }));
+    assert!(
+        methods[0]
+            .code()
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::GetSuperValue))
+    );
+    assert!(
+        methods[1]
+            .code()
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::PutSuperValue))
+    );
+    assert!(
+        methods[2]
+            .code()
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::GetSuperValueForCall))
+    );
+    assert!(
+        methods[3]
+            .code()
+            .windows(2)
+            .any(|window| matches!(window, [Instruction::Perm5, Instruction::PutSuperValue]))
+    );
+    assert!(
+        methods[4]
+            .code()
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::ThrowDeleteSuper))
+    );
+    assert!(
+        methods[5]
+            .code()
+            .windows(2)
+            .any(|window| matches!(window, [Instruction::Rot4Left, Instruction::PutSuperValue]))
+    );
+}
+
+#[test]
 fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
     for source in [
         "({})",
@@ -7546,7 +7613,6 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
         "({set a(left=1,right){}})",
         "({set a({left},right){}})",
         "({set a([left],right){}})",
-        "({get a(){return super.a}})",
     ] {
         assert!(
             compile_unlinked_script(source)

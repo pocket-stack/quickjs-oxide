@@ -544,6 +544,10 @@ pub struct FunctionMetadata {
     pub closure_count: u16,
     pub max_stack: u16,
     pub strict: bool,
+    /// Whether closure publication must accept a method HomeObject. QuickJS
+    /// derives this from `home_object_var_idx`/`need_home_object`; ordinary
+    /// functions leave the flag clear and therefore retain no object edge.
+    pub needs_home_object: bool,
     /// Whether this bytecode is the synthetic root compiled for an
     /// ECMAScript eval invocation. Ordinary scripts/functions use `None`;
     /// nested functions inside eval code also use `None` because only the
@@ -3935,6 +3939,22 @@ impl Heap {
         }
     }
 
+    /// Read the optional HomeObject edge of one bytecode function.
+    ///
+    /// Native, bound, and ordinary objects are rejected rather than silently
+    /// impersonating bytecode functions at the super-resolution boundary.
+    pub fn bytecode_function_home_object(
+        &self,
+        id: ObjectId,
+    ) -> Result<Option<ObjectId>, HeapError> {
+        let ObjectPayload::BytecodeFunction { home_object, .. } = &self.object(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "HomeObject lookup reached a non-bytecode function",
+            ));
+        };
+        Ok(*home_object)
+    }
+
     /// Read one live shape record.
     pub fn shape(&self, id: ShapeId) -> Result<&Shape, HeapError> {
         match self.live_node(RawId::Shape(id))?.data {
@@ -4486,6 +4506,39 @@ impl Heap {
         }
         cleanup.merge(self.drain_zero_queue()?);
         Ok(cleanup)
+    }
+
+    /// Transactionally replace a bytecode function's optional HomeObject.
+    ///
+    /// The replacement is retained before the previous edge is detached, so
+    /// changing from an object which owns the replacement cannot make the new
+    /// handle stale mid-operation. Identical `Some` values and `None -> None`
+    /// are no-ops and therefore cannot overflow or perturb reference counts.
+    /// Releasing the old edge may reclaim an unrooted receiver; callers must
+    /// keep `id` rooted if they need to use it after this operation.
+    pub fn replace_bytecode_function_home_object(
+        &mut self,
+        id: ObjectId,
+        replacement: Option<ObjectId>,
+    ) -> Result<HeapCleanup, HeapError> {
+        let previous = self.bytecode_function_home_object(id)?;
+        if previous == replacement {
+            return Ok(HeapCleanup::default());
+        }
+        if let Some(home_object) = replacement {
+            self.retain_raw(RawId::Object(home_object), 1)?;
+        }
+
+        let ObjectPayload::BytecodeFunction { home_object, .. } = &mut self.object_mut(id)?.payload
+        else {
+            unreachable!("bytecode-function payload was validated before HomeObject replacement")
+        };
+        *home_object = replacement;
+
+        if let Some(home_object) = previous {
+            self.release_raw_no_drain(RawId::Object(home_object))?;
+        }
+        self.drain_zero_queue()
     }
 
     /// Transactionally replace an object's complete shape/slot layout.
@@ -8175,6 +8228,156 @@ mod tests {
         assert_eq!(cleanup.finalized_contexts, 1);
         assert_eq!(cleanup.finalized_objects, 1);
         assert_eq!(cleanup.finalized_shapes, 1);
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn bytecode_home_object_replacement_is_retain_first_and_idempotent() {
+        let mut heap = Heap::new();
+        assert!(!FunctionMetadata::default().needs_home_object);
+
+        let empty = empty_shape(&mut heap);
+        let realm_root = leaf(&mut heap, empty);
+        let context = heap
+            .allocate_context(ContextData::new(
+                realm_root, realm_root, realm_root, realm_root, realm_root, realm_root, realm_root,
+                realm_root,
+            ))
+            .unwrap();
+        heap.release_object(realm_root).unwrap();
+
+        let code: Rc<[Instruction]> = Rc::from([]);
+        let bytecode = heap
+            .allocate_function_bytecode(bytecode(&code, context, Vec::new(), Vec::new()))
+            .unwrap();
+        let function = heap
+            .allocate_object(ObjectData::bytecode_function(
+                empty,
+                Vec::new(),
+                bytecode,
+                None,
+                false,
+            ))
+            .unwrap();
+        assert_eq!(heap.bytecode_function_home_object(function), Ok(None));
+        assert_eq!(
+            heap.bytecode_function_home_object(realm_root),
+            Err(HeapError::Invariant(
+                "HomeObject lookup reached a non-bytecode function"
+            ))
+        );
+
+        let replacement = leaf(&mut heap, empty);
+        let owner_shape = one_slot_shape(&mut heap);
+        let previous = heap
+            .allocate_object(ObjectData::ordinary(
+                owner_shape,
+                vec![PropertySlot::Data(RawValue::Object(replacement))],
+            ))
+            .unwrap();
+        assert_eq!(heap.object_strong_count(replacement), Ok(2));
+
+        assert_eq!(
+            heap.replace_bytecode_function_home_object(function, Some(previous))
+                .unwrap(),
+            HeapCleanup::default()
+        );
+        heap.release_object(previous).unwrap();
+        heap.release_object(replacement).unwrap();
+        assert_eq!(heap.object_strong_count(previous), Ok(1));
+        assert_eq!(heap.object_strong_count(replacement), Ok(1));
+
+        // `previous` owns `replacement`. Retaining the new edge first keeps it
+        // live while detaching and finalizing the old HomeObject.
+        let cleanup = heap
+            .replace_bytecode_function_home_object(function, Some(replacement))
+            .unwrap();
+        assert_eq!(cleanup.finalized_objects, 1);
+        assert_eq!(
+            heap.bytecode_function_home_object(function),
+            Ok(Some(replacement))
+        );
+        assert_eq!(heap.object_strong_count(replacement), Ok(1));
+
+        assert_eq!(
+            heap.replace_bytecode_function_home_object(function, Some(replacement))
+                .unwrap(),
+            HeapCleanup::default()
+        );
+        assert_eq!(heap.object_strong_count(replacement), Ok(1));
+
+        let cleanup = heap
+            .replace_bytecode_function_home_object(function, None)
+            .unwrap();
+        assert_eq!(cleanup.finalized_objects, 1);
+        assert_eq!(heap.bytecode_function_home_object(function), Ok(None));
+        assert_eq!(
+            heap.replace_bytecode_function_home_object(function, None)
+                .unwrap(),
+            HeapCleanup::default()
+        );
+
+        assert_eq!(heap.release_object(function).unwrap().finalized_objects, 1);
+        heap.release_function_bytecode(bytecode).unwrap();
+        heap.release_context(context).unwrap();
+        heap.release_shape(owner_shape).unwrap();
+        heap.release_shape(empty).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn bytecode_home_object_edge_participates_in_cycle_collection() {
+        let mut heap = Heap::new();
+        let empty = empty_shape(&mut heap);
+        let realm_root = leaf(&mut heap, empty);
+        let context = heap
+            .allocate_context(ContextData::new(
+                realm_root, realm_root, realm_root, realm_root, realm_root, realm_root, realm_root,
+                realm_root,
+            ))
+            .unwrap();
+        heap.release_object(realm_root).unwrap();
+
+        let code: Rc<[Instruction]> = Rc::from([]);
+        let bytecode = heap
+            .allocate_function_bytecode(bytecode(&code, context, Vec::new(), Vec::new()))
+            .unwrap();
+        let function = heap
+            .allocate_object(ObjectData::bytecode_function(
+                empty,
+                Vec::new(),
+                bytecode,
+                None,
+                false,
+            ))
+            .unwrap();
+        let home_shape = one_slot_shape(&mut heap);
+        let home_object = heap
+            .allocate_object(ObjectData::ordinary(
+                home_shape,
+                vec![PropertySlot::Data(RawValue::Undefined)],
+            ))
+            .unwrap();
+
+        heap.replace_bytecode_function_home_object(function, Some(home_object))
+            .unwrap();
+        heap.replace_object_slot(
+            home_object,
+            0,
+            PropertySlot::Data(RawValue::Object(function)),
+        )
+        .unwrap();
+        heap.release_object(function).unwrap();
+        heap.release_object(home_object).unwrap();
+
+        let stats = heap.run_gc().unwrap();
+        assert_eq!(stats.candidate_nodes, 2);
+        assert_eq!(stats.cleanup.finalized_objects, 2);
+
+        heap.release_function_bytecode(bytecode).unwrap();
+        heap.release_context(context).unwrap();
+        heap.release_shape(home_shape).unwrap();
+        heap.release_shape(empty).unwrap();
         assert_eq!(heap.counts().live, 0);
     }
 

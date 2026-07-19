@@ -181,6 +181,17 @@ pub(crate) trait VmHost {
     fn create_arguments(&mut self, kind: ArgumentsKind) -> Result<Completion, Error>;
     /// Create a fresh ordinary Object in the executing bytecode's realm.
     fn object(&mut self) -> Result<Completion, Error>;
+    /// Read the active bytecode function's authenticated HomeObject. Detached
+    /// execution has no function object and therefore keeps the default
+    /// rejection.
+    fn home_object(&mut self) -> Result<Value, Error> {
+        Err(Error::internal("VM host has no active HomeObject"))
+    }
+    /// QuickJS `OP_get_super`: return the current prototype of HomeObject,
+    /// represented by JavaScript `null` when no prototype exists.
+    fn get_super(&mut self, _home_object: Value) -> Result<Value, Error> {
+        Err(Error::internal("VM host cannot resolve a super base"))
+    }
     /// Create the null-prototype object which backs one sloppy direct-eval
     /// variable environment.
     fn create_variable_environment(&mut self) -> Result<Completion, Error>;
@@ -352,6 +363,17 @@ pub(crate) trait VmHost {
     /// `base[key]` after the VM has preserved QuickJS's operand order. The
     /// runtime host owns `ToObject`/`ToPropertyKey` and accessor execution.
     fn get_property(&mut self, base: Value, key: Value) -> Result<Completion, Error>;
+    /// Receiver-aware `super[key]` read. `base` is the HomeObject prototype
+    /// frozen before computed-key evaluation; `receiver` is the method's
+    /// actual `this` value.
+    fn get_super_property(
+        &mut self,
+        _receiver: Value,
+        _base: Value,
+        _key: Value,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal("VM host cannot read a super property"))
+    }
     /// QuickJS `OP_in`: the VM has already validated the RHS Object, so the
     /// host can perform observable left-operand ToPropertyKey conversion.
     fn has_property(&mut self, key: Value, object: ObjectRef) -> Result<Completion, Error>;
@@ -375,6 +397,18 @@ pub(crate) trait VmHost {
         value: Value,
         strict: bool,
     ) -> Result<Completion, Error>;
+    /// Receiver-aware super write using QuickJS `JS_PROP_THROW_STRICT`:
+    /// rejected writes throw only when the containing frame is strict.
+    fn set_super_property(
+        &mut self,
+        _receiver: Value,
+        _base: Value,
+        _key: Value,
+        _value: Value,
+        _strict: bool,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal("VM host cannot write a super property"))
+    }
     fn delete_property(
         &mut self,
         base: Value,
@@ -2252,6 +2286,15 @@ impl CallFrame {
                 Instruction::ThrowRedeclaration(index) => {
                     return Err(host.redeclaration_error(*index)?);
                 }
+                Instruction::ThrowDeleteSuper => {
+                    self.pop()?;
+                    self.pop()?;
+                    self.pop()?;
+                    return Err(Error::new(
+                        ErrorKind::Reference,
+                        "unsupported reference to 'super'",
+                    ));
+                }
                 Instruction::Undefined => self.stack.push(Value::Undefined),
                 Instruction::Null => self.stack.push(Value::Null),
                 Instruction::PushFalse => self.stack.push(Value::Bool(false)),
@@ -2259,6 +2302,9 @@ impl CallFrame {
                 Instruction::PushThis => {
                     let value = self.normalized_this(host)?;
                     self.stack.push(value);
+                }
+                Instruction::PushHomeObject => {
+                    self.stack.push(host.home_object()?);
                 }
                 Instruction::PushNewTarget => self.stack.push(self.new_target.clone()),
                 Instruction::GetLocal(index) => {
@@ -2418,6 +2464,34 @@ impl CallFrame {
                     self.stack.push(key);
                     self.stack.push(value);
                 }
+                Instruction::GetSuper => {
+                    let home_object = self.pop()?;
+                    self.stack.push(host.get_super(home_object)?);
+                }
+                Instruction::GetSuperValue | Instruction::GetSuperValueForCall => {
+                    let key = self.pop()?;
+                    let base = self.pop()?;
+                    let receiver = self.pop()?;
+                    let keep_receiver = matches!(instruction, Instruction::GetSuperValueForCall);
+                    let outcome = if keep_receiver {
+                        // Pinned QuickJS rewrites get_super_value to the
+                        // ordinary get_array_el opcode at a call site. The
+                        // getter therefore observes `base`, while the
+                        // preserved receiver is still used by CallMethod.
+                        host.get_property(base, key)?
+                    } else {
+                        host.get_super_property(receiver.clone(), base, key)?
+                    };
+                    match outcome {
+                        Completion::Return(value) => {
+                            if keep_receiver {
+                                self.stack.push(receiver);
+                            }
+                            self.stack.push(value);
+                        }
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                }
                 Instruction::ToPropKey => {
                     let key = self.pop()?;
                     match host.convert_property_key(key)? {
@@ -2440,6 +2514,25 @@ impl CallFrame {
                     self.stack.push(key);
                     self.stack.push(value);
                 }
+                Instruction::Dup3 => {
+                    let len = self.stack.len();
+                    let first = len
+                        .checked_sub(3)
+                        .ok_or_else(|| Error::internal("dup3 needs three stack values"))?;
+                    let values = self.stack[first..].to_vec();
+                    self.stack.extend(values);
+                }
+                Instruction::Insert4 => {
+                    let value = self.pop()?;
+                    let key = self.pop()?;
+                    let base = self.pop()?;
+                    let receiver = self.pop()?;
+                    self.stack.push(value.clone());
+                    self.stack.push(receiver);
+                    self.stack.push(base);
+                    self.stack.push(key);
+                    self.stack.push(value);
+                }
                 Instruction::Perm3 => {
                     let new_value = self.pop()?;
                     let old_value = self.pop()?;
@@ -2458,6 +2551,28 @@ impl CallFrame {
                     self.stack.push(key);
                     self.stack.push(new_value);
                 }
+                Instruction::Perm5 => {
+                    let new_value = self.pop()?;
+                    let old_value = self.pop()?;
+                    let key = self.pop()?;
+                    let base = self.pop()?;
+                    let receiver = self.pop()?;
+                    self.stack.push(old_value);
+                    self.stack.push(receiver);
+                    self.stack.push(base);
+                    self.stack.push(key);
+                    self.stack.push(new_value);
+                }
+                Instruction::Rot4Left => {
+                    let key = self.pop()?;
+                    let base = self.pop()?;
+                    let receiver = self.pop()?;
+                    let value = self.pop()?;
+                    self.stack.push(receiver);
+                    self.stack.push(base);
+                    self.stack.push(key);
+                    self.stack.push(value);
+                }
                 Instruction::PutField(index) => {
                     let (base, value) = self.pop_pair()?;
                     if let Completion::Throw(value) =
@@ -2472,6 +2587,17 @@ impl CallFrame {
                     let base = self.pop()?;
                     if let Completion::Throw(value) =
                         host.set_property(base, key, value, self.strict)?
+                    {
+                        return Ok(Completion::Throw(value));
+                    }
+                }
+                Instruction::PutSuperValue => {
+                    let value = self.pop()?;
+                    let key = self.pop()?;
+                    let base = self.pop()?;
+                    let receiver = self.pop()?;
+                    if let Completion::Throw(value) =
+                        host.set_super_property(receiver, base, key, value, self.strict)?
                     {
                         return Ok(Completion::Throw(value));
                     }

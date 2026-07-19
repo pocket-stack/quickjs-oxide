@@ -21,6 +21,7 @@ impl Runtime {
         let name = self.object_literal_method_name(key, kind)?;
         let function = Value::Object(callable.as_object().clone());
         self.define_object_name(&function, &name)?;
+        self.install_object_literal_home_object(&callable, object)?;
 
         let descriptor = match kind {
             DefineMethodKind::Method => OrdinaryPropertyDescriptor {

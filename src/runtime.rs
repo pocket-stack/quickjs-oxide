@@ -7,6 +7,7 @@
 mod arguments;
 mod bytecode_publish;
 mod for_in;
+mod home_object;
 mod intrinsics;
 mod native_dispatch;
 mod native_stack;

@@ -495,8 +495,18 @@ enum IdentifierReferenceAccess {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MemberReference {
-    Field { key: u32, site: SourceOffset },
-    Computed { site: SourceOffset },
+    Field {
+        key: u32,
+        site: SourceOffset,
+    },
+    Computed {
+        site: SourceOffset,
+    },
+    /// `this, frozen HomeObject prototype, raw/canonical key` reference used
+    /// by QuickJS's get/put-super-value lowering.
+    Super {
+        site: SourceOffset,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -755,6 +765,10 @@ struct FunctionIr {
     /// containing syntactic direct eval. Its identity is explicit rather than
     /// inferred from local allocation order.
     eval_variable_object_local: Option<u16>,
+    /// Direct `super` property syntax in this concise method requires the
+    /// published function object to retain its object literal as HomeObject.
+    /// Arrow/eval inheritance is intentionally a later semantic slice.
+    needs_home_object: bool,
     parameters: Vec<String>,
     locals: Vec<String>,
     scopes: Vec<IrScope>,
@@ -894,6 +908,7 @@ impl FunctionIr {
             this_local: None,
             new_target_local: None,
             eval_variable_object_local: None,
+            needs_home_object: false,
             parameters,
             locals,
             scopes,
@@ -2372,6 +2387,10 @@ impl<'source> Parser<'source> {
                 self.emit_instruction(Instruction::Insert2)?;
                 self.emit_instruction(Instruction::Drop)?;
                 self.emit_instruction_at(Instruction::PutArrayEl, site)?;
+            }
+            MemberReference::Super { site } => {
+                self.emit_instruction(Instruction::Rot4Left)?;
+                self.emit_instruction_at(Instruction::PutSuperValue, site)?;
             }
         }
         Ok(())
@@ -3898,7 +3917,9 @@ impl<'source> Parser<'source> {
         let rhs_start = self.current_ir().ops.len();
         self.parse_assignment()?;
         let site = match target {
-            MemberReference::Field { site, .. } | MemberReference::Computed { site } => site,
+            MemberReference::Field { site, .. }
+            | MemberReference::Computed { site }
+            | MemberReference::Super { site } => site,
         };
         self.inherit_source_marker_at(rhs_start, site)?;
 
@@ -3996,6 +4017,7 @@ impl<'source> Parser<'source> {
         let lvalue_depth = match target {
             MemberReference::Field { .. } => 1,
             MemberReference::Computed { .. } => 2,
+            MemberReference::Super { .. } => 3,
         };
 
         self.advance()?;
@@ -4323,6 +4345,9 @@ impl<'source> Parser<'source> {
                     MemberReference::Computed { site } => {
                         self.emit_instruction_at(Instruction::Delete, site)?;
                     }
+                    MemberReference::Super { site } => {
+                        self.emit_instruction_at(Instruction::ThrowDeleteSuper, site)?;
+                    }
                 }
             } else if self.current_ir().ops.len() == operand_start + 1
                 && matches!(
@@ -4612,6 +4637,10 @@ impl<'source> Parser<'source> {
                 *instruction = Instruction::GetArrayEl2;
                 true
             }
+            IrOp::Bytecode(instruction @ Instruction::GetSuperValue) => {
+                *instruction = Instruction::GetSuperValueForCall;
+                true
+            }
             _ => false,
         };
         if promoted {
@@ -4825,6 +4854,15 @@ impl<'source> Parser<'source> {
                     .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
                 Ok(Some(MemberReference::Computed { site }))
             }
+            IrOp::Bytecode(Instruction::GetSuperValue) => {
+                // Removing a 3 -> 1 getter restores the authenticated method
+                // receiver, frozen super base, and raw property key.
+                function.stack_depth = function
+                    .stack_depth
+                    .checked_add(2)
+                    .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+                Ok(Some(MemberReference::Super { site }))
+            }
             _ => Err(Error::internal(
                 "member Reference marker did not point to a getter",
             )),
@@ -4835,6 +4873,40 @@ impl<'source> Parser<'source> {
     /// assignment. The computed form also retains the already-converted key,
     /// exactly matching QuickJS `get_array_el3`.
     fn promote_tail_member_get_for_compound(&mut self) -> Result<Option<MemberReference>, Error> {
+        let super_site = {
+            let function = self.current_ir();
+            if function.last_member_reference == function.ops.len().checked_sub(1) {
+                function.ops.last().and_then(|last| {
+                    matches!(last.op, IrOp::Bytecode(Instruction::GetSuperValue))
+                        .then_some(last.pc_site)
+                        .flatten()
+                })
+            } else {
+                None
+            }
+        };
+        if let Some(site) = super_site {
+            {
+                let function = self.current_ir_mut();
+                function.last_member_reference = None;
+                let last = function
+                    .ops
+                    .last_mut()
+                    .ok_or_else(|| Error::internal("super Reference operation disappeared"))?;
+                last.op = IrOp::Bytecode(Instruction::ToPropKey);
+                last.pc_site = None;
+                // Replacing 3 -> 1 with 1 -> 1 restores the three Reference
+                // operands before QuickJS's dup3/get_super_value keep form.
+                function.stack_depth = function
+                    .stack_depth
+                    .checked_add(2)
+                    .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+            }
+            self.emit_instruction(Instruction::Dup3)?;
+            self.emit_instruction_at(Instruction::GetSuperValue, site)?;
+            return Ok(Some(MemberReference::Super { site }));
+        }
+
         let function = self.current_ir_mut();
         if function.last_member_reference != function.ops.len().checked_sub(1) {
             return Ok(None);
@@ -4882,6 +4954,10 @@ impl<'source> Parser<'source> {
                 self.emit_instruction(Instruction::Insert3)?;
                 self.emit_instruction(Instruction::PutArrayEl)?;
             }
+            MemberReference::Super { .. } => {
+                self.emit_instruction(Instruction::Insert4)?;
+                self.emit_instruction(Instruction::PutSuperValue)?;
+            }
         }
         Ok(())
     }
@@ -4897,6 +4973,10 @@ impl<'source> Parser<'source> {
             MemberReference::Computed { .. } => {
                 self.emit_instruction(Instruction::Perm4)?;
                 self.emit_instruction(Instruction::PutArrayEl)?;
+            }
+            MemberReference::Super { .. } => {
+                self.emit_instruction(Instruction::Perm5)?;
+                self.emit_instruction(Instruction::PutSuperValue)?;
             }
         }
         Ok(())
@@ -4987,6 +5067,82 @@ impl<'source> Parser<'source> {
             Instruction::Construct(argument_count),
             source_offset(construct_span)?,
         )?;
+        self.anonymous_function_definition = None;
+        Ok(())
+    }
+
+    /// Parse the direct ObjectLiteral-method SuperProperty subset with the
+    /// same operand order as QuickJS: `this` and the current HomeObject
+    /// prototype are fixed before a computed key expression begins.
+    fn parse_super_property(&mut self, super_span: Span) -> Result<(), Error> {
+        self.advance()?;
+        if self.is_punctuator(Punctuator::LeftParen) {
+            return Err(Error::syntax(
+                "super() is only valid in a derived class constructor",
+                source_span(super_span),
+            ));
+        }
+        if !matches!(
+            self.current().kind,
+            TokenKind::Punctuator(Punctuator::Dot | Punctuator::LeftBracket)
+        ) {
+            return Err(Error::syntax(
+                "invalid use of 'super'",
+                source_span(super_span),
+            ));
+        }
+
+        if !matches!(self.current_ir().kind, FunctionKind::Method) {
+            let mut function_id = self.current_function;
+            let inherited_from_method = loop {
+                let function = &self.functions[function_id];
+                if !matches!(function.kind, FunctionKind::Arrow) {
+                    break matches!(function.kind, FunctionKind::Method);
+                }
+                let Some(parent) = function.parent else {
+                    break false;
+                };
+                function_id = parent.function;
+            };
+            if inherited_from_method {
+                return Err(Error::unsupported(
+                    "super property inheritance through arrow functions is not implemented yet",
+                    source_span(super_span),
+                ));
+            }
+            return Err(Error::syntax(
+                "'super' is only valid in a method",
+                source_span(super_span),
+            ));
+        }
+
+        self.current_ir_mut().needs_home_object = true;
+        self.emit_instruction(Instruction::PushThis)?;
+        self.emit_instruction(Instruction::PushHomeObject)?;
+        self.emit_instruction(Instruction::GetSuper)?;
+
+        let member_span = self.current().span;
+        if self.is_punctuator(Punctuator::Dot) {
+            self.advance()?;
+            let token = self.current().clone();
+            let name = match token.kind {
+                TokenKind::Identifier(identifier) => identifier.value,
+                TokenKind::Keyword(keyword) => keyword.as_str().to_owned(),
+                _ => return Err(self.syntax_here("expecting field name")),
+            };
+            self.advance()?;
+            let key = self.add_constant(IrConstant::Primitive(Value::String(
+                JsString::try_from_utf8(&name)?,
+            )))?;
+            self.emit(IrOp::PushConstant(key))?;
+        } else {
+            self.advance_expression_start()?;
+            self.parse_expression()?;
+            self.expect_punctuator(Punctuator::RightBracket)?;
+        }
+        let operation =
+            self.emit_instruction_at(Instruction::GetSuperValue, source_offset(member_span)?)?;
+        self.current_ir_mut().last_member_reference = Some(operation);
         self.anonymous_function_definition = None;
         Ok(())
     }
@@ -5092,6 +5248,9 @@ impl<'source> Parser<'source> {
             }
             TokenKind::Keyword(Keyword::New) => {
                 self.parse_new_expression()?;
+            }
+            TokenKind::Keyword(Keyword::Super) => {
+                self.parse_super_property(token.span)?;
             }
             TokenKind::Keyword(keyword)
                 if self.current_ir().strict && strict_reserved_identifier(keyword) =>
@@ -10731,6 +10890,7 @@ fn lower_unlinked_tree(
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?,
             function_name_local: function.function_name_local,
             eval_variable_object_local: function.eval_variable_object_local,
+            needs_home_object: function.needs_home_object,
             closure_count: u16::try_from(function.closure_variables.len())
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"))?,
             max_stack,

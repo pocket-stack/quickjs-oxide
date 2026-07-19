@@ -983,6 +983,19 @@ fn verify_unlinked_tree_with_root(
                 "eval variable-object and function-name locals overlap",
             )));
         }
+        // GetSuper is also used by derived-constructor `super()`, while the
+        // get/put-value operations consume only ordinary stack values. The
+        // hidden capability authenticated by this metadata is specifically
+        // reading the active function object's HomeObject.
+        let reads_home_object = function
+            .code()
+            .iter()
+            .any(|instruction| matches!(instruction, crate::bytecode::Instruction::PushHomeObject));
+        if reads_home_object && !function.metadata().needs_home_object {
+            return Err(RuntimeError::Engine(Error::internal(
+                "super bytecode has no authenticated HomeObject metadata",
+            )));
+        }
         if function.metadata().eval_variable_object_local.is_some()
             && (is_root
                 || function.metadata().strict

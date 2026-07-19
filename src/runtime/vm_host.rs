@@ -11,6 +11,7 @@ use crate::heap::{EvalBinding, EvalBindingSource, EvalVariableEnvironment};
 use crate::vm::{CallInput, DirectEvalInvocation, Vm, VmHost};
 
 mod dynamic_environment;
+mod super_property;
 
 /// Validated caller state retained while primitive-String eval is compiled.
 ///
@@ -1784,6 +1785,14 @@ impl VmHost for RuntimeVmHost {
             .map_err(runtime_error_to_vm_error)
     }
 
+    fn home_object(&mut self) -> Result<Value, Error> {
+        self.active_home_object()
+    }
+
+    fn get_super(&mut self, home_object: Value) -> Result<Value, Error> {
+        self.resolve_super_base(home_object)
+    }
+
     fn create_variable_environment(&mut self) -> Result<Completion, Error> {
         if self.eval_variable_object_local.is_none() {
             return Err(Error::internal(
@@ -2376,6 +2385,15 @@ impl VmHost for RuntimeVmHost {
         self.get_property_with_key(base, &key, false)
     }
 
+    fn get_super_property(
+        &mut self,
+        receiver: Value,
+        base: Value,
+        key: Value,
+    ) -> Result<Completion, Error> {
+        self.read_super_property(receiver, base, key)
+    }
+
     fn has_property(&mut self, key: Value, object: ObjectRef) -> Result<Completion, Error> {
         // QuickJS `js_operator_in` validates the RHS object before
         // JS_ValueToAtom can execute arbitrary key-conversion code.
@@ -2463,6 +2481,17 @@ impl VmHost for RuntimeVmHost {
             VmPropertyKeyConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
         self.set_property_with_key(base, &key, value, strict)
+    }
+
+    fn set_super_property(
+        &mut self,
+        receiver: Value,
+        base: Value,
+        key: Value,
+        value: Value,
+        strict: bool,
+    ) -> Result<Completion, Error> {
+        self.write_super_property(receiver, base, key, value, strict)
     }
 
     fn delete_property(

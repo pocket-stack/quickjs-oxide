@@ -97,11 +97,20 @@ pub enum Instruction {
     /// imported lexical scope. The verified String constant preserves the
     /// conflicting binding identity even though QuickJS's message is generic.
     ThrowRedeclaration(u32),
+    /// QuickJS `JS_THROW_ERROR_DELETE_SUPER`. The three authenticated
+    /// SuperProperty Reference operands are consumed conceptually and the
+    /// terminal throw occupies the expression's one-value stack shape.
+    ThrowDeleteSuper,
     Undefined,
     Null,
     PushFalse,
     PushTrue,
     PushThis,
+    /// QuickJS's authenticated `<home_object>` pseudo binding. Only bytecode
+    /// whose immutable metadata declares `needs_home_object` may execute this
+    /// operation; the runtime reads it from the active function object rather
+    /// than from a JavaScript-visible operand.
+    PushHomeObject,
     PushNewTarget,
     /// QuickJS `OP_special_object` for an ordinary function's lazily selected
     /// arguments binding. Runtime creation still occurs in the entry prologue,
@@ -240,6 +249,19 @@ pub enum Instruction {
     /// QuickJS `OP_get_array_el3`: `base raw-key -> base converted-key value`
     /// for compound/logical assignment without repeated key conversion.
     GetArrayEl3,
+    /// QuickJS `OP_get_super`: replace a method HomeObject with its current
+    /// prototype. A null prototype is represented by JavaScript `null` and is
+    /// diagnosed only by the following property operation.
+    GetSuper,
+    /// QuickJS `OP_get_super_value`: `receiver base key -> value`. The base is
+    /// the prototype captured before a computed key is evaluated, while
+    /// accessors observe the method's actual `this` as their receiver.
+    GetSuperValue,
+    /// QuickJS's call-site rewrite of `OP_get_super_value` to
+    /// `OP_get_array_el`: `receiver base key -> receiver value`. This
+    /// deliberately gives a getter `base` as its receiver before the returned
+    /// callable is invoked with the preserved method receiver.
+    GetSuperValueForCall,
     /// QuickJS `OP_array_from`: consume `element_count` dense literal values
     /// and replace them with a fresh Array in the bytecode's realm.
     ArrayFrom(u16),
@@ -253,15 +275,27 @@ pub enum Instruction {
     Insert2,
     /// QuickJS `OP_insert3`: `base key value -> value base key value`.
     Insert3,
+    /// QuickJS `OP_dup3`: `a b c -> a b c a b c`.
+    Dup3,
+    /// QuickJS `OP_insert4`: `this base key value -> value this base key value`.
+    Insert4,
     /// QuickJS `OP_perm3`: `base old new -> old base new`.
     Perm3,
     /// QuickJS `OP_perm4`: `base key old new -> old base key new`.
     Perm4,
+    /// QuickJS `OP_perm5`: `this base key old new -> old this base key new`.
+    Perm5,
+    /// QuickJS `OP_rot4l`: `value this base key -> this base key value`.
+    Rot4Left,
     /// QuickJS `OP_put_field`: assign one constant string-keyed property.
     PutField(u32),
     /// QuickJS `OP_put_array_el`: assign a computed property, converting the
     /// still-raw key only after the right-hand side has been evaluated.
     PutArrayEl,
+    /// QuickJS `OP_put_super_value`: assign through `base` with `receiver` as
+    /// the actual receiver. `JS_PROP_THROW_STRICT` rejects failed writes only
+    /// when the containing method is strict.
+    PutSuperValue,
     /// QuickJS `OP_define_field`: define one C_W_E data property while
     /// preserving the object below it (`object value -> object`). Array
     /// literals use this after their initial dense prefix.
@@ -433,6 +467,7 @@ impl Instruction {
             | Self::PushFalse
             | Self::PushTrue
             | Self::PushThis
+            | Self::PushHomeObject
             | Self::PushNewTarget
             | Self::Arguments(_)
             | Self::VariableEnvironment
@@ -459,15 +494,23 @@ impl Instruction {
             Self::GetArrayEl => (2, 1),
             Self::GetArrayEl2 => (2, 2),
             Self::GetArrayEl3 => (2, 3),
+            Self::GetSuper => (1, 1),
+            Self::GetSuperValue => (3, 1),
+            Self::GetSuperValueForCall => (3, 2),
             Self::ArrayFrom(element_count) => (*element_count as usize, 1),
             Self::Object => (0, 1),
             Self::ToPropKey => (1, 1),
             Self::Insert2 => (2, 3),
             Self::Insert3 => (3, 4),
+            Self::Dup3 => (3, 6),
+            Self::Insert4 => (4, 5),
             Self::Perm3 => (3, 3),
             Self::Perm4 => (4, 4),
+            Self::Perm5 => (5, 5),
+            Self::Rot4Left => (4, 4),
             Self::PutField(_) => (2, 0),
             Self::PutArrayEl => (3, 0),
+            Self::PutSuperValue => (4, 0),
             Self::DefineField(_) | Self::DefineMethod { .. } => (2, 1),
             Self::DefineMethodComputed { .. } => (3, 1),
             Self::DefineArrayEl | Self::Append => (3, 2),
@@ -499,6 +542,7 @@ impl Instruction {
             | Self::Return
             | Self::Throw => (1, 0),
             Self::PutRefValue(_) => (2, 0),
+            Self::ThrowDeleteSuper => (3, 1),
             Self::Nip => (2, 1),
             // The verifier replaces this nominal value-preserving effect with
             // the active handler's recorded entry depth.
@@ -978,7 +1022,9 @@ pub(crate) fn verify_parts(
             // frame stack. A postfix update can legitimately retain its old
             // value below the attempted write when immutable-binding
             // resolution replaces that write with this instruction.
-            Instruction::ThrowReadOnly(_) | Instruction::ThrowRedeclaration(_) => {}
+            Instruction::ThrowReadOnly(_)
+            | Instruction::ThrowRedeclaration(_)
+            | Instruction::ThrowDeleteSuper => {}
             Instruction::Goto(target) => {
                 enqueue_target(
                     &mut worklist,
