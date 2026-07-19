@@ -7524,12 +7524,25 @@ fn object_literal_super_references_authenticate_home_object_and_quickjs_stack_fo
             .all(|method| method.metadata().needs_home_object)
     );
     assert!(methods.iter().all(|method| {
+        method.code().windows(4).any(|window| {
+            matches!(
+                window,
+                [
+                    Instruction::PushHomeObject,
+                    Instruction::PutLocal(_),
+                    Instruction::PushThis,
+                    Instruction::PutLocal(_),
+                ]
+            )
+        })
+    }));
+    assert!(methods.iter().all(|method| {
         method.code().windows(3).any(|window| {
             matches!(
                 window,
                 [
-                    Instruction::PushThis,
-                    Instruction::PushHomeObject,
+                    Instruction::GetLocal(_),
+                    Instruction::GetLocal(_),
                     Instruction::GetSuper
                 ]
             )
@@ -7571,6 +7584,136 @@ fn object_literal_super_references_authenticate_home_object_and_quickjs_stack_fo
             .windows(2)
             .any(|window| matches!(window, [Instruction::Rot4Left, Instruction::PutSuperValue]))
     );
+}
+
+#[test]
+fn object_literal_arrow_super_relays_lexical_this_and_home_object() {
+    let script = compile_unlinked_script(
+        "({method(){return()=>()=>{super['value'];super.call();super.value=1;super.value+=1;super.value||=2;++super.value;super.value++;delete super.value}}})",
+    )
+    .expect("nested arrows inherit ObjectLiteral super properties");
+    let method = script
+        .constants()
+        .iter()
+        .find_map(|constant| constant.as_child())
+        .expect("script lost its object method");
+    let relay = method
+        .constants()
+        .iter()
+        .find_map(|constant| constant.as_child())
+        .expect("method lost its first arrow");
+    let inner = relay
+        .constants()
+        .iter()
+        .find_map(|constant| constant.as_child())
+        .expect("first arrow lost its nested arrow");
+
+    assert!(method.metadata().needs_home_object);
+    assert!(!relay.metadata().needs_home_object);
+    assert!(!inner.metadata().needs_home_object);
+    assert_eq!(method.metadata().local_count, 2);
+    assert_eq!(relay.metadata().local_count, 0);
+    assert_eq!(inner.metadata().local_count, 0);
+
+    let [
+        Instruction::PushHomeObject,
+        Instruction::PutLocal(home_object),
+        Instruction::PushThis,
+        Instruction::PutLocal(this_value),
+        ..,
+    ] = method.code()
+    else {
+        panic!("method pseudo-binding prologue did not match QuickJS order");
+    };
+    assert_ne!(home_object, this_value);
+    assert_eq!(relay.closure_variables().len(), 2);
+    assert!(relay.closure_variables().iter().any(|descriptor| {
+        descriptor.source == ClosureSource::ParentLocal(*this_value)
+            && descriptor.kind == ClosureVariableKind::Normal
+            && descriptor.name == ClosureVariableName::None
+    }));
+    assert!(relay.closure_variables().iter().any(|descriptor| {
+        descriptor.source == ClosureSource::ParentLocal(*home_object)
+            && descriptor.kind == ClosureVariableKind::Normal
+            && descriptor.name == ClosureVariableName::None
+    }));
+    assert_eq!(inner.closure_variables().len(), 2);
+    assert!(inner.closure_variables().iter().any(|descriptor| {
+        descriptor.source == ClosureSource::ParentClosure(0)
+            && descriptor.kind == ClosureVariableKind::Normal
+            && descriptor.name == ClosureVariableName::None
+    }));
+    assert!(inner.closure_variables().iter().any(|descriptor| {
+        descriptor.source == ClosureSource::ParentClosure(1)
+            && descriptor.kind == ClosureVariableKind::Normal
+            && descriptor.name == ClosureVariableName::None
+    }));
+    assert!(
+        inner
+            .code()
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::GetSuperValueForCall))
+    );
+    assert!(
+        inner
+            .code()
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::PutSuperValue))
+    );
+    assert!(
+        inner
+            .code()
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::ThrowDeleteSuper))
+    );
+
+    assert_eq!(
+        evaluate_in_context(
+            r#"
+                (function () {
+                    var log = "";
+                    var proto = {
+                        method(addend) { log += "c"; return this.count + addend; },
+                        get value() { log += "g"; return this.count; },
+                        set value(input) { log += "s"; this.count = input; }
+                    };
+                    var home = {
+                        __proto__: proto,
+                        count: 38,
+                        make(key) {
+                            return () => () => {
+                                var read = super[key];
+                                var call = super.method(2);
+                                var assigned = super.value = 39;
+                                var compound = super.value += 1;
+                                var logical = super.value ||= 99;
+                                var post = super.value++;
+                                var pre = ++super.value;
+                                var deleted;
+                                try { delete super.value; }
+                                catch (error) { deleted = error.name; }
+                                return [
+                                    read, call, assigned, compound, logical,
+                                    post, pre, this.count, deleted, log
+                                ].join("|");
+                            };
+                        }
+                    };
+                    var relay = home.make("value").call({ count: 100 });
+                    return relay.call({ count: 200 });
+                })()
+            "#,
+        ),
+        Value::String(JsString::from_static(
+            "38|40|39|40|40|40|42|42|ReferenceError|gcsgsggsgs"
+        ))
+    );
+
+    let error =
+        compile_unlinked_script("({method(){return()=>function ordinary(){return super.value}}})")
+            .expect_err("ordinary functions must truncate inherited super capability");
+    assert_eq!(error.kind(), ErrorKind::Syntax);
+    assert_eq!(error.message(), "'super' is only valid in a method");
 }
 
 #[test]

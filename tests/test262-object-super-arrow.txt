@@ -1,0 +1,4 @@
+test/language/eval-code/direct/super-call-arrow.js
+test/language/eval-code/direct/super-prop-arrow.js
+test/language/expressions/super/prop-dot-obj-val-from-arrow.js
+test/language/expressions/super/prop-expr-obj-val-from-arrow.js

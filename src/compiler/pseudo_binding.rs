@@ -8,15 +8,18 @@ use crate::error::{Error, ErrorKind};
 use crate::heap::EvalKind;
 use crate::lexer::Span;
 
-// QuickJS `JS_ATOM_this` and `JS_ATOM_new_target` pseudo variables. Arrow
-// functions never own these bindings: the resolver lazily creates the local
-// in the nearest non-arrow frame and relays it through ordinary closure slots.
-// Source text cannot spell either identity as an IdentifierName.
+// QuickJS `JS_ATOM_this`, `JS_ATOM_new_target`, and `JS_ATOM_home_object`
+// pseudo variables. Arrow functions never own these bindings: the resolver
+// lazily creates the local in the nearest authenticated owner and relays it
+// through ordinary closure slots. Source text cannot spell any identity as an
+// IdentifierName.
 pub(super) const THIS_LOCAL_NAME: &str = "<this>";
 pub(super) const NEW_TARGET_LOCAL_NAME: &str = "<new.target>";
+pub(super) const HOME_OBJECT_LOCAL_NAME: &str = "<home_object>";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PseudoBinding {
+    HomeObject,
     This,
     NewTarget,
 }
@@ -24,6 +27,7 @@ pub(super) enum PseudoBinding {
 impl PseudoBinding {
     pub(super) const fn name(self) -> &'static str {
         match self {
+            Self::HomeObject => HOME_OBJECT_LOCAL_NAME,
             Self::This => THIS_LOCAL_NAME,
             Self::NewTarget => NEW_TARGET_LOCAL_NAME,
         }
@@ -31,6 +35,7 @@ impl PseudoBinding {
 
     pub(super) fn from_name(name: &str) -> Option<Self> {
         match name {
+            HOME_OBJECT_LOCAL_NAME => Some(Self::HomeObject),
             THIS_LOCAL_NAME => Some(Self::This),
             NEW_TARGET_LOCAL_NAME => Some(Self::NewTarget),
             _ => None,
@@ -138,14 +143,26 @@ fn ensure_pseudo_binding_path(
     }
 }
 
-/// Initialize QuickJS's lazily selected `new.target` and `this` pseudo locals
-/// before authored body code can publish or invoke descendant closures.
+/// Initialize QuickJS's lazily selected `home_object`, `new.target`, and
+/// `this` pseudo locals before authored body code can publish or invoke
+/// descendant closures. The order mirrors QuickJS `resolve_labels`.
 pub(super) fn install_pseudo_binding_prologues(tree: &mut FunctionTree) -> Result<(), Error> {
     for function in &mut tree.functions {
         let mut prefix = Vec::with_capacity(
-            usize::from(function.new_target_local.is_some()) * 2
+            usize::from(function.home_object_local.is_some()) * 2
+                + usize::from(function.new_target_local.is_some()) * 2
                 + usize::from(function.this_local.is_some()) * 2,
         );
+        if let Some(local) = function.home_object_local {
+            prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::PushHomeObject),
+                pc_site: None,
+            });
+            prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::PutLocal(local)),
+                pc_site: None,
+            });
+        }
         if let Some(local) = function.new_target_local {
             prefix.push(SpannedIrOp {
                 op: IrOp::Bytecode(Instruction::PushNewTarget),
@@ -178,6 +195,7 @@ pub(super) const fn function_owns_pseudo_binding(
     pseudo: PseudoBinding,
 ) -> bool {
     match (kind, pseudo) {
+        (FunctionKind::Method, PseudoBinding::HomeObject) => true,
         (
             FunctionKind::Script
             | FunctionKind::Ordinary
@@ -186,6 +204,13 @@ pub(super) const fn function_owns_pseudo_binding(
             PseudoBinding::This,
         ) => true,
         (FunctionKind::Ordinary | FunctionKind::Method, PseudoBinding::NewTarget) => true,
+        (
+            FunctionKind::Script
+            | FunctionKind::Ordinary
+            | FunctionKind::Arrow
+            | FunctionKind::Eval(_),
+            PseudoBinding::HomeObject,
+        ) => false,
         (
             FunctionKind::Arrow
             | FunctionKind::Eval(EvalKind::Direct)
@@ -235,6 +260,10 @@ pub(super) fn find_or_create_own_pseudo_binding(
     let index = u16::try_from(function.locals.len())
         .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
     let slot = match pseudo {
+        PseudoBinding::HomeObject => {
+            function.needs_home_object = true;
+            &mut function.home_object_local
+        }
         PseudoBinding::This => &mut function.this_local,
         PseudoBinding::NewTarget => &mut function.new_target_local,
     };

@@ -45,9 +45,9 @@ mod object_literal;
 mod pseudo_binding;
 
 use pseudo_binding::{
-    NEW_TARGET_LOCAL_NAME, PseudoBinding, THIS_LOCAL_NAME, ensure_eval_visible_pseudo_bindings,
-    find_or_create_own_pseudo_binding, function_owns_pseudo_binding,
-    install_pseudo_binding_prologues,
+    HOME_OBJECT_LOCAL_NAME, NEW_TARGET_LOCAL_NAME, PseudoBinding, THIS_LOCAL_NAME,
+    ensure_eval_visible_pseudo_bindings, find_or_create_own_pseudo_binding,
+    function_owns_pseudo_binding, install_pseudo_binding_prologues,
 };
 
 /// Default filename used by the Rust convenience compile/eval APIs.
@@ -758,16 +758,18 @@ struct FunctionIr {
     /// implicit binding. An explicit `arguments` parameter suppresses it.
     arguments_local: Option<u16>,
     /// Lazily materialized QuickJS pseudo variables captured by descendant
-    /// arrows or exposed to direct eval. Arrow frames never own these locals.
+    /// arrows or exposed to direct eval. Arrow frames never own these locals;
+    /// only concise methods can own the HomeObject cell.
+    home_object_local: Option<u16>,
     this_local: Option<u16>,
     new_target_local: Option<u16>,
     /// Hidden null-prototype variable object for sloppy authored function code
     /// containing syntactic direct eval. Its identity is explicit rather than
     /// inferred from local allocation order.
     eval_variable_object_local: Option<u16>,
-    /// Direct `super` property syntax in this concise method requires the
-    /// published function object to retain its object literal as HomeObject.
-    /// Arrow/eval inheritance is intentionally a later semantic slice.
+    /// A lazily allocated HomeObject pseudo local requires the published
+    /// method function to retain its object literal as HomeObject. Descendant
+    /// arrows relay the local without carrying this metadata themselves.
     needs_home_object: bool,
     parameters: Vec<String>,
     locals: Vec<String>,
@@ -905,6 +907,7 @@ impl FunctionIr {
             private_name_binding,
             function_name_local: None,
             arguments_local: None,
+            home_object_local: None,
             this_local: None,
             new_target_local: None,
             eval_variable_object_local: None,
@@ -5071,9 +5074,10 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    /// Parse the direct ObjectLiteral-method SuperProperty subset with the
-    /// same operand order as QuickJS: `this` and the current HomeObject
-    /// prototype are fixed before a computed key expression begins.
+    /// Parse the ObjectLiteral-method SuperProperty subset with the same
+    /// operand order as QuickJS: lexical `this` and HomeObject are fixed
+    /// before a computed key expression begins. Arrows relay both authenticated
+    /// pseudo bindings through ordinary closure slots.
     fn parse_super_property(&mut self, super_span: Span) -> Result<(), Error> {
         self.advance()?;
         if self.is_punctuator(Punctuator::LeftParen) {
@@ -5104,21 +5108,24 @@ impl<'source> Parser<'source> {
                 };
                 function_id = parent.function;
             };
-            if inherited_from_method {
-                return Err(Error::unsupported(
-                    "super property inheritance through arrow functions is not implemented yet",
+            if !inherited_from_method {
+                return Err(Error::syntax(
+                    "'super' is only valid in a method",
                     source_span(super_span),
                 ));
             }
-            return Err(Error::syntax(
-                "'super' is only valid in a method",
-                source_span(super_span),
-            ));
         }
 
-        self.current_ir_mut().needs_home_object = true;
-        self.emit_instruction(Instruction::PushThis)?;
-        self.emit_instruction(Instruction::PushHomeObject)?;
+        self.emit_identifier(
+            THIS_LOCAL_NAME.to_owned(),
+            super_span,
+            IdentifierAccess::Get,
+        )?;
+        self.emit_identifier(
+            HOME_OBJECT_LOCAL_NAME.to_owned(),
+            super_span,
+            IdentifierAccess::Get,
+        )?;
         self.emit_instruction(Instruction::GetSuper)?;
 
         let member_span = self.current().span;
@@ -7156,6 +7163,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             }
         }
         for (pseudo, local) in [
+            (PseudoBinding::HomeObject, function.home_object_local),
             (PseudoBinding::This, function.this_local),
             (PseudoBinding::NewTarget, function.new_target_local),
         ] {
@@ -7185,6 +7193,13 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                             matches!(
                                 (&window[0].op, &window[1].op, pseudo),
                                 (
+                                    IrOp::Bytecode(Instruction::PushHomeObject),
+                                    IrOp::Bytecode(Instruction::PutLocal(target)),
+                                    PseudoBinding::HomeObject,
+                                ) if *target == index
+                            ) || matches!(
+                                (&window[0].op, &window[1].op, pseudo),
+                                (
                                     IrOp::Bytecode(Instruction::PushThis),
                                     IrOp::Bytecode(Instruction::PutLocal(target)),
                                     PseudoBinding::This,
@@ -7212,6 +7227,16 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                     ));
                 }
             }
+        }
+        if function.home_object_local.is_some() && !function.needs_home_object {
+            return Err(Error::internal(
+                "HomeObject pseudo local lacks publication metadata",
+            ));
+        }
+        if function.needs_home_object && !matches!(function.kind, FunctionKind::Method) {
+            return Err(Error::internal(
+                "non-method function retained HomeObject metadata",
+            ));
         }
         let eval_variable_object_bindings = function
             .bindings
