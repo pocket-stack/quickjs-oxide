@@ -29,6 +29,10 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "let value;typeof value+'|'+(value===undefined)",
     ),
     (
+        "Program lexical flat array bindings stay off the global object",
+        "let [first=1,...rest]=[];const [third]=[3];first+'|'+rest.length+'|'+third+'|'+typeof globalThis.first+'|'+typeof globalThis.rest+'|'+typeof globalThis.third",
+    ),
+    (
         "declaration preserves an earlier script completion",
         "9;let value=1",
     ),
@@ -72,9 +76,9 @@ struct BoundaryCase {
 }
 
 const BOUNDARY_CASES: &[BoundaryCase] = &[BoundaryCase {
-    description: "Program lexical destructuring",
-    source: "let [value]=[1];value",
-    rust_message: "lexical destructuring bindings are not implemented yet",
+    description: "Program lexical nested array destructuring",
+    source: "let [[value]]=[[1]];value",
+    rust_message: "nested destructuring bindings are not implemented yet",
 }];
 
 #[test]

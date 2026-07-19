@@ -46,6 +46,10 @@ const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
     "a1a347d2d74c946a50f1e26fca6c1756c0e9948f087de3aed2339b3a4c7d6677";
+const TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256: &str =
+    "8232e2c11e908f7cbf5a9e0f34fbd5223a9551b49ae64647f2a72b2314bcaf84";
+const TEST262_ARRAY_BINDING_FLAT_MANIFEST_SHA256: &str =
+    "db17670a1f7715a325a07087b766f6e64cf2bb24cec727278db05db3f79ee679";
 const TEST262_MAP_PROFILE_SHA256: &str =
     "16ab6bfe18540aae398c847905f492491e81500045b45a6bfb21f447fd537ea2";
 const TEST262_MAP_MANIFEST_SHA256: &str =
@@ -554,6 +558,7 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OxideProfileKind {
     Global,
+    ArrayBindingFlat,
     Map,
     Set,
     SymbolProtocols,
@@ -571,6 +576,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("compat/test262-oxide.conf"),
             OxideProfileKind::Global,
+        ),
+        (
+            root.join("tests/test262-array-binding-flat.conf"),
+            OxideProfileKind::ArrayBindingFlat,
         ),
         (root.join("tests/test262-map.conf"), OxideProfileKind::Map),
         (root.join("tests/test262-set.conf"), OxideProfileKind::Set),
@@ -591,7 +600,7 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         }
     }
     Err(format!(
-        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-array-binding-flat.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
         path.display()
     ))
 }
@@ -605,6 +614,47 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 "global quickjs-oxide Test262 capability profile",
             )?;
             Ok(TEST262_OXIDE_PROFILE_SHA256)
+        }
+        OxideProfileKind::ArrayBindingFlat => {
+            verify_sha256(
+                &options.oxide_profile,
+                TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256,
+                "scoped flat array binding Test262 capability profile",
+            )?;
+            if options.all || !options.tests.is_empty() {
+                return Err(
+                    "the scoped flat array binding Test262 capability profile requires its pinned manifest"
+                        .to_owned(),
+                );
+            }
+            let manifest = options.manifest.as_ref().ok_or_else(|| {
+                "the scoped flat array binding Test262 capability profile requires its pinned manifest"
+                    .to_owned()
+            })?;
+            let actual = fs::canonicalize(manifest).map_err(|error| {
+                format!(
+                    "resolve scoped flat array binding manifest {}: {error}",
+                    manifest.display()
+                )
+            })?;
+            let expected = fs::canonicalize(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/test262-array-binding-flat.txt"),
+            )
+            .map_err(|error| {
+                format!("resolve pinned scoped flat array binding manifest: {error}")
+            })?;
+            if actual != expected {
+                return Err(format!(
+                    "the scoped flat array binding Test262 capability profile requires tests/test262-array-binding-flat.txt, found {}",
+                    manifest.display()
+                ));
+            }
+            verify_sha256(
+                manifest,
+                TEST262_ARRAY_BINDING_FLAT_MANIFEST_SHA256,
+                "scoped flat array binding Test262 manifest",
+            )?;
+            Ok(TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256)
         }
         OxideProfileKind::Map => {
             verify_sha256(
@@ -990,7 +1040,8 @@ mod cli_tests {
     use std::path::Path;
 
     use super::{
-        Invocation, OxideProfileKind, TEST262_MAP_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
+        Invocation, OxideProfileKind, TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256,
+        TEST262_MAP_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
         TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, default_worker_count, identify_oxide_profile,
         parse_args, verify_oxide_profile,
     };
@@ -1078,10 +1129,14 @@ mod cli_tests {
     }
 
     #[test]
-    fn only_pinned_global_map_set_and_symbol_protocol_profiles_are_accepted() {
+    fn only_pinned_global_and_scoped_profiles_are_accepted() {
         assert_eq!(
             identify_oxide_profile(Path::new("compat/test262-oxide.conf")).unwrap(),
             OxideProfileKind::Global
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-array-binding-flat.conf")).unwrap(),
+            OxideProfileKind::ArrayBindingFlat
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-map.conf")).unwrap(),
@@ -1098,6 +1153,53 @@ mod cli_tests {
 
         let error = identify_oxide_profile(Path::new("Cargo.toml")).unwrap_err();
         assert!(error.contains("unsupported Test262 capability profile"));
+    }
+
+    #[test]
+    fn scoped_flat_array_binding_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-array-binding-flat.conf",
+            "--manifest",
+            "tests/test262-array-binding-flat.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/language/statements/variable/dstr/ary-name-iter-val.js",
+            ],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-array-binding-flat.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
     }
 
     #[test]

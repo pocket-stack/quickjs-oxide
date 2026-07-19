@@ -6,7 +6,7 @@ fn context_can_preserve_an_implementation_frontier_without_a_js_exception() {
     let mut context = runtime.new_context();
     let options = CompileOptions::new("unsupported.js");
     let RuntimeError::Engine(error) = context
-        .compile_with_options_preserving_unsupported_diagnostics("let [value] = [];", &options)
+        .compile_with_options_preserving_unsupported_diagnostics("let [[value]] = [[1]];", &options)
         .unwrap_err()
     else {
         panic!("diagnostic compilation did not retain its engine error");
@@ -14,7 +14,7 @@ fn context_can_preserve_an_implementation_frontier_without_a_js_exception() {
     assert_eq!(error.kind(), ErrorKind::Unsupported);
     assert_eq!(
         error.message(),
-        "lexical destructuring bindings are not implemented yet"
+        "nested destructuring bindings are not implemented yet"
     );
     assert!(context.take_exception().unwrap().is_none());
 }
@@ -24,7 +24,7 @@ fn default_context_compilation_keeps_the_temporary_js_compatibility_boundary() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     assert_eq!(
-        context.compile("let [value] = [];").unwrap_err(),
+        context.compile("let [[value]] = [[1]];").unwrap_err(),
         RuntimeError::Exception
     );
     assert!(context.take_exception().unwrap().is_some());

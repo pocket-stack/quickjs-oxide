@@ -200,9 +200,9 @@ struct BoundaryCase {
 }
 
 const BOUNDARY_CASES: &[BoundaryCase] = &[BoundaryCase {
-    description: "classic for lexical destructuring",
-    source: "(function(){for(let [value]=[1];false;){}return 1;})()",
-    rust_message: "lexical destructuring bindings are not implemented yet",
+    description: "classic for lexical nested array destructuring",
+    source: "(function(){for(let [[value]]=[[1]];false;){}return 1;})()",
+    rust_message: "nested destructuring bindings are not implemented yet",
 }];
 
 #[test]

@@ -24,6 +24,10 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "var named=function(){};named.name",
     ),
     (
+        "Program var flat array binding publishes global cells",
+        "var [first,,third=3,...rest]=[1,2,undefined,4,5];first+'|'+third+'|'+rest.join(',')+'|'+globalThis.first+'|'+globalThis.third+'|'+globalThis.rest.length",
+    ),
+    (
         "Program var preserves an earlier script completion",
         "9;var completed=1",
     ),
@@ -73,9 +77,9 @@ struct BoundaryCase {
 }
 
 const BOUNDARY_CASES: &[BoundaryCase] = &[BoundaryCase {
-    description: "Program var destructuring",
-    source: "var [value]=[1];value",
-    rust_message: "variable name expected",
+    description: "Program var nested array destructuring",
+    source: "var [[value]]=[[1]];value",
+    rust_message: "nested destructuring bindings are not implemented yet",
 }];
 
 const ORACLE_PROPERTY_PROBE: &str = r#"

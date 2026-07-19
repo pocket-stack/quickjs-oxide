@@ -907,11 +907,17 @@ fn lexical_parser_matches_redefinition_priority_contextual_let_and_boundaries() 
     );
 
     for source in [
-        "(function(){let [item]=source})",
-        "(function(){{let [item]=source}})",
-        "(function(){switch(0){case 0:let [item]=source}})",
+        "(function(){let [[item]]=[[1]]})",
+        "(function(){{let [[item]]=[[1]]}})",
+        "(function(){switch(0){case 0:let [[item]]=[[1]]}})",
     ] {
-        assert!(compile_unlinked_script(source).is_err(), "{source}");
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Unsupported, "{source}");
+        assert_eq!(
+            error.message(),
+            "nested destructuring bindings are not implemented yet",
+            "{source}"
+        );
     }
     assert_eq!(
         evaluate_in_context("(function(){{let nested=1;return nested}})()"),
@@ -2502,10 +2508,8 @@ fn classic_for_uses_quickjs_test_update_and_loop_targets() {
     let destructuring =
         compile_unlinked_script("(function(){ var let=Function; for(let[0]=1;false;); })")
             .unwrap_err();
-    assert_eq!(
-        destructuring.message(),
-        "lexical destructuring bindings are not implemented yet"
-    );
+    assert_eq!(destructuring.kind(), ErrorKind::Syntax);
+    assert_eq!(destructuring.message(), "invalid destructuring target");
     for source in [
         "(function(){ for(let binding=0;false;); })",
         "(function(){ for(let\nbinding=0;false;); })",
@@ -7357,7 +7361,7 @@ fn for_in_of_array_bindings_use_nested_iterator_records() {
         for_in
             .code()
             .iter()
-            .filter(|instruction| matches!(instruction, Instruction::ForOfNext(0)))
+            .filter(|instruction| matches!(instruction, Instruction::ForOfNext(1)))
             .count(),
         2
     );

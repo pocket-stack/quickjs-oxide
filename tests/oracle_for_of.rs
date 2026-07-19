@@ -224,6 +224,101 @@ const ERROR_CASES: &[(&str, &str)] = &[
     ),
 ];
 
+const ARRAY_BINDING_CASES: &[(&str, &str)] = &[
+    (
+        "ordinary declarations share flat array binding lowering",
+        "(function(){var [a,,b,]=[1,2,3],c=4,[d]=[5];let [e]=[6],f=7;const []=[8],[g]=[9];return a+'|'+b+'|'+c+'|'+d+'|'+e+'|'+f+'|'+g})()",
+    ),
+    (
+        "classic for initializer accepts a flat lexical array binding",
+        "(function(){var s='';for(let [a,b]=[1,2];a<3;a++)s+=a+':'+b+'|';return s})()",
+    ),
+    (
+        "classic for flat bindings retain per-iteration captured cells",
+        "(function(){var closures=[];for(let [i,j]=[0,9];i<3;i++)closures.push(function(){return i+':'+j});return closures[0]()+'|'+closures[1]()+'|'+closures[2]()})()",
+    ),
+    (
+        "classic for element defaults accept in for lexical and var bindings",
+        "(function(){var result='';for(let [x=0 in {}]=[];;){result+=x;break}for(var [y=1 in {1:2}]=[];;){result+='|'+y;break}return result})()",
+    ),
+    (
+        "block and switch declarations share the flat binding lowering",
+        "(function(){var s='';{let [a]=[1];s+=a}switch(0){case 0:const [b]=[2];s+=b}return s})()",
+    ),
+    (
+        "defaults run only for undefined and infer anonymous function names",
+        "(function(){let [a=9,b=8,c=function(){}]=[undefined,null];return a+'|'+b+'|'+c.name})()",
+    ),
+    (
+        "defaults observe earlier initialized bindings",
+        "(function(){let [a=1,b=a,c=b]=[];return a+'|'+b+'|'+c})()",
+    ),
+    (
+        "declaration lookahead balances a regexp default containing a bracket",
+        "(function(){let [value=/]/]=[];return value.test(']')})()",
+    ),
+    (
+        "defaults observe later bindings in their temporal dead zone",
+        "(function(){try{let [a=b,b=2]=[]}catch(e){return e.name+'|'+e.message}})()",
+    ),
+    (
+        "right operand observes the declaration temporal dead zone",
+        "(function(){let value='outer';try{{let [value]=[value]}}catch(e){return e.name+'|'+e.message}})()",
+    ),
+    (
+        "rest drains the iterator into a fresh array",
+        "(function(){let [head,...tail]='A\\uD83D\\uDCA9B';return head+'|'+tail.join(',')+'|'+Array.isArray(tail)})()",
+    ),
+    (
+        "rest exhaustion suppresses iterator return",
+        "(function(){var log='';var iterable={[Symbol.iterator]:function(){var i=0;return{next:function(){log+='n';i++;return{value:i,done:i>2}},return:function(){log+='r';return{done:true}}}}};let [...values]=iterable;return values.join(',')+'|'+log})()",
+    ),
+    (
+        "for-of array binding composes defaults and rest",
+        "(function(){var result='';for(const [head=1,...tail] of [[],[2,3,4]])result+=head+':'+tail.join(',')+'|';return result})()",
+    ),
+    (
+        "for-of default throw closes inner before outer",
+        "(function(){var log='',outerDone=false;var inner={[Symbol.iterator]:function(){return this},next:function(){log+='n';return{value:undefined,done:false}},return:function(){log+='i';return{done:true}}};var outer={[Symbol.iterator]:function(){return this},next:function(){if(outerDone)return{done:true};outerDone=true;return{value:inner,done:false}},return:function(){log+='o';return{done:true}}};try{for(const [value=(log+='d',function(){throw 7})(),...rest] of outer){}}catch(e){return e+'|'+log}})()",
+    ),
+    (
+        "empty pattern acquires and closes without stepping",
+        "(function(){var log='';var iterable={[Symbol.iterator]:function(){log+='i';return{next:function(){log+='n';return{value:1,done:false}},return:function(){log+='r';return{done:true}}}}};const []=iterable;return log})()",
+    ),
+    (
+        "elisions step once per hole and close a live iterator",
+        "(function(){var log='';var iterable={[Symbol.iterator]:function(){var i=0;return{next:function(){log+='n';return{value:++i,done:false}},return:function(){log+='r';return{done:true}}}}};let [,,value]=iterable;return value+'|'+log})()",
+    ),
+    (
+        "default throw closes the iterator and wins over close throw",
+        "(function(){var log='';var iterable={[Symbol.iterator]:function(){return{next:function(){log+='n';return{value:undefined,done:false}},return:function(){log+='r';throw 9}}}};try{let [value=(log+='d',function(){throw 7})()]=iterable}catch(e){return e+'|'+log}})()",
+    ),
+    (
+        "default throw after iterator exhaustion does not close",
+        "(function(){var log='';var iterable={[Symbol.iterator]:function(){return{next:function(){log+='n';return{done:true}},return:function(){log+='r';return{done:true}}}}};try{let [value=(log+='d',function(){throw 7})()]=iterable}catch(e){return e+'|'+log}})()",
+    ),
+    (
+        "iterator next throw disables declaration close",
+        "(function(){var log='';var iterable={[Symbol.iterator]:function(){return{next:function(){log+='n';throw 7},return:function(){log+='r';return{done:true}}}}};try{let [value]=iterable}catch(e){return e+'|'+log}})()",
+    ),
+    (
+        "normal declaration close propagates a return throw",
+        "(function(){var iterable={[Symbol.iterator]:function(){return{next:function(){return{value:1,done:false}},return:function(){throw 8}}}};try{const [value]=iterable}catch(e){return e}})()",
+    ),
+    (
+        "var declaration prepares a with reference before iterator step",
+        "(function(){var value='outer',object={value:'object'},once=false;var iterable={[Symbol.iterator]:function(){return this},next:function(){if(once)return{done:true};once=true;delete object.value;return{value:7,done:false}},return:function(){return{done:true}}};with(object){var [value]=iterable}return value+'|'+object.value})()",
+    ),
+    (
+        "var rest keeps its prepared with reference while draining",
+        "(function(){var value='outer',object={value:'object'},index=0;var iterable={[Symbol.iterator]:function(){return this},next:function(){delete object.value;index++;return{value:index,done:index>2}},return:function(){return{done:true}}};with(object){var [...value]=iterable}return value+'|'+object.value.join(',')})()",
+    ),
+    (
+        "var for-of binding prepares a with reference before inner step",
+        "(function(){var value='outer',object={value:'object'},once=false;var iterable={[Symbol.iterator]:function(){return this},next:function(){if(once)return{done:true};once=true;delete object.value;return{value:7,done:false}},return:function(){return{done:true}}};with(object){for(var [value] of [iterable]){}}return value+'|'+object.value})()",
+    ),
+];
+
 const SYNTAX_CASES: &[(&str, &str)] = &[
     (
         "var for-of declaration cannot have an initializer",
@@ -248,7 +343,68 @@ const SYNTAX_CASES: &[(&str, &str)] = &[
     ),
 ];
 
+const ARRAY_BINDING_SYNTAX_CASES: &[(&str, &str)] = &[
+    (
+        "let array binding requires a top-level initializer",
+        "let [value];",
+    ),
+    (
+        "var array binding requires a top-level initializer",
+        "var [value];",
+    ),
+    (
+        "const array binding requires a top-level initializer",
+        "const [value];",
+    ),
+    (
+        "missing initializer wins over a nested pattern frontier",
+        "let [[value]];",
+    ),
+    (
+        "missing initializer wins over an invalid element",
+        "let [1];",
+    ),
+    (
+        "missing initializer wins over a nonterminal rest element",
+        "let [...value,];",
+    ),
+    (
+        "missing initializer wins over a missing comma",
+        "let [first second];",
+    ),
+    (
+        "missing initializer lookahead balances a regexp bracket",
+        "let [value=/]/];",
+    ),
+    (
+        "missing initializer wins over a lookahead regexp lexer failure",
+        "let [value=/[/];",
+    ),
+    ("array rest requires a binding target", "let [...]=[]"),
+    (
+        "array rest cannot have a trailing comma",
+        "let [...rest,]=[]",
+    ),
+    ("array rest cannot have a default", "let [...rest=1]=[]"),
+    (
+        "let cannot be an array lexical binding name",
+        "let [let]=[]",
+    ),
+    (
+        "let cannot be a for-of array lexical binding name",
+        "for(let [let] of [[]]){}",
+    ),
+];
+
 const STACK_CASES: &[(&str, &str)] = &[
+    (
+        "flat lexical declaration close call fault keeps the preceding marker",
+        "(function outer(){var it={[Symbol.iterator]:function(){return this},next:function(){return{value:1,done:false}},return:function closeFault(){throw new Error('close')}};let [x]=it})()",
+    ),
+    (
+        "flat lexical declaration close getter fault keeps the preceding marker",
+        "(function outer(){var it={[Symbol.iterator]:function(){return this},next:function(){return{value:1,done:false}}};Object.defineProperty(it,'return',{get:function closeGetter(){throw new Error('close')}});const [x]=it})()",
+    ),
     (
         "body fault closes the iterator without replacing its origin",
         "(function outer(){function R(v,d){this.value=v;this.done=d};function I(){};I.prototype.next=function(){return new R(1,false)};I.prototype.return=function(){return new R(0,true)};function X(){};X.prototype[Symbol.iterator]=function(){return new I};for(var value of new X)(function body(){null.forOfBodyFault})()})()",
@@ -336,6 +492,11 @@ fn for_of_protocol_errors_match_pinned_quickjs() {
 }
 
 #[test]
+fn flat_array_binding_patterns_match_pinned_quickjs() {
+    compare_value_cases("flat array binding patterns", ARRAY_BINDING_CASES);
+}
+
+#[test]
 fn for_of_accessor_protocol_matches_pinned_quickjs() {
     let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
         eprintln!("SKIP for-of accessor differential: set QJS_ORACLE to upstream qjs");
@@ -366,6 +527,17 @@ fn for_of_parser_diagnostics_match_pinned_quickjs() {
 }
 
 #[test]
+fn flat_array_binding_parser_diagnostics_match_pinned_quickjs() {
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!("SKIP array binding parser differential: set QJS_ORACLE to upstream qjs");
+        return;
+    };
+    for &(description, source) in ARRAY_BINDING_SYNTAX_CASES {
+        compare_cli(&oracle, &[], source, description);
+    }
+}
+
+#[test]
 fn for_of_full_strip_source_and_strip_debug_stacks_match_pinned_quickjs() {
     let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
         eprintln!("SKIP for-of stack differential: set QJS_ORACLE to upstream qjs");
@@ -390,14 +562,6 @@ fn remaining_for_in_of_destructuring_and_for_await_boundaries_remain_explicit() 
         (
             "for(const {value} of [{value:1}])value",
             "for-of destructuring bindings are not implemented yet",
-        ),
-        (
-            "for(const [value=1] of [[]])value",
-            "for-of array binding defaults are not implemented yet",
-        ),
-        (
-            "for(const [...value] of [[1]])value",
-            "for-of array binding rest elements are not implemented yet",
         ),
         (
             "for(const [[value]] of [[[1]]])value",

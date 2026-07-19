@@ -50,12 +50,12 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 34,847 pass;
+- 34,878 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 46,517 are classified as unsupported because of a feature, mode, host
+- 46,496 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 562 fail to parse, 1,495 fail at runtime, 135 fail in the harness, and six
+- 552 fail to parse, 1,495 fail at runtime, 135 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 38,421 variants to execution. That count includes variants
@@ -64,18 +64,19 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 34.15% (`34,847 / 102,037`);
-- conservative target-scope lower bound: 41.70%
-  (`34,847 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 94.07%
-  (`34,847 / 37,045`).
+- raw suite pass rate: 34.18% (`34,878 / 102,037`);
+- conservative target-scope lower bound: 41.74%
+  (`34,878 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 94.10%
+  (`34,878 / 37,066`).
 
-The 41.70% figure is the useful whole-project progress floor, not a claim that
-the engine is 41.70% conformant. The 94.07% conditional rate measures quality
+The 41.74% figure is the useful whole-project progress floor, not a claim that
+the engine is 41.74% conformant. The 94.10% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
-had previously failed closed as unsupported features. The capability profile
+had previously failed closed as unsupported features; R2q then raises it
+slightly as 31 untagged binding variants become real passes. The capability profile
 currently admits 69 reviewed Test262
 feature tags and 423 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
@@ -90,9 +91,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`a56285e53591df1d2026da4d6334d42e374a107cbcc7744e87f1d8b4c49d865d`
+`bc9e6f71acbad459fabfcd2838c691cf318a781dea3dc2239161eced7c065c2f`
 and
-`0f1b3899b73d990575b8ee1f4cb11e308847c5fd3fb728b13b3e3e583e08f15e`.
+`b0b99d49bec652fa0b686a8d9af4296a5b156db6fec849c56168fb1dc41e6b7e`.
 
 ## Milestone policy
 
@@ -1774,6 +1775,63 @@ collections: it unlocks several thousand immediately classifiable variants,
 while WeakMap and WeakSet first require genuine weak heap edges and collection
 semantics.
 
+## R2q flat array binding declarations
+
+R2q implements flat ArrayBindingPattern declarations for `var`, `let`, and
+`const` in Program code, ordinary-function bodies, nested blocks, shared
+switch scopes, classic `for` heads, and synchronous `for-in`/`for-of` heads.
+The shared lowering accepts identifier leaves, empty patterns, elisions,
+trailing commas, undefined-only defaults with NamedEvaluation, and a terminal
+rest binding. Direct declarations use QuickJS-shaped control-flow inversion:
+the binding fragment is emitted first, execution jumps to the right-hand side,
+and then returns to the iterator-driven assignment fragment. Iterator records,
+abrupt unwind, and `IteratorClose` therefore stay on the same VM path as
+synchronous `for-of`. For `var` under `with`, the destination Reference is now
+prepared before `IteratorStep`, preserving the binding target even when
+observable iterator side effects mutate the object environment.
+
+The dependency-audited gate freezes the clean identifier-leaf projection
+across direct declarations, classic `for`, and synchronous `for-of`: 90 paths
+and 180 sloppy/strict variants, all runnable and all passing. Its runner-bound
+profile admits only `destructuring-binding` and the already-implemented
+`Symbol.iterator`; it is deliberately not a global claim for nested or object
+patterns, destructuring assignment, parameters, catch bindings, or
+async/generator contexts. Normalized-manifest, manifest-file, key-set, and
+empty non-pass SHA-256 values are
+`257af4e4f08f01ed33c0d88a7c64b44dd29adee6bbc64d87cb0213402e72c048`,
+`db17670a1f7715a325a07087b766f6e64cf2bb24cec727278db05db3f79ee679`,
+`fdceb7f320989a25165bd37ec41b2b3d2cdd616695979a1a0db92a5415537325`,
+and
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+The scoped profile SHA-256 is
+`8232e2c11e908f7cbf5a9e0f34fbd5223a9551b49ae64647f2a72b2314bcaf84`;
+focused TSV/JSONL hashes are
+`f0a66030c0a650874b003639775cb87149a4fcd221a1cfd80f603ab8d86f0dde`
+and
+`ca54eb7e1763501e130fff72dd67ec90469ab8fbc580e12809b6e6cda88e2f35`.
+Reproduce the gate with `scripts/test-test262-array-binding-flat.sh`.
+
+The broad `destructuring-binding` tag remains absent from the global profile,
+but the full vector is not byte-identical: several Test262 and staging paths do
+not carry that metadata tag, so the newly implemented syntax is reached
+naturally. The exact R2p/R2q join retains all 102,037 keys and changes 37
+outcomes: 23 `unsupported-parser -> pass`, eight `fail-parse -> pass`, two
+`unsupported-parser -> fail-parse`, and four
+`fail-parse -> unsupported-parser`. The two new parse failures are both modes
+of one still-unsupported destructuring-assignment staging path now reaching its
+generic syntax frontier; the four typed parser outcomes are nested patterns.
+Two further rows keep `fail-parse` but move from the old declaration diagnostic
+to that same assignment diagnostic, so 39 data rows change bytes in total.
+There are zero previous-pass regressions. Passes rise by 31 to 34,878 while
+runnable variants remain 38,421; the full summary now contains 552 parse
+failures and 1,204 typed parser frontiers, with every other category unchanged.
+Full TSV/JSONL hashes are
+`bc9e6f71acbad459fabfcd2838c691cf318a781dea3dc2239161eced7c065c2f`
+and
+`b0b99d49bec652fa0b686a8d9af4296a5b156db6fec849c56168fb1dc41e6b7e`.
+Wider declaration contexts and destructuring consumers must still land behind
+their own audited projections before the global capability boundary can move.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -1851,6 +1909,7 @@ canonical progress report.
 ./scripts/test-test262-map.sh
 ./scripts/test-test262-set.sh
 ./scripts/test-test262-symbol-protocols.sh
+./scripts/test-test262-array-binding-flat.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -1916,6 +1975,10 @@ R2p audits and globally admits the eight remaining well-known Symbol protocol
 tags, passes all 806 protocol-ready variants in its frozen 1,010-variant gate,
 and adds exactly 806 full-vector passes with zero previous-pass regression,
 bringing the complete vector to 34,847 passes.
+R2q implements flat array binding declarations, passes all 180 variants in its
+90-path scoped gate, and deliberately keeps `destructuring-binding` scoped.
+Untagged binding variants nevertheless add 31 full-vector passes with zero
+previous-pass regressions, bringing the complete vector to 34,878 passes.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

@@ -40,6 +40,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 mod arrow;
+mod destructuring;
 mod function;
 mod object_literal;
 mod pseudo_binding;
@@ -2319,136 +2320,6 @@ impl<'source> Parser<'source> {
         })
     }
 
-    /// Lower the identifier-only declaration slice of QuickJS
-    /// `js_parse_destructuring_element` for a for-in/of head. The value yielded
-    /// by the outer enumeration becomes a second, nested iterator record. Each
-    /// element consumes `value, done` from that innermost record, and the
-    /// explicit close preserves QuickJS's early-close and exception ordering.
-    fn parse_for_array_binding_pattern(
-        &mut self,
-        iteration_kind: ForIterationKind,
-        declaration: ForAssignmentDeclaration,
-        is_const: bool,
-    ) -> Result<ForAssignmentTargetInfo, Error> {
-        let loop_name = if iteration_kind == ForIterationKind::In {
-            "for-in"
-        } else {
-            "for-of"
-        };
-        if !matches!(
-            declaration,
-            ForAssignmentDeclaration::Var | ForAssignmentDeclaration::Lexical
-        ) {
-            return Err(Error::internal(
-                "array binding pattern received a non-declaration target",
-            ));
-        }
-
-        self.expect_punctuator(Punctuator::LeftBracket)?;
-        self.emit_instruction(Instruction::ForOfStart)?;
-
-        while !self.is_punctuator(Punctuator::RightBracket) {
-            if self.is_punctuator(Punctuator::Ellipsis) {
-                return Err(self.unsupported_here(format!(
-                    "{loop_name} array binding rest elements are not implemented yet"
-                )));
-            }
-            if matches!(
-                self.current().kind,
-                TokenKind::Punctuator(Punctuator::LeftBrace | Punctuator::LeftBracket)
-            ) {
-                return Err(self.unsupported_here(format!(
-                    "{loop_name} nested destructuring bindings are not implemented yet"
-                )));
-            }
-
-            if self.consume_punctuator(Punctuator::Comma)? {
-                self.emit_instruction(Instruction::ForOfNext(0))?;
-                self.emit_instruction(Instruction::Drop)?;
-                self.emit_instruction(Instruction::Drop)?;
-                continue;
-            }
-
-            let token = self.current().clone();
-            let TokenKind::Identifier(identifier) = token.kind else {
-                return Err(Error::syntax(
-                    "invalid destructuring target",
-                    source_span(token.span),
-                ));
-            };
-            validate_identifier_reservation(
-                &identifier,
-                token.span,
-                self.current_ir().strict,
-                IdentifierContext::Variable,
-            )?;
-            if declaration == ForAssignmentDeclaration::Lexical && identifier.value == "let" {
-                return Err(Error::syntax(
-                    "'let' is not a valid lexical identifier",
-                    source_span(token.span),
-                ));
-            }
-            let name = identifier.value;
-            let strict = self.current_ir().strict;
-            self.advance()?;
-            if strict && matches!(name.as_str(), "eval" | "arguments") {
-                return Err(Error::syntax(
-                    "invalid destructuring target",
-                    source_span(token.span),
-                ));
-            }
-            if self.is_punctuator(Punctuator::Equal) {
-                return Err(self.unsupported_here(format!(
-                    "{loop_name} array binding defaults are not implemented yet"
-                )));
-            }
-
-            match declaration {
-                ForAssignmentDeclaration::Lexical => {
-                    self.register_lexical_binding(
-                        &name,
-                        token.span,
-                        self.current().span,
-                        is_const,
-                        false,
-                    )?;
-                }
-                ForAssignmentDeclaration::Var => {
-                    self.register_var_binding(&name, token.span, self.current().span)?;
-                }
-                ForAssignmentDeclaration::Assignment => {
-                    unreachable!("array binding declaration was validated before parsing elements")
-                }
-            }
-
-            self.emit_instruction(Instruction::ForOfNext(0))?;
-            self.emit_instruction(Instruction::Drop)?;
-            self.emit_identifier_at(
-                name,
-                token.span,
-                if declaration == ForAssignmentDeclaration::Lexical {
-                    IdentifierAccess::Initialize
-                } else {
-                    IdentifierAccess::Put
-                },
-                source_offset(token.span)?,
-            )?;
-
-            if self.is_punctuator(Punctuator::RightBracket) {
-                break;
-            }
-            self.expect_punctuator(Punctuator::Comma)?;
-        }
-
-        self.expect_punctuator(Punctuator::RightBracket)?;
-        self.emit_instruction(Instruction::IteratorClose)?;
-        Ok(ForAssignmentTargetInfo {
-            declaration,
-            var_initializer: None,
-            is_destructuring: true,
-        })
-    }
-
     /// Reorder `value, base[, key]` into the ordinary property-write layout
     /// without introducing a forgeable temporary. `Insert2; Drop` is the
     /// existing typed bytecode's two-value swap; `Perm3` first rotates the
@@ -3163,68 +3034,75 @@ impl<'source> Parser<'source> {
         self.advance()?;
 
         loop {
-            if matches!(
-                self.current().kind,
-                TokenKind::Punctuator(Punctuator::LeftBrace | Punctuator::LeftBracket)
-            ) {
-                return Err(
-                    self.unsupported_here("lexical destructuring bindings are not implemented yet")
-                );
-            }
-
-            let token = self.current().clone();
-            let TokenKind::Identifier(identifier) = token.kind else {
-                return Err(self.syntax_here("variable name expected"));
-            };
-            validate_identifier_reservation(
-                &identifier,
-                token.span,
-                self.current_ir().strict,
-                IdentifierContext::Variable,
-            )?;
-            if identifier.value == "let" {
-                return Err(Error::syntax(
-                    "'let' is not a valid lexical identifier",
-                    source_span(token.span),
-                ));
-            }
-            let name = identifier.value;
-            let strict = self.current_ir().strict;
-            self.advance()?;
-            if strict && matches!(name.as_str(), "eval" | "arguments") {
-                return Err(Error::syntax(
-                    "invalid variable name in strict mode",
-                    source_span(self.current().span),
-                ));
-            }
-            self.register_lexical_binding(&name, token.span, self.current().span, is_const, false)?;
-
-            let initializer_site = if self.consume_punctuator(Punctuator::Equal)? {
-                let site = source_offset(self.tokens[self.cursor - 1].span)?;
-                self.parse_assignment()?;
-                if self.anonymous_function_definition.take().is_some() {
-                    let name_constant = self.add_constant(IrConstant::Primitive(Value::String(
-                        JsString::try_from_utf8(&name)?,
-                    )))?;
-                    self.emit_instruction(Instruction::SetName(name_constant))?;
-                }
-                site
+            if self.is_punctuator(Punctuator::LeftBracket) {
+                self.parse_array_binding_declaration(ForAssignmentDeclaration::Lexical, is_const)?;
             } else {
-                if is_const {
+                if self.is_punctuator(Punctuator::LeftBrace) {
+                    return Err(self.unsupported_here(
+                        "lexical destructuring bindings are not implemented yet",
+                    ));
+                }
+
+                let token = self.current().clone();
+                let TokenKind::Identifier(identifier) = token.kind else {
+                    return Err(self.syntax_here("variable name expected"));
+                };
+                validate_identifier_reservation(
+                    &identifier,
+                    token.span,
+                    self.current_ir().strict,
+                    IdentifierContext::Variable,
+                )?;
+                if identifier.value == "let" {
                     return Err(Error::syntax(
-                        "missing initializer for const variable",
+                        "'let' is not a valid lexical identifier",
+                        source_span(token.span),
+                    ));
+                }
+                let name = identifier.value;
+                let strict = self.current_ir().strict;
+                self.advance()?;
+                if strict && matches!(name.as_str(), "eval" | "arguments") {
+                    return Err(Error::syntax(
+                        "invalid variable name in strict mode",
                         source_span(self.current().span),
                     ));
                 }
-                self.emit_instruction(Instruction::Undefined)?;
-                source_offset(token.span)?
-            };
-            self.emit_identifier_at(
-                name,
-                token.span,
-                IdentifierAccess::Initialize,
-                initializer_site,
-            )?;
+                self.register_lexical_binding(
+                    &name,
+                    token.span,
+                    self.current().span,
+                    is_const,
+                    false,
+                )?;
+
+                let initializer_site = if self.consume_punctuator(Punctuator::Equal)? {
+                    let site = source_offset(self.tokens[self.cursor - 1].span)?;
+                    self.parse_assignment()?;
+                    if self.anonymous_function_definition.take().is_some() {
+                        let name_constant = self.add_constant(IrConstant::Primitive(
+                            Value::String(JsString::try_from_utf8(&name)?),
+                        ))?;
+                        self.emit_instruction(Instruction::SetName(name_constant))?;
+                    }
+                    site
+                } else {
+                    if is_const {
+                        return Err(Error::syntax(
+                            "missing initializer for const variable",
+                            source_span(self.current().span),
+                        ));
+                    }
+                    self.emit_instruction(Instruction::Undefined)?;
+                    source_offset(token.span)?
+                };
+                self.emit_identifier_at(
+                    name,
+                    token.span,
+                    IdentifierAccess::Initialize,
+                    initializer_site,
+                )?;
+            }
 
             if !self.consume_punctuator(Punctuator::Comma)? {
                 break;
@@ -3245,72 +3123,76 @@ impl<'source> Parser<'source> {
 
     fn parse_var_declarations(&mut self) -> Result<(), Error> {
         loop {
-            let token = self.current().clone();
-            let TokenKind::Identifier(identifier) = token.kind else {
-                return Err(self.syntax_here("variable name expected"));
-            };
-            validate_identifier_reservation(
-                &identifier,
-                token.span,
-                self.current_ir().strict,
-                IdentifierContext::Variable,
-            )?;
-            let strict = self.current_ir().strict;
-            let name = identifier.value;
-            self.advance()?;
-            if strict && matches!(name.as_str(), "eval" | "arguments") {
-                return Err(Error::syntax(
-                    "invalid variable name in strict mode",
-                    source_span(self.current().span),
-                ));
-            }
-            self.register_var_binding(&name, token.span, self.current().span)?;
+            if self.is_punctuator(Punctuator::LeftBracket) {
+                self.parse_array_binding_declaration(ForAssignmentDeclaration::Var, false)?;
+            } else {
+                let token = self.current().clone();
+                let TokenKind::Identifier(identifier) = token.kind else {
+                    return Err(self.syntax_here("variable name expected"));
+                };
+                validate_identifier_reservation(
+                    &identifier,
+                    token.span,
+                    self.current_ir().strict,
+                    IdentifierContext::Variable,
+                )?;
+                let strict = self.current_ir().strict;
+                let name = identifier.value;
+                self.advance()?;
+                if strict && matches!(name.as_str(), "eval" | "arguments") {
+                    return Err(Error::syntax(
+                        "invalid variable name in strict mode",
+                        source_span(self.current().span),
+                    ));
+                }
+                self.register_var_binding(&name, token.span, self.current().span)?;
 
-            let initializer_span = self.current().span;
-            if self.consume_punctuator(Punctuator::Equal)? {
-                let initializer_scope = self.current_ir().current_scope;
-                let object_environment =
-                    self.parser_scope_has_authored_with(self.current_function, initializer_scope)?;
-                if object_environment {
-                    self.emit_at(
-                        IrOp::IdentifierReference {
-                            name: name.clone(),
-                            span: token.span,
-                            scope: initializer_scope,
-                            access: IdentifierReferenceAccess::Prepare,
-                        },
-                        source_offset(token.span)?,
-                    )?;
-                }
-                self.parse_assignment()?;
-                if self.anonymous_function_definition.take().is_some() {
-                    // QuickJS emits a dummy OP_set_name after an anonymous
-                    // closure and rewrites its atom when NamedEvaluation
-                    // applies to this initializer. Keep that contextual name
-                    // separate from the child bytecode's intrinsic func_name.
-                    let name_constant = self.add_constant(IrConstant::Primitive(Value::String(
-                        JsString::try_from_utf8(&name)?,
-                    )))?;
-                    self.emit_instruction(Instruction::SetName(name_constant))?;
-                }
-                if object_environment {
-                    self.emit_at(
-                        IrOp::IdentifierReference {
+                let initializer_span = self.current().span;
+                if self.consume_punctuator(Punctuator::Equal)? {
+                    let initializer_scope = self.current_ir().current_scope;
+                    let object_environment = self
+                        .parser_scope_has_authored_with(self.current_function, initializer_scope)?;
+                    if object_environment {
+                        self.emit_at(
+                            IrOp::IdentifierReference {
+                                name: name.clone(),
+                                span: token.span,
+                                scope: initializer_scope,
+                                access: IdentifierReferenceAccess::Prepare,
+                            },
+                            source_offset(token.span)?,
+                        )?;
+                    }
+                    self.parse_assignment()?;
+                    if self.anonymous_function_definition.take().is_some() {
+                        // QuickJS emits a dummy OP_set_name after an anonymous
+                        // closure and rewrites its atom when NamedEvaluation
+                        // applies to this initializer. Keep that contextual name
+                        // separate from the child bytecode's intrinsic func_name.
+                        let name_constant = self.add_constant(IrConstant::Primitive(
+                            Value::String(JsString::try_from_utf8(&name)?),
+                        ))?;
+                        self.emit_instruction(Instruction::SetName(name_constant))?;
+                    }
+                    if object_environment {
+                        self.emit_at(
+                            IrOp::IdentifierReference {
+                                name,
+                                span: token.span,
+                                scope: initializer_scope,
+                                access: IdentifierReferenceAccess::Set,
+                            },
+                            source_offset(initializer_span)?,
+                        )?;
+                        self.emit_instruction(Instruction::Drop)?;
+                    } else {
+                        self.emit_identifier_at(
                             name,
-                            span: token.span,
-                            scope: initializer_scope,
-                            access: IdentifierReferenceAccess::Set,
-                        },
-                        source_offset(initializer_span)?,
-                    )?;
-                    self.emit_instruction(Instruction::Drop)?;
-                } else {
-                    self.emit_identifier_at(
-                        name,
-                        token.span,
-                        IdentifierAccess::Put,
-                        source_offset(initializer_span)?,
-                    )?;
+                            token.span,
+                            IdentifierAccess::Put,
+                            source_offset(initializer_span)?,
+                        )?;
+                    }
                 }
             }
 

@@ -243,19 +243,19 @@ struct BoundaryCase {
 
 const BOUNDARY_CASES: &[BoundaryCase] = &[
     BoundaryCase {
-        description: "lexical destructuring binding",
-        source: "(function(){ const [value] = [1]; return value; })()",
-        rust_message: "lexical destructuring bindings are not implemented yet",
+        description: "nested array lexical destructuring binding",
+        source: "(function(){ const [[value]] = [[1]]; return value; })()",
+        rust_message: "nested destructuring bindings are not implemented yet",
     },
     BoundaryCase {
-        description: "nested block lexical destructuring binding",
-        source: "(function(){ { const [value] = [1]; return value; } })()",
-        rust_message: "lexical destructuring bindings are not implemented yet",
+        description: "nested block nested array lexical destructuring binding",
+        source: "(function(){ { const [[value]] = [[1]]; return value; } })()",
+        rust_message: "nested destructuring bindings are not implemented yet",
     },
     BoundaryCase {
-        description: "switch lexical destructuring binding",
-        source: "(function(){ switch (0) { case 0: const [value] = [1]; return value; } })()",
-        rust_message: "lexical destructuring bindings are not implemented yet",
+        description: "switch nested array lexical destructuring binding",
+        source: "(function(){ switch (0) { case 0: const [[value]] = [[1]]; return value; } })()",
+        rust_message: "nested destructuring bindings are not implemented yet",
     },
 ];
 
