@@ -10,13 +10,13 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 53 reviewed feature tags and 413 exact audited
+  capability profile now admits 53 reviewed feature tags and 422 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 31,951 passes: 31.31% raw, a 38.24% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 91.57% among the 34,893 variants with a
+  has 32,398 passes: 31.75% raw, a 38.77% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 91.55% among the 35,390 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -385,6 +385,45 @@ claim full parity.
   and
   `4196b714970aae9710d76d07e169c1f96ce80afe65cf37d4677ec2da20e3fe2d`.
 
+  R2g ports synchronous ObjectLiteral getters and simple-parameter setters
+  through the same QuickJS-shaped define-method path. Fixed and computed
+  String, numeric, keyword, and Symbol keys; one-time `ToPropertyKey`;
+  getter/setter half merging and replacement; data/accessor conversion;
+  inferred names and descriptors; dynamic `this`, `arguments`, `new.target`,
+  and direct eval; inherited and body strictness; non-constructability; source
+  spans; and ordinary accessor-named `__proto__` properties are pinned against
+  QuickJS 2026-06-04. Accessor arity and strict reserved-word diagnostics keep
+  the oracle's error priority. Non-simple setter parameters, HomeObject/`super`,
+  and async/generator methods remain typed independent frontiers.
+
+  The frozen ObjectLiteral-accessor gate contains 70 paths and 128 variants;
+  all 128 are admitted and pass. Its manifest/key-set SHA-256 values are
+  `02e2810fd012d7f2191cfd2a14d0ae54425c82717c9b8aacd5460e65f9d72175`
+  and
+  `2b70d0e1d0054705fe4da193374a67ad664c5f5027d17fb21e1873bb3f8fc1e3`;
+  focused TSV/JSONL SHA-256 values are
+  `fec46a88e750f33f59085a09386a0f05bd563a5c11ed1310bbd19f8de18cb70a`
+  and
+  `51f232d679e7045da9634cc0d417cf74815d0f9a1af6064eb1385e6aafa260bd`.
+  Nine independently audited parse-negative paths move the capability profile
+  to 53 feature tags and 422 exact negative paths, with SHA-256
+  `73da0ef92820d81935e2f784a2f0e9ce565ccd10c302d8905c4bd4353c3a81ef`.
+
+  All 23 existing script-focused gates remain green. Nine gain 76 overlapping
+  passes, while the separately frozen Reflect and Date vectors add four and
+  eight; Date also exposes two existing missing-JSON runtime failures. The
+  exact R2f/R2g full-vector join retains all 102,037 unique keys with no
+  missing, extra, or duplicate keys and no previous-pass regressions. It adds
+  447 passes across
+  267 paths: 436 accessor consumers, two strict reserved-word consumers, and
+  nine newly audited negative variants. Ten former parser frontiers now report
+  ordinary parse failures and 42 reach downstream runtime failures instead of
+  remaining hidden. Runnable jobs rise from 36,786 to 36,795 and the complete
+  vector reaches 32,398 passes. Full TSV/JSONL SHA-256 values are
+  `8510e4117dd3854cd3c428548e36e0bba13a31abd66a875decf5f774850302d3`
+  and
+  `71cba68a097d685638b4f77f5e77676ea161e4212410724937ab9804d3c43cb8`.
+
   At the R2c landing, async Arrow, default/rest/destructuring parameters,
   class/`super`, and method/accessor adjacency remained typed frontiers. The
   compiler's prepend passes also publish
@@ -528,9 +567,9 @@ claim full parity.
   requires a trampoline or exact QuickJS stack budgeting before feature parity
   can be claimed.
 
-  Its frozen 66-path/132-variant Test262 search vector now admits 128 variants:
-  116 pass, 12 stop at the typed object-literal accessor parser frontier, and
-  four retain adjacent feature requirements. At R1c the focused manifest gained
+  Its frozen 66-path/132-variant Test262 search vector now admits and passes
+  128 variants; four retain adjacent feature requirements. R2g resolves the
+  final 12 accessor consumers. At R1c the focused manifest gained
   110 passes from R1b and eight additional variants passed outside it, moving
   the full vector from 24,699 to 24,817. The exact join matches all 102,037 keys
   with no
@@ -559,13 +598,12 @@ claim full parity.
   cross-realm and recursion-guard tests pass; every differential vector
   matches QuickJS 2026-06-04 while the explicit guard test preserves the
   depth frontier above. The frozen
-  104-path/208-variant match vector now admits 206 variants: 192 pass, 14 retain
-  the typed object-literal accessor parser frontier, and two remain behind
+  104-path/208-variant match vector now admits and passes 206 variants; two remain behind
   `regexp-v-flag`. R1x executes the legacy eval consumer. Its current TSV
   and JSONL SHA-256 values are
-  `14e29ec0a4c74a014e8aba70cc1c781b774a58f1dce217209b8db159d974bdf4`
+  `9d842d302c3fc7ce1377cc66091833e429bc8f7738d1fab31c7c6ef71cbe49db`
   and
-  `efa022b4ccca8e8f536347116a8d145e09fc9c8600e4e110e8f0e8547cf9b4ab`.
+  `bc71b9b7ad83be72165ef1682a5cd34e401185ceb53a7be3a5ceda9dca1e8038`.
   Admitting `Symbol.match` brings the conservative profile to 18 tags with
   SHA-256
   `cc10293aa847f5a449ac2b039709dff98d264b672dddc8828b8e17d8b7e12d9a`.
@@ -593,24 +631,24 @@ claim full parity.
   reach `runtime.rs`.
 
   Eight Rust tests over 19 QuickJS differential vectors pass. The frozen direct
-  46-path/92-variant RegExp split vector now admits 50 variants: 46 pass, 40
+  46-path/92-variant RegExp split vector now admits and passes 50 variants; 40
   core variants remain conservatively gated by the undeclared `Symbol.species`
-  profile tag, two require the create-realm host hook, and four retain typed
-  object-literal accessor parser frontiers. Species construction itself is
+  profile tag and two require the create-realm host hook; R2g resolves the four
+  former accessor parser frontiers. Species construction itself is
   locked by the QuickJS differential suite. Its current TSV and JSONL SHA-256
   values are
-  `6aaf167ecfa209b53d195ce73f94713ff1a6f878bda4282a4c615d77eec0421b`
+  `f250e015ef0ecda217e9677b86c91472525fabd8a75b6549cecc25a45d98386d`
   and
-  `b139c86aa03537e4231dae44d58f60cf857172c113a05237c91ad07697fc834f`.
+  `08ba05def25b30192812c1bd9b6eb1e82081e1bb366ee06e4977b8e5317f4fa8`.
   The independent 127-path/254-variant String split gate now admits and passes
   248 variants; four retain adjacent feature requirements and two require the
   IsHTMLDDA host hook. R1p resolves the two Annex B `\k` separator variants,
   R1x executes the two eval consumers, R2c resolves the Arrow consumers, and
   R2f resolves the six concise-method consumers. Its
   current TSV/JSONL SHA-256 values are
-  `8cdc31c6da79a2fe6ca3bd5c6d2f860eac4dc5612f6d864d337961a945470fb1`
+  `8e16d98c56abc159af76a8cb5ffefe3fa87ab2be963666c41c0698ae8ca90dc4`
   and
-  `c8c129b514326184c18cceebdafb511b59f386e87636eea664a1a746ca2b6376`.
+  `da0bfeaf52ef7163de349275baf8769087ae4ce36d4660cb16097392e1ceb555`.
 
   The exact R1d-to-R1e full join has only 90 `fail-runtime -> pass`
   transitions, moving the complete vector to 25,119 passes while leaving
@@ -642,12 +680,12 @@ claim full parity.
   At R1f the frozen 35-path/70-variant compile vector recorded 44 passes;
   its only runtime failures were the sloppy/strict variants of one staging
   replace path at the then-missing `@@replace` protocol. Later slices bring the
-  current vector to 58 passes, four runtime failures, two accessor parser
-  frontiers, four configured legacy-feature skips, and two create-realm host
+  current vector to 60 passes, four runtime failures, four configured
+  legacy-feature skips, and two create-realm host
   frontiers. Its current TSV/JSONL SHA-256 values are
-  `8a1c3b536e32ed1d569a47e0e1d37f001a07e8bf212b4fae29dbc7b6be7488ce`
+  `40a6f485efb9fe17bdc02aa44a0fed4f47fbafa57827a1bcbe78056516ea3827`
   and
-  `1b3667426dc09c7cd9ab247028422333f7f01fc0de6e0b062d7038ba684678ef`.
+  `2fb72af95bcfab78835c3dfa0fea159184be3ae628c94744cc64b393d9b91156`.
   A QuickJS-shaped lexical capture-count prepass also distinguishes known
   out-of-range Unicode decimal escapes from in-range references, moving the two
   `unicode_restricted_octal_escape.js` variants to pass while preserving typed
@@ -686,9 +724,9 @@ claim full parity.
   R1g it admitted all 460, recorded 452 passes, and left eight Unicode
   property-escape parser frontiers; R1m resolves those final eight, so the
   current gate passes all 460. Its current TSV/JSONL SHA-256 values are
-  `5c19412eb099892d6e3e2a5c30cd036a56d80e991a300972d79365048e4a57f0`
+  `a3319ff24a63b4b049465ef79e01cff2ddb03b905a336928b0e4357081df2ca4`
   and
-  `ac65deff1f7eef6adc9047d7f10ca7320299a4e1e6993cd9d695cd3f3454bbef`.
+  `e2897d64ec7158128ea4f74f6cd31c53804b9ac9d2e00d89264987951126fbc1`.
   Publishing the feature also audits exactly 83 modifier-owned literal
   parse-negative paths, moving the capability profile to 19 feature tags and
   101 negative paths with SHA-256
@@ -757,13 +795,13 @@ claim full parity.
   The frozen replace manifest covers 191 paths and 376 variants. At R1h it
   admitted 332 and recorded 286 passes. R1i's direct standard-RegExp path
   preserved that outcome vector; at R1p it admitted 348 and recorded 300
-  passes. The current R2f vector admits 354 and records 326 passes: four fail to
-  parse, 24 stop at typed parser frontiers, 16 retain independently undeclared
-  features, two require create-realm, and four require IsHTMLDDA. The current
+  passes. The current R2g vector admits 354 and records 350 passes: four fail to
+  parse, 16 retain independently undeclared features, two require create-realm,
+  and four require IsHTMLDDA. The current
   focused TSV/JSONL SHA-256 values are
-  `e0513c178cc8f89bf96333d8b3764024b041e6fb717f5cad8a683b8e344b865f`
+  `ae7183e3b477f9ef28aa4fca4fd7b39f47963d2d39edddc998797fe00c11ee02`
   and
-  `6b0d42883460198b1e3db01779f3786268761d0b400baf09ca3526defa66fa18`.
+  `9cc3a04403891e4f9c3b550dd23d0cba88763e2bad9eaedbe42fb4128d6201eb`.
   Publishing `String.prototype.replaceAll` and `Symbol.replace` moves the
   capability profile to 21 feature tags with SHA-256
   `921df0ef452f4d1286162093ebdf81a74d0805eb7c04601c86abd6ec7347ed7f`.
@@ -835,9 +873,9 @@ claim full parity.
   match/reference cases reach the existing lexical-destructuring parser
   frontier. The current gate therefore has 94 passes and four typed parser
   frontiers. Its TSV/JSONL SHA-256 values are
-  `9a820fab0a8ec7744588276b2c2bdb5d90dfe9f6d42ea63afcfb047053f6be41`
+  `2ca1c5f74aa39f30de62242f50b52ffe551488590bf91e3b3a34f474ac92f54a`
   and
-  `9ae25d8903eb5d3ef401bed9683cccd588bca3a5fa1b8be453d96a9ed37a7f96`.
+  `97352977006bc07562648e239cf326891999a5e8110c497aba6fbd785e3f8f07`.
 
   The complete vector moves to 26,027 passes and 33,287 admitted jobs. Its
   exact R1j-to-R1k outcome delta is 62 `unsupported-parser -> pass`, two
@@ -940,9 +978,9 @@ claim full parity.
   owned solely by lookbehind and left four co-tagged named-group variants
   gated. R1p resolves those four, so the current gate passes all 54. Its
   current TSV/JSONL SHA-256 values are
-  `1919f504681d79725eb9c647f5895527c4690d9132980ec448aa1ee8d449dbd5`
+  `464b9634b3973557986c4a3cff107d3d80714bf5d9190c5c9b935758d2ab5b05`
   and
-  `26fa0044622e9c163a3cfb199d9059301cab2d4b2bf26d32f57fe6ceb8ecffab`.
+  `edf31d0f7551fe819dddba86d3a480db231d20761437a95d4eaa1c861fc05682`.
   The exact R1n/R1o full join matches all 102,037 keys: 34
   `unsupported-feature -> pass` and 16
   `unsupported-negative-provenance -> pass`, with 50 outcome changes, 54
@@ -1065,17 +1103,17 @@ claim full parity.
   public/construction surface, nested scoped modifiers, matchAll/split species
   flags, and cross-realm getter brands and error realms.
 
-  The frozen 17-path/34-variant gate admits 26 variants and passes 18. Four
-  variants expose the existing empty-parameter arrow parse frontier, four
-  reach the typed object-literal accessor parser frontier, six retain the
-  independently gated `u180e` or `regexp-v-flag` requirements, and two retain
-  the missing `$262.createRealm` host requirement. Its exact summary is
-  `fail-parse=4 pass=18 unsupported-feature=6` and
-  `unsupported-host-create-realm=2 unsupported-parser=4`. Focused TSV/JSONL
-  hashes are
-  `8a559e418e99793dcacb558e46f0a4da16fa09dc43aa44a4bf79c2b0b6904f0d`
+  At R1s the frozen 17-path/34-variant gate admitted 26 variants and passed 18,
+  with Arrow, accessor, `u180e`, `regexp-v-flag`, and create-realm frontiers
+  explicit. Later slices resolve Arrow and `u180e`; R2g resolves the final four
+  accessor consumers. The current gate admits and passes 30 variants, while
+  two remain behind `regexp-v-flag` and two retain the missing
+  `$262.createRealm` host requirement. Its exact summary is
+  `pass=30 unsupported-feature=2 unsupported-host-create-realm=2`. Focused
+  TSV/JSONL hashes are
+  `0f97cc3647736cc205526883de1f0eef23bf08ff61dad34cccaa73021981ae0b`
   and
-  `21f09cf404aae476f8041360539cf531dad7693e2aa0d7cc2f990698f2039e06`.
+  `3fbbd16859b13499db150dc8d78d05afcbd16d722d6bf489040551ebbcd45135`.
 
   The exact R1r/R1s join matches all 102,037 keys. It records 18
   `unsupported-feature -> pass`, four `unsupported-feature -> fail-parse`, and
@@ -1823,13 +1861,18 @@ claim full parity.
   own dynamic `this`/`arguments`/`new.target`/direct-eval environments, and stay
   callable but non-constructible without a `prototype`. Contextual `get`, `set`
   and `async` remain ordinary names before `(`, while `__proto__()` is an
-  ordinary own data property. Accessors, async/generator methods, non-simple
-  parameters, home-object/`super` wiring, and Proxy/exotic-source spread remain
-  explicit frontiers. The pinned anchors are `quickjs.c` 24485-24621 and
+  ordinary own data property. Synchronous getters and simple-parameter setters
+  use the same fixed/computed define-method path, including one-time computed
+  key conversion, descriptor-half pairing/replacement, data/accessor
+  conversion, inferred names, and non-constructability. Async/generator
+  methods, non-simple parameters, home-object/`super` wiring, and
+  Proxy/exotic-source spread remain explicit frontiers. The pinned anchors are
+  `quickjs.c` 24485-24621 and
   24850-24965 plus the matching object/define/name/proto/copy opcodes in
   `quickjs-opcode.h`; `oracle_object_literals` locks the data-property/spread
-  slice, while `oracle_object_methods` locks the concise-method slice against
-  QuickJS 2026-06-04.
+  slice, `oracle_object_methods` locks the concise-method slice, and
+  `oracle_object_accessors` locks the getter/setter slice against QuickJS
+  2026-06-04.
 
 - Untagged template literals follow QuickJS `js_parse_template` rather than a
   generic string-interpolation rewrite. A no-substitution template pushes only
@@ -3097,9 +3140,10 @@ host-missing outcomes are failures, not additional feature skips.
 
 The language slice remains incomplete. Async/generator declarations,
 `for-await`, general assignment/object/default/rest/nested destructuring,
-other general assignment targets, module resolution, object-literal accessors,
+other general assignment targets, module resolution,
 async/generator methods, home-object/`super` semantics, non-simple parameter
-lists, async and non-simple Arrow forms, and callable Proxy classes are not yet
+lists including ObjectLiteral setters, async and non-simple Arrow forms, and
+callable Proxy classes are not yet
 implemented.
 Unsupported declaration contexts are rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` is currently
@@ -3252,7 +3296,8 @@ uncatchable termination state are also pending. Array
 destructuring consumers, `with` object-environment
 semantics, other
 iterator classes and helpers, the remaining RegExp grammar/static surface and
-Unicode-backed String methods, object-literal accessors, async/generator
+Unicode-backed String methods, non-simple ObjectLiteral setter parameters,
+async/generator
 methods, home-object/`super` semantics, exotic-source spread, and the rest of
 the builtin table build on those layers.
 
@@ -3368,6 +3413,11 @@ R2f keeps method parsing in `compiler/object_literal.rs` and
 `runtime/object_literal.rs`. `runtime.rs` grows only by the module declaration
 to 9,733 lines; `compiler.rs` is 11,706 lines, so the feature does not resume
 growth of either parent monolith.
+R2g keeps accessor parsing and diagnostics in those same bounded compiler
+modules and reuses `runtime/object_literal.rs` without changing the runtime
+facade. `compiler/function.rs` is 315 lines,
+`compiler/object_literal.rs` is 290, `compiler.rs` is 11,714 after the strict
+reserved-word priority fix, and `runtime.rs` remains 9,733 lines.
 The
 RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
@@ -3561,6 +3611,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_arrow_functions -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_methods -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_object_accessors -- --nocapture
 
 ./scripts/test-parity-slice.sh
 ./scripts/test-test262-smoke.sh
@@ -3592,6 +3644,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/run-test262-with.sh
 ./scripts/run-test262-arrow.sh
 ./scripts/run-test262-object-methods.sh
+./scripts/run-test262-object-accessors.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -3609,7 +3662,8 @@ Program-var/function, Program/body/block/switch/classic-for lexical-scope,
 ordinary mapped/unmapped Arguments object,
 single/labelled Annex B, synchronous try/catch/finally, synchronous
 for-in/for-of, Array core/literal/iterator/search/callback/mutation/change-by-copy,
-Object literal/concise-method, and Object constructor/static-prefix/prototype
+Object literal/concise-method/accessor, and Object
+constructor/static-prefix/prototype
 slices. The atom-Error
 target contains thirteen
 pinned-oracle inputs in addition to its Rust-side expectation test. The Unicode

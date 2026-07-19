@@ -263,7 +263,7 @@ mod tests {
         "string-trimming",
         "u180e",
     ];
-    const EXPECTED_AUDITED_NEGATIVES: [&str; 271] = [
+    const EXPECTED_AUDITED_NEGATIVES: [&str; 280] = [
         "test/language/comments/hashbang/escaped-bang-041.js",
         "test/language/eval-code/direct/var-env-global-lex-non-strict.js",
         "test/language/expressions/assignment/target-cover-newtarget.js",
@@ -284,7 +284,10 @@ mod tests {
         "test/language/expressions/logical-assignment/lgcl-or-assignment-operator-non-simple-lhs.js",
         "test/language/expressions/logical-assignment/lgcl-or-eval-strict.js",
         "test/language/expressions/logical-assignment/lgcl-or-non-simple.js",
+        "test/language/expressions/object/11.1.5-1gs.js",
         "test/language/expressions/object/__proto__-duplicate.js",
+        "test/language/expressions/object/getter-body-strict-inside.js",
+        "test/language/expressions/object/getter-body-strict-outside.js",
         "test/language/expressions/object/method-definition/early-errors-object-method-duplicate-parameters.js",
         "test/language/expressions/object/method-definition/escaped-get-e.js",
         "test/language/expressions/object/method-definition/escaped-get-g.js",
@@ -295,6 +298,12 @@ mod tests {
         "test/language/expressions/object/method-definition/escaped-set-t.js",
         "test/language/expressions/object/method-definition/escaped-set.js",
         "test/language/expressions/object/method-definition/name-param-redecl.js",
+        "test/language/expressions/object/setter-body-strict-inside.js",
+        "test/language/expressions/object/setter-body-strict-outside.js",
+        "test/language/expressions/object/setter-param-arguments-strict-inside.js",
+        "test/language/expressions/object/setter-param-arguments-strict-outside.js",
+        "test/language/expressions/object/setter-param-eval-strict-inside.js",
+        "test/language/expressions/object/setter-param-eval-strict-outside.js",
         "test/language/expressions/postfix-decrement/target-cover-newtarget.js",
         "test/language/expressions/postfix-decrement/target-newtarget.js",
         "test/language/expressions/postfix-increment/target-cover-newtarget.js",
@@ -561,7 +570,7 @@ mod tests {
                     && !PROPERTY_POSITIVE_PATHS.contains(path)
             }))
             .collect::<BTreeSet<_>>();
-        assert_eq!(expected_audited_negatives.len(), 413);
+        assert_eq!(expected_audited_negatives.len(), 422);
         assert!(
             profile
                 .audited_negative_tests

@@ -1,19 +1,19 @@
 # The 191-path replace slice is frozen from the R1g full keyed report. R1h
-# admits 332 variants and records 286 passes. R2f ordinary object methods raise
-# the current slice to 326 passes; the remaining parser frontiers stay explicit.
+# admits 332 variants and records 286 passes. R2f methods raise the slice to
+# 326 passes; R2g accessors admit 24 more variants for 350 current passes.
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
 test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
 test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
-oxide_profile_sha256=1a5258a57285ff43149d8377692b5f1a3939ed19c790cbee81abab6912d21e51
+oxide_profile_sha256=73da0ef92820d81935e2f784a2f0e9ce565ccd10c302d8905c4bd4353c3a81ef
 schema=test262-canonical-classified-v2
 mode=both
 timeout_ms=30000
 paths=191
 variants=376
 runnable=354
-passes=326
+passes=350
 manifest_sha256=85999347ba335697a991931a7346e426b9487ca293897527bea06867e691be4a
 r1g_oxide_profile_sha256=0d26aedd5b5d7fa00b6c2551a93c7d776f22e2934b790615d6dc58c454156d5f
 r1g_full_tsv_sha256=5ece50a681fcb4fe97779002b179174930d2cdbdb4bd2120e0679678bd96b161
@@ -21,6 +21,6 @@ r1g_keys_sha256=4bb59888a4c37d5c2082b1c19156ecda7cdb5b659e40c47e1d7bf684f3980999
 r1g_selected_sha256=493abc9c31bab15a4fb843861563c7db4a6e33b2f461c6610b461e2b4bd7c37f
 r1g_variants=376
 r1g_summary=fail-parse=2 fail-runtime=106 pass=10 unsupported-feature=250 unsupported-host-create-realm=2 unsupported-host-is-html-dda=4 unsupported-parser=2
-tsv_sha256=e0513c178cc8f89bf96333d8b3764024b041e6fb717f5cad8a683b8e344b865f
-jsonl_sha256=6b0d42883460198b1e3db01779f3786268761d0b400baf09ca3526defa66fa18
-summary=fail-parse=4 pass=326 unsupported-feature=16 unsupported-host-create-realm=2 unsupported-host-is-html-dda=4 unsupported-parser=24
+tsv_sha256=ae7183e3b477f9ef28aa4fca4fd7b39f47963d2d39edddc998797fe00c11ee02
+jsonl_sha256=9cc3a04403891e4f9c3b550dd23d0cba88763e2bad9eaedbe42fb4128d6201eb
+summary=fail-parse=4 pass=350 unsupported-feature=16 unsupported-host-create-realm=2 unsupported-host-is-html-dda=4
