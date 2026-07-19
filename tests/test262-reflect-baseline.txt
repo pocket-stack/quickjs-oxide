@@ -2,7 +2,7 @@ schema=test262-canonical-classified-v2
 timeout_ms=30000
 variants=427
 runnable=403
-passes=369
-tsv_sha256=601f759ccd2f3cbcf4aea4ad6383857fe092769448e114185aa2951c6db6e9c2
-jsonl_sha256=5eebb1cfec2813949365640948ca00d48f20b7b33e5fcc3d26e935fc745f4f38
-summary=fail-parse=2 fail-runtime=32 pass=369 unsupported-feature=24
+passes=373
+tsv_sha256=febf9b9dd5471da4050746e4122c058357907c80c8f0658d210bd09dfc7525bd
+jsonl_sha256=8b7521f34e27e9b742e700c5f216aa122312f317432f50126746294d6471b23a
+summary=fail-parse=2 fail-runtime=28 pass=373 unsupported-feature=24

@@ -10,7 +10,7 @@ differentials still decide exact behavior inside each implemented slice.
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
 - quickjs-oxide capability profile SHA-256:
-  `0c6b9ef80d683bd69a97f87bbee10e7029432deb25d23695a96c251e9dfc9f66`
+  `0f4617ff1678710c97620aa1257c4868b2a4daf0f4f917f9d7393566ee549c45`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -50,32 +50,32 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 33,083 pass;
+- 33,397 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 47,953 are classified as unsupported because of a feature, mode, host
+- 47,865 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 452 fail to parse, 1,951 fail at runtime, 117 fail in the harness, and six
+- 452 fail to parse, 1,725 fail at runtime, 117 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 36,871 variants to execution. That count includes variants
+The runner admitted 36,963 variants to execution. That count includes variants
 which then report a typed parser or harness frontier rather than an observed
 non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 32.42% (`33,083 / 102,037`);
-- conservative target-scope lower bound: 39.59%
-  (`33,083 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 92.91%
-  (`33,083 / 35,609`).
+- raw suite pass rate: 32.73% (`33,397 / 102,037`);
+- conservative target-scope lower bound: 39.97%
+  (`33,397 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 93.56%
+  (`33,397 / 35,697`).
 
-The 39.59% figure is the useful whole-project progress floor, not a claim that
-the engine is 39.59% conformant. The 92.91% conditional rate measures quality
+The 39.97% figure is the useful whole-project progress floor, not a claim that
+the engine is 39.97% conformant. The 93.56% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion; R1u also demonstrates that this conditional rate can rise when
 previously ambiguous failures move to a more honest typed unsupported class.
-The capability profile currently admits 57 reviewed Test262
+The capability profile currently admits 59 reviewed Test262
 feature tags and 423 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
 lands can only make the measurement more representative. Focused QuickJS
@@ -89,9 +89,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`63d5a44dd8d057e220882d02abebb1b221fdb1a419ce1fc691e1ed084d2b0a3e`
+`5a0502380cb281bb089fe229cb1ec806228dd70e75987f852476984cb4d30271`
 and
-`0b8eedcae7d427a6bf7fbbcefb412d9f2691c0bdf00c4bc2229bbfd1a8212fb2`.
+`2370d923625dc76d0a89c8314ed16875a402bccde665b6e45e30948e7526a2f8`.
 
 ## Milestone policy
 
@@ -135,16 +135,18 @@ outside-manifest drift. The transitions are 294 `unsupported-feature -> pass`,
 fail-parse`, six `unsupported-feature -> harness-error`, six
 `unsupported-feature -> unsupported-parser`, and 17 `fail-runtime -> pass`.
 
-The current 427-variant focused Reflect vector admits 403 variants: 369 pass,
-32 fail at runtime, two fail to parse, and 24 remain gated by adjacent
+The current 427-variant focused Reflect vector admits 403 variants: 373 pass,
+28 fail at runtime, two fail to parse, and 24 remain gated by adjacent
 features. R2f moved four concise-method parser frontiers to runtime assertions;
-R2g then makes four independent getter consumers pass. The other
+R2g then made four independent getter consumers pass. Refreshing this older
+aggregate gate for R2n exposes four more previously landed downstream fixes.
+The other
 non-pass results continue to expose ArrayBuffer, async/generator, JSON,
 TypedArray, parser, or adjacent-feature frontiers rather than being hidden from
 the scoreboard. Current focused TSV/JSONL SHA-256 values are
-`3fdcee09eca4e914897359cd74a9459fa9ab9db8275d3fd98f0304555623a82a`
+`febf9b9dd5471da4050746e4122c058357907c80c8f0658d210bd09dfc7525bd`
 and
-`3062524bdaab42f6842ac30c649f56c961197774cf3dd7018944a6420b62d1e3`.
+`8b7521f34e27e9b742e700c5f216aa122312f317432f50126746294d6471b23a`.
 
 The observable Date milestone moves the complete vector from 21,740 to 23,016
 passes without changing its 32,227 admitted jobs. An exact keyed join across
@@ -156,18 +158,19 @@ The Date-focused review corpus contains 799 paths and 1,598 sloppy/strict
 variants. Its Date-owned subset contains all 646 paths and 1,292 variants from
 `built-ins/Date`, `annexB/built-ins/Date`, and `staging/sm/Date`; 153 adjacent
 paths expose Date through globals, reflection, constructors, or indirect
-dependencies. The current focused outcome vector has 1,486 passes, six runtime
+dependencies. The current focused outcome vector has 1,490 passes, two runtime
 failures, 34 configured/feature skips, and 72 explicitly unsupported outcomes.
 The runner admits 1,492 jobs, all of which now have an observed non-unsupported
-outcome, for a 99.60% pass rate on that frontier (92.99% of the complete
+outcome, for a 99.87% pass rate on that frontier (93.24% of the complete
 focused vector). R2f resolves 62 former concise-method parser frontiers; R2g
 resolves the final ten accessor variants, eight to pass and two to the existing
-missing-JSON runtime frontier. The remaining failures require independent
-runtime/global surface.
+missing-JSON runtime frontier. Refreshing this older aggregate gate for R2n
+exposes four more previously landed downstream fixes. The remaining failures
+require independent runtime/global surface.
 Current focused TSV/JSONL SHA-256 values are
-`2b85caac18a93290ebf1bda58d446e77a895001fab40c085770c8e1136600598`
+`d2b3ed816006aa96ce3f6cb264195e8529c9edebb0e8a05db59dde7eef31f10d`
 and
-`c82e6bccf3969c93a64f2164b5b6d64051cbb996e4e1debc8d3c36e548302f8a`.
+`be2a6d705827490c95b748a3de1d65ecadbc7d0e0c9a35ecab1070120e6850b3`.
 The six grouped QuickJS differentials, one oracle vector self-check, two
 cross-realm/GC integration tests, and 44 Date unit tests pass. Reproduce the
 hash-pinned focused vector with `scripts/test-test262-date.sh`; both it and the
@@ -211,9 +214,9 @@ R1p's Annex B named-backreference parser resolves the two
 R2c Arrow and R2f concise-method slices resolve the remaining parser consumers.
 The current gate admits and passes 248 variants; four remain behind adjacent
 features and two require IsHTMLDDA. Current TSV/JSONL hashes are
-`7e1b93f47ccfe34f89044f082e638d6fc0813b92fe9af584c460e4280e0d3946`
+`4b13051099f6c20379c67e3177e9cf46829f569ace3fe6f0eb7c48655fdc0f54`
 and
-`baa3055c9c930173619bea758bcbcb8962124aeb83e0d08d9566f12fc37d8b5c`.
+`565c51f190bd1f44de4754bb76c155aa88c72b84a229d54bbb388f3213d83683`.
 
 The RegExp R0 foundation deliberately did not increase the pass count. It
 added the internal UTF-16 compiler/executor and heap brand while `%RegExp%`
@@ -258,9 +261,9 @@ Subsequent RegExp grammar slices moved the same core gate to 436 passes; R1p's
 Unicode bare-`\k` diagnostic resolves two more, and R1x executes the five eval
 consumers. The current core vector has 448 passes and two typed legacy-control
 frontiers. Its TSV/JSONL hashes are
-`47bf3e9db6e28d07931d406579aec619f6c8cbad5dad8055c0028849677df9bc`
+`b71378d6d03a4e835e7d61fc43785ca9af43d9f0aaa1bff75316e5b9443fe273`
 and
-`0b3bb83ff36179180afc46b42d2bc7b6bff2ccba46236907f7481d756c64a8c7`.
+`18e066aba3b68304e3a959aeb472bb3a5bf968522336e222cfa35f4b6f8f32c7`.
 The frozen core vector is reproduced by
 `scripts/test-test262-regexp-core.sh`.
 
@@ -332,9 +335,9 @@ remain gated by `regexp-v-flag`. R1x executes the
 legacy eval consumer. At R1c the
 same keys were two passes, 76 runtime failures and 130 feature-gated outcomes.
 The focused TSV and JSONL SHA-256 values are
-`57035744c30e12899c76a55eca2ddd25b7beba5af759cb68186fb74658078b34`
+`5aa6b8b6c61a48acf72417d583f3439b8fbfc5dde9020b8c8341e31759a790a6`
 and
-`5093255791f84842a553e3ce1e607a9bf6559db690e81c0ae1a1cf4192a7cd67`.
+`5f3e63c0d709819e47a57e4bfbb3929a565b615d74a6a95966b3dc19c90948e2`.
 
 The complete R1d vector moves from 24,817 to 25,029 passes and from 32,353 to
 32,497 admitted jobs. Its exact old/new join matches all 102,037 keys with no
@@ -370,9 +373,9 @@ parser frontiers. The QuickJS differential suite separately locks
 SpeciesConstructor semantics
 without widening the full-suite capability profile. Its current TSV and JSONL
 SHA-256 values are
-`7fb824e97164b62df2ddd475bf27818a6bf88941da3a5cf095006fdcafa17df2`
+`377746133482618291d3948d5a2da8a30f2cd7c6a7ca9cf3fce3589f426b8be5`
 and
-`1ec026e1b18e0c1f3abdc3cf3b26d8193d1bf1f4cf3f4c83944cb8f43d3a18c7`.
+`853e1dcd3353307b0c6e2b71f4acfa3df3014f9c1dd516caad6d3f62a3f51629`.
 The independent 127-path String split gate now records the 248 passes and
 hashes above.
 
@@ -473,9 +476,9 @@ admits 354 and records 350 passes: four fail to parse, 16 retain adjacent
 feature requirements, two
 require create-realm, and four require IsHTMLDDA. Current focused TSV/JSONL
 hashes are
-`54781b0bbeb363bdf180b7e44a1424598162d7b35000f935bc9b408cac0b0cd8`
+`5521571759251d3b2a70a343a0e1397b80fbd4ad989ddca05c19680466c982c0`
 and
-`ae2eedfe3c591ee9bb4d1f107f1aa7e62df248afd5044087e3bc854916dc9863`.
+`2f425f6a24aa21bf42a3ada7d6f7fc456cfb3fcc99cdf750b043f28b62db9c12`.
 
 Publishing `String.prototype.replaceAll` and `Symbol.replace` moves the
 capability profile to 21 reviewed feature tags, with SHA-256
@@ -548,9 +551,9 @@ resolved four linked lookahead variants, R1o resolved 14 linked lookbehind
 variants, and R1p admits the final six named-group variants. The current gate
 therefore runs all 98 variants: 94 pass and four reach typed
 lexical-destructuring parser frontiers. Current focused TSV/JSONL hashes are
-`8fdb7bea8efcdd73dbda39b2a3086225fd38a6ba8e63a013a4a8824fb85bc959`
+`06ac527e434ebe7b7b7ed0e50193a716ebedc9d4b0fa028c5b1e3f87a0458268`
 and
-`7865d626ac411834544476c2b416d62fc5178c2e229438b623deec4a2f67c655`.
+`02b8672453b17e260ea13e28f74bb9aea04caaccd3f274232e525f2e5fb6bb33`.
 
 The exact R1j/R1k full join adds 68 passes with no previous-pass regression:
 62 variants move from `unsupported-parser`, two from `unsupported-runtime`,
@@ -664,9 +667,9 @@ The frozen focused gate contains 27 paths and 54 variants. At R1o, its 17 pure
 lookbehind paths and eight audited parse-negative paths contributed 50 passing
 variants while four co-tagged named-group variants stayed gated. R1p resolves
 those four, so the current gate passes all 54. Focused TSV/JSONL hashes are
-`ef3a82229f5e0d2c7ee9b4f3190240aeb0de829d402cd2ef3fee66eb66531ddc`
+`590b466885fe087bc30cb02e1adc1b1076af0322e229a998af8cda3a680131dd`
 and
-`516530378ef979ce0d68fa90f4f5d26b0fd96f8e847c19f4e6263745cd29464e`.
+`5aca0c7d11afea0d6c1facd893663ad2000f7a95860703112c641dd8a8fa914c`.
 
 The exact R1n/R1o full join matches all 102,037 keys. It records 34
 `unsupported-feature -> pass` and 16
@@ -801,9 +804,9 @@ behind `regexp-v-flag` and two retain the missing `$262.createRealm` host
 requirement. Its exact outcome summary is
 `pass=30 unsupported-feature=2 unsupported-host-create-realm=2`. Focused
 TSV/JSONL hashes are
-`578089e2909785c9688ca14735901f708f58c9e68a24f9d3b067b4131d35f1b0`
+`3d5bda20dece92150f0398cb6f2d70a4114ff46fea69c7326ef056e439c7e246`
 and
-`e7c104f6f66a6e69f67f120df0f80bf94eaee10aa1bf6f0fb5e17e6b7d86fd21`.
+`a584c2db7b136338cb5ea9ca5116572f17ce2121740b5670889ab035e979bd23`.
 
 The exact R1r/R1s join matches all 102,037 keys. It records 18
 `unsupported-feature -> pass`, four `unsupported-feature -> fail-parse`, and
@@ -1529,11 +1532,13 @@ Landing TSV/JSONL hashes under the R2k profile were
 `31d01dbc119767d5eb9e2be69c9054f97ca78a3b4ca5e5ae60faf9ed1f29b8e9`
 and
 `7ed6c23a8b94dfb2854f9be793c4aba388d64a432e0a931d6d8d81dbb7c38dbf`.
-After R2m's profile-metadata migration, the current gate hashes are
+Under R2m's profile metadata, the gate hashes were
 `22377dfabe093c798ec712be77ab06ca600e11725666945e523b68410d6927cb`
 and
 `2fa563ffd36405eee7433e0aada0abe1a1474e64b31228949f5a0dc04af2da04`.
-Reproduce it with `scripts/test-test262-json-parse.sh`.
+Reproduce the current outcome vector and its checked-in
+`tests/test262-json-parse-baseline.txt` byte hashes with
+`scripts/test-test262-json-parse.sh`.
 
 ## R2m JSON stringify and Raw JSON gate
 
@@ -1554,11 +1559,13 @@ across 80 paths pass. Manifest, key-set, and empty non-pass SHA-256 values are
 `ab8b0bdfa3895693115c79579f936d2559806dbc95f2588537267a73d6039892`,
 and
 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
-Focused TSV/JSONL hashes are
+R2m-landing focused TSV/JSONL hashes are
 `38ebfa11ff63d080072eb93845711ff4f90bd6753a70fa793edc0c128f89bd82`
 and
 `1ff4e957792cf2f1702f21df30bd7656d5448a71f5cf9fcc6f37c9cd48fa445b`.
-Reproduce it with `scripts/test-test262-json-stringify.sh`.
+Reproduce the current outcome vector and its checked-in
+`tests/test262-json-stringify-baseline.txt` byte hashes with
+`scripts/test-test262-json-stringify.sh`.
 
 `JSON.rawJSON` first converts and validates the exact source text through the
 same strict parser, then creates a null-prototype, non-extensible object with a
@@ -1574,20 +1581,22 @@ Manifest, key-set, and non-pass hashes are
 `c5be0b3a9dd6c106d9e1c19cd15726b7a6756ac5ee464d4279fd835d520ddee7`,
 and
 `2c8fb7640ded74e86d6e5b8990dcaf8650ec0eccbc855cb2dcbef808e8caae8a`.
-Focused TSV/JSONL hashes are
+R2m-landing focused TSV/JSONL hashes are
 `bb3792c4b565855a533a56db306f9fb465b6f899ca739db3a0ceb92979a0cf34`
 and
 `4d76fd54f0d4878a816f452170f1b7436fec0c86a0c601d925f86aca1ae16264`.
-Reproduce it with `scripts/test-test262-json-raw.sh`.
+Reproduce the current outcome vector and its checked-in
+`tests/test262-json-raw-baseline.txt` byte hashes with
+`scripts/test-test262-json-raw.sh`.
 
 Declaring `json-parse-with-source` and `well-formed-json-stringify` moves the
 capability profile to 57 feature tags and 423 audited negative paths, with
 SHA-256
 `0c6b9ef80d683bd69a97f87bbee10e7029432deb25d23695a96c251e9dfc9f66`.
-Because every profile-aware report pins that hash in its header, current
-baselines for older focused gates are re-emitted with metadata-only byte/hash
-changes; their outcomes and key sets remain unchanged, while the historical
-sections retain each gate's landing hashes.
+Because every profile-aware report pins that hash in its header, R2m-era
+baselines for older focused gates were re-emitted with metadata-only byte/hash
+changes; their outcomes and key sets remained unchanged, while the historical
+sections retained each gate's landing hashes.
 The exact R2k/R2m full join keeps all 102,037 unique keys with no missing,
 extra, duplicate, or previous-pass-regression rows. Of 518 outcome changes,
 472 are `fail-runtime -> pass`, 38 are `unsupported-feature -> pass`, two are
@@ -1599,6 +1608,54 @@ are
 `63d5a44dd8d057e220882d02abebb1b221fdb1a419ce1fc691e1ed084d2b0a3e`
 and
 `0b8eedcae7d427a6bf7fbbcefb412d9f2691c0bdf00c4bc2229bbfd1a8212fb2`.
+
+## R2n strong Map gate
+
+R2n ports the pinned strong `Map` family through realm-local constructor,
+prototype, and iterator graphs. Ordered records use `SameValueZero`, normalize
+negative zero, and preserve live mutation behavior for iterators and
+`forEach`. Construction follows QuickJS's cached-adder and `IteratorClose`
+ordering; the implemented surface includes `set`, `get`, `has`, `delete`,
+`clear`, `size`, `forEach`, `keys`, `values`, `entries`, `getOrInsert`,
+`getOrInsertComputed`, species, tags, and `Map.groupBy`.
+
+The dependency-audited focused gate freezes 186 paths and 370 variants; all
+370 pass. `Symbol.iterator` and `upsert` are admitted only by its runner-bound
+scoped profile, whose SHA-256 is
+`16ab6bfe18540aae398c847905f492491e81500045b45a6bfb21f447fd537ea2`;
+this is not a global feature claim for Set, WeakMap, or other consumers.
+Manifest, key-set, and empty non-pass SHA-256 values are
+`50387c488c3ade2aafbbe2cd4cecc387bc0c97a76808831d74b634407b990cd1`,
+`2704f0c3407fa65dec9297df89f3643eba808f72347b530c71f091be15b14d81`,
+and
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+Focused TSV/JSONL hashes are
+`10e2e4ca4f285eaaf345c1231b7707951e72882e1d603dc144cdde50eb8ed645`
+and
+`e8645afd72aec2e917fbc11ae4c9502bbb4473897414cc9882027d79082cda69`.
+Reproduce the gate with `scripts/test-test262-map.sh`.
+
+Declaring only `Map` and `array-grouping` globally moves the capability profile
+to 59 feature tags and 423 audited negative paths, with SHA-256
+`0f4617ff1678710c97620aa1257c4868b2a4daf0f4f917f9d7393566ee549c45`.
+The exact R2m/R2n full join retains all 102,037 unique keys and records 234
+`fail-runtime -> pass`, 80 `unsupported-feature -> pass`, eight
+`unsupported-feature -> fail-runtime`, and four
+`unsupported-feature -> unsupported-parser` transitions. The eight runtime
+failures expose four WeakMap receiver-brand paths in both modes; the four
+parser frontiers are two subclass-Map class paths in both modes. They are newly
+admitted gaps, not regressions of previously runnable tests. Eighteen further
+rows change detail only. There is no previous-pass regression or outcome drift
+outside the reviewed admission set: the focused Map manifest plus rows gated
+by the newly global `Map` or `array-grouping` tags. Runnable variants reach
+36,963 and passes reach 33,397, a net gain of 314. Full TSV/JSONL hashes are
+`5a0502380cb281bb089fe229cb1ec806228dd70e75987f852476984cb4d30271`
+and
+`2370d923625dc76d0a89c8314ed16875a402bccde665b6e45e30948e7526a2f8`.
+All global-profile focused reports are re-emitted because the profile header
+changed; their key sets remain stable. Older aggregate gates may also change
+outcomes or details when the newly installed Map surface removes a downstream
+blocker.
 
 Parameter initializers, classes and derived constructors, and async/generator
 methods remain explicit follow-up slices.
@@ -1677,6 +1734,7 @@ canonical progress report.
 ./scripts/test-test262-json-parse.sh
 ./scripts/test-test262-json-stringify.sh
 ./scripts/test-test262-json-raw.sh
+./scripts/test-test262-map.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -1730,7 +1788,10 @@ reviver walk, and exact source contexts, passing 166/168 focused variants with
 only the dense-array timeout pair; R2m adds stringify and branded Raw JSON,
 passes 160/160 direct stringify variants and 36/42 runnable Raw JSON variants,
 declares the two reviewed JSON feature tags, and brings the complete vector to
-33,083 passes with zero previous-pass regressions.
+33,083 passes with zero previous-pass regressions; R2n adds the complete strong
+Map surface, passes its 370/370 focused gate, declares only `Map` and
+`array-grouping` globally, and adds 314 full-vector passes with zero
+previous-pass regression, bringing the complete vector to 33,397 passes.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

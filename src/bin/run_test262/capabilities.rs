@@ -208,10 +208,11 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 55] = [
+    const EXPECTED_FEATURES: [&str; 59] = [
         "Array.prototype.at",
         "Array.prototype.includes",
         "BigInt",
+        "Map",
         "Math.sumPrecise",
         "Object.fromEntries",
         "Object.hasOwn",
@@ -240,6 +241,7 @@ mod tests {
         "__proto__",
         "__setter__",
         "array-find-from-last",
+        "array-grouping",
         "arrow-function",
         "change-array-by-copy",
         "coalesce-expression",
@@ -247,6 +249,7 @@ mod tests {
         "exponentiation",
         "for-in-order",
         "hashbang",
+        "json-parse-with-source",
         "let",
         "logical-assignment-operators",
         "new.target",
@@ -264,6 +267,7 @@ mod tests {
         "super",
         "template",
         "u180e",
+        "well-formed-json-stringify",
     ];
     const EXPECTED_AUDITED_NEGATIVES: [&str; 281] = [
         "test/language/comments/hashbang/escaped-bang-041.js",

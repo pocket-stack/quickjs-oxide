@@ -78,7 +78,7 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_patch" != "f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3" \
     || "$expected_config" != "79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b" \
     || "$expected_metadata" != "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a" \
-    || "$expected_profile" != "7e2e084075c58664380187a33fbfd95fed5246cad091452a62baa748cf0fe420" \
+    || "$expected_profile" != "16ab6bfe18540aae398c847905f492491e81500045b45a6bfb21f447fd537ea2" \
     || "$expected_schema" != "test262-canonical-classified-v2" \
     || "$expected_mode" != "both" \
     || "$expected_timeout_ms" != "30000" \
@@ -185,13 +185,15 @@ if [[ "$nonpass_count" != "$expected_failures" \
     || "$(tail -n 1 "$report")" != "# summary $expected_summary" \
     || "$(sha256_file "$report")" != "$expected_tsv" \
     || "$(sha256_file "$json_report")" != "$expected_jsonl" ]]; then
-    echo "error: Map Test262 gate contains $nonpass_count non-pass rows" >&2
-    printf 'path\tvariant\toutcome\tactual_phase\tactual_type\tdetail\n' >&2
-    awk -F'\t' '
-        !/^#/ && !($1 == "path" && $2 == "variant") && $7 != "pass" {
-            print $1 "\t" $2 "\t" $7 "\t" $8 "\t" $9 "\t" $10
-        }
-    ' "$report" >&2
+    echo "error: Map Test262 classified vector drifted" >&2
+    if [[ "$nonpass_count" != 0 ]]; then
+        printf 'path\tvariant\toutcome\tactual_phase\tactual_type\tdetail\n' >&2
+        awk -F'\t' '
+            !/^#/ && !($1 == "path" && $2 == "variant") && $7 != "pass" {
+                print $1 "\t" $2 "\t" $7 "\t" $8 "\t" $9 "\t" $10
+            }
+        ' "$report" >&2
+    fi
     exit 1
 fi
 

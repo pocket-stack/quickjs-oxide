@@ -485,7 +485,7 @@ impl Runtime {
 
     fn normalized_map_key(value: Value) -> Value {
         match value {
-            Value::Float(value) if value == 0.0 => Value::Int(0),
+            Value::Float(0.0) => Value::Int(0),
             value => value,
         }
     }
