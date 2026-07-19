@@ -208,7 +208,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 53] = [
+    const EXPECTED_FEATURES: [&str; 54] = [
         "Array.prototype.at",
         "Array.prototype.includes",
         "BigInt",
@@ -261,9 +261,10 @@ mod tests {
         "regexp-named-groups",
         "regexp-unicode-property-escapes",
         "string-trimming",
+        "super",
         "u180e",
     ];
-    const EXPECTED_AUDITED_NEGATIVES: [&str; 280] = [
+    const EXPECTED_AUDITED_NEGATIVES: [&str; 281] = [
         "test/language/comments/hashbang/escaped-bang-041.js",
         "test/language/eval-code/direct/var-env-global-lex-non-strict.js",
         "test/language/expressions/assignment/target-cover-newtarget.js",
@@ -298,6 +299,7 @@ mod tests {
         "test/language/expressions/object/method-definition/escaped-set-t.js",
         "test/language/expressions/object/method-definition/escaped-set.js",
         "test/language/expressions/object/method-definition/name-param-redecl.js",
+        "test/language/expressions/object/method-definition/name-super-call-body.js",
         "test/language/expressions/object/setter-body-strict-inside.js",
         "test/language/expressions/object/setter-body-strict-outside.js",
         "test/language/expressions/object/setter-param-arguments-strict-inside.js",
@@ -570,7 +572,7 @@ mod tests {
                     && !PROPERTY_POSITIVE_PATHS.contains(path)
             }))
             .collect::<BTreeSet<_>>();
-        assert_eq!(expected_audited_negatives.len(), 422);
+        assert_eq!(expected_audited_negatives.len(), 423);
         assert!(
             profile
                 .audited_negative_tests
