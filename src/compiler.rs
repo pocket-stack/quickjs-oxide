@@ -5093,6 +5093,14 @@ impl<'source> Parser<'source> {
             TokenKind::Keyword(Keyword::New) => {
                 self.parse_new_expression()?;
             }
+            TokenKind::Keyword(keyword)
+                if self.current_ir().strict && strict_reserved_identifier(keyword) =>
+            {
+                return Err(self.syntax_here(format!(
+                    "unexpected token in expression: '{}'",
+                    keyword.as_str()
+                )));
+            }
             TokenKind::Keyword(
                 keyword @ (Keyword::Else
                 | Keyword::Case

@@ -7577,6 +7577,16 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
             "malformed parameters must fail before the accessor arity check for {source}"
         );
     }
+    for source in [
+        "({get a(){'use strict';public=42}})",
+        "'use strict';({set a(value){public=42}})",
+    ] {
+        assert_eq!(
+            compile_unlinked_script(source).unwrap_err().message(),
+            "unexpected token in expression: 'public'",
+            "strict future-reserved references must remain SyntaxError for {source}"
+        );
+    }
     assert_eq!(
         compile_unlinked_script("({a(value,value){}})")
             .unwrap_err()
