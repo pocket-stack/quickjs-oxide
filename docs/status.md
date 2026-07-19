@@ -10,16 +10,17 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 59 reviewed feature tags and 423 exact audited
+  capability profile now admits 61 reviewed feature tags and 423 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 33,397 passes: 32.73% raw, a 39.97% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 93.56% among the 35,697 variants with a
-  non-unsupported observed outcome. The fixed smoke now has 191
-  passes and two explicit parser-frontier results. See `docs/test262.md` for
-  the denominators and why none of these figures is a parity claim. The first
+  has 34,041 passes and 37,411 runnable variants: 33.36% raw, a 40.74% lower
+  bound after the 18,475 pinned QuickJS target exclusions, or 94.39% among the
+  36,063 variants with a non-unsupported observed outcome. The fixed smoke now
+  has 191 passes and two explicit parser-frontier results. See
+  `docs/test262.md` for the denominators and why none of these figures is a
+  parity claim. The first
   observable RegExp intrinsic slice added 669 full-vector passes and moved ten
   advanced-pattern variants from generic runtime failure to typed unsupported
   results. The subsequent R1b literal slice adds another 840 passes. Its exact
@@ -687,6 +688,56 @@ claim full parity.
   `5a0502380cb281bb089fe229cb1ec806228dd70e75987f852476984cb4d30271`
   and
   `2370d923625dc76d0a89c8314ed16875a402bccde665b6e45e30948e7526a2f8`.
+
+  R2o ports the pinned observable strong `Set` family through realm-local
+  constructor, prototype, and independent Set-iterator graphs. Its heap-backed
+  ordered records use `SameValueZero`, normalize negative zero, and preserve
+  live mutation for iterators and `forEach`. Construction follows QuickJS's
+  cached-adder and `IteratorClose` order. The surface includes `add`, `has`,
+  `delete`, `clear`, `size`, `forEach`, the exact keys/values alias, `entries`,
+  species and tags, `Set.groupBy`, and all seven set-composition methods. Those
+  methods follow QuickJS's set-like protocol, branch-specific iteration and
+  close behavior, and defining-realm result allocation without consulting a
+  subclass species or overridden `add`.
+
+  The dependency-audited focused gate freezes 322 paths / 642 variants and all
+  642 pass. The global profile already admits `Set` and `set-methods`; its
+  runner-bound scoped profile adds only the exact well-known-Symbol dependencies
+  needed by that frozen surface and has SHA-256
+  `6869e9d28fff1d5bd4e5b698dcdf6ee677b9134a91781ad7abe226200d669455`.
+  Class, generator/object-generator, rest-parameter, lexical-destructuring,
+  WeakSet, and `$262.createRealm` dependencies remain separate frontiers.
+  Focused manifest/key-set/non-pass hashes are
+  `44c6b6b599e7fe48324aaa693fa684649469c35209bc5c1edb34f0eebe2085b9`,
+  `5b4959128a9fb34b72b83950fd329f8a98bbbb2b08f256d5ff8bc3f7bc73a0ac`,
+  and
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`;
+  TSV/JSONL hashes are
+  `b45345b024a33560f2244b69bcdd181e2c5f07add1a04d9fe474169117cb222b`
+  and
+  `de7d718b67a1bae7d8031345ce55ba7f32aa8a5d6bcefd745ac2c4401ae65e3f`.
+
+  Declaring only `Set` and `set-methods` globally moves the capability profile
+  to 61 reviewed feature tags and 423 audited negative paths, with SHA-256
+  `086b4964eebc8dd8960b33aaa333b0adaeefb1447cbf63f893042ab269a5a17b`.
+  The exact R2n/R2o full join retains all 102,037 unique keys and records 342
+  `fail-runtime -> pass`, 302 `unsupported-feature -> pass`, 82
+  `unsupported-feature -> unsupported-parser`, 50
+  `unsupported-feature -> fail-parse`, and 14
+  `unsupported-feature -> fail-runtime` transitions. The focused manifest
+  accounts for 602 of the 644 new full-vector passes; 42 linked Map-brand,
+  for-of, and staging variants pass outside it. Its other 40 scoped variants
+  remain fail-closed under the global profile because their Symbol dependencies
+  are deliberately admitted only by the scoped gate. The 14 newly exposed
+  runtime failures are WeakMap/WeakSet receiver-brand cases; the parser and
+  parse failures expose the already tracked class, generator/object-method, and
+  parameter-syntax frontiers. There is no previous-pass regression or outcome
+  drift outside the focused manifest and rows selected by the newly global
+  tags. Runnable variants reach 37,411 and passes reach 34,041, a net gain of
+  644. Full TSV/JSONL SHA-256 values are
+  `14f8412069dc7ba2a648c2facead1cbcd79ccf2cc5116832602f50decd5f95ab`
+  and
+  `c29229ceeee55db836e701d8a2984ef0ba9eb9396d6deca8a5166026b58bb71b`.
 
   Parameter initializers and other non-simple parameters, classes/derived
   construction, and async/generator method/accessor forms stay typed frontiers.
@@ -2707,9 +2758,11 @@ claim full parity.
   conversion—performs QuickJS's pending-exception `IteratorClose`; return
   getter/call failures cannot replace the original throw. Normal exhaustion
   does not close. A four-active-call guard plus the shared weighted budget keeps
-  direct and interleaved getter/key-coercion recursion catchable. Proxy entry
-  traps, Set iterators, generators/finally, TypedArrays and module namespace
-  entries remain explicit boundaries until those object kinds exist.
+  direct and interleaved getter/key-coercion recursion catchable. Strong Map
+  entry iteration and Set values which are themselves entry objects now run in
+  the pinned differential. Proxy entry traps, generators/finally, TypedArrays
+  and module namespace entries remain explicit boundaries until those object
+  kinds exist.
   `hasOwn` converts and boxes its target in the defining realm before converting
   its property key, deliberately reversing the legacy prototype method's
   observable conversion order. It probes only the resulting object's own
@@ -3051,6 +3104,20 @@ claim full parity.
   uses linear lookup. That preserves the tested observable semantics but does
   not yet match QuickJS's hash lookup and reclaimable zombie records, so long
   delete histories remain an explicit resource-parity frontier.
+- Every realm also publishes an independently branded strong `%Set%`
+  constructor, ordinary `%Set.prototype%`, and realm-local
+  `%SetIteratorPrototype%`. The dedicated intrinsic implements constructor
+  closing, ordered `SameValueZero` membership, live iteration, callback
+  mutation, exact aliases and descriptors, all seven set-composition methods,
+  species, tags, and `Set.groupBy`. Set-like operands are observed in the
+  pinned `size`/`has`/`keys` order, while Set-producing methods allocate a base
+  Set in their defining realm without consulting subclass species or an
+  overridden `add`. Heap records own object and Symbol edges, exhausted
+  iterators release their source, and roots follow the same constructor-lifetime
+  discipline as Map. The shared stable-vector kernel still retains tombstones
+  permanently and uses linear lookup rather than QuickJS's hash lookup and
+  reclaimable zombie records; observable semantics are locked, but long
+  deletion histories remain a resource- and complexity-parity frontier.
 - The global object has QuickJS's dedicated payload and hidden
   `uninitialized_vars` object. Global data properties and the lexical-binding
   object can store `PropertySlot::VarRef` cells; define, descriptor lookup,
@@ -3077,8 +3144,8 @@ claim full parity.
   Error family, `Array`, `Object`, `Function`, `parseInt`, `parseFloat`, `isNaN`,
   `isFinite`, the six URI/escape functions, the three constants, `Number`,
   `Boolean`, `String`, `Math`, `Reflect`, `Symbol`, `globalThis`, `BigInt`,
-  `Date`, `RegExp`, `JSON`, then `Map`. This is not a claim that the wider global
-  builtin table is complete.
+  `Date`, `RegExp`, `JSON`, `Map`, then `Set`. This is not a claim that the wider
+  global builtin table is complete.
 - Every global object owns QuickJS's `[Symbol.toStringTag] = "global"` metadata
   as a non-writable, non-enumerable, configurable data property. The runtime's
   well-known identity is also exposed as the frozen public
@@ -3444,14 +3511,21 @@ parse/link/evaluate, Promises/jobs and async completion, the ES5.1 suite, and a
 separate QuickJS-runner-quirk profile remain future milestones. Unsupported and
 host-missing outcomes are failures, not additional feature skips.
 
-One gate-infrastructure debt is measured on macOS's default 2 MiB libtest
-worker stack. `cargo test --locked --workspace --all-targets` reaches a host
-stack overflow/SIGABRT in
-`runtime::intrinsics::object::tests::recursive_object_has_own_key_conversion_is_guarded_and_runtime_recovers`;
-the exact test and all 813 library tests pass with
-`RUST_MIN_STACK=8388608`. This is not an R2j semantic regression, but the test
-must gain an explicit proven stack or the VM/native frames must shrink before
-the default workspace command is again a reliable gate.
+The former default-libtest-stack gate debt is closed. QuickJS checks its real
+platform stack pointer at both native and bytecode call boundaries; the
+`unsafe`-free runtime now captures a safe address marker at the outermost call
+and shares QuickJS's one-MiB byte budget across native and bytecode entries.
+The measured ARM64 debug hot-opcode frame (71,024 bytes) is isolated behind an
+`inline(never)` helper, so suspended `Call`/`Eval`/`Construct` instructions no
+longer retain it for every callee. Explicit 2 MiB tests cover 32 finite
+bytecode calls, ordinary recursion, recursive constructors, mixed
+`Object.hasOwn`/`@@toPrimitive` reentry, and runtime recovery; the pinned
+Sputnik 32-IIFE case also passes both normal-runner variants. This remains a
+resource-parity approximation: the marker does not query the OS stack bound,
+the conservative native-family budgets remain, and syntactically nested
+parser/compiler work still uses host recursion. A complete execution
+trampoline plus explicit compiler work storage is required to recover
+upstream's substantially deeper platform-dependent limits throughout.
 
 The language slice remains incomplete. Async/generator declarations,
 `for-await`, general assignment/object/default/rest/nested destructuring,
@@ -3771,6 +3845,13 @@ lifetimes. Initialization, dispatch, and exhaustive payload routing move
 `runtime.rs` only from 9,762 to 9,791 lines; `compiler.rs` remains 11,956
 lines. This is a bounded intrinsic-family addition rather than another
 algorithm folded into the runtime or compiler monolith.
+R2o likewise keeps the Set algorithms in the dedicated 1,536-line
+`runtime/intrinsics/set.rs`. Initialization, dispatch, and exhaustive payload
+routing move `runtime.rs` only from 9,791 to 9,817 lines, while `compiler.rs`
+remains 11,956 lines. The shared heap owner reaches 10,419 lines with the
+independently branded Set/SetIterator payloads, ordered records, roots, and atom
+lifetimes; that heap monolith remains explicit split debt even though Set did
+not fold its algorithms back into the runtime facade.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -3787,7 +3868,7 @@ in these dedicated status and Test262 documents.
 ## Reproduce current evidence
 
 ```sh
-RUST_MIN_STACK=8388608 cargo test --locked --workspace --all-targets
+cargo test --locked --workspace --all-targets
 
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_boolean_intrinsic -- --nocapture
@@ -3981,6 +4062,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_json_raw -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_map -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_set -- --nocapture
 
 ./scripts/test-parity-slice.sh
 ./scripts/test-test262-smoke.sh
@@ -4021,6 +4104,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-json-stringify.sh
 ./scripts/test-test262-json-raw.sh
 ./scripts/test-test262-map.sh
+./scripts/test-test262-set.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -4061,8 +4145,10 @@ and GC lifetime. The JSON targets lock strict UTF-16 parsing, reviver source
 contexts, stringify traversal/coercion/quoting, and Raw JSON branding and
 source splicing. The Map target locks its intrinsic graph, descriptors,
 constructor closing order, ordered `SameValueZero` records, live iteration,
-callback mutation, realm ownership, and GC/atom edges. The full gate discovers
-every `tests/oracle_*.rs`
+callback mutation, realm ownership, and GC/atom edges. The Set target separately
+locks its independent brands, exact aliases, set-like protocol and all seven
+composition methods under the same mutation, realm, and lifetime boundaries.
+The full gate discovers every `tests/oracle_*.rs`
 integration target, reuses an executable `QJS_ORACLE` or checksum-verifies and
 builds the pinned test-only oracle, obtains and checksum-verifies the matching
 Unicode table source, then runs both generated-table drift checks, formatting,

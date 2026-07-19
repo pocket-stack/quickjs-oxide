@@ -876,45 +876,6 @@ impl Runtime {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn table_backed_symbol_atoms_return_after_set_mutations() {
-        let runtime = Runtime::new();
-        let mut context = runtime.new_context();
-        let Value::Object(function) = context
-            .eval(
-                r#"(function(){
-                    var set = new Set();
-                    var value = Symbol("set-value");
-                    set.add(value);
-                    set.add(value);
-                    set.delete(value);
-                    set.add(Symbol("set-clear-value"));
-                    set.clear();
-                })"#,
-            )
-            .unwrap()
-        else {
-            panic!("Set Symbol ownership probe was not callable");
-        };
-        let function = runtime.as_callable(&function).unwrap().unwrap();
-
-        context
-            .call(&function, Value::Undefined, &[])
-            .expect("warm Set Symbol ownership probe");
-        let baseline = runtime.test_atom_count();
-        for _ in 0..3 {
-            context
-                .call(&function, Value::Undefined, &[])
-                .expect("repeat Set Symbol ownership probe");
-            assert_eq!(runtime.test_atom_count(), baseline);
-        }
-    }
-}
-
 impl Runtime {
     fn get_set_like_record(
         &self,
@@ -1531,6 +1492,45 @@ impl Runtime {
                 ObjectIteratorStep::Throw(value) => return Ok(Completion::Throw(value)),
             };
             self.insert_set_record(&result, value)?;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn table_backed_symbol_atoms_return_after_set_mutations() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let Value::Object(function) = context
+            .eval(
+                r#"(function(){
+                    var set = new Set();
+                    var value = Symbol("set-value");
+                    set.add(value);
+                    set.add(value);
+                    set.delete(value);
+                    set.add(Symbol("set-clear-value"));
+                    set.clear();
+                })"#,
+            )
+            .unwrap()
+        else {
+            panic!("Set Symbol ownership probe was not callable");
+        };
+        let function = runtime.as_callable(&function).unwrap().unwrap();
+
+        context
+            .call(&function, Value::Undefined, &[])
+            .expect("warm Set Symbol ownership probe");
+        let baseline = runtime.test_atom_count();
+        for _ in 0..3 {
+            context
+                .call(&function, Value::Undefined, &[])
+                .expect("repeat Set Symbol ownership probe");
+            assert_eq!(runtime.test_atom_count(), baseline);
         }
     }
 }

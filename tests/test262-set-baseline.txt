@@ -1,0 +1,27 @@
+# R2o freezes the dependency-audited complete strong Set surface. The global
+# profile admits Set and set-methods; this runner-bound scoped profile adds the
+# exact well-known-symbol dependencies required by the manifest. Class,
+# generator, WeakSet, and createRealm remain separate capability frontiers.
+quickjs=2026-06-04
+test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
+test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
+test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
+oxide_profile_sha256=6869e9d28fff1d5bd4e5b698dcdf6ee677b9134a91781ad7abe226200d669455
+schema=test262-canonical-classified-v2
+mode=both
+timeout_ms=30000
+paths=322
+variants=642
+runnable=642
+passes=642
+failures=0
+unsupported=0
+skipped=0
+manifest_sha256=44c6b6b599e7fe48324aaa693fa684649469c35209bc5c1edb34f0eebe2085b9
+manifest_file_sha256=0f560c202e9463ff4896796be6e924db984e25bc3e95ae2604a54ce9dee61e9f
+keys_sha256=5b4959128a9fb34b72b83950fd329f8a98bbbb2b08f256d5ff8bc3f7bc73a0ac
+nonpass_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+tsv_sha256=b45345b024a33560f2244b69bcdd181e2c5f07add1a04d9fe474169117cb222b
+jsonl_sha256=de7d718b67a1bae7d8031345ce55ba7f32aa8a5d6bcefd745ac2c4401ae65e3f
+summary=pass=642

@@ -10,7 +10,7 @@ differentials still decide exact behavior inside each implemented slice.
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
 - quickjs-oxide capability profile SHA-256:
-  `0f4617ff1678710c97620aa1257c4868b2a4daf0f4f917f9d7393566ee549c45`
+  `086b4964eebc8dd8960b33aaa333b0adaeefb1447cbf63f893042ab269a5a17b`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -50,32 +50,32 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 33,397 pass;
+- 34,041 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 47,865 are classified as unsupported because of a feature, mode, host
+- 47,499 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 452 fail to parse, 1,725 fail at runtime, 117 fail in the harness, and six
+- 502 fail to parse, 1,397 fail at runtime, 117 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 36,963 variants to execution. That count includes variants
+The runner admitted 37,411 variants to execution. That count includes variants
 which then report a typed parser or harness frontier rather than an observed
 non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 32.73% (`33,397 / 102,037`);
-- conservative target-scope lower bound: 39.97%
-  (`33,397 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 93.56%
-  (`33,397 / 35,697`).
+- raw suite pass rate: 33.36% (`34,041 / 102,037`);
+- conservative target-scope lower bound: 40.74%
+  (`34,041 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 94.39%
+  (`34,041 / 36,063`).
 
-The 39.97% figure is the useful whole-project progress floor, not a claim that
-the engine is 39.97% conformant. The 93.56% conditional rate measures quality
+The 40.74% figure is the useful whole-project progress floor, not a claim that
+the engine is 40.74% conformant. The 94.39% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion; R1u also demonstrates that this conditional rate can rise when
 previously ambiguous failures move to a more honest typed unsupported class.
-The capability profile currently admits 59 reviewed Test262
+The capability profile currently admits 61 reviewed Test262
 feature tags and 423 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
 lands can only make the measurement more representative. Focused QuickJS
@@ -89,9 +89,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`5a0502380cb281bb089fe229cb1ec806228dd70e75987f852476984cb4d30271`
+`14f8412069dc7ba2a648c2facead1cbcd79ccf2cc5116832602f50decd5f95ab`
 and
-`2370d923625dc76d0a89c8314ed16875a402bccde665b6e45e30948e7526a2f8`.
+`c29229ceeee55db836e701d8a2984ef0ba9eb9396d6deca8a5166026b58bb71b`.
 
 ## Milestone policy
 
@@ -1660,6 +1660,68 @@ blocker.
 Parameter initializers, classes and derived constructors, and async/generator
 methods remain explicit follow-up slices.
 
+## R2o strong Set gate
+
+R2o ports the pinned observable strong `Set` family through realm-local
+constructor, prototype, and independent Set-iterator graphs. Ordered records
+use `SameValueZero`, normalize negative zero, and preserve live mutation for
+iterators and `forEach`. Construction follows QuickJS's cached-adder and
+`IteratorClose` ordering. The implemented surface includes `add`, `has`,
+`delete`, `clear`, `size`, `forEach`, the exact keys/values alias, `entries`,
+species, tags, `Set.groupBy`, and `isDisjointFrom`, `isSubsetOf`,
+`isSupersetOf`, `intersection`, `difference`, `symmetricDifference`, and
+`union`. Set-producing methods follow the pinned set-like protocol and allocate
+a base Set in their defining realm without consulting subclass species or an
+overridden `add`.
+
+The dependency-audited focused gate freezes 322 paths and 642 variants; all
+642 pass. The global profile already admits `Set` and `set-methods`; the
+runner-bound scoped profile adds only the exact well-known-Symbol dependencies
+required by the frozen manifest. Its SHA-256 is
+`6869e9d28fff1d5bd4e5b698dcdf6ee677b9134a91781ad7abe226200d669455`.
+Class, generator/object-generator, rest-parameter, lexical-destructuring,
+WeakSet, and `$262.createRealm` dependencies remain separate frontiers.
+Manifest, key-set, and empty non-pass SHA-256 values are
+`44c6b6b599e7fe48324aaa693fa684649469c35209bc5c1edb34f0eebe2085b9`,
+`5b4959128a9fb34b72b83950fd329f8a98bbbb2b08f256d5ff8bc3f7bc73a0ac`,
+and
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+Focused TSV/JSONL hashes are
+`b45345b024a33560f2244b69bcdd181e2c5f07add1a04d9fe474169117cb222b`
+and
+`de7d718b67a1bae7d8031345ce55ba7f32aa8a5d6bcefd745ac2c4401ae65e3f`.
+Reproduce the gate with `scripts/test-test262-set.sh`.
+
+Declaring only `Set` and `set-methods` globally moves the capability profile to
+61 feature tags and 423 audited negative paths, with SHA-256
+`086b4964eebc8dd8960b33aaa333b0adaeefb1447cbf63f893042ab269a5a17b`.
+The exact R2n/R2o full join retains all 102,037 unique keys and records 342
+`fail-runtime -> pass`, 302 `unsupported-feature -> pass`, 82
+`unsupported-feature -> unsupported-parser`, 50
+`unsupported-feature -> fail-parse`, and 14
+`unsupported-feature -> fail-runtime` transitions. Of the 644 new passes, 602
+are inside the focused manifest and 42 are linked Map-brand, for-of, and
+staging variants outside it. The focused gate's other 40 variants remain
+fail-closed under the global profile because their well-known-Symbol tags are
+deliberately scoped. The 14 newly exposed runtime failures are WeakMap/WeakSet
+receiver-brand cases; the parser and parse failures expose existing class,
+generator/object-method, and parameter-syntax frontiers. There is no
+previous-pass regression or outcome drift outside the focused manifest and
+rows selected by the newly global tags. Runnable variants reach 37,411 and
+passes reach 34,041, a net gain of 644. Full TSV/JSONL SHA-256 values are
+`14f8412069dc7ba2a648c2facead1cbcd79ccf2cc5116832602f50decd5f95ab`
+and
+`c29229ceeee55db836e701d8a2984ef0ba9eb9396d6deca8a5166026b58bb71b`.
+All global-profile focused reports are re-emitted because the profile header
+changed; their key sets remain stable.
+
+The stable-vector storage shared with Map deliberately retains tombstones and
+uses linear lookup. That preserves the tested observable semantics but does
+not yet match QuickJS's hash lookup and reclaimable zombie records. WeakMap and
+WeakSet additionally require genuine weak-reference/GC infrastructure rather
+than another strong-record wrapper. Both remain explicit resource-parity or
+feature frontiers rather than part of this milestone.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -1735,6 +1797,7 @@ canonical progress report.
 ./scripts/test-test262-json-stringify.sh
 ./scripts/test-test262-json-raw.sh
 ./scripts/test-test262-map.sh
+./scripts/test-test262-set.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -1792,6 +1855,10 @@ declares the two reviewed JSON feature tags, and brings the complete vector to
 Map surface, passes its 370/370 focused gate, declares only `Map` and
 `array-grouping` globally, and adds 314 full-vector passes with zero
 previous-pass regression, bringing the complete vector to 33,397 passes.
+R2o adds the observable strong Set family and all seven set-composition
+methods, passes its 642/642 focused gate, declares only `Set` and
+`set-methods`, and adds 644 full-vector passes with zero previous-pass
+regression, bringing the complete vector to 34,041 passes.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

@@ -12,9 +12,10 @@ use quickjs_oxide::{
 // both reads, and routes every abrupt completion after iterator acquisition
 // through `JS_IteratorClose(..., TRUE)`.
 //
-// Proxy, Map/Set, TypedArray, generator and module-namespace integration are
-// recorded as explicit boundaries below; they do not silently weaken the
-// ordinary iterator differential while those intrinsics remain unpublished.
+// Proxy, TypedArray, generator and module-namespace integration are recorded
+// as explicit boundaries below; they do not silently weaken the ordinary
+// iterator differential while those intrinsics remain unpublished. Strong
+// Map/Set iterators are part of the active value differential.
 
 const VALUE_CASES: &[(&str, &str)] = &[
     (
@@ -69,6 +70,20 @@ const VALUE_CASES: &[(&str, &str)] = &[
             var result=Object.fromEntries([empty,negativeZero,nan]);
             return Object.getOwnPropertyNames(result).join(",")+"|"+
                 (result.undefined===undefined)+":"+result[0]+":"+result.NaN;
+        })()"#,
+    ),
+    (
+        "Map supplies its native entry iterator",
+        r#"(function(){
+            var map=new Map([["x",1],["y",2]]),result=Object.fromEntries(map);
+            return Object.getOwnPropertyNames(result).join(",")+":"+result.x+":"+result.y;
+        })()"#,
+    ),
+    (
+        "Set values may themselves be entry objects",
+        r#"(function(){
+            var set=new Set([["x",1],["y",2]]),result=Object.fromEntries(set);
+            return Object.getOwnPropertyNames(result).join(",")+":"+result.x+":"+result.y;
         })()"#,
     ),
 ];
@@ -277,13 +292,6 @@ const EXOTIC_ORACLE_ONLY_CASES: &[(&str, &str)] = &[
             function* entries(){try{yield ["a",1];yield 2}finally{log+="finally;"}}
             try{Object.fromEntries(entries())}catch(error){return log+error.name+":"+error.message}
             return "missing";
-        })()"#,
-    ),
-    (
-        "Map supplies its native entry iterator",
-        r#"(function(){
-            var map=new Map([["x",1],["y",2]]),result=Object.fromEntries(map);
-            return Object.getOwnPropertyNames(result).join(",")+":"+result.x+":"+result.y;
         })()"#,
     ),
 ];
@@ -586,7 +594,7 @@ fn object_from_entries_method_and_result_retain_then_release_their_realm() {
 }
 
 #[test]
-fn object_from_entries_records_current_exotic_and_generator_gap() {
+fn object_from_entries_records_current_proxy_typed_array_and_generator_gap() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     assert_eq!(
@@ -596,9 +604,9 @@ fn object_from_entries_records_current_exotic_and_generator_gap() {
             )
             .unwrap(),
         Value::String(
-            JsString::try_from_utf8("undefined|undefined|undefined|undefined|undefined").unwrap(),
+            JsString::try_from_utf8("undefined|function|function|undefined|undefined").unwrap(),
         ),
-        "activate the exotic Object.fromEntries oracle vectors as these intrinsics are published",
+        "activate the remaining exotic Object.fromEntries vectors as those intrinsics are published",
     );
     // The lexer recognizes generator context, but the current compiler does
     // not publish generator bytecode. The generator/finally oracle vector must

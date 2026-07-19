@@ -45,11 +45,15 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "0f4617ff1678710c97620aa1257c4868b2a4daf0f4f917f9d7393566ee549c45";
+    "086b4964eebc8dd8960b33aaa333b0adaeefb1447cbf63f893042ab269a5a17b";
 const TEST262_MAP_PROFILE_SHA256: &str =
     "16ab6bfe18540aae398c847905f492491e81500045b45a6bfb21f447fd537ea2";
 const TEST262_MAP_MANIFEST_SHA256: &str =
     "f369837ef69275815349f9202ade5b6ae1d4d91e9ae0313ac816ecfb0e3a4845";
+const TEST262_SET_PROFILE_SHA256: &str =
+    "6869e9d28fff1d5bd4e5b698dcdf6ee677b9134a91781ad7abe226200d669455";
+const TEST262_SET_MANIFEST_SHA256: &str =
+    "0f560c202e9463ff4896796be6e924db984e25bc3e95ae2604a54ce9dee61e9f";
 const QUICKJS_VERSION: &str = "2026-06-04";
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
@@ -547,6 +551,7 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
 enum OxideProfileKind {
     Global,
     Map,
+    Set,
 }
 
 fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
@@ -563,6 +568,7 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
             OxideProfileKind::Global,
         ),
         (root.join("tests/test262-map.conf"), OxideProfileKind::Map),
+        (root.join("tests/test262-set.conf"), OxideProfileKind::Set),
     ];
     for (candidate, kind) in profiles {
         let candidate = fs::canonicalize(&candidate).map_err(|error| {
@@ -576,7 +582,7 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         }
     }
     Err(format!(
-        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf or tests/test262-map.conf",
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-map.conf, or tests/test262-set.conf",
         path.display()
     ))
 }
@@ -628,6 +634,44 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 "scoped Map Test262 manifest",
             )?;
             Ok(TEST262_MAP_PROFILE_SHA256)
+        }
+        OxideProfileKind::Set => {
+            verify_sha256(
+                &options.oxide_profile,
+                TEST262_SET_PROFILE_SHA256,
+                "scoped Set Test262 capability profile",
+            )?;
+            if options.all || !options.tests.is_empty() {
+                return Err(
+                    "the scoped Set Test262 capability profile requires its pinned manifest"
+                        .to_owned(),
+                );
+            }
+            let manifest = options.manifest.as_ref().ok_or_else(|| {
+                "the scoped Set Test262 capability profile requires its pinned manifest".to_owned()
+            })?;
+            let actual = fs::canonicalize(manifest).map_err(|error| {
+                format!(
+                    "resolve scoped Set manifest {}: {error}",
+                    manifest.display()
+                )
+            })?;
+            let expected = fs::canonicalize(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/test262-set.txt"),
+            )
+            .map_err(|error| format!("resolve pinned scoped Set manifest: {error}"))?;
+            if actual != expected {
+                return Err(format!(
+                    "the scoped Set Test262 capability profile requires tests/test262-set.txt, found {}",
+                    manifest.display()
+                ));
+            }
+            verify_sha256(
+                manifest,
+                TEST262_SET_MANIFEST_SHA256,
+                "scoped Set Test262 manifest",
+            )?;
+            Ok(TEST262_SET_PROFILE_SHA256)
         }
     }
 }
@@ -896,8 +940,8 @@ mod cli_tests {
     use std::path::Path;
 
     use super::{
-        Invocation, OxideProfileKind, TEST262_MAP_PROFILE_SHA256, default_worker_count,
-        identify_oxide_profile, parse_args, verify_oxide_profile,
+        Invocation, OxideProfileKind, TEST262_MAP_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
+        default_worker_count, identify_oxide_profile, parse_args, verify_oxide_profile,
     };
 
     fn parse(values: &[&str]) -> Result<Invocation, String> {
@@ -983,7 +1027,7 @@ mod cli_tests {
     }
 
     #[test]
-    fn only_pinned_global_and_map_profiles_are_accepted() {
+    fn only_pinned_global_map_and_set_profiles_are_accepted() {
         assert_eq!(
             identify_oxide_profile(Path::new("compat/test262-oxide.conf")).unwrap(),
             OxideProfileKind::Global
@@ -991,6 +1035,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-map.conf")).unwrap(),
             OxideProfileKind::Map
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-set.conf")).unwrap(),
+            OxideProfileKind::Set
         );
 
         let error = identify_oxide_profile(Path::new("Cargo.toml")).unwrap_err();
@@ -1028,6 +1076,50 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-map.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_set_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-set.conf",
+            "--manifest",
+            "tests/test262-set.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_SET_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            ["--test", "test/built-ins/Set/length.js"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-set.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

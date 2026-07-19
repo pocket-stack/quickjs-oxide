@@ -208,7 +208,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 59] = [
+    const EXPECTED_FEATURES: [&str; 61] = [
         "Array.prototype.at",
         "Array.prototype.includes",
         "BigInt",
@@ -220,6 +220,7 @@ mod tests {
         "Reflect.construct",
         "Reflect.set",
         "Reflect.setPrototypeOf",
+        "Set",
         "String.fromCodePoint",
         "String.prototype.at",
         "String.prototype.endsWith",
@@ -263,6 +264,7 @@ mod tests {
         "regexp-modifiers",
         "regexp-named-groups",
         "regexp-unicode-property-escapes",
+        "set-methods",
         "string-trimming",
         "super",
         "template",
