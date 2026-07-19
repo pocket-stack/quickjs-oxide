@@ -15,8 +15,8 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 32,480 passes: 31.83% raw, a 38.87% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 91.54% among the 35,480 variants with a
+  has 32,484 passes: 31.84% raw, a 38.87% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 91.55% among the 35,484 variants with a
   non-unsupported observed outcome. The fixed smoke now has 191
   passes and two explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -435,9 +435,9 @@ claim full parity.
   reads, calls, assignments, logical
   assignments, updates, for-in/of targets, key-coercion/error ordering,
   strict-versus-sloppy rejected writes, and deletion errors are pinned against
-  QuickJS 2026-06-04. Arrow/direct-eval inheritance, parameter initializers,
-  classes/derived construction, and async/generator methods remain separate
-  frontiers.
+  QuickJS 2026-06-04. The R2i follow-up below resolves Arrow inheritance;
+  direct-eval inheritance, parameter initializers, classes/derived
+  construction, and async/generator methods remain separate frontiers.
 
   The frozen ObjectLiteral-super gate contains 26 paths and 48 variants; all 48
   are admitted and pass. Its manifest/key-set SHA-256 values are
@@ -462,14 +462,48 @@ claim full parity.
   and
   `4d220f27199ee71757e368eb863a535264cc9914a85efaa90d69d54813dd575c`.
 
-  At the R2c landing, async Arrow, default/rest/destructuring parameters,
-  class/`super`, and method/accessor adjacency remained typed frontiers. The
-  compiler's prepend passes also publish
-  var-object/arguments/hoist setup before the lazily selected `this`/
-  `new.target` locals, whereas QuickJS fixes the opposite bytecode prefix
-  order. Closures capture cells and all observable probes agree, so no semantic
-  divergence is known; structural prefix alignment remains explicit follow-up
-  work.
+  R2i extends those ObjectLiteral SuperProperty References through synchronous
+  ArrowFunctions. The arrow owns neither `this` nor HomeObject: the compiler
+  lazily materializes both pseudo bindings in the enclosing method or accessor
+  and relays them through ordinary closure slots, including nested and escaped
+  arrows. The HomeObject's live prototype, lexical receiver, computed writes
+  and updates, strictness, getter-call receiver split, and delete/grammar
+  boundaries are pinned by an 11-case QuickJS differential.
+
+  The focused ObjectLiteral-arrow-super gate freezes four paths and eight
+  sloppy/strict variants; all eight are admitted and pass. Its manifest/key-set
+  SHA-256 values are
+  `d29f77c5920b21a92f61b0022eb186b5ba24e100f6ffa52b4d952347c9aaad90`
+  and
+  `4ac13c25ee6b84ee9019b53f5119fb2d7dc3154eb9785eda8800f725bbf32eba`;
+  focused TSV/JSONL SHA-256 values are
+  `afa0f32205ef75af6aae165a3b2e74023d4408cef423333cad63454f9c402872`
+  and
+  `0c35ca795fc6b8329bcc6a3af0bbe7878d9819e22bf8b590f2634c79fbba4cbc`.
+  The capability profile remains unchanged at 54 feature tags and 423 exact
+  negative paths.
+
+  The exact R2h/R2i full-vector join retains all 102,037 unique keys with no
+  missing, extra, duplicate, or detail-only rows and no previous-pass
+  regressions. Exactly four rows move from `unsupported-parser` to pass: the
+  sloppy/strict variants of
+  `prop-dot-obj-val-from-arrow.js` and `prop-expr-obj-val-from-arrow.js`.
+  Runnable jobs remain 36,825 and the complete vector reaches 32,484 passes.
+  Full TSV/JSONL SHA-256 values are
+  `dcc079d5c819b066703046136bfe2bdb17a6f02723796c6a8020680db0bb3acb`
+  and
+  `c82f264111cd4d0526f2f607ead97aab0e2776b49410b58d25425b8491df2664`.
+
+  Async Arrow, default/rest/destructuring parameters, classes, and remaining
+  method/accessor forms stay typed frontiers. One entry-prologue composition
+  debt also remains. R2i fixes the pseudo-local group itself to QuickJS's
+  HomeObject, `new.target`, then `this` order, but the compiler still installs
+  that group and the var-object/arguments/function-hoist group with separate
+  prepend passes. The later prepend therefore leaves the declaration group
+  before the pseudo locals, opposite QuickJS's complete entry prefix. Closures
+  capture the intended cells and the mixed-entry oracle observes no semantic
+  divergence; a single composer must eventually publish all entry groups once
+  in upstream order.
 
   Generator/async and destructuring eval declarations, class/`super`, and
   ill-formed UTF-16 source stay explicit frontiers.
@@ -1909,8 +1943,10 @@ claim full parity.
   pinned getter-call exception first invokes an accessor with the frozen super
   base, then calls its result with the method receiver. Reads, calls, writes,
   updates, deletion errors, and loop assignment targets
-  share dedicated verified bytecode/VM helpers. Arrow/direct-eval inheritance,
-  parameter initializers, classes/derived construction, and
+  share dedicated verified bytecode/VM helpers. Synchronous arrows nested in a
+  method or accessor inherit its lexical receiver and HomeObject through
+  authenticated closure slots. Direct-eval inheritance, parameter initializers,
+  classes/derived construction, and
   Proxy/exotic-source spread remain explicit frontiers. The pinned anchors are
   `quickjs.c` 24485-24621 and
   24850-24965 plus the matching object/define/name/proto/copy opcodes in
@@ -1918,7 +1954,7 @@ claim full parity.
   slice, `oracle_object_methods` locks the concise-method slice, and
   `oracle_object_accessors` locks the getter/setter slice against QuickJS
   2026-06-04; `oracle_object_super` locks the direct HomeObject/SuperProperty
-  slice.
+  slice, and `oracle_object_super_arrow` locks the lexical-arrow relay.
 
 - Untagged template literals follow QuickJS `js_parse_template` rather than a
   generic string-interpolation rewrite. A no-substitution template pushes only
@@ -3184,10 +3220,19 @@ parse/link/evaluate, Promises/jobs and async completion, the ES5.1 suite, and a
 separate QuickJS-runner-quirk profile remain future milestones. Unsupported and
 host-missing outcomes are failures, not additional feature skips.
 
+One gate-infrastructure debt is measured on macOS's default 2 MiB libtest
+worker stack. `cargo test --locked --workspace --all-targets` reaches a host
+stack overflow/SIGABRT in
+`runtime::intrinsics::object::tests::recursive_object_has_own_key_conversion_is_guarded_and_runtime_recovers`;
+the exact test and all 800 library tests pass with
+`RUST_MIN_STACK=8388608`. This is not an R2i semantic regression, but the test
+must gain an explicit proven stack or the VM/native frames must shrink before
+the default workspace command is again a reliable gate.
+
 The language slice remains incomplete. Async/generator declarations,
 `for-await`, general assignment/object/default/rest/nested destructuring,
 other general assignment targets, module resolution,
-async/generator methods, Arrow/direct-eval/parameter-initializer inheritance of
+async/generator methods, direct-eval/parameter-initializer inheritance of
 HomeObject/`super`, non-simple parameter lists including ObjectLiteral setters,
 async and non-simple Arrow forms, and
 callable Proxy classes are not yet
@@ -3344,7 +3389,7 @@ destructuring consumers, `with` object-environment
 semantics, other
 iterator classes and helpers, the remaining RegExp grammar/static surface and
 Unicode-backed String methods, non-simple ObjectLiteral setter parameters,
-async/generator methods, Arrow/direct-eval/parameter-initializer `super`
+async/generator methods, direct-eval/parameter-initializer `super`
 inheritance, exotic-source spread, and the rest of
 the builtin table build on those layers.
 
@@ -3471,6 +3516,14 @@ module declaration to 9,734 lines. Generic Reference-expression lowering raises
 `compiler.rs` to 11,874 lines while the bounded object/function parsers remain
 290/315 lines. That compiler growth is tracked as structural debt for the next
 expression-lowering split rather than a precedent for resuming monolith growth.
+R2i leaves `runtime.rs`, `runtime/home_object.rs`, and
+`runtime/vm_host/super_property.rs` at 9,734/165/97 lines and extends the bounded
+`compiler/pseudo_binding.rs` owner to 288 lines for the authenticated
+HomeObject pseudo local and closure relay. `compiler.rs` reaches 11,899 lines;
+`compiler/arrow.rs`, `compiler/function.rs`, and
+`compiler/object_literal.rs` remain 333/315/290 lines. The separate entry-prefix
+prepend passes remain the composer-order debt described above; they should be
+unified rather than moved back into the compiler facade.
 The
 RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
@@ -3668,6 +3721,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_accessors -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_super -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_object_super_arrow -- --nocapture
 
 ./scripts/test-parity-slice.sh
 ./scripts/test-test262-smoke.sh
@@ -3701,6 +3756,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/run-test262-object-methods.sh
 ./scripts/run-test262-object-accessors.sh
 ./scripts/run-test262-object-super.sh
+./scripts/run-test262-object-super-arrow.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -3718,7 +3774,7 @@ Program-var/function, Program/body/block/switch/classic-for lexical-scope,
 ordinary mapped/unmapped Arguments object,
 single/labelled Annex B, synchronous try/catch/finally, synchronous
 for-in/for-of, Array core/literal/iterator/search/callback/mutation/change-by-copy,
-Object literal/concise-method/accessor/direct-super, and Object
+Object literal/concise-method/accessor/direct/arrow-super, and Object
 constructor/static-prefix/prototype
 slices. The atom-Error
 target contains thirteen

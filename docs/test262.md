@@ -50,9 +50,9 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 32,480 pass;
+- 32,484 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 48,082 are classified as unsupported because of a feature, mode, host
+- 48,078 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
 - 448 fail to parse, 2,431 fail at runtime, 117 fail in the harness, and four
@@ -64,14 +64,14 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 31.83% (`32,480 / 102,037`);
+- raw suite pass rate: 31.84% (`32,484 / 102,037`);
 - conservative target-scope lower bound: 38.87%
-  (`32,480 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 91.54%
-  (`32,480 / 35,480`).
+  (`32,484 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 91.55%
+  (`32,484 / 35,484`).
 
 The 38.87% figure is the useful whole-project progress floor, not a claim that
-the engine is 38.87% conformant. The 91.54% conditional rate measures quality
+the engine is 38.87% conformant. The 91.55% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion; R1u also demonstrates that this conditional rate can rise when
 previously ambiguous failures move to a more honest typed unsupported class.
@@ -89,9 +89,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`44f6f555cc8f72a6d0ff5ed392468a315b44d8c2cd289f7b72a65adde8c58a78`
+`dcc079d5c819b066703046136bfe2bdb17a6f02723796c6a8020680db0bb3acb`
 and
-`4d220f27199ee71757e368eb863a535264cc9914a85efaa90d69d54813dd575c`.
+`c82f264111cd4d0526f2f607ead97aab0e2776b49410b58d25425b8491df2664`.
 
 ## Milestone policy
 
@@ -1366,10 +1366,50 @@ full TSV/JSONL SHA-256 values are
 and
 `4d220f27199ee71757e368eb863a535264cc9914a85efaa90d69d54813dd575c`.
 
-ArrowFunction and direct-eval inheritance of HomeObject, parameter
-initializers, classes and derived constructors, and async/generator methods
-remain explicit follow-up slices rather than being inferred from this direct
-ObjectLiteral result.
+R2i below resolves ArrowFunction inheritance. Direct-eval inheritance of
+HomeObject, parameter initializers, classes and derived constructors, and
+async/generator methods remain explicit follow-up slices rather than being
+inferred from the direct ObjectLiteral result.
+
+## R2i ObjectLiteral arrow `super` gate
+
+R2i extends SuperProperty Reference semantics through synchronous arrows nested
+in ObjectLiteral methods and accessors. Arrows capture neither a fresh `this`
+nor a fresh HomeObject: the enclosing method lazily owns both authenticated
+pseudo locals and nested or escaped arrows relay those cells through ordinary
+closure slots. An 11-case pinned QuickJS differential covers live HomeObject
+prototype changes, lexical receivers, accessor and nested-arrow inheritance,
+computed writes, updates, strictness, getter-call receiver behavior, deletion,
+and grammar boundaries.
+
+The focused manifest freezes four paths and eight sloppy/strict variants. All
+eight are runnable and pass. Its manifest/key-set SHA-256 values are
+`d29f77c5920b21a92f61b0022eb186b5ba24e100f6ffa52b4d952347c9aaad90`
+and
+`4ac13c25ee6b84ee9019b53f5119fb2d7dc3154eb9785eda8800f725bbf32eba`;
+the empty non-pass projection has SHA-256
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+Focused TSV/JSONL SHA-256 values are
+`afa0f32205ef75af6aae165a3b2e74023d4408cef423333cad63454f9c402872`
+and
+`0c35ca795fc6b8329bcc6a3af0bbe7878d9819e22bf8b590f2634c79fbba4cbc`.
+Reproduce it with `scripts/run-test262-object-super-arrow.sh`. The capability
+profile remains unchanged at 54 feature tags and 423 audited negative paths.
+
+The exact R2h/R2i full-vector join matches all 102,037 unique keys with no
+missing, extra, duplicate, or detail-only rows and no previous-pass
+regressions. Exactly four `unsupported-parser -> pass` transitions occur: the
+sloppy/strict variants of
+`prop-dot-obj-val-from-arrow.js` and `prop-expr-obj-val-from-arrow.js`.
+Runnable jobs remain 36,825 and the complete vector reaches 32,484 passes.
+Full TSV/JSONL SHA-256 values are
+`dcc079d5c819b066703046136bfe2bdb17a6f02723796c6a8020680db0bb3acb`
+and
+`c82f264111cd4d0526f2f607ead97aab0e2776b49410b58d25425b8491df2664`.
+
+Direct-eval inheritance of HomeObject, parameter initializers, classes and
+derived constructors, and async/generator methods remain explicit follow-up
+slices.
 
 ## Runner contract
 
@@ -1439,6 +1479,7 @@ canonical progress report.
 ./scripts/run-test262-object-methods.sh
 ./scripts/run-test262-object-accessors.sh
 ./scripts/run-test262-object-super.sh
+./scripts/run-test262-object-super-arrow.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -1478,7 +1519,10 @@ moves the profile to 422 audited negative paths, passes its 128-variant focused
 gate, and adds 447 full-vector passes with zero previous-pass regressions; R2h
 adds direct ObjectLiteral SuperProperty References, moves the profile to 54
 feature tags and 423 audited negative paths, passes its 48-variant focused gate,
-and adds 82 full-vector passes with zero previous-pass regressions.
+and adds 82 full-vector passes with zero previous-pass regressions; R2i relays
+ObjectLiteral HomeObject and lexical `this` through synchronous arrows, passes
+its eight-variant focused gate, and adds four full-vector passes without
+changing the profile or runnable count.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS
