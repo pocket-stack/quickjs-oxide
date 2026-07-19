@@ -88,6 +88,7 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/run-test262-object-super-arrow.sh
 ./scripts/run-test262-object-super-eval.sh
 ./scripts/test-test262-tagged-template.sh
+./scripts/test-test262-json-parse.sh
 ./scripts/test-test262-full.sh
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ./scripts/check-rust-only.sh

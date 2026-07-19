@@ -1,0 +1,26 @@
+# R2l freezes the strict JSON.parse surface, reviver walk, and the JSON global
+# shell. The two timeouts are the single 2,097,153-element dense-array stress
+# path in sloppy and strict mode; they remain visible as an object-model
+# performance frontier rather than being removed from the manifest.
+quickjs=2026-06-04
+test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
+test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
+test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
+oxide_profile_sha256=d146a337c9bab8b171aaddfe31d404073a9d3cbb65fd7ac7d6ab46fdefe69ef7
+schema=test262-canonical-classified-v2
+mode=both
+timeout_ms=30000
+paths=84
+variants=168
+runnable=168
+passes=166
+failures=2
+unsupported=0
+skipped=0
+manifest_sha256=16b919d34d9eebcc60a92e038e0a6fd565e9306c1ba17cffc6f62ce0f05f23c4
+keys_sha256=36e19d071bb8ad9e4982ae85a5f32a3205925b6bf68fe335cfd1cbdfb429cff9
+nonpass_sha256=2436785b58ef14db6e47d65537af5a9edf58e33bec81837eaf2f3b36f1eee4d0
+tsv_sha256=31d01dbc119767d5eb9e2be69c9054f97ca78a3b4ca5e5ae60faf9ed1f29b8e9
+jsonl_sha256=7ed6c23a8b94dfb2854f9be793c4aba388d64a432e0a931d6d8d81dbb7c38dbf
+summary=pass=166 timeout=2
