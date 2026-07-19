@@ -15,6 +15,34 @@ pub(super) struct FunctionDefinitionHeader<'source> {
     pub(super) name: Option<(Identifier<'source>, Span)>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FunctionDefinitionOptions {
+    kind: FunctionKind,
+    private_name_binding: bool,
+    reject_duplicate_parameters: bool,
+    allow_trailing_parameter_comma: bool,
+}
+
+impl FunctionDefinitionOptions {
+    const fn ordinary(private_name_binding: bool) -> Self {
+        Self {
+            kind: FunctionKind::Ordinary,
+            private_name_binding,
+            reject_duplicate_parameters: false,
+            allow_trailing_parameter_comma: false,
+        }
+    }
+
+    const METHOD: Self = Self {
+        kind: FunctionKind::Method,
+        private_name_binding: false,
+        // QuickJS applies the method-specific UniqueFormalParameters early
+        // error even when the surrounding source and method body are sloppy.
+        reject_duplicate_parameters: true,
+        allow_trailing_parameter_comma: true,
+    };
+}
+
 impl<'source> Parser<'source> {
     pub(super) fn parse_function_expression(&mut self) -> Result<(), Error> {
         let parsed = self.parse_function_definition(false, true)?;
@@ -61,6 +89,37 @@ impl<'source> Parser<'source> {
         header: FunctionDefinitionHeader<'source>,
         private_name_binding: bool,
     ) -> Result<ParsedFunctionDefinition, Error> {
+        self.parse_function_definition_tail_with_options(
+            header,
+            FunctionDefinitionOptions::ordinary(private_name_binding),
+        )
+    }
+
+    /// Parse a synchronous object-literal concise method after its property
+    /// name has been consumed. Unlike a named function expression, the
+    /// property key is only the eventual public `.name`; it must never create
+    /// a private self binding inside the method body.
+    pub(super) fn parse_object_method_definition(
+        &mut self,
+        function_span: Span,
+    ) -> Result<(), Error> {
+        let parsed = self.parse_function_definition_tail_with_options(
+            FunctionDefinitionHeader {
+                span: function_span,
+                name: None,
+            },
+            FunctionDefinitionOptions::METHOD,
+        )?;
+        self.emit(IrOp::MakeClosure(parsed.constant))?;
+        self.anonymous_function_definition = None;
+        Ok(())
+    }
+
+    fn parse_function_definition_tail_with_options(
+        &mut self,
+        header: FunctionDefinitionHeader<'source>,
+        options: FunctionDefinitionOptions,
+    ) -> Result<ParsedFunctionDefinition, Error> {
         let FunctionDefinitionHeader {
             span: function_span,
             name: function_name_token,
@@ -71,11 +130,32 @@ impl<'source> Parser<'source> {
         let mut parameter_tokens = Vec::new();
         if !self.consume_punctuator(Punctuator::RightParen)? {
             loop {
+                if options.kind == FunctionKind::Method {
+                    if self.is_punctuator(Punctuator::Ellipsis) {
+                        return Err(self.unsupported_here(
+                            "object method rest parameters are not implemented yet",
+                        ));
+                    }
+                    if matches!(
+                        self.current().kind,
+                        TokenKind::Punctuator(Punctuator::LeftBracket | Punctuator::LeftBrace)
+                    ) {
+                        return Err(self.unsupported_here(
+                            "object method destructuring parameters are not implemented yet",
+                        ));
+                    }
+                }
                 let token = self.current().clone();
                 let TokenKind::Identifier(identifier) = token.kind else {
                     return Err(self.syntax_here("missing formal parameter"));
                 };
                 validate_identifier(&identifier, token.span, false, IdentifierContext::Argument)?;
+                if options.reject_duplicate_parameters && parameters.contains(&identifier.value) {
+                    return Err(Error::syntax(
+                        "duplicate argument names not allowed in this context",
+                        source_span(token.span),
+                    ));
+                }
                 parameter_tokens.push((identifier.clone(), token.span));
                 parameters.push(identifier.value);
                 if parameters.len() > MAX_LOCAL_VARIABLES {
@@ -83,6 +163,11 @@ impl<'source> Parser<'source> {
                         .with_span(source_span(token.span)));
                 }
                 self.advance()?;
+                if options.kind == FunctionKind::Method && self.is_punctuator(Punctuator::Equal) {
+                    return Err(self.unsupported_here(
+                        "object method default parameters are not implemented yet",
+                    ));
+                }
                 if !self.consume_punctuator(Punctuator::Comma)? {
                     if !self.consume_punctuator(Punctuator::RightParen)? {
                         return Err(Error::syntax(
@@ -93,6 +178,10 @@ impl<'source> Parser<'source> {
                     break;
                 }
                 if self.is_punctuator(Punctuator::RightParen) {
+                    if options.allow_trailing_parameter_comma {
+                        self.advance()?;
+                        break;
+                    }
                     return Err(self.unsupported_here(
                         "a trailing comma in this simple parameter list is not implemented yet",
                     ));
@@ -124,7 +213,7 @@ impl<'source> Parser<'source> {
                     IdentifierContext::Argument,
                 )?;
                 let parameter = &identifier.value;
-                if parameters[..index].contains(parameter) {
+                if !options.reject_duplicate_parameters && parameters[..index].contains(parameter) {
                     return Err(Error::syntax(
                         "duplicate argument names not allowed in this context",
                         source_span(self.current().span),
@@ -143,14 +232,14 @@ impl<'source> Parser<'source> {
                 function: parent,
                 definition_scope: parent_scope,
             }),
-            FunctionKind::Ordinary,
+            options.kind,
             FunctionSourceInfo {
                 span: function_span,
                 definition: source_offset(function_span)?,
                 range: None,
             },
             function_name,
-            private_name_binding && function_name_token.is_some(),
+            options.private_name_binding && function_name_token.is_some(),
             parameters,
             strict,
         )?);

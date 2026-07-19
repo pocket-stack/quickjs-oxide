@@ -1,5 +1,7 @@
 use crate::bigint::JsBigInt;
-use crate::bytecode::{ArgumentsKind, DynamicEnvironmentSource, EvalVariableSource, Instruction};
+use crate::bytecode::{
+    ArgumentsKind, DefineMethodKind, DynamicEnvironmentSource, EvalVariableSource, Instruction,
+};
 use crate::debug::DebugInfoMode;
 use crate::error::ErrorKind;
 use crate::heap::{
@@ -7412,7 +7414,40 @@ fn object_literals_lower_quickjs_data_proto_computed_and_spread_paths() {
 }
 
 #[test]
-fn object_literal_grammar_is_fail_closed_at_method_and_pattern_frontiers() {
+fn object_literal_methods_lower_fixed_and_computed_non_constructors() {
+    let script = compile_unlinked_script("({a(value,){return value},['b'](){return this}})")
+        .expect("concise methods compile");
+    assert!(script.code().iter().any(|instruction| matches!(
+        instruction,
+        Instruction::DefineMethod {
+            kind: DefineMethodKind::Method,
+            enumerable: true,
+            ..
+        }
+    )));
+    assert!(script.code().iter().any(|instruction| matches!(
+        instruction,
+        Instruction::DefineMethodComputed {
+            kind: DefineMethodKind::Method,
+            enumerable: true,
+        }
+    )));
+
+    let methods = script
+        .constants()
+        .iter()
+        .filter_map(|constant| constant.as_child())
+        .collect::<Vec<_>>();
+    assert_eq!(methods.len(), 2);
+    assert_eq!(methods[0].metadata().argument_count, 1);
+    for method in methods {
+        assert!(!method.metadata().has_prototype);
+        assert_eq!(method.metadata().constructor_kind, ConstructorKind::None);
+    }
+}
+
+#[test]
+fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
     for source in [
         "({})",
         "({a:1,})",
@@ -7421,12 +7456,24 @@ fn object_literal_grammar_is_fail_closed_at_method_and_pattern_frontiers() {
         "({['x']:2})",
         "({...null})",
         "({__proto__:null,a:1})",
+        "({a(){}})",
+        "({get(){}})",
+        "({set(value){}})",
+        "({[1](){}})",
     ] {
         compile_unlinked_script(source)
             .unwrap_or_else(|error| panic!("valid Object literal {source:?}: {error}"));
     }
 
-    for source in ["({a(){}})", "({get a(){}})", "({set a(v){}})", "({*a(){}})"] {
+    for source in [
+        "({get a(){}})",
+        "({set a(v){}})",
+        "({*a(){}})",
+        "({async a(){}})",
+        "({a(...rest){}})",
+        "({a(value=1){}})",
+        "({a({value}){}})",
+    ] {
         assert!(
             compile_unlinked_script(source)
                 .unwrap_err()
@@ -7435,6 +7482,12 @@ fn object_literal_grammar_is_fail_closed_at_method_and_pattern_frontiers() {
             "method frontier was not explicit for {source}"
         );
     }
+    assert_eq!(
+        compile_unlinked_script("({a(value,value){}})")
+            .unwrap_err()
+            .message(),
+        "duplicate argument names not allowed in this context"
+    );
     assert_eq!(
         compile_unlinked_script("({__proto__:null,__proto__:{}})")
             .unwrap_err()

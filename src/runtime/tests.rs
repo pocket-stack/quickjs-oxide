@@ -5084,6 +5084,19 @@ fn publication_rejects_string_key_opcodes_with_non_string_constants() {
             ],
             2,
         ),
+        (
+            vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::DefineMethod {
+                    key: 0,
+                    kind: crate::bytecode::DefineMethodKind::Method,
+                    enumerable: true,
+                },
+                Instruction::Return,
+            ],
+            2,
+        ),
     ] {
         let function = UnlinkedFunction::new(
             code,

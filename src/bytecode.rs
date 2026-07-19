@@ -59,6 +59,19 @@ const fn dynamic_environment_local(source: DynamicEnvironmentSource) -> Option<u
     }
 }
 
+/// Object-literal function role carried by QuickJS's `OP_define_method`
+/// family.
+///
+/// The role is deliberately part of the verified instruction rather than a
+/// JavaScript stack value: it selects both the function-name prefix and the
+/// property descriptor shape used at publication time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DefineMethodKind {
+    Method,
+    Getter,
+    Setter,
+}
+
 /// Stack-machine operations deliberately use the names and stack behavior of
 /// their `QuickJS` counterparts. This typed form is the current compiler IR and
 /// verified execution format; a future compact encoder must share this opcode
@@ -253,6 +266,21 @@ pub enum Instruction {
     /// preserving the object below it (`object value -> object`). Array
     /// literals use this after their initial dense prefix.
     DefineField(u32),
+    /// QuickJS `OP_define_method`: name and publish an object-literal method
+    /// under one verified String constant while preserving the fresh literal
+    /// (`object closure -> object`).
+    DefineMethod {
+        key: u32,
+        kind: DefineMethodKind,
+        enumerable: bool,
+    },
+    /// QuickJS `OP_define_method_computed`: publish an object-literal method
+    /// under an already-canonical property key while preserving the fresh
+    /// literal (`object key closure -> object`).
+    DefineMethodComputed {
+        kind: DefineMethodKind,
+        enumerable: bool,
+    },
     /// QuickJS `OP_define_array_el`: define a computed C_W_E data property
     /// while preserving the Array and its dynamic index
     /// (`array index value -> array index`).
@@ -440,7 +468,8 @@ impl Instruction {
             Self::Perm4 => (4, 4),
             Self::PutField(_) => (2, 0),
             Self::PutArrayEl => (3, 0),
-            Self::DefineField(_) => (2, 1),
+            Self::DefineField(_) | Self::DefineMethod { .. } => (2, 1),
+            Self::DefineMethodComputed { .. } => (3, 1),
             Self::DefineArrayEl | Self::Append => (3, 2),
             Self::SetNameComputed => (2, 2),
             Self::SetProto | Self::CopyDataProperties => (2, 1),
@@ -562,6 +591,7 @@ impl BytecodeFunction {
             | Instruction::GetField2(index)
             | Instruction::PutField(index)
             | Instruction::DefineField(index)
+            | Instruction::DefineMethod { key: index, .. }
             | Instruction::HasEvalVariable { name: index, .. }
             | Instruction::GetEvalVariable { name: index, .. }
             | Instruction::PutEvalVariable { name: index, .. }
@@ -676,6 +706,7 @@ pub(crate) fn verify_parts(
             | Instruction::GetField2(index)
             | Instruction::PutField(index)
             | Instruction::DefineField(index)
+            | Instruction::DefineMethod { key: index, .. }
             | Instruction::HasEvalVariable { name: index, .. }
             | Instruction::GetEvalVariable { name: index, .. }
             | Instruction::PutEvalVariable { name: index, .. }
@@ -1160,8 +1191,8 @@ fn enqueue_fallthrough(
 #[cfg(test)]
 mod tests {
     use super::{
-        ArgumentsKind, BytecodeFunction, DynamicEnvironmentSource, EvalVariableSource, Instruction,
-        MAX_LOCAL_SLOTS, WithObjectSource,
+        ArgumentsKind, BytecodeFunction, DefineMethodKind, DynamicEnvironmentSource,
+        EvalVariableSource, Instruction, MAX_LOCAL_SLOTS, WithObjectSource,
     };
     use crate::{JsString, Value};
 
@@ -2534,13 +2565,22 @@ mod tests {
                 Instruction::Object,
                 Instruction::PushI32(1),
                 Instruction::DefineField(0),
+                Instruction::Undefined,
+                Instruction::DefineMethod {
+                    key: 1,
+                    kind: DefineMethodKind::Method,
+                    enumerable: true,
+                },
                 Instruction::Null,
                 Instruction::SetProto,
                 Instruction::Undefined,
                 Instruction::CopyDataProperties,
                 Instruction::Return,
             ],
-            constants: vec![Value::String(crate::value::JsString::from_static("field"))],
+            constants: vec![
+                Value::String(crate::value::JsString::from_static("field")),
+                Value::String(crate::value::JsString::from_static("method")),
+            ],
             local_count: 0,
             max_stack: 2,
         };
@@ -2551,10 +2591,12 @@ mod tests {
             code: vec![
                 Instruction::Object,
                 Instruction::PushI32(1),
+                Instruction::ToPropKey,
                 Instruction::Undefined,
-                Instruction::SetNameComputed,
-                Instruction::DefineArrayEl,
-                Instruction::Drop,
+                Instruction::DefineMethodComputed {
+                    kind: DefineMethodKind::Getter,
+                    enumerable: true,
+                },
                 Instruction::Return,
             ],
             constants: vec![],
@@ -2568,13 +2610,27 @@ mod tests {
     fn verifier_rejects_object_literal_opcode_underflow() {
         for instruction in [
             Instruction::SetNameComputed,
+            Instruction::DefineMethod {
+                key: 0,
+                kind: DefineMethodKind::Method,
+                enumerable: true,
+            },
+            Instruction::DefineMethodComputed {
+                kind: DefineMethodKind::Setter,
+                enumerable: true,
+            },
             Instruction::SetProto,
             Instruction::CopyDataProperties,
         ] {
+            let constants = if matches!(&instruction, Instruction::DefineMethod { .. }) {
+                vec![Value::String(crate::value::JsString::from_static("method"))]
+            } else {
+                vec![]
+            };
             let function = BytecodeFunction {
                 name: None,
                 code: vec![instruction, Instruction::Return],
-                constants: vec![],
+                constants,
                 local_count: 0,
                 max_stack: 2,
             };
@@ -2601,6 +2657,27 @@ mod tests {
         };
         assert_eq!(
             non_string_field.verify().unwrap_err().message(),
+            "string-key opcode referenced a non-string constant"
+        );
+
+        let non_string_method = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::DefineMethod {
+                    key: 0,
+                    kind: DefineMethodKind::Method,
+                    enumerable: true,
+                },
+                Instruction::Return,
+            ],
+            constants: vec![Value::Int(0)],
+            local_count: 0,
+            max_stack: 2,
+        };
+        assert_eq!(
+            non_string_method.verify().unwrap_err().message(),
             "string-key opcode referenced a non-string constant"
         );
 

@@ -4,7 +4,9 @@
 //! runtime's object, call, iterator, realm and captured-variable machinery.
 
 use super::*;
-use crate::bytecode::{ArgumentsKind, DynamicEnvironmentSource, EvalVariableSource};
+use crate::bytecode::{
+    ArgumentsKind, DefineMethodKind, DynamicEnvironmentSource, EvalVariableSource,
+};
 use crate::heap::{EvalBinding, EvalBindingSource, EvalVariableEnvironment};
 use crate::vm::{CallInput, DirectEvalInvocation, Vm, VmHost};
 
@@ -786,6 +788,38 @@ impl RuntimeVmHost {
             }
         };
         Ok(VmPropertyKeyConversion::Key(key))
+    }
+
+    /// Convert the authenticated output of `ToPropKey` without invoking any
+    /// user-observable coercion a second time.
+    fn canonical_property_key_from_value(&self, value: &Value) -> Result<PropertyKey, Error> {
+        match value {
+            Value::Symbol(symbol) => {
+                if !symbol.belongs_to(&self.runtime) {
+                    return Err(Error::internal(
+                        "computed method symbol belongs to another runtime",
+                    ));
+                }
+                PropertyKey::from_borrowed_atom(self.runtime.clone(), symbol.atom())
+                    .map_err(|error| Error::internal(error.to_string()))
+            }
+            Value::String(string) => self
+                .runtime
+                .intern_property_key_js_string(string)
+                .map_err(|error| Error::internal(error.to_string())),
+            Value::Int(value) => self
+                .runtime
+                .intern_property_key_js_string(&Value::Int(*value).to_js_string()?)
+                .map_err(|error| Error::internal(error.to_string())),
+            Value::Undefined
+            | Value::Null
+            | Value::Bool(_)
+            | Value::Float(_)
+            | Value::BigInt(_)
+            | Value::Object(_) => Err(Error::internal(
+                "computed method key was not canonicalized by ToPropKey",
+            )),
+        }
     }
 
     fn finish_property_get_action(
@@ -1943,6 +1977,56 @@ impl VmHost for RuntimeVmHost {
                 configurable: DescriptorField::Present(true),
                 ..OrdinaryPropertyDescriptor::new()
             },
+        );
+        self.finish_property_define(result)
+    }
+
+    fn define_method(
+        &mut self,
+        base: Value,
+        key_index: u32,
+        function: Value,
+        kind: DefineMethodKind,
+        enumerable: bool,
+    ) -> Result<Completion, Error> {
+        let Value::Object(object) = base else {
+            return Err(Error::internal(
+                "object-literal method target was not an Object",
+            ));
+        };
+        let key = self.constant_property_key(key_index)?;
+        let result = self.runtime.define_object_literal_method(
+            self.current_realm,
+            &object,
+            &key,
+            function,
+            kind,
+            enumerable,
+        );
+        self.finish_property_define(result)
+    }
+
+    fn define_method_computed(
+        &mut self,
+        base: Value,
+        key: Value,
+        function: Value,
+        kind: DefineMethodKind,
+        enumerable: bool,
+    ) -> Result<Completion, Error> {
+        let Value::Object(object) = base else {
+            return Err(Error::internal(
+                "computed object-literal method target was not an Object",
+            ));
+        };
+        let key = self.canonical_property_key_from_value(&key)?;
+        let result = self.runtime.define_object_literal_method(
+            self.current_realm,
+            &object,
+            &key,
+            function,
+            kind,
+            enumerable,
         );
         self.finish_property_define(result)
     }

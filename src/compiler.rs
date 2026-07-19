@@ -245,6 +245,10 @@ enum FunctionKind {
     Script,
     Eval(EvalKind),
     Ordinary,
+    /// Compiler-only object-literal concise method. Like an ordinary function
+    /// it owns `this`, `arguments`, and `new.target`, but publication lowers it
+    /// as a non-constructor with no `prototype` property.
+    Method,
     /// Compiler-only parse/binding kind. QuickJS publishes synchronous arrow
     /// bytecode as a normal function with no prototype or constructor bit.
     Arrow,
@@ -747,7 +751,7 @@ struct FunctionIr {
     /// arrows or exposed to direct eval. Arrow frames never own these locals.
     this_local: Option<u16>,
     new_target_local: Option<u16>,
-    /// Hidden null-prototype variable object for a sloppy ordinary function
+    /// Hidden null-prototype variable object for sloppy authored function code
     /// containing syntactic direct eval. Its identity is explicit rather than
     /// inferred from local allocation order.
     eval_variable_object_local: Option<u16>,
@@ -867,7 +871,10 @@ impl FunctionIr {
         let var_scope = function_root;
         let ops = if matches!(
             kind,
-            FunctionKind::Ordinary | FunctionKind::Arrow | FunctionKind::Eval(_)
+            FunctionKind::Ordinary
+                | FunctionKind::Method
+                | FunctionKind::Arrow
+                | FunctionKind::Eval(_)
         ) {
             vec![SpannedIrOp {
                 op: IrOp::EnterScope(body),
@@ -1347,7 +1354,7 @@ impl<'source> Parser<'source> {
             )?;
         }
 
-        // QuickJS ends ordinary function bytecode with `return_undef`. It may
+        // QuickJS ends function bytecode with `return_undef`. It may
         // be unreachable after an explicit return, but keeps fallthrough
         // behavior structural and gives every function a terminal opcode.
         self.emit_instruction(Instruction::Undefined)?;
@@ -1418,7 +1425,7 @@ impl<'source> Parser<'source> {
                     self.parse_eval_program_function_declaration()
                 } else if matches!(
                     self.current_ir().kind,
-                    FunctionKind::Ordinary | FunctionKind::Arrow
+                    FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
                 ) && position == StatementPosition::FunctionBody
                 {
                     self.parse_function_body_declaration()
@@ -3234,12 +3241,13 @@ impl<'source> Parser<'source> {
             return self.register_eval_var_binding(name, declaration_span, conflict_span);
         }
         let function = &mut self.functions[self.current_function];
-        let selects_arguments_object = matches!(function.kind, FunctionKind::Ordinary)
-            && name == "arguments"
-            && !function
-                .parameters
-                .iter()
-                .any(|parameter| parameter == "arguments");
+        let selects_arguments_object =
+            matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method)
+                && name == "arguments"
+                && !function
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter == "arguments");
         if let Some((binding_scope, binding)) =
             function.binding_id_from_scope(function.current_scope, name)
             && matches!(
@@ -3572,7 +3580,10 @@ impl<'source> Parser<'source> {
                     | ScopeKind::Catch
             )
             || (matches!(scope_kind, ScopeKind::FunctionBody)
-                && matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Arrow)
+                && matches!(
+                    function.kind,
+                    FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
+                )
                 && scope == function.body_scope);
         if !supported_scope {
             return Err(Error::internal(
@@ -5493,7 +5504,7 @@ impl<'source> Parser<'source> {
             .ok_or_else(|| Error::internal("required function declaration lost its name"))?;
         if !matches!(
             self.current_ir().kind,
-            FunctionKind::Ordinary | FunctionKind::Arrow
+            FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
         ) {
             return Err(Error::internal(
                 "function-body declaration escaped its ordinary function",
@@ -5707,12 +5718,15 @@ impl<'source> Parser<'source> {
         if function.strict {
             return false;
         }
-        if (matches!(function.kind, FunctionKind::Ordinary) && name == "arguments")
-            || (matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Arrow)
-                && function
-                    .parameters
-                    .iter()
-                    .any(|parameter| parameter == name))
+        if (matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method)
+            && name == "arguments")
+            || (matches!(
+                function.kind,
+                FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
+            ) && function
+                .parameters
+                .iter()
+                .any(|parameter| parameter == name))
         {
             return false;
         }
@@ -5879,7 +5893,10 @@ impl<'source> Parser<'source> {
                     binding.name == name
                         && match (function.kind, eval_mode) {
                             (FunctionKind::Script, _) => binding.storage == BindingStorage::Global,
-                            (FunctionKind::Ordinary | FunctionKind::Arrow, _) => {
+                            (
+                                FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow,
+                                _,
+                            ) => {
                                 matches!(binding.storage, BindingStorage::Local(_))
                             }
                             (FunctionKind::Eval(_), Some(EvalDeclarationMode::Global)) => {
@@ -6438,7 +6455,7 @@ impl<'source> Parser<'source> {
         loop {
             let function = &self.functions[function_id];
             match function.kind {
-                FunctionKind::Ordinary => return true,
+                FunctionKind::Ordinary | FunctionKind::Method => return true,
                 FunctionKind::Script | FunctionKind::Eval(EvalKind::Indirect) => return false,
                 FunctionKind::Eval(EvalKind::Direct) => {
                     return function
@@ -6935,7 +6952,10 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             FunctionKind::Eval(EvalKind::None) => {
                 return Err(Error::internal("eval root has no eval kind"));
             }
-            FunctionKind::Script | FunctionKind::Ordinary | FunctionKind::Arrow => {
+            FunctionKind::Script
+            | FunctionKind::Ordinary
+            | FunctionKind::Method
+            | FunctionKind::Arrow => {
                 if !function.external_bindings.is_empty()
                     || !function.eval_caller_profile.scope_kinds.is_empty()
                     || function.eval_caller_profile.variable_target
@@ -6954,7 +6974,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                     && binding.kind == BindingKind::Normal
                     && binding.storage == BindingStorage::Local(index)
             });
-            if !matches!(function.kind, FunctionKind::Ordinary)
+            if !matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method)
                 || usize::from(index) >= function.locals.len()
                 || function.locals[usize::from(index)] != "arguments"
                 || function
@@ -7039,8 +7059,10 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             eval_variable_object_bindings.as_slice(),
         ) {
             (Some(index), [binding])
-                if matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Arrow)
-                    && !function.strict
+                if matches!(
+                    function.kind,
+                    FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
+                ) && !function.strict
                     && binding.name == EVAL_VARIABLE_OBJECT_LOCAL_NAME
                     && binding.storage == BindingStorage::Local(index)
                     && binding.storage_scope == function.var_scope
@@ -7607,9 +7629,9 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                     }
                 }
             }
-            FunctionKind::Ordinary | FunctionKind::Arrow
+            FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
                 if function.global_declarations.is_empty() => {}
-            FunctionKind::Ordinary | FunctionKind::Arrow => {
+            FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow => {
                 return Err(Error::internal(
                     "ordinary function contains Program global declarations",
                 ));
@@ -7762,23 +7784,24 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         }
                         if matches!(binding.kind, BindingKind::Lexical { .. }) {
                             let scope_kind = function.scopes[binding.storage_scope.0].kind;
-                            let supported_scope =
-                                matches!(
-                                    scope_kind,
-                                    ScopeKind::Block
-                                        | ScopeKind::If
-                                        | ScopeKind::For
-                                        | ScopeKind::Switch
-                                        | ScopeKind::Catch
-                                ) || (matches!(scope_kind, ScopeKind::FunctionBody)
-                                    && matches!(
-                                        function.kind,
-                                        FunctionKind::Ordinary | FunctionKind::Arrow
-                                    )
-                                    && binding.storage_scope == function.body_scope)
-                                    || (scope_kind == ScopeKind::ProgramBody
-                                        && matches!(function.kind, FunctionKind::Eval(_))
-                                        && binding.storage_scope == function.body_scope);
+                            let supported_scope = matches!(
+                                scope_kind,
+                                ScopeKind::Block
+                                    | ScopeKind::If
+                                    | ScopeKind::For
+                                    | ScopeKind::Switch
+                                    | ScopeKind::Catch
+                            ) || (matches!(
+                                scope_kind,
+                                ScopeKind::FunctionBody
+                            ) && matches!(
+                                function.kind,
+                                FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
+                            ) && binding.storage_scope
+                                == function.body_scope)
+                                || (scope_kind == ScopeKind::ProgramBody
+                                    && matches!(function.kind, FunctionKind::Eval(_))
+                                    && binding.storage_scope == function.body_scope);
                             if binding.storage_scope != binding.declaration_scope
                                 || !supported_scope
                             {
@@ -7954,7 +7977,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         .locals
                         .first()
                         .is_some_and(|name| name == EVAL_RET_LOCAL_NAME) => {}
-            FunctionKind::Ordinary | FunctionKind::Arrow
+            FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
                 if eval_ret_index.is_none() && synthetic_eval_ret.is_none() => {}
             _ => {
                 return Err(Error::internal(
@@ -8018,7 +8041,10 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             } else if scope_index == function.body_scope.0 {
                 match function.kind {
                     FunctionKind::Script if entries == 0 && leaves == 0 => {}
-                    FunctionKind::Ordinary | FunctionKind::Arrow | FunctionKind::Eval(_)
+                    FunctionKind::Ordinary
+                    | FunctionKind::Method
+                    | FunctionKind::Arrow
+                    | FunctionKind::Eval(_)
                         if entries == 1
                             && leaves == 0
                             && function.ops.iter().any(|operation| {
@@ -8065,13 +8091,13 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 (None, []) => {}
                 _ => return Err(Error::internal("function-name binding metadata disagrees")),
             },
-            FunctionKind::Arrow
+            FunctionKind::Method | FunctionKind::Arrow
                 if function.function_name_local.is_none()
                     && !function.private_name_binding
                     && function_name_bindings.is_empty() => {}
-            FunctionKind::Arrow => {
+            FunctionKind::Method | FunctionKind::Arrow => {
                 return Err(Error::internal(
-                    "arrow function retained private function-name metadata",
+                    "unnamed function retained private function-name metadata",
                 ));
             }
             FunctionKind::Eval(EvalKind::Direct)
@@ -8162,13 +8188,15 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
 }
 
 /// QuickJS `add_eval_variables` allocates one hidden `<var>` local before
-/// resolving any identifier in a sloppy ordinary function which contains a
+/// resolving any identifier in sloppy authored function code which contains a
 /// syntactic direct-eval site. Keeping this as a separate prepass is essential:
 /// children authored before the eval call must resolve through the same object.
 fn install_eval_variable_objects(tree: &mut FunctionTree) -> Result<(), Error> {
     for function in &mut tree.functions {
-        let needs_object = matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Arrow)
-            && !function.strict
+        let needs_object = matches!(
+            function.kind,
+            FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
+        ) && !function.strict
             && function
                 .ops
                 .iter()
@@ -8238,9 +8266,9 @@ fn link_eval_environments(tree: &mut FunctionTree, function_id: FunctionId) -> R
     }
 
     // Lazy pseudo-bindings must exist before any descriptor snapshots a scope.
-    // The current ordinary function always owns `arguments`; named-expression
-    // self bindings from every enclosing function are also part of the visible
-    // lexical chain even when no ordinary identifier opcode forced them first.
+    // The nearest ordinary-function or method frame owns `arguments`;
+    // named-expression self bindings from every enclosing function are also
+    // visible even when no ordinary identifier opcode forced them first.
     ensure_eval_visible_pseudo_bindings(tree, function_id)?;
 
     let sites = tree.functions[function_id]
@@ -8538,49 +8566,51 @@ fn link_eval_environment(
         });
     }
 
-    let variable_environment = match caller_kind {
-        FunctionKind::Script => EvalVariableEnvironment::Global,
-        FunctionKind::Ordinary | FunctionKind::Arrow => EvalVariableEnvironment::Scope(
-            current_function_root
-                .ok_or_else(|| Error::internal("eval environment has no current function root"))?,
-        ),
-        FunctionKind::Eval(_) if caller_strict => {
-            EvalVariableEnvironment::Scope(current_function_root.ok_or_else(|| {
-                Error::internal("strict eval environment has no current function root")
-            })?)
-        }
-        FunctionKind::Eval(EvalKind::Direct) => {
-            match tree.functions[consuming_function]
-                .eval_caller_profile
-                .variable_target
-            {
-                EvalCallerVariableTarget::Global => EvalVariableEnvironment::Global,
-                EvalCallerVariableTarget::ExternalBinding(index) => {
-                    EvalVariableEnvironment::Closure(index)
+    let variable_environment =
+        match caller_kind {
+            FunctionKind::Script => EvalVariableEnvironment::Global,
+            FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow => {
+                EvalVariableEnvironment::Scope(current_function_root.ok_or_else(|| {
+                    Error::internal("eval environment has no current function root")
+                })?)
+            }
+            FunctionKind::Eval(_) if caller_strict => {
+                EvalVariableEnvironment::Scope(current_function_root.ok_or_else(|| {
+                    Error::internal("strict eval environment has no current function root")
+                })?)
+            }
+            FunctionKind::Eval(EvalKind::Direct) => {
+                match tree.functions[consuming_function]
+                    .eval_caller_profile
+                    .variable_target
+                {
+                    EvalCallerVariableTarget::Global => EvalVariableEnvironment::Global,
+                    EvalCallerVariableTarget::ExternalBinding(index) => {
+                        EvalVariableEnvironment::Closure(index)
+                    }
+                    EvalCallerVariableTarget::StrictLocal => {
+                        return Err(Error::internal(
+                            "sloppy eval root retained a strict-local variable target",
+                        ));
+                    }
                 }
-                EvalCallerVariableTarget::StrictLocal => {
+            }
+            FunctionKind::Eval(EvalKind::Indirect) => {
+                if tree.functions[consuming_function]
+                    .eval_caller_profile
+                    .variable_target
+                    != EvalCallerVariableTarget::Global
+                {
                     return Err(Error::internal(
-                        "sloppy eval root retained a strict-local variable target",
+                        "indirect eval root retained a caller variable target",
                     ));
                 }
+                EvalVariableEnvironment::Global
             }
-        }
-        FunctionKind::Eval(EvalKind::Indirect) => {
-            if tree.functions[consuming_function]
-                .eval_caller_profile
-                .variable_target
-                != EvalCallerVariableTarget::Global
-            {
-                return Err(Error::internal(
-                    "indirect eval root retained a caller variable target",
-                ));
+            FunctionKind::Eval(EvalKind::None) => {
+                return Err(Error::internal("eval root has no eval kind"));
             }
-            EvalVariableEnvironment::Global
-        }
-        FunctionKind::Eval(EvalKind::None) => {
-            return Err(Error::internal("eval root has no eval kind"));
-        }
-    };
+        };
     Ok(EvalEnvironment {
         scopes: scopes.into_boxed_slice(),
         variable_environment,
@@ -9436,7 +9466,10 @@ fn resolve_identifier_path(
             // without materializing it.
             if name == "arguments"
                 && access == IdentifierAccess::Delete
-                && matches!(tree.functions[owner].kind, FunctionKind::Ordinary)
+                && matches!(
+                    tree.functions[owner].kind,
+                    FunctionKind::Ordinary | FunctionKind::Method
+                )
             {
                 return Ok(ResolvedIdentifierPath {
                     sources,
@@ -9921,7 +9954,8 @@ fn find_or_create_own_binding(
     if let Some(binding) = function.binding_from_scope(start_scope, name) {
         return Ok(Some(binding));
     }
-    if name == "arguments" && matches!(function.kind, FunctionKind::Ordinary) {
+    if name == "arguments" && matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method)
+    {
         let function = &mut tree.functions[function_id];
         if function.arguments_local.is_some() {
             return Err(Error::internal(
@@ -10695,9 +10729,10 @@ fn lower_unlinked_tree(
             strict: function.strict,
             eval_kind: match function.kind {
                 FunctionKind::Eval(kind) => kind,
-                FunctionKind::Script | FunctionKind::Ordinary | FunctionKind::Arrow => {
-                    EvalKind::None
-                }
+                FunctionKind::Script
+                | FunctionKind::Ordinary
+                | FunctionKind::Method
+                | FunctionKind::Arrow => EvalKind::None,
             },
             function_kind: BytecodeFunctionKind::Normal,
             has_prototype: matches!(function.kind, FunctionKind::Ordinary),

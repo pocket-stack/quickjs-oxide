@@ -10,6 +10,7 @@ mod for_in;
 mod intrinsics;
 mod native_dispatch;
 mod native_stack;
+mod object_literal;
 mod properties;
 mod vm_host;
 

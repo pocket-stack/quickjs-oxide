@@ -1,6 +1,7 @@
 use crate::bigint::{BigIntError, JsBigInt};
 use crate::bytecode::{
-    ArgumentsKind, BytecodeFunction, DynamicEnvironmentSource, EvalVariableSource, Instruction,
+    ArgumentsKind, BytecodeFunction, DefineMethodKind, DynamicEnvironmentSource,
+    EvalVariableSource, Instruction,
 };
 use crate::error::{Error, ErrorKind, NativeErrorKind};
 use crate::heap::{ContextId, FunctionMetadata};
@@ -298,6 +299,26 @@ pub(crate) trait VmHost {
         key_index: u32,
         value: Value,
     ) -> Result<Completion, Error>;
+    /// QuickJS `OP_define_method`: set the closure's inferred name and define
+    /// the corresponding data or accessor property. The VM preserves `base`.
+    fn define_method(
+        &mut self,
+        base: Value,
+        key_index: u32,
+        function: Value,
+        kind: DefineMethodKind,
+        enumerable: bool,
+    ) -> Result<Completion, Error>;
+    /// Computed-key form of [`VmHost::define_method`]. `key` has already been
+    /// canonicalized by `ToPropKey`, and the VM preserves only `base`.
+    fn define_method_computed(
+        &mut self,
+        base: Value,
+        key: Value,
+        function: Value,
+        kind: DefineMethodKind,
+        enumerable: bool,
+    ) -> Result<Completion, Error>;
     /// QuickJS `OP_define_array_el`: define one own C_W_E data property using
     /// the dynamic internal Array-literal index. The VM preserves both base
     /// and index on success.
@@ -444,6 +465,14 @@ struct DetachedHost<'a> {
     #[cfg(test)]
     defined_fields: Vec<(Value, u32, Value)>,
     #[cfg(test)]
+    define_method_results: VecDeque<Completion>,
+    #[cfg(test)]
+    defined_methods: Vec<(Value, u32, Value, DefineMethodKind, bool)>,
+    #[cfg(test)]
+    define_method_computed_results: VecDeque<Completion>,
+    #[cfg(test)]
+    defined_computed_methods: Vec<(Value, Value, Value, DefineMethodKind, bool)>,
+    #[cfg(test)]
     define_array_element_results: VecDeque<Completion>,
     #[cfg(test)]
     defined_array_elements: Vec<(Value, Value, Value)>,
@@ -512,6 +541,14 @@ impl<'a> DetachedHost<'a> {
             define_field_results: VecDeque::new(),
             #[cfg(test)]
             defined_fields: Vec::new(),
+            #[cfg(test)]
+            define_method_results: VecDeque::new(),
+            #[cfg(test)]
+            defined_methods: Vec::new(),
+            #[cfg(test)]
+            define_method_computed_results: VecDeque::new(),
+            #[cfg(test)]
+            defined_computed_methods: Vec::new(),
             #[cfg(test)]
             define_array_element_results: VecDeque::new(),
             #[cfg(test)]
@@ -1059,6 +1096,46 @@ impl VmHost for DetachedHost<'_> {
         let _ = (base, key_index, value);
         Err(Error::internal(
             "detached VM cannot define runtime-owned properties",
+        ))
+    }
+
+    fn define_method(
+        &mut self,
+        base: Value,
+        key_index: u32,
+        function: Value,
+        kind: DefineMethodKind,
+        enumerable: bool,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        if let Some(outcome) = self.define_method_results.pop_front() {
+            self.defined_methods
+                .push((base, key_index, function, kind, enumerable));
+            return Ok(outcome);
+        }
+        let _ = (base, key_index, function, kind, enumerable);
+        Err(Error::internal(
+            "detached VM cannot define runtime-owned methods",
+        ))
+    }
+
+    fn define_method_computed(
+        &mut self,
+        base: Value,
+        key: Value,
+        function: Value,
+        kind: DefineMethodKind,
+        enumerable: bool,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        if let Some(outcome) = self.define_method_computed_results.pop_front() {
+            self.defined_computed_methods
+                .push((base, key, function, kind, enumerable));
+            return Ok(outcome);
+        }
+        let _ = (base, key, function, kind, enumerable);
+        Err(Error::internal(
+            "detached VM cannot define runtime-owned computed methods",
         ))
     }
 
@@ -1651,6 +1728,28 @@ impl CallFrame {
                     .ok_or_else(|| Error::internal("set computed name without a key"))?;
                 host.set_function_name_computed(value, key)?;
             }
+            Instruction::DefineMethod {
+                key,
+                kind,
+                enumerable,
+            } => {
+                let (base, function) = self.pop_pair()?;
+                let retained_base = base.clone();
+                match host.define_method(base, *key, function, *kind, *enumerable)? {
+                    Completion::Return(_) => self.stack.push(retained_base),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::DefineMethodComputed { kind, enumerable } => {
+                let function = self.pop()?;
+                let key = self.pop()?;
+                let base = self.pop()?;
+                let retained_base = base.clone();
+                match host.define_method_computed(base, key, function, *kind, *enumerable)? {
+                    Completion::Return(_) => self.stack.push(retained_base),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
             Instruction::SetProto => {
                 let (object, prototype) = self.pop_pair()?;
                 let retained_object = object.clone();
@@ -2021,6 +2120,8 @@ impl CallFrame {
                     | Instruction::Object
                     | Instruction::RegExp(_)
                     | Instruction::SetNameComputed
+                    | Instruction::DefineMethod { .. }
+                    | Instruction::DefineMethodComputed { .. }
                     | Instruction::SetProto
                     | Instruction::CopyDataProperties
                     | Instruction::ForInStart
@@ -2140,6 +2241,9 @@ impl CallFrame {
                 }
                 Instruction::SetNameComputed => {
                     unreachable!("computed-name literal dispatch was bypassed")
+                }
+                Instruction::DefineMethod { .. } | Instruction::DefineMethodComputed { .. } => {
+                    unreachable!("object method dispatch was bypassed")
                 }
                 Instruction::ThrowReadOnly(index) => {
                     self.pop()?;
@@ -3328,8 +3432,8 @@ fn bigint_error(error: BigIntError) -> Error {
 #[cfg(test)]
 mod tests {
     use crate::bytecode::{
-        ArgumentsKind, BytecodeFunction, DynamicEnvironmentSource, EvalVariableSource, Instruction,
-        WithObjectSource,
+        ArgumentsKind, BytecodeFunction, DefineMethodKind, DynamicEnvironmentSource,
+        EvalVariableSource, Instruction, WithObjectSource,
     };
     use crate::error::ErrorKind;
     use crate::value::{JsString, Value};
@@ -4079,31 +4183,67 @@ mod tests {
             name: None,
             code: vec![
                 Instruction::Object,
+                Instruction::Undefined,
+                Instruction::DefineMethod {
+                    key: 0,
+                    kind: DefineMethodKind::Method,
+                    enumerable: true,
+                },
+                Instruction::PushI32(8),
+                Instruction::Undefined,
+                Instruction::DefineMethodComputed {
+                    kind: DefineMethodKind::Getter,
+                    enumerable: false,
+                },
                 Instruction::Null,
                 Instruction::SetProto,
                 Instruction::PushI32(7),
                 Instruction::CopyDataProperties,
                 Instruction::Return,
             ],
-            constants: vec![],
+            constants: vec![Value::String(JsString::from_static("method"))],
             local_count: 0,
-            max_stack: 2,
+            max_stack: 3,
         };
         function.verify().unwrap();
         let object = Value::String(JsString::from_static("object"));
         let mut host = DetachedHost::new(&function);
         host.object_results
             .push_back(Completion::Return(object.clone()));
+        host.define_method_results
+            .push_back(Completion::Return(Value::Undefined));
+        host.define_method_computed_results
+            .push_back(Completion::Return(Value::Undefined));
         host.set_object_prototype_results
             .push_back(Completion::Return(Value::Undefined));
         host.copy_data_properties_results
             .push_back(Completion::Return(Value::Undefined));
 
         assert_eq!(
-            CallFrame::new(2)
+            CallFrame::new(3)
                 .execute(&function.code, &mut host)
                 .unwrap(),
             Completion::Return(object.clone())
+        );
+        assert_eq!(
+            host.defined_methods,
+            [(
+                object.clone(),
+                0,
+                Value::Undefined,
+                DefineMethodKind::Method,
+                true
+            )]
+        );
+        assert_eq!(
+            host.defined_computed_methods,
+            [(
+                object.clone(),
+                Value::Int(8),
+                Value::Undefined,
+                DefineMethodKind::Getter,
+                false
+            )]
         );
         assert_eq!(
             host.set_object_prototype_inputs,

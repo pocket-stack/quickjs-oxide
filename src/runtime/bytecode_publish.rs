@@ -1719,7 +1719,8 @@ fn verify_unlinked_tree_with_root(
                 | crate::bytecode::Instruction::GetField(index)
                 | crate::bytecode::Instruction::GetField2(index)
                 | crate::bytecode::Instruction::PutField(index)
-                | crate::bytecode::Instruction::DefineField(index) => {
+                | crate::bytecode::Instruction::DefineField(index)
+                | crate::bytecode::Instruction::DefineMethod { key: index, .. } => {
                     let index = usize::try_from(*index)
                         .map_err(|_| RuntimeError::Invariant("constant index did not fit usize"))?;
                     let constant = function.constants().get(index).ok_or_else(|| {

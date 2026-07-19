@@ -57,12 +57,12 @@ pub(super) fn ensure_eval_visible_pseudo_bindings(
     }
 
     // Arrow functions do not own `arguments`. Force the lazy binding in the
-    // nearest ordinary parent so the eval descriptor can relay it through the
-    // same closure chain used by an authored arrow reference.
+    // nearest ordinary-function or method owner so the eval descriptor can
+    // relay it through the same closure chain as an authored arrow reference.
     let mut arguments_owner = Some(consuming_function);
     while let Some(function_id) = arguments_owner {
         let function = &tree.functions[function_id];
-        if matches!(function.kind, FunctionKind::Ordinary) {
+        if matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method) {
             let span = function.source.span;
             find_or_create_own_binding(tree, function_id, ScopeId(0), "arguments", span)?;
             break;
@@ -103,7 +103,7 @@ fn function_allows_new_target(tree: &FunctionTree, mut function_id: FunctionId) 
     loop {
         let function = &tree.functions[function_id];
         match function.kind {
-            FunctionKind::Ordinary => return true,
+            FunctionKind::Ordinary | FunctionKind::Method => return true,
             FunctionKind::Script | FunctionKind::Eval(EvalKind::Indirect) => return false,
             FunctionKind::Eval(EvalKind::Direct) => {
                 return function
@@ -179,10 +179,13 @@ pub(super) const fn function_owns_pseudo_binding(
 ) -> bool {
     match (kind, pseudo) {
         (
-            FunctionKind::Script | FunctionKind::Ordinary | FunctionKind::Eval(EvalKind::Indirect),
+            FunctionKind::Script
+            | FunctionKind::Ordinary
+            | FunctionKind::Method
+            | FunctionKind::Eval(EvalKind::Indirect),
             PseudoBinding::This,
         ) => true,
-        (FunctionKind::Ordinary, PseudoBinding::NewTarget) => true,
+        (FunctionKind::Ordinary | FunctionKind::Method, PseudoBinding::NewTarget) => true,
         (
             FunctionKind::Arrow
             | FunctionKind::Eval(EvalKind::Direct)

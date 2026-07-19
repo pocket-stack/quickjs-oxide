@@ -2,7 +2,7 @@ use super::{
     IdentifierAccess, IdentifierContext, IrConstant, Parser, parse_number, source_offset,
     source_span, validate_identifier,
 };
-use crate::bytecode::Instruction;
+use crate::bytecode::{DefineMethodKind, Instruction};
 use crate::error::Error;
 use crate::lexer::{NumberKind, Punctuator, TokenKind};
 use crate::value::{JsString, Value};
@@ -12,8 +12,9 @@ impl<'source> Parser<'source> {
     /// `js_parse_object_literal`. The fresh Object stays below every property
     /// operation. Fixed names reuse `DefineField`; computed names are
     /// canonicalized before their RHS and use `DefineArrayEl` followed by the
-    /// same key drop as upstream. Method/accessor syntax remains an explicit
-    /// parser frontier until its home-object and descriptor lowering lands.
+    /// same key drop as upstream. Synchronous concise methods use dedicated
+    /// define-method operations so runtime naming and non-constructor metadata
+    /// remain distinct from ordinary data-property NamedEvaluation.
     pub(super) fn parse_object_literal(&mut self) -> Result<(), Error> {
         if !self.is_punctuator(Punctuator::LeftBrace) {
             return Err(self.syntax_here("expecting '{'"));
@@ -43,21 +44,24 @@ impl<'source> Parser<'source> {
                 self.emit_instruction(Instruction::ToPropKey)?;
                 self.expect_punctuator(Punctuator::RightBracket)?;
                 if self.is_punctuator(Punctuator::LeftParen) {
-                    return Err(Error::unsupported(
-                        "computed object literal methods are not implemented yet",
-                        source_span(property_span),
-                    ));
+                    self.parse_object_method_definition(property_span)?;
+                    self.emit_instruction(Instruction::DefineMethodComputed {
+                        kind: DefineMethodKind::Method,
+                        enumerable: true,
+                    })?;
+                    self.anonymous_function_definition = None;
+                } else {
+                    if !self.is_punctuator(Punctuator::Colon) {
+                        return Err(self.syntax_here("expecting ':'"));
+                    }
+                    self.advance_expression_start()?;
+                    self.parse_assignment_allow_in()?;
+                    if self.anonymous_function_definition.take().is_some() {
+                        self.emit_instruction(Instruction::SetNameComputed)?;
+                    }
+                    self.emit_instruction(Instruction::DefineArrayEl)?;
+                    self.emit_instruction(Instruction::Drop)?;
                 }
-                if !self.is_punctuator(Punctuator::Colon) {
-                    return Err(self.syntax_here("expecting ':'"));
-                }
-                self.advance_expression_start()?;
-                self.parse_assignment_allow_in()?;
-                if self.anonymous_function_definition.take().is_some() {
-                    self.emit_instruction(Instruction::SetNameComputed)?;
-                }
-                self.emit_instruction(Instruction::DefineArrayEl)?;
-                self.emit_instruction(Instruction::Drop)?;
             } else {
                 let token = self.current().clone();
                 let mut shorthand = None;
@@ -65,8 +69,10 @@ impl<'source> Parser<'source> {
                 let key = match token.kind {
                     TokenKind::Identifier(identifier) => {
                         let name = identifier.value.clone();
-                        shorthand = Some(identifier);
-                        if matches!(name.as_str(), "get" | "set" | "async") {
+                        shorthand = Some(identifier.clone());
+                        if !identifier.has_escape
+                            && matches!(name.as_str(), "get" | "set" | "async")
+                        {
                             method_prefix = Some(name.clone());
                         }
                         self.advance()?;
@@ -125,14 +131,26 @@ impl<'source> Parser<'source> {
                         || (prefix == "async" && self.is_punctuator(Punctuator::Multiply)))
                         && (prefix != "async" || !self.current().line_terminator_before)
                 });
-                if self.is_punctuator(Punctuator::LeftParen) || is_method_prefix {
+                if self.is_punctuator(Punctuator::LeftParen) {
+                    self.parse_object_method_definition(token.span)?;
+                    let key_constant =
+                        self.add_constant(IrConstant::Primitive(Value::String(key)))?;
+                    self.emit_instruction(Instruction::DefineMethod {
+                        key: key_constant,
+                        kind: DefineMethodKind::Method,
+                        enumerable: true,
+                    })?;
+                    self.anonymous_function_definition = None;
+                } else if is_method_prefix {
                     return Err(Error::unsupported(
-                        "object literal methods and accessors are not implemented yet",
+                        if method_prefix.as_deref() == Some("async") {
+                            "async object literal methods are not implemented yet"
+                        } else {
+                            "object literal accessors are not implemented yet"
+                        },
                         source_span(token.span),
                     ));
-                }
-
-                if self.is_punctuator(Punctuator::Colon) {
+                } else if self.is_punctuator(Punctuator::Colon) {
                     self.advance_expression_start()?;
                     self.parse_assignment_allow_in()?;
                     if key == JsString::from_static("__proto__") {
