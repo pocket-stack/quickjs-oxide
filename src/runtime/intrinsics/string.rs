@@ -731,6 +731,7 @@ impl Runtime {
         Ok(match &object.payload {
             ObjectPayload::RegExp(_) => true,
             ObjectPayload::Ordinary
+            | ObjectPayload::RawJson
             | ObjectPayload::Date(_)
             | ObjectPayload::Array { .. }
             | ObjectPayload::Arguments { .. }

@@ -9,7 +9,9 @@
 use super::super::*;
 
 mod parse;
+mod raw;
 mod reviver;
+mod stringify;
 
 #[cfg(test)]
 mod tests;
@@ -89,19 +91,10 @@ impl Runtime {
             ));
         };
         match kind {
-            // Raw JSON has an unforgeable heap brand. Until that brand lands,
-            // every value which can exist in this runtime correctly tests
-            // false without triggering user code.
-            JsonNativeKind::IsRawJson => Ok(Completion::Return(Value::Bool(false))),
+            JsonNativeKind::IsRawJson => self.call_json_is_raw_json(arguments),
             JsonNativeKind::Parse => self.call_json_parse(realm, arguments),
-            JsonNativeKind::RawJson => Err(RuntimeError::Engine(Error::new(
-                ErrorKind::Unsupported,
-                "JSON.rawJSON is not implemented",
-            ))),
-            JsonNativeKind::Stringify => Err(RuntimeError::Engine(Error::new(
-                ErrorKind::Unsupported,
-                "JSON.stringify is not implemented",
-            ))),
+            JsonNativeKind::RawJson => self.call_json_raw_json(realm, arguments),
+            JsonNativeKind::Stringify => self.call_json_stringify(realm, arguments),
         }
     }
 }

@@ -233,6 +233,7 @@ impl Runtime {
                 ));
             }
             ObjectPayload::Ordinary
+            | ObjectPayload::RawJson
             | ObjectPayload::Array { .. }
             | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }

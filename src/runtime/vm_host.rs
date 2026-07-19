@@ -1554,6 +1554,7 @@ impl VmHost for RuntimeVmHost {
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. } => "function",
             ObjectPayload::Ordinary
+            | ObjectPayload::RawJson
             | ObjectPayload::Date(_)
             | ObjectPayload::RegExp(_)
             | ObjectPayload::Array { .. }

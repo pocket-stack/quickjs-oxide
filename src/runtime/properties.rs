@@ -28,6 +28,7 @@ impl Runtime {
         Ok(match &object.payload {
             ObjectPayload::Primitive(PrimitiveObjectData::String(value)) => Some(value.len()),
             ObjectPayload::Ordinary
+            | ObjectPayload::RawJson
             | ObjectPayload::Date(_)
             | ObjectPayload::RegExp(_)
             | ObjectPayload::Array { .. }
@@ -1177,6 +1178,7 @@ impl Runtime {
                     }
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::RawJson
                 | ObjectPayload::Date(_)
                 | ObjectPayload::RegExp(_)
                 | ObjectPayload::Array { .. }

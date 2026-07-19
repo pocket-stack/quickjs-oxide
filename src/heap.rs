@@ -946,6 +946,10 @@ pub enum RegExpObjectData {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ObjectPayload {
     Ordinary,
+    /// Runtime-wide, unforgeable `JS_CLASS_RAWJSON` brand. The exact source
+    /// text remains in the object's frozen ordinary `rawJSON` data slot, so
+    /// the payload needs no duplicate GC edge or string owner.
+    RawJson,
     /// A genuine `JS_CLASS_ARRAY` exotic object. Indexed elements and the
     /// mandatory length property remain in the ordinary shape/slot arrays;
     /// this class marker selects ArraySetLength and index-growth semantics at
@@ -2371,6 +2375,20 @@ impl ObjectData {
         }
     }
 
+    /// Construct one Raw JSON branded object with ordinary internal methods.
+    #[must_use]
+    pub const fn raw_json(shape: ShapeId, slots: Vec<PropertySlot>) -> Self {
+        Self {
+            shape,
+            slots,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::Ordinary,
+            payload: ObjectPayload::RawJson,
+        }
+    }
+
     /// Construct one genuine Array exotic object. The caller supplies the
     /// validated `length`-first layout used by QuickJS's initial Array shape.
     #[must_use]
@@ -3067,6 +3085,7 @@ impl Heap {
                 ));
             }
             ObjectPayload::Ordinary
+            | ObjectPayload::RawJson
             | ObjectPayload::Array { .. }
             | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }
@@ -4892,8 +4911,10 @@ impl Heap {
     fn validate_object_layout(&self, object: &ObjectData) -> Result<(), HeapError> {
         if !matches!(
             (object.kind, &object.payload),
-            (ObjectKind::Ordinary, ObjectPayload::Ordinary)
-                | (ObjectKind::Array, ObjectPayload::Array { .. })
+            (
+                ObjectKind::Ordinary,
+                ObjectPayload::Ordinary | ObjectPayload::RawJson
+            ) | (ObjectKind::Array, ObjectPayload::Array { .. })
                 | (ObjectKind::Arguments, ObjectPayload::Arguments { .. })
                 | (
                     ObjectKind::ArrayIterator,
@@ -5359,6 +5380,7 @@ impl Heap {
 fn object_edges(object: &ObjectData) -> Vec<RawId> {
     let closure_count = match &object.payload {
         ObjectPayload::Ordinary
+        | ObjectPayload::RawJson
         | ObjectPayload::Array { .. }
         | ObjectPayload::Arguments { .. }
         | ObjectPayload::ArrayIterator { .. }
@@ -5387,6 +5409,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
     edges.push(RawId::Shape(object.shape));
     match &object.payload {
         ObjectPayload::Ordinary
+        | ObjectPayload::RawJson
         | ObjectPayload::Array { .. }
         | ObjectPayload::Arguments { .. }
         | ObjectPayload::Primitive(_)
@@ -5591,6 +5614,7 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
             .chain(arguments.iter().filter_map(raw_value_atom))
             .collect::<Vec<_>>(),
         ObjectPayload::Ordinary
+        | ObjectPayload::RawJson
         | ObjectPayload::Array { .. }
         | ObjectPayload::Arguments { .. }
         | ObjectPayload::ArrayIterator { .. }

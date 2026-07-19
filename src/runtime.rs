@@ -941,8 +941,8 @@ impl Runtime {
         // Upstream installs `globalThis` after String/Math/Reflect/Symbol and
         // generator setup, then installs BigInt. The remaining intervening
         // intrinsics are absent here, but this boundary preserves the
-        // implemented `Boolean, String, Math, Reflect, Symbol, globalThis, BigInt` relative
-        // order.
+        // implemented `Boolean, String, Math, Reflect, Symbol, globalThis,
+        // BigInt, Date, RegExp, JSON` relative order.
         self.initialize_global_this(&global_object)
             .expect("globalThis initialization must succeed");
         self.initialize_bigint_intrinsic(
@@ -4767,6 +4767,7 @@ impl Runtime {
                     ..
                 } => (*bytecode, closure_slots.clone()),
                 ObjectPayload::Ordinary
+                | ObjectPayload::RawJson
                 | ObjectPayload::Date(_)
                 | ObjectPayload::RegExp(_)
                 | ObjectPayload::Array { .. }
@@ -4822,6 +4823,7 @@ impl Runtime {
                 Ok(None)
             }
             ObjectPayload::Ordinary
+            | ObjectPayload::RawJson
             | ObjectPayload::Date(_)
             | ObjectPayload::RegExp(_)
             | ObjectPayload::Array { .. }
@@ -5159,6 +5161,7 @@ impl Runtime {
                     ));
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::RawJson
                 | ObjectPayload::Date(_)
                 | ObjectPayload::RegExp(_)
                 | ObjectPayload::Array { .. }
@@ -6210,6 +6213,7 @@ impl Runtime {
                             !metadata.strict && metadata.has_prototype
                         }
                         ObjectPayload::Ordinary
+                        | ObjectPayload::RawJson
                         | ObjectPayload::Date(_)
                         | ObjectPayload::RegExp(_)
                         | ObjectPayload::Array { .. }
@@ -6513,6 +6517,7 @@ impl Runtime {
                     (true, None, FunctionKind::Normal)
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::RawJson
                 | ObjectPayload::Date(_)
                 | ObjectPayload::RegExp(_)
                 | ObjectPayload::Array { .. }
@@ -6725,6 +6730,7 @@ impl Runtime {
                         ObjectPayload::NativeFunction { .. }
                         | ObjectPayload::BytecodeFunction { .. } => None,
                         ObjectPayload::Ordinary
+                        | ObjectPayload::RawJson
                         | ObjectPayload::Date(_)
                         | ObjectPayload::RegExp(_)
                         | ObjectPayload::Array { .. }
@@ -6826,6 +6832,7 @@ impl Runtime {
                             ))
                         }
                         ObjectPayload::Ordinary
+                        | ObjectPayload::RawJson
                         | ObjectPayload::Date(_)
                         | ObjectPayload::RegExp(_)
                         | ObjectPayload::Array { .. }
@@ -7194,6 +7201,7 @@ impl Runtime {
                         Some(Ok(Value::BigInt(value.clone())))
                     }
                     ObjectPayload::Ordinary
+                    | ObjectPayload::RawJson
                     | ObjectPayload::Date(_)
                     | ObjectPayload::RegExp(_)
                     | ObjectPayload::Array { .. }
@@ -8260,6 +8268,7 @@ impl Runtime {
             match state.heap.object(object.object_id())?.payload {
                 ObjectPayload::GlobalObject { uninitialized_vars } => Some(uninitialized_vars),
                 ObjectPayload::Ordinary
+                | ObjectPayload::RawJson
                 | ObjectPayload::Date(_)
                 | ObjectPayload::RegExp(_)
                 | ObjectPayload::Array { .. }

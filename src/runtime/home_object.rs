@@ -44,6 +44,7 @@ impl Runtime {
             ObjectPayload::BytecodeFunction { bytecode, .. } => Some(*bytecode),
             ObjectPayload::NativeFunction { .. } | ObjectPayload::BoundFunction { .. } => None,
             ObjectPayload::Ordinary
+            | ObjectPayload::RawJson
             | ObjectPayload::Array { .. }
             | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }
