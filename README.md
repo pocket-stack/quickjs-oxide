@@ -14,7 +14,7 @@ Rust 1.85 or newer is required.
 ```sh
 git clone https://github.com/pocket-stack/quickjs-oxide.git
 cd quickjs-oxide
-./scripts/demo-42.sh
+./scripts/demo-42.sh  # prints 42
 cargo run --bin qjs -- -e '(function (a) { return a + 1; })(41)'
 cargo run --bin qjs -- path/to/script.js
 ```

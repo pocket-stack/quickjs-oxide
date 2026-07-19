@@ -10,14 +10,14 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 61 reviewed feature tags and 423 exact audited
+  capability profile now admits 69 reviewed feature tags and 423 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 34,041 passes and 37,411 runnable variants: 33.36% raw, a 40.74% lower
-  bound after the 18,475 pinned QuickJS target exclusions, or 94.39% among the
-  36,063 variants with a non-unsupported observed outcome. The fixed smoke now
+  has 34,847 passes and 38,421 runnable variants: 34.15% raw, a 41.70% lower
+  bound after the 18,475 pinned QuickJS target exclusions, or 94.07% among the
+  37,045 variants with a non-unsupported observed outcome. The fixed smoke now
   has 191 passes and two explicit parser-frontier results. See
   `docs/test262.md` for the denominators and why none of these figures is a
   parity claim. The first
@@ -738,6 +738,48 @@ claim full parity.
   `14f8412069dc7ba2a648c2facead1cbcd79ccf2cc5116832602f50decd5f95ab`
   and
   `c29229ceeee55db836e701d8a2984ef0ba9eb9396d6deca8a5166026b58bb71b`.
+
+  R2p audits the already-implemented well-known Symbol graph and globally
+  admits `Symbol.asyncIterator`, `Symbol.hasInstance`, `Symbol.iterator`,
+  `Symbol.prototype.description`, `Symbol.species`, `Symbol.toPrimitive`,
+  `Symbol.toStringTag`, and `Symbol.unscopables`. Existing focused QuickJS
+  differentials pin their intrinsic graph, descriptors, coercion, iteration,
+  species, instance checks, tags, and unscopables behavior; no production
+  runtime change is needed for this admission milestone.
+
+  Its dependency-audited Test262 gate freezes 517 paths / 1,010 variants under
+  an exact 30-feature scoped profile with SHA-256
+  `ff674aafc4b1b61b0c40042f831b44c600b1f741e06b8c8c35863b876919aa7b`.
+  All 806 Symbol-ready variants pass. The other 204 expose only independent
+  class, rest/spread, Promise, buffer/TypedArray, Proxy, and weak-collection
+  frontiers: 60 parse failures, 98 runtime failures, 18 harness failures, and
+  28 typed parser frontiers. Normalized-manifest/manifest-file/key-set/non-pass
+  hashes are
+  `eaf2a48408b6b1f5673389335cda73cb66bed062636a669c655460d9fef99a4b`,
+  `6147636f7950b899f7c0eea25078e2f4c9c4c7fda2977181dd7c9671aa0bcde2`,
+  `e87d58ad7a8be3e60b5545129a70a1abd70ee350654092a4aa066d17dc69e450`,
+  and
+  `4783b1a8bb909a6e4706138265c477cfa3979bb6821f09f590e4c8c66a0dd5d2`;
+  TSV/JSONL hashes are
+  `ed0363676e7efdfc6bb24ee396739cf67d49a4ce685c3bd37d98569a60a96267`
+  and
+  `75c40ff9adf28f0b9120c23af44268b4660189ff815e3f4c2ba0b74786ede048`.
+
+  The global profile reaches 69 reviewed tags and 423 audited negative paths,
+  with SHA-256
+  `a1a347d2d74c946a50f1e26fca6c1756c0e9948f087de3aed2339b3a4c7d6677`.
+  The exact R2o/R2p join retains all 102,037 keys. Its 1,010 outcome changes
+  exactly equal the focused key set: 806 become passes, while 204 expose the
+  independent frontiers above. Another 1,954 rows change detail only. Every
+  changed row carries a newly admitted tag, with zero previous-pass regression,
+  missing/extra key, or unrelated outcome movement. Runnable variants reach
+  38,421 and passes reach 34,847. Full TSV/JSONL SHA-256 values are
+  `a56285e53591df1d2026da4d6334d42e374a107cbcc7744e87f1d8b4c49d865d`
+  and
+  `0f1b3899b73d990575b8ee1f4cb11e308847c5fd3fb728b13b3e3e583e08f15e`.
+
+  Binding/destructuring is the next high-yield semantic line. WeakMap and
+  WeakSet remain later work because they first require genuine weak heap edges.
 
   Parameter initializers and other non-simple parameters, classes/derived
   construction, and async/generator method/accessor forms stay typed frontiers.
@@ -4105,6 +4147,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-json-raw.sh
 ./scripts/test-test262-map.sh
 ./scripts/test-test262-set.sh
+./scripts/test-test262-symbol-protocols.sh
 ./scripts/test-test262-full.sh
 ```
 

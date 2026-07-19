@@ -1,20 +1,21 @@
 # R1j freezes the direct matchAll protocol surface before feature admission.
 # R1n removes the shared regExpUtils.js destructuring frontier. R2f ordinary
 # object methods make all twenty shared-harness variants pass. R2g accessors
-# admit the remaining eight runnable variants and lift the slice to 116 passes.
+# lift the slice to 116 passes; R2p well-known Symbol admission executes 18
+# more variants for 134 passes, with one feature-gated path remaining.
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
 test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
 test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
-oxide_profile_sha256=086b4964eebc8dd8960b33aaa333b0adaeefb1447cbf63f893042ab269a5a17b
+oxide_profile_sha256=a1a347d2d74c946a50f1e26fca6c1756c0e9948f087de3aed2339b3a4c7d6677
 schema=test262-canonical-classified-v2
 mode=both
 timeout_ms=30000
 paths=68
 variants=136
-runnable=116
-passes=116
+runnable=134
+passes=134
 manifest_sha256=2f8c3d730c36ed86f46218c67f069c18698210704b1db7575fb4d2a95c69a671
 r1j_full_tsv_sha256=2895a8d2ddbe5857e83b573827e46b4a60a97d89b5882727c85ff75d2ff9d368
 r1j_keys_sha256=6fd466297dedbee518fbf7b168ea99d4d802b6bccc421fab4e61c2f913ba09ee
@@ -26,6 +27,6 @@ r1j_shared_harness_selected_sha256=a678ad14b62a3a3cabd4f62af83b0e34bffc808c07ce8
 r1j_shared_harness_summary=unsupported-harness-parser=20
 r2f_shared_harness_variants=20
 r2f_shared_harness_summary=pass=20
-tsv_sha256=23a072899a90415293d276ebc8b28d7c8c451040f71b3aeec5843f5e88137aab
-jsonl_sha256=518b7e8495d2479458f8156ad36fe914975ab9e0e8f84250fdbf2a8cacffa16a
-summary=pass=116 unsupported-feature=20
+tsv_sha256=3eef588b92ef328cf9882a91f6c8fc4368788eb837c3d0d1e17a95f38117e384
+jsonl_sha256=8022efb2415b4c0aac1cb34efdae06ff1312fe4f765c461b67eef06b2f3ce77a
+summary=pass=134 unsupported-feature=2

@@ -45,7 +45,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "086b4964eebc8dd8960b33aaa333b0adaeefb1447cbf63f893042ab269a5a17b";
+    "a1a347d2d74c946a50f1e26fca6c1756c0e9948f087de3aed2339b3a4c7d6677";
 const TEST262_MAP_PROFILE_SHA256: &str =
     "16ab6bfe18540aae398c847905f492491e81500045b45a6bfb21f447fd537ea2";
 const TEST262_MAP_MANIFEST_SHA256: &str =
@@ -54,6 +54,10 @@ const TEST262_SET_PROFILE_SHA256: &str =
     "6869e9d28fff1d5bd4e5b698dcdf6ee677b9134a91781ad7abe226200d669455";
 const TEST262_SET_MANIFEST_SHA256: &str =
     "0f560c202e9463ff4896796be6e924db984e25bc3e95ae2604a54ce9dee61e9f";
+const TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256: &str =
+    "ff674aafc4b1b61b0c40042f831b44c600b1f741e06b8c8c35863b876919aa7b";
+const TEST262_SYMBOL_PROTOCOLS_MANIFEST_SHA256: &str =
+    "6147636f7950b899f7c0eea25078e2f4c9c4c7fda2977181dd7c9671aa0bcde2";
 const QUICKJS_VERSION: &str = "2026-06-04";
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
@@ -552,6 +556,7 @@ enum OxideProfileKind {
     Global,
     Map,
     Set,
+    SymbolProtocols,
 }
 
 fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
@@ -569,6 +574,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         ),
         (root.join("tests/test262-map.conf"), OxideProfileKind::Map),
         (root.join("tests/test262-set.conf"), OxideProfileKind::Set),
+        (
+            root.join("tests/test262-symbol-protocols.conf"),
+            OxideProfileKind::SymbolProtocols,
+        ),
     ];
     for (candidate, kind) in profiles {
         let candidate = fs::canonicalize(&candidate).map_err(|error| {
@@ -582,7 +591,7 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         }
     }
     Err(format!(
-        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-map.conf, or tests/test262-set.conf",
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
         path.display()
     ))
 }
@@ -672,6 +681,47 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 "scoped Set Test262 manifest",
             )?;
             Ok(TEST262_SET_PROFILE_SHA256)
+        }
+        OxideProfileKind::SymbolProtocols => {
+            verify_sha256(
+                &options.oxide_profile,
+                TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256,
+                "scoped well-known Symbol protocol Test262 capability profile",
+            )?;
+            if options.all || !options.tests.is_empty() {
+                return Err(
+                    "the scoped well-known Symbol protocol Test262 capability profile requires its pinned manifest"
+                        .to_owned(),
+                );
+            }
+            let manifest = options.manifest.as_ref().ok_or_else(|| {
+                "the scoped well-known Symbol protocol Test262 capability profile requires its pinned manifest"
+                    .to_owned()
+            })?;
+            let actual = fs::canonicalize(manifest).map_err(|error| {
+                format!(
+                    "resolve scoped well-known Symbol protocol manifest {}: {error}",
+                    manifest.display()
+                )
+            })?;
+            let expected = fs::canonicalize(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/test262-symbol-protocols.txt"),
+            )
+            .map_err(|error| {
+                format!("resolve pinned scoped well-known Symbol protocol manifest: {error}")
+            })?;
+            if actual != expected {
+                return Err(format!(
+                    "the scoped well-known Symbol protocol Test262 capability profile requires tests/test262-symbol-protocols.txt, found {}",
+                    manifest.display()
+                ));
+            }
+            verify_sha256(
+                manifest,
+                TEST262_SYMBOL_PROTOCOLS_MANIFEST_SHA256,
+                "scoped well-known Symbol protocol Test262 manifest",
+            )?;
+            Ok(TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256)
         }
     }
 }
@@ -941,7 +991,8 @@ mod cli_tests {
 
     use super::{
         Invocation, OxideProfileKind, TEST262_MAP_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
-        default_worker_count, identify_oxide_profile, parse_args, verify_oxide_profile,
+        TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, default_worker_count, identify_oxide_profile,
+        parse_args, verify_oxide_profile,
     };
 
     fn parse(values: &[&str]) -> Result<Invocation, String> {
@@ -1027,7 +1078,7 @@ mod cli_tests {
     }
 
     #[test]
-    fn only_pinned_global_map_and_set_profiles_are_accepted() {
+    fn only_pinned_global_map_set_and_symbol_protocol_profiles_are_accepted() {
         assert_eq!(
             identify_oxide_profile(Path::new("compat/test262-oxide.conf")).unwrap(),
             OxideProfileKind::Global
@@ -1039,6 +1090,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-set.conf")).unwrap(),
             OxideProfileKind::Set
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-symbol-protocols.conf")).unwrap(),
+            OxideProfileKind::SymbolProtocols
         );
 
         let error = identify_oxide_profile(Path::new("Cargo.toml")).unwrap_err();
@@ -1120,6 +1175,50 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-set.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_symbol_protocol_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-symbol-protocols.conf",
+            "--manifest",
+            "tests/test262-symbol-protocols.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            ["--test", "test/built-ins/Symbol/iterator/prop-desc.js"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-symbol-protocols.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

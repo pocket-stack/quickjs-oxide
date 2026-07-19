@@ -1,22 +1,23 @@
 # R1r refreshes the complete ordinary named-capture slice after admitting
-# regexp-match-indices. R2f methods raise the slice to 172 passes and R2g
-# accessors to 176. Duplicate-named-group-only tests remain outside the gate.
+# regexp-match-indices. R2f methods raise the slice to 172 passes, R2g
+# accessors to 176, and R2p symbol protocols to 178. Duplicate-named-group-only
+# tests remain outside the gate.
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
 test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
 test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
-oxide_profile_sha256=086b4964eebc8dd8960b33aaa333b0adaeefb1447cbf63f893042ab269a5a17b
+oxide_profile_sha256=a1a347d2d74c946a50f1e26fca6c1756c0e9948f087de3aed2339b3a4c7d6677
 schema=test262-canonical-classified-v2
 mode=both
 timeout_ms=30000
 paths=101
 variants=202
-runnable=198
-passes=176
+runnable=200
+passes=178
 manifest_sha256=477c5acbfad09b7748e3c605209ec7e182f88d82d63511593fc5bc98a1bc8f5e
 keys_sha256=eb5eae11fd4e32468e525e7ac0c0663468809167fe0e3897b3841837a90dc4f4
-nonpass_sha256=dc61de8d5e40b99bb43a0ea59c59a8cfd21bfba860c1d2a96208a3330aca302e
-tsv_sha256=b0a0f19bec55b209eeea2a9f987a5da3c61e9adbabf1d1cb0f5837e908fb2bde
-jsonl_sha256=7db7b3364022c4b9bb1180ffaa22cd99520867914f45cdf4885ea429ac9aecd3
-summary=harness-error=4 pass=176 unsupported-feature=4 unsupported-parser=16 unsupported-runtime=2
+nonpass_sha256=b8b4a15b2d3b1f3f8f485fd6554522540288dea1326a6a1484d5f950b3e4c95e
+tsv_sha256=bfe2c6289b6860a7d04c6380166a3b8832ce353a9b4880e45d64119a794a2022
+jsonl_sha256=53c3ca4fd047bb812485b67dcbaf4312140c2313d785c6247e6d23dbaaee8120
+summary=harness-error=4 pass=178 unsupported-feature=2 unsupported-parser=16 unsupported-runtime=2

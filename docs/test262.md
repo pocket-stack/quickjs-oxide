@@ -10,7 +10,7 @@ differentials still decide exact behavior inside each implemented slice.
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
 - quickjs-oxide capability profile SHA-256:
-  `086b4964eebc8dd8960b33aaa333b0adaeefb1447cbf63f893042ab269a5a17b`
+  `a1a347d2d74c946a50f1e26fca6c1756c0e9948f087de3aed2339b3a4c7d6677`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -50,32 +50,33 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 34,041 pass;
+- 34,847 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 47,499 are classified as unsupported because of a feature, mode, host
+- 46,517 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 502 fail to parse, 1,397 fail at runtime, 117 fail in the harness, and six
+- 562 fail to parse, 1,495 fail at runtime, 135 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 37,411 variants to execution. That count includes variants
+The runner admitted 38,421 variants to execution. That count includes variants
 which then report a typed parser or harness frontier rather than an observed
 non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 33.36% (`34,041 / 102,037`);
-- conservative target-scope lower bound: 40.74%
-  (`34,041 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 94.39%
-  (`34,041 / 36,063`).
+- raw suite pass rate: 34.15% (`34,847 / 102,037`);
+- conservative target-scope lower bound: 41.70%
+  (`34,847 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 94.07%
+  (`34,847 / 37,045`).
 
-The 40.74% figure is the useful whole-project progress floor, not a claim that
-the engine is 40.74% conformant. The 94.39% conditional rate measures quality
+The 41.70% figure is the useful whole-project progress floor, not a claim that
+the engine is 41.70% conformant. The 94.07% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
-completion; R1u also demonstrates that this conditional rate can rise when
-previously ambiguous failures move to a more honest typed unsupported class.
-The capability profile currently admits 61 reviewed Test262
+completion. It can move in either direction as classification improves: R2p
+lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
+had previously failed closed as unsupported features. The capability profile
+currently admits 69 reviewed Test262
 feature tags and 423 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
 lands can only make the measurement more representative. Focused QuickJS
@@ -89,9 +90,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`14f8412069dc7ba2a648c2facead1cbcd79ccf2cc5116832602f50decd5f95ab`
+`a56285e53591df1d2026da4d6334d42e374a107cbcc7744e87f1d8b4c49d865d`
 and
-`c29229ceeee55db836e701d8a2984ef0ba9eb9396d6deca8a5166026b58bb71b`.
+`0f1b3899b73d990575b8ee1f4cb11e308847c5fd3fb728b13b3e3e583e08f15e`.
 
 ## Milestone policy
 
@@ -1722,6 +1723,57 @@ WeakSet additionally require genuine weak-reference/GC infrastructure rather
 than another strong-record wrapper. Both remain explicit resource-parity or
 feature frontiers rather than part of this milestone.
 
+## R2p well-known Symbol protocol admission
+
+R2p audits the already-implemented realm-local well-known Symbol graph and
+admits its eight remaining protocol tags globally: `Symbol.asyncIterator`,
+`Symbol.hasInstance`, `Symbol.iterator`, `Symbol.prototype.description`,
+`Symbol.species`, `Symbol.toPrimitive`, `Symbol.toStringTag`, and
+`Symbol.unscopables`. The focused QuickJS differential suite continues to pin
+intrinsic identity, descriptors, descriptions, coercion, iteration, species,
+instance checks, tags, and unscopables behavior; this milestone changes the
+runner's audited capability boundary rather than production semantics.
+
+The dependency-audited focused gate freezes 517 paths and 1,010 variants under
+an exact 30-feature scoped profile. All 806 protocol-ready variants pass. The
+remaining 204 outcomes are 60 parse failures, 98 runtime failures, 18 harness
+failures, and 28 typed parser frontiers caused by independent class,
+rest/spread, Promise, buffer/TypedArray, Proxy, and weak-collection
+dependencies; the source/result audit found no Symbol protocol mismatch. The
+scoped profile SHA-256 is
+`ff674aafc4b1b61b0c40042f831b44c600b1f741e06b8c8c35863b876919aa7b`.
+Normalized-manifest, manifest-file, key-set, and non-pass SHA-256 values are
+`eaf2a48408b6b1f5673389335cda73cb66bed062636a669c655460d9fef99a4b`,
+`6147636f7950b899f7c0eea25078e2f4c9c4c7fda2977181dd7c9671aa0bcde2`,
+`e87d58ad7a8be3e60b5545129a70a1abd70ee350654092a4aa066d17dc69e450`,
+and
+`4783b1a8bb909a6e4706138265c477cfa3979bb6821f09f590e4c8c66a0dd5d2`.
+Focused TSV/JSONL hashes are
+`ed0363676e7efdfc6bb24ee396739cf67d49a4ce685c3bd37d98569a60a96267`
+and
+`75c40ff9adf28f0b9120c23af44268b4660189ff815e3f4c2ba0b74786ede048`.
+Reproduce the gate with `scripts/test-test262-symbol-protocols.sh`.
+
+The global profile now contains 69 reviewed feature tags and 423 audited
+negative paths, with SHA-256
+`a1a347d2d74c946a50f1e26fca6c1756c0e9948f087de3aed2339b3a4c7d6677`.
+The exact R2o/R2p full join retains all 102,037 unique keys. Its 1,010 outcome
+changes exactly equal the focused key set: 806 move from
+`unsupported-feature` to pass, 98 to runtime failure, 60 to parse failure, 28
+to a typed parser frontier, and 18 to harness failure. Another 1,954 rows change
+feature-detail only. Every changed row carries at least one newly admitted tag;
+there are no missing/extra keys, previous-pass regressions, or unrelated
+outcome changes. Runnable variants reach 38,421 and passes reach 34,847, an
+exact net gain of 806. Full TSV/JSONL SHA-256 values are
+`a56285e53591df1d2026da4d6334d42e374a107cbcc7744e87f1d8b4c49d865d`
+and
+`0f1b3899b73d990575b8ee1f4cb11e308847c5fd3fb728b13b3e3e583e08f15e`.
+
+The next high-yield semantic line is binding/destructuring rather than weak
+collections: it unlocks several thousand immediately classifiable variants,
+while WeakMap and WeakSet first require genuine weak heap edges and collection
+semantics.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -1798,6 +1850,7 @@ canonical progress report.
 ./scripts/test-test262-json-raw.sh
 ./scripts/test-test262-map.sh
 ./scripts/test-test262-set.sh
+./scripts/test-test262-symbol-protocols.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -1859,6 +1912,10 @@ R2o adds the observable strong Set family and all seven set-composition
 methods, passes its 642/642 focused gate, declares only `Set` and
 `set-methods`, and adds 644 full-vector passes with zero previous-pass
 regression, bringing the complete vector to 34,041 passes.
+R2p audits and globally admits the eight remaining well-known Symbol protocol
+tags, passes all 806 protocol-ready variants in its frozen 1,010-variant gate,
+and adds exactly 806 full-vector passes with zero previous-pass regression,
+bringing the complete vector to 34,847 passes.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

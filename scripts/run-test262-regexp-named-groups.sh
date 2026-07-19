@@ -86,14 +86,14 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_patch" != "f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3" \
     || "$expected_config" != "79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b" \
     || "$expected_metadata" != "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a" \
-    || "$expected_profile" != "086b4964eebc8dd8960b33aaa333b0adaeefb1447cbf63f893042ab269a5a17b" \
+    || "$expected_profile" != "a1a347d2d74c946a50f1e26fca6c1756c0e9948f087de3aed2339b3a4c7d6677" \
     || "$expected_schema" != "test262-canonical-classified-v2" \
     || "$expected_mode" != "both" \
     || "$timeout_ms" != "30000" \
     || "$expected_paths" != "101" \
     || "$expected_variants" != "202" \
-    || "$expected_runnable" != "198" \
-    || "$expected_passes" != "176" ]]; then
+    || "$expected_runnable" != "200" \
+    || "$expected_passes" != "178" ]]; then
     echo "error: named-groups baseline metadata drifted" >&2
     exit 1
 fi
