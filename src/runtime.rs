@@ -75,6 +75,10 @@ struct RuntimeInner {
     state: RefCell<RuntimeState>,
     deferred_references: RefCell<VecDeque<DeferredRefOp>>,
     date_host: Rc<dyn DateHost>,
+    /// Address marker captured at the outermost JavaScript/native call entry.
+    /// Nested call guards compare against it using QuickJS's one-MiB host-stack
+    /// budget; no pointer is dereferenced after the marker's lifetime ends.
+    host_stack_top: Cell<Option<usize>>,
     next_context_id: Cell<u64>,
     domain_id: u64,
 }
@@ -677,6 +681,7 @@ impl Runtime {
             }),
             deferred_references: RefCell::new(VecDeque::new()),
             date_host,
+            host_stack_top: Cell::new(None),
             next_context_id: Cell::new(0),
             domain_id,
         }))

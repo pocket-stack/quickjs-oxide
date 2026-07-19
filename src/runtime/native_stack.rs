@@ -2,31 +2,47 @@
 
 use super::*;
 
-impl Runtime {
-    /// Conservatively reject another recursive bytecode entry before Rust's
-    /// fixed host thread stack is exhausted.
-    ///
-    /// QuickJS checks the platform stack pointer at both native and bytecode
-    /// call boundaries. Stable Rust cannot perform that pointer arithmetic in
-    /// this `unsafe`-free runtime, so the recursive interpreter temporarily
-    /// needs a deterministic frame ceiling. Nineteen active bytecode frames
-    /// are the proven-safe boundary on the explicit 2 MiB regression stack:
-    /// it preserves the finite Object.hasOwn coercion vector while rejecting
-    /// the next mixed bytecode/native reentry with room to allocate its error.
-    pub(super) fn bytecode_call_would_overflow(&self) -> bool {
-        const MAX_ACTIVE_BYTECODE_FRAMES: usize = 19;
+const HOST_STACK_BUDGET_BYTES: usize = 1024 * 1024;
 
-        self.0
-            .state
-            .borrow()
-            .active_frames
-            .iter()
-            .filter(|frame| matches!(frame.kind, ActiveFrameKind::Bytecode { .. }))
-            .count()
-            >= MAX_ACTIVE_BYTECODE_FRAMES
+/// Return a comparable address near the current host stack pointer without
+/// dereferencing it or relying on platform-specific APIs.
+#[inline(never)]
+fn current_host_stack_address() -> usize {
+    let marker = 0_usize;
+    std::ptr::from_ref(&marker).addr()
+}
+
+impl Runtime {
+    /// Approximate QuickJS's host-stack check with safe pointer-address
+    /// arithmetic. The outermost guarded call captures a top marker; nested
+    /// native and bytecode entries share the upstream one-MiB byte budget.
+    ///
+    /// This tracks actual debug/release frame sizes instead of treating every
+    /// JavaScript frame as equally expensive. Recursive execution is proven on
+    /// a two-MiB host thread stack, leaving another MiB for the caller and for
+    /// materializing a catchable overflow error.
+    fn host_stack_would_overflow(&self) -> bool {
+        let current = current_host_stack_address();
+        let active_frame_count = self.0.state.borrow().active_frames.len();
+        if active_frame_count == 0 {
+            self.0.host_stack_top.set(Some(current));
+            return false;
+        }
+        let Some(top) = self.0.host_stack_top.get() else {
+            self.0.host_stack_top.set(Some(current));
+            return false;
+        };
+        top.abs_diff(current) >= HOST_STACK_BUDGET_BYTES
+    }
+
+    pub(super) fn bytecode_call_would_overflow(&self) -> bool {
+        self.host_stack_would_overflow()
     }
 
     pub(super) fn native_call_would_overflow(&self, target: NativeFunctionId) -> bool {
+        if self.host_stack_would_overflow() {
+            return true;
+        }
         // Ordinary Function.prototype.call entries are tail-forwarded by
         // `call_internal`: each logical frame consumes one argument and no
         // Rust native frame remains around the target call. A native-stack
@@ -298,6 +314,23 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    #[test]
+    fn thirty_two_nested_bytecode_calls_fit_on_two_mib_stack() {
+        on_two_mib_stack(|| {
+            let runtime = Runtime::new();
+            let mut context = runtime.new_context();
+            // Keep the parser nesting shallow so this isolates the execution
+            // stack. The pinned Test262 Sputnik case separately covers the
+            // equivalent 32 nested IIFE calls end to end.
+            let mut nested_calls = "function f0(){return 42}".to_owned();
+            for depth in 1..=32 {
+                nested_calls.push_str(&format!("function f{depth}(){{return f{}()}}", depth - 1,));
+            }
+            nested_calls.push_str("f32()");
+            assert_eq!(context.eval(&nested_calls).unwrap(), Value::Int(42));
+        });
     }
 
     #[test]

@@ -2219,701 +2219,723 @@ impl CallFrame {
                 continue;
             }
 
-            match instruction {
-                Instruction::Nop => {}
-                Instruction::PushI32(value) => self.stack.push(Value::Int(*value)),
-                Instruction::PushConst(index) => {
-                    self.stack.push(host.load_constant(*index)?);
-                }
-                Instruction::FClosure(index) => {
-                    self.stack.push(host.instantiate_closure(*index)?);
-                }
-                Instruction::ArrayFrom(element_count) => {
-                    let element_count = usize::from(*element_count);
-                    let first = self
-                        .stack
-                        .len()
-                        .checked_sub(element_count)
-                        .ok_or_else(|| Error::internal("array_from stack underflow"))?;
-                    let elements = self.stack.drain(first..).collect();
-                    match host.array_from(elements)? {
-                        Completion::Return(array) => self.stack.push(array),
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                }
-                Instruction::Arguments(_) => {
-                    unreachable!("arguments-object dispatch was bypassed")
-                }
-                Instruction::VariableEnvironment
-                | Instruction::HasEvalVariable { .. }
-                | Instruction::GetEvalVariable { .. }
-                | Instruction::PutEvalVariable { .. }
-                | Instruction::DeleteEvalVariable { .. }
-                | Instruction::DefineEvalVariable { .. }
-                | Instruction::ToObject
-                | Instruction::HasDynamicBinding { .. }
-                | Instruction::GetDynamicBinding { .. }
-                | Instruction::PutDynamicBinding { .. }
-                | Instruction::DeleteDynamicBinding { .. }
-                | Instruction::DynamicEnvironmentObject(_)
-                | Instruction::GlobalReference(_)
-                | Instruction::GetRefValue(_)
-                | Instruction::GetRefValueUndef(_)
-                | Instruction::PutRefValue(_) => {
-                    unreachable!("eval variable-object dispatch was bypassed")
-                }
-                Instruction::Object => unreachable!("object literal dispatch was bypassed"),
-                Instruction::RegExp(_) => {
-                    unreachable!("RegExp literal dispatch was bypassed")
-                }
-                Instruction::SetName(index) => {
-                    let value = self
-                        .stack
-                        .last()
-                        .ok_or_else(|| Error::internal("set name on an empty stack"))?;
-                    host.set_function_name(value, *index)?;
-                }
-                Instruction::SetNameComputed => {
-                    unreachable!("computed-name literal dispatch was bypassed")
-                }
-                Instruction::DefineMethod { .. } | Instruction::DefineMethodComputed { .. } => {
-                    unreachable!("object method dispatch was bypassed")
-                }
-                Instruction::ThrowReadOnly(index) => {
-                    self.pop()?;
-                    return Err(host.read_only_error(*index)?);
-                }
-                Instruction::ThrowRedeclaration(index) => {
-                    return Err(host.redeclaration_error(*index)?);
-                }
-                Instruction::ThrowDeleteSuper => {
-                    self.pop()?;
-                    self.pop()?;
-                    self.pop()?;
-                    return Err(Error::new(
-                        ErrorKind::Reference,
-                        "unsupported reference to 'super'",
-                    ));
-                }
-                Instruction::Undefined => self.stack.push(Value::Undefined),
-                Instruction::Null => self.stack.push(Value::Null),
-                Instruction::PushFalse => self.stack.push(Value::Bool(false)),
-                Instruction::PushTrue => self.stack.push(Value::Bool(true)),
-                Instruction::PushThis => {
-                    let value = self.normalized_this(host)?;
-                    self.stack.push(value);
-                }
-                Instruction::PushHomeObject => {
-                    self.stack.push(host.home_object()?);
-                }
-                Instruction::PushNewTarget => self.stack.push(self.new_target.clone()),
-                Instruction::GetLocal(index) => {
-                    self.stack.push(host.get_local(*index)?);
-                }
-                Instruction::PutLocal(index) => {
-                    let value = self.pop()?;
-                    host.put_local(*index, value)?;
-                }
-                Instruction::SetLocal(index) => {
-                    let value = self
-                        .stack
-                        .last()
-                        .cloned()
-                        .ok_or_else(|| Error::internal("set local on an empty stack"))?;
-                    host.put_local(*index, value)?;
-                }
-                Instruction::SetLocalUninitialized(index) => {
-                    host.set_local_uninitialized(*index)?;
-                }
-                Instruction::GetLocalCheck(index) => {
-                    self.stack.push(host.get_local_checked(*index)?);
-                }
-                Instruction::InitializeLocal(index) => {
-                    let value = self.pop()?;
-                    host.initialize_local(*index, value)?;
-                }
-                Instruction::PutLocalCheck(index) => {
-                    let value = self.pop()?;
-                    host.put_local_checked(*index, value)?;
-                }
-                Instruction::SetLocalCheck(index) => {
-                    let value =
-                        self.stack.last().cloned().ok_or_else(|| {
-                            Error::internal("set lexical local on an empty stack")
-                        })?;
-                    host.put_local_checked(*index, value)?;
-                }
-                Instruction::GetArg(index) => {
-                    self.stack.push(host.get_argument(*index)?);
-                }
-                Instruction::PutArg(index) => {
-                    let value = self.pop()?;
-                    host.put_argument(*index, value)?;
-                }
-                Instruction::SetArg(index) => {
-                    let value = self
-                        .stack
-                        .last()
-                        .cloned()
-                        .ok_or_else(|| Error::internal("set argument on an empty stack"))?;
-                    host.put_argument(*index, value)?;
-                }
-                Instruction::GetVarRef(index) => {
-                    self.stack.push(host.get_var_ref(*index)?);
-                }
-                Instruction::PutVarRef(index) => {
-                    let value = self.pop()?;
-                    host.put_var_ref(*index, value)?;
-                }
-                Instruction::SetVarRef(index) => {
-                    let value = self
-                        .stack
-                        .last()
-                        .cloned()
-                        .ok_or_else(|| Error::internal("set VarRef on an empty stack"))?;
-                    host.put_var_ref(*index, value)?;
-                }
-                Instruction::GetVarRefCheck(index) => {
-                    self.stack.push(host.get_var_ref_checked(*index)?);
-                }
-                Instruction::PutVarRefCheck(index) => {
-                    let value = self.pop()?;
-                    host.put_var_ref_checked(*index, value)?;
-                }
-                Instruction::CloseLocal(index) => {
-                    host.close_local(*index)?;
-                }
-                Instruction::GetVar(index) | Instruction::GetVarUndef(index) => {
-                    let throw_if_missing = matches!(instruction, Instruction::GetVar(_));
-                    match host.get_global_var(*index, throw_if_missing)? {
-                        Completion::Return(value) => self.stack.push(value),
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                }
-                Instruction::DeleteVar(index) => match host.delete_global_var(*index)? {
-                    Completion::Return(value) => self.stack.push(value),
-                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                },
-                Instruction::PutVar(index) | Instruction::PutVarInit(index) => {
-                    let value = self.pop()?;
-                    let initialize = matches!(instruction, Instruction::PutVarInit(_));
-                    if let Completion::Throw(value) =
-                        host.put_global_var(*index, value, initialize, self.strict)?
-                    {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::GetField(index) | Instruction::GetField2(index) => {
-                    let keep_receiver = matches!(instruction, Instruction::GetField2(_));
-                    let base = self.pop()?;
-                    let receiver = keep_receiver.then(|| base.clone());
-                    match host.get_field(base, *index)? {
-                        Completion::Return(value) => {
-                            if let Some(receiver) = receiver {
-                                self.stack.push(receiver);
-                            }
-                            self.stack.push(value);
-                        }
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                }
-                Instruction::GetArrayEl | Instruction::GetArrayEl2 => {
-                    let keep_receiver = matches!(instruction, Instruction::GetArrayEl2);
-                    let (base, key) = self.pop_pair()?;
-                    let receiver = keep_receiver.then(|| base.clone());
-                    match host.get_property(base, key)? {
-                        Completion::Return(value) => {
-                            if let Some(receiver) = receiver {
-                                self.stack.push(receiver);
-                            }
-                            self.stack.push(value);
-                        }
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                }
-                Instruction::GetArrayEl3 => {
-                    let (base, key) = self.pop_pair()?;
-                    let key_is_already_canonical =
-                        matches!(key, Value::Int(_) | Value::String(_) | Value::Symbol(_));
-                    if matches!(base, Value::Null | Value::Undefined) && !key_is_already_canonical {
-                        // QuickJS `get_array_el3` performs this special check
-                        // before ToPropertyKey for non-fast key tags.
-                        return Err(Error::new(ErrorKind::Type, "value has no property"));
-                    }
-                    if matches!(base, Value::Null | Value::Undefined) {
-                        // Reuse the ordinary read path solely for its exact
-                        // fast-key nullish diagnostic.
-                        match host.get_property(base, key)? {
-                            Completion::Return(_) => {
-                                return Err(Error::internal(
-                                    "nullish property read unexpectedly completed",
-                                ));
-                            }
-                            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                        }
-                    }
-                    let key = match host.convert_property_key(key)? {
-                        Completion::Return(key) => key,
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    };
-                    let value = match host.get_property(base.clone(), key.clone())? {
-                        Completion::Return(value) => value,
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    };
-                    self.stack.push(base);
-                    self.stack.push(key);
-                    self.stack.push(value);
-                }
-                Instruction::GetSuper => {
-                    let home_object = self.pop()?;
-                    self.stack.push(host.get_super(home_object)?);
-                }
-                Instruction::GetSuperValue | Instruction::GetSuperValueForCall => {
-                    let key = self.pop()?;
-                    let base = self.pop()?;
-                    let receiver = self.pop()?;
-                    let keep_receiver = matches!(instruction, Instruction::GetSuperValueForCall);
-                    let outcome = if keep_receiver {
-                        // Pinned QuickJS rewrites get_super_value to the
-                        // ordinary get_array_el opcode at a call site. The
-                        // getter therefore observes `base`, while the
-                        // preserved receiver is still used by CallMethod.
-                        host.get_property(base, key)?
-                    } else {
-                        host.get_super_property(receiver.clone(), base, key)?
-                    };
-                    match outcome {
-                        Completion::Return(value) => {
-                            if keep_receiver {
-                                self.stack.push(receiver);
-                            }
-                            self.stack.push(value);
-                        }
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                }
-                Instruction::ToPropKey => {
-                    let key = self.pop()?;
-                    match host.convert_property_key(key)? {
-                        Completion::Return(key) => self.stack.push(key),
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                }
-                Instruction::Insert2 => {
-                    let (base, value) = self.pop_pair()?;
-                    self.stack.push(value.clone());
-                    self.stack.push(base);
-                    self.stack.push(value);
-                }
-                Instruction::Insert3 => {
-                    let value = self.pop()?;
-                    let key = self.pop()?;
-                    let base = self.pop()?;
-                    self.stack.push(value.clone());
-                    self.stack.push(base);
-                    self.stack.push(key);
-                    self.stack.push(value);
-                }
-                Instruction::Dup3 => {
-                    let len = self.stack.len();
-                    let first = len
-                        .checked_sub(3)
-                        .ok_or_else(|| Error::internal("dup3 needs three stack values"))?;
-                    let values = self.stack[first..].to_vec();
-                    self.stack.extend(values);
-                }
-                Instruction::Insert4 => {
-                    let value = self.pop()?;
-                    let key = self.pop()?;
-                    let base = self.pop()?;
-                    let receiver = self.pop()?;
-                    self.stack.push(value.clone());
-                    self.stack.push(receiver);
-                    self.stack.push(base);
-                    self.stack.push(key);
-                    self.stack.push(value);
-                }
-                Instruction::Perm3 => {
-                    let new_value = self.pop()?;
-                    let old_value = self.pop()?;
-                    let base = self.pop()?;
-                    self.stack.push(old_value);
-                    self.stack.push(base);
-                    self.stack.push(new_value);
-                }
-                Instruction::Perm4 => {
-                    let new_value = self.pop()?;
-                    let old_value = self.pop()?;
-                    let key = self.pop()?;
-                    let base = self.pop()?;
-                    self.stack.push(old_value);
-                    self.stack.push(base);
-                    self.stack.push(key);
-                    self.stack.push(new_value);
-                }
-                Instruction::Perm5 => {
-                    let new_value = self.pop()?;
-                    let old_value = self.pop()?;
-                    let key = self.pop()?;
-                    let base = self.pop()?;
-                    let receiver = self.pop()?;
-                    self.stack.push(old_value);
-                    self.stack.push(receiver);
-                    self.stack.push(base);
-                    self.stack.push(key);
-                    self.stack.push(new_value);
-                }
-                Instruction::Rot4Left => {
-                    let key = self.pop()?;
-                    let base = self.pop()?;
-                    let receiver = self.pop()?;
-                    let value = self.pop()?;
-                    self.stack.push(receiver);
-                    self.stack.push(base);
-                    self.stack.push(key);
-                    self.stack.push(value);
-                }
-                Instruction::PutField(index) => {
-                    let (base, value) = self.pop_pair()?;
-                    if let Completion::Throw(value) =
-                        host.set_field(base, *index, value, self.strict)?
-                    {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::PutArrayEl => {
-                    let value = self.pop()?;
-                    let key = self.pop()?;
-                    let base = self.pop()?;
-                    if let Completion::Throw(value) =
-                        host.set_property(base, key, value, self.strict)?
-                    {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::PutSuperValue => {
-                    let value = self.pop()?;
-                    let key = self.pop()?;
-                    let base = self.pop()?;
-                    let receiver = self.pop()?;
-                    if let Completion::Throw(value) =
-                        host.set_super_property(receiver, base, key, value, self.strict)?
-                    {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Instruction::DefineField(index) => {
-                    let (base, value) = self.pop_pair()?;
-                    let retained_base = base.clone();
-                    match host.define_field(base, *index, value)? {
-                        Completion::Return(_) => self.stack.push(retained_base),
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                }
-                Instruction::DefineArrayEl => {
-                    let value = self.pop()?;
-                    let index = self.pop()?;
-                    let base = self.pop()?;
-                    let retained_base = base.clone();
-                    let retained_index = index.clone();
-                    match host.define_array_element(base, index, value)? {
-                        Completion::Return(_) => {
-                            self.stack.push(retained_base);
-                            self.stack.push(retained_index);
-                        }
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                }
-                Instruction::SetProto => unreachable!("prototype literal dispatch was bypassed"),
-                Instruction::CopyDataProperties => {
-                    unreachable!("spread literal dispatch was bypassed")
-                }
-                Instruction::Append => {
-                    let iterable = self.pop()?;
-                    let index = self.pop()?;
-                    let array = self.pop()?;
-                    match Self::append_iterable(host, array, index, iterable)? {
-                        OperationOutcome::Value((array, index)) => {
-                            self.stack.push(array);
-                            self.stack.push(index);
-                        }
-                        OperationOutcome::Throw(value) => {
-                            return Ok(Completion::Throw(value));
-                        }
-                    }
-                }
-                Instruction::Delete => {
-                    let (base, key) = self.pop_pair()?;
-                    match host.delete_property(base, key, self.strict)? {
-                        Completion::Return(value) => self.stack.push(value),
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                }
-                Instruction::Drop => {
-                    self.pop()?;
-                }
-                Instruction::Nip => {
-                    let (_, value) = self.pop_pair()?;
-                    self.stack.push(value);
-                }
-                Instruction::Dup => {
-                    let value = self
-                        .stack
-                        .last()
-                        .cloned()
-                        .ok_or_else(|| Error::internal("dup on an empty stack"))?;
-                    self.stack.push(value);
-                }
-                Instruction::Dup1 => {
-                    let index = self
-                        .stack
-                        .len()
-                        .checked_sub(2)
-                        .ok_or_else(|| Error::internal("dup1 needs two stack values"))?;
-                    let value = self.stack[index].clone();
-                    self.stack.insert(index + 1, value);
-                }
-                Instruction::Neg
-                | Instruction::Plus
-                | Instruction::Inc
-                | Instruction::Dec
-                | Instruction::PostInc
-                | Instruction::PostDec
-                | Instruction::BitNot
-                | Instruction::Not
-                | Instruction::TypeOf
-                | Instruction::IsUndefinedOrNull
-                | Instruction::Add
-                | Instruction::Sub
-                | Instruction::Mul
-                | Instruction::Div
-                | Instruction::Mod
-                | Instruction::Pow
-                | Instruction::Shl
-                | Instruction::Sar
-                | Instruction::Shr
-                | Instruction::BitAnd
-                | Instruction::BitXor
-                | Instruction::BitOr
-                | Instruction::Eq
-                | Instruction::StrictEq
-                | Instruction::Neq
-                | Instruction::StrictNeq
-                | Instruction::Lt
-                | Instruction::Lte
-                | Instruction::Gt
-                | Instruction::Gte => unreachable!("numeric dispatch was bypassed"),
-                Instruction::In => {
-                    let (key, object) = self.pop_pair()?;
-                    let Value::Object(object) = object else {
-                        return Err(Error::new(ErrorKind::Type, "invalid 'in' operand"));
-                    };
-                    match host.has_property(key, object)? {
-                        Completion::Return(value) => self.stack.push(value),
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                }
-                Instruction::InstanceOf => {
-                    let (candidate, target) = self.pop_pair()?;
-                    let Value::Object(target) = target else {
-                        return Err(Error::new(
-                            ErrorKind::Type,
-                            "invalid 'instanceof' right operand",
-                        ));
-                    };
-                    match host.is_instance_of(candidate, target)? {
-                        Completion::Return(value) => self.stack.push(value),
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                }
-                Instruction::IfFalse(target) => {
-                    if !self.pop()?.to_boolean() {
-                        self.pc = checked_target(*target, code.len())?;
-                    }
-                }
-                Instruction::IfTrue(target) => {
-                    if self.pop()?.to_boolean() {
-                        self.pc = checked_target(*target, code.len())?;
-                    }
-                }
-                Instruction::Goto(target) => {
-                    self.pc = checked_target(*target, code.len())?;
-                }
-                Instruction::Catch(target) => {
-                    self.regions.push(UnwindRegion::Catch {
-                        target: checked_target(*target, code.len())?,
-                        stack_depth: self.stack.len(),
-                    });
-                }
-                Instruction::DropCatch => {
-                    let region = self
-                        .regions
-                        .pop()
-                        .ok_or_else(|| Error::internal("DropCatch has no active catch handler"))?;
-                    let UnwindRegion::Catch { stack_depth, .. } = region else {
-                        return Err(Error::internal(
-                            "DropCatch did not target the innermost unwind region",
-                        ));
-                    };
-                    if self.stack.len() != stack_depth {
-                        return Err(Error::internal(
-                            "DropCatch did not reach its catch entry depth",
-                        ));
-                    }
-                }
-                Instruction::NipCatch => {
-                    let region = *self
-                        .regions
-                        .last()
-                        .ok_or_else(|| Error::internal("NipCatch has no active catch handler"))?;
-                    let UnwindRegion::Catch { stack_depth, .. } = region else {
-                        return Err(Error::internal(
-                            "NipCatch did not target the innermost unwind region",
-                        ));
-                    };
-                    if self.stack.len() <= stack_depth {
-                        return Err(Error::internal(
-                            "NipCatch has no value above its catch marker",
-                        ));
-                    }
-                    // A return crossing a try/finally uses NipCatch to retain
-                    // its pending value while removing the private handler.
-                    // QuickJS does not synthesize CloseLocal along that edge;
-                    // if the finally body overrides the return, the same frame
-                    // may re-enter those captured lexical slots.
-                    host.prepare_captured_local_reuse()?;
-                    self.regions.pop();
-                    let value = self.pop()?;
-                    self.stack.truncate(stack_depth);
-                    self.stack.push(value);
-                }
-                Instruction::Gosub(target) => {
-                    let return_pc = i32::try_from(self.pc)
-                        .map_err(|_| Error::internal("gosub return PC does not fit Int"))?;
-                    self.stack.push(Value::Int(return_pc));
-                    self.pc = checked_target(*target, code.len())?;
-                }
-                Instruction::Ret => {
-                    let Value::Int(target) = self.pop()? else {
-                        return Err(Error::internal("invalid ret value"));
-                    };
-                    let target = usize::try_from(target)
-                        .map_err(|_| Error::internal("invalid ret value"))?;
-                    if target >= code.len() {
-                        return Err(Error::internal("invalid ret value"));
-                    }
-                    self.pc = target;
-                }
-                Instruction::DropGosub => {
-                    if !matches!(self.pop()?, Value::Int(_)) {
-                        return Err(Error::internal("invalid gosub cleanup value"));
-                    }
-                }
-                Instruction::ForOfStart => {
-                    let iterable = self.pop()?;
-                    match host.for_of_start(iterable)? {
-                        ForOfStartOutcome::Record {
-                            iterator,
-                            next_method,
-                        } => {
-                            let record_base = self.stack.len();
-                            self.stack.push(iterator);
-                            self.stack.push(next_method);
-                            self.regions.push(UnwindRegion::Iterator {
-                                record_base,
-                                enabled: true,
-                            });
-                        }
-                        ForOfStartOutcome::Throw(value) => {
-                            return Ok(Completion::Throw(value));
-                        }
-                    }
-                }
-                Instruction::ForOfNext(offset) => {
-                    let (record_base, enabled) = match self.regions.last() {
-                        Some(UnwindRegion::Iterator {
-                            record_base,
-                            enabled,
-                        }) => (*record_base, *enabled),
-                        _ => {
-                            return Err(Error::internal(
-                                "ForOfNext has no innermost iterator region",
-                            ));
-                        }
-                    };
-                    let expected_depth = record_base
-                        .checked_add(2)
-                        .and_then(|depth| depth.checked_add(usize::from(*offset)))
-                        .ok_or_else(|| Error::internal("for-of offset overflow"))?;
-                    if self.stack.len() != expected_depth {
-                        return Err(Error::internal(
-                            "ForOfNext offset does not reach its iterator record",
-                        ));
-                    }
-                    if !enabled {
-                        self.stack.push(Value::Undefined);
-                        self.stack.push(Value::Bool(true));
-                        continue;
-                    }
-                    let iterator = self
-                        .stack
-                        .get(record_base)
-                        .cloned()
-                        .ok_or_else(|| Error::internal("iterator record is truncated"))?;
-                    let next_method = self
-                        .stack
-                        .get(record_base + 1)
-                        .cloned()
-                        .ok_or_else(|| Error::internal("iterator record is truncated"))?;
-                    match host.for_of_next(iterator, next_method)? {
-                        ForOfNextOutcome::Result { value, done } => {
-                            if done {
-                                self.disable_iterator_region(record_base)?;
-                            }
-                            self.stack.push(value);
-                            self.stack.push(Value::Bool(done));
-                        }
-                        ForOfNextOutcome::Throw(value) => {
-                            self.disable_iterator_region(record_base)?;
-                            return Ok(Completion::Throw(value));
-                        }
-                    }
-                }
-                Instruction::ForInStart | Instruction::ForInNext => {
-                    unreachable!("for-in dispatch was bypassed")
-                }
-                Instruction::IteratorClose => {
-                    let (iterator, enabled) = self.take_iterator_region(false)?;
-                    if enabled {
-                        match host.iterator_close(iterator, false)? {
-                            IteratorCloseOutcome::Closed => {}
-                            IteratorCloseOutcome::Throw(value) => {
-                                return Ok(Completion::Throw(value));
-                            }
-                        }
-                    }
-                }
-                Instruction::IteratorClosePreserve => {
-                    let (iterator, enabled) = self.take_iterator_region(true)?;
-                    if enabled {
-                        match host.iterator_close(iterator, false)? {
-                            IteratorCloseOutcome::Closed => {}
-                            IteratorCloseOutcome::Throw(value) => {
-                                return Ok(Completion::Throw(value));
-                            }
-                        }
-                    }
-                }
-                Instruction::Call(_)
-                | Instruction::Eval { .. }
-                | Instruction::CallMethod(_)
-                | Instruction::Construct(_) => {
-                    unreachable!("call dispatch was bypassed")
-                }
-                Instruction::Return => return self.pop().map(Completion::Return),
-                Instruction::Throw => return self.pop().map(Completion::Throw),
+            if let Some(completion) = self.execute_hot_instruction(code, instruction, host)? {
+                return Ok(completion);
             }
         }
+    }
+
+    // Keep the large non-call instruction match out of `execute_inner`'s
+    // frame. A suspended JavaScript call retains `execute_inner` while its
+    // callee runs, so allowing this debug-build dispatch frame to remain live
+    // multiplied roughly 71 KiB by every ordinary bytecode call.
+    #[inline(never)]
+    fn execute_hot_instruction(
+        &mut self,
+        code: &[Instruction],
+        instruction: &Instruction,
+        host: &mut impl VmHost,
+    ) -> Result<Option<Completion>, Error> {
+        match instruction {
+            Instruction::Nop => {}
+            Instruction::PushI32(value) => self.stack.push(Value::Int(*value)),
+            Instruction::PushConst(index) => {
+                self.stack.push(host.load_constant(*index)?);
+            }
+            Instruction::FClosure(index) => {
+                self.stack.push(host.instantiate_closure(*index)?);
+            }
+            Instruction::ArrayFrom(element_count) => {
+                let element_count = usize::from(*element_count);
+                let first = self
+                    .stack
+                    .len()
+                    .checked_sub(element_count)
+                    .ok_or_else(|| Error::internal("array_from stack underflow"))?;
+                let elements = self.stack.drain(first..).collect();
+                match host.array_from(elements)? {
+                    Completion::Return(array) => self.stack.push(array),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::Arguments(_) => {
+                unreachable!("arguments-object dispatch was bypassed")
+            }
+            Instruction::VariableEnvironment
+            | Instruction::HasEvalVariable { .. }
+            | Instruction::GetEvalVariable { .. }
+            | Instruction::PutEvalVariable { .. }
+            | Instruction::DeleteEvalVariable { .. }
+            | Instruction::DefineEvalVariable { .. }
+            | Instruction::ToObject
+            | Instruction::HasDynamicBinding { .. }
+            | Instruction::GetDynamicBinding { .. }
+            | Instruction::PutDynamicBinding { .. }
+            | Instruction::DeleteDynamicBinding { .. }
+            | Instruction::DynamicEnvironmentObject(_)
+            | Instruction::GlobalReference(_)
+            | Instruction::GetRefValue(_)
+            | Instruction::GetRefValueUndef(_)
+            | Instruction::PutRefValue(_) => {
+                unreachable!("eval variable-object dispatch was bypassed")
+            }
+            Instruction::Object => unreachable!("object literal dispatch was bypassed"),
+            Instruction::RegExp(_) => {
+                unreachable!("RegExp literal dispatch was bypassed")
+            }
+            Instruction::SetName(index) => {
+                let value = self
+                    .stack
+                    .last()
+                    .ok_or_else(|| Error::internal("set name on an empty stack"))?;
+                host.set_function_name(value, *index)?;
+            }
+            Instruction::SetNameComputed => {
+                unreachable!("computed-name literal dispatch was bypassed")
+            }
+            Instruction::DefineMethod { .. } | Instruction::DefineMethodComputed { .. } => {
+                unreachable!("object method dispatch was bypassed")
+            }
+            Instruction::ThrowReadOnly(index) => {
+                self.pop()?;
+                return Err(host.read_only_error(*index)?);
+            }
+            Instruction::ThrowRedeclaration(index) => {
+                return Err(host.redeclaration_error(*index)?);
+            }
+            Instruction::ThrowDeleteSuper => {
+                self.pop()?;
+                self.pop()?;
+                self.pop()?;
+                return Err(Error::new(
+                    ErrorKind::Reference,
+                    "unsupported reference to 'super'",
+                ));
+            }
+            Instruction::Undefined => self.stack.push(Value::Undefined),
+            Instruction::Null => self.stack.push(Value::Null),
+            Instruction::PushFalse => self.stack.push(Value::Bool(false)),
+            Instruction::PushTrue => self.stack.push(Value::Bool(true)),
+            Instruction::PushThis => {
+                let value = self.normalized_this(host)?;
+                self.stack.push(value);
+            }
+            Instruction::PushHomeObject => {
+                self.stack.push(host.home_object()?);
+            }
+            Instruction::PushNewTarget => self.stack.push(self.new_target.clone()),
+            Instruction::GetLocal(index) => {
+                self.stack.push(host.get_local(*index)?);
+            }
+            Instruction::PutLocal(index) => {
+                let value = self.pop()?;
+                host.put_local(*index, value)?;
+            }
+            Instruction::SetLocal(index) => {
+                let value = self
+                    .stack
+                    .last()
+                    .cloned()
+                    .ok_or_else(|| Error::internal("set local on an empty stack"))?;
+                host.put_local(*index, value)?;
+            }
+            Instruction::SetLocalUninitialized(index) => {
+                host.set_local_uninitialized(*index)?;
+            }
+            Instruction::GetLocalCheck(index) => {
+                self.stack.push(host.get_local_checked(*index)?);
+            }
+            Instruction::InitializeLocal(index) => {
+                let value = self.pop()?;
+                host.initialize_local(*index, value)?;
+            }
+            Instruction::PutLocalCheck(index) => {
+                let value = self.pop()?;
+                host.put_local_checked(*index, value)?;
+            }
+            Instruction::SetLocalCheck(index) => {
+                let value = self
+                    .stack
+                    .last()
+                    .cloned()
+                    .ok_or_else(|| Error::internal("set lexical local on an empty stack"))?;
+                host.put_local_checked(*index, value)?;
+            }
+            Instruction::GetArg(index) => {
+                self.stack.push(host.get_argument(*index)?);
+            }
+            Instruction::PutArg(index) => {
+                let value = self.pop()?;
+                host.put_argument(*index, value)?;
+            }
+            Instruction::SetArg(index) => {
+                let value = self
+                    .stack
+                    .last()
+                    .cloned()
+                    .ok_or_else(|| Error::internal("set argument on an empty stack"))?;
+                host.put_argument(*index, value)?;
+            }
+            Instruction::GetVarRef(index) => {
+                self.stack.push(host.get_var_ref(*index)?);
+            }
+            Instruction::PutVarRef(index) => {
+                let value = self.pop()?;
+                host.put_var_ref(*index, value)?;
+            }
+            Instruction::SetVarRef(index) => {
+                let value = self
+                    .stack
+                    .last()
+                    .cloned()
+                    .ok_or_else(|| Error::internal("set VarRef on an empty stack"))?;
+                host.put_var_ref(*index, value)?;
+            }
+            Instruction::GetVarRefCheck(index) => {
+                self.stack.push(host.get_var_ref_checked(*index)?);
+            }
+            Instruction::PutVarRefCheck(index) => {
+                let value = self.pop()?;
+                host.put_var_ref_checked(*index, value)?;
+            }
+            Instruction::CloseLocal(index) => {
+                host.close_local(*index)?;
+            }
+            Instruction::GetVar(index) | Instruction::GetVarUndef(index) => {
+                let throw_if_missing = matches!(instruction, Instruction::GetVar(_));
+                match host.get_global_var(*index, throw_if_missing)? {
+                    Completion::Return(value) => self.stack.push(value),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::DeleteVar(index) => match host.delete_global_var(*index)? {
+                Completion::Return(value) => self.stack.push(value),
+                Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+            },
+            Instruction::PutVar(index) | Instruction::PutVarInit(index) => {
+                let value = self.pop()?;
+                let initialize = matches!(instruction, Instruction::PutVarInit(_));
+                if let Completion::Throw(value) =
+                    host.put_global_var(*index, value, initialize, self.strict)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::GetField(index) | Instruction::GetField2(index) => {
+                let keep_receiver = matches!(instruction, Instruction::GetField2(_));
+                let base = self.pop()?;
+                let receiver = keep_receiver.then(|| base.clone());
+                match host.get_field(base, *index)? {
+                    Completion::Return(value) => {
+                        if let Some(receiver) = receiver {
+                            self.stack.push(receiver);
+                        }
+                        self.stack.push(value);
+                    }
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::GetArrayEl | Instruction::GetArrayEl2 => {
+                let keep_receiver = matches!(instruction, Instruction::GetArrayEl2);
+                let (base, key) = self.pop_pair()?;
+                let receiver = keep_receiver.then(|| base.clone());
+                match host.get_property(base, key)? {
+                    Completion::Return(value) => {
+                        if let Some(receiver) = receiver {
+                            self.stack.push(receiver);
+                        }
+                        self.stack.push(value);
+                    }
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::GetArrayEl3 => {
+                let (base, key) = self.pop_pair()?;
+                let key_is_already_canonical =
+                    matches!(key, Value::Int(_) | Value::String(_) | Value::Symbol(_));
+                if matches!(base, Value::Null | Value::Undefined) && !key_is_already_canonical {
+                    // QuickJS `get_array_el3` performs this special check
+                    // before ToPropertyKey for non-fast key tags.
+                    return Err(Error::new(ErrorKind::Type, "value has no property"));
+                }
+                if matches!(base, Value::Null | Value::Undefined) {
+                    // Reuse the ordinary read path solely for its exact
+                    // fast-key nullish diagnostic.
+                    match host.get_property(base, key)? {
+                        Completion::Return(_) => {
+                            return Err(Error::internal(
+                                "nullish property read unexpectedly completed",
+                            ));
+                        }
+                        Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                    }
+                }
+                let key = match host.convert_property_key(key)? {
+                    Completion::Return(key) => key,
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                };
+                let value = match host.get_property(base.clone(), key.clone())? {
+                    Completion::Return(value) => value,
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                };
+                self.stack.push(base);
+                self.stack.push(key);
+                self.stack.push(value);
+            }
+            Instruction::GetSuper => {
+                let home_object = self.pop()?;
+                self.stack.push(host.get_super(home_object)?);
+            }
+            Instruction::GetSuperValue | Instruction::GetSuperValueForCall => {
+                let key = self.pop()?;
+                let base = self.pop()?;
+                let receiver = self.pop()?;
+                let keep_receiver = matches!(instruction, Instruction::GetSuperValueForCall);
+                let outcome = if keep_receiver {
+                    // Pinned QuickJS rewrites get_super_value to the
+                    // ordinary get_array_el opcode at a call site. The
+                    // getter therefore observes `base`, while the
+                    // preserved receiver is still used by CallMethod.
+                    host.get_property(base, key)?
+                } else {
+                    host.get_super_property(receiver.clone(), base, key)?
+                };
+                match outcome {
+                    Completion::Return(value) => {
+                        if keep_receiver {
+                            self.stack.push(receiver);
+                        }
+                        self.stack.push(value);
+                    }
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::ToPropKey => {
+                let key = self.pop()?;
+                match host.convert_property_key(key)? {
+                    Completion::Return(key) => self.stack.push(key),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::Insert2 => {
+                let (base, value) = self.pop_pair()?;
+                self.stack.push(value.clone());
+                self.stack.push(base);
+                self.stack.push(value);
+            }
+            Instruction::Insert3 => {
+                let value = self.pop()?;
+                let key = self.pop()?;
+                let base = self.pop()?;
+                self.stack.push(value.clone());
+                self.stack.push(base);
+                self.stack.push(key);
+                self.stack.push(value);
+            }
+            Instruction::Dup3 => {
+                let len = self.stack.len();
+                let first = len
+                    .checked_sub(3)
+                    .ok_or_else(|| Error::internal("dup3 needs three stack values"))?;
+                let values = self.stack[first..].to_vec();
+                self.stack.extend(values);
+            }
+            Instruction::Insert4 => {
+                let value = self.pop()?;
+                let key = self.pop()?;
+                let base = self.pop()?;
+                let receiver = self.pop()?;
+                self.stack.push(value.clone());
+                self.stack.push(receiver);
+                self.stack.push(base);
+                self.stack.push(key);
+                self.stack.push(value);
+            }
+            Instruction::Perm3 => {
+                let new_value = self.pop()?;
+                let old_value = self.pop()?;
+                let base = self.pop()?;
+                self.stack.push(old_value);
+                self.stack.push(base);
+                self.stack.push(new_value);
+            }
+            Instruction::Perm4 => {
+                let new_value = self.pop()?;
+                let old_value = self.pop()?;
+                let key = self.pop()?;
+                let base = self.pop()?;
+                self.stack.push(old_value);
+                self.stack.push(base);
+                self.stack.push(key);
+                self.stack.push(new_value);
+            }
+            Instruction::Perm5 => {
+                let new_value = self.pop()?;
+                let old_value = self.pop()?;
+                let key = self.pop()?;
+                let base = self.pop()?;
+                let receiver = self.pop()?;
+                self.stack.push(old_value);
+                self.stack.push(receiver);
+                self.stack.push(base);
+                self.stack.push(key);
+                self.stack.push(new_value);
+            }
+            Instruction::Rot4Left => {
+                let key = self.pop()?;
+                let base = self.pop()?;
+                let receiver = self.pop()?;
+                let value = self.pop()?;
+                self.stack.push(receiver);
+                self.stack.push(base);
+                self.stack.push(key);
+                self.stack.push(value);
+            }
+            Instruction::PutField(index) => {
+                let (base, value) = self.pop_pair()?;
+                if let Completion::Throw(value) =
+                    host.set_field(base, *index, value, self.strict)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::PutArrayEl => {
+                let value = self.pop()?;
+                let key = self.pop()?;
+                let base = self.pop()?;
+                if let Completion::Throw(value) =
+                    host.set_property(base, key, value, self.strict)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::PutSuperValue => {
+                let value = self.pop()?;
+                let key = self.pop()?;
+                let base = self.pop()?;
+                let receiver = self.pop()?;
+                if let Completion::Throw(value) =
+                    host.set_super_property(receiver, base, key, value, self.strict)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::DefineField(index) => {
+                let (base, value) = self.pop_pair()?;
+                let retained_base = base.clone();
+                match host.define_field(base, *index, value)? {
+                    Completion::Return(_) => self.stack.push(retained_base),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::DefineArrayEl => {
+                let value = self.pop()?;
+                let index = self.pop()?;
+                let base = self.pop()?;
+                let retained_base = base.clone();
+                let retained_index = index.clone();
+                match host.define_array_element(base, index, value)? {
+                    Completion::Return(_) => {
+                        self.stack.push(retained_base);
+                        self.stack.push(retained_index);
+                    }
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::SetProto => unreachable!("prototype literal dispatch was bypassed"),
+            Instruction::CopyDataProperties => {
+                unreachable!("spread literal dispatch was bypassed")
+            }
+            Instruction::Append => {
+                let iterable = self.pop()?;
+                let index = self.pop()?;
+                let array = self.pop()?;
+                match Self::append_iterable(host, array, index, iterable)? {
+                    OperationOutcome::Value((array, index)) => {
+                        self.stack.push(array);
+                        self.stack.push(index);
+                    }
+                    OperationOutcome::Throw(value) => {
+                        return Ok(Some(Completion::Throw(value)));
+                    }
+                }
+            }
+            Instruction::Delete => {
+                let (base, key) = self.pop_pair()?;
+                match host.delete_property(base, key, self.strict)? {
+                    Completion::Return(value) => self.stack.push(value),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::Drop => {
+                self.pop()?;
+            }
+            Instruction::Nip => {
+                let (_, value) = self.pop_pair()?;
+                self.stack.push(value);
+            }
+            Instruction::Dup => {
+                let value = self
+                    .stack
+                    .last()
+                    .cloned()
+                    .ok_or_else(|| Error::internal("dup on an empty stack"))?;
+                self.stack.push(value);
+            }
+            Instruction::Dup1 => {
+                let index = self
+                    .stack
+                    .len()
+                    .checked_sub(2)
+                    .ok_or_else(|| Error::internal("dup1 needs two stack values"))?;
+                let value = self.stack[index].clone();
+                self.stack.insert(index + 1, value);
+            }
+            Instruction::Neg
+            | Instruction::Plus
+            | Instruction::Inc
+            | Instruction::Dec
+            | Instruction::PostInc
+            | Instruction::PostDec
+            | Instruction::BitNot
+            | Instruction::Not
+            | Instruction::TypeOf
+            | Instruction::IsUndefinedOrNull
+            | Instruction::Add
+            | Instruction::Sub
+            | Instruction::Mul
+            | Instruction::Div
+            | Instruction::Mod
+            | Instruction::Pow
+            | Instruction::Shl
+            | Instruction::Sar
+            | Instruction::Shr
+            | Instruction::BitAnd
+            | Instruction::BitXor
+            | Instruction::BitOr
+            | Instruction::Eq
+            | Instruction::StrictEq
+            | Instruction::Neq
+            | Instruction::StrictNeq
+            | Instruction::Lt
+            | Instruction::Lte
+            | Instruction::Gt
+            | Instruction::Gte => unreachable!("numeric dispatch was bypassed"),
+            Instruction::In => {
+                let (key, object) = self.pop_pair()?;
+                let Value::Object(object) = object else {
+                    return Err(Error::new(ErrorKind::Type, "invalid 'in' operand"));
+                };
+                match host.has_property(key, object)? {
+                    Completion::Return(value) => self.stack.push(value),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::InstanceOf => {
+                let (candidate, target) = self.pop_pair()?;
+                let Value::Object(target) = target else {
+                    return Err(Error::new(
+                        ErrorKind::Type,
+                        "invalid 'instanceof' right operand",
+                    ));
+                };
+                match host.is_instance_of(candidate, target)? {
+                    Completion::Return(value) => self.stack.push(value),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::IfFalse(target) => {
+                if !self.pop()?.to_boolean() {
+                    self.pc = checked_target(*target, code.len())?;
+                }
+            }
+            Instruction::IfTrue(target) => {
+                if self.pop()?.to_boolean() {
+                    self.pc = checked_target(*target, code.len())?;
+                }
+            }
+            Instruction::Goto(target) => {
+                self.pc = checked_target(*target, code.len())?;
+            }
+            Instruction::Catch(target) => {
+                self.regions.push(UnwindRegion::Catch {
+                    target: checked_target(*target, code.len())?,
+                    stack_depth: self.stack.len(),
+                });
+            }
+            Instruction::DropCatch => {
+                let region = self
+                    .regions
+                    .pop()
+                    .ok_or_else(|| Error::internal("DropCatch has no active catch handler"))?;
+                let UnwindRegion::Catch { stack_depth, .. } = region else {
+                    return Err(Error::internal(
+                        "DropCatch did not target the innermost unwind region",
+                    ));
+                };
+                if self.stack.len() != stack_depth {
+                    return Err(Error::internal(
+                        "DropCatch did not reach its catch entry depth",
+                    ));
+                }
+            }
+            Instruction::NipCatch => {
+                let region = *self
+                    .regions
+                    .last()
+                    .ok_or_else(|| Error::internal("NipCatch has no active catch handler"))?;
+                let UnwindRegion::Catch { stack_depth, .. } = region else {
+                    return Err(Error::internal(
+                        "NipCatch did not target the innermost unwind region",
+                    ));
+                };
+                if self.stack.len() <= stack_depth {
+                    return Err(Error::internal(
+                        "NipCatch has no value above its catch marker",
+                    ));
+                }
+                // A return crossing a try/finally uses NipCatch to retain
+                // its pending value while removing the private handler.
+                // QuickJS does not synthesize CloseLocal along that edge;
+                // if the finally body overrides the return, the same frame
+                // may re-enter those captured lexical slots.
+                host.prepare_captured_local_reuse()?;
+                self.regions.pop();
+                let value = self.pop()?;
+                self.stack.truncate(stack_depth);
+                self.stack.push(value);
+            }
+            Instruction::Gosub(target) => {
+                let return_pc = i32::try_from(self.pc)
+                    .map_err(|_| Error::internal("gosub return PC does not fit Int"))?;
+                self.stack.push(Value::Int(return_pc));
+                self.pc = checked_target(*target, code.len())?;
+            }
+            Instruction::Ret => {
+                let Value::Int(target) = self.pop()? else {
+                    return Err(Error::internal("invalid ret value"));
+                };
+                let target =
+                    usize::try_from(target).map_err(|_| Error::internal("invalid ret value"))?;
+                if target >= code.len() {
+                    return Err(Error::internal("invalid ret value"));
+                }
+                self.pc = target;
+            }
+            Instruction::DropGosub => {
+                if !matches!(self.pop()?, Value::Int(_)) {
+                    return Err(Error::internal("invalid gosub cleanup value"));
+                }
+            }
+            Instruction::ForOfStart => {
+                let iterable = self.pop()?;
+                match host.for_of_start(iterable)? {
+                    ForOfStartOutcome::Record {
+                        iterator,
+                        next_method,
+                    } => {
+                        let record_base = self.stack.len();
+                        self.stack.push(iterator);
+                        self.stack.push(next_method);
+                        self.regions.push(UnwindRegion::Iterator {
+                            record_base,
+                            enabled: true,
+                        });
+                    }
+                    ForOfStartOutcome::Throw(value) => {
+                        return Ok(Some(Completion::Throw(value)));
+                    }
+                }
+            }
+            Instruction::ForOfNext(offset) => {
+                let (record_base, enabled) = match self.regions.last() {
+                    Some(UnwindRegion::Iterator {
+                        record_base,
+                        enabled,
+                    }) => (*record_base, *enabled),
+                    _ => {
+                        return Err(Error::internal(
+                            "ForOfNext has no innermost iterator region",
+                        ));
+                    }
+                };
+                let expected_depth = record_base
+                    .checked_add(2)
+                    .and_then(|depth| depth.checked_add(usize::from(*offset)))
+                    .ok_or_else(|| Error::internal("for-of offset overflow"))?;
+                if self.stack.len() != expected_depth {
+                    return Err(Error::internal(
+                        "ForOfNext offset does not reach its iterator record",
+                    ));
+                }
+                if !enabled {
+                    self.stack.push(Value::Undefined);
+                    self.stack.push(Value::Bool(true));
+                    return Ok(None);
+                }
+                let iterator = self
+                    .stack
+                    .get(record_base)
+                    .cloned()
+                    .ok_or_else(|| Error::internal("iterator record is truncated"))?;
+                let next_method = self
+                    .stack
+                    .get(record_base + 1)
+                    .cloned()
+                    .ok_or_else(|| Error::internal("iterator record is truncated"))?;
+                match host.for_of_next(iterator, next_method)? {
+                    ForOfNextOutcome::Result { value, done } => {
+                        if done {
+                            self.disable_iterator_region(record_base)?;
+                        }
+                        self.stack.push(value);
+                        self.stack.push(Value::Bool(done));
+                    }
+                    ForOfNextOutcome::Throw(value) => {
+                        self.disable_iterator_region(record_base)?;
+                        return Ok(Some(Completion::Throw(value)));
+                    }
+                }
+            }
+            Instruction::ForInStart | Instruction::ForInNext => {
+                unreachable!("for-in dispatch was bypassed")
+            }
+            Instruction::IteratorClose => {
+                let (iterator, enabled) = self.take_iterator_region(false)?;
+                if enabled {
+                    match host.iterator_close(iterator, false)? {
+                        IteratorCloseOutcome::Closed => {}
+                        IteratorCloseOutcome::Throw(value) => {
+                            return Ok(Some(Completion::Throw(value)));
+                        }
+                    }
+                }
+            }
+            Instruction::IteratorClosePreserve => {
+                let (iterator, enabled) = self.take_iterator_region(true)?;
+                if enabled {
+                    match host.iterator_close(iterator, false)? {
+                        IteratorCloseOutcome::Closed => {}
+                        IteratorCloseOutcome::Throw(value) => {
+                            return Ok(Some(Completion::Throw(value)));
+                        }
+                    }
+                }
+            }
+            Instruction::Call(_)
+            | Instruction::Eval { .. }
+            | Instruction::CallMethod(_)
+            | Instruction::Construct(_) => {
+                unreachable!("call dispatch was bypassed")
+            }
+            Instruction::Return => {
+                return self.pop().map(|value| Some(Completion::Return(value)));
+            }
+            Instruction::Throw => {
+                return self.pop().map(|value| Some(Completion::Throw(value)));
+            }
+        }
+        Ok(None)
     }
 
     /// Execute QuickJS `OP_append` without publishing a private iterator
