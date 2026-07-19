@@ -10,6 +10,7 @@ mod object;
 mod reflect;
 mod regexp;
 mod replacement;
+mod set;
 mod string;
 
 impl Runtime {

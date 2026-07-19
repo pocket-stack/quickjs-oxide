@@ -380,6 +380,17 @@ pub struct MapRealmData {
     pub iterator_prototype: ObjectId,
 }
 
+/// Realm-owned identities required to allocate genuine Set objects and their
+/// iterators. As with Map, QuickJS roots the two class prototypes without
+/// independently rooting the public Set constructor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetRealmData {
+    pub prototype: ObjectId,
+    /// Realm-local `%SetIteratorPrototype%`, inheriting from this realm's
+    /// `%IteratorPrototype%`.
+    pub iterator_prototype: ObjectId,
+}
+
 /// Realm-owned roots which participate in QuickJS's cycle graph.
 ///
 /// The bootstrap roots needed by ordinary script evaluation are explicit;
@@ -427,6 +438,9 @@ pub struct ContextData {
     /// Realm-local Map constructor, ordinary prototype, and Map Iterator
     /// prototype, attached atomically after the cyclic Context is published.
     pub map: Option<MapRealmData>,
+    /// Realm-local Set ordinary prototype and Set Iterator prototype,
+    /// attached atomically after the cyclic Context is published.
+    pub set: Option<SetRealmData>,
     /// `%Function%`, published after the cyclic realm bootstrap has created
     /// `%Function.prototype%` and the global object.
     pub function_constructor: Option<ObjectId>,
@@ -482,6 +496,7 @@ impl ContextData {
             date_prototype: None,
             regexp: None,
             map: None,
+            set: None,
             function_constructor: None,
             throw_type_error: None,
             eval_function: None,
@@ -1040,6 +1055,21 @@ pub enum ObjectPayload {
         next_index: usize,
         kind: MapIteratorKind,
     },
+    /// `JS_CLASS_SET`: the ordered record layout is shared with Map, but each
+    /// live record stores its element in `key` and keeps `value` exactly
+    /// `undefined`. A distinct payload preserves the unforgeable Set brand.
+    Set {
+        records: Vec<MapRecord>,
+        size: usize,
+    },
+    /// `JS_CLASS_SET_ITERATOR`: the source Set remains an owned edge until
+    /// exhaustion. `kind` distinguishes value iteration from entry-pair
+    /// iteration while both `keys` and `values` use the value projection.
+    SetIterator {
+        object: Option<ObjectId>,
+        next_index: usize,
+        kind: SetIteratorKind,
+    },
     /// Realm global object and its hidden table of unresolved global VarRefs.
     GlobalObject {
         uninitialized_vars: ObjectId,
@@ -1087,6 +1117,8 @@ pub enum ObjectKind {
     RegExpStringIterator,
     Map,
     MapIterator,
+    Set,
+    SetIterator,
     GlobalObject,
     Error,
     StringIterator,
@@ -1143,6 +1175,14 @@ pub enum ArrayIteratorKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MapIteratorKind {
     Key,
+    Value,
+    KeyAndValue,
+}
+
+/// Observable projection selected by `Set.prototype.values`/`keys` or
+/// `entries`. QuickJS stores values in the shared ordered Map record key slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SetIteratorKind {
     Value,
     KeyAndValue,
 }
@@ -1776,6 +1816,30 @@ pub enum MapNativeKind {
     Iterator(MapIteratorKind),
 }
 
+/// Typed handler family for pinned QuickJS's Set constructor, prototype, and
+/// set-composition surface. Iterator identities retain their result projection
+/// instead of dispatching by the property that exposed the callable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SetNativeKind {
+    Constructor,
+    Species,
+    GroupBy,
+    Add,
+    Has,
+    Delete,
+    Clear,
+    Size,
+    ForEach,
+    IsDisjointFrom,
+    IsSubsetOf,
+    IsSupersetOf,
+    Intersection,
+    Difference,
+    SymmetricDifference,
+    Union,
+    Iterator(SetIteratorKind),
+}
+
 /// Runtime-provided callable identities. The enum is stored in heap payloads
 /// so native dispatch stays typed and does not rely on function pointers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1850,6 +1914,8 @@ pub enum NativeFunctionId {
     RegExp(RegExpNativeKind),
     Map(MapNativeKind),
     MapIteratorNext,
+    Set(SetNativeKind),
+    SetIteratorNext,
     PrimitiveConstructor(PrimitiveKind),
     StringStatic(StringStaticKind),
     /// QuickJS's test262-only `js_string_codePointRange` helper.
@@ -2237,6 +2303,22 @@ impl NativeFunctionId {
                 | MapNativeKind::ForEach
                 | MapNativeKind::Iterator(_),
             )
+            | Self::Set(
+                SetNativeKind::GroupBy
+                | SetNativeKind::Add
+                | SetNativeKind::Has
+                | SetNativeKind::Delete
+                | SetNativeKind::Clear
+                | SetNativeKind::ForEach
+                | SetNativeKind::IsDisjointFrom
+                | SetNativeKind::IsSubsetOf
+                | SetNativeKind::IsSupersetOf
+                | SetNativeKind::Intersection
+                | SetNativeKind::Difference
+                | SetNativeKind::SymmetricDifference
+                | SetNativeKind::Union
+                | SetNativeKind::Iterator(_),
+            )
             | Self::Reflect(
                 ReflectKind::Apply
                 | ReflectKind::Construct
@@ -2359,15 +2441,18 @@ impl NativeFunctionId {
             | Self::RegExp(RegExpNativeKind::Constructor) => NativeFunctionDescriptor {
                 cproto: NativeCProto::ConstructorOrFunction,
             },
-            Self::Map(MapNativeKind::Constructor) => NativeFunctionDescriptor {
-                cproto: NativeCProto::Constructor,
-            },
+            Self::Map(MapNativeKind::Constructor) | Self::Set(SetNativeKind::Constructor) => {
+                NativeFunctionDescriptor {
+                    cproto: NativeCProto::Constructor,
+                }
+            }
             Self::FunctionPrototypeFileName
             | Self::ObjectPrototypeProtoGetter
             | Self::RegExp(
                 RegExpNativeKind::Species | RegExpNativeKind::Source | RegExpNativeKind::Flags,
             )
-            | Self::Map(MapNativeKind::Species | MapNativeKind::Size) => NativeFunctionDescriptor {
+            | Self::Map(MapNativeKind::Species | MapNativeKind::Size)
+            | Self::Set(SetNativeKind::Species | SetNativeKind::Size) => NativeFunctionDescriptor {
                 cproto: NativeCProto::Getter,
             },
             Self::ObjectPrototypeProtoSetter => NativeFunctionDescriptor {
@@ -2387,7 +2472,8 @@ impl NativeFunctionId {
             Self::StringIteratorNext
             | Self::RegExpStringIteratorNext
             | Self::ArrayIteratorNext
-            | Self::MapIteratorNext => NativeFunctionDescriptor {
+            | Self::MapIteratorNext
+            | Self::SetIteratorNext => NativeFunctionDescriptor {
                 cproto: NativeCProto::IteratorNext,
             },
             Self::FunctionPrototypePosition(_) | Self::RegExp(RegExpNativeKind::Flag(_)) => {
@@ -2696,6 +2782,48 @@ impl ObjectData {
             is_constructor: false,
             kind: ObjectKind::MapIterator,
             payload: ObjectPayload::MapIterator {
+                object: Some(object),
+                next_index: 0,
+                kind,
+            },
+        }
+    }
+
+    /// Construct one empty genuine Set object. Stable records are appended by
+    /// [`Heap::set_insert_record`] after the runtime resolves SameValueZero
+    /// equality. The shared record value slot remains `undefined`.
+    #[must_use]
+    pub const fn set(shape: ShapeId, slots: Vec<PropertySlot>) -> Self {
+        Self {
+            shape,
+            slots,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::Set,
+            payload: ObjectPayload::Set {
+                records: Vec::new(),
+                size: 0,
+            },
+        }
+    }
+
+    /// Construct a branded Set Iterator at stable record index zero.
+    #[must_use]
+    pub const fn set_iterator(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        object: ObjectId,
+        kind: SetIteratorKind,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::SetIterator,
+            payload: ObjectPayload::SetIterator {
                 object: Some(object),
                 next_index: 0,
                 kind,
@@ -3231,6 +3359,8 @@ impl Heap {
             | ObjectPayload::RegExpStringIterator { .. }
             | ObjectPayload::Map { .. }
             | ObjectPayload::MapIterator { .. }
+            | ObjectPayload::Set { .. }
+            | ObjectPayload::SetIterator { .. }
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }
@@ -3595,6 +3725,58 @@ impl Heap {
             unreachable!("context identity was validated before retaining Map roots")
         };
         context.map = Some(map);
+        Ok(())
+    }
+
+    /// Atomically publish the realm's ordinary Set prototype and Set Iterator
+    /// prototype roots after both have been initialized.
+    pub(crate) fn attach_set_intrinsics(
+        &mut self,
+        realm: ContextId,
+        set: SetRealmData,
+    ) -> Result<(), HeapError> {
+        let context = self.context(realm)?;
+        if context.set.is_some() {
+            return Err(HeapError::Invariant(
+                "context already has Set intrinsic roots",
+            ));
+        }
+        let iterator_prototype = context.iterator_prototype;
+
+        let prototype = self.object(set.prototype)?;
+        if prototype.kind != ObjectKind::Ordinary
+            || !matches!(prototype.payload, ObjectPayload::Ordinary)
+        {
+            return Err(HeapError::Invariant(
+                "Set prototype root is not an ordinary object",
+            ));
+        }
+
+        let set_iterator_prototype = self.object(set.iterator_prototype)?;
+        if set_iterator_prototype.kind != ObjectKind::Ordinary
+            || !matches!(set_iterator_prototype.payload, ObjectPayload::Ordinary)
+        {
+            return Err(HeapError::Invariant(
+                "Set Iterator prototype root is not an ordinary object",
+            ));
+        }
+        if self.shape(set_iterator_prototype.shape)?.prototype() != Some(iterator_prototype) {
+            return Err(HeapError::Invariant(
+                "Set Iterator prototype does not inherit from the realm's Iterator prototype",
+            ));
+        }
+
+        let edges = [
+            RawId::Object(set.prototype),
+            RawId::Object(set.iterator_prototype),
+        ];
+        self.retain_edges_transactionally(&edges)?;
+
+        let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(realm))?.data
+        else {
+            unreachable!("context identity was validated before retaining Set roots")
+        };
+        context.set = Some(set);
         Ok(())
     }
 
@@ -4778,6 +4960,211 @@ impl Heap {
         self.drain_zero_queue()
     }
 
+    /// Borrow the stable insertion-order record array of one genuine Set.
+    /// Live elements occupy `key`; both live and tombstoned `value` slots are
+    /// always `undefined`.
+    pub fn set_records(&self, id: ObjectId) -> Result<&[MapRecord], HeapError> {
+        match &self.object(id)?.payload {
+            ObjectPayload::Set { records, .. } => Ok(records),
+            _ => Err(HeapError::Invariant(
+                "Set records requested for an object with the wrong class",
+            )),
+        }
+    }
+
+    /// Read the number of live records in one genuine Set.
+    pub fn set_size(&self, id: ObjectId) -> Result<usize, HeapError> {
+        match &self.object(id)?.payload {
+            ObjectPayload::Set { size, .. } => Ok(*size),
+            _ => Err(HeapError::Invariant(
+                "Set size requested for an object with the wrong class",
+            )),
+        }
+    }
+
+    /// Append a new live Set record after the caller has established that no
+    /// SameValueZero-equal element exists. Object edges are retained before
+    /// publication. A Symbol atom must already be owned by the caller and
+    /// transfers to the Set only when this operation succeeds.
+    pub fn set_insert_record(
+        &mut self,
+        id: ObjectId,
+        key: RawValue,
+    ) -> Result<HeapCleanup, HeapError> {
+        if !is_map_storable_value(&key) {
+            return Err(HeapError::Invariant(
+                "Set record contains an internal value sentinel",
+            ));
+        }
+        let next_size = match &self.object(id)?.payload {
+            ObjectPayload::Set { size, .. } => size.checked_add(1).ok_or(HeapError::Overflow {
+                operation: "growing Set size",
+            })?,
+            _ => {
+                return Err(HeapError::Invariant(
+                    "Set insertion reached an object with the wrong class",
+                ));
+            }
+        };
+
+        let new_edges = raw_value_edges(&key);
+        self.retain_edges_transactionally(&new_edges)?;
+
+        let ObjectPayload::Set { records, size } = &mut self.object_mut(id)?.payload else {
+            unreachable!("Set payload was validated before retaining record edges")
+        };
+        records.push(MapRecord {
+            key: Some(key),
+            value: RawValue::Undefined,
+        });
+        *size = next_size;
+        Ok(HeapCleanup::default())
+    }
+
+    /// Turn a caller-resolved live Set record into a tombstone without
+    /// changing stable record indices. The owned element edge and Symbol atom
+    /// are detached together.
+    pub fn set_delete_record(
+        &mut self,
+        id: ObjectId,
+        index: usize,
+    ) -> Result<HeapCleanup, HeapError> {
+        let key = {
+            let ObjectPayload::Set { records, size } = &mut self.object_mut(id)?.payload else {
+                return Err(HeapError::Invariant(
+                    "Set deletion reached an object with the wrong class",
+                ));
+            };
+            if *size == 0 {
+                return Err(HeapError::Invariant(
+                    "Set deletion requires a live record index",
+                ));
+            }
+            let record = records.get_mut(index).ok_or(HeapError::Invariant(
+                "Set deletion requires a live record index",
+            ))?;
+            if !matches!(record.value, RawValue::Undefined) {
+                return Err(HeapError::Invariant(
+                    "Set record value slot is not undefined",
+                ));
+            }
+            let key = record.key.take().ok_or(HeapError::Invariant(
+                "Set deletion requires a live record index",
+            ))?;
+            *size -= 1;
+            key
+        };
+
+        let mut cleanup = HeapCleanup::default();
+        cleanup.atoms.extend(raw_value_atom(&key));
+        for edge in raw_value_edges(&key) {
+            self.release_raw_no_drain(edge)?;
+        }
+        cleanup.merge(self.drain_zero_queue()?);
+        Ok(cleanup)
+    }
+
+    /// Tombstone every live Set record while preserving stable indices for
+    /// existing iterators. Detached edges and Symbol atoms are finalized only
+    /// after the payload mutation completes.
+    pub fn set_clear(&mut self, id: ObjectId) -> Result<HeapCleanup, HeapError> {
+        let removed = {
+            let ObjectPayload::Set { records, size } = &mut self.object_mut(id)?.payload else {
+                return Err(HeapError::Invariant(
+                    "Set clear reached an object with the wrong class",
+                ));
+            };
+            if records
+                .iter()
+                .any(|record| !matches!(record.value, RawValue::Undefined))
+            {
+                return Err(HeapError::Invariant(
+                    "Set record value slot is not undefined",
+                ));
+            }
+            let mut removed = Vec::with_capacity(*size);
+            for record in records {
+                if let Some(key) = record.key.take() {
+                    removed.push(key);
+                }
+            }
+            *size = 0;
+            removed
+        };
+
+        let mut cleanup = HeapCleanup::default();
+        for key in removed {
+            cleanup.atoms.extend(raw_value_atom(&key));
+            for edge in raw_value_edges(&key) {
+                self.release_raw_no_drain(edge)?;
+            }
+        }
+        cleanup.merge(self.drain_zero_queue()?);
+        Ok(cleanup)
+    }
+
+    /// Snapshot one branded Set Iterator's live source, stable record cursor,
+    /// and result projection.
+    pub fn set_iterator_state(
+        &self,
+        id: ObjectId,
+    ) -> Result<(Option<ObjectId>, usize, SetIteratorKind), HeapError> {
+        let ObjectPayload::SetIterator {
+            object,
+            next_index,
+            kind,
+        } = &self.object(id)?.payload
+        else {
+            return Err(HeapError::Invariant(
+                "Set Iterator state reached an object with the wrong class",
+            ));
+        };
+        Ok((*object, *next_index, *kind))
+    }
+
+    /// Advance a live Set Iterator to the next stable record index. The source
+    /// edge remains retained so later record appends are visible.
+    pub fn set_set_iterator_index(
+        &mut self,
+        id: ObjectId,
+        next_index: usize,
+    ) -> Result<(), HeapError> {
+        let ObjectPayload::SetIterator {
+            object,
+            next_index: stored,
+            ..
+        } = &mut self.object_mut(id)?.payload
+        else {
+            return Err(HeapError::Invariant(
+                "Set Iterator advance reached an object with the wrong class",
+            ));
+        };
+        if object.is_none() {
+            return Err(HeapError::Invariant("completed Set Iterator was advanced"));
+        }
+        *stored = next_index;
+        Ok(())
+    }
+
+    /// Permanently detach an exhausted Set Iterator source and release its
+    /// owned object edge. Repeated completion is idempotent.
+    pub fn finish_set_iterator(&mut self, id: ObjectId) -> Result<HeapCleanup, HeapError> {
+        let source = {
+            let ObjectPayload::SetIterator { object, .. } = &mut self.object_mut(id)?.payload
+            else {
+                return Err(HeapError::Invariant(
+                    "Set Iterator completion reached an object with the wrong class",
+                ));
+            };
+            object.take()
+        };
+        let Some(source) = source else {
+            return Ok(HeapCleanup::default());
+        };
+        self.release_raw_no_drain(RawId::Object(source))?;
+        self.drain_zero_queue()
+    }
+
     /// Read the representation-sensitive dense prefix tracked for a genuine
     /// QuickJS Array. `None` means the Array has converted to slow properties.
     pub fn array_fast_len(&self, id: ObjectId) -> Result<Option<u32>, HeapError> {
@@ -5372,6 +5759,8 @@ impl Heap {
                 )
                 | (ObjectKind::Map, ObjectPayload::Map { .. })
                 | (ObjectKind::MapIterator, ObjectPayload::MapIterator { .. })
+                | (ObjectKind::Set, ObjectPayload::Set { .. })
+                | (ObjectKind::SetIterator, ObjectPayload::SetIterator { .. })
                 | (ObjectKind::GlobalObject, ObjectPayload::GlobalObject { .. })
                 | (ObjectKind::Error, ObjectPayload::Error)
                 | (
@@ -5482,6 +5871,41 @@ impl Heap {
             if !matches!(self.object(*map)?.payload, ObjectPayload::Map { .. }) {
                 return Err(HeapError::Invariant(
                     "Map Iterator source does not have the Map class",
+                ));
+            }
+        }
+        if let ObjectPayload::Set { records, size } = &object.payload {
+            let mut live = 0usize;
+            for record in records {
+                if !matches!(record.value, RawValue::Undefined) {
+                    return Err(HeapError::Invariant(
+                        "Set record value slot is not undefined",
+                    ));
+                }
+                if let Some(key) = &record.key {
+                    if !is_map_storable_value(key) {
+                        return Err(HeapError::Invariant(
+                            "Set record contains an internal value sentinel",
+                        ));
+                    }
+                    live = live.checked_add(1).ok_or(HeapError::Overflow {
+                        operation: "validating Set size",
+                    })?;
+                }
+            }
+            if live != *size {
+                return Err(HeapError::Invariant(
+                    "Set live record count does not match its payload",
+                ));
+            }
+        }
+        if let ObjectPayload::SetIterator {
+            object: Some(set), ..
+        } = &object.payload
+        {
+            if !matches!(self.object(*set)?.payload, ObjectPayload::Set { .. }) {
+                return Err(HeapError::Invariant(
+                    "Set Iterator source does not have the Set class",
                 ));
             }
         }
@@ -5886,6 +6310,12 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
             })
             .sum(),
         ObjectPayload::MapIterator { .. } => 1,
+        ObjectPayload::Set { records, .. } => records
+            .iter()
+            .filter_map(|record| record.key.as_ref())
+            .map(|key| raw_value_edges(key).len())
+            .sum(),
+        ObjectPayload::SetIterator { .. } => 1,
         ObjectPayload::BoundFunction { arguments, .. } => arguments.len().saturating_add(2),
         ObjectPayload::BytecodeFunction { closure_slots, .. } => closure_slots.len(),
     };
@@ -5925,6 +6355,16 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
             }
         }
         ObjectPayload::MapIterator { object, .. } => {
+            edges.extend(object.map(RawId::Object));
+        }
+        ObjectPayload::Set { records, .. } => {
+            for record in records {
+                if let Some(key) = &record.key {
+                    edges.extend(raw_value_edges(key));
+                }
+            }
+        }
+        ObjectPayload::SetIterator { object, .. } => {
             edges.extend(object.map(RawId::Object));
         }
         ObjectPayload::ForInIterator(data) => {
@@ -6022,6 +6462,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
             .saturating_add(NativeErrorKind::COUNT)
             .saturating_add(context.regexp.map_or(0, |_| 4))
             .saturating_add(context.map.map_or(0, |_| 2))
+            .saturating_add(context.set.map_or(0, |_| 2))
             .saturating_add(context.global_objects.len())
             .saturating_add(context.intrinsics.len())
             .saturating_add(context.initial_shapes.len()),
@@ -6050,6 +6491,10 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     if let Some(map) = context.map {
         edges.push(RawId::Object(map.prototype));
         edges.push(RawId::Object(map.iterator_prototype));
+    }
+    if let Some(set) = context.set {
+        edges.push(RawId::Object(set.prototype));
+        edges.push(RawId::Object(set.iterator_prototype));
     }
     edges.extend(context.function_constructor.map(RawId::Object));
     edges.extend(context.array_constructor.map(RawId::Object));
@@ -6133,6 +6578,10 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
                     .chain(raw_value_atom(&record.value))
             })
             .collect::<Vec<_>>(),
+        ObjectPayload::Set { records, .. } => records
+            .iter()
+            .filter_map(|record| record.key.as_ref().and_then(raw_value_atom))
+            .collect::<Vec<_>>(),
         ObjectPayload::Ordinary
         | ObjectPayload::RawJson
         | ObjectPayload::Array { .. }
@@ -6143,6 +6592,7 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
         | ObjectPayload::RegExp(_)
         | ObjectPayload::RegExpStringIterator { .. }
         | ObjectPayload::MapIterator { .. }
+        | ObjectPayload::SetIterator { .. }
         | ObjectPayload::GlobalObject { .. }
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
@@ -7104,6 +7554,362 @@ mod tests {
         }
         assert_eq!(
             NativeFunctionId::MapIteratorNext.descriptor().cproto,
+            NativeCProto::IteratorNext
+        );
+    }
+
+    #[test]
+    fn set_records_retain_key_edges_and_tombstone_with_undefined_value() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let set = heap
+            .allocate_object(ObjectData::set(shape, Vec::new()))
+            .unwrap();
+        let key = leaf(&mut heap, shape);
+
+        assert_eq!(
+            heap.set_insert_record(set, RawValue::Object(key)),
+            Ok(HeapCleanup::default())
+        );
+        assert_eq!(heap.set_size(set), Ok(1));
+        assert_eq!(heap.object_strong_count(key), Ok(2));
+        assert_eq!(
+            heap.set_records(set),
+            Ok(&[MapRecord {
+                key: Some(RawValue::Object(key)),
+                value: RawValue::Undefined,
+            }][..])
+        );
+        heap.release_object(key).unwrap();
+
+        let cleanup = heap.set_delete_record(set, 0).unwrap();
+        assert_eq!(cleanup.finalized_objects, 1);
+        assert!(matches!(heap.object(key), Err(HeapError::Stale { .. })));
+        assert_eq!(heap.set_size(set), Ok(0));
+        assert_eq!(
+            heap.set_records(set),
+            Ok(&[MapRecord {
+                key: None,
+                value: RawValue::Undefined,
+            }][..])
+        );
+        assert!(matches!(
+            heap.set_delete_record(set, 0),
+            Err(HeapError::Invariant(
+                "Set deletion requires a live record index"
+            ))
+        ));
+        assert!(matches!(
+            heap.set_insert_record(set, RawValue::Uninitialized),
+            Err(HeapError::Invariant(
+                "Set record contains an internal value sentinel"
+            ))
+        ));
+        assert!(matches!(
+            heap.set_insert_record(set, RawValue::Exception),
+            Err(HeapError::Invariant(
+                "Set record contains an internal value sentinel"
+            ))
+        ));
+
+        let map = heap
+            .allocate_object(ObjectData::map(shape, Vec::new()))
+            .unwrap();
+        assert!(matches!(
+            heap.set_insert_record(map, RawValue::Int(1)),
+            Err(HeapError::Invariant(
+                "Set insertion reached an object with the wrong class"
+            ))
+        ));
+        heap.release_object(map).unwrap();
+        heap.release_object(set).unwrap();
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn set_tombstones_preserve_readd_order_and_live_iterator_sees_appends() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let set = heap
+            .allocate_object(ObjectData::set(shape, Vec::new()))
+            .unwrap();
+        heap.set_insert_record(set, RawValue::Int(1)).unwrap();
+        let iterator = heap
+            .allocate_object(ObjectData::set_iterator(
+                shape,
+                Vec::new(),
+                set,
+                SetIteratorKind::KeyAndValue,
+            ))
+            .unwrap();
+
+        heap.set_set_iterator_index(iterator, 1).unwrap();
+        heap.set_insert_record(set, RawValue::Int(2)).unwrap();
+        heap.set_delete_record(set, 1).unwrap();
+        heap.set_insert_record(set, RawValue::Int(2)).unwrap();
+
+        let records = heap.set_records(set).unwrap();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].key, Some(RawValue::Int(1)));
+        assert_eq!(records[1].key, None);
+        assert_eq!(records[2].key, Some(RawValue::Int(2)));
+        assert!(
+            records
+                .iter()
+                .all(|record| matches!(record.value, RawValue::Undefined))
+        );
+        assert_eq!(heap.set_size(set), Ok(2));
+        assert_eq!(
+            heap.set_iterator_state(iterator),
+            Ok((Some(set), 1, SetIteratorKind::KeyAndValue))
+        );
+        assert_eq!(
+            records[1..].iter().find_map(|record| record.key.as_ref()),
+            Some(&RawValue::Int(2))
+        );
+
+        assert_eq!(heap.object_strong_count(set), Ok(2));
+        heap.release_object(set).unwrap();
+        assert_eq!(heap.object_strong_count(set), Ok(1));
+        let cleanup = heap.finish_set_iterator(iterator).unwrap();
+        assert_eq!(cleanup.finalized_objects, 1);
+        assert!(matches!(heap.object(set), Err(HeapError::Stale { .. })));
+        assert_eq!(
+            heap.set_iterator_state(iterator),
+            Ok((None, 1, SetIteratorKind::KeyAndValue))
+        );
+        assert_eq!(
+            heap.finish_set_iterator(iterator).unwrap(),
+            HeapCleanup::default()
+        );
+        assert!(matches!(
+            heap.set_set_iterator_index(iterator, 2),
+            Err(HeapError::Invariant("completed Set Iterator was advanced"))
+        ));
+
+        heap.release_object(iterator).unwrap();
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn set_symbol_atoms_transfer_and_return_on_delete_clear_and_finalize() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let set = heap
+            .allocate_object(ObjectData::set(shape, Vec::new()))
+            .unwrap();
+        let first = Atom::from_immediate_integer(201).unwrap();
+        let second = Atom::from_immediate_integer(202).unwrap();
+        let third = Atom::from_immediate_integer(203).unwrap();
+
+        heap.set_insert_record(set, RawValue::Symbol(first))
+            .unwrap();
+        heap.set_insert_record(set, RawValue::Symbol(second))
+            .unwrap();
+        let cleanup = heap.set_delete_record(set, 0).unwrap();
+        assert_eq!(cleanup.atoms, vec![first]);
+        let cleanup = heap.set_clear(set).unwrap();
+        assert_eq!(cleanup.atoms, vec![second]);
+        assert_eq!(heap.set_size(set), Ok(0));
+
+        heap.set_insert_record(set, RawValue::Symbol(third))
+            .unwrap();
+        let cleanup = heap.release_object(set).unwrap();
+        assert_eq!(cleanup.atoms, vec![third]);
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn set_layout_and_iterator_source_are_structurally_validated() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+
+        let malformed = ObjectData {
+            shape,
+            slots: Vec::new(),
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::Set,
+            payload: ObjectPayload::Set {
+                records: vec![MapRecord {
+                    key: Some(RawValue::Int(1)),
+                    value: RawValue::Int(2),
+                }],
+                size: 1,
+            },
+        };
+        assert!(matches!(
+            heap.allocate_object(malformed),
+            Err(HeapError::Invariant(
+                "Set record value slot is not undefined"
+            ))
+        ));
+        assert_eq!(heap.counts().object_nodes, 0);
+
+        let map = heap
+            .allocate_object(ObjectData::map(shape, Vec::new()))
+            .unwrap();
+        assert!(matches!(
+            heap.allocate_object(ObjectData::set_iterator(
+                shape,
+                Vec::new(),
+                map,
+                SetIteratorKind::Value,
+            )),
+            Err(HeapError::Invariant(
+                "Set Iterator source does not have the Set class"
+            ))
+        ));
+        assert_eq!(heap.object_strong_count(map), Ok(1));
+
+        let mut mismatched = ObjectData::set(shape, Vec::new());
+        mismatched.kind = ObjectKind::Map;
+        assert!(matches!(
+            heap.allocate_object(mismatched),
+            Err(HeapError::Invariant(
+                "object kind does not match its class payload"
+            ))
+        ));
+
+        heap.release_object(map).unwrap();
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn set_intrinsics_attach_transactionally_and_root_the_realm_graph() {
+        let mut heap = Heap::new();
+        let empty_shape = empty_shape(&mut heap);
+        let root = leaf(&mut heap, empty_shape);
+        let realm = heap
+            .allocate_context(ContextData::new(
+                root, root, root, root, root, root, root, root,
+            ))
+            .unwrap();
+        let intrinsic_shape = heap
+            .allocate_shape(Shape::new(Some(root), []).unwrap())
+            .unwrap();
+        let prototype = heap
+            .allocate_object(ObjectData::ordinary(intrinsic_shape, Vec::new()))
+            .unwrap();
+        let iterator_prototype = heap
+            .allocate_object(ObjectData::ordinary(intrinsic_shape, Vec::new()))
+            .unwrap();
+        let constructor = heap
+            .allocate_object(ObjectData::bound_native_function(
+                intrinsic_shape,
+                Vec::new(),
+                NativeFunctionId::Set(SetNativeKind::Constructor),
+                realm,
+                0,
+            ))
+            .unwrap();
+        let set = SetRealmData {
+            prototype,
+            iterator_prototype,
+        };
+        let prototype_strong = heap.object_strong_count(prototype).unwrap();
+        let constructor_strong = heap.object_strong_count(constructor).unwrap();
+        let iterator_strong = heap.object_strong_count(iterator_prototype).unwrap();
+
+        heap.live_node_mut(RawId::Object(iterator_prototype))
+            .unwrap()
+            .strong = u32::MAX;
+        assert_eq!(
+            heap.attach_set_intrinsics(realm, set),
+            Err(HeapError::Overflow {
+                operation: "retaining outgoing heap edges",
+            })
+        );
+        assert_eq!(heap.context(realm).unwrap().set, None);
+        assert_eq!(heap.object_strong_count(prototype), Ok(prototype_strong));
+        assert_eq!(
+            heap.object_strong_count(constructor),
+            Ok(constructor_strong)
+        );
+        heap.live_node_mut(RawId::Object(iterator_prototype))
+            .unwrap()
+            .strong = iterator_strong;
+
+        heap.attach_set_intrinsics(realm, set).unwrap();
+        assert_eq!(heap.context(realm).unwrap().set, Some(set));
+        assert_eq!(
+            heap.object_strong_count(prototype),
+            Ok(prototype_strong + 1)
+        );
+        assert_eq!(
+            heap.object_strong_count(constructor),
+            Ok(constructor_strong)
+        );
+        assert_eq!(
+            heap.object_strong_count(iterator_prototype),
+            Ok(iterator_strong + 1)
+        );
+        assert!(matches!(
+            heap.attach_set_intrinsics(realm, set),
+            Err(HeapError::Invariant(
+                "context already has Set intrinsic roots"
+            ))
+        ));
+
+        heap.release_object(prototype).unwrap();
+        heap.release_object(iterator_prototype).unwrap();
+        let constructor_cleanup = heap.release_object(constructor).unwrap();
+        assert_eq!(constructor_cleanup.finalized_objects, 1);
+        let context_cleanup = heap.release_context(realm).unwrap();
+        assert_eq!(context_cleanup.finalized_contexts, 1);
+        assert_eq!(context_cleanup.finalized_objects, 2);
+        let stats = heap.run_gc().unwrap();
+        assert_eq!(stats.cleanup.finalized_contexts, 0);
+        assert_eq!(stats.cleanup.finalized_objects, 0);
+        heap.release_shape(intrinsic_shape).unwrap();
+        heap.release_object(root).unwrap();
+        heap.release_shape(empty_shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn set_native_descriptors_preserve_quickjs_call_protocols() {
+        assert_eq!(
+            NativeFunctionId::Set(SetNativeKind::Constructor)
+                .descriptor()
+                .cproto,
+            NativeCProto::Constructor
+        );
+        for kind in [SetNativeKind::Species, SetNativeKind::Size] {
+            assert_eq!(
+                NativeFunctionId::Set(kind).descriptor().cproto,
+                NativeCProto::Getter
+            );
+        }
+        for kind in [
+            SetNativeKind::GroupBy,
+            SetNativeKind::Add,
+            SetNativeKind::Has,
+            SetNativeKind::Delete,
+            SetNativeKind::Clear,
+            SetNativeKind::ForEach,
+            SetNativeKind::IsDisjointFrom,
+            SetNativeKind::IsSubsetOf,
+            SetNativeKind::IsSupersetOf,
+            SetNativeKind::Intersection,
+            SetNativeKind::Difference,
+            SetNativeKind::SymmetricDifference,
+            SetNativeKind::Union,
+            SetNativeKind::Iterator(SetIteratorKind::Value),
+            SetNativeKind::Iterator(SetIteratorKind::KeyAndValue),
+        ] {
+            assert_eq!(
+                NativeFunctionId::Set(kind).descriptor().cproto,
+                NativeCProto::Generic
+            );
+        }
+        assert_eq!(
+            NativeFunctionId::SetIteratorNext.descriptor().cproto,
             NativeCProto::IteratorNext
         );
     }

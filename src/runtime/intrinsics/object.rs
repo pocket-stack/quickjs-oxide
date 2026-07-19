@@ -824,6 +824,8 @@ impl Runtime {
                 | ObjectPayload::RawJson
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
+                | ObjectPayload::Set { .. }
+                | ObjectPayload::SetIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::GlobalObject { .. } => JsString::from_static("Object"),
                 ObjectPayload::ArrayIterator { .. }

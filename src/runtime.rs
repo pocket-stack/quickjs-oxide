@@ -975,6 +975,14 @@ impl Runtime {
             &global_object,
         )
         .expect("Map intrinsic initialization must succeed");
+        self.initialize_set_intrinsic(
+            realm,
+            &function_prototype,
+            &object_prototype,
+            &iterator_prototype,
+            &global_object,
+        )
+        .expect("Set intrinsic initialization must succeed");
         drop(global_var_object);
         drop(global_object);
         drop(uninitialized_vars);
@@ -4786,6 +4794,8 @@ impl Runtime {
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
+                | ObjectPayload::Set { .. }
+                | ObjectPayload::SetIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
@@ -4844,6 +4854,8 @@ impl Runtime {
             | ObjectPayload::ArrayIterator { .. }
             | ObjectPayload::Map { .. }
             | ObjectPayload::MapIterator { .. }
+            | ObjectPayload::Set { .. }
+            | ObjectPayload::SetIterator { .. }
             | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)
             | ObjectPayload::GlobalObject { .. }
@@ -5184,6 +5196,8 @@ impl Runtime {
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
+                | ObjectPayload::Set { .. }
+                | ObjectPayload::SetIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
@@ -6238,6 +6252,8 @@ impl Runtime {
                         | ObjectPayload::ArrayIterator { .. }
                         | ObjectPayload::Map { .. }
                         | ObjectPayload::MapIterator { .. }
+                        | ObjectPayload::Set { .. }
+                        | ObjectPayload::SetIterator { .. }
                         | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
@@ -6544,6 +6560,8 @@ impl Runtime {
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
+                | ObjectPayload::Set { .. }
+                | ObjectPayload::SetIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
@@ -6759,6 +6777,8 @@ impl Runtime {
                         | ObjectPayload::ArrayIterator { .. }
                         | ObjectPayload::Map { .. }
                         | ObjectPayload::MapIterator { .. }
+                        | ObjectPayload::Set { .. }
+                        | ObjectPayload::SetIterator { .. }
                         | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
@@ -6863,6 +6883,8 @@ impl Runtime {
                         | ObjectPayload::ArrayIterator { .. }
                         | ObjectPayload::Map { .. }
                         | ObjectPayload::MapIterator { .. }
+                        | ObjectPayload::Set { .. }
+                        | ObjectPayload::SetIterator { .. }
                         | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
@@ -7234,6 +7256,8 @@ impl Runtime {
                     | ObjectPayload::ArrayIterator { .. }
                     | ObjectPayload::Map { .. }
                     | ObjectPayload::MapIterator { .. }
+                    | ObjectPayload::Set { .. }
+                    | ObjectPayload::SetIterator { .. }
                     | ObjectPayload::ForInIterator(_)
                     | ObjectPayload::Primitive(_)
                     | ObjectPayload::GlobalObject { .. }
@@ -8303,6 +8327,8 @@ impl Runtime {
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
+                | ObjectPayload::Set { .. }
+                | ObjectPayload::SetIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::Error

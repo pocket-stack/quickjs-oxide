@@ -50,6 +50,8 @@ impl Runtime {
             | ObjectPayload::ArrayIterator { .. }
             | ObjectPayload::Map { .. }
             | ObjectPayload::MapIterator { .. }
+            | ObjectPayload::Set { .. }
+            | ObjectPayload::SetIterator { .. }
             | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)
             | ObjectPayload::Date(_)

@@ -301,6 +301,8 @@ impl Runtime {
             | ObjectPayload::ArrayIterator { .. }
             | ObjectPayload::Map { .. }
             | ObjectPayload::MapIterator { .. }
+            | ObjectPayload::Set { .. }
+            | ObjectPayload::SetIterator { .. }
             | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(PrimitiveObjectData::Symbol(_))
             | ObjectPayload::Date(_)
