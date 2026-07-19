@@ -822,6 +822,8 @@ impl Runtime {
                 ObjectPayload::RegExp(_) => JsString::from_static("RegExp"),
                 ObjectPayload::Ordinary
                 | ObjectPayload::RawJson
+                | ObjectPayload::Map { .. }
+                | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::GlobalObject { .. } => JsString::from_static("Object"),
                 ObjectPayload::ArrayIterator { .. }

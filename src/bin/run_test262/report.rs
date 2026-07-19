@@ -6,7 +6,7 @@ use std::path::Path;
 use super::metadata::Metadata;
 use super::{
     CoordinatorOptions, QUICKJS_VERSION, TEST262_COMMIT, TEST262_CONFIG_SHA256,
-    TEST262_METADATA_SHA256, TEST262_OXIDE_PROFILE_SHA256, TEST262_PATCH_SHA256,
+    TEST262_METADATA_SHA256, TEST262_PATCH_SHA256,
 };
 
 #[derive(Clone, Debug)]
@@ -119,6 +119,7 @@ pub(super) fn write_report(
     options: &CoordinatorOptions,
     rows: &[String],
     summary: &BTreeMap<String, usize>,
+    oxide_profile_sha256: &str,
 ) -> Result<(), String> {
     let json_path = options.report.with_extension("jsonl");
     if json_path == options.report {
@@ -137,9 +138,7 @@ pub(super) fn write_report(
     output.push_str(&format!(
         "# test262_metadata_sha256={TEST262_METADATA_SHA256}\n"
     ));
-    output.push_str(&format!(
-        "# oxide_profile_sha256={TEST262_OXIDE_PROFILE_SHA256}\n"
-    ));
+    output.push_str(&format!("# oxide_profile_sha256={oxide_profile_sha256}\n"));
     output.push_str("# profile=test262-canonical-classified-v2\n");
     output.push_str(&format!("# mode={}\n", options.mode.name()));
     output.push_str("path\tvariant\tflags\tfeatures\texpected_phase\texpected_type\toutcome\tactual_phase\tactual_type\tdetail\n");
@@ -176,7 +175,7 @@ pub(super) fn write_report(
         json_string(TEST262_PATCH_SHA256),
         json_string(TEST262_CONFIG_SHA256),
         json_string(TEST262_METADATA_SHA256),
-        json_string(TEST262_OXIDE_PROFILE_SHA256),
+        json_string(oxide_profile_sha256),
         json_string(options.mode.name()),
     ));
     for row in rows {

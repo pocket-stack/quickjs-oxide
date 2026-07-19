@@ -46,6 +46,10 @@ const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
     "0c6b9ef80d683bd69a97f87bbee10e7029432deb25d23695a96c251e9dfc9f66";
+const TEST262_MAP_PROFILE_SHA256: &str =
+    "7e2e084075c58664380187a33fbfd95fed5246cad091452a62baa748cf0fe420";
+const TEST262_MAP_MANIFEST_SHA256: &str =
+    "f369837ef69275815349f9202ade5b6ae1d4d91e9ae0313ac816ecfb0e3a4845";
 const QUICKJS_VERSION: &str = "2026-06-04";
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
@@ -393,11 +397,7 @@ struct RunnableJob {
 fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
     validate_suite(&options.suite)?;
     validate_config(&options.config)?;
-    verify_sha256(
-        &options.oxide_profile,
-        TEST262_OXIDE_PROFILE_SHA256,
-        "quickjs-oxide Test262 capability profile",
-    )?;
+    let oxide_profile_sha256 = verify_oxide_profile(options)?;
     let config = parse_config(&options.config)?;
     let oxide_profile = OxideProfile::load(&options.oxide_profile)?;
     validate_oxide_profile(&oxide_profile, &options.suite)?;
@@ -517,7 +517,7 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
         ));
     }
 
-    write_report(options, &rows, &summary)?;
+    write_report(options, &rows, &summary, oxide_profile_sha256)?;
     let total = rows.len();
     let passed = summary.get("pass").copied().unwrap_or(0);
     let skipped = summary
@@ -541,6 +541,95 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
     );
     println!("report={}", options.report.display());
     Ok(options.allow_failures || failed == 0)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OxideProfileKind {
+    Global,
+    Map,
+}
+
+fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
+    let actual = fs::canonicalize(path).map_err(|error| {
+        format!(
+            "resolve Test262 capability profile {}: {error}",
+            path.display()
+        )
+    })?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let profiles = [
+        (
+            root.join("compat/test262-oxide.conf"),
+            OxideProfileKind::Global,
+        ),
+        (root.join("tests/test262-map.conf"), OxideProfileKind::Map),
+    ];
+    for (candidate, kind) in profiles {
+        let candidate = fs::canonicalize(&candidate).map_err(|error| {
+            format!(
+                "resolve pinned Test262 capability profile {}: {error}",
+                candidate.display()
+            )
+        })?;
+        if actual == candidate {
+            return Ok(kind);
+        }
+    }
+    Err(format!(
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf or tests/test262-map.conf",
+        path.display()
+    ))
+}
+
+fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, String> {
+    match identify_oxide_profile(&options.oxide_profile)? {
+        OxideProfileKind::Global => {
+            verify_sha256(
+                &options.oxide_profile,
+                TEST262_OXIDE_PROFILE_SHA256,
+                "global quickjs-oxide Test262 capability profile",
+            )?;
+            Ok(TEST262_OXIDE_PROFILE_SHA256)
+        }
+        OxideProfileKind::Map => {
+            verify_sha256(
+                &options.oxide_profile,
+                TEST262_MAP_PROFILE_SHA256,
+                "scoped Map Test262 capability profile",
+            )?;
+            if options.all || !options.tests.is_empty() {
+                return Err(
+                    "the scoped Map Test262 capability profile requires its pinned manifest"
+                        .to_owned(),
+                );
+            }
+            let manifest = options.manifest.as_ref().ok_or_else(|| {
+                "the scoped Map Test262 capability profile requires its pinned manifest".to_owned()
+            })?;
+            let actual = fs::canonicalize(manifest).map_err(|error| {
+                format!(
+                    "resolve scoped Map manifest {}: {error}",
+                    manifest.display()
+                )
+            })?;
+            let expected = fs::canonicalize(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/test262-map.txt"),
+            )
+            .map_err(|error| format!("resolve pinned scoped Map manifest: {error}"))?;
+            if actual != expected {
+                return Err(format!(
+                    "the scoped Map Test262 capability profile requires tests/test262-map.txt, found {}",
+                    manifest.display()
+                ));
+            }
+            verify_sha256(
+                manifest,
+                TEST262_MAP_MANIFEST_SHA256,
+                "scoped Map Test262 manifest",
+            )?;
+            Ok(TEST262_MAP_PROFILE_SHA256)
+        }
+    }
 }
 
 fn validate_oxide_profile(profile: &OxideProfile, suite: &Path) -> Result<(), String> {
@@ -804,8 +893,12 @@ fn validate_relative_test_path(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod cli_tests {
     use std::ffi::OsString;
+    use std::path::Path;
 
-    use super::{Invocation, default_worker_count, parse_args};
+    use super::{
+        Invocation, OxideProfileKind, TEST262_MAP_PROFILE_SHA256, default_worker_count,
+        identify_oxide_profile, parse_args, verify_oxide_profile,
+    };
 
     fn parse(values: &[&str]) -> Result<Invocation, String> {
         parse_args(values.iter().map(OsString::from))
@@ -887,5 +980,64 @@ mod cli_tests {
     #[test]
     fn automatic_worker_bound_is_nonzero_and_capped() {
         assert!((1..=16).contains(&default_worker_count()));
+    }
+
+    #[test]
+    fn only_pinned_global_and_map_profiles_are_accepted() {
+        assert_eq!(
+            identify_oxide_profile(Path::new("compat/test262-oxide.conf")).unwrap(),
+            OxideProfileKind::Global
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-map.conf")).unwrap(),
+            OxideProfileKind::Map
+        );
+
+        let error = identify_oxide_profile(Path::new("Cargo.toml")).unwrap_err();
+        assert!(error.contains("unsupported Test262 capability profile"));
+    }
+
+    #[test]
+    fn scoped_map_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-map.conf",
+            "--manifest",
+            "tests/test262-map.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_MAP_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            ["--test", "test/built-ins/Map/length.js"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-map.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
     }
 }

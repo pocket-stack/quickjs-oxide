@@ -356,6 +356,7 @@ impl Runtime {
             NativeFunctionId::ArrayIteratorNext => {
                 self.call_array_iterator_next_raw(realm, invocation)
             }
+            NativeFunctionId::MapIteratorNext => self.call_map_iterator_next_raw(realm, invocation),
             NativeFunctionId::RegExpStringIteratorNext => {
                 self.call_regexp_string_iterator_next_raw(realm, invocation)
             }
@@ -452,6 +453,8 @@ impl Runtime {
                 self.call_array_prototype_iterator(realm, kind, invocation)
             }
             NativeFunctionId::ArrayIteratorNext => self.call_array_iterator_next(realm, invocation),
+            NativeFunctionId::Map(kind) => self.call_map_native(realm, kind, invocation, arguments),
+            NativeFunctionId::MapIteratorNext => self.call_map_iterator_next(realm, invocation),
             NativeFunctionId::ThrowTypeError => {
                 self.call_throw_type_error(realm, invocation, arguments)
             }

@@ -1,0 +1,27 @@
+# R2n freezes the dependency-audited strong Map surface. Symbol.iterator and
+# upsert are admitted only through the runner-bound scoped profile and manifest;
+# this is not a global feature claim for Set, WeakMap, or other consumers.
+quickjs=2026-06-04
+test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
+test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
+test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
+oxide_profile_sha256=7e2e084075c58664380187a33fbfd95fed5246cad091452a62baa748cf0fe420
+schema=test262-canonical-classified-v2
+mode=both
+timeout_ms=30000
+paths=186
+variants=370
+runnable=370
+passes=370
+failures=0
+unsupported=0
+skipped=0
+manifest_sha256=50387c488c3ade2aafbbe2cd4cecc387bc0c97a76808831d74b634407b990cd1
+manifest_file_sha256=f369837ef69275815349f9202ade5b6ae1d4d91e9ae0313ac816ecfb0e3a4845
+keys_sha256=2704f0c3407fa65dec9297df89f3643eba808f72347b530c71f091be15b14d81
+nonpass_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+tsv_sha256=9b64f7907bacb8a5814b087aa300260611e6c8f70a9047fd6b02801ee8fc4fbc
+jsonl_sha256=b688c05056fd0a02f7a31376eb89ac8dec6b0238b7b0ecfb113bcfd01407c621
+summary=pass=370
+

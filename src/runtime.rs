@@ -964,6 +964,17 @@ impl Runtime {
         .expect("RegExp intrinsic initialization must succeed");
         self.initialize_json_intrinsic(realm, &global_object)
             .expect("JSON intrinsic initialization must succeed");
+        // Pinned QuickJS installs strong/weak collection intrinsics after
+        // Proxy. Proxy is not linked yet, so Map follows JSON here while
+        // retaining the implemented intrinsic order and its own realm roots.
+        self.initialize_map_intrinsic(
+            realm,
+            &function_prototype,
+            &object_prototype,
+            &iterator_prototype,
+            &global_object,
+        )
+        .expect("Map intrinsic initialization must succeed");
         drop(global_var_object);
         drop(global_object);
         drop(uninitialized_vars);
@@ -4773,6 +4784,8 @@ impl Runtime {
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
+                | ObjectPayload::Map { .. }
+                | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
@@ -4829,6 +4842,8 @@ impl Runtime {
             | ObjectPayload::Array { .. }
             | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }
+            | ObjectPayload::Map { .. }
+            | ObjectPayload::MapIterator { .. }
             | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)
             | ObjectPayload::GlobalObject { .. }
@@ -5167,6 +5182,8 @@ impl Runtime {
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
+                | ObjectPayload::Map { .. }
+                | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
@@ -6219,6 +6236,8 @@ impl Runtime {
                         | ObjectPayload::Array { .. }
                         | ObjectPayload::Arguments { .. }
                         | ObjectPayload::ArrayIterator { .. }
+                        | ObjectPayload::Map { .. }
+                        | ObjectPayload::MapIterator { .. }
                         | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
@@ -6523,6 +6542,8 @@ impl Runtime {
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
+                | ObjectPayload::Map { .. }
+                | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::GlobalObject { .. }
@@ -6736,6 +6757,8 @@ impl Runtime {
                         | ObjectPayload::Array { .. }
                         | ObjectPayload::Arguments { .. }
                         | ObjectPayload::ArrayIterator { .. }
+                        | ObjectPayload::Map { .. }
+                        | ObjectPayload::MapIterator { .. }
                         | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
@@ -6838,6 +6861,8 @@ impl Runtime {
                         | ObjectPayload::Array { .. }
                         | ObjectPayload::Arguments { .. }
                         | ObjectPayload::ArrayIterator { .. }
+                        | ObjectPayload::Map { .. }
+                        | ObjectPayload::MapIterator { .. }
                         | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
                         | ObjectPayload::GlobalObject { .. }
@@ -7207,6 +7232,8 @@ impl Runtime {
                     | ObjectPayload::Array { .. }
                     | ObjectPayload::Arguments { .. }
                     | ObjectPayload::ArrayIterator { .. }
+                    | ObjectPayload::Map { .. }
+                    | ObjectPayload::MapIterator { .. }
                     | ObjectPayload::ForInIterator(_)
                     | ObjectPayload::Primitive(_)
                     | ObjectPayload::GlobalObject { .. }
@@ -8274,6 +8301,8 @@ impl Runtime {
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
+                | ObjectPayload::Map { .. }
+                | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::Error

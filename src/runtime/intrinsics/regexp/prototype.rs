@@ -119,6 +119,8 @@ impl Runtime {
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
+                | ObjectPayload::Map { .. }
+                | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::Date(_)
@@ -177,6 +179,8 @@ impl Runtime {
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
+                | ObjectPayload::Map { .. }
+                | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::Date(_)
