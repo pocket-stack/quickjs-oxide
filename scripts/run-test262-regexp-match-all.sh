@@ -101,8 +101,8 @@ expected_r1j_summary=$(read_value r1j_summary)
 expected_r1n_shared_harness_keys=$(read_value r1n_shared_harness_keys_sha256)
 expected_r1j_shared_harness_selected=$(read_value r1j_shared_harness_selected_sha256)
 expected_r1j_shared_harness_summary=$(read_value r1j_shared_harness_summary)
-expected_r1n_shared_harness_variants=$(read_value r1n_shared_harness_variants)
-expected_r1n_shared_harness_summary=$(read_value r1n_shared_harness_summary)
+expected_r2f_shared_harness_variants=$(read_value r2f_shared_harness_variants)
+expected_r2f_shared_harness_summary=$(read_value r2f_shared_harness_summary)
 expected_tsv=$(read_value tsv_sha256)
 expected_jsonl=$(read_value jsonl_sha256)
 expected_summary=$(read_value summary)
@@ -112,14 +112,14 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_patch" != "f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3" \
     || "$expected_config" != "79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b" \
     || "$expected_metadata" != "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a" \
-    || "$expected_profile" != "e2043efeaa2d8b4420d0c82550f7ba42d53588897ec14ac87f6f03c4358a8218" \
+    || "$expected_profile" != "1a5258a57285ff43149d8377692b5f1a3939ed19c790cbee81abab6912d21e51" \
     || "$expected_schema" != "test262-canonical-classified-v2" \
     || "$expected_mode" != "both" \
     || "$timeout_ms" != "30000" \
     || "$expected_paths" != "68" \
     || "$expected_variants" != "136" \
     || "$expected_runnable" != "116" \
-    || "$expected_passes" != "82" \
+    || "$expected_passes" != "108" \
     || "$expected_manifest" != "2f8c3d730c36ed86f46218c67f069c18698210704b1db7575fb4d2a95c69a671" \
     || "$expected_r1j_full_tsv" != "2895a8d2ddbe5857e83b573827e46b4a60a97d89b5882727c85ff75d2ff9d368" \
     || "$expected_r1j_keys" != "6fd466297dedbee518fbf7b168ea99d4d802b6bccc421fab4e61c2f913ba09ee" \
@@ -129,9 +129,9 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_r1n_shared_harness_keys" != "02cb6947a41a508b01d9be0c1830b7941df8ceda2e35ca92cb1c99e1501d85f6" \
     || "$expected_r1j_shared_harness_selected" != "a678ad14b62a3a3cabd4f62af83b0e34bffc808c07ce86c6d6c0e07e65efea76" \
     || "$expected_r1j_shared_harness_summary" != "unsupported-harness-parser=20" \
-    || "$expected_r1n_shared_harness_variants" != "20" \
-    || "$expected_r1n_shared_harness_summary" != "pass=14 unsupported-parser=6" ]]; then
-    echo "error: matchAll R1j/R1n provenance metadata drifted" >&2
+    || "$expected_r2f_shared_harness_variants" != "20" \
+    || "$expected_r2f_shared_harness_summary" != "pass=20" ]]; then
+    echo "error: matchAll R1j/R1n/R2f provenance metadata drifted" >&2
     exit 1
 fi
 
@@ -245,11 +245,11 @@ actual_shared_harness_summary=$(awk -F'\t' '
     !/^#/ && ($1 in selected) { outcomes[$7]++ }
     END { for (outcome in outcomes) print outcome "=" outcomes[outcome] }
 ' <(shared_harness_paths) "$report" | LC_ALL=C sort | paste -sd ' ' -)
-if [[ "$actual_shared_harness_variants" != "$expected_r1n_shared_harness_variants" \
-    || "$actual_shared_harness_summary" != "$expected_r1n_shared_harness_summary" ]]; then
-    echo "error: matchAll shared-harness R1n transition vector drifted" >&2
-    echo "variants expected/actual: $expected_r1n_shared_harness_variants / $actual_shared_harness_variants" >&2
-    echo "summary expected/actual:  $expected_r1n_shared_harness_summary / $actual_shared_harness_summary" >&2
+if [[ "$actual_shared_harness_variants" != "$expected_r2f_shared_harness_variants" \
+    || "$actual_shared_harness_summary" != "$expected_r2f_shared_harness_summary" ]]; then
+    echo "error: matchAll shared-harness R2f transition vector drifted" >&2
+    echo "variants expected/actual: $expected_r2f_shared_harness_variants / $actual_shared_harness_variants" >&2
+    echo "summary expected/actual:  $expected_r2f_shared_harness_summary / $actual_shared_harness_summary" >&2
     exit 1
 fi
 

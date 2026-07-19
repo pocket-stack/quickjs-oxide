@@ -9,12 +9,12 @@ timeout_ms=30000
 paths=127
 variants=254
 runnable=248
-passes=242
+passes=248
 manifest_sha256=de13f656ba1237660233f8b47c5b638424415f902f991eeda6e5c482fe342714
 r1d_full_tsv_sha256=a695d6299b44e4298b553c28c12983b6b12fc9d8522f1216e18e16a6bad28012
 r1d_selected_sha256=c471c60bb73b7cd9cc05c1c9793de646d46539fdea4b8e50ada3716b8142306e
 r1d_variants=254
 r1d_summary=fail-runtime=52 pass=186 unsupported-feature=8 unsupported-host-is-html-dda=2 unsupported-parser=6
-tsv_sha256=99c872fbc6c7e2b6a9733e5b9088a2bf86bc6f0712c6a97c8eb42c9166342786
-jsonl_sha256=9987580a34957ccddf7368a5c4bc32bd8a8ab830bf31e4cdc990d5e836576448
-summary=pass=242 unsupported-feature=4 unsupported-host-is-html-dda=2 unsupported-parser=6
+tsv_sha256=8cdc31c6da79a2fe6ca3bd5c6d2f860eac4dc5612f6d864d337961a945470fb1
+jsonl_sha256=c8c129b514326184c18cceebdafb511b59f386e87636eea664a1a746ca2b6376
+summary=pass=248 unsupported-feature=4 unsupported-host-is-html-dda=2

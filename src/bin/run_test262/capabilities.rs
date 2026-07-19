@@ -263,7 +263,7 @@ mod tests {
         "string-trimming",
         "u180e",
     ];
-    const EXPECTED_AUDITED_NEGATIVES: [&str; 261] = [
+    const EXPECTED_AUDITED_NEGATIVES: [&str; 271] = [
         "test/language/comments/hashbang/escaped-bang-041.js",
         "test/language/eval-code/direct/var-env-global-lex-non-strict.js",
         "test/language/expressions/assignment/target-cover-newtarget.js",
@@ -285,6 +285,16 @@ mod tests {
         "test/language/expressions/logical-assignment/lgcl-or-eval-strict.js",
         "test/language/expressions/logical-assignment/lgcl-or-non-simple.js",
         "test/language/expressions/object/__proto__-duplicate.js",
+        "test/language/expressions/object/method-definition/early-errors-object-method-duplicate-parameters.js",
+        "test/language/expressions/object/method-definition/escaped-get-e.js",
+        "test/language/expressions/object/method-definition/escaped-get-g.js",
+        "test/language/expressions/object/method-definition/escaped-get-t.js",
+        "test/language/expressions/object/method-definition/escaped-get.js",
+        "test/language/expressions/object/method-definition/escaped-set-e.js",
+        "test/language/expressions/object/method-definition/escaped-set-s.js",
+        "test/language/expressions/object/method-definition/escaped-set-t.js",
+        "test/language/expressions/object/method-definition/escaped-set.js",
+        "test/language/expressions/object/method-definition/name-param-redecl.js",
         "test/language/expressions/postfix-decrement/target-cover-newtarget.js",
         "test/language/expressions/postfix-decrement/target-newtarget.js",
         "test/language/expressions/postfix-increment/target-cover-newtarget.js",
@@ -551,7 +561,7 @@ mod tests {
                     && !PROPERTY_POSITIVE_PATHS.contains(path)
             }))
             .collect::<BTreeSet<_>>();
-        assert_eq!(expected_audited_negatives.len(), 403);
+        assert_eq!(expected_audited_negatives.len(), 413);
         assert!(
             profile
                 .audited_negative_tests
