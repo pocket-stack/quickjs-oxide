@@ -145,6 +145,8 @@ pub(crate) enum UnlinkedConstantError {
     RuntimeBoundObject,
     /// Symbols are runtime atom identities and need a dedicated linked form.
     RuntimeBoundSymbol,
+    /// A template site must contain one or more aligned cooked/raw segments.
+    InvalidTemplateObject,
 }
 
 impl fmt::Display for UnlinkedConstantError {
@@ -156,6 +158,9 @@ impl fmt::Display for UnlinkedConstantError {
             Self::RuntimeBoundSymbol => {
                 formatter.write_str("a symbol cannot enter a runtime-independent constant pool")
             }
+            Self::InvalidTemplateObject => formatter.write_str(
+                "a template object requires equal non-empty cooked and raw segment lists",
+            ),
         }
     }
 }
@@ -179,8 +184,17 @@ enum UnlinkedConstantKind {
         pattern: JsString,
         program: Rc<CompiledRegExp>,
     },
+    /// Runtime-independent template-site data. Runtime publication replaces
+    /// this pair with one realm-local frozen cooked Array whose `raw` property
+    /// points at the corresponding frozen raw Array.
+    TemplateObject {
+        cooked: Box<[Option<JsString>]>,
+        raw: Box<[JsString]>,
+    },
     Child(Box<UnlinkedFunction>),
 }
+
+type TemplateObjectPayload = (Box<[Option<JsString>]>, Box<[JsString]>);
 
 /// One constant in a compiler draft, before runtime publication.
 ///
@@ -221,6 +235,20 @@ impl UnlinkedConstant {
         Self(UnlinkedConstantKind::RegExp { pattern, program })
     }
 
+    /// Store one checked runtime-independent template-site payload.
+    pub(crate) fn template_object(
+        cooked: Vec<Option<JsString>>,
+        raw: Vec<JsString>,
+    ) -> Result<Self, UnlinkedConstantError> {
+        if cooked.is_empty() || cooked.len() != raw.len() {
+            return Err(UnlinkedConstantError::InvalidTemplateObject);
+        }
+        Ok(Self(UnlinkedConstantKind::TemplateObject {
+            cooked: cooked.into_boxed_slice(),
+            raw: raw.into_boxed_slice(),
+        }))
+    }
+
     /// Store one recursively compiled child-function draft.
     #[must_use]
     pub(crate) fn child(function: UnlinkedFunction) -> Self {
@@ -234,7 +262,9 @@ impl UnlinkedConstant {
             UnlinkedConstantKind::Primitive(value) | UnlinkedConstantKind::AtomString(value) => {
                 Some(value)
             }
-            UnlinkedConstantKind::RegExp { .. } | UnlinkedConstantKind::Child(_) => None,
+            UnlinkedConstantKind::RegExp { .. }
+            | UnlinkedConstantKind::TemplateObject { .. }
+            | UnlinkedConstantKind::Child(_) => None,
         }
     }
 
@@ -245,6 +275,7 @@ impl UnlinkedConstant {
             UnlinkedConstantKind::RegExp { pattern, program } => Some((pattern, program)),
             UnlinkedConstantKind::Primitive(_)
             | UnlinkedConstantKind::AtomString(_)
+            | UnlinkedConstantKind::TemplateObject { .. }
             | UnlinkedConstantKind::Child(_) => None,
         }
     }
@@ -259,13 +290,35 @@ impl UnlinkedConstant {
         }
     }
 
+    /// Consume a template-site payload without exposing the private constant
+    /// representation to the publisher.
+    pub(crate) fn into_template_object(self) -> Result<TemplateObjectPayload, Self> {
+        match self.0 {
+            UnlinkedConstantKind::TemplateObject { cooked, raw } => Ok((cooked, raw)),
+            other => Err(Self(other)),
+        }
+    }
+
+    /// Borrow a template-site payload for publication verification.
+    #[must_use]
+    pub(crate) fn as_template_object(&self) -> Option<(&[Option<JsString>], &[JsString])> {
+        match &self.0 {
+            UnlinkedConstantKind::TemplateObject { cooked, raw } => Some((cooked, raw)),
+            UnlinkedConstantKind::Primitive(_)
+            | UnlinkedConstantKind::AtomString(_)
+            | UnlinkedConstantKind::RegExp { .. }
+            | UnlinkedConstantKind::Child(_) => None,
+        }
+    }
+
     /// Borrow the child draft, or return `None` for another constant kind.
     #[must_use]
     pub(crate) fn as_child(&self) -> Option<&UnlinkedFunction> {
         match &self.0 {
             UnlinkedConstantKind::Primitive(_)
             | UnlinkedConstantKind::AtomString(_)
-            | UnlinkedConstantKind::RegExp { .. } => None,
+            | UnlinkedConstantKind::RegExp { .. }
+            | UnlinkedConstantKind::TemplateObject { .. } => None,
             UnlinkedConstantKind::Child(function) => Some(function),
         }
     }
@@ -285,6 +338,9 @@ impl UnlinkedConstant {
             UnlinkedConstantKind::RegExp { .. } => {
                 unreachable!("RegExp constants must use into_regexp before ordinary publication")
             }
+            UnlinkedConstantKind::TemplateObject { .. } => unreachable!(
+                "template constants must use into_template_object before ordinary publication"
+            ),
             UnlinkedConstantKind::Child(function) => (None, false, Some(*function)),
         }
     }

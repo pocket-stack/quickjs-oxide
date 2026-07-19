@@ -3,8 +3,8 @@ use std::process::Command;
 
 use quickjs_oxide::value::number_to_string;
 use quickjs_oxide::{
-    AccessorValue, Context, DescriptorField, OrdinaryPropertyDescriptor, Runtime, RuntimeError,
-    Value,
+    AccessorValue, Context, DescriptorField, JsString, OrdinaryPropertyDescriptor, Runtime,
+    RuntimeError, Value,
 };
 
 const ORACLE_NORMALIZER: &str = r#"
@@ -598,27 +598,29 @@ fn template_stack_limit_uses_reachable_bytecode_like_pinned_quickjs() {
 }
 
 #[test]
-fn tagged_templates_remain_an_explicit_boundary() {
-    for source in [
-        "tag`x`",
-        "tag\n`x`",
-        "(tag)`x`",
-        "Function.name`x`",
-        "Function()`x`",
-        "`tag``${1}`",
-        r"tag`\x`",
-        "tag\n`\\8`",
-    ] {
-        let runtime = Runtime::new();
-        let mut context = runtime.new_context();
-        assert_eq!(context.eval(source), Err(RuntimeError::Exception));
-        let observation = take_rust_error(&runtime, &mut context);
-        assert!(
-            observation
-                .starts_with("SyntaxError|tagged template literals are not implemented yet|"),
-            "tagged boundary drifted for {source:?}: {observation}"
-        );
-    }
+fn tagged_templates_publish_realm_local_template_objects() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    assert_eq!(
+        context
+            .eval(
+                "(function tag(strings, value) { return strings[0] + value + strings[1]; })`a${40 + 2}b`",
+            )
+            .unwrap(),
+        Value::String(JsString::try_from_utf8("a42b").unwrap())
+    );
+    assert_eq!(
+        context
+            .eval("(function tag(strings) { return strings.raw[0]; })`\\x`")
+            .unwrap(),
+        Value::String(JsString::try_from_utf8("\\x").unwrap())
+    );
+    assert_eq!(
+        context
+            .eval("(function tag(strings) { return strings[0]; })\n`x`")
+            .unwrap(),
+        Value::String(JsString::try_from_utf8("x").unwrap())
+    );
 }
 
 fn expose_string_prototype(runtime: &Runtime, context: &mut Context) {

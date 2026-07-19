@@ -2342,7 +2342,10 @@ fn verify_unlinked_tree_with_root(
                     child_function_name_origins,
                     child_id,
                 ));
-            } else if constant.as_primitive().is_none() && constant.as_regexp().is_none() {
+            } else if constant.as_primitive().is_none()
+                && constant.as_regexp().is_none()
+                && constant.as_template_object().is_none()
+            {
                 return Err(RuntimeError::Invariant(
                     "unlinked constant did not contain exactly one payload",
                 ));
@@ -2455,6 +2458,17 @@ pub(super) fn flatten_unlinked_tree(
             .remaining
             .next();
         if let Some(constant) = next {
+            let constant = match constant.into_template_object() {
+                Ok((cooked, raw)) => {
+                    frames
+                        .last_mut()
+                        .expect("flatten frame remains present")
+                        .constants
+                        .push(FlatConstant::TemplateObject { cooked, raw });
+                    continue;
+                }
+                Err(constant) => constant,
+            };
             let constant = match constant.into_regexp() {
                 Ok((pattern, program)) => {
                     frames

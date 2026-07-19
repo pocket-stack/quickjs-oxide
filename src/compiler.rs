@@ -43,6 +43,7 @@ mod arrow;
 mod function;
 mod object_literal;
 mod pseudo_binding;
+mod template;
 
 use pseudo_binding::{
     HOME_OBJECT_LOCAL_NAME, NEW_TARGET_LOCAL_NAME, PseudoBinding, THIS_LOCAL_NAME,
@@ -465,6 +466,13 @@ enum IrConstant {
         pattern: JsString,
         program: Rc<crate::regexp::CompiledRegExp>,
     },
+    /// Runtime-independent template-site payload. Publication materializes
+    /// the two frozen realm-local Arrays once and replaces this structural
+    /// constant with the cooked template object identity retained by bytecode.
+    TemplateObject {
+        cooked: Vec<Option<JsString>>,
+        raw: Vec<JsString>,
+    },
     Child(FunctionId),
 }
 
@@ -594,7 +602,10 @@ enum IrOp {
     /// QuickJS's template parser does not apply the ordinary call parser's
     /// u16 argument guard.  Retain the full count until the bytecode stack
     /// limit has been checked during lowering.
-    TemplateCall(usize),
+    TemplateCall {
+        argument_count: usize,
+        method: bool,
+    },
     /// Parser/linker form of QuickJS `OP_eval`. Retain the syntactic call
     /// site's scope identity until bytecode publication so String-source eval
     /// can later lower it into a verified environment descriptor. R1v's
@@ -706,7 +717,10 @@ impl IrOp {
         match self {
             Self::Bytecode(instruction) => instruction.stack_effect(),
             Self::EnterScope(_) | Self::LeaveScope(_) => (0, 0),
-            Self::TemplateCall(argument_count) => (argument_count + 2, 1),
+            Self::TemplateCall {
+                argument_count,
+                method,
+            } => (argument_count + usize::from(*method) + 1, 1),
             Self::EvalCall { argument_count, .. } => (usize::from(*argument_count) + 1, 1),
             Self::PushConstant(_) | Self::MakeClosure(_) => (0, 1),
             Self::GlobalSet(_) | Self::CapturedLexicalSet(_) => (1, 1),
@@ -3013,13 +3027,6 @@ impl<'source> Parser<'source> {
         let expression_site = source_offset(self.current().span)?;
         self.parse_expression()?;
         self.inherit_source_marker_at(expression_start, expression_site)?;
-        if self.current().line_terminator_before
-            && matches!(self.current().kind, TokenKind::Template(_))
-        {
-            return Err(
-                self.unsupported_here("tagged-template continuations are not implemented yet")
-            );
-        }
         match completion {
             StatementCompletion::Eval => {
                 self.emit_instruction(Instruction::PutLocal(self.eval_ret_local()?))?;
@@ -3061,7 +3068,7 @@ impl<'source> Parser<'source> {
             if let Some(SpannedIrOp {
                 op:
                     IrOp::Bytecode(Instruction::Call(_) | Instruction::CallMethod(_))
-                    | IrOp::TemplateCall(_),
+                    | IrOp::TemplateCall { .. },
                 pc_site,
             }) = self.current_ir_mut().ops.last_mut()
             {
@@ -4570,10 +4577,8 @@ impl<'source> Parser<'source> {
                 self.anonymous_function_definition = None;
                 continue;
             }
-            if matches!(self.current().kind, TokenKind::Template(_)) {
-                return Err(
-                    self.unsupported_here("tagged template literals are not implemented yet")
-                );
+            if self.parse_tagged_template_suffix()? {
+                continue;
             }
             break;
         }
@@ -5117,7 +5122,15 @@ impl<'source> Parser<'source> {
         // suffixes enabled. The following `(` therefore belongs to this `new`,
         // while calls after the completed construction remain postfix calls.
         self.parse_primary()?;
-        while self.parse_member_suffix()? {}
+        loop {
+            if self.parse_member_suffix()? {
+                continue;
+            }
+            if self.parse_tagged_template_suffix()? {
+                continue;
+            }
+            break;
+        }
         self.emit_instruction(Instruction::Dup)?;
         let no_arguments_span = self.current().span;
         let (argument_count, construct_span) = if self.is_punctuator(Punctuator::LeftParen) {
@@ -5504,79 +5517,6 @@ impl<'source> Parser<'source> {
         self.expect_punctuator(Punctuator::RightBracket)?;
         self.anonymous_function_definition = None;
         Ok(())
-    }
-
-    /// Lower an untagged template exactly like QuickJS `js_parse_template`:
-    /// the first cooked segment becomes the receiver for one observable
-    /// `String.prototype.concat` lookup, substitutions are full comma
-    /// expressions, and only non-empty later cooked segments become call
-    /// arguments. Tagged templates require the separate template-object cache.
-    fn parse_template_literal(&mut self) -> Result<(), Error> {
-        let mut depth = 0_usize;
-
-        loop {
-            let token = self.current().clone();
-            let TokenKind::Template(part) = token.kind else {
-                return Err(Error::internal(
-                    "template parser lost its continuation token",
-                ));
-            };
-            let kind = part.kind;
-            let invalid_span = part.invalid_escape.as_ref().map(|error| error.span);
-            let Some(cooked) = part.cooked else {
-                return Err(Error::syntax(
-                    "malformed escape sequence in string literal",
-                    source_span(invalid_span.unwrap_or(token.span)),
-                ));
-            };
-
-            if !cooked.utf16.is_empty() || depth == 0 {
-                self.emit_atom_string(JsString::try_from_utf16(cooked.utf16)?)?;
-                if depth == 0 {
-                    if kind == TemplatePartKind::NoSubstitution {
-                        self.advance()?;
-                        self.anonymous_function_definition = None;
-                        return Ok(());
-                    }
-                    let concat = self.add_constant(IrConstant::Primitive(Value::String(
-                        JsString::from_static("concat"),
-                    )))?;
-                    // `js_parse_template` emits no source marker for either
-                    // synthetic concat operation. Inherit the surrounding
-                    // expression marker, just as ordinary QuickJS bytecode.
-                    self.emit_instruction(Instruction::GetField2(concat))?;
-                }
-                depth += 1;
-            }
-
-            if kind == TemplatePartKind::Tail {
-                let argument_count = depth
-                    .checked_sub(1)
-                    .ok_or_else(|| Error::internal("template receiver disappeared"))?;
-                // `js_parse_template` emits no source marker for the final
-                // call.  Preserve the last substitution marker so failures
-                // during concat/coercion point into that expression. Keep the
-                // full count in IR so a reached later syntax error still wins
-                // over deferred JS_STACK_SIZE_MAX validation.
-                self.emit(IrOp::TemplateCall(argument_count))?;
-                self.advance()?;
-                self.current_ir_mut().last_member_reference = None;
-                self.current_ir_mut().last_identifier_reference = None;
-                self.anonymous_function_definition = None;
-                return Ok(());
-            }
-            if !matches!(kind, TemplatePartKind::Head | TemplatePartKind::Middle) {
-                return Err(Error::internal("invalid template-part transition"));
-            }
-
-            self.advance()?;
-            self.parse_expression()?;
-            depth += 1;
-            if !self.is_punctuator(Punctuator::RightBrace) {
-                return Err(self.syntax_here("expected '}' after template expression"));
-            }
-            self.advance_with_goal(LexicalGoal::TemplateContinuation)?;
-        }
     }
 
     fn parse_program_function_declaration(&mut self) -> Result<(), Error> {
@@ -10857,6 +10797,10 @@ fn lower_detached_script(tree: FunctionTree) -> Result<BytecodeFunction, Error> 
                 ErrorKind::Unsupported,
                 "RegExp literals require runtime publication; use Context::compile or Context::eval",
             )),
+            IrConstant::TemplateObject { .. } => Err(Error::new(
+                ErrorKind::Unsupported,
+                "tagged template objects require runtime publication; use Context::compile or Context::eval",
+            )),
             IrConstant::Child(_) => Err(Error::internal(
                 "detached compiler accepted a child-function constant",
             )),
@@ -10994,6 +10938,13 @@ fn lower_unlinked_tree(
                 IrConstant::Primitive(value) => unlinked_primitive(value),
                 IrConstant::RegExp { pattern, program } => {
                     Ok(UnlinkedConstant::regexp(pattern, program))
+                }
+                IrConstant::TemplateObject { cooked, raw } => {
+                    UnlinkedConstant::template_object(cooked, raw).map_err(|error| {
+                        Error::internal(format!(
+                            "compiler produced an invalid template object: {error}"
+                        ))
+                    })
                 }
                 IrConstant::Child(child) => lowered
                     .get_mut(child)
@@ -11648,13 +11599,20 @@ fn lower_ops(operations: Vec<SpannedIrOp>, scopes: &[ScopeLifecycle]) -> Result<
                 code.push(instruction);
                 pc_sites.push(pc_site);
             }
-            IrOp::TemplateCall(argument_count) => {
+            IrOp::TemplateCall {
+                argument_count,
+                method,
+            } => {
                 // QuickJS `emit_u16` writes the low operand bits even when an
                 // unreachable template has more than 65,535 arguments. The
                 // reachability verifier still observes every push on a live
                 // path and rejects its stack before this truncated call can
                 // execute.
-                code.push(Instruction::CallMethod(argument_count as u16));
+                code.push(if method {
+                    Instruction::CallMethod(argument_count as u16)
+                } else {
+                    Instruction::Call(argument_count as u16)
+                });
                 pc_sites.push(pc_site);
             }
             IrOp::EvalCall {

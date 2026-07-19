@@ -13,6 +13,7 @@ mod native_dispatch;
 mod native_stack;
 mod object_literal;
 mod properties;
+mod template_object;
 mod vm_host;
 
 use self::intrinsics::date::{DateHost, SystemDateHost};
@@ -444,6 +445,10 @@ enum FlatConstant {
     RegExp {
         pattern: JsString,
         program: Rc<crate::regexp::CompiledRegExp>,
+    },
+    TemplateObject {
+        cooked: Box<[Option<JsString>]>,
+        raw: Box<[JsString]>,
     },
     Child(usize),
 }
@@ -4040,6 +4045,7 @@ impl Runtime {
             let mut linked_constants = Vec::with_capacity(function.constants.len());
             let mut atom_string_constants = Vec::new();
             let mut children = Vec::new();
+            let mut materialized_constant_roots = Vec::new();
             for constant in function.constants {
                 match constant {
                     FlatConstant::Value(value) => {
@@ -4051,6 +4057,13 @@ impl Runtime {
                     }
                     FlatConstant::RegExp { pattern, program } => {
                         linked_constants.push(BytecodeConstant::RegExp { pattern, program });
+                    }
+                    FlatConstant::TemplateObject { cooked, raw } => {
+                        let template = self.instantiate_template_object(realm, cooked, raw)?;
+                        linked_constants.push(BytecodeConstant::Value(RawValue::Object(
+                            template.object_id(),
+                        )));
+                        materialized_constant_roots.push(template);
                     }
                     FlatConstant::Child(index) => {
                         let child = roots.get(index).and_then(Option::as_ref).ok_or(
@@ -4193,6 +4206,9 @@ impl Runtime {
                 }
             };
             let root = FunctionBytecodeRef::from_owned_handle(self.clone(), id);
+            // The bytecode node now owns every materialized template object
+            // through its constant-pool RawValue edge.
+            drop(materialized_constant_roots);
 
             // The parent node now owns each child through its cpool edge.
             for child in children {

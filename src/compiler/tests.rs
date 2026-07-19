@@ -2947,13 +2947,19 @@ fn untagged_templates_follow_quickjs_concat_lowering() {
         "malformed escape sequence in string literal"
     );
     assert_eq!(
-        compile_script("tag`x`").unwrap_err().message(),
-        "tagged template literals are not implemented yet"
+        compile_script("0`x`").unwrap_err().message(),
+        "tagged template objects require runtime publication; use Context::compile or Context::eval"
     );
     assert_eq!(
-        compile_script("tag\n`x`").unwrap_err().message(),
-        "tagged template literals are not implemented yet"
+        compile_script("0\n`x`").unwrap_err().message(),
+        "tagged template objects require runtime publication; use Context::compile or Context::eval"
     );
+
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    context
+        .compile("(function tag(strings) { return strings[0]; })`x`")
+        .expect("runtime publication should materialize tagged-template objects");
 }
 
 #[test]
