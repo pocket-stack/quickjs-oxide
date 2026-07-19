@@ -57,4 +57,4 @@ if ! cmp -s "$json_baseline" "$json_report"; then
     exit 1
 fi
 
-echo "Test262 smoke baseline matches: 189 pass, 4 unsupported-parser"
+echo "Test262 smoke baseline matches: 191 pass, 2 unsupported-parser"

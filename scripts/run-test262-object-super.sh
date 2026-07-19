@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Reproduce the focused synchronous ObjectLiteral concise-method vector.
+# Reproduce the focused synchronous ObjectLiteral SuperProperty vector.
 
 set -euo pipefail
 export TZ=America/Los_Angeles
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$script_dir/.." && pwd)
-baseline=tests/test262-object-methods-baseline.txt
-manifest=tests/test262-object-methods.txt
-report=target/test262-object-methods.tsv
-json_report=target/test262-object-methods.jsonl
+baseline=tests/test262-object-super-baseline.txt
+manifest=tests/test262-object-super.txt
+report=target/test262-object-super.tsv
+json_report=target/test262-object-super.jsonl
 workers=${TEST262_WORKERS:-8}
 
 read_value() {
@@ -77,29 +77,29 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_schema" != "test262-canonical-classified-v2" \
     || "$expected_mode" != "both" \
     || "$timeout_ms" != "30000" \
-    || "$expected_paths" != "74" \
-    || "$expected_variants" != "144" \
-    || "$expected_runnable" != "144" \
-    || "$expected_passes" != "144" ]]; then
-    echo "error: ObjectLiteral method baseline metadata drifted" >&2
+    || "$expected_paths" != "26" \
+    || "$expected_variants" != "48" \
+    || "$expected_runnable" != "48" \
+    || "$expected_passes" != "48" ]]; then
+    echo "error: ObjectLiteral super baseline metadata drifted" >&2
     exit 1
 fi
 
 actual_paths=$(awk 'NF && $1 !~ /^#/ { count++ } END { print count + 0 }' "$manifest")
 unique_paths=$(awk 'NF && $1 !~ /^#/ { print }' "$manifest" | LC_ALL=C sort -u | wc -l | tr -d '[:space:]')
 if [[ "$actual_paths" != "$expected_paths" || "$unique_paths" != "$expected_paths" ]]; then
-    echo "error: ObjectLiteral method manifest cardinality drifted" >&2
+    echo "error: ObjectLiteral super manifest cardinality drifted" >&2
     exit 1
 fi
 awk 'NF && $1 !~ /^#/ { print }' "$manifest" | LC_ALL=C sort -c
 actual_manifest=$(awk 'NF && $1 !~ /^#/ { print }' "$manifest" | sha256_stream)
 if [[ "$actual_manifest" != "$expected_manifest" ]]; then
-    echo "error: ObjectLiteral method manifest content drifted" >&2
+    echo "error: ObjectLiteral super manifest content drifted" >&2
     exit 1
 fi
-while IFS= read -r path; do
-    if [[ ! -f "$suite/$path" ]]; then
-        echo "error: pinned ObjectLiteral method path is missing: $path" >&2
+while IFS= read -r test_path; do
+    if [[ ! -f "$suite/$test_path" ]]; then
+        echo "error: pinned ObjectLiteral super path is missing: $test_path" >&2
         exit 1
     fi
 done < <(awk 'NF && $1 !~ /^#/ { print }' "$manifest")
@@ -130,7 +130,7 @@ if [[ "$(read_header quickjs)" != "$expected_quickjs" \
     || "$(read_header mode)" != "$expected_mode" \
     || "$actual_variants" != "$expected_variants" \
     || "$actual_runnable" != "$expected_runnable" ]]; then
-    echo "error: ObjectLiteral method report metadata drifted" >&2
+    echo "error: ObjectLiteral super report metadata drifted" >&2
     exit 1
 fi
 
@@ -146,10 +146,10 @@ if [[ "$actual_keys" != "$expected_keys" \
     || "$(tail -n 1 "$report")" != "# summary $expected_summary" \
     || "$(sha256_file "$report")" != "$expected_tsv" \
     || "$(sha256_file "$json_report")" != "$expected_jsonl" ]]; then
-    echo "error: ObjectLiteral method classified vector drifted" >&2
+    echo "error: ObjectLiteral super classified vector drifted" >&2
     exit 1
 fi
 
 "$script_dir/check-rust-only.sh"
-printf 'ObjectLiteral method Test262 vector matches: %s/%s pass across %s paths\n' \
+printf 'ObjectLiteral super Test262 vector matches: %s/%s pass across %s paths\n' \
     "$expected_passes" "$expected_variants" "$expected_paths"

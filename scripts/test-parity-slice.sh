@@ -84,6 +84,7 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/run-test262-with.sh
 ./scripts/run-test262-object-methods.sh
 ./scripts/run-test262-object-accessors.sh
+./scripts/run-test262-object-super.sh
 ./scripts/test-test262-full.sh
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ./scripts/check-rust-only.sh

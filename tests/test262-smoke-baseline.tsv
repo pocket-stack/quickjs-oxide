@@ -4,7 +4,7 @@
 # test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
 # test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
 # test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
-# oxide_profile_sha256=73da0ef92820d81935e2f784a2f0e9ce565ccd10c302d8905c4bd4353c3a81ef
+# oxide_profile_sha256=85cec5c2713df52c631ed38b96621e253baf9e1fafc06eceeea19e9eba64c6f9
 # profile=test262-canonical-classified-v2
 # mode=both
 path	variant	flags	features	expected_phase	expected_type	outcome	actual_phase	actual_type	detail
@@ -175,8 +175,8 @@ test/language/statements/function/S13_A17_T2.js	sloppy			normal		pass	normal
 test/language/statements/function/S13_A17_T2.js	strict			normal		pass	normal		
 test/language/statements/function/S13_A4_T2.js	sloppy			normal		pass	normal		
 test/language/statements/function/S13_A4_T2.js	strict			normal		pass	normal		
-test/language/statements/function/early-body-super-prop.js	sloppy			parse	SyntaxError	unsupported-parser	parse	Unsupported	super syntax is not implemented yet
-test/language/statements/function/early-body-super-prop.js	strict			parse	SyntaxError	unsupported-parser	parse	Unsupported	super syntax is not implemented yet
+test/language/statements/function/early-body-super-prop.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	'super' is only valid in a method
+test/language/statements/function/early-body-super-prop.js	strict			parse	SyntaxError	pass	parse	SyntaxError	'super' is only valid in a method
 test/language/statements/if/S12.5_A10_T1.js	sloppy			normal		pass	normal		
 test/language/statements/if/S12.5_A10_T1.js	strict			normal		pass	normal		
 test/language/statements/if/S12.5_A8.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	unexpected token in expression: ')'
@@ -201,4 +201,4 @@ test/language/statements/variable/arguments-strict-list-middle-init.js	strict	on
 test/language/statements/variable/eval-strict-list-final-init.js	strict	onlyStrict		parse	SyntaxError	pass	parse	SyntaxError	invalid variable name in strict mode
 test/language/statements/while/decl-fun.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	function declarations can't appear in single-statement context
 test/language/statements/while/decl-fun.js	strict			parse	SyntaxError	pass	parse	SyntaxError	function declarations can't appear in single-statement context
-# summary pass=189 unsupported-parser=4
+# summary pass=191 unsupported-parser=2
