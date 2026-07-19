@@ -3,6 +3,7 @@ use super::*;
 mod array;
 pub(super) mod date;
 mod eval;
+mod json;
 mod math;
 mod object;
 mod reflect;

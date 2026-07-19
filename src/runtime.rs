@@ -44,14 +44,15 @@ use crate::heap::{
     ErrorConstructorKind, EvalEnvironment, ForInCandidate, ForInIteratorData, ForInProperty,
     FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo, FunctionDebugPosition,
     FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap,
-    HeapCleanup, HeapCounts, HeapError, MathBinaryKind, MathMinMaxKind, MathUnaryKind,
-    NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
-    ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind,
-    ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload, PrimitiveKind,
-    PrimitiveObjectData, PropertySlot, RawValue, ReflectKind, RegExpNativeKind, ShapeId,
-    StringCaseKind, StringCharAtKind, StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind,
-    StringPadKind, StringReplaceKind, StringStaticKind, StringSubrangeKind, StringTrimKind,
-    StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
+    HeapCleanup, HeapCounts, HeapError, JsonNativeKind, MathBinaryKind, MathMinMaxKind,
+    MathUnaryKind, NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind,
+    NumberPredicateKind, ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId,
+    ObjectIntegrityKind, ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload,
+    PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue, ReflectKind, RegExpNativeKind,
+    ShapeId, StringCaseKind, StringCharAtKind, StringCreateHtmlKind, StringIncludesKind,
+    StringIndexOfKind, StringPadKind, StringReplaceKind, StringStaticKind, StringSubrangeKind,
+    StringTrimKind, StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId,
+    VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -961,6 +962,8 @@ impl Runtime {
             &global_object,
         )
         .expect("RegExp intrinsic initialization must succeed");
+        self.initialize_json_intrinsic(realm, &global_object)
+            .expect("JSON intrinsic initialization must succeed");
         drop(global_var_object);
         drop(global_object);
         drop(uninitialized_vars);

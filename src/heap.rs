@@ -343,6 +343,10 @@ pub enum AutoInitProperty {
     Reflect {
         realm: ContextId,
     },
+    /// QuickJS `JS_OBJECT_DEF` payload for the realm's global `JSON` object.
+    Json {
+        realm: ContextId,
+    },
     #[cfg(test)]
     FailureProbe {
         realm: ContextId,
@@ -1236,6 +1240,18 @@ pub enum ReflectKind {
     SetPrototypeOf,
 }
 
+/// Operation selected by pinned QuickJS's complete `js_json_funcs` table.
+///
+/// The typed family keeps the public property order stable while parse,
+/// stringify and Raw JSON land as separately reviewable algorithmic slices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum JsonNativeKind {
+    IsRawJson,
+    Parse,
+    RawJson,
+    Stringify,
+}
+
 /// Operation selected by QuickJS's shared `js_math_min_max` generic-magic
 /// builtin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1750,6 +1766,7 @@ pub enum NativeFunctionId {
     ObjectPrototypeProtoSetter,
     ObjectPrototypeDefineAccessor(ObjectAccessorKind),
     ObjectPrototypeLookupAccessor(ObjectAccessorKind),
+    Json(JsonNativeKind),
     Reflect(ReflectKind),
     Date(DateNativeKind),
     RegExp(RegExpNativeKind),
@@ -2105,6 +2122,7 @@ impl NativeFunctionId {
             | Self::ObjectPrototypeHasOwnProperty
             | Self::ObjectPrototypeIsPrototypeOf
             | Self::ObjectPrototypePropertyIsEnumerable
+            | Self::Json(_)
             | Self::Date(
                 DateNativeKind::Now
                 | DateNativeKind::Parse
@@ -5444,7 +5462,8 @@ fn property_slot_edges(slot: &PropertySlot) -> Vec<RawId> {
             | AutoInitProperty::String { realm, .. }
             | AutoInitProperty::ArrayUnscopables { realm }
             | AutoInitProperty::Math { realm }
-            | AutoInitProperty::Reflect { realm },
+            | AutoInitProperty::Reflect { realm }
+            | AutoInitProperty::Json { realm },
         ) => vec![RawId::Context(*realm)],
         #[cfg(test)]
         PropertySlot::AutoInit(AutoInitProperty::FailureProbe { realm }) => {

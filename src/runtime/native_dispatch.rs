@@ -551,6 +551,9 @@ impl Runtime {
             NativeFunctionId::ObjectPrototypeLookupAccessor(kind) => {
                 self.call_object_prototype_lookup_accessor(realm, kind, invocation, arguments)
             }
+            NativeFunctionId::Json(kind) => {
+                self.call_json_native(realm, kind, invocation, arguments)
+            }
             NativeFunctionId::Reflect(kind) => {
                 self.call_reflect(realm, kind, invocation, arguments)
             }
