@@ -3299,8 +3299,11 @@ visibility and `compiler.rs` falls again to 12,248 lines. R2d-2b isolates the
 identifier-resolution events or entry-prefix ordering. R2d-2c moves the
 178-line ordinary-function definition parser and its two transfer records to
 `compiler/function.rs`; the parser bodies are unchanged and `compiler.rs` now
-stands at 11,842 lines. Further production phase splits remain required before
-another broad grammar slice.
+stands at 11,842 lines. R2d-2d then moves the unchanged 171-line object-literal
+lowering method into the 182-line `compiler/object_literal.rs` module, reducing
+the parent to 11,671 lines and giving the next method/accessor slice a bounded
+compiler home. Further production phase splits remain required as those
+semantics land.
 At the R2d-2c landing, the complete 102,037-variant Test262 report remained
 byte-for-byte identical to the R2c hashes above at 30,254 passes; the subsequent
 R2e profile truth-up changes only selection and classified report metadata.
