@@ -10,7 +10,7 @@ differentials still decide exact behavior inside each implemented slice.
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
 - quickjs-oxide capability profile SHA-256:
-  `d146a337c9bab8b171aaddfe31d404073a9d3cbb65fd7ac7d6ab46fdefe69ef7`
+  `0c6b9ef80d683bd69a97f87bbee10e7029432deb25d23695a96c251e9dfc9f66`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -50,32 +50,32 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 32,573 pass;
+- 33,083 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 47,995 are classified as unsupported because of a feature, mode, host
+- 47,953 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 448 fail to parse, 2,425 fail at runtime, 117 fail in the harness, and four
+- 452 fail to parse, 1,951 fail at runtime, 117 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 36,827 variants to execution. That count includes variants
+The runner admitted 36,871 variants to execution. That count includes variants
 which then report a typed parser or harness frontier rather than an observed
 non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 31.92% (`32,573 / 102,037`);
-- conservative target-scope lower bound: 38.98%
-  (`32,573 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 91.58%
-  (`32,573 / 35,567`).
+- raw suite pass rate: 32.42% (`33,083 / 102,037`);
+- conservative target-scope lower bound: 39.59%
+  (`33,083 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 92.91%
+  (`33,083 / 35,609`).
 
-The 38.98% figure is the useful whole-project progress floor, not a claim that
-the engine is 38.98% conformant. The 91.58% conditional rate measures quality
+The 39.59% figure is the useful whole-project progress floor, not a claim that
+the engine is 39.59% conformant. The 92.91% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion; R1u also demonstrates that this conditional rate can rise when
 previously ambiguous failures move to a more honest typed unsupported class.
-The capability profile currently admits 55 reviewed Test262
+The capability profile currently admits 57 reviewed Test262
 feature tags and 423 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
 lands can only make the measurement more representative. Focused QuickJS
@@ -89,9 +89,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`8a1633a0d527bc77926124f3a6e1fa5ef340e6e79626a22ed171f37dafb8c6e0`
+`63d5a44dd8d057e220882d02abebb1b221fdb1a419ce1fc691e1ed084d2b0a3e`
 and
-`b904278dd9c8cc5d3cf54babd037723ec7e52d015a636fe0d19ef5a4b0f36cfb`.
+`0b8eedcae7d427a6bf7fbbcefb412d9f2691c0bdf00c4bc2229bbfd1a8212fb2`.
 
 ## Milestone policy
 
@@ -1505,6 +1505,101 @@ TSV/JSONL SHA-256 values are
 and
 `799be95a11b86d2b1efdfa694cd88971a600c64992fd07b03d61d913377f2e23`.
 
+## R2l strict JSON parse and reviver gate
+
+R2l ports the pinned QuickJS JSON grammar and post-order reviver walk instead
+of reusing the JavaScript lexer or an external serializer. Parsing preserves
+arbitrary UTF-16 code units, allocates Arrays and ordinary objects in the
+method's defining realm, defines `__proto__` as data, and retains exact
+primitive source spans only when a callable reviver needs them. The walk
+snapshots own keys, keeps QuickJS's duplicate-key parse-record behavior, and
+observes mutations through ordinary property operations. It passes the third
+reviver context argument with `source` only when the parsed primitive is still
+unchanged.
+
+The focused manifest freezes 84 paths and 168 variants. All 168 run: 166 pass,
+and the sloppy/strict forms of the 2,097,153-element dense-array stress case
+time out at the existing object-model performance frontier. Nothing is skipped
+or reported unsupported. Manifest, key-set, and non-pass SHA-256 values are
+`16b919d34d9eebcc60a92e038e0a6fd565e9306c1ba17cffc6f62ce0f05f23c4`,
+`36e19d071bb8ad9e4982ae85a5f32a3205925b6bf68fe335cfd1cbdfb429cff9`,
+and
+`2436785b58ef14db6e47d65537af5a9edf58e33bec81837eaf2f3b36f1eee4d0`.
+Landing TSV/JSONL hashes under the R2k profile were
+`31d01dbc119767d5eb9e2be69c9054f97ca78a3b4ca5e5ae60faf9ed1f29b8e9`
+and
+`7ed6c23a8b94dfb2854f9be793c4aba388d64a432e0a931d6d8d81dbb7c38dbf`.
+After R2m's profile-metadata migration, the current gate hashes are
+`22377dfabe093c798ec712be77ab06ca600e11725666945e523b68410d6927cb`
+and
+`2fa563ffd36405eee7433e0aada0abe1a1474e64b31228949f5a0dc04af2da04`.
+Reproduce it with `scripts/test-test262-json-parse.sh`.
+
+## R2m JSON stringify and Raw JSON gate
+
+R2m completes the pinned JSON intrinsic family. `JSON.stringify` normalizes
+the replacer before `space`, creates the root holder afterward in the defining
+realm, invokes `toJSON` then the replacer, unwraps supported primitive wrappers,
+snapshots object keys and Array length at the corresponding QuickJS points,
+uses a path-only ancestor stack for cycle detection, quotes exact UTF-16
+including lone surrogates, rejects unspecialized BigInts, and preserves
+QuickJS's indentation and omission/null substitution rules. An explicit task
+stack preserves the observable recursive traversal order without imposing the
+old 256-level Rust cutoff; differential cases lock 257 and 4,096 nested Arrays.
+
+Its focused manifest deliberately selects the direct stringify semantic
+surface, excluding cases whose formatter usage is incidental. All 160 variants
+across 80 paths pass. Manifest, key-set, and empty non-pass SHA-256 values are
+`001d8337407a2689dc181120160bc6d45d6b03765ec5ca0c2c7f3421f9705f11`,
+`ab8b0bdfa3895693115c79579f936d2559806dbc95f2588537267a73d6039892`,
+and
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+Focused TSV/JSONL hashes are
+`38ebfa11ff63d080072eb93845711ff4f90bd6753a70fa793edc0c128f89bd82`
+and
+`1ff4e957792cf2f1702f21df30bd7656d5448a71f5cf9fcc6f37c9cd48fa445b`.
+Reproduce it with `scripts/test-test262-json-stringify.sh`.
+
+`JSON.rawJSON` first converts and validates the exact source text through the
+same strict parser, then creates a null-prototype, non-extensible object with a
+runtime-wide unforgeable heap brand and one frozen enumerable `rawJSON` data
+property. `JSON.isRawJSON` tests that brand directly without traps or coercion;
+stringify recognizes it after `toJSON`/replacer processing and splices its
+validated lexeme before cycle handling. The raw manifest freezes 22 paths and
+44 variants. Forty-two are runnable: 36 pass; four parse failures require
+unrelated rest/spread syntax and two typed parser frontiers require unrelated
+arrow destructuring. The pinned staging path is config-excluded in both modes.
+Manifest, key-set, and non-pass hashes are
+`8e4d1fa6f59eae77cf1a35668ea02002de4d4f4cae146bb9ea6bde1c849b1df4`,
+`c5be0b3a9dd6c106d9e1c19cd15726b7a6756ac5ee464d4279fd835d520ddee7`,
+and
+`2c8fb7640ded74e86d6e5b8990dcaf8650ec0eccbc855cb2dcbef808e8caae8a`.
+Focused TSV/JSONL hashes are
+`bb3792c4b565855a533a56db306f9fb465b6f899ca739db3a0ceb92979a0cf34`
+and
+`4d76fd54f0d4878a816f452170f1b7436fec0c86a0c601d925f86aca1ae16264`.
+Reproduce it with `scripts/test-test262-json-raw.sh`.
+
+Declaring `json-parse-with-source` and `well-formed-json-stringify` moves the
+capability profile to 57 feature tags and 423 audited negative paths, with
+SHA-256
+`0c6b9ef80d683bd69a97f87bbee10e7029432deb25d23695a96c251e9dfc9f66`.
+Because every profile-aware report pins that hash in its header, current
+baselines for older focused gates are re-emitted with metadata-only byte/hash
+changes; their outcomes and key sets remain unchanged, while the historical
+sections retain each gate's landing hashes.
+The exact R2k/R2m full join keeps all 102,037 unique keys with no missing,
+extra, duplicate, or previous-pass-regression rows. Of 518 outcome changes,
+472 are `fail-runtime -> pass`, 38 are `unsupported-feature -> pass`, two are
+`unsupported-feature -> unsupported-parser`, four are
+`unsupported-feature -> fail-parse`, and the dense-array pair is
+`fail-runtime -> timeout`; nine more rows change detail only. Runnable variants
+reach 36,871 and passes reach 33,083, a net gain of 510. Full TSV/JSONL hashes
+are
+`63d5a44dd8d057e220882d02abebb1b221fdb1a419ce1fc691e1ed084d2b0a3e`
+and
+`0b8eedcae7d427a6bf7fbbcefb412d9f2691c0bdf00c4bc2229bbfd1a8212fb2`.
+
 Parameter initializers, classes and derived constructors, and async/generator
 methods remain explicit follow-up slices.
 
@@ -1579,6 +1674,9 @@ canonical progress report.
 ./scripts/run-test262-object-super-arrow.sh
 ./scripts/run-test262-object-super-eval.sh
 ./scripts/test-test262-tagged-template.sh
+./scripts/test-test262-json-parse.sh
+./scripts/test-test262-json-stringify.sh
+./scripts/test-test262-json-raw.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -1627,7 +1725,12 @@ passes its 24-variant focused gate, and adds six full-vector passes with no
 previous-pass regression or runnable-count change; R2k adds QuickJS-shaped
 tagged-template site objects and calls, declares `template`, passes all 83
 runnable non-frontier variants in its focused gate, and adds 83 full-vector
-passes with zero previous-pass regressions.
+passes with zero previous-pass regressions; R2l adds the strict JSON parser,
+reviver walk, and exact source contexts, passing 166/168 focused variants with
+only the dense-array timeout pair; R2m adds stringify and branded Raw JSON,
+passes 160/160 direct stringify variants and 36/42 runnable Raw JSON variants,
+declares the two reviewed JSON feature tags, and brings the complete vector to
+33,083 passes with zero previous-pass regressions.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

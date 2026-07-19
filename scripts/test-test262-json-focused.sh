@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
-# Reproduce the focused ObjectLiteral direct-eval SuperProperty vector.
+# Shared reproducibility gate for one pinned JSON Test262 manifest.
 
 set -euo pipefail
 export TZ=America/Los_Angeles
 
+if [[ $# -ne 2 ]]; then
+    echo "usage: $0 <slice> <display-name>" >&2
+    exit 2
+fi
+
+slice=$1
+display_name=$2
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$script_dir/.." && pwd)
-baseline=tests/test262-object-super-eval-baseline.txt
-manifest=tests/test262-object-super-eval.txt
-report=target/test262-object-super-eval.tsv
-json_report=target/test262-object-super-eval.jsonl
+baseline="tests/test262-$slice-baseline.txt"
+manifest="tests/test262-$slice.txt"
+report="target/test262-$slice.tsv"
+json_report="target/test262-$slice.jsonl"
 workers=${TEST262_WORKERS:-8}
 
 read_value() {
@@ -61,6 +68,9 @@ expected_paths=$(read_value paths)
 expected_variants=$(read_value variants)
 expected_runnable=$(read_value runnable)
 expected_passes=$(read_value passes)
+expected_failures=$(read_value failures)
+expected_unsupported=$(read_value unsupported)
+expected_skipped=$(read_value skipped)
 expected_manifest=$(read_value manifest_sha256)
 expected_keys=$(read_value keys_sha256)
 expected_nonpass=$(read_value nonpass_sha256)
@@ -76,30 +86,26 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_profile" != "0c6b9ef80d683bd69a97f87bbee10e7029432deb25d23695a96c251e9dfc9f66" \
     || "$expected_schema" != "test262-canonical-classified-v2" \
     || "$expected_mode" != "both" \
-    || "$timeout_ms" != "30000" \
-    || "$expected_paths" != "12" \
-    || "$expected_variants" != "24" \
-    || "$expected_runnable" != "24" \
-    || "$expected_passes" != "24" ]]; then
-    echo "error: ObjectLiteral direct-eval super baseline metadata drifted" >&2
+    || "$timeout_ms" != "30000" ]]; then
+    echo "error: $display_name baseline metadata drifted" >&2
     exit 1
 fi
 
 actual_paths=$(awk 'NF && $1 !~ /^#/ { count++ } END { print count + 0 }' "$manifest")
 unique_paths=$(awk 'NF && $1 !~ /^#/ { print }' "$manifest" | LC_ALL=C sort -u | wc -l | tr -d '[:space:]')
 if [[ "$actual_paths" != "$expected_paths" || "$unique_paths" != "$expected_paths" ]]; then
-    echo "error: ObjectLiteral direct-eval super manifest cardinality drifted" >&2
+    echo "error: $display_name manifest cardinality drifted" >&2
     exit 1
 fi
 awk 'NF && $1 !~ /^#/ { print }' "$manifest" | LC_ALL=C sort -c
 actual_manifest=$(awk 'NF && $1 !~ /^#/ { print }' "$manifest" | sha256_stream)
 if [[ "$actual_manifest" != "$expected_manifest" ]]; then
-    echo "error: ObjectLiteral direct-eval super manifest content drifted" >&2
+    echo "error: $display_name manifest content drifted" >&2
     exit 1
 fi
 while IFS= read -r test_path; do
     if [[ ! -f "$suite/$test_path" ]]; then
-        echo "error: pinned ObjectLiteral direct-eval super path is missing: $test_path" >&2
+        echo "error: pinned $display_name path is missing: $test_path" >&2
         exit 1
     fi
 done < <(awk 'NF && $1 !~ /^#/ { print }' "$manifest")
@@ -120,6 +126,28 @@ actual_variants=$(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") { coun
 execution_line=$(printf '%s\n' "$run_output" | awk '/^execution: runnable=/ { print; found=1 } END { if (!found) exit 1 }')
 actual_runnable=${execution_line#*runnable=}
 actual_runnable=${actual_runnable%% *}
+actual_passes=$(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") && $7 == "pass" { count++ } END { print count + 0 }' "$report")
+actual_failures=$(awk -F'\t' '
+    !/^#/ && !($1 == "path" && $2 == "variant") \
+        && $7 != "pass" && $7 !~ /^unsupported-/ && $7 !~ /^skipped-/ { count++ }
+    END { print count + 0 }
+' "$report")
+actual_unsupported=$(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") && $7 ~ /^unsupported-/ { count++ } END { print count + 0 }' "$report")
+actual_skipped=$(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") && $7 ~ /^skipped-/ { count++ } END { print count + 0 }' "$report")
+
+printf '%s canonical outcomes: pass=%s fail=%s unsupported=%s skipped=%s\n' \
+    "$display_name" "$actual_passes" "$actual_failures" "$actual_unsupported" "$actual_skipped"
+nonpass_count=$((actual_variants - actual_passes))
+if [[ "$nonpass_count" -gt 0 ]]; then
+    printf '%s non-pass rows (%s):\n' "$display_name" "$nonpass_count"
+    printf 'path\tvariant\toutcome\tactual_phase\tactual_type\tdetail\n'
+    awk -F'\t' '
+        !/^#/ && !($1 == "path" && $2 == "variant") && $7 != "pass" {
+            print $1 "\t" $2 "\t" $7 "\t" $8 "\t" $9 "\t" $10
+        }
+    ' "$report"
+fi
+
 if [[ "$(read_header quickjs)" != "$expected_quickjs" \
     || "$(read_header test262)" != "$expected_test262" \
     || "$(read_header test262_patch_sha256)" != "$expected_patch" \
@@ -130,7 +158,7 @@ if [[ "$(read_header quickjs)" != "$expected_quickjs" \
     || "$(read_header mode)" != "$expected_mode" \
     || "$actual_variants" != "$expected_variants" \
     || "$actual_runnable" != "$expected_runnable" ]]; then
-    echo "error: ObjectLiteral direct-eval super report metadata drifted" >&2
+    echo "error: $display_name report metadata drifted" >&2
     exit 1
 fi
 
@@ -138,18 +166,19 @@ diff -u \
     <(awk 'NF && $1 !~ /^#/ { print }' "$manifest" | LC_ALL=C sort) \
     <(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") { print $1 }' "$report" | LC_ALL=C sort -u)
 actual_keys=$(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") { print $1 "\t" $2 }' "$report" | LC_ALL=C sort | sha256_stream)
-actual_passes=$(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") && $7 == "pass" { count++ } END { print count + 0 }' "$report")
 actual_nonpass=$(awk -F'\t' '!/^#/ && !($1 == "path" && $2 == "variant") && $7 != "pass" { print $1 "\t" $2 "\t" $7 "\t" $8 "\t" $9 "\t" $10 }' "$report" | sha256_stream)
 if [[ "$actual_keys" != "$expected_keys" \
     || "$actual_passes" != "$expected_passes" \
+    || "$actual_failures" != "$expected_failures" \
+    || "$actual_unsupported" != "$expected_unsupported" \
+    || "$actual_skipped" != "$expected_skipped" \
     || "$actual_nonpass" != "$expected_nonpass" \
     || "$(tail -n 1 "$report")" != "# summary $expected_summary" \
     || "$(sha256_file "$report")" != "$expected_tsv" \
     || "$(sha256_file "$json_report")" != "$expected_jsonl" ]]; then
-    echo "error: ObjectLiteral direct-eval super classified vector drifted" >&2
+    echo "error: $display_name classified vector drifted" >&2
     exit 1
 fi
 
-"$script_dir/check-rust-only.sh"
-printf 'ObjectLiteral direct-eval super Test262 vector matches: %s/%s pass across %s paths\n' \
-    "$expected_passes" "$expected_variants" "$expected_paths"
+printf '%s Test262 vector matches: %s/%s pass across %s paths\n' \
+    "$display_name" "$expected_passes" "$expected_variants" "$expected_paths"

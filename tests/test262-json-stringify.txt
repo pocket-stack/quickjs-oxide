@@ -1,0 +1,92 @@
+# Frozen JSON.stringify core milestone slice for the pinned Test262 checkout.
+#
+# This is the bytewise-sorted union of the 78 runnable paths whose source
+# directly reached the `JSON.stringify is not implemented` boundary in the
+# R2l full vector, the one intentional property-helper error-formatting
+# dependency, and the well-formed Unicode escaping path that belongs to the
+# core algorithm but was still gated by its feature declaration.
+#
+# RawJSON/json-parse-with-source, Proxy, TypedArray, host/config/module/parser
+# prerequisites, parse-only paths, and assertion formatting that merely masks
+# an unrelated failure are excluded. The frozen vector expands these 80 paths
+# to 160 variants: 158 unsupported-runtime and two unsupported-feature.
+test/built-ins/JSON/stringify/property-order.js
+test/built-ins/JSON/stringify/replacer-array-duplicates.js
+test/built-ins/JSON/stringify/replacer-array-empty.js
+test/built-ins/JSON/stringify/replacer-array-number-object.js
+test/built-ins/JSON/stringify/replacer-array-number.js
+test/built-ins/JSON/stringify/replacer-array-order.js
+test/built-ins/JSON/stringify/replacer-array-string-object.js
+test/built-ins/JSON/stringify/replacer-array-undefined.js
+test/built-ins/JSON/stringify/replacer-function-abrupt.js
+test/built-ins/JSON/stringify/replacer-function-arguments.js
+test/built-ins/JSON/stringify/replacer-function-array-circular.js
+test/built-ins/JSON/stringify/replacer-function-object-circular.js
+test/built-ins/JSON/stringify/replacer-function-object-deleted-property.js
+test/built-ins/JSON/stringify/replacer-function-result-undefined.js
+test/built-ins/JSON/stringify/replacer-function-result.js
+test/built-ins/JSON/stringify/replacer-function-tojson.js
+test/built-ins/JSON/stringify/replacer-function-wrapper.js
+test/built-ins/JSON/stringify/replacer-wrong-type.js
+test/built-ins/JSON/stringify/space-number-float.js
+test/built-ins/JSON/stringify/space-number-object.js
+test/built-ins/JSON/stringify/space-number-range.js
+test/built-ins/JSON/stringify/space-number.js
+test/built-ins/JSON/stringify/space-string-object.js
+test/built-ins/JSON/stringify/space-string-range.js
+test/built-ins/JSON/stringify/space-string.js
+test/built-ins/JSON/stringify/space-wrong-type.js
+test/built-ins/JSON/stringify/value-array-circular.js
+test/built-ins/JSON/stringify/value-bigint-order.js
+test/built-ins/JSON/stringify/value-bigint-replacer.js
+test/built-ins/JSON/stringify/value-bigint-tojson-receiver.js
+test/built-ins/JSON/stringify/value-bigint-tojson.js
+test/built-ins/JSON/stringify/value-bigint.js
+test/built-ins/JSON/stringify/value-boolean-object.js
+test/built-ins/JSON/stringify/value-function.js
+test/built-ins/JSON/stringify/value-number-negative-zero.js
+test/built-ins/JSON/stringify/value-number-non-finite.js
+test/built-ins/JSON/stringify/value-number-object.js
+test/built-ins/JSON/stringify/value-object-abrupt.js
+test/built-ins/JSON/stringify/value-object-circular.js
+test/built-ins/JSON/stringify/value-primitive-top-level.js
+test/built-ins/JSON/stringify/value-string-escape-ascii.js
+test/built-ins/JSON/stringify/value-string-escape-unicode.js
+test/built-ins/JSON/stringify/value-string-object.js
+test/built-ins/JSON/stringify/value-symbol.js
+test/built-ins/JSON/stringify/value-tojson-abrupt.js
+test/built-ins/JSON/stringify/value-tojson-arguments.js
+test/built-ins/JSON/stringify/value-tojson-array-circular.js
+test/built-ins/JSON/stringify/value-tojson-not-function.js
+test/built-ins/JSON/stringify/value-tojson-object-circular.js
+test/built-ins/JSON/stringify/value-tojson-result.js
+test/harness/verifyProperty-desc-is-not-object.js
+test/staging/sm/Boolean/no-boolean-toJSON.js
+test/staging/sm/Date/toJSON-01.js
+test/staging/sm/JSON/cyclic-stringify-unrelated.js
+test/staging/sm/JSON/cyclic-stringify.js
+test/staging/sm/JSON/stringify-boxed-primitives.js
+test/staging/sm/JSON/stringify-call-replacer-once.js
+test/staging/sm/JSON/stringify-call-toJSON-once.js
+test/staging/sm/JSON/stringify-dropping-elements.js
+test/staging/sm/JSON/stringify-gap.js
+test/staging/sm/JSON/stringify-ignore-noncallable-toJSON.js
+test/staging/sm/JSON/stringify-large-replacer-array.js
+test/staging/sm/JSON/stringify-missing-arguments.js
+test/staging/sm/JSON/stringify-nonarray-noncallable-replacer.js
+test/staging/sm/JSON/stringify-primitives.js
+test/staging/sm/JSON/stringify-replacer-array-boxed-elements.js
+test/staging/sm/JSON/stringify-replacer-array-duplicated-element.js
+test/staging/sm/JSON/stringify-replacer-array-edgecase-jsid-elements.js
+test/staging/sm/JSON/stringify-replacer-array-hijinks.js
+test/staging/sm/JSON/stringify-replacer-array-skipped-element.js
+test/staging/sm/JSON/stringify-replacer-array-trailing-holes.js
+test/staging/sm/JSON/stringify-replacer-with-array-indexes.js
+test/staging/sm/JSON/stringify-replacer.js
+test/staging/sm/JSON/stringify-special-escapes.js
+test/staging/sm/JSON/stringify-toJSON-arguments.js
+test/staging/sm/JSON/stringify.js
+test/staging/sm/RegExp/split.js
+test/staging/sm/Symbol/json-stringify-keys.js
+test/staging/sm/Symbol/json-stringify-values.js
+test/staging/sm/object/toPrimitive-callers.js

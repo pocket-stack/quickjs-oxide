@@ -10,13 +10,13 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 55 reviewed feature tags and 423 exact audited
+  capability profile now admits 57 reviewed feature tags and 423 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 32,573 passes: 31.92% raw, a 38.98% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 91.58% among the 35,567 variants with a
+  has 33,083 passes: 32.42% raw, a 39.59% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 92.91% among the 35,609 variants with a
   non-unsupported observed outcome. The fixed smoke now has 191
   passes and two explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -570,6 +570,78 @@ claim full parity.
   `96dfb48f8887e525ff2813e4f8ac9ab7cf191f9e0fedd0d8724ee52943ce60e9`
   and
   `799be95a11b86d2b1efdfa694cd88971a600c64992fd07b03d61d913377f2e23`.
+
+  R2l ports the pinned strict JSON parser and post-order reviver walk. It uses
+  JSON's own UTF-16 grammar rather than the JavaScript lexer, allocates
+  realm-correct Arrays and ordinary objects directly, preserves QuickJS's
+  duplicate-key parse-record selection, and supplies the third reviver
+  context argument with an exact primitive `source` slice only while the
+  parsed value still matches. The focused gate freezes 84 paths and 168
+  variants: 166 pass, while the sloppy/strict forms of the 2,097,153-element
+  dense-array stress test retain a visible timeout frontier. There are no
+  unsupported or skipped rows. Its manifest/key-set/non-pass hashes are
+  `16b919d34d9eebcc60a92e038e0a6fd565e9306c1ba17cffc6f62ce0f05f23c4`,
+  `36e19d071bb8ad9e4982ae85a5f32a3205925b6bf68fe335cfd1cbdfb429cff9`,
+  and
+  `2436785b58ef14db6e47d65537af5a9edf58e33bec81837eaf2f3b36f1eee4d0`;
+  landing TSV/JSONL hashes under the R2k profile were
+  `31d01dbc119767d5eb9e2be69c9054f97ca78a3b4ca5e5ae60faf9ed1f29b8e9`
+  and
+  `7ed6c23a8b94dfb2854f9be793c4aba388d64a432e0a931d6d8d81dbb7c38dbf`;
+  after R2m's profile-metadata migration, the current gate hashes are
+  `22377dfabe093c798ec712be77ab06ca600e11725666945e523b68410d6927cb`
+  and
+  `2fa563ffd36405eee7433e0aada0abe1a1474e64b31228949f5a0dc04af2da04`.
+
+  R2m completes the JSON intrinsic family on the pinned QuickJS path.
+  `JSON.stringify` preserves replacer/space/root-holder order, `toJSON` and
+  replacer calls, wrapper coercion, key and length snapshots, path-only cycle
+  detection, UTF-16 quoting, BigInt errors, and pretty-print gaps. Traversal
+  uses an explicit task stack, so it has no Rust-recursion cutoff below the
+  pinned engine; differential cases lock both 257 and 4,096 nested Arrays. Its
+  focused 80-path/160-variant gate passes 160/160. `JSON.rawJSON` validates
+  through the same strict parser and constructs a null-prototype,
+  non-extensible object with a runtime-wide unforgeable heap brand. Stringify
+  splices the exact
+  source lexeme; `JSON.isRawJSON` checks that brand without invoking user code.
+  The 22-path/44-variant raw gate records 36 passes, four unrelated rest/spread
+  parse failures, two unrelated arrow-destructuring parser frontiers, and two
+  pinned staging exclusions. Stringify manifest/key-set/non-pass hashes are
+  `001d8337407a2689dc181120160bc6d45d6b03765ec5ca0c2c7f3421f9705f11`,
+  `ab8b0bdfa3895693115c79579f936d2559806dbc95f2588537267a73d6039892`,
+  and
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`;
+  its TSV/JSONL hashes are
+  `38ebfa11ff63d080072eb93845711ff4f90bd6753a70fa793edc0c128f89bd82`
+  and
+  `1ff4e957792cf2f1702f21df30bd7656d5448a71f5cf9fcc6f37c9cd48fa445b`.
+  Raw JSON manifest/key-set/non-pass hashes are
+  `8e4d1fa6f59eae77cf1a35668ea02002de4d4f4cae146bb9ea6bde1c849b1df4`,
+  `c5be0b3a9dd6c106d9e1c19cd15726b7a6756ac5ee464d4279fd835d520ddee7`,
+  and
+  `2c8fb7640ded74e86d6e5b8990dcaf8650ec0eccbc855cb2dcbef808e8caae8a`;
+  its TSV/JSONL hashes are
+  `bb3792c4b565855a533a56db306f9fb465b6f899ca739db3a0ceb92979a0cf34`
+  and
+  `4d76fd54f0d4878a816f452170f1b7436fec0c86a0c601d925f86aca1ae16264`.
+
+  Declaring `json-parse-with-source` and `well-formed-json-stringify` moves the
+  capability profile to 57 reviewed feature tags with SHA-256
+  `0c6b9ef80d683bd69a97f87bbee10e7029432deb25d23695a96c251e9dfc9f66`.
+  Every profile-aware older focused baseline is re-emitted because its report
+  header pins this hash; those changes are metadata-only, with outcomes and
+  key sets unchanged, while the sections above retain landing-history hashes.
+  The exact R2k/R2m full join retains all 102,037 unique keys with no missing,
+  extra, duplicate, or previous-pass-regression rows. Of 518 outcome changes,
+  472 move from `fail-runtime` to pass, 38 from `unsupported-feature` to pass,
+  two from `unsupported-feature` to `unsupported-parser`, four from
+  `unsupported-feature` to `fail-parse`, and two dense-array rows from
+  `fail-runtime` to timeout; nine additional rows change detail only. Runnable
+  jobs reach 36,871 and the complete vector reaches 33,083 passes, a net gain
+  of 510. Full TSV/JSONL SHA-256 values are
+  `63d5a44dd8d057e220882d02abebb1b221fdb1a419ce1fc691e1ed084d2b0a3e`
+  and
+  `0b8eedcae7d427a6bf7fbbcefb412d9f2691c0bdf00c4bc2229bbfd1a8212fb2`.
 
   Parameter initializers and other non-simple parameters, classes/derived
   construction, and async/generator method/accessor forms stay typed frontiers.
@@ -2910,6 +2982,18 @@ claim full parity.
   `tz-rs` has no native local-zone/zoneinfo backend there. A real
   cross-platform local-time backend is still required before full QuickJS
   feature parity can be claimed.
+- Every realm publishes the pinned `%JSON%` namespace in `isRawJSON`, `parse`,
+  `rawJSON`, `stringify`, then `@@toStringTag` order. The implementation follows
+  `quickjs.c` 49257-50181 with a dedicated strict UTF-16 parser and parse-record
+  tree, post-order reviver walk and exact primitive source contexts, ordered
+  stringify transform/traversal, well-formed UTF-16 quoting, and a runtime-wide
+  Raw JSON heap brand. Raw objects have a null prototype, one frozen enumerable
+  source slot, and no duplicate payload edge; brand checks invoke no user code,
+  while stringify splices only the internally validated exact source. The
+  parser, reviver, Raw JSON, and stringify owners remain separate modules under
+  `runtime/intrinsics/json/`. Dedicated QuickJS differentials cover the graph,
+  descriptors, coercion and callback order, mutation snapshots, duplicate
+  keys, cycles, raw UTF-16, cross-realm ownership, and Raw JSON branding.
 - The global object has QuickJS's dedicated payload and hidden
   `uninitialized_vars` object. Global data properties and the lexical-binding
   object can store `PropertySlot::VarRef` cells; define, descriptor lookup,
@@ -2935,8 +3019,9 @@ claim full parity.
   global string-key surface preserves upstream relative own-key order as the
   Error family, `Array`, `Object`, `Function`, `parseInt`, `parseFloat`, `isNaN`,
   `isFinite`, the six URI/escape functions, the three constants, `Number`,
-  `Boolean`, `String`, `Math`, `Reflect`, `Symbol`, `globalThis`, then `BigInt`. This is
-  not a claim that the wider global builtin table is complete.
+  `Boolean`, `String`, `Math`, `Reflect`, `Symbol`, `globalThis`, `BigInt`,
+  `Date`, `RegExp`, then `JSON`. This is not a claim that the wider global
+  builtin table is complete.
 - Every global object owns QuickJS's `[Symbol.toStringTag] = "global"` metadata
   as a non-writable, non-enumerable, configurable data property. The runtime's
   well-known identity is also exposed as the frozen public
@@ -3306,7 +3391,7 @@ One gate-infrastructure debt is measured on macOS's default 2 MiB libtest
 worker stack. `cargo test --locked --workspace --all-targets` reaches a host
 stack overflow/SIGABRT in
 `runtime::intrinsics::object::tests::recursive_object_has_own_key_conversion_is_guarded_and_runtime_recovers`;
-the exact test and all 804 library tests pass with
+the exact test and all 807 library tests pass with
 `RUST_MIN_STACK=8388608`. This is not an R2j semantic regression, but the test
 must gain an explicit proven stack or the VM/native frames must shrink before
 the default workspace command is again a reliable gate.
@@ -3619,6 +3704,13 @@ after tagged calls are added. Realm-local template object publication lives in
 the new 111-line `runtime/template_object.rs`; `runtime.rs` grows only 16 lines
 from 9,734 to 9,750 for the constant-pool plumbing and module hook. This keeps
 the feature on bounded owners instead of resuming either monolith's growth.
+R2l/R2m keep JSON algorithms in `runtime/intrinsics/json/`: the strict parser,
+reviver walk, Raw JSON brand, and iterative stringifier occupy 517/208/116/739
+lines.
+Only dispatch and exhaustive heap-payload routing reach the runtime facade,
+which stands at 9,762 lines; `compiler.rs` remains 11,956 lines. This is a
+bounded intrinsic-family addition rather than another algorithm folded into
+the runtime or compiler monolith.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -3821,6 +3913,12 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_super_eval -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_tagged_templates -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_json_parse -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_json_stringify -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_json_raw -- --nocapture
 
 ./scripts/test-parity-slice.sh
 ./scripts/test-test262-smoke.sh
@@ -3857,6 +3955,9 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/run-test262-object-super-arrow.sh
 ./scripts/run-test262-object-super-eval.sh
 ./scripts/test-test262-tagged-template.sh
+./scripts/test-test262-json-parse.sh
+./scripts/test-test262-json-stringify.sh
+./scripts/test-test262-json-raw.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -3893,7 +3994,9 @@ UTF-16, continuation goals, concat lowering/order, diagnostics,
 and folded control-flow reachability at the 65,534-slot stack limit. The tagged
 template target separately locks frozen cooked/raw site objects, receiver and
 evaluation order, compilation-site identity, direct-eval/super composition,
-and GC lifetime. The full gate discovers every `tests/oracle_*.rs`
+and GC lifetime. The JSON targets lock strict UTF-16 parsing, reviver source
+contexts, stringify traversal/coercion/quoting, and Raw JSON branding and
+source splicing. The full gate discovers every `tests/oracle_*.rs`
 integration target, reuses an executable `QJS_ORACLE` or checksum-verifies and
 builds the pinned test-only oracle, obtains and checksum-verifies the matching
 Unicode table source, then runs both generated-table drift checks, formatting,
