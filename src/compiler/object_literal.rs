@@ -7,6 +7,11 @@ use crate::error::Error;
 use crate::lexer::{NumberKind, Punctuator, TokenKind};
 use crate::value::{JsString, Value};
 
+enum ObjectMethodPropertyKey {
+    Fixed(JsString),
+    Computed,
+}
+
 impl<'source> Parser<'source> {
     /// Lower the data-property portion of QuickJS
     /// `js_parse_object_literal`. The fresh Object stays below every property
@@ -44,7 +49,7 @@ impl<'source> Parser<'source> {
                 self.emit_instruction(Instruction::ToPropKey)?;
                 self.expect_punctuator(Punctuator::RightBracket)?;
                 if self.is_punctuator(Punctuator::LeftParen) {
-                    self.parse_object_method_definition(property_span)?;
+                    self.parse_object_method_definition(property_span, DefineMethodKind::Method)?;
                     self.emit_instruction(Instruction::DefineMethodComputed {
                         kind: DefineMethodKind::Method,
                         enumerable: true,
@@ -132,7 +137,7 @@ impl<'source> Parser<'source> {
                         && (prefix != "async" || !self.current().line_terminator_before)
                 });
                 if self.is_punctuator(Punctuator::LeftParen) {
-                    self.parse_object_method_definition(token.span)?;
+                    self.parse_object_method_definition(token.span, DefineMethodKind::Method)?;
                     let key_constant =
                         self.add_constant(IrConstant::Primitive(Value::String(key)))?;
                     self.emit_instruction(Instruction::DefineMethod {
@@ -142,14 +147,40 @@ impl<'source> Parser<'source> {
                     })?;
                     self.anonymous_function_definition = None;
                 } else if is_method_prefix {
-                    return Err(Error::unsupported(
-                        if method_prefix.as_deref() == Some("async") {
-                            "async object literal methods are not implemented yet"
-                        } else {
-                            "object literal accessors are not implemented yet"
-                        },
-                        source_span(token.span),
-                    ));
+                    let method_prefix = method_prefix
+                        .as_deref()
+                        .ok_or_else(|| Error::internal("object method prefix disappeared"))?;
+                    if method_prefix == "async" {
+                        return Err(Error::unsupported(
+                            "async object literal methods are not implemented yet",
+                            source_span(token.span),
+                        ));
+                    }
+                    let method_kind = if method_prefix == "get" {
+                        DefineMethodKind::Getter
+                    } else {
+                        DefineMethodKind::Setter
+                    };
+                    let property_key = self.parse_object_method_property_name()?;
+                    self.parse_object_method_definition(token.span, method_kind)?;
+                    match property_key {
+                        ObjectMethodPropertyKey::Fixed(key) => {
+                            let key_constant =
+                                self.add_constant(IrConstant::Primitive(Value::String(key)))?;
+                            self.emit_instruction(Instruction::DefineMethod {
+                                key: key_constant,
+                                kind: method_kind,
+                                enumerable: true,
+                            })?;
+                        }
+                        ObjectMethodPropertyKey::Computed => {
+                            self.emit_instruction(Instruction::DefineMethodComputed {
+                                kind: method_kind,
+                                enumerable: true,
+                            })?;
+                        }
+                    }
+                    self.anonymous_function_definition = None;
                 } else if self.is_punctuator(Punctuator::Colon) {
                     self.advance_expression_start()?;
                     self.parse_assignment_allow_in()?;
@@ -196,5 +227,64 @@ impl<'source> Parser<'source> {
         self.expect_punctuator(Punctuator::RightBrace)?;
         self.anonymous_function_definition = None;
         Ok(())
+    }
+
+    /// Parse the property name following contextual `get` or `set`. QuickJS
+    /// evaluates and canonicalizes a computed key before creating the accessor
+    /// closure, so the typed stack retains that key until DefineMethodComputed.
+    fn parse_object_method_property_name(&mut self) -> Result<ObjectMethodPropertyKey, Error> {
+        let token = self.current().clone();
+        let key = match token.kind {
+            TokenKind::Identifier(identifier) => {
+                self.advance()?;
+                JsString::try_from_utf8(&identifier.value)?
+            }
+            TokenKind::Keyword(keyword) => {
+                self.advance()?;
+                JsString::from_static(keyword.as_str())
+            }
+            TokenKind::String(string) => {
+                if self.current_ir().strict && string.has_legacy_octal_escape {
+                    return Err(Error::syntax(
+                        "legacy octal escapes are forbidden in strict mode",
+                        source_span(token.span),
+                    ));
+                }
+                self.advance()?;
+                JsString::try_from_utf16(string.value.utf16)?
+            }
+            TokenKind::Number(number) => {
+                if self.current_ir().strict
+                    && matches!(
+                        number.kind,
+                        NumberKind::LegacyOctal | NumberKind::LegacyDecimal
+                    )
+                {
+                    return Err(Error::syntax(
+                        "legacy leading-zero numeric literals are forbidden in strict mode",
+                        source_span(token.span),
+                    ));
+                }
+                self.advance()?;
+                parse_number(&number)
+                    .map_err(|message| Error::syntax(message, source_span(token.span)))?
+                    .to_js_string()?
+            }
+            TokenKind::Punctuator(Punctuator::LeftBracket) => {
+                self.advance_expression_start()?;
+                self.parse_assignment_allow_in()?;
+                self.emit_instruction(Instruction::ToPropKey)?;
+                self.expect_punctuator(Punctuator::RightBracket)?;
+                return Ok(ObjectMethodPropertyKey::Computed);
+            }
+            TokenKind::PrivateIdentifier(_) => {
+                return Err(Error::syntax(
+                    "private identifiers are not valid in object literals",
+                    source_span(token.span),
+                ));
+            }
+            _ => return Err(self.syntax_here("invalid property name")),
+        };
+        Ok(ObjectMethodPropertyKey::Fixed(key))
     }
 }

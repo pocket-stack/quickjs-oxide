@@ -7447,6 +7447,66 @@ fn object_literal_methods_lower_fixed_and_computed_non_constructors() {
 }
 
 #[test]
+fn object_literal_accessors_lower_fixed_and_computed_zero_one_arity_functions() {
+    let script = compile_unlinked_script(
+        "({get fixed(){return this},set fixed(value,){this.value=value},get ['computed'](){return arguments.length},set [1](value){return typeof new.target}})",
+    )
+    .expect("object literal accessors compile");
+
+    let mut fixed_kinds = Vec::new();
+    let mut computed_kinds = Vec::new();
+    for instruction in script.code() {
+        match instruction {
+            Instruction::DefineMethod {
+                kind, enumerable, ..
+            } => {
+                assert!(*enumerable);
+                fixed_kinds.push(*kind);
+            }
+            Instruction::DefineMethodComputed { kind, enumerable } => {
+                assert!(*enumerable);
+                computed_kinds.push(*kind);
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        fixed_kinds,
+        [DefineMethodKind::Getter, DefineMethodKind::Setter]
+    );
+    assert_eq!(
+        computed_kinds,
+        [DefineMethodKind::Getter, DefineMethodKind::Setter]
+    );
+    assert_eq!(
+        script
+            .code()
+            .iter()
+            .filter(|instruction| matches!(instruction, Instruction::ToPropKey))
+            .count(),
+        2
+    );
+
+    let accessors = script
+        .constants()
+        .iter()
+        .filter_map(|constant| constant.as_child())
+        .collect::<Vec<_>>();
+    assert_eq!(accessors.len(), 4);
+    assert_eq!(
+        accessors
+            .iter()
+            .map(|accessor| accessor.metadata().argument_count)
+            .collect::<Vec<_>>(),
+        [0, 1, 0, 1]
+    );
+    for accessor in accessors {
+        assert!(!accessor.metadata().has_prototype);
+        assert_eq!(accessor.metadata().constructor_kind, ConstructorKind::None);
+    }
+}
+
+#[test]
 fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
     for source in [
         "({})",
@@ -7460,19 +7520,33 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
         "({get(){}})",
         "({set(value){}})",
         "({[1](){}})",
+        "({get a(){}})",
+        "({set a(value){}})",
+        "({get ['a'](){}})",
+        "({set [1](value,){}})",
+        "({get get(){}})",
+        "({set set(value){}})",
+        "({get\nlineBreak(){},set\nlineBreak(value){}})",
+        "({g\\u0065t(){},s\\u0065t(value){}})",
     ] {
         compile_unlinked_script(source)
             .unwrap_or_else(|error| panic!("valid Object literal {source:?}: {error}"));
     }
 
     for source in [
-        "({get a(){}})",
-        "({set a(v){}})",
         "({*a(){}})",
         "({async a(){}})",
         "({a(...rest){}})",
         "({a(value=1){}})",
         "({a({value}){}})",
+        "({set a(value=1){}})",
+        "({set a({value}){}})",
+        "({get a(value=1){}})",
+        "({get a({value}){}})",
+        "({set a(left=1,right){}})",
+        "({set a({left},right){}})",
+        "({set a([left],right){}})",
+        "({get a(){return super.a}})",
     ] {
         assert!(
             compile_unlinked_script(source)
@@ -7480,6 +7554,27 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
                 .message()
                 .contains("not implemented yet"),
             "method frontier was not explicit for {source}"
+        );
+    }
+    for source in [
+        "({get a(value){}})",
+        "({get a(...rest){}})",
+        "({set a(){}})",
+        "({set a(...rest){}})",
+        "({set a(left,right){}})",
+        "({set a(value,value){}})",
+    ] {
+        assert_eq!(
+            compile_unlinked_script(source).unwrap_err().message(),
+            "invalid number of arguments for getter or setter",
+            "accessor arity did not match QuickJS for {source}"
+        );
+    }
+    for source in ["({get a(1){}})", "({set a(1,2){}})"] {
+        assert_eq!(
+            compile_unlinked_script(source).unwrap_err().message(),
+            "missing formal parameter",
+            "malformed parameters must fail before the accessor arity check for {source}"
         );
     }
     assert_eq!(

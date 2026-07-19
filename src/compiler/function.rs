@@ -3,6 +3,7 @@ use super::{
     IdentifierContext, IrConstant, IrOp, MAX_LOCAL_VARIABLES, ParentLink, Parser, Punctuator,
     SourceOffset, Span, TokenKind, source_offset, source_span, validate_identifier,
 };
+use crate::bytecode::DefineMethodKind;
 
 pub(super) struct ParsedFunctionDefinition {
     pub(super) constant: u32,
@@ -21,6 +22,8 @@ struct FunctionDefinitionOptions {
     private_name_binding: bool,
     reject_duplicate_parameters: bool,
     allow_trailing_parameter_comma: bool,
+    object_method_kind: Option<DefineMethodKind>,
+    accessor_parameter_count: Option<usize>,
 }
 
 impl FunctionDefinitionOptions {
@@ -30,17 +33,28 @@ impl FunctionDefinitionOptions {
             private_name_binding,
             reject_duplicate_parameters: false,
             allow_trailing_parameter_comma: false,
+            object_method_kind: None,
+            accessor_parameter_count: None,
         }
     }
 
-    const METHOD: Self = Self {
-        kind: FunctionKind::Method,
-        private_name_binding: false,
-        // QuickJS applies the method-specific UniqueFormalParameters early
-        // error even when the surrounding source and method body are sloppy.
-        reject_duplicate_parameters: true,
-        allow_trailing_parameter_comma: true,
-    };
+    const fn object_method(method_kind: DefineMethodKind) -> Self {
+        Self {
+            kind: FunctionKind::Method,
+            private_name_binding: false,
+            // QuickJS applies the ordinary-method UniqueFormalParameters early
+            // error even when the surrounding source and body are sloppy.
+            // Accessors first enforce their zero/one-parameter arity.
+            reject_duplicate_parameters: matches!(method_kind, DefineMethodKind::Method),
+            allow_trailing_parameter_comma: true,
+            object_method_kind: Some(method_kind),
+            accessor_parameter_count: match method_kind {
+                DefineMethodKind::Method => None,
+                DefineMethodKind::Getter => Some(0),
+                DefineMethodKind::Setter => Some(1),
+            },
+        }
+    }
 }
 
 impl<'source> Parser<'source> {
@@ -95,20 +109,21 @@ impl<'source> Parser<'source> {
         )
     }
 
-    /// Parse a synchronous object-literal concise method after its property
-    /// name has been consumed. Unlike a named function expression, the
-    /// property key is only the eventual public `.name`; it must never create
-    /// a private self binding inside the method body.
+    /// Parse a synchronous object-literal method or accessor after its property
+    /// name has been consumed. Unlike a named function expression, the property
+    /// key is only the eventual public `.name`; it must never create a private
+    /// self binding inside the function body.
     pub(super) fn parse_object_method_definition(
         &mut self,
         function_span: Span,
+        method_kind: DefineMethodKind,
     ) -> Result<(), Error> {
         let parsed = self.parse_function_definition_tail_with_options(
             FunctionDefinitionHeader {
                 span: function_span,
                 name: None,
             },
-            FunctionDefinitionOptions::METHOD,
+            FunctionDefinitionOptions::object_method(method_kind),
         )?;
         self.emit(IrOp::MakeClosure(parsed.constant))?;
         self.anonymous_function_definition = None;
@@ -128,21 +143,35 @@ impl<'source> Parser<'source> {
 
         let mut parameters = Vec::new();
         let mut parameter_tokens = Vec::new();
-        if !self.consume_punctuator(Punctuator::RightParen)? {
+        let mut parameter_list_end_span = self.current().span;
+        if self.is_punctuator(Punctuator::RightParen) {
+            self.advance()?;
+        } else {
             loop {
-                if options.kind == FunctionKind::Method {
+                if let Some(method_kind) = options.object_method_kind {
+                    let role = match method_kind {
+                        DefineMethodKind::Method => "object method",
+                        DefineMethodKind::Getter => "object getter",
+                        DefineMethodKind::Setter => "object setter",
+                    };
                     if self.is_punctuator(Punctuator::Ellipsis) {
-                        return Err(self.unsupported_here(
-                            "object method rest parameters are not implemented yet",
-                        ));
+                        if !matches!(method_kind, DefineMethodKind::Method) {
+                            return Err(Error::syntax(
+                                "invalid number of arguments for getter or setter",
+                                source_span(self.current().span),
+                            ));
+                        }
+                        return Err(self.unsupported_here(format!(
+                            "{role} rest parameters are not implemented yet"
+                        )));
                     }
                     if matches!(
                         self.current().kind,
                         TokenKind::Punctuator(Punctuator::LeftBracket | Punctuator::LeftBrace)
                     ) {
-                        return Err(self.unsupported_here(
-                            "object method destructuring parameters are not implemented yet",
-                        ));
+                        return Err(self.unsupported_here(format!(
+                            "{role} destructuring parameters are not implemented yet"
+                        )));
                     }
                 }
                 let token = self.current().clone();
@@ -163,22 +192,32 @@ impl<'source> Parser<'source> {
                         .with_span(source_span(token.span)));
                 }
                 self.advance()?;
-                if options.kind == FunctionKind::Method && self.is_punctuator(Punctuator::Equal) {
-                    return Err(self.unsupported_here(
-                        "object method default parameters are not implemented yet",
-                    ));
+                if let Some(method_kind) = options.object_method_kind {
+                    if self.is_punctuator(Punctuator::Equal) {
+                        let role = match method_kind {
+                            DefineMethodKind::Method => "object method",
+                            DefineMethodKind::Getter => "object getter",
+                            DefineMethodKind::Setter => "object setter",
+                        };
+                        return Err(self.unsupported_here(format!(
+                            "{role} default parameters are not implemented yet"
+                        )));
+                    }
                 }
                 if !self.consume_punctuator(Punctuator::Comma)? {
-                    if !self.consume_punctuator(Punctuator::RightParen)? {
+                    if !self.is_punctuator(Punctuator::RightParen) {
                         return Err(Error::syntax(
                             "expecting ','",
                             source_span(self.current().span),
                         ));
                     }
+                    parameter_list_end_span = self.current().span;
+                    self.advance()?;
                     break;
                 }
                 if self.is_punctuator(Punctuator::RightParen) {
                     if options.allow_trailing_parameter_comma {
+                        parameter_list_end_span = self.current().span;
                         self.advance()?;
                         break;
                     }
@@ -187,6 +226,15 @@ impl<'source> Parser<'source> {
                     ));
                 }
             }
+        }
+        if options
+            .accessor_parameter_count
+            .is_some_and(|expected| parameters.len() != expected)
+        {
+            return Err(Error::syntax(
+                "invalid number of arguments for getter or setter",
+                source_span(parameter_list_end_span),
+            ));
         }
         self.expect_punctuator(Punctuator::LeftBrace)?;
 
