@@ -3,6 +3,29 @@
 use super::*;
 
 impl Runtime {
+    /// Conservatively reject another recursive bytecode entry before Rust's
+    /// fixed host thread stack is exhausted.
+    ///
+    /// QuickJS checks the platform stack pointer at both native and bytecode
+    /// call boundaries. Stable Rust cannot perform that pointer arithmetic in
+    /// this `unsafe`-free runtime, so the recursive interpreter temporarily
+    /// needs a deterministic frame ceiling. Nineteen active bytecode frames
+    /// are the proven-safe boundary on the explicit 2 MiB regression stack:
+    /// it preserves the finite Object.hasOwn coercion vector while rejecting
+    /// the next mixed bytecode/native reentry with room to allocate its error.
+    pub(super) fn bytecode_call_would_overflow(&self) -> bool {
+        const MAX_ACTIVE_BYTECODE_FRAMES: usize = 19;
+
+        self.0
+            .state
+            .borrow()
+            .active_frames
+            .iter()
+            .filter(|frame| matches!(frame.kind, ActiveFrameKind::Bytecode { .. }))
+            .count()
+            >= MAX_ACTIVE_BYTECODE_FRAMES
+    }
+
     pub(super) fn native_call_would_overflow(&self, target: NativeFunctionId) -> bool {
         // Ordinary Function.prototype.call entries are tail-forwarded by
         // `call_internal`: each logical frame consumes one argument and no
@@ -260,5 +283,54 @@ impl Runtime {
             })
             .count()
             >= limit
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn on_two_mib_stack(test: impl FnOnce() + Send + 'static) {
+        std::thread::Builder::new()
+            .name("bytecode-recursion-guard".to_owned())
+            .stack_size(2 * 1024 * 1024)
+            .spawn(test)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn recursive_bytecode_calls_and_constructors_throw_before_host_stack_overflow() {
+        on_two_mib_stack(|| {
+            let runtime = Runtime::new();
+            let mut context = runtime.new_context();
+            let value = context
+                .eval(
+                    r#"(function(){
+                        function recurse(depth){
+                            return depth===0?42:recurse(depth-1)
+                        }
+                        function Constructor(depth){
+                            if(depth!==0)new Constructor(depth-1)
+                        }
+                        var finite=recurse(8);
+                        var callError,constructError;
+                        try{recurse(1000);callError="missing"}
+                        catch(error){callError=error.name+":"+error.message}
+                        try{new Constructor(1000);constructError="missing"}
+                        catch(error){constructError=error.name+":"+error.message}
+                        return finite+"|"+callError+"|"+constructError
+                    })()"#,
+                )
+                .unwrap();
+            assert_eq!(
+                value,
+                Value::String(JsString::from_static(
+                    "42|InternalError:stack overflow|InternalError:stack overflow"
+                )),
+            );
+            assert_eq!(context.eval("1+1").unwrap(), Value::Int(2));
+        });
     }
 }

@@ -1170,6 +1170,13 @@ impl Runtime {
         bytecode: FunctionBytecodeRef,
         closure_slots: Vec<VarRefRoot>,
     ) -> Result<Completion, RuntimeError> {
+        if self.bytecode_call_would_overflow() {
+            return Ok(Completion::Throw(self.new_native_error(
+                caller_realm,
+                NativeErrorKind::Internal,
+                "stack overflow",
+            )?));
+        }
         let PublishedFunctionSnapshot {
             root,
             code,

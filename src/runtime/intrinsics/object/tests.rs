@@ -511,11 +511,15 @@ fn object_has_own_autoinit_preserves_pinned_metadata_and_presence_is_non_materia
 
 #[test]
 fn recursive_object_has_own_key_conversion_is_guarded_and_runtime_recovers() {
-    let runtime = Runtime::new();
-    let mut context = runtime.new_context();
-    context
-        .eval(
-            r#"function objectHasOwnRecurse(depth){
+    std::thread::Builder::new()
+        .name("object-has-own-recursion".to_owned())
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = Runtime::new();
+            let mut context = runtime.new_context();
+            context
+                .eval(
+                    r#"function objectHasOwnRecurse(depth){
                     var key=Object();
                     key[Symbol.toPrimitive]=function(){
                         if(depth!==0)objectHasOwnRecurse(depth-1);
@@ -524,29 +528,33 @@ fn recursive_object_has_own_key_conversion_is_guarded_and_runtime_recovers() {
                     var target=Object();target.x=1;
                     return Object.hasOwn(target,key);
                 }"#,
-        )
-        .unwrap();
+                )
+                .unwrap();
 
-    assert_eq!(
-        context.eval("objectHasOwnRecurse(8)").unwrap(),
-        Value::Bool(true),
-    );
-    for depth in [9, 10, 11] {
-        let value = context
-            .eval(&format!(
-                r#"(function(){{
+            assert_eq!(
+                context.eval("objectHasOwnRecurse(8)").unwrap(),
+                Value::Bool(true),
+            );
+            for depth in [9, 10, 11] {
+                let value = context
+                    .eval(&format!(
+                        r#"(function(){{
                     try{{objectHasOwnRecurse({depth});return "missing"}}
                     catch(error){{return error.name+":"+error.message}}
                 }})()"#,
-            ))
-            .unwrap();
-        assert_eq!(
-            value,
-            Value::String(JsString::from_static("InternalError:stack overflow")),
-            "Object.hasOwn recursion depth {depth}",
-        );
-    }
-    assert_eq!(context.eval("1+1").unwrap(), Value::Int(2));
+                    ))
+                    .unwrap();
+                assert_eq!(
+                    value,
+                    Value::String(JsString::from_static("InternalError:stack overflow")),
+                    "Object.hasOwn recursion depth {depth}",
+                );
+            }
+            assert_eq!(context.eval("1+1").unwrap(), Value::Int(2));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]
