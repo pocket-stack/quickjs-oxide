@@ -10,7 +10,7 @@ differentials still decide exact behavior inside each implemented slice.
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
 - quickjs-oxide capability profile SHA-256:
-  `5c3c11f7c7c81fd54b706d6d50b5f28f6dddbd915c7b3543af9e5e6b5fb08aae`
+  `e2043efeaa2d8b4420d0c82550f7ba42d53588897ec14ac87f6f03c4358a8218`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -50,32 +50,32 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 30,254 pass;
+- 31,459 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 50,493 are classified as unsupported feature, mode, host capability, parser
+- 49,288 are classified as unsupported feature, mode, host capability, parser
   frontier, harness frontier, or unaudited negative-test provenance;
 - 398 fail to parse, 2,296 fail at runtime, 117 fail in the harness, and four
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 35,424 variants to execution. That count includes variants
+The runner admitted 36,766 variants to execution. That count includes variants
 which then report a typed parser or harness frontier rather than an observed
 non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 29.65% (`30,254 / 102,037`);
-- conservative target-scope lower bound: 36.21%
-  (`30,254 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 91.49%
-  (`30,254 / 33,069`).
+- raw suite pass rate: 30.83% (`31,459 / 102,037`);
+- conservative target-scope lower bound: 37.65%
+  (`31,459 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 91.79%
+  (`31,459 / 34,274`).
 
-The 36.21% figure is the useful whole-project progress floor, not a claim that
-the engine is 36.21% conformant. The 91.49% conditional rate measures quality
+The 37.65% figure is the useful whole-project progress floor, not a claim that
+the engine is 37.65% conformant. The 91.79% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion; R1u also demonstrates that this conditional rate can rise when
 previously ambiguous failures move to a more honest typed unsupported class.
-The capability profile currently admits 31 reviewed Test262
-feature tags and 308 reviewed negative-test paths; all other feature-tagged or
+The capability profile currently admits 53 reviewed Test262
+feature tags and 403 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
 lands can only make the measurement more representative. Focused QuickJS
 differential tests remain the semantic judge.
@@ -88,9 +88,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`c28acb10ae63e46e8aad1372f679c3be3b283322c2f690e0296bf0a77e243345`
+`7e05dd58a0387d8639d09b3896917ad38fd8fd8fdecef85a3f0bcd26f730a22a`
 and
-`e82fbff1bdd49b300ea561d7ad21b9c3d62ed4d640f7080c3375bc9044bf32f9`.
+`c9faabfd53bd125b3f7e4f3f6cbce884e0ce3172de320a1056398de60aa73ab6`.
 
 ## Milestone policy
 
@@ -1164,6 +1164,47 @@ case. The final join has zero previous-pass regressions, 30,254 passes and
 `c28acb10ae63e46e8aad1372f679c3be3b283322c2f690e0296bf0a77e243345`
 and
 `e82fbff1bdd49b300ea561d7ad21b9c3d62ed4d640f7080c3375bc9044bf32f9`.
+
+## R2e capability-profile truth-up
+
+R2e first audits already-implemented surface area before adding another grammar
+slice. Direct single-variant runs in quickjs-oxide and the pinned QuickJS
+2026-06-04 oracle prove 22 feature cohorts that the conservative profile had
+continued to reject:
+
+- `Array.prototype.at`, `Array.prototype.includes`, `array-find-from-last`;
+- `Object.fromEntries`, `Object.hasOwn`;
+- `String.fromCodePoint`, `String.prototype.includes`,
+  `String.prototype.isWellFormed`, `String.prototype.toWellFormed`,
+  `String.prototype.trimEnd`, `String.prototype.trimStart`, `string-trimming`;
+- `__getter__`, `__setter__`;
+- `coalesce-expression`, `logical-assignment-operators`, `new.target`,
+  `numeric-separator-literal`, `object-spread`;
+- `const`, `let`, `optional-catch-binding`.
+
+The same audit admits 95 exact negative-test paths only after both engines
+produce the expected phase and error type. The runner also re-reads those paths
+from the pinned suite and rejects the profile if any no longer carries negative
+metadata. Together these additions move the profile from 31/308 to 53 reviewed
+feature tags and 403 audited negative paths, with SHA-256
+`e2043efeaa2d8b4420d0c82550f7ba42d53588897ec14ac87f6f03c4358a8218`.
+No engine semantic code changes in this step.
+
+All 28 focused, non-full Test262 gates preserve their existing key sets,
+runnable counts, pass counts and outcome summaries. The 26 metadata baselines
+and four direct TSV/JSONL baselines are regenerated only because the canonical
+report header embeds the capability-profile hash.
+
+The complete 102,037-key join admits 1,342 more variants and reaches 31,459
+passes: 1,205 rows move from `unsupported-feature` to pass and 137 move to an
+existing typed parser frontier. Another 507 rows retain their outcome while
+their unsupported-feature detail loses one or more newly reviewed tags. The
+join has no missing, extra, duplicate, or previous-pass rows, and all 1,849
+complete-row changes carry at least one of the 22 new tags. Runnable jobs rise
+from 35,424 to 36,766. Full TSV/JSONL SHA-256 values are
+`7e05dd58a0387d8639d09b3896917ad38fd8fd8fdecef85a3f0bcd26f730a22a`
+and
+`c9faabfd53bd125b3f7e4f3f6cbce884e0ce3172de320a1056398de60aa73ab6`.
 
 ## Runner contract
 

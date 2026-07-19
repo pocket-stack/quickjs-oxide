@@ -10,13 +10,13 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 31 reviewed feature tags and 308 exact audited
+  capability profile now admits 53 reviewed feature tags and 403 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 30,254 passes: 29.65% raw, a 36.21% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 91.49% among the 33,069 variants with a
+  has 31,459 passes: 30.83% raw, a 37.65% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 91.79% among the 34,274 variants with a
   non-unsupported observed outcome. The fixed smoke remains 189
   passes and four explicit parser-frontier results. See `docs/test262.md` for
   the denominators and why none of these figures is a parity claim. The first
@@ -315,6 +315,29 @@ claim full parity.
   `c28acb10ae63e46e8aad1372f679c3be3b283322c2f690e0296bf0a77e243345`
   and
   `e82fbff1bdd49b300ea561d7ad21b9c3d62ed4d640f7080c3375bc9044bf32f9`.
+
+  R2e begins with a capability-profile truth-up rather than an engine semantic
+  change. A path-by-path Rust and pinned-QuickJS audit found 22 already
+  implemented Test262 feature tags that the fail-closed profile still hid, and
+  95 already-correct negative tests whose exact phase/type provenance had not
+  yet been admitted. The profile now contains 53 feature tags and 403 exact
+  negative paths with SHA-256
+  `e2043efeaa2d8b4420d0c82550f7ba42d53588897ec14ac87f6f03c4358a8218`.
+  The runner contract independently fixes those sets in Rust and validates
+  every negative path against the pinned suite metadata. All 28 non-full
+  Test262 gates retain their prior keys, runnable counts, pass counts and
+  outcome summaries; their 30 checked-in report artifacts change only for the
+  current profile metadata and the resulting report hashes. This inventory
+  milestone changes no lexer, compiler, VM or intrinsic implementation. The
+  complete 102,037-key join admits 1,342 more jobs and reaches 31,459 passes:
+  1,205 rows move from `unsupported-feature` to pass and 137 move to an
+  existing typed parser frontier. Another 507 rows change only their remaining
+  unsupported-feature detail. All 1,849 changed rows carry one of the 22 newly
+  reviewed tags, and there are zero previous-pass regressions, missing, extra,
+  or duplicate keys. The 36,766 runnable jobs have TSV/JSONL SHA-256
+  `7e05dd58a0387d8639d09b3896917ad38fd8fd8fdecef85a3f0bcd26f730a22a`
+  and
+  `c9faabfd53bd125b3f7e4f3f6cbce884e0ce3172de320a1056398de60aa73ab6`.
 
   This is not the complete Arrow grammar. Async Arrow, default/rest/
   destructuring parameters, class/`super`, and method/accessor adjacency stay
@@ -3278,8 +3301,9 @@ identifier-resolution events or entry-prefix ordering. R2d-2c moves the
 `compiler/function.rs`; the parser bodies are unchanged and `compiler.rs` now
 stands at 11,842 lines. Further production phase splits remain required before
 another broad grammar slice.
-The complete 102,037-variant Test262 report remains byte-for-byte identical to
-the R2c hashes above at 30,254 passes.
+At the R2d-2c landing, the complete 102,037-variant Test262 report remained
+byte-for-byte identical to the R2c hashes above at 30,254 passes; the subsequent
+R2e profile truth-up changes only selection and classified report metadata.
 The
 RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
