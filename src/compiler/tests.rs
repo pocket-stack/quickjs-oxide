@@ -906,19 +906,20 @@ fn lexical_parser_matches_redefinition_priority_contextual_let_and_boundaries() 
         Value::Int(3)
     );
 
-    for source in [
-        "(function(){let [[item]]=[[1]]})",
-        "(function(){{let [[item]]=[[1]]}})",
-        "(function(){switch(0){case 0:let [[item]]=[[1]]}})",
-    ] {
-        let error = compile_unlinked_script(source).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Unsupported, "{source}");
-        assert_eq!(
-            error.message(),
-            "nested destructuring bindings are not implemented yet",
-            "{source}"
-        );
-    }
+    assert_eq!(
+        evaluate_in_context("(function(){let [[item]]=[[1]];return item})()"),
+        Value::Int(1)
+    );
+    assert_eq!(
+        evaluate_in_context("(function(){{let [[item]=[2]]=[];return item}})()"),
+        Value::Int(2)
+    );
+    assert_eq!(
+        evaluate_in_context(
+            "(function(){switch(0){case 0:let [...[first,second]]=[3,4];return first+second}})()"
+        ),
+        Value::Int(7)
+    );
     assert_eq!(
         evaluate_in_context("(function(){{let nested=1;return nested}})()"),
         Value::Int(1)

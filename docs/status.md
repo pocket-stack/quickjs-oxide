@@ -15,9 +15,9 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 34,878 passes and 38,421 runnable variants: 34.18% raw, a 41.74% lower
+  has 34,880 passes and 38,421 runnable variants: 34.18% raw, a 41.74% lower
   bound after the 18,475 pinned QuickJS target exclusions, or 94.10% among the
-  37,066 variants with a non-unsupported observed outcome. The fixed smoke now
+  37,068 variants with a non-unsupported observed outcome. The fixed smoke now
   has 191 passes and two explicit parser-frontier results. See
   `docs/test262.md` for the denominators and why none of these figures is a
   parity claim. The first
@@ -817,6 +817,36 @@ claim full parity.
   `bc9e6f71acbad459fabfcd2838c691cf318a781dea3dc2239161eced7c065c2f`
   and
   `b0b99d49bec652fa0b686a8d9af4296a5b156db6fec849c56168fb1dc41e6b7e`.
+
+  R2r extends that shared lowering to recursively nested ArrayBindingPatterns
+  across direct `var`/`let`/`const`, classic `for`, and synchronous
+  `for-in`/`for-of` declarations. Nested defaults, terminal rest patterns,
+  elisions, and abrupt completion share the existing iterator-region path,
+  including `IteratorClose` for every active iterator. Dynamic `with`
+  References, whole-pattern AllowIn in classic-for initializers, and QuickJS
+  malformed-pattern error priority remain pinned by differential tests.
+
+  The dependency-audited R2r gate freezes 72 paths / 144 variants and passes
+  all 144. Its exact one-feature scoped profile has SHA-256
+  `c770387473b6ba2e273ab635182b5f07ae80ad902f48057ba5e2fb4f036c723e`.
+  Normalized-manifest/manifest-file/key-set/TSV/JSONL hashes are
+  `84d3c39bb9dcc81f16d92e8b30045a7b5c5d8c2fa6b24151a849633ae087d269`,
+  `f7c7c181cdde65c84dfcb677cbe45f77884990666a774f952bc165df89f5e8a5`,
+  `a95c253cbdaf997e9b6d4ed38a48c63e4ffc7400204137c5f4fdd693a815ca7f`,
+  `39abfe594755acdeb26375bce7c173544bc9404ad5e96b7c6c4b0dd3f48b1c89`,
+  and
+  `d4f25a4495c080fd36c237077f323e9686a99b7b9dfdf192c93c18643467f187`.
+  The exact R2q/R2r full join keeps all 102,037 keys and changes only the two
+  sloppy/strict variants of
+  `staging/sm/regress/regress-469625-03.js` from
+  `unsupported-parser` to pass. There are zero previous-pass regressions or
+  other outcome changes. Passes reach 34,880, runnable variants remain 38,421,
+  and typed parser frontiers fall to 1,202. Full TSV/JSONL hashes are
+  `10704652e6a0f24369203c0830bf8e70c7cf3ecd6e158823ee70dc5130d91214`
+  and
+  `53590c254bbb591279dc86b4bb8c668dd5f84098fb8eaa0410318e6f42e924d8`.
+  Fixed/computed object binding properties are the next split; object rest
+  additionally needs exclusion-aware `CopyDataProperties`.
 
   Parameter initializers and other non-simple parameters, classes/derived
   construction, and async/generator method/accessor forms stay typed frontiers.
@@ -3943,11 +3973,12 @@ independently branded Set/SetIterator payloads, ordered records, roots, and atom
 lifetimes; that heap monolith remains explicit split debt even though Set did
 not fold its algorithms back into the runtime facade.
 R2p adds no production code. R2q keeps the runtime facade at 9,822 lines and
-moves the shared flat-array binding lowering into the new 418-line
-`compiler/destructuring.rs`; `compiler.rs` is 11,838 lines. Ordinary
-declarations and synchronous iteration heads now use that same bounded owner,
-so the feature does not duplicate binding logic or resume runtime-monolith
-growth.
+moves the shared flat-array binding lowering into the new
+`compiler/destructuring.rs`; `compiler.rs` is 11,838 lines. R2r keeps both
+facades unchanged and grows that bounded owner from 418 to 568 lines for the
+recursive array path. Ordinary declarations and synchronous iteration heads
+use the same owner, so the feature does not duplicate binding logic or resume
+runtime-monolith growth.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -4203,6 +4234,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-set.sh
 ./scripts/test-test262-symbol-protocols.sh
 ./scripts/test-test262-array-binding-flat.sh
+./scripts/test-test262-array-binding-nested.sh
 ./scripts/test-test262-full.sh
 ```
 

@@ -68,6 +68,10 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "(function(){var s='';for(const [a,b,] in {ab:1,cd:2})s+=a+b;return s})()",
     ),
     (
+        "for-of recursively nested array bindings receive fresh lexical cells",
+        "(function(){var first,second,i=0;for(const [[value]=[0]] of [[[40]],[]]){if(i++===0)first=function(){return value};else second=function(){return value}}return first()+'|'+second()})()",
+    ),
+    (
         "nested for-of values",
         "(function(){var s='';for(var a of 'ab')for(var b of '12')s+=a+b;return s})()",
     ),
@@ -242,6 +246,10 @@ const ARRAY_BINDING_CASES: &[(&str, &str)] = &[
         "(function(){var result='';for(let [x=0 in {}]=[];;){result+=x;break}for(var [y=1 in {1:2}]=[];;){result+='|'+y;break}return result})()",
     ),
     (
+        "classic for whole-pattern initializer restores the In grammar",
+        "(function(){var result;for(let [x]=1 in {1:1}?[42]:[0];(result=x,false);){}return result})()",
+    ),
+    (
         "block and switch declarations share the flat binding lowering",
         "(function(){var s='';{let [a]=[1];s+=a}switch(0){case 0:const [b]=[2];s+=b}return s})()",
     ),
@@ -282,6 +290,18 @@ const ARRAY_BINDING_CASES: &[(&str, &str)] = &[
         "(function(){var log='',outerDone=false;var inner={[Symbol.iterator]:function(){return this},next:function(){log+='n';return{value:undefined,done:false}},return:function(){log+='i';return{done:true}}};var outer={[Symbol.iterator]:function(){return this},next:function(){if(outerDone)return{done:true};outerDone=true;return{value:inner,done:false}},return:function(){log+='o';return{done:true}}};try{for(const [value=(log+='d',function(){throw 7})(),...rest] of outer){}}catch(e){return e+'|'+log}})()",
     ),
     (
+        "nested pattern default runs before inner acquisition and closes inner then outer",
+        "(function(){var log='',outerDone=false,innerDone=false;var outer={[Symbol.iterator]:function(){log+='O';return this},next:function(){log+='o';if(outerDone)return{done:true};outerDone=true;return{value:undefined,done:false}},return:function(){log+='R';return{done:true}}};var inner={[Symbol.iterator]:function(){log+='I';return this},next:function(){log+='i';if(innerDone)return{done:true};innerDone=true;return{value:1,done:false}},return:function(){log+='r';return{done:true}}};let [[a]=inner]=outer;return a+'|'+log})()",
+    ),
+    (
+        "nested normal close throw wins while the outer iterator still closes",
+        "(function(){var log='',outerDone=false;var inner={[Symbol.iterator]:function(){log+='I';return this},next:function(){log+='i';return{value:1,done:false}},return:function(){log+='r';throw 'inner-close'}};var outer={[Symbol.iterator]:function(){log+='O';return this},next:function(){log+='o';if(outerDone)return{done:true};outerDone=true;return{value:inner,done:false}},return:function(){log+='R';throw 'outer-close'}};try{let [[a]]=outer}catch(e){return e+'|'+log}})()",
+    ),
+    (
+        "nested next throw skips inner return but still closes the outer iterator",
+        "(function(){var log='',outerDone=false;var inner={[Symbol.iterator]:function(){log+='I';return this},next:function(){log+='i';throw 'inner-next'},return:function(){log+='r';return{done:true}}};var outer={[Symbol.iterator]:function(){log+='O';return this},next:function(){log+='o';if(outerDone)return{done:true};outerDone=true;return{value:inner,done:false}},return:function(){log+='R';throw 'outer-close'}};try{let [[a]]=outer}catch(e){return e+'|'+log}})()",
+    ),
+    (
         "empty pattern acquires and closes without stepping",
         "(function(){var log='';var iterable={[Symbol.iterator]:function(){log+='i';return{next:function(){log+='n';return{value:1,done:false}},return:function(){log+='r';return{done:true}}}}};const []=iterable;return log})()",
     ),
@@ -316,6 +336,10 @@ const ARRAY_BINDING_CASES: &[(&str, &str)] = &[
     (
         "var for-of binding prepares a with reference before inner step",
         "(function(){var value='outer',object={value:'object'},once=false;var iterable={[Symbol.iterator]:function(){return this},next:function(){if(once)return{done:true};once=true;delete object.value;return{value:7,done:false}},return:function(){return{done:true}}};with(object){for(var [value] of [iterable]){}}return value+'|'+object.value})()",
+    ),
+    (
+        "nested var binding prepares its with reference after inner acquisition and before step",
+        "(function(){var w={},x='outer';var inner={[Symbol.iterator]:function(){w.x='iter';return this},next:function(){delete w.x;return{value:7,done:false}},return:function(){return{done:true}}};with(w){var [[x]]=[inner]}return x+'|'+w.x})()",
     ),
 ];
 
@@ -394,6 +418,34 @@ const ARRAY_BINDING_SYNTAX_CASES: &[(&str, &str)] = &[
         "let cannot be a for-of array lexical binding name",
         "for(let [let] of [[]]){}",
     ),
+    (
+        "nested rest default wins before an invalid inner lexical name",
+        "let [...[let]=[]]=[[]]",
+    ),
+    (
+        "an array expression is not misclassified as a nested binding pattern",
+        "let [[value]+other]=[[1]]",
+    ),
+    (
+        "an object expression is not misclassified as a nested binding pattern",
+        "let [{value}+other]=[{}]",
+    ),
+    (
+        "an object expression nested in an array is not a binding pattern",
+        "let [[{value}+other]]=[[{}]]",
+    ),
+    (
+        "a for-of object expression is not a nested binding pattern",
+        "for(const [{value}+other] of [[{}]]){}",
+    ),
+    (
+        "nested object rest default wins before an invalid lexical leaf",
+        "let [...{let}=[]]=[{}]",
+    ),
+    (
+        "for-of nested object rest default wins before an invalid lexical leaf",
+        "for(const [...{let}=[]] of [[{}]]){}",
+    ),
 ];
 
 const STACK_CASES: &[(&str, &str)] = &[
@@ -404,6 +456,14 @@ const STACK_CASES: &[(&str, &str)] = &[
     (
         "flat lexical declaration close getter fault keeps the preceding marker",
         "(function outer(){var it={[Symbol.iterator]:function(){return this},next:function(){return{value:1,done:false}}};Object.defineProperty(it,'return',{get:function closeGetter(){throw new Error('close')}});const [x]=it})()",
+    ),
+    (
+        "nested iterator acquisition fault keeps the recursive pattern marker",
+        "(function outer(){var inner={[Symbol.iterator]:function acquire(){throw new Error('inner')}};let [[x]]=[inner]})()",
+    ),
+    (
+        "nested normal close fault keeps the recursive pattern marker",
+        "(function outer(){var inner={[Symbol.iterator]:function(){return this},next:function(){return{value:1,done:false}},return:function close(){throw new Error('close')}};let [[x]]=[inner]})()",
     ),
     (
         "body fault closes the iterator without replacing its origin",
@@ -564,8 +624,8 @@ fn remaining_for_in_of_destructuring_and_for_await_boundaries_remain_explicit() 
             "for-of destructuring bindings are not implemented yet",
         ),
         (
-            "for(const [[value]] of [[[1]]])value",
-            "for-of nested destructuring bindings are not implemented yet",
+            "for(const [{value}] of [[{value:1}]])value",
+            "for-of object destructuring bindings are not implemented yet",
         ),
         (
             "for await(var value of 'a')value",

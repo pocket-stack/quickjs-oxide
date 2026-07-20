@@ -50,9 +50,9 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 34,878 pass;
+- 34,880 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 46,496 are classified as unsupported because of a feature, mode, host
+- 46,494 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
 - 552 fail to parse, 1,495 fail at runtime, 135 fail in the harness, and six
@@ -64,11 +64,11 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 34.18% (`34,878 / 102,037`);
+- raw suite pass rate: 34.18% (`34,880 / 102,037`);
 - conservative target-scope lower bound: 41.74%
-  (`34,878 / (102,037 - 18,475)`);
+  (`34,880 / (102,037 - 18,475)`);
 - pass rate among variants with a non-unsupported observed outcome: 94.10%
-  (`34,878 / 37,066`).
+  (`34,880 / 37,068`).
 
 The 41.74% figure is the useful whole-project progress floor, not a claim that
 the engine is 41.74% conformant. The 94.10% conditional rate measures quality
@@ -91,9 +91,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`bc9e6f71acbad459fabfcd2838c691cf318a781dea3dc2239161eced7c065c2f`
+`10704652e6a0f24369203c0830bf8e70c7cf3ecd6e158823ee70dc5130d91214`
 and
-`b0b99d49bec652fa0b686a8d9af4296a5b156db6fec849c56168fb1dc41e6b7e`.
+`53590c254bbb591279dc86b4bb8c668dd5f84098fb8eaa0410318e6f42e924d8`.
 
 ## Milestone policy
 
@@ -1832,6 +1832,51 @@ and
 Wider declaration contexts and destructuring consumers must still land behind
 their own audited projections before the global capability boundary can move.
 
+## R2r recursive nested array binding declarations
+
+R2r extends the shared declaration lowering from flat identifier leaves to
+recursively nested ArrayBindingPatterns. The same path now handles direct
+`var`/`let`/`const` declarations, classic `for` declarations, and synchronous
+`for-in`/`for-of` declaration heads. Nested defaults, terminal rest patterns,
+elisions, and abrupt completion use the existing iterator-region machinery, so
+each active iterator receives QuickJS-compatible `IteratorClose` treatment.
+The lowering also preserves dynamic `with` References, restores AllowIn for a
+whole-pattern initializer in a classic-for NoIn head, and pins QuickJS error
+priority for malformed nested and rest patterns.
+
+The dependency-audited R2r gate freezes 72 paths / 144 sloppy/strict variants;
+all 144 are runnable and pass. Its runner-bound profile admits only
+`destructuring-binding`, so object patterns, destructuring assignment,
+parameters, catch bindings, async/generator contexts, and modules remain
+outside this claim. The scoped profile SHA-256 is
+`c770387473b6ba2e273ab635182b5f07ae80ad902f48057ba5e2fb4f036c723e`.
+Normalized-manifest, manifest-file, key-set, and empty non-pass SHA-256 values
+are
+`84d3c39bb9dcc81f16d92e8b30045a7b5c5d8c2fa6b24151a849633ae087d269`,
+`f7c7c181cdde65c84dfcb677cbe45f77884990666a774f952bc165df89f5e8a5`,
+`a95c253cbdaf997e9b6d4ed38a48c63e4ffc7400204137c5f4fdd693a815ca7f`,
+and
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+Focused TSV/JSONL hashes are
+`39abfe594755acdeb26375bce7c173544bc9404ad5e96b7c6c4b0dd3f48b1c89`
+and
+`d4f25a4495c080fd36c237077f323e9686a99b7b9dfdf192c93c18643467f187`.
+Reproduce the gate with `scripts/test-test262-array-binding-nested.sh`.
+
+The exact R2q/R2r full join retains all 102,037 unique keys and records only
+the sloppy and strict variants of `staging/sm/regress/regress-469625-03.js`
+moving from `unsupported-parser` to pass. There are no previous-pass
+regressions or other outcome changes. Passes therefore rise by two to 34,880,
+runnable variants remain 38,421, and typed parser frontiers fall from 1,204 to
+1,202. Full TSV/JSONL SHA-256 values are
+`10704652e6a0f24369203c0830bf8e70c7cf3ecd6e158823ee70dc5130d91214`
+and
+`53590c254bbb591279dc86b4bb8c668dd5f84098fb8eaa0410318e6f42e924d8`.
+
+Fixed/computed object binding properties are the next separable declaration
+slice. Object rest must additionally gain exclusion-aware
+`CopyDataProperties`; it is not implied by recursive array support.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -1910,6 +1955,7 @@ canonical progress report.
 ./scripts/test-test262-set.sh
 ./scripts/test-test262-symbol-protocols.sh
 ./scripts/test-test262-array-binding-flat.sh
+./scripts/test-test262-array-binding-nested.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -1979,6 +2025,11 @@ R2q implements flat array binding declarations, passes all 180 variants in its
 90-path scoped gate, and deliberately keeps `destructuring-binding` scoped.
 Untagged binding variants nevertheless add 31 full-vector passes with zero
 previous-pass regressions, bringing the complete vector to 34,878 passes.
+R2r adds recursive nested array declaration patterns across direct
+declarations, classic `for`, and synchronous `for-in`/`for-of`, passing all 144
+variants in its 72-path scoped gate. The two variants of
+`staging/sm/regress/regress-469625-03.js` move to pass with no other
+full-vector outcome change, bringing the complete vector to 34,880 passes.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

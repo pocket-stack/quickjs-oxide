@@ -92,6 +92,10 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "function body inside a NoIn initializer restores ordinary grammar",
         "(function(){var read;for(let initializer=(read=function(){let value='name' in Function;return value});false;){}return read();})()",
     ),
+    (
+        "classic for nested array binding supports a pattern default",
+        "(function(){let result;for(let [[value]=[42]]=[];(result=value,false);){}return result;})()",
+    ),
 ];
 
 const SCRIPT_VALUE_CASES: &[(&str, &str, &str)] = &[
@@ -200,9 +204,9 @@ struct BoundaryCase {
 }
 
 const BOUNDARY_CASES: &[BoundaryCase] = &[BoundaryCase {
-    description: "classic for lexical nested array destructuring",
-    source: "(function(){for(let [[value]]=[[1]];false;){}return 1;})()",
-    rust_message: "nested destructuring bindings are not implemented yet",
+    description: "classic for lexical nested object destructuring",
+    source: "(function(){for(let [{value}]=[{value:1}];false;){}return 1;})()",
+    rust_message: "object destructuring bindings are not implemented yet",
 }];
 
 #[test]

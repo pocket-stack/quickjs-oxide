@@ -28,6 +28,10 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "var [first,,third=3,...rest]=[1,2,undefined,4,5];first+'|'+third+'|'+rest.join(',')+'|'+globalThis.first+'|'+globalThis.third+'|'+globalThis.rest.length",
     ),
     (
+        "Program var nested array binding supports defaults and rest patterns",
+        "var [[first]=[40],...[second,third]]=[undefined,1,2];first+'|'+second+'|'+third+'|'+globalThis.first",
+    ),
+    (
         "Program var preserves an earlier script completion",
         "9;var completed=1",
     ),
@@ -77,9 +81,9 @@ struct BoundaryCase {
 }
 
 const BOUNDARY_CASES: &[BoundaryCase] = &[BoundaryCase {
-    description: "Program var nested array destructuring",
-    source: "var [[value]]=[[1]];value",
-    rust_message: "nested destructuring bindings are not implemented yet",
+    description: "Program var nested object destructuring",
+    source: "var [{value}]=[{value:1}];value",
+    rust_message: "object destructuring bindings are not implemented yet",
 }];
 
 const ORACLE_PROPERTY_PROBE: &str = r#"
