@@ -50,12 +50,12 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 34,933 pass;
+- 34,947 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 46,469 are classified as unsupported because of a feature, mode, host
+- 46,455 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 511 fail to parse, 1,508 fail at runtime, 135 fail in the harness, and six
+- 511 fail to parse, 1,506 fail at runtime, 135 fail in the harness, and eight
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 38,421 variants to execution. That count includes variants
@@ -64,21 +64,22 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 34.24% (`34,933 / 102,037`);
-- conservative target-scope lower bound: 41.80%
-  (`34,933 / (102,037 - 18,475)`);
+- raw suite pass rate: 34.25% (`34,947 / 102,037`);
+- conservative target-scope lower bound: 41.82%
+  (`34,947 / (102,037 - 18,475)`);
 - pass rate among variants with a non-unsupported observed outcome: 94.18%
-  (`34,933 / 37,093`).
+  (`34,947 / 37,107`).
 
-The 41.80% figure is the useful whole-project progress floor, not a claim that
-the engine is 41.80% conformant. The 94.18% conditional rate measures quality
+The 41.82% figure is the useful whole-project progress floor, not a claim that
+the engine is 41.82% conformant. The 94.18% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
 had previously failed closed as unsupported features; R2q then raises it
 slightly as 31 untagged binding variants become real passes, R2t resolves two
-more typed parser frontiers, and R2u adds 15 array-assignment passes without
-admitting additional jobs. The
+more typed parser frontiers, R2u adds 15 array-assignment passes without
+admitting additional jobs, and R2v resolves 14 untagged object-assignment
+frontiers. The
 capability profile currently admits 69 reviewed Test262
 feature tags and 423 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
@@ -93,9 +94,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`17c3c36e73ad8d098ae9d3bd3fc5c5d372187830d5e11f8532bc28471fbb4da3`
+`bbc5babdb70a470ff6d937dde2771cb7de270bc6971bfc7597e1f5bf0b24e5da`
 and
-`e9cb57c7616c27e01e156e7754b9cbc606c40100ea632bcc651c411d10c6c8e9`.
+`2839c0d58d8661b6cec4f6e606d297625343756dbbd656224013c17f992743fe`.
 
 ## Milestone policy
 
@@ -2034,6 +2035,71 @@ frontiers become 1,179. Full TSV/JSONL SHA-256 values are
 and
 `e9cb57c7616c27e01e156e7754b9cbc606c40100ea632bcc651c411d10c6c8e9`.
 
+## R2v object destructuring assignment
+
+R2v implements ObjectAssignmentPattern for direct AssignmentExpression and
+synchronous `for-in`/`for-of` assignment heads. It shares the direct array
+path's control inversion so the original RHS remains the expression result,
+then follows QuickJS's object-specific order: `ToObject`, source key
+canonicalization, complete target Reference, source Get, undefined-only
+default/NamedEvaluation, and NOKEEP Put. Nested patterns read the outer
+property before preparing inner References. Object rest prepares its arbitrary
+identifier/member/`super` target before exclusion-aware CopyDataProperties;
+computed exclusions are canonicalized once and shared by Get and copy. Arrays
+and objects recurse through each other without adding a VM opcode.
+
+The pinned-QuickJS gate passes all nine Rust tests: 35 eval differentials, five
+exact CLI stack traces, 14 exact parser diagnostics, and a Rust-only smoke.
+Nested source-marker inheritance remains a documented non-exact source-map
+surface rather than a false stack-parity assertion.
+
+The Test262 projection is split by semantic owner:
+
+- flat: 67 paths / 118 variants, all pass;
+- nested object/array recursion: 14 paths / 24 variants, all pass;
+- rest: 26 paths / 51 variants, all pass.
+
+The three runner-bound profiles admit only their audited features and 6/4/1
+negative paths. Profile SHA-256 values are
+`989f5617484d5c12a15fb26a447121fa3436b19f05cd998cf400b5d3d7179a51`,
+`18411f3d674a9493806bbf6a601bda903e859395aeec572e466c4a59470ceb12`,
+and
+`4b9f50b982dc5c3af1466d425a1665448c4a00165d465a74fd4057ef6e414206`.
+Normalized-manifest/manifest-file/key-set hashes are respectively
+`51eda576685e7a42d734c789f83a3a39efd9614f59e583afb179da4aec8b053a` /
+`92089af97dcc157d557061120dfdb68c868f2a8823288290a227a22bfadb285b` /
+`f4f62e06502ac316a37ad3b9a55c80a48be6c12fa61b51701b04fbc510994808`,
+`925359ce13f9f03e82c2357e5b8ccf1d4024a712445455237fa78f4bba328be6` /
+`0e5a594cee6e1c021f310c8e9d88e8b253d789171c97511aec4adcfd346d7d27` /
+`ffd426c04c9d96bcae249d576811d2eae1d9a68c455b396769db145212113010`,
+and
+`014a3e85c43f1ceabdc49379bd502444bc1ca93da163ad25a7ed1ad9f32f899f` /
+`931d743e7e2f46d78e66baf7c7c83fcf33208fd8ced6f6c72619ec5948971226` /
+`6e574b6e8c3450e0ddb29aaa3d51fe892ad086d718f062858c48f2d115e91595`.
+Every non-pass hash is the empty SHA-256. Focused TSV/JSONL hashes are
+`f0cd537e2349ce952828c6c61c073636b8631ca27750c7decbc4a8cd634087c6` /
+`27456fb05f0015a01c37f2d6c35a0d2b44e49a20578b9e0eabe5c57d53c546d9`,
+`430391c59cb61029ecdb1b7f2d81b0ec7054cba76f6bbfdab8b0840baf438669` /
+`cad849b67be5b15bbe7fd63b1fa635c5f74f4d2e05c8b65941fe076bb762a37a`,
+and
+`14d7dba398df75de6aa4583fe126ffc3aca871890121a7f6d53df71d8da4e4de` /
+`b6cb010459de59ffaab193fb7ad5fddc9fb73b1f8e437f8041fd2a56ba358964`.
+Reproduce them with the three
+`scripts/test-test262-object-assignment-{flat,nested,rest}.sh` entry points.
+
+The exact R2u/R2v full join retains all 102,037 keys. All 14 former
+ObjectAssignmentPattern `unsupported-parser` variants move to pass; no prior
+pass regresses and there are no missing/extra keys or detail-only changes.
+Passes reach 34,947 among 38,421 runnable variants and typed parser frontiers
+fall from 1,179 to 1,165. Both modes of the unrelated
+`staging/sm/Proxy/ownkeys-linear.js` also move from their eventual missing-Proxy
+runtime failure to the 30-second timeout while constructing 15,000 properties;
+that performance-only movement is kept explicit in the vector. Full TSV/JSONL
+SHA-256 values are
+`bbc5babdb70a470ff6d937dde2771cb7de270bc6971bfc7597e1f5bf0b24e5da`
+and
+`2839c0d58d8661b6cec4f6e606d297625343756dbbd656224013c17f992743fe`.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -2114,6 +2180,9 @@ canonical progress report.
 ./scripts/test-test262-array-binding-flat.sh
 ./scripts/test-test262-array-binding-nested.sh
 ./scripts/test-test262-array-assignment-flat.sh
+./scripts/test-test262-object-assignment-flat.sh
+./scripts/test-test262-object-assignment-nested.sh
+./scripts/test-test262-object-assignment-rest.sh
 ./scripts/test-test262-object-binding.sh
 ./scripts/test-test262-object-rest-binding.sh
 ./scripts/test-test262-full.sh
@@ -2207,6 +2276,11 @@ unwind. Its direct flat gate passes all 131 variants across 70 paths; the exact
 full join adds 15 passes with zero previous-pass regression, reaching 34,933
 passes among 38,421 runnable variants. Object assignment is the next
 assignment slice.
+R2v adds direct and synchronous for-in/of object assignment patterns, including
+depth-0-to-3 References, defaults, object/array recursion, exclusion-aware
+rest, and iterator unwind. Its three scoped gates pass all 193 variants across
+107 paths; the exact full join adds 14 passes with zero previous-pass
+regression, reaching 34,947 passes among 38,421 runnable variants.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

@@ -15,9 +15,9 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 34,933 passes and 38,421 runnable variants: 34.24% raw, a 41.80% lower
+  has 34,947 passes and 38,421 runnable variants: 34.25% raw, a 41.82% lower
   bound after the 18,475 pinned QuickJS target exclusions, or 94.18% among the
-  37,093 variants with a non-unsupported observed outcome. The fixed smoke now
+  37,107 variants with a non-unsupported observed outcome. The fixed smoke now
   has 191 passes and two explicit parser-frontier results. See
   `docs/test262.md` for the denominators and why none of these figures is a
   parity claim. The first
@@ -983,6 +983,57 @@ claim full parity.
   iterator-acquisition fault also still inherits the existing for-of control
   marker rather than QuickJS's RHS value site; its behavior is correct, but
   that debug-frame provenance remains a separate for-of source-map follow-up.
+
+  R2v replaces the ObjectAssignmentPattern frontier with QuickJS-shaped
+  lowering for direct AssignmentExpression and synchronous `for-in`/`for-of`
+  assignment heads. Direct assignment shares the array path's control
+  inversion and therefore returns the untouched RHS while consuming a separate
+  working value. Each object first performs `ToObject`; ordinary leaves then
+  run PropertyName/`ToPropertyKey`, prepare the full depth-0-to-3 target
+  Reference, read the source property, apply an undefined-only default and
+  NamedEvaluation, and perform a NOKEEP Put. Nested patterns intentionally read
+  the outer property before preparing inner References. Rest prepares its
+  target before copying own enumerable String/Symbol properties through the
+  existing exclusion object and `CopyDataPropertiesExcluded` opcode. Array and
+  object patterns now recurse through each other; no new VM instruction or
+  runtime path is required.
+
+  The focused pinned-QuickJS target passes 9/9 Rust tests: 35 eval
+  differentials, five exact CLI stack traces, 14 exact parser diagnostics, and
+  one Rust-only smoke. Three independently runner-bound Test262 cohorts freeze
+  flat, nested, and rest behavior at 67/14/26 paths and 118/24/51 variants;
+  all 193 variants pass. Their profile SHA-256 values are
+  `989f5617484d5c12a15fb26a447121fa3436b19f05cd998cf400b5d3d7179a51`,
+  `18411f3d674a9493806bbf6a601bda903e859395aeec572e466c4a59470ceb12`,
+  and
+  `4b9f50b982dc5c3af1466d425a1665448c4a00165d465a74fd4057ef6e414206`.
+  Focused TSV/JSONL hashes are respectively
+  `f0cd537e2349ce952828c6c61c073636b8631ca27750c7decbc4a8cd634087c6` /
+  `27456fb05f0015a01c37f2d6c35a0d2b44e49a20578b9e0eabe5c57d53c546d9`,
+  `430391c59cb61029ecdb1b7f2d81b0ec7054cba76f6bbfdab8b0840baf438669` /
+  `cad849b67be5b15bbe7fd63b1fa635c5f74f4d2e05c8b65941fe076bb762a37a`,
+  and
+  `14d7dba398df75de6aa4583fe126ffc3aca871890121a7f6d53df71d8da4e4de` /
+  `b6cb010459de59ffaab193fb7ad5fddc9fb73b1f8e437f8041fd2a56ba358964`.
+  The broad `destructuring-binding` and `object-rest` tags remain scoped: they
+  also cover unsupported parameter, generator, async, and class surfaces.
+
+  The exact R2u/R2v full join retains all 102,037 keys and moves all 14 former
+  object-assignment `unsupported-parser` variants to pass, with zero previous
+  pass regression, missing/extra key, or detail-only change. Passes rise to
+  34,947 among 38,421 runnable variants and typed parser frontiers fall to
+  1,165. The same measured run also moves both modes of the unrelated
+  `staging/sm/Proxy/ownkeys-linear.js` from its eventual missing-Proxy
+  `ReferenceError` to the 30-second timeout because its 15,000-property setup
+  now crosses that host limit; this is recorded as performance noise, not an
+  ObjectAssignmentPattern result. Full TSV/JSONL SHA-256 values are
+  `bbc5babdb70a470ff6d937dde2771cb7de270bc6971bfc7597e1f5bf0b24e5da`
+  and
+  `2839c0d58d8661b6cec4f6e606d297625343756dbbd656224013c17f992743fe`.
+  Nested object reads keep stable Rust source sites but do not yet reproduce
+  QuickJS's inherited source marker exactly; that joins the existing nested
+  for-head marker as source-map debt. Destructuring parameters and catch
+  patterns remain independent compiler surfaces.
 
   Parameter initializers and other non-simple parameters, classes/derived
   construction, and async/generator method/accessor forms stay typed frontiers.
@@ -4162,6 +4213,15 @@ for-head dispatch adds only 20 net lines to the `compiler.rs` facade, now
 11,860 lines. The object-frontier validator is intentionally colocated with
 the lowering it will replace when ObjectAssignmentPattern lands, rather than
 adding another runtime or compiler-facade path.
+R2v replaces that temporary validator with complete direct and synchronous
+for-head ObjectAssignmentPattern lowering. Removing the frontier while adding
+fixed/computed leaves, recursive array/object joins, rest copying, and shared
+assignment control inversion reduces `compiler/destructuring.rs` slightly from
+1,913 to 1,904 lines. `compiler.rs` reaches 11,865 lines after the shared
+Array/Object invalid-target diagnostic path, while `runtime.rs` remains
+unchanged at 9,822 lines. No VM opcode or runtime-facade branch was added; the
+existing typed Reference, property, and CopyDataProperties operations carry
+the semantics.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -4290,6 +4350,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_rest -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_assignment -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_object_assignment -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_for_in -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -4425,6 +4487,9 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-array-binding-flat.sh
 ./scripts/test-test262-array-binding-nested.sh
 ./scripts/test-test262-array-assignment-flat.sh
+./scripts/test-test262-object-assignment-flat.sh
+./scripts/test-test262-object-assignment-nested.sh
+./scripts/test-test262-object-assignment-rest.sh
 ./scripts/test-test262-object-binding.sh
 ./scripts/test-test262-object-rest-binding.sh
 ./scripts/test-test262-full.sh

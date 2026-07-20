@@ -1,0 +1,19 @@
+# R2v dependency-audited nested object destructuring-assignment surface.
+#
+# The frozen cohort covers object properties whose targets are nested array or
+# object assignment patterns.
+
+test/language/expressions/assignment/dstr/obj-prop-nested-array-invalid.js
+test/language/expressions/assignment/dstr/obj-prop-nested-array-null.js
+test/language/expressions/assignment/dstr/obj-prop-nested-array-undefined-own.js
+test/language/expressions/assignment/dstr/obj-prop-nested-array-undefined.js
+test/language/expressions/assignment/dstr/obj-prop-nested-array-yield-ident-invalid.js
+test/language/expressions/assignment/dstr/obj-prop-nested-array-yield-ident-valid.js
+test/language/expressions/assignment/dstr/obj-prop-nested-array.js
+test/language/expressions/assignment/dstr/obj-prop-nested-obj-invalid.js
+test/language/expressions/assignment/dstr/obj-prop-nested-obj-null.js
+test/language/expressions/assignment/dstr/obj-prop-nested-obj-undefined-own.js
+test/language/expressions/assignment/dstr/obj-prop-nested-obj-undefined.js
+test/language/expressions/assignment/dstr/obj-prop-nested-obj-yield-ident-invalid.js
+test/language/expressions/assignment/dstr/obj-prop-nested-obj-yield-ident-valid.js
+test/language/expressions/assignment/dstr/obj-prop-nested-obj.js

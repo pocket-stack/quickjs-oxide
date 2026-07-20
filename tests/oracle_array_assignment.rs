@@ -6,8 +6,8 @@ use quickjs_oxide::{Context, ErrorKind, Runtime, RuntimeError, Value};
 // Pins QuickJS 2026-06-04 ArrayAssignmentPattern lowering. Array binding
 // declarations are covered separately: this target keeps AssignmentExpression
 // result identity, Reference timing, IteratorClose, and synchronous for-in/of
-// assignment heads on the assignment-specific path. Nested object assignment
-// remains an explicit compiler frontier below.
+// assignment heads on the assignment-specific path. Object assignment parity
+// is covered by its own focused target, including recursive array/object joins.
 
 const DIRECT_CASES: &[(&str, &str)] = &[
     (
@@ -501,19 +501,19 @@ const PARSER_CASES: &[(&str, &str)] = &[
         "var a;({p:[...{q:true&&a}=[]]}={});",
     ),
     (
-        "later invalid leaf wins over a direct object frontier",
+        "later invalid leaf retains its diagnostic after a direct object pattern",
         "var a,x;[{x},true&&a]=[];",
     ),
     (
-        "later invalid leaf wins over a recursive object frontier",
+        "later invalid leaf retains its diagnostic after a recursive object pattern",
         "var a,x;[[{x}],true&&a]=[];",
     ),
     (
-        "later invalid for-of leaf wins over an object frontier",
+        "later invalid for-of leaf retains its diagnostic after an object pattern",
         "var a,x;for([{x},true&&a] of []){}",
     ),
     (
-        "rest-last error wins over a nested object frontier",
+        "rest-last error wins after a nested object pattern",
         "var a,x;[...{x},true&&a]=[];",
     ),
     (
@@ -549,11 +549,11 @@ const PARSER_CASES: &[(&str, &str)] = &[
         "'use strict';var value;[eval]=[value]",
     ),
     (
-        "invalid object assignment leaf wins over the implementation frontier",
+        "invalid object assignment leaf retains its target diagnostic",
         "var a;({p: true && a} = {});",
     ),
     (
-        "later invalid object leaf wins over an earlier nested object frontier",
+        "later invalid object leaf wins after an earlier nested object pattern",
         "var a,x;({p:[{x}],q:true&&a}={});",
     ),
     (
@@ -620,27 +620,26 @@ fn array_assignment_parser_diagnostics_match_pinned_quickjs() {
 }
 
 #[test]
-fn nested_object_assignment_frontier_remains_explicit() {
+fn nested_object_assignments_run_without_an_oracle() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
     for source in [
         "(function(){var value;({value}={value:42});return value})()",
         "(function(){var value;[{value}]=[{value:42}];return value})()",
         "(function(){var x;({p:[{x}]}={p:[{x:42}]});return x})()",
         "(function(){var x;[[{x}]]=[[{x:42}]];return x})()",
-        "(function(){var x;for([{x}] of [{x:42}]){}return x})()",
+        "(function(){var x;for([{x}] of [[{x:42}]]){}return x})()",
     ] {
-        let error = quickjs_oxide::compiler::compile_script(source)
-            .expect_err("object assignment unexpectedly compiled");
-        assert_eq!(error.kind(), ErrorKind::Unsupported, "{source}");
         assert_eq!(
-            error.message(),
-            "object destructuring assignment patterns are not implemented yet",
+            observe_rust_eval(&runtime, &mut context, source, "nested object assignment"),
+            "return|number|42",
             "{source}",
         );
     }
 }
 
 #[test]
-fn invalid_object_assignment_leaf_is_syntax_before_the_frontier() {
+fn invalid_object_assignment_leaf_is_syntax() {
     for source in [
         "var a;({p: true && a} = {});",
         "var a,x;({p:[{x}],q:true&&a}={});",
@@ -686,7 +685,7 @@ fn array_assignment_rest_diagnostics_have_quickjs_priority() {
 }
 
 #[test]
-fn invalid_array_assignment_leaf_is_syntax_before_the_object_frontier() {
+fn invalid_array_assignment_leaf_is_syntax_after_object_patterns() {
     for source in [
         "var a,x;[{x},true&&a]=[];",
         "var a,x;[[{x}],true&&a]=[];",

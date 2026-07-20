@@ -58,6 +58,18 @@ const TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256: &str =
     "b2133d90974566c72ab788525254de68d260b44756a8c5981111873fb38727af";
 const TEST262_ARRAY_ASSIGNMENT_FLAT_MANIFEST_SHA256: &str =
     "046679bd745132066b4982770f13236bfecdbd953b70bdba98afa60424c599c8";
+const TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256: &str =
+    "989f5617484d5c12a15fb26a447121fa3436b19f05cd998cf400b5d3d7179a51";
+const TEST262_OBJECT_ASSIGNMENT_FLAT_MANIFEST_SHA256: &str =
+    "92089af97dcc157d557061120dfdb68c868f2a8823288290a227a22bfadb285b";
+const TEST262_OBJECT_ASSIGNMENT_NESTED_PROFILE_SHA256: &str =
+    "18411f3d674a9493806bbf6a601bda903e859395aeec572e466c4a59470ceb12";
+const TEST262_OBJECT_ASSIGNMENT_NESTED_MANIFEST_SHA256: &str =
+    "0e5a594cee6e1c021f310c8e9d88e8b253d789171c97511aec4adcfd346d7d27";
+const TEST262_OBJECT_ASSIGNMENT_REST_PROFILE_SHA256: &str =
+    "4b9f50b982dc5c3af1466d425a1665448c4a00165d465a74fd4057ef6e414206";
+const TEST262_OBJECT_ASSIGNMENT_REST_MANIFEST_SHA256: &str =
+    "931d743e7e2f46d78e66baf7c7c83fcf33208fd8ced6f6c72619ec5948971226";
 const TEST262_OBJECT_BINDING_PROFILE_SHA256: &str =
     "aa6cdca241b5f0be7eb202461ba80e44132f917a66480f1c04225cedc410d0d7";
 const TEST262_OBJECT_BINDING_MANIFEST_SHA256: &str =
@@ -577,6 +589,9 @@ enum OxideProfileKind {
     ArrayBindingFlat,
     ArrayBindingNested,
     ArrayAssignmentFlat,
+    ObjectAssignmentFlat,
+    ObjectAssignmentNested,
+    ObjectAssignmentRest,
     ObjectBinding,
     ObjectRestBinding,
     Map,
@@ -610,6 +625,18 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
             OxideProfileKind::ArrayAssignmentFlat,
         ),
         (
+            root.join("tests/test262-object-assignment-flat.conf"),
+            OxideProfileKind::ObjectAssignmentFlat,
+        ),
+        (
+            root.join("tests/test262-object-assignment-nested.conf"),
+            OxideProfileKind::ObjectAssignmentNested,
+        ),
+        (
+            root.join("tests/test262-object-assignment-rest.conf"),
+            OxideProfileKind::ObjectAssignmentRest,
+        ),
+        (
             root.join("tests/test262-object-binding.conf"),
             OxideProfileKind::ObjectBinding,
         ),
@@ -636,9 +663,55 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         }
     }
     Err(format!(
-        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
         path.display()
     ))
+}
+
+fn verify_scoped_object_assignment_profile(
+    options: &CoordinatorOptions,
+    cohort: &str,
+    profile_sha256: &'static str,
+    manifest_sha256: &str,
+) -> Result<&'static str, String> {
+    verify_sha256(
+        &options.oxide_profile,
+        profile_sha256,
+        &format!("scoped {cohort} object assignment Test262 capability profile"),
+    )?;
+    if options.all || !options.tests.is_empty() {
+        return Err(format!(
+            "the scoped {cohort} object assignment Test262 capability profile requires its pinned manifest"
+        ));
+    }
+    let manifest = options.manifest.as_ref().ok_or_else(|| {
+        format!(
+            "the scoped {cohort} object assignment Test262 capability profile requires its pinned manifest"
+        )
+    })?;
+    let actual = fs::canonicalize(manifest).map_err(|error| {
+        format!(
+            "resolve scoped {cohort} object assignment manifest {}: {error}",
+            manifest.display()
+        )
+    })?;
+    let relative = format!("tests/test262-object-assignment-{cohort}.txt");
+    let expected = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join(&relative))
+        .map_err(|error| {
+            format!("resolve pinned scoped {cohort} object assignment manifest: {error}")
+        })?;
+    if actual != expected {
+        return Err(format!(
+            "the scoped {cohort} object assignment Test262 capability profile requires {relative}, found {}",
+            manifest.display()
+        ));
+    }
+    verify_sha256(
+        manifest,
+        manifest_sha256,
+        &format!("scoped {cohort} object assignment Test262 manifest"),
+    )?;
+    Ok(profile_sha256)
 }
 
 fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, String> {
@@ -776,6 +849,24 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             )?;
             Ok(TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256)
         }
+        OxideProfileKind::ObjectAssignmentFlat => verify_scoped_object_assignment_profile(
+            options,
+            "flat",
+            TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
+            TEST262_OBJECT_ASSIGNMENT_FLAT_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::ObjectAssignmentNested => verify_scoped_object_assignment_profile(
+            options,
+            "nested",
+            TEST262_OBJECT_ASSIGNMENT_NESTED_PROFILE_SHA256,
+            TEST262_OBJECT_ASSIGNMENT_NESTED_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::ObjectAssignmentRest => verify_scoped_object_assignment_profile(
+            options,
+            "rest",
+            TEST262_OBJECT_ASSIGNMENT_REST_PROFILE_SHA256,
+            TEST262_OBJECT_ASSIGNMENT_REST_MANIFEST_SHA256,
+        ),
         OxideProfileKind::ObjectBinding => {
             verify_sha256(
                 &options.oxide_profile,
@@ -1242,7 +1333,9 @@ mod cli_tests {
     use super::{
         Invocation, OxideProfileKind, TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256, TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256,
-        TEST262_MAP_PROFILE_SHA256, TEST262_OBJECT_BINDING_PROFILE_SHA256,
+        TEST262_MAP_PROFILE_SHA256, TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
+        TEST262_OBJECT_ASSIGNMENT_NESTED_PROFILE_SHA256,
+        TEST262_OBJECT_ASSIGNMENT_REST_PROFILE_SHA256, TEST262_OBJECT_BINDING_PROFILE_SHA256,
         TEST262_OBJECT_REST_BINDING_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
         TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, default_worker_count, identify_oxide_profile,
         parse_args, verify_oxide_profile,
@@ -1347,6 +1440,19 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-array-assignment-flat.conf")).unwrap(),
             OxideProfileKind::ArrayAssignmentFlat
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-object-assignment-flat.conf")).unwrap(),
+            OxideProfileKind::ObjectAssignmentFlat
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-object-assignment-nested.conf"))
+                .unwrap(),
+            OxideProfileKind::ObjectAssignmentNested
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-object-assignment-rest.conf")).unwrap(),
+            OxideProfileKind::ObjectAssignmentRest
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-object-binding.conf")).unwrap(),
@@ -1511,6 +1617,53 @@ mod cli_tests {
                 panic!("coordinator arguments selected another invocation");
             };
             assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_object_assignment_profiles_are_bound_to_their_pinned_manifests() {
+        for (cohort, expected_hash) in [
+            ("flat", TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256),
+            ("nested", TEST262_OBJECT_ASSIGNMENT_NESTED_PROFILE_SHA256),
+            ("rest", TEST262_OBJECT_ASSIGNMENT_REST_PROFILE_SHA256),
+        ] {
+            let profile = format!("tests/test262-object-assignment-{cohort}.conf");
+            let manifest = format!("tests/test262-object-assignment-{cohort}.txt");
+            let invocation = parse(&[
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                &profile,
+                "--manifest",
+                &manifest,
+                "--report",
+                "report.tsv",
+            ])
+            .unwrap();
+            let Invocation::Coordinator(options) = invocation else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert_eq!(verify_oxide_profile(&options).unwrap(), expected_hash);
+
+            for selection in [
+                ["--all", ""],
+                [
+                    "--test",
+                    "test/language/expressions/assignment/dstr/obj-empty-obj.js",
+                ],
+                ["--manifest", "Cargo.toml"],
+            ] {
+                let mut arguments = vec!["--suite", "suite", "--oxide-profile", profile.as_str()];
+                arguments.push(selection[0]);
+                if !selection[1].is_empty() {
+                    arguments.push(selection[1]);
+                }
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert!(verify_oxide_profile(&options).is_err());
+            }
         }
     }
 

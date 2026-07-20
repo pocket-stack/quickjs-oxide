@@ -2135,7 +2135,7 @@ impl<'source> Parser<'source> {
             return self.parse_for_array_assignment_pattern(iteration_kind);
         }
         if self.for_object_assignment_pattern_ahead(iteration_kind) {
-            return self.reject_object_assignment_pattern();
+            return self.parse_for_object_assignment_pattern(iteration_kind);
         }
 
         if self.lexical_declaration_ahead(true)? {
@@ -3749,12 +3749,15 @@ impl<'source> Parser<'source> {
         // control-inverted path only when the matching `]` is immediately
         // followed by `=`; otherwise this remains an ordinary Array literal.
         if self.object_assignment_pattern_ahead() {
-            return self.reject_object_assignment_pattern();
+            return self.parse_object_assignment_expression();
         }
         if self.array_assignment_pattern_ahead() {
             return self.parse_array_assignment_expression();
         }
-        let leading_array_literal = self.is_punctuator(Punctuator::LeftBracket);
+        let leading_assignment_pattern_literal = matches!(
+            self.current().kind,
+            TokenKind::Punctuator(Punctuator::LeftBracket | Punctuator::LeftBrace)
+        );
         // QuickJS's `name0` is captured only when the AssignmentExpression
         // starts with the identifier token itself. Parenthesized lvalues are
         // valid References but intentionally do not trigger NamedEvaluation.
@@ -3776,7 +3779,8 @@ impl<'source> Parser<'source> {
                 let infer_name = direct_identifier_name.as_deref() == Some(target.name.as_str());
                 return self.parse_logical_identifier_assignment(target, logical, infer_name);
             }
-            return self.parse_logical_member_assignment(logical, leading_array_literal);
+            return self
+                .parse_logical_member_assignment(logical, leading_assignment_pattern_literal);
         }
 
         let assignment_span = self.current().span;
@@ -3824,10 +3828,11 @@ impl<'source> Parser<'source> {
                 return Ok(());
             }
             let Some(target) = self.promote_tail_member_get_for_compound()? else {
-                // QuickJS consumes a compound operator after an Array literal
-                // before reporting that the literal is not an lvalue, so the
-                // diagnostic points at the first RHS token rather than `+=`.
-                if leading_array_literal {
+                // QuickJS consumes a compound operator after an Array/Object
+                // literal before reporting that the literal is not an lvalue,
+                // so the diagnostic points at the first RHS token rather than
+                // `+=`.
+                if leading_assignment_pattern_literal {
                     self.advance()?;
                 }
                 return Err(self.syntax_here("invalid assignment left-hand side"));
@@ -3978,13 +3983,13 @@ impl<'source> Parser<'source> {
     fn parse_logical_member_assignment(
         &mut self,
         logical: LogicalAssignment,
-        leading_array_literal: bool,
+        leading_assignment_pattern_literal: bool,
     ) -> Result<(), Error> {
         let Some(target) = self.promote_tail_member_get_for_compound()? else {
-            // QuickJS consumes a logical-assignment operator after an Array
-            // literal before get_lvalue rejects that literal, matching the
-            // arithmetic compound-assignment diagnostic path above.
-            if leading_array_literal {
+            // QuickJS consumes a logical-assignment operator after an
+            // Array/Object literal before get_lvalue rejects that literal,
+            // matching the arithmetic compound-assignment diagnostic path.
+            if leading_assignment_pattern_literal {
                 self.advance()?;
             }
             return Err(self.syntax_here("invalid assignment left-hand side"));

@@ -1,0 +1,31 @@
+# R2v dependency-audited object-rest destructuring-assignment surface.
+#
+# The frozen cohort covers rest copy semantics, exclusions, descriptors,
+# primitive sources, abrupt completion, and assignment targets.
+
+test/language/expressions/assignment/dstr/obj-rest-computed-property-no-strict.js
+test/language/expressions/assignment/dstr/obj-rest-computed-property.js
+test/language/expressions/assignment/dstr/obj-rest-descriptors.js
+test/language/expressions/assignment/dstr/obj-rest-empty-obj.js
+test/language/expressions/assignment/dstr/obj-rest-getter-abrupt-get-error.js
+test/language/expressions/assignment/dstr/obj-rest-getter.js
+test/language/expressions/assignment/dstr/obj-rest-non-string-computed-property-1.js
+test/language/expressions/assignment/dstr/obj-rest-non-string-computed-property-1dot.js
+test/language/expressions/assignment/dstr/obj-rest-non-string-computed-property-1dot0.js
+test/language/expressions/assignment/dstr/obj-rest-non-string-computed-property-1e0.js
+test/language/expressions/assignment/dstr/obj-rest-non-string-computed-property-array-1.js
+test/language/expressions/assignment/dstr/obj-rest-non-string-computed-property-array-1e0.js
+test/language/expressions/assignment/dstr/obj-rest-non-string-computed-property-string-1.js
+test/language/expressions/assignment/dstr/obj-rest-not-last-element-invalid.js
+test/language/expressions/assignment/dstr/obj-rest-number.js
+test/language/expressions/assignment/dstr/obj-rest-order.js
+test/language/expressions/assignment/dstr/obj-rest-put-const.js
+test/language/expressions/assignment/dstr/obj-rest-same-name.js
+test/language/expressions/assignment/dstr/obj-rest-skip-non-enumerable.js
+test/language/expressions/assignment/dstr/obj-rest-str-val.js
+test/language/expressions/assignment/dstr/obj-rest-symbol-val.js
+test/language/expressions/assignment/dstr/obj-rest-to-property-with-setter.js
+test/language/expressions/assignment/dstr/obj-rest-to-property.js
+test/language/expressions/assignment/dstr/obj-rest-val-null.js
+test/language/expressions/assignment/dstr/obj-rest-val-undefined.js
+test/language/expressions/assignment/dstr/obj-rest-valid-object.js

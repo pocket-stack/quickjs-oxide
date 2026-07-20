@@ -97,6 +97,9 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/test-test262-array-binding-flat.sh
 ./scripts/test-test262-array-binding-nested.sh
 ./scripts/test-test262-array-assignment-flat.sh
+./scripts/test-test262-object-assignment-flat.sh
+./scripts/test-test262-object-assignment-nested.sh
+./scripts/test-test262-object-assignment-rest.sh
 ./scripts/test-test262-object-binding.sh
 ./scripts/test-test262-object-rest-binding.sh
 ./scripts/test-test262-full.sh

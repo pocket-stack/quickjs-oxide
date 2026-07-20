@@ -630,26 +630,25 @@ fn for_of_full_strip_source_and_strip_debug_stacks_match_pinned_quickjs() {
 fn remaining_for_await_boundary_remains_explicit() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
-    for (source, expected) in [(
+    let (source, expected) = (
         "for await(var value of 'a')value",
         "for-await-of loops are not implemented yet",
-    )] {
-        let Err(RuntimeError::Exception) = context.compile(source) else {
-            panic!("for-of boundary was not rejected explicitly: {source}");
-        };
-        let Value::Object(error) = context
-            .take_exception()
-            .expect("take for-of boundary exception")
-            .expect("for-of boundary exception is present")
-        else {
-            panic!("for-of boundary did not materialize an Error object: {source}");
-        };
-        assert_eq!(
-            error_string_property(&runtime, &mut context, &error, "message", source),
-            expected,
-            "{source}",
-        );
-    }
+    );
+    let Err(RuntimeError::Exception) = context.compile(source) else {
+        panic!("for-of boundary was not rejected explicitly: {source}");
+    };
+    let Value::Object(error) = context
+        .take_exception()
+        .expect("take for-of boundary exception")
+        .expect("for-of boundary exception is present")
+    else {
+        panic!("for-of boundary did not materialize an Error object: {source}");
+    };
+    assert_eq!(
+        error_string_property(&runtime, &mut context, &error, "message", source),
+        expected,
+        "{source}",
+    );
 }
 
 #[test]
