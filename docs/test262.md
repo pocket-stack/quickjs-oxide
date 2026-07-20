@@ -50,9 +50,9 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 34,916 pass;
+- 34,918 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 46,458 are classified as unsupported because of a feature, mode, host
+- 46,456 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
 - 543 fail to parse, 1,504 fail at runtime, 135 fail in the harness, and six
@@ -64,20 +64,21 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 34.22% (`34,916 / 102,037`);
-- conservative target-scope lower bound: 41.78%
-  (`34,916 / (102,037 - 18,475)`);
+- raw suite pass rate: 34.22% (`34,918 / 102,037`);
+- conservative target-scope lower bound: 41.79%
+  (`34,918 / (102,037 - 18,475)`);
 - pass rate among variants with a non-unsupported observed outcome: 94.10%
-  (`34,916 / 37,104`).
+  (`34,918 / 37,106`).
 
-The 41.78% figure is the useful whole-project progress floor, not a claim that
-the engine is 41.78% conformant. The 94.10% conditional rate measures quality
+The 41.79% figure is the useful whole-project progress floor, not a claim that
+the engine is 41.79% conformant. The 94.10% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
 had previously failed closed as unsupported features; R2q then raises it
-slightly as 31 untagged binding variants become real passes. The capability profile
-currently admits 69 reviewed Test262
+slightly as 31 untagged binding variants become real passes, and R2t resolves
+two more typed parser frontiers without admitting additional jobs. The
+capability profile currently admits 69 reviewed Test262
 feature tags and 423 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
 lands can only make the measurement more representative. Focused QuickJS
@@ -91,9 +92,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`616026d35b7b86f6b4e6c24d22456db9ca50b64fcc00e787472e75aeebc3e3c2`
+`0c4e7a6e1939aaee3926e8cd2b91e05af0f61a4bfb0cf0c932827e49ea7bb95c`
 and
-`a3f633ac23d0fe6d22dcec563ec7f2296f46b2be00738176b543079b7da283e6`.
+`512e97b82df170c24e262968c6ebf73fa450be92fb1f0db14aaa58d50c17d7f6`.
 
 ## Milestone policy
 
@@ -1924,6 +1925,56 @@ source has completed syntax and declaration scanning, preserving the priority
 of later syntax errors and declaration conflicts. Exclusion-aware object rest
 is the next binding slice.
 
+## R2t object-rest binding declarations
+
+R2t implements exclusion-aware ObjectBindingPattern rest declarations against
+QuickJS 2026-06-04. Direct `var`/`let`/`const`, classic `for`, and synchronous
+`for-in`/`for-of` declarations share the recursive object/array lowering. The
+new depth-addressed `CopyDataPropertiesExcluded` bytecode preserves its stack
+operands. After source `ToObject`, a fresh exclusion object is created before
+any computed-key conversion or getter and records fixed and computed
+String/Symbol keys before the copy. Computed keys receive exactly one
+`ToPropertyKey`; excluded accessors are not read again; ordinary own enumerable
+keys are snapshotted in String/Symbol order and then read live into fresh
+writable, enumerable, configurable own data properties. Differential tests also
+pin primitive boxing, sloppy `with` Reference preparation, nested patterns,
+parser skip-scanning, and copy/Put failures under iterator unwind.
+
+The dependency-audited Test262 cohort selects the three available object-rest
+semantic templates across direct, classic-for, and synchronous for-of
+`var`/`let`/`const` declarations: 27 paths / 54 sloppy/strict variants. All 54
+are runnable and pass. Synchronous for-in rest is covered by the focused
+QuickJS differential rather than this Test262 cohort. The scoped profile admits
+only `destructuring-binding` and `object-rest`; its SHA-256 is
+`122a2b055aaf40672a0540441861ecd1e6c09b65e88d45b947bc27a691afc45e`.
+Normalized-manifest, manifest-file, key-set, and empty non-pass SHA-256 values
+are
+`381dc052af426d6d73e498600660d479c843dee1333896958b73176e23b705d7`,
+`fc75564488d2ae45a015fa8b07989f3a178f08978221d87ffdeeca0a9359fe57`,
+`4b1f4177d308124eb74c0eff3a8028c4bf09b5cf713392467f635e05b03f7e7e`,
+and
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+Focused TSV/JSONL hashes are
+`9a1a364218204b9d6aede93dadd52cb97256b1504a0f016e8d41d46cca3b26be`
+and
+`53d8920bf0b160e0899a56af3a64fa50be354a899d78a8ec6864be96b3c79694`.
+Reproduce the gate with `scripts/test-test262-object-rest-binding.sh`.
+
+The exact R2s/R2t full join retains all 102,037 unique keys and changes only
+the sloppy and strict variants of
+`test/staging/sm/expressions/destructuring-object-__proto__-1.js` from
+`unsupported-parser` to pass. There are no previous-pass regressions,
+missing/extra keys, detail-only changes, or other outcome changes. Passes rise
+by two to 34,918, runnable variants remain 38,421, and typed parser frontiers
+fall from 1,168 to 1,166. Full TSV/JSONL SHA-256 values are
+`0c4e7a6e1939aaee3926e8cd2b91e05af0f61a4bfb0cf0c932827e49ea7bb95c`
+and
+`512e97b82df170c24e262968c6ebf73fa450be92fb1f0db14aaa58d50c17d7f6`.
+
+Destructuring assignment, parameter patterns, and catch patterns remain
+separate compiler surfaces. Destructuring assignment is the next high-yield
+binding slice.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -2004,6 +2055,7 @@ canonical progress report.
 ./scripts/test-test262-array-binding-flat.sh
 ./scripts/test-test262-array-binding-nested.sh
 ./scripts/test-test262-object-binding.sh
+./scripts/test-test262-object-rest-binding.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -2084,6 +2136,12 @@ and iterator unwind. All 648 variants in its 324-path scoped gate pass. The
 full vector gains 36 passes with zero previous-pass regression, reaching
 34,916 passes among 38,421 runnable variants; exclusion-aware object rest is
 the next binding slice.
+R2t adds exclusion-aware object-rest declarations on those direct, loop, and
+recursive binding surfaces. All 54 variants in its 27-path scoped gate pass;
+the full vector changes only the two modes of one staging path from typed
+parser frontier to pass, with zero previous-pass regression, reaching 34,918
+passes among 38,421 runnable variants. Destructuring assignment is the next
+high-yield binding slice.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

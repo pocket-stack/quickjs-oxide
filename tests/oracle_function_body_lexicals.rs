@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::process::{Command, Output};
 
-use quickjs_oxide::{Context, Runtime, RuntimeError, Value};
+use quickjs_oxide::{Runtime, Value};
 
 const VALUE_CASES: &[(&str, &str)] = &[
     (
@@ -95,6 +95,18 @@ const VALUE_CASES: &[(&str, &str)] = &[
     (
         "switch object lexical binding",
         "(function(){switch(0){case 0:const [{value}] = [{value:3}];return value;}})()",
+    ),
+    (
+        "function body object rest lexical binding",
+        "(function(){const {skip,...rest}={skip:1,value:2};return skip+'|'+rest.value+'|'+('skip' in rest);})()",
+    ),
+    (
+        "nested block object rest lexical binding",
+        "(function(){{const [{skip,...rest}]=[{skip:2,value:3}];return skip+'|'+rest.value+'|'+('skip' in rest);}})()",
+    ),
+    (
+        "switch object rest lexical binding",
+        "(function(){switch(0){case 0:const {skip,...rest}={skip:3,value:4};return skip+'|'+rest.value+'|'+('skip' in rest);}})()",
     ),
     (
         "switch fallthrough shares one lexical environment",
@@ -251,30 +263,6 @@ const NESTED_SCOPE_ERROR_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-struct BoundaryCase {
-    description: &'static str,
-    source: &'static str,
-    rust_message: &'static str,
-}
-
-const BOUNDARY_CASES: &[BoundaryCase] = &[
-    BoundaryCase {
-        description: "function body object rest lexical binding",
-        source: "(function(){ const {...rest} = {value:1}; return rest.value; })()",
-        rust_message: "object rest destructuring bindings are not implemented yet",
-    },
-    BoundaryCase {
-        description: "nested block object rest lexical binding",
-        source: "(function(){ { const [{...rest}] = [{value:1}]; return rest.value; } })()",
-        rust_message: "object rest destructuring bindings are not implemented yet",
-    },
-    BoundaryCase {
-        description: "switch object rest lexical binding",
-        source: "(function(){ switch (0) { case 0: const {...rest} = {value:1}; return rest.value; } })()",
-        rust_message: "object rest destructuring bindings are not implemented yet",
-    },
-];
-
 const SYNTAX_ERROR_CASES: &[(&str, &str)] = &[
     (
         "duplicate body lexical",
@@ -419,32 +407,6 @@ fn lexical_parser_diagnostics_match_pinned_quickjs() {
     }
 }
 
-#[test]
-fn unsupported_lexical_boundaries_remain_explicit_while_quickjs_accepts_them() {
-    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
-        eprintln!("SKIP lexical boundary differential: set QJS_ORACLE to upstream qjs");
-        return;
-    };
-
-    for case in BOUNDARY_CASES {
-        let output = run_cli(&oracle, case.source, case.description);
-        assert!(
-            output.status.success(),
-            "pinned QuickJS rejected {} ({:?}): {}",
-            case.description,
-            case.source,
-            String::from_utf8_lossy(&output.stderr),
-        );
-        assert_eq!(
-            rust_error_observation(case.source, case.description),
-            format!("SyntaxError|{}", case.rust_message),
-            "Rust boundary drifted for {} ({:?})",
-            case.description,
-            case.source,
-        );
-    }
-}
-
 fn rust_value_observation(source: &str, description: &str) -> String {
     let runtime = Runtime::new();
     let value = runtime
@@ -513,45 +475,6 @@ fn oracle_script_value_observation(
         })
         .trim_end()
         .to_owned()
-}
-
-fn rust_error_observation(source: &str, description: &str) -> String {
-    let runtime = Runtime::new();
-    let mut context = runtime.new_context();
-    assert_eq!(
-        context.eval_with_filename(source, "<cmdline>"),
-        Err(RuntimeError::Exception),
-        "Rust unexpectedly accepted {description}: {source:?}",
-    );
-    let Value::Object(error) = context
-        .take_exception()
-        .expect("take Rust exception")
-        .expect("Rust exception is present")
-    else {
-        panic!("Rust did not materialize an Error object for {description}");
-    };
-    let name = error_string_property(&runtime, &mut context, &error, "name", description);
-    let message = error_string_property(&runtime, &mut context, &error, "message", description);
-    format!("{name}|{message}")
-}
-
-fn error_string_property(
-    runtime: &Runtime,
-    context: &mut Context,
-    error: &quickjs_oxide::ObjectRef,
-    name: &str,
-    description: &str,
-) -> String {
-    let key = runtime
-        .intern_property_key(name)
-        .expect("Error property key");
-    let Value::String(value) = context
-        .get_property(error, &key)
-        .unwrap_or_else(|failure| panic!("read Error.{name} for {description}: {failure}"))
-    else {
-        panic!("Error.{name} was not a string for {description}");
-    };
-    value.to_utf8_lossy()
 }
 
 fn run_cli(program: &OsStr, source: &str, description: &str) -> Output {

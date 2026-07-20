@@ -332,6 +332,20 @@ pub enum Instruction {
     /// defines C_W_E data properties, and preserves the fresh literal
     /// (`target source -> target`).
     CopyDataProperties,
+    /// Exclusion-aware QuickJS `OP_copy_data_properties` used by an Object
+    /// binding rest element. The three operands are addressed by depth from
+    /// the top of the stack (depth zero is the top) and are only borrowed:
+    /// successful execution leaves the complete operand stack unchanged.
+    ///
+    /// This is intentionally depth-addressed instead of consuming three
+    /// adjacent values. A sloppy `var` binding may need to keep its prepared
+    /// Reference between the retained source and the fresh target while the
+    /// copy executes observable getters.
+    CopyDataPropertiesExcluded {
+        target_depth: u8,
+        source_depth: u8,
+        excluded_depth: u8,
+    },
     /// QuickJS `OP_append`: append every value from one iterable and replace
     /// the dynamic index with the first unused index
     /// (`array index iterable -> array index`).
@@ -516,6 +530,21 @@ impl Instruction {
             Self::DefineArrayEl | Self::Append => (3, 2),
             Self::SetNameComputed => (2, 2),
             Self::SetProto | Self::CopyDataProperties => (2, 1),
+            Self::CopyDataPropertiesExcluded {
+                target_depth,
+                source_depth,
+                excluded_depth,
+            } => {
+                let mut maximum = *target_depth;
+                if *source_depth > maximum {
+                    maximum = *source_depth;
+                }
+                if *excluded_depth > maximum {
+                    maximum = *excluded_depth;
+                }
+                let required = maximum as usize + 1;
+                (required, required)
+            }
             Self::Delete => (2, 1),
             Self::Call(argument_count) | Self::Eval { argument_count, .. } => {
                 (*argument_count as usize + 1, 1)
@@ -2650,6 +2679,51 @@ mod tests {
             max_stack: 3,
         };
         assert_eq!(computed.verify().unwrap().max_stack, 3);
+    }
+
+    #[test]
+    fn verifier_models_depth_addressed_object_rest_copy_without_stack_mutation() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1), // excluded
+                Instruction::PushI32(2), // source
+                Instruction::PushI32(3), // prepared Reference
+                Instruction::PushI32(4), // target
+                Instruction::CopyDataPropertiesExcluded {
+                    target_depth: 0,
+                    source_depth: 2,
+                    excluded_depth: 3,
+                },
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        assert_eq!(function.verify().unwrap().max_stack, 4);
+
+        let underflow = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::PushI32(2),
+                Instruction::PushI32(3),
+                Instruction::CopyDataPropertiesExcluded {
+                    target_depth: 0,
+                    source_depth: 2,
+                    excluded_depth: 3,
+                },
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 3,
+        };
+        assert_eq!(
+            underflow.verify().unwrap_err().message(),
+            "bytecode stack underflow"
+        );
     }
 
     #[test]

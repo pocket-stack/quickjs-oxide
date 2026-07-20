@@ -1298,11 +1298,6 @@ struct Parser<'source> {
     /// Operators which make the surrounding expression cease to be an
     /// AnonymousFunctionDefinition clear this marker.
     anonymous_function_definition: Option<FunctionId>,
-    /// First implementation frontier whose surrounding syntax and declaration
-    /// conflicts must still be parsed before it becomes observable. This is
-    /// used only when a stack-balanced placeholder can safely carry parsing to
-    /// the end of the source; any later real syntax error wins naturally.
-    deferred_unsupported: Option<Error>,
 }
 
 enum RootCompileContext {
@@ -1391,7 +1386,6 @@ impl<'source> Parser<'source> {
             current_function: 0,
             in_mode: InMode::Allow,
             anonymous_function_definition: None,
-            deferred_unsupported: None,
             functions: vec![FunctionIr::new(
                 None,
                 root_kind,
@@ -1423,9 +1417,6 @@ impl<'source> Parser<'source> {
         parser.relex_current_with_strict(strict)?;
         parser.functions[0].strict = strict;
         parser.parse_script_body()?;
-        if let Some(error) = parser.deferred_unsupported {
-            return Err(error);
-        }
         Ok(FunctionTree {
             functions: parser.functions,
             source: source.into(),

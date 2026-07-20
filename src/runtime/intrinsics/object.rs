@@ -1773,6 +1773,61 @@ impl Runtime {
         Ok(Completion::Return(Value::Bool(left.same_value(right))))
     }
 
+    fn copy_data_properties_into_fresh_object(
+        &self,
+        realm: ContextId,
+        target: &ObjectRef,
+        source: &ObjectRef,
+        excluded: Option<&ObjectRef>,
+        enumerable_at_snapshot: bool,
+        rejection: &'static str,
+    ) -> Result<Completion, RuntimeError> {
+        if !target.belongs_to(self)
+            || !source.belongs_to(self)
+            || excluded.is_some_and(|object| !object.belongs_to(self))
+        {
+            return Err(RuntimeError::WrongRuntime("CopyDataProperties object"));
+        }
+
+        // Both QuickJS paths begin with one OwnPropertyKeys snapshot. Its
+        // ordinary-object path applies the ENUM_ONLY optimization during this
+        // pass. A future Proxy/exotic caller must select the live mode because
+        // QuickJS cannot use that optimization across observable descriptor
+        // traps.
+        let mut keys = Vec::new();
+        for key in self.own_property_keys(source)? {
+            let kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
+            if !matches!(kind, PropertyKeyKind::String | PropertyKeyKind::Symbol) {
+                continue;
+            }
+            if enumerable_at_snapshot && !self.own_property_is_enumerable(source, &key)? {
+                continue;
+            }
+            keys.push(key);
+        }
+
+        for key in keys {
+            // QuickJS checks the private exclusion Object before consulting
+            // the source descriptor. It is an own-property membership test,
+            // not ordinary `HasProperty`, so neither prototypes nor getters
+            // on the exclusion values participate.
+            if let Some(excluded) = excluded {
+                if self.has_own_property(excluded, &key)? {
+                    continue;
+                }
+            }
+            if !enumerable_at_snapshot && !self.own_property_is_enumerable(source, &key)? {
+                continue;
+            }
+            let value = match self.get_property_in_realm(realm, source, &key)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            self.define_fresh_object_descriptor_property(target, &key, value, rejection)?;
+        }
+        Ok(Completion::Return(Value::Undefined))
+    }
+
     /// Pinned QuickJS `JS_CopyDataProperties(..., setprop = 0)` as used by an
     /// Object literal spread. This intentionally preserves two upstream
     /// details which differ from a naive spec helper reuse:
@@ -1790,33 +1845,38 @@ impl Runtime {
         let Value::Object(source) = source else {
             return Ok(Completion::Return(Value::Undefined));
         };
-        if !target.belongs_to(self) || !source.belongs_to(self) {
-            return Err(RuntimeError::WrongRuntime("object-literal spread object"));
-        }
+        self.copy_data_properties_into_fresh_object(
+            realm,
+            target,
+            &source,
+            None,
+            true,
+            "fresh Object literal rejected a spread data property",
+        )
+    }
 
-        let mut keys = Vec::new();
-        for key in self.own_property_keys(&source)? {
-            let kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
-            if matches!(kind, PropertyKeyKind::String | PropertyKeyKind::Symbol)
-                && self.own_property_is_enumerable(&source, &key)?
-            {
-                keys.push(key);
-            }
-        }
-
-        for key in keys {
-            let value = match self.get_property_in_realm(realm, &source, &key)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            self.define_fresh_object_descriptor_property(
-                target,
-                &key,
-                value,
-                "fresh Object literal rejected a spread data property",
-            )?;
-        }
-        Ok(Completion::Return(Value::Undefined))
+    /// Exclusion-aware `JS_CopyDataProperties(..., setprop = 0)` for Object
+    /// rest. The caller has already performed the binding pattern's leading
+    /// `ToObject`, and `excluded` is the private fresh Object populated with
+    /// every String/Symbol key consumed by an earlier binding property. The
+    /// currently implemented source families follow QuickJS's ordinary
+    /// enumerable-at-snapshot path; future Proxy support must select the live
+    /// descriptor path in the shared helper above.
+    pub(in crate::runtime) fn copy_object_rest_data_properties(
+        &self,
+        realm: ContextId,
+        target: &ObjectRef,
+        source: &ObjectRef,
+        excluded: &ObjectRef,
+    ) -> Result<Completion, RuntimeError> {
+        self.copy_data_properties_into_fresh_object(
+            realm,
+            target,
+            source,
+            Some(excluded),
+            true,
+            "fresh Object rest result rejected a copied data property",
+        )
     }
 
     pub(in crate::runtime) fn call_object_assign(

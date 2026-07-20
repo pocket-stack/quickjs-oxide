@@ -5,7 +5,8 @@ use quickjs_oxide::{Context, Runtime, RuntimeError, Value};
 
 // This target pins the object-binding declaration path shared by direct
 // declarations, classic for heads, and for-in/of heads in QuickJS 2026-06-04.
-// Object-rest bindings and destructuring assignment are separate frontiers.
+// Object-rest bindings use the same declaration path; destructuring assignment
+// remains a separate frontier.
 
 const DIRECT_CASES: &[(&str, &str)] = &[
     (
@@ -47,6 +48,14 @@ const DIRECT_CASES: &[(&str, &str)] = &[
             var log='';
             let {outer:{value=(log+='V',40)}=(log+='P',{})}={outer:undefined};
             return value+'|'+log;
+        })()"#,
+    ),
+    (
+        "object rest excludes fixed computed and Symbol keys",
+        r#"(function(){
+            var symbol=Symbol('excluded'),source={fixed:1,kept:2};source[symbol]=3;
+            const {fixed,[symbol]:symbolic,...rest}=source;
+            return fixed+'|'+symbolic+'|'+rest.kept+'|'+('fixed' in rest)+'|'+(symbol in rest);
         })()"#,
     ),
 ];
@@ -352,15 +361,15 @@ const PARSER_CASES: &[(&str, &str)] = &[
         "let {...let}={}",
     ),
     (
-        "object rest defers its frontier until after an invalid initializer",
+        "invalid initializer wins after a valid object rest target",
         "let {...rest}=;",
     ),
     (
-        "for-of object rest defers its frontier until after an invalid RHS",
+        "invalid for-of RHS wins after a valid object rest target",
         "for(let {...rest} of ){}",
     ),
     (
-        "object rest defers its frontier until a later duplicate declaration",
+        "later duplicate declaration wins after a valid object rest binding",
         "let {...value}={},value",
     ),
 ];

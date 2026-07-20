@@ -7,7 +7,7 @@ fn context_can_preserve_an_implementation_frontier_without_a_js_exception() {
     let options = CompileOptions::new("unsupported.js");
     let RuntimeError::Engine(error) = context
         .compile_with_options_preserving_unsupported_diagnostics(
-            "let {...rest} = {value: 1};",
+            "try { throw {value: 1}; } catch ({value}) {}",
             &options,
         )
         .unwrap_err()
@@ -17,7 +17,7 @@ fn context_can_preserve_an_implementation_frontier_without_a_js_exception() {
     assert_eq!(error.kind(), ErrorKind::Unsupported);
     assert_eq!(
         error.message(),
-        "object rest destructuring bindings are not implemented yet"
+        "catch destructuring bindings are not implemented yet"
     );
     assert!(context.take_exception().unwrap().is_none());
 }
@@ -27,14 +27,16 @@ fn default_context_compilation_keeps_the_temporary_js_compatibility_boundary() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     assert_eq!(
-        context.compile("let {...rest} = {value: 1};").unwrap_err(),
+        context
+            .compile("try { throw {value: 1}; } catch ({value}) {}")
+            .unwrap_err(),
         RuntimeError::Exception
     );
     assert!(context.take_exception().unwrap().is_some());
 }
 
 #[test]
-fn object_rest_frontier_preserves_prior_lexical_conflict_diagnostics() {
+fn object_rest_bindings_preserve_lexical_conflict_diagnostics() {
     for source in [
         "let {value, ...value} = {value: 1};",
         "const {value, ...value} = {value: 1};",
@@ -51,7 +53,7 @@ fn object_rest_frontier_preserves_prior_lexical_conflict_diagnostics() {
 }
 
 #[test]
-fn object_rest_frontier_is_deferred_behind_later_source_errors() {
+fn object_rest_bindings_preserve_later_source_error_priority() {
     for (source, expected) in [
         ("let {...rest} = ;", "unexpected token in expression: ';'"),
         (

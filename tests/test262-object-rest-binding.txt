@@ -1,0 +1,34 @@
+# R2t dependency-audited ObjectBindingPattern rest declaration surface.
+#
+# Three generated semantic templates repeat across direct var/let/const,
+# classic-for var/let/const, and synchronous for-of var/let/const. Assignment,
+# parameter, catch, generator, class-static-block, module, and async paths stay
+# outside this executable cohort.
+
+test/language/statements/const/dstr/obj-ptrn-rest-getter.js
+test/language/statements/const/dstr/obj-ptrn-rest-skip-non-enumerable.js
+test/language/statements/const/dstr/obj-ptrn-rest-val-obj.js
+test/language/statements/for-of/dstr/const-obj-ptrn-rest-getter.js
+test/language/statements/for-of/dstr/const-obj-ptrn-rest-skip-non-enumerable.js
+test/language/statements/for-of/dstr/const-obj-ptrn-rest-val-obj.js
+test/language/statements/for-of/dstr/let-obj-ptrn-rest-getter.js
+test/language/statements/for-of/dstr/let-obj-ptrn-rest-skip-non-enumerable.js
+test/language/statements/for-of/dstr/let-obj-ptrn-rest-val-obj.js
+test/language/statements/for-of/dstr/var-obj-ptrn-rest-getter.js
+test/language/statements/for-of/dstr/var-obj-ptrn-rest-skip-non-enumerable.js
+test/language/statements/for-of/dstr/var-obj-ptrn-rest-val-obj.js
+test/language/statements/for/dstr/const-obj-ptrn-rest-getter.js
+test/language/statements/for/dstr/const-obj-ptrn-rest-skip-non-enumerable.js
+test/language/statements/for/dstr/const-obj-ptrn-rest-val-obj.js
+test/language/statements/for/dstr/let-obj-ptrn-rest-getter.js
+test/language/statements/for/dstr/let-obj-ptrn-rest-skip-non-enumerable.js
+test/language/statements/for/dstr/let-obj-ptrn-rest-val-obj.js
+test/language/statements/for/dstr/var-obj-ptrn-rest-getter.js
+test/language/statements/for/dstr/var-obj-ptrn-rest-skip-non-enumerable.js
+test/language/statements/for/dstr/var-obj-ptrn-rest-val-obj.js
+test/language/statements/let/dstr/obj-ptrn-rest-getter.js
+test/language/statements/let/dstr/obj-ptrn-rest-skip-non-enumerable.js
+test/language/statements/let/dstr/obj-ptrn-rest-val-obj.js
+test/language/statements/variable/dstr/obj-ptrn-rest-getter.js
+test/language/statements/variable/dstr/obj-ptrn-rest-skip-non-enumerable.js
+test/language/statements/variable/dstr/obj-ptrn-rest-val-obj.js

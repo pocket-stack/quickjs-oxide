@@ -347,6 +347,16 @@ pub(crate) trait VmHost {
     ) -> Result<Completion, Error>;
     /// Copy QuickJS object-literal spread data properties into `target`.
     fn copy_data_properties(&mut self, target: Value, source: Value) -> Result<Completion, Error>;
+    /// Copy Object-rest data properties after the compiler has performed the
+    /// pattern's leading `ToObject`. `excluded` is the private fresh Object
+    /// whose own String/Symbol keys identify properties already bound by the
+    /// pattern.
+    fn copy_data_properties_excluded(
+        &mut self,
+        target: Value,
+        source: Value,
+        excluded: Value,
+    ) -> Result<Completion, Error>;
     fn get_global_var(&mut self, index: u16, throw_if_missing: bool) -> Result<Completion, Error>;
     fn delete_global_var(&mut self, index: u16) -> Result<Completion, Error>;
     fn put_global_var(
@@ -533,6 +543,10 @@ struct DetachedHost<'a> {
     #[cfg(test)]
     copy_data_properties_inputs: Vec<(Value, Value)>,
     #[cfg(test)]
+    copy_data_properties_excluded_results: VecDeque<Completion>,
+    #[cfg(test)]
+    copy_data_properties_excluded_inputs: Vec<(Value, Value, Value)>,
+    #[cfg(test)]
     eval_identity_results: VecDeque<Result<bool, Error>>,
     #[cfg(test)]
     eval_identity_inputs: Vec<Value>,
@@ -609,6 +623,10 @@ impl<'a> DetachedHost<'a> {
             copy_data_properties_results: VecDeque::new(),
             #[cfg(test)]
             copy_data_properties_inputs: Vec::new(),
+            #[cfg(test)]
+            copy_data_properties_excluded_results: VecDeque::new(),
+            #[cfg(test)]
+            copy_data_properties_excluded_inputs: Vec::new(),
             #[cfg(test)]
             eval_identity_results: VecDeque::new(),
             #[cfg(test)]
@@ -1218,6 +1236,24 @@ impl VmHost for DetachedHost<'_> {
         ))
     }
 
+    fn copy_data_properties_excluded(
+        &mut self,
+        target: Value,
+        source: Value,
+        excluded: Value,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        if let Some(outcome) = self.copy_data_properties_excluded_results.pop_front() {
+            self.copy_data_properties_excluded_inputs
+                .push((target, source, excluded));
+            return Ok(outcome);
+        }
+        let _ = (target, source, excluded);
+        Err(Error::internal(
+            "detached VM cannot copy excluded runtime-owned Object properties",
+        ))
+    }
+
     fn get_global_var(
         &mut self,
         _index: u16,
@@ -1800,6 +1836,20 @@ impl CallFrame {
                     Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
                 }
             }
+            Instruction::CopyDataPropertiesExcluded {
+                target_depth,
+                source_depth,
+                excluded_depth,
+            } => {
+                let target = self.clone_at_depth(*target_depth)?;
+                let source = self.clone_at_depth(*source_depth)?;
+                let excluded = self.clone_at_depth(*excluded_depth)?;
+                if let Completion::Throw(value) =
+                    host.copy_data_properties_excluded(target, source, excluded)?
+                {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
             Instruction::ForInStart => {
                 let value = self.pop()?;
                 match host.for_in_start(value)? {
@@ -2158,6 +2208,7 @@ impl CallFrame {
                     | Instruction::DefineMethodComputed { .. }
                     | Instruction::SetProto
                     | Instruction::CopyDataProperties
+                    | Instruction::CopyDataPropertiesExcluded { .. }
                     | Instruction::ForInStart
                     | Instruction::ForInNext
             ) {
@@ -2646,6 +2697,9 @@ impl CallFrame {
             Instruction::CopyDataProperties => {
                 unreachable!("spread literal dispatch was bypassed")
             }
+            Instruction::CopyDataPropertiesExcluded { .. } => {
+                unreachable!("object-rest copy dispatch was bypassed")
+            }
             Instruction::Append => {
                 let iterable = self.pop()?;
                 let index = self.pop()?;
@@ -3128,6 +3182,18 @@ impl CallFrame {
         self.stack
             .pop()
             .ok_or_else(|| Error::internal("bytecode stack underflow"))
+    }
+
+    fn clone_at_depth(&self, depth: u8) -> Result<Value, Error> {
+        let index = self
+            .stack
+            .len()
+            .checked_sub(usize::from(depth) + 1)
+            .ok_or_else(|| Error::internal("bytecode stack depth operand is out of bounds"))?;
+        self.stack
+            .get(index)
+            .cloned()
+            .ok_or_else(|| Error::internal("bytecode stack depth operand is out of bounds"))
     }
 
     fn take_call_arguments(
@@ -4401,6 +4467,60 @@ mod tests {
     }
 
     #[test]
+    fn object_rest_copy_reads_depth_operands_after_to_object_and_preserves_the_stack() {
+        let excluded = Value::String(JsString::from_static("excluded"));
+        let primitive_source = Value::String(JsString::from_static("ab"));
+        let boxed_source = Value::String(JsString::from_static("boxed source"));
+        let reference = Value::String(JsString::from_static("prepared reference"));
+        let target = Value::String(JsString::from_static("target"));
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushConst(0),
+                Instruction::PushConst(1),
+                Instruction::ToObject,
+                Instruction::PushConst(2),
+                Instruction::PushConst(3),
+                Instruction::CopyDataPropertiesExcluded {
+                    target_depth: 0,
+                    source_depth: 2,
+                    excluded_depth: 3,
+                },
+                Instruction::Drop,
+                Instruction::Drop,
+                Instruction::Drop,
+                Instruction::Return,
+            ],
+            constants: vec![
+                excluded.clone(),
+                primitive_source.clone(),
+                reference,
+                target.clone(),
+            ],
+            local_count: 0,
+            max_stack: 4,
+        };
+        function.verify().unwrap();
+        let mut host = DetachedHost::new(&function);
+        host.box_primitive_results
+            .push_back(Ok(boxed_source.clone()));
+        host.copy_data_properties_excluded_results
+            .push_back(Completion::Return(Value::Undefined));
+
+        assert_eq!(
+            CallFrame::new(4)
+                .execute(&function.code, &mut host)
+                .unwrap(),
+            Completion::Return(excluded.clone())
+        );
+        assert_eq!(host.box_primitive_inputs, [primitive_source]);
+        assert_eq!(
+            host.copy_data_properties_excluded_inputs,
+            [(target, boxed_source, excluded)]
+        );
+    }
+
+    #[test]
     fn object_literal_opcodes_forward_host_throws() {
         let thrown = Value::String(JsString::from_static("literal throw"));
 
@@ -4463,11 +4583,42 @@ mod tests {
             .push_back(Completion::Throw(thrown.clone()));
         assert_eq!(
             CallFrame::new(2).execute(&spread.code, &mut host).unwrap(),
-            Completion::Throw(thrown)
+            Completion::Throw(thrown.clone())
         );
         assert_eq!(
             host.copy_data_properties_inputs,
             [(Value::Int(1), Value::Int(2))]
+        );
+
+        let rest = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::PushI32(2),
+                Instruction::PushI32(3),
+                Instruction::PushI32(4),
+                Instruction::CopyDataPropertiesExcluded {
+                    target_depth: 0,
+                    source_depth: 2,
+                    excluded_depth: 3,
+                },
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        rest.verify().unwrap();
+        let mut host = DetachedHost::new(&rest);
+        host.copy_data_properties_excluded_results
+            .push_back(Completion::Throw(thrown.clone()));
+        assert_eq!(
+            CallFrame::new(4).execute(&rest.code, &mut host).unwrap(),
+            Completion::Throw(thrown)
+        );
+        assert_eq!(
+            host.copy_data_properties_excluded_inputs,
+            [(Value::Int(4), Value::Int(2), Value::Int(1))]
         );
     }
 

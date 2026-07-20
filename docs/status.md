@@ -15,9 +15,9 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 34,916 passes and 38,421 runnable variants: 34.22% raw, a 41.78% lower
+  has 34,918 passes and 38,421 runnable variants: 34.22% raw, a 41.79% lower
   bound after the 18,475 pinned QuickJS target exclusions, or 94.10% among the
-  37,104 variants with a non-unsupported observed outcome. The fixed smoke now
+  37,106 variants with a non-unsupported observed outcome. The fixed smoke now
   has 191 passes and two explicit parser-frontier results. See
   `docs/test262.md` for the denominators and why none of these figures is a
   parity claim. The first
@@ -891,6 +891,50 @@ claim full parity.
   scanning, so later syntax errors and declaration conflicts retain QuickJS
   priority. The next binding slice is exclusion-aware object-rest
   `CopyDataProperties`.
+
+  R2t ports exclusion-aware ObjectBindingPattern rest declarations from
+  QuickJS 2026-06-04. The bytecode carries typed target/source/exclusion stack
+  depths and leaves those operands in place, matching upstream's
+  `OP_copy_data_properties` lowering without encoding parser-local scope state.
+  After source `ToObject`, a fresh exclusion object is created before any
+  computed-key conversion or getter. Fixed and computed String/Symbol keys
+  enter it before the rest copy; computed keys receive exactly one
+  `ToPropertyKey`, excluded
+  accessors are not read twice, and ordinary own enumerable String/Symbol keys
+  are copied in QuickJS order with fresh writable, enumerable, configurable
+  data properties. Direct `var`/`let`/`const`, classic `for`, and synchronous
+  `for-in`/`for-of` declarations share the existing recursive binding owner.
+  Sloppy `with` References are prepared before source enumeration and abrupt
+  copy/Put failures retain the surrounding iterator-close priority.
+
+  The dependency-audited R2t gate freezes 27 Test262 paths / 54 sloppy/strict
+  variants; all 54 are runnable and pass. Its exact two-feature scoped profile
+  has SHA-256
+  `122a2b055aaf40672a0540441861ecd1e6c09b65e88d45b947bc27a691afc45e`.
+  Normalized-manifest/manifest-file/key-set/empty-non-pass hashes are
+  `381dc052af426d6d73e498600660d479c843dee1333896958b73176e23b705d7`,
+  `fc75564488d2ae45a015fa8b07989f3a178f08978221d87ffdeeca0a9359fe57`,
+  `4b1f4177d308124eb74c0eff3a8028c4bf09b5cf713392467f635e05b03f7e7e`,
+  and
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`;
+  TSV/JSONL hashes are
+  `9a1a364218204b9d6aede93dadd52cb97256b1504a0f016e8d41d46cca3b26be`
+  and
+  `53d8920bf0b160e0899a56af3a64fa50be354a899d78a8ec6864be96b3c79694`.
+
+  The exact R2s/R2t full join retains all 102,037 keys and changes only the two
+  sloppy/strict variants of
+  `test/staging/sm/expressions/destructuring-object-__proto__-1.js` from
+  `unsupported-parser` to pass. There are zero previous-pass regressions,
+  missing/extra keys, or other outcome changes. Passes rise to 34,918 while
+  runnable variants remain 38,421 and typed parser frontiers fall to 1,166.
+  Full TSV/JSONL hashes are
+  `0c4e7a6e1939aaee3926e8cd2b91e05af0f61a4bfb0cf0c932827e49ea7bb95c`
+  and
+  `512e97b82df170c24e262968c6ebf73fa450be92fb1f0db14aaa58d50c17d7f6`.
+  Destructuring assignment, parameter patterns, and catch patterns remain
+  separate compiler surfaces; assignment lowering is the next high-yield
+  binding slice.
 
   Parameter initializers and other non-simple parameters, classes/derived
   construction, and async/generator method/accessor forms stay typed frontiers.
@@ -1775,8 +1819,8 @@ claim full parity.
   duplicate parameters remain distinct slots with the last slot winning, and
   the private named-function binding remains a lazy root local.
 
-  Source lexical population now covers simple-name and recursive array/object
-  `let` and `const` lists (except object rest) in the direct Program global
+  Source lexical population now covers simple-name and recursive
+  array/object/rest `let` and `const` lists in the direct Program global
   lexical environment plus four
   local authored environments: an ordinary function body (including a normal
   `%Function%` constructor body), every non-empty nested brace block, the one
@@ -1867,8 +1911,8 @@ claim full parity.
   `ParentGlobal` descriptors because they are semantic atoms, not debug-only
   lexical names.
 
-  Script `var` names from simple declarations and recursive array/object
-  patterns (except object rest) use the same production global-declaration path
+  Script `var` names from simple declarations and recursive array/object/rest
+  patterns use the same production global-declaration path
   in Program bodies, blocks,
   `if`/`switch` statements, and classic `for (;;)` heads. They never consume a
   script-frame local. Matching QuickJS,
@@ -2125,7 +2169,7 @@ claim full parity.
   scoped lexical creation, Annex source writes, and argument/local hoist
   attachment)
   in QuickJS 2026-06-04. Async/generator eval declarations, `for-await`,
-  destructuring assignment, object-rest binding patterns, destructuring in
+  destructuring assignment, destructuring in
   parameters or catch bindings, single-statement lexical declarations, and
   class scopes remain explicit boundaries rather than falling back to local or
   ordinary global storage.
@@ -2172,8 +2216,8 @@ claim full parity.
   primitive expression grammar,
   the current source path supports anonymous and named ordinary function
   expressions, simple parameters, `return`/fallthrough, function-local `var`,
-  Script-wide simple-name or recursive array/object `var`, direct Program
-  simple-name or recursive array/object `let`/`const` (except object rest), and
+  Script-wide simple-name or recursive array/object/rest `var`, direct Program
+  simple-name or recursive array/object/rest `let`/`const`, and
   the body/block/switch/classic-for-head lexical slice above,
   recursive block statements, `if`/`else` (including nearest-`if` binding),
   `while`/`do-while`, classic `for (;;)` loops, `switch` control flow and
@@ -2202,7 +2246,7 @@ claim full parity.
   `js_parse_skip_parens_token` to select a head with top-level semicolons,
   explicitly propagates QuickJS AllowIn/NoIn grammar state, and shares the
   function-local `var` declaration path. Its simple-name and recursive
-  array/object lexical declarations (except object rest) use the same NoIn
+  array/object/rest lexical declarations use the same NoIn
   initializer grammar, conflict registration,
   TDZ, NamedEvaluation, closure, read-only, and StripDebug paths in scripts,
   ordinary functions, and normal `%Function%` constructor bodies.
@@ -2247,9 +2291,10 @@ claim full parity.
   inner-to-outer order and interleave correctly with switch cleanup and
   try/finally subroutines. Recursive array declaration patterns reuse nested
   iterator records with QuickJS close semantics; recursive object declarations
-  share their fixed/computed property lowering and unwind nested arrays in
-  inner-to-outer order. Destructuring assignment, object rest, patterns in
-  parameters or catch bindings, and `for-await-of` remain explicit frontiers.
+  share their fixed/computed property and exclusion-aware rest lowering, then
+  unwind nested arrays in inner-to-outer order. Destructuring assignment,
+  patterns in parameters or catch bindings, and `for-await-of` remain explicit
+  frontiers.
   The classic
   head continues to port QuickJS's
   sloppy `is_let(..., DECL_MASK_OTHER)` ambiguity; the shared statement parser
@@ -3295,8 +3340,8 @@ claim full parity.
   to the hidden object, resets it to Uninitialized, and allows a later data
   definition to reconnect the same closures. These VarRef, hidden-object,
   Shape and atom edges participate in reference counting and trial-deletion GC.
-  Script-wide simple-name or recursive array/object `var` and direct Program
-  simple-name or recursive array/object `let`/`const` (except object rest) now
+  Script-wide simple-name or recursive array/object/rest `var` and direct Program
+  simple-name or recursive array/object/rest `let`/`const` now
   drive this substrate through production declaration instantiation rather
   than test-only helpers. The
   global lexical object stores the persistent binding while a same-name
@@ -3592,34 +3637,34 @@ claim full parity.
   locations, named initialization, normal `%Function%` bodies, nested script
   locals, shared switch conflicts, classic-for single-entry/cell lifetimes and
   pinned continue behavior, Program-global declaration descriptors, recursive
-  array/object binding declarations, explicit nonclassic-for and remaining
-  destructuring boundaries, and strip-debug name removal without losing
-  read-only atoms.
+  array/object/rest binding declarations, explicit nonclassic-for and remaining
+  assignment/parameter/catch destructuring boundaries, and strip-debug name
+  removal without losing read-only atoms.
   The companion `oracle_function_body_lexicals` target compares ordinary and
   normal-`Function` body/block/switch values, nested script block/switch locals,
   direct and transitive closure cells, repeated-entry and break/continue scope
   exits, cross-case TDZ/conflicts, TDZ/read-only CLI stacks, recursive
-  array/object binding declarations, and the remaining object-rest boundary
-  with the pinned release.
+  array/object/rest binding declarations, and the remaining
+  destructuring-assignment boundary with the pinned release.
   The `oracle_for_lexicals` target separately locks classic-head initialization
   and NoIn parsing, ordinary and normal-`Function` values, script-local and
   cross-eval captures, initializer/body/update cell identity, the pinned
   shared-head-cell continue quirk, labeled jumps through a nested switch,
   conflicts, exact full/StripDebug TDZ and read-only stacks, recursive
-  array/object binding declarations, and explicit object-rest/destructuring
-  assignment boundaries.
+  array/object/rest binding declarations, and the explicit
+  destructuring-assignment boundary.
   The `oracle_program_lexicals` target locks direct Program values, declaration
   source order, repeated eval persistence, globalThis separation and VarRef
   splitting, preflight atomicity, failed-initializer behavior, exact
-  full/StripDebug stacks and parser errors, recursive array/object binding
-  declarations, and the still-explicit object-rest boundary.
+  full/StripDebug stacks and parser errors, recursive array/object/rest binding
+  declarations, and the still-explicit assignment/parameter/catch boundaries.
   The `oracle_program_vars` target locks duplicate declaration records,
   no-initializer and unreachable-statement instantiation, classic-for shared
   cells, NamedEvaluation, cross-eval persistence and hidden-cell reconnection,
   exact global property attributes, data/accessor/AutoInit/inherited and
   non-extensible paths, mixed-declaration preflight atomicity, full/StripDebug
-  stacks, parser conflicts, recursive array/object binding declarations, and
-  explicit object-rest and nonclassic-loop boundaries.
+  stacks, parser conflicts, recursive array/object/rest binding declarations,
+  and explicit destructuring-assignment and nonclassic-loop boundaries.
   The `oracle_program_functions` target locks direct hoisting, duplicate and
   var/function source ordering, the pinned lexical-first asymmetry, global
   property normalization and rejection, two-pass atomicity, cross-eval cell
@@ -3661,9 +3706,14 @@ claim full parity.
   explicit catch-destructuring frontier.
   The `oracle_object_bindings` target locks direct, classic-for, and synchronous
   for-in/of declaration surfaces; fixed and computed String/Symbol property
-  keys; object/array recursion; defaults and NamedEvaluation; observable
-  `with` Reference timing; iterator unwind; malformed-pattern diagnostics; and
-  the deferred object-rest frontier.
+  keys; object/array/rest recursion; defaults and NamedEvaluation; observable
+  `with` Reference timing; exclusion and copy order; iterator unwind; and
+  malformed-pattern diagnostics.
+  The `oracle_object_rest` target separately locks fresh rest objects, fixed and
+  computed String/Symbol exclusions, one-shot `ToPropertyKey`, own-key and
+  enumerability snapshots followed by live `Get`, property definition order and
+  attributes, primitive boxing, nested patterns, sloppy `with` Reference
+  timing, parser skip-scanning, and copy/Put faults under iterator unwind.
   The `oracle_for_of` target locks simple binding/reference heads, recursive
   array/object declaration patterns, the generic iterator protocol and
   accessor order,
@@ -3671,8 +3721,8 @@ claim full parity.
   precedence, nested labels/switch/finally, raw
   native-next dispatch, realm splitting, exact diagnostics, and all three
   debug modes. Generic Array iteration is now covered by `oracle_array`;
-  `for-await-of`, destructuring assignment, object rest, other binding contexts,
-  and Iterator Helpers remain separate milestones.
+  `for-await-of`, destructuring assignment, other binding contexts, and
+  Iterator Helpers remain separate milestones.
   The `oracle_for_in` target locks ordinary and representation-sensitive fast
   Array enumeration, per-level snapshots, live presence/prototype changes,
   shadowing, primitive boxing, simple assignment plus simple-name/flat-array
@@ -3708,8 +3758,8 @@ trampoline plus explicit compiler work storage is required to recover
 upstream's substantially deeper platform-dependent limits throughout.
 
 The language slice remains incomplete. Async/generator declarations,
-`for-await`, destructuring assignment, object-rest binding patterns,
-destructuring parameters and catch bindings, other general assignment targets,
+`for-await`, destructuring assignment, destructuring parameters and catch
+bindings, other general assignment targets,
 module resolution,
 async/generator methods, parameter-initializer inheritance of HomeObject/`super`,
 classes and derived constructors, non-simple parameter lists including
@@ -3718,21 +3768,21 @@ classes are not yet
 implemented.
 Unsupported declaration contexts are rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` supports
-simple identifiers and recursive array/object patterns except object rest in
-direct Program code, authored
+simple identifiers and recursive array/object/rest patterns in direct Program
+code, authored
 ordinary-function bodies, non-empty nested brace blocks, shared switch scopes,
 classic `for (;;)` heads, and synchronous `for-in`/`for-of` heads. Patterns
 cover fixed and computed properties, undefined-only defaults, NamedEvaluation,
-array terminal rest, and object/array recursion. These forms also work in
-scripts, and ordinary
+array terminal rest, object rest, and object/array recursion. These forms also
+work in scripts, and ordinary
 bodies including classic heads are available through the normal `%Function%`
-constructor. Single-statement lexical declarations, object rest,
-destructuring assignment, patterns in parameters or catch bindings,
+constructor. Single-statement lexical declarations, destructuring assignment,
+patterns in parameters or catch bindings,
 and class lexical environments remain later compiler slices. Direct
 Program lexicals now use the production global VarRef path with two-phase
-instantiation; simple-name and recursive array/object Program vars plus direct
-ordinary function declarations use ordered, kind-specific global declaration
-records.
+instantiation; simple-name and recursive array/object/rest Program vars plus
+direct ordinary function declarations use ordered, kind-specific global
+declaration records.
 One internal resource-failure
 hardening gap is tracked here: the Rust path currently allocates the callable
 after creating accepted global bindings, whereas QuickJS reserves the
@@ -3868,7 +3918,7 @@ advanced RegExp grammar,
 Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. AggregateError and
 uncatchable termination state are also pending. Destructuring assignment,
-object-rest binding patterns, parameter and catch patterns, other iterator
+parameter and catch patterns, other iterator
 classes and helpers, the remaining RegExp grammar/static surface and
 Unicode-backed String methods, non-simple ObjectLiteral setter parameters,
 async/generator methods, parameter-initializer `super` inheritance,
@@ -4048,6 +4098,15 @@ object binding lowering grows the bounded `compiler/destructuring.rs` owner
 from 568 to 1,122 lines; the `compiler.rs` facade reaches 11,849 lines for its
 declaration-head wiring and deferred object-rest diagnostic frontier. The
 runtime monolith therefore does not grow with this compiler-only slice.
+R2t also keeps `runtime.rs` unchanged at 9,822 lines. Exclusion/rest lowering
+grows `compiler/destructuring.rs` from 1,122 to 1,247 lines while the compiler
+facade shrinks from 11,849 to 11,840 lines after removing the deferred
+whole-source diagnostic path. The shared CopyDataProperties kernel stays in
+`runtime/intrinsics/object.rs`, which grows from 2,246 to 2,306 lines; its
+VM-facing host bridge grows from 3,210 to 3,427 lines in
+`runtime/vm_host.rs`, while typed stack-depth metadata and dispatch remain in
+bytecode/VM owners. This adds the runtime behavior without resuming growth of
+the runtime facade.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -4172,6 +4231,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_for_of -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_bindings -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_object_rest -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_for_in -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -4307,6 +4368,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-array-binding-flat.sh
 ./scripts/test-test262-array-binding-nested.sh
 ./scripts/test-test262-object-binding.sh
+./scripts/test-test262-object-rest-binding.sh
 ./scripts/test-test262-full.sh
 ```
 

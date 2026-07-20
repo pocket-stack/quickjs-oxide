@@ -58,6 +58,10 @@ const TEST262_OBJECT_BINDING_PROFILE_SHA256: &str =
     "aa6cdca241b5f0be7eb202461ba80e44132f917a66480f1c04225cedc410d0d7";
 const TEST262_OBJECT_BINDING_MANIFEST_SHA256: &str =
     "ab9974676a1f15442875d6b9de607a27a94a76896a949c8b9cf86b05dbac18dc";
+const TEST262_OBJECT_REST_BINDING_PROFILE_SHA256: &str =
+    "122a2b055aaf40672a0540441861ecd1e6c09b65e88d45b947bc27a691afc45e";
+const TEST262_OBJECT_REST_BINDING_MANIFEST_SHA256: &str =
+    "fc75564488d2ae45a015fa8b07989f3a178f08978221d87ffdeeca0a9359fe57";
 const TEST262_MAP_PROFILE_SHA256: &str =
     "16ab6bfe18540aae398c847905f492491e81500045b45a6bfb21f447fd537ea2";
 const TEST262_MAP_MANIFEST_SHA256: &str =
@@ -569,6 +573,7 @@ enum OxideProfileKind {
     ArrayBindingFlat,
     ArrayBindingNested,
     ObjectBinding,
+    ObjectRestBinding,
     Map,
     Set,
     SymbolProtocols,
@@ -599,6 +604,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
             root.join("tests/test262-object-binding.conf"),
             OxideProfileKind::ObjectBinding,
         ),
+        (
+            root.join("tests/test262-object-rest-binding.conf"),
+            OxideProfileKind::ObjectRestBinding,
+        ),
         (root.join("tests/test262-map.conf"), OxideProfileKind::Map),
         (root.join("tests/test262-set.conf"), OxideProfileKind::Set),
         (
@@ -618,7 +627,7 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         }
     }
     Err(format!(
-        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-object-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
         path.display()
     ))
 }
@@ -754,6 +763,47 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 "scoped object binding Test262 manifest",
             )?;
             Ok(TEST262_OBJECT_BINDING_PROFILE_SHA256)
+        }
+        OxideProfileKind::ObjectRestBinding => {
+            verify_sha256(
+                &options.oxide_profile,
+                TEST262_OBJECT_REST_BINDING_PROFILE_SHA256,
+                "scoped object-rest binding Test262 capability profile",
+            )?;
+            if options.all || !options.tests.is_empty() {
+                return Err(
+                    "the scoped object-rest binding Test262 capability profile requires its pinned manifest"
+                        .to_owned(),
+                );
+            }
+            let manifest = options.manifest.as_ref().ok_or_else(|| {
+                "the scoped object-rest binding Test262 capability profile requires its pinned manifest"
+                    .to_owned()
+            })?;
+            let actual = fs::canonicalize(manifest).map_err(|error| {
+                format!(
+                    "resolve scoped object-rest binding manifest {}: {error}",
+                    manifest.display()
+                )
+            })?;
+            let expected = fs::canonicalize(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/test262-object-rest-binding.txt"),
+            )
+            .map_err(|error| {
+                format!("resolve pinned scoped object-rest binding manifest: {error}")
+            })?;
+            if actual != expected {
+                return Err(format!(
+                    "the scoped object-rest binding Test262 capability profile requires tests/test262-object-rest-binding.txt, found {}",
+                    manifest.display()
+                ));
+            }
+            verify_sha256(
+                manifest,
+                TEST262_OBJECT_REST_BINDING_MANIFEST_SHA256,
+                "scoped object-rest binding Test262 manifest",
+            )?;
+            Ok(TEST262_OBJECT_REST_BINDING_PROFILE_SHA256)
         }
         OxideProfileKind::Map => {
             verify_sha256(
@@ -1141,9 +1191,9 @@ mod cli_tests {
     use super::{
         Invocation, OxideProfileKind, TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256,
         TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256, TEST262_MAP_PROFILE_SHA256,
-        TEST262_OBJECT_BINDING_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
-        TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, default_worker_count, identify_oxide_profile,
-        parse_args, verify_oxide_profile,
+        TEST262_OBJECT_BINDING_PROFILE_SHA256, TEST262_OBJECT_REST_BINDING_PROFILE_SHA256,
+        TEST262_SET_PROFILE_SHA256, TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, default_worker_count,
+        identify_oxide_profile, parse_args, verify_oxide_profile,
     };
 
     fn parse(values: &[&str]) -> Result<Invocation, String> {
@@ -1245,6 +1295,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-object-binding.conf")).unwrap(),
             OxideProfileKind::ObjectBinding
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-object-rest-binding.conf")).unwrap(),
+            OxideProfileKind::ObjectRestBinding
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-map.conf")).unwrap(),
@@ -1391,6 +1445,53 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-object-binding.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_object_rest_binding_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-object-rest-binding.conf",
+            "--manifest",
+            "tests/test262-object-rest-binding.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_OBJECT_REST_BINDING_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/language/statements/variable/dstr/obj-ptrn-rest-getter.js",
+            ],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-object-rest-binding.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

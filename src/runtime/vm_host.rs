@@ -2145,6 +2145,30 @@ impl VmHost for RuntimeVmHost {
             .map_err(runtime_error_to_vm_error)
     }
 
+    fn copy_data_properties_excluded(
+        &mut self,
+        target: Value,
+        source: Value,
+        excluded: Value,
+    ) -> Result<Completion, Error> {
+        let Value::Object(target) = target else {
+            return Err(Error::internal("object-rest copy target was not an Object"));
+        };
+        let Value::Object(source) = source else {
+            return Err(Error::internal(
+                "object-rest source was not an Object after ToObject",
+            ));
+        };
+        let Value::Object(excluded) = excluded else {
+            return Err(Error::internal(
+                "object-rest exclusion list was not an Object",
+            ));
+        };
+        self.runtime
+            .copy_object_rest_data_properties(self.current_realm, &target, &source, &excluded)
+            .map_err(runtime_error_to_vm_error)
+    }
+
     fn get_global_var(&mut self, index: u16, throw_if_missing: bool) -> Result<Completion, Error> {
         let descriptor = *self
             .closure_variables
@@ -2935,6 +2959,20 @@ mod tests {
     use crate::bytecode::EvalVariableSource;
     use crate::object::CompleteOrdinaryPropertyDescriptor;
 
+    fn eval_object(context: &mut Context, source: &str) -> ObjectRef {
+        let Value::Object(object) = context.eval(source).unwrap() else {
+            panic!("{source} did not evaluate to an Object");
+        };
+        object
+    }
+
+    fn eval_string(context: &mut Context, source: &str) -> String {
+        let Value::String(value) = context.eval(source).unwrap() else {
+            panic!("{source} did not evaluate to a String");
+        };
+        value.to_utf8_lossy()
+    }
+
     fn local_variable_environment_host(
         runtime: Runtime,
         realm: ContextId,
@@ -3167,6 +3205,185 @@ mod tests {
                 .unwrap_err()
                 .message(),
             "local initialization referenced an ordinary local definition"
+        );
+    }
+
+    #[test]
+    fn object_rest_copy_snapshots_enumerability_excludes_string_and_symbol_keys_and_defines_data() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        context
+            .eval(
+                r#"
+                var __restCopy = (function(){
+                    var log="", setterHits=0;
+                    var keep=Symbol("keep"), omit=Symbol("omit");
+                    var source={}, excluded={}, target={};
+                    Object.defineProperty(source,"a",{
+                        enumerable:true, configurable:true,
+                        get:function(){
+                            log+="get-a|";
+                            Object.defineProperty(source,"b",{
+                                value:"B2",writable:true,enumerable:false,configurable:true
+                            });
+                            Object.defineProperty(source,"c",{
+                                value:"C2",writable:true,enumerable:true,configurable:true
+                            });
+                            source.late="late";
+                            return "A";
+                        }
+                    });
+                    source.b="B";
+                    Object.defineProperty(source,"c",{
+                        value:"C",writable:true,enumerable:false,configurable:true
+                    });
+                    Object.defineProperty(source,"skip",{
+                        enumerable:true,configurable:true,
+                        get:function(){log+="get-skip|";throw "skip getter ran"}
+                    });
+                    source[keep]="S";
+                    Object.defineProperty(source,omit,{
+                        enumerable:true,configurable:true,
+                        get:function(){log+="get-omit|";throw "omit getter ran"}
+                    });
+                    source.setterKey=42;
+                    excluded.skip=null;
+                    excluded[omit]=null;
+                    Object.defineProperty(Object.prototype,"setterKey",{
+                        configurable:true,set:function(){setterHits++}
+                    });
+                    return {
+                        source:source,excluded:excluded,target:target,
+                        observe:function(){
+                            delete Object.prototype.setterKey;
+                            function bits(key){
+                                var d=Object.getOwnPropertyDescriptor(target,key);
+                                return Number(d.writable)+""+Number(d.enumerable)+Number(d.configurable);
+                            }
+                            return Reflect.ownKeys(target).map(String).join(",")+"|"+
+                                target.a+"|"+target.b+"|"+target.setterKey+"|"+target[keep]+"|"+
+                                Object.hasOwn(target,"c")+"|"+Object.hasOwn(target,"late")+"|"+
+                                Object.hasOwn(target,"skip")+"|"+Object.hasOwn(target,omit)+"|"+
+                                log+"|"+setterHits+"|"+
+                                bits("a")+bits("b")+bits("setterKey")+bits(keep);
+                        }
+                    };
+                })();
+                undefined
+                "#,
+            )
+            .unwrap();
+        let source = eval_object(&mut context, "__restCopy.source");
+        let excluded = eval_object(&mut context, "__restCopy.excluded");
+        let target = eval_object(&mut context, "__restCopy.target");
+        let mut host = RuntimeVmHost::empty_for_test(runtime, context.realm);
+
+        assert_eq!(
+            host.copy_data_properties_excluded(
+                Value::Object(target),
+                Value::Object(source),
+                Value::Object(excluded),
+            )
+            .unwrap(),
+            Completion::Return(Value::Undefined)
+        );
+        assert_eq!(
+            eval_string(&mut context, "__restCopy.observe()"),
+            "a,b,setterKey,Symbol(keep)|A|B2|42|S|false|false|false|false|get-a||0|111111111111"
+        );
+    }
+
+    #[test]
+    fn object_rest_copy_stops_on_get_throw_after_preserving_prior_definitions() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        context
+            .eval(
+                r#"
+                var __restThrow = (function(){
+                    var log="",boom={},source={},target={},excluded={};
+                    Object.defineProperty(source,"a",{
+                        enumerable:true,get:function(){log+="a|";return 1}
+                    });
+                    Object.defineProperty(source,"b",{
+                        enumerable:true,get:function(){log+="b|";throw boom}
+                    });
+                    Object.defineProperty(source,"c",{
+                        enumerable:true,get:function(){log+="c|";return 3}
+                    });
+                    return {
+                        boom:boom,source:source,target:target,excluded:excluded,
+                        observe:function(){
+                            var d=Object.getOwnPropertyDescriptor(target,"a");
+                            return log+"|"+target.a+"|"+Object.hasOwn(target,"b")+"|"+
+                                Object.hasOwn(target,"c")+"|"+
+                                Number(d.writable)+Number(d.enumerable)+Number(d.configurable);
+                        }
+                    };
+                })();
+                undefined
+                "#,
+            )
+            .unwrap();
+        let boom = eval_object(&mut context, "__restThrow.boom");
+        let source = eval_object(&mut context, "__restThrow.source");
+        let target = eval_object(&mut context, "__restThrow.target");
+        let excluded = eval_object(&mut context, "__restThrow.excluded");
+        let mut host = RuntimeVmHost::empty_for_test(runtime, context.realm);
+
+        assert_eq!(
+            host.copy_data_properties_excluded(
+                Value::Object(target),
+                Value::Object(source),
+                Value::Object(excluded),
+            )
+            .unwrap(),
+            Completion::Throw(Value::Object(boom))
+        );
+        assert_eq!(
+            eval_string(&mut context, "__restThrow.observe()"),
+            "a|b||1|false|false|111"
+        );
+    }
+
+    #[test]
+    fn object_rest_copy_requires_compiler_preconversion_and_private_objects() {
+        let runtime = Runtime::new();
+        let context = runtime.new_context();
+        let target = runtime.new_object(None).unwrap();
+        let source = runtime.new_object(None).unwrap();
+        let excluded = runtime.new_object(None).unwrap();
+        let mut host = RuntimeVmHost::empty_for_test(runtime, context.realm);
+
+        assert_eq!(
+            host.copy_data_properties_excluded(
+                Value::Object(target.clone()),
+                Value::Null,
+                Value::Object(excluded.clone()),
+            )
+            .unwrap_err()
+            .message(),
+            "object-rest source was not an Object after ToObject"
+        );
+        assert_eq!(
+            host.copy_data_properties_excluded(
+                Value::Object(target.clone()),
+                Value::Object(source.clone()),
+                Value::Undefined,
+            )
+            .unwrap_err()
+            .message(),
+            "object-rest exclusion list was not an Object"
+        );
+        assert_eq!(
+            host.copy_data_properties_excluded(
+                Value::Int(0),
+                Value::Object(source),
+                Value::Object(excluded),
+            )
+            .unwrap_err()
+            .message(),
+            "object-rest copy target was not an Object"
         );
     }
 

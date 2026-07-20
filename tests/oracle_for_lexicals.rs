@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::process::{Command, Output};
 
-use quickjs_oxide::{Context, Runtime, RuntimeError, Value};
+use quickjs_oxide::{Runtime, Value};
 
 const VALUE_CASES: &[(&str, &str)] = &[
     (
@@ -99,6 +99,10 @@ const VALUE_CASES: &[(&str, &str)] = &[
     (
         "classic for object binding supports fixed computed and recursive properties",
         "(function(){let key='computed',result;for(let {fixed,[key]:computed,nested:{value=3}}={fixed:1,computed:2,nested:{}};(result=fixed+'|'+computed+'|'+value,false);){}return result;})()",
+    ),
+    (
+        "classic for lexical object rest excludes consumed keys",
+        "(function(){let result;for(let {skip,...rest}={skip:1,value:2};(result=skip+'|'+rest.value+'|'+('skip' in rest),false);){}return result;})()",
     ),
 ];
 
@@ -201,18 +205,6 @@ const SYNTAX_ERROR_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-struct BoundaryCase {
-    description: &'static str,
-    source: &'static str,
-    rust_message: &'static str,
-}
-
-const BOUNDARY_CASES: &[BoundaryCase] = &[BoundaryCase {
-    description: "classic for lexical object rest destructuring",
-    source: "(function(){for(let {...objectRest}={value:1};false;){}return 1;})()",
-    rust_message: "object rest destructuring bindings are not implemented yet",
-}];
-
 #[test]
 fn classic_for_lexical_values_match_pinned_quickjs() {
     let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
@@ -293,32 +285,6 @@ fn classic_for_lexical_parser_diagnostics_match_pinned_quickjs() {
 
     for &(description, source) in SYNTAX_ERROR_CASES {
         compare_cli(&oracle, &[], source, description);
-    }
-}
-
-#[test]
-fn nonclassic_and_destructuring_for_boundaries_remain_explicit() {
-    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
-        eprintln!("SKIP lexical-for boundary differential: set QJS_ORACLE to upstream qjs");
-        return;
-    };
-
-    for case in BOUNDARY_CASES {
-        let output = run_cli(&oracle, &[], case.source, case.description);
-        assert!(
-            output.status.success(),
-            "pinned QuickJS rejected {} ({:?}): {}",
-            case.description,
-            case.source,
-            String::from_utf8_lossy(&output.stderr),
-        );
-        assert_eq!(
-            rust_error_observation(case.source, case.description),
-            format!("SyntaxError|{}", case.rust_message),
-            "Rust boundary drifted for {} ({:?})",
-            case.description,
-            case.source,
-        );
     }
 }
 
@@ -417,45 +383,6 @@ fn oracle_two_eval_value_observation(oracle: &OsStr, setup: &str, observation: &
         .expect("QuickJS cross-eval output was not UTF-8")
         .trim_end()
         .to_owned()
-}
-
-fn rust_error_observation(source: &str, description: &str) -> String {
-    let runtime = Runtime::new();
-    let mut context = runtime.new_context();
-    assert_eq!(
-        context.eval_with_filename(source, "<cmdline>"),
-        Err(RuntimeError::Exception),
-        "Rust unexpectedly accepted {description}: {source:?}",
-    );
-    let Value::Object(error) = context
-        .take_exception()
-        .expect("take Rust exception")
-        .expect("Rust exception is present")
-    else {
-        panic!("Rust did not materialize an Error object for {description}");
-    };
-    let name = error_string_property(&runtime, &mut context, &error, "name", description);
-    let message = error_string_property(&runtime, &mut context, &error, "message", description);
-    format!("{name}|{message}")
-}
-
-fn error_string_property(
-    runtime: &Runtime,
-    context: &mut Context,
-    error: &quickjs_oxide::ObjectRef,
-    name: &str,
-    description: &str,
-) -> String {
-    let key = runtime
-        .intern_property_key(name)
-        .expect("Error property key");
-    let Value::String(value) = context
-        .get_property(error, &key)
-        .unwrap_or_else(|failure| panic!("read Error.{name} for {description}: {failure}"))
-    else {
-        panic!("Error.{name} was not a string for {description}");
-    };
-    value.to_utf8_lossy()
 }
 
 fn run_cli(program: &OsStr, options: &[&str], source: &str, description: &str) -> Output {

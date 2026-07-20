@@ -41,6 +41,10 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "let objectKey='computed',{fixed:objectFixed,[objectKey]:objectComputed}={fixed:1,computed:2};const {nested:{value:objectNested=3}}={nested:{}};objectFixed+'|'+objectComputed+'|'+objectNested+'|'+typeof globalThis.objectFixed+'|'+typeof globalThis.objectComputed+'|'+typeof globalThis.objectNested",
     ),
     (
+        "Program lexical object rest excludes consumed keys and stays off the global object",
+        "let {fixed,...objectRest}={fixed:1,value:2};fixed+'|'+objectRest.value+'|'+('fixed' in objectRest)+'|'+typeof globalThis.objectRest",
+    ),
+    (
         "declaration preserves an earlier script completion",
         "9;let value=1",
     ),
@@ -76,18 +80,6 @@ const SYNTAX_ERROR_CASES: &[(&str, &str)] = &[
     ),
     ("Program let cannot bind itself", "let let=1;"),
 ];
-
-struct BoundaryCase {
-    description: &'static str,
-    source: &'static str,
-    rust_message: &'static str,
-}
-
-const BOUNDARY_CASES: &[BoundaryCase] = &[BoundaryCase {
-    description: "Program lexical object rest destructuring",
-    source: "let {...objectRest}={value:1};objectRest.value",
-    rust_message: "object rest destructuring bindings are not implemented yet",
-}];
 
 #[test]
 fn program_lexical_values_match_pinned_quickjs() {
@@ -253,47 +245,6 @@ fn program_lexical_parser_diagnostics_match_pinned_quickjs() {
 
     for &(description, source) in SYNTAX_ERROR_CASES {
         compare_cli(&oracle, &[], source, description);
-    }
-}
-
-#[test]
-fn selected_unsupported_program_declaration_boundaries_stay_explicit() {
-    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
-        eprintln!("SKIP Program declaration boundaries: set QJS_ORACLE to upstream qjs");
-        return;
-    };
-
-    for case in BOUNDARY_CASES {
-        let quickjs = run_cli(&oracle, &[], case.source, case.description);
-        assert!(
-            quickjs.status.success(),
-            "pinned QuickJS rejected {}: {}",
-            case.description,
-            String::from_utf8_lossy(&quickjs.stderr),
-        );
-
-        let runtime = Runtime::new();
-        let mut context = runtime.new_context();
-        assert_eq!(
-            context.eval(case.source),
-            Err(RuntimeError::Exception),
-            "Rust unexpectedly accepted {}",
-            case.description,
-        );
-        let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
-            panic!(
-                "Rust boundary did not throw an Error for {}",
-                case.description
-            );
-        };
-        assert_eq!(
-            error_string_property(&runtime, &mut context, &error, "name", case.description),
-            "SyntaxError"
-        );
-        assert_eq!(
-            error_string_property(&runtime, &mut context, &error, "message", case.description),
-            case.rust_message
-        );
     }
 }
 

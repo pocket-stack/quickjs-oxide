@@ -76,6 +76,14 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "(function(){var result='';for(var {0:first} in {ab:1})result+=first;for(let {[1]:second} in {ab:1})result+=second;for(const {constructor:{name}} in {ab:1})result+=name;return result})()",
     ),
     (
+        "for-of object rest excludes consumed keys",
+        "(function(){var result='';for(const {skip,...rest} of [{skip:0,a:1},{skip:0,b:2}])result+=rest.a||rest.b;return result})()",
+    ),
+    (
+        "for-in object rest copies the remaining boxed string index",
+        "(function(){var result='';for(const {0:first,...rest} in {ab:1,cd:2})result+=first+rest[1];return result})()",
+    ),
+    (
         "for-of recursively nested array bindings receive fresh lexical cells",
         "(function(){var first,second,i=0;for(const [[value]=[0]] of [[[40]],[]]){if(i++===0)first=function(){return value};else second=function(){return value}}return first()+'|'+second()})()",
     ),
@@ -619,21 +627,13 @@ fn for_of_full_strip_source_and_strip_debug_stacks_match_pinned_quickjs() {
 }
 
 #[test]
-fn remaining_for_in_of_destructuring_and_for_await_boundaries_remain_explicit() {
+fn remaining_destructuring_assignment_and_for_await_boundaries_remain_explicit() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     for (source, expected) in [
         (
             "for([value] of [[1]])value",
             "for-of destructuring assignment patterns are not implemented yet",
-        ),
-        (
-            "for(const {...rest} in {ab:1})rest",
-            "for-in object rest destructuring bindings are not implemented yet",
-        ),
-        (
-            "for(const {...rest} of [{value:1}])rest",
-            "for-of object rest destructuring bindings are not implemented yet",
         ),
         (
             "for await(var value of 'a')value",

@@ -6,16 +6,6 @@ enum BindingSite {
     Iteration(ForIterationKind),
 }
 
-impl BindingSite {
-    fn unsupported(self, detail: &str) -> String {
-        match self {
-            Self::Declaration => detail.to_owned(),
-            Self::Iteration(ForIterationKind::In) => format!("for-in {detail}"),
-            Self::Iteration(ForIterationKind::Of) => format!("for-of {detail}"),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BindingPatternKind {
     Array,
@@ -31,6 +21,11 @@ enum ObjectBindingPropertyKey<'source> {
     Computed {
         span: Span,
     },
+}
+
+struct BindingPatternScan<'source> {
+    following: Token<'source>,
+    has_object_rest: bool,
 }
 
 impl<'source> Parser<'source> {
@@ -155,7 +150,21 @@ impl<'source> Parser<'source> {
         self.binding_pattern_following_token(Punctuator::LeftBrace)
     }
 
+    /// Report whether the matching ObjectBindingPattern contains a rest
+    /// property at its own nesting level. QuickJS knows `has_ellipsis` before
+    /// lowering the first property and therefore creates the exclusion object
+    /// before any computed key or getter can run.
+    fn object_binding_has_rest(&self) -> bool {
+        self.binding_pattern_scan(Punctuator::LeftBrace)
+            .is_some_and(|scan| scan.has_object_rest)
+    }
+
     fn binding_pattern_following_token(&self, opening: Punctuator) -> Option<Token<'source>> {
+        self.binding_pattern_scan(opening)
+            .map(|scan| scan.following)
+    }
+
+    fn binding_pattern_scan(&self, opening: Punctuator) -> Option<BindingPatternScan<'source>> {
         if !self.is_punctuator(opening) {
             return None;
         }
@@ -170,6 +179,7 @@ impl<'source> Parser<'source> {
         let mut delimiters = Vec::new();
         let mut goal = LexicalGoal::Div;
         let mut regexp_allowed = true;
+        let mut has_object_rest = false;
 
         loop {
             let requested_goal = goal;
@@ -189,6 +199,13 @@ impl<'source> Parser<'source> {
                     return None;
                 };
                 token = regexp;
+            }
+
+            if root == ForHeadDelimiter::Brace
+                && delimiters.as_slice() == [ForHeadDelimiter::Brace]
+                && matches!(token.kind, TokenKind::Punctuator(Punctuator::Ellipsis))
+            {
+                has_object_rest = true;
             }
 
             match &token.kind {
@@ -220,7 +237,10 @@ impl<'source> Parser<'source> {
                         return None;
                     }
                     if root == ForHeadDelimiter::Bracket && delimiters.is_empty() {
-                        return lexer.next_token().ok();
+                        return Some(BindingPatternScan {
+                            following: lexer.next_token().ok()?,
+                            has_object_rest,
+                        });
                     }
                 }
                 TokenKind::Punctuator(Punctuator::RightBrace) => {
@@ -233,7 +253,10 @@ impl<'source> Parser<'source> {
                         return None;
                     }
                     if root == ForHeadDelimiter::Brace && delimiters.is_empty() {
-                        return lexer.next_token().ok();
+                        return Some(BindingPatternScan {
+                            following: lexer.next_token().ok()?,
+                            has_object_rest,
+                        });
                     }
                 }
                 TokenKind::Template(part) => match part.kind {
@@ -583,12 +606,19 @@ impl<'source> Parser<'source> {
         site: BindingSite,
     ) -> Result<(), Error> {
         let pattern_span = self.current().span;
+        let has_rest = self.object_binding_has_rest();
         self.expect_punctuator(Punctuator::LeftBrace)?;
         self.emit_instruction_at(Instruction::ToObject, source_offset(pattern_span)?)?;
+        if has_rest {
+            // source exclusion -> exclusion source
+            self.emit_instruction(Instruction::Object)?;
+            self.emit_instruction(Instruction::Insert2)?;
+            self.emit_instruction(Instruction::Drop)?;
+        }
 
         while !self.is_punctuator(Punctuator::RightBrace) {
             if self.is_punctuator(Punctuator::Ellipsis) {
-                self.parse_object_binding_rest_frontier(declaration, is_const, site)?;
+                self.parse_object_binding_rest(declaration, is_const, has_rest)?;
                 break;
             }
 
@@ -607,6 +637,9 @@ impl<'source> Parser<'source> {
                 self.advance()?;
             }
 
+            let computed_key_is_canonical =
+                self.emit_object_binding_exclusion(&property, has_rest)?;
+
             let nested_pattern = if shorthand {
                 None
             } else {
@@ -616,7 +649,12 @@ impl<'source> Parser<'source> {
                 self.emit_nested_object_property_value(&property)?;
                 self.parse_nested_binding_element(declaration, is_const, site, false, pattern)?;
             } else {
-                self.parse_object_binding_leaf(property, declaration, is_const)?;
+                self.parse_object_binding_leaf(
+                    property,
+                    declaration,
+                    is_const,
+                    computed_key_is_canonical,
+                )?;
             }
 
             if self.is_punctuator(Punctuator::RightBrace) {
@@ -627,7 +665,52 @@ impl<'source> Parser<'source> {
 
         self.expect_punctuator(Punctuator::RightBrace)?;
         self.emit_instruction(Instruction::Drop)?;
+        if has_rest {
+            self.emit_instruction(Instruction::Drop)?;
+        }
         Ok(())
+    }
+
+    /// Add one already-evaluated property name to the exclusion object kept
+    /// below the source. For computed names this is also the single observable
+    /// `ToPropertyKey` conversion shared by exclusion and the following Get.
+    fn emit_object_binding_exclusion(
+        &mut self,
+        property: &ObjectBindingPropertyKey<'source>,
+        has_rest: bool,
+    ) -> Result<bool, Error> {
+        if !has_rest {
+            return Ok(false);
+        }
+
+        match property {
+            ObjectBindingPropertyKey::Fixed { key, token, .. } => {
+                // exclusion source -> source exclusion
+                self.emit_instruction(Instruction::Insert2)?;
+                self.emit_instruction(Instruction::Drop)?;
+                self.emit_instruction(Instruction::Null)?;
+                let key = self.add_constant(IrConstant::Primitive(Value::String(key.clone())))?;
+                self.emit_instruction_at(
+                    Instruction::DefineField(key),
+                    source_offset(token.span)?,
+                )?;
+                // source exclusion -> exclusion source
+                self.emit_instruction(Instruction::Insert2)?;
+                self.emit_instruction(Instruction::Drop)?;
+                Ok(false)
+            }
+            ObjectBindingPropertyKey::Computed { span } => {
+                // exclusion source raw-key -> exclusion source key
+                self.emit_instruction_at(Instruction::ToPropKey, source_offset(*span)?)?;
+                // exclusion source key -> source exclusion key
+                self.emit_instruction(Instruction::Perm3)?;
+                self.emit_instruction(Instruction::Null)?;
+                self.emit_instruction(Instruction::DefineArrayEl)?;
+                // source exclusion key -> exclusion source key
+                self.emit_instruction(Instruction::Perm3)?;
+                Ok(true)
+            }
+        }
     }
 
     fn parse_object_binding_property_name(
@@ -758,6 +841,7 @@ impl<'source> Parser<'source> {
         property: ObjectBindingPropertyKey<'source>,
         declaration: ForAssignmentDeclaration,
         is_const: bool,
+        computed_key_is_canonical: bool,
     ) -> Result<(), Error> {
         let (fixed_key, property_span, shorthand) = match property {
             ObjectBindingPropertyKey::Fixed {
@@ -834,7 +918,7 @@ impl<'source> Parser<'source> {
         }
 
         let reference_scope = self.current_ir().current_scope;
-        if fixed_key.is_none() {
+        if fixed_key.is_none() && !computed_key_is_canonical {
             // A leaf computed key is canonicalized before a sloppy `var`
             // Reference is prepared and before the property getter runs.
             self.emit_instruction(Instruction::ToPropKey)?;
@@ -906,11 +990,11 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    fn parse_object_binding_rest_frontier(
+    fn parse_object_binding_rest(
         &mut self,
         declaration: ForAssignmentDeclaration,
         is_const: bool,
-        site: BindingSite,
+        has_rest: bool,
     ) -> Result<(), Error> {
         let rest_span = self.current().span;
         self.advance()?;
@@ -961,11 +1045,52 @@ impl<'source> Parser<'source> {
                 unreachable!("object binding declaration was validated before parsing rest")
             }
         }
-        if self.deferred_unsupported.is_none() {
-            self.deferred_unsupported = Some(Error::unsupported(
-                site.unsupported("object rest destructuring bindings are not implemented yet"),
-                source_span(rest_span),
+        if !has_rest {
+            return Err(Error::internal(
+                "object rest binding was absent from its pattern skip-scan",
             ));
+        }
+
+        let reference_scope = self.current_ir().current_scope;
+        if declaration == ForAssignmentDeclaration::Var {
+            // QuickJS prepares a potentially dynamic sloppy-var Reference
+            // before allocating/enumerating the rest object.
+            self.emit_identifier_reference_inherited(
+                identifier.value.clone(),
+                token.span,
+                reference_scope,
+                IdentifierReferenceAccess::Prepare,
+            )?;
+        }
+        self.emit_instruction(Instruction::Object)?;
+        let (source_depth, excluded_depth) = if declaration == ForAssignmentDeclaration::Var {
+            (2, 3)
+        } else {
+            (1, 2)
+        };
+        self.emit_instruction_at(
+            Instruction::CopyDataPropertiesExcluded {
+                target_depth: 0,
+                source_depth,
+                excluded_depth,
+            },
+            source_offset(rest_span)?,
+        )?;
+        if declaration == ForAssignmentDeclaration::Var {
+            self.emit_identifier_reference_inherited(
+                identifier.value,
+                token.span,
+                reference_scope,
+                IdentifierReferenceAccess::Set,
+            )?;
+            self.emit_instruction(Instruction::Drop)?;
+        } else {
+            self.emit_identifier_inherited(
+                identifier.value,
+                token.span,
+                reference_scope,
+                IdentifierAccess::Initialize,
+            )?;
         }
         Ok(())
     }
