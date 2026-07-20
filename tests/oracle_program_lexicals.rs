@@ -37,6 +37,10 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "let [[first]=[40],...[second,third]]=[undefined,1,2];const [[fourth]]=[[2]];first+second+third+fourth+'|'+typeof globalThis.first",
     ),
     (
+        "Program lexical object bindings support fixed computed and recursive properties",
+        "let objectKey='computed',{fixed:objectFixed,[objectKey]:objectComputed}={fixed:1,computed:2};const {nested:{value:objectNested=3}}={nested:{}};objectFixed+'|'+objectComputed+'|'+objectNested+'|'+typeof globalThis.objectFixed+'|'+typeof globalThis.objectComputed+'|'+typeof globalThis.objectNested",
+    ),
+    (
         "declaration preserves an earlier script completion",
         "9;let value=1",
     ),
@@ -80,9 +84,9 @@ struct BoundaryCase {
 }
 
 const BOUNDARY_CASES: &[BoundaryCase] = &[BoundaryCase {
-    description: "Program lexical nested object destructuring",
-    source: "let [{value}]=[{value:1}];value",
-    rust_message: "object destructuring bindings are not implemented yet",
+    description: "Program lexical object rest destructuring",
+    source: "let {...objectRest}={value:1};objectRest.value",
+    rust_message: "object rest destructuring bindings are not implemented yet",
 }];
 
 #[test]

@@ -85,6 +85,18 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "(function(){const [[first]=[40],,[...[,second]]]=[undefined,0,[1,2]];return first+second;})()",
     ),
     (
+        "function body object lexical binding",
+        "(function(){const [{value}] = [{value:1}];return value;})()",
+    ),
+    (
+        "nested block object lexical binding",
+        "(function(){{const [{value}] = [{value:2}];return value;}})()",
+    ),
+    (
+        "switch object lexical binding",
+        "(function(){switch(0){case 0:const [{value}] = [{value:3}];return value;}})()",
+    ),
+    (
         "switch fallthrough shares one lexical environment",
         "(function(){ let read; switch (0) { case 0: let value = 40; read = function(){ return value; }; case 1: value++; break; } return read(); })()",
     ),
@@ -247,19 +259,19 @@ struct BoundaryCase {
 
 const BOUNDARY_CASES: &[BoundaryCase] = &[
     BoundaryCase {
-        description: "nested object lexical destructuring binding",
-        source: "(function(){ const [{value}] = [{value:1}]; return value; })()",
-        rust_message: "object destructuring bindings are not implemented yet",
+        description: "function body object rest lexical binding",
+        source: "(function(){ const {...rest} = {value:1}; return rest.value; })()",
+        rust_message: "object rest destructuring bindings are not implemented yet",
     },
     BoundaryCase {
-        description: "nested block object lexical destructuring binding",
-        source: "(function(){ { const [{value}] = [{value:1}]; return value; } })()",
-        rust_message: "object destructuring bindings are not implemented yet",
+        description: "nested block object rest lexical binding",
+        source: "(function(){ { const [{...rest}] = [{value:1}]; return rest.value; } })()",
+        rust_message: "object rest destructuring bindings are not implemented yet",
     },
     BoundaryCase {
-        description: "switch nested object lexical destructuring binding",
-        source: "(function(){ switch (0) { case 0: const [{value}] = [{value:1}]; return value; } })()",
-        rust_message: "object destructuring bindings are not implemented yet",
+        description: "switch object rest lexical binding",
+        source: "(function(){ switch (0) { case 0: const {...rest} = {value:1}; return rest.value; } })()",
+        rust_message: "object rest destructuring bindings are not implemented yet",
     },
 ];
 

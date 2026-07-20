@@ -7386,6 +7386,34 @@ fn for_in_of_array_bindings_use_nested_iterator_records() {
 }
 
 #[test]
+fn object_binding_declarations_cover_direct_and_loop_surfaces() {
+    for (source, expected) in [
+        (
+            "(function(){var {fixed}={fixed:'v'};let {['computed']:computed}={computed:'l'};const {nested:{value}}={nested:{value:'c'}};return fixed+computed+value})()",
+            "vlc",
+        ),
+        (
+            "(function(){var result='';for(var {fixed}={fixed:'v'};;){result+=fixed;break}for(let {['computed']:computed}={computed:'l'};;){result+=computed;break}for(const {nested:{value}}={nested:{value:'c'}};;){result+=value;break}return result})()",
+            "vlc",
+        ),
+        (
+            "(function(){var result='';for(var {0:first} in {ab:1})result+=first;for(let {[1]:second} in {ab:1})result+=second;for(const {constructor:{name}} in {ab:1})result+=name;return result})()",
+            "abString",
+        ),
+        (
+            "(function(){var result='';for(var {fixed} of [{fixed:'v'}])result+=fixed;for(let {['computed']:computed} of [{computed:'l'}])result+=computed;for(const {nested:{value}} of [{nested:{value:'c'}}])result+=value;return result})()",
+            "vlc",
+        ),
+    ] {
+        assert_eq!(
+            evaluate_in_context(source),
+            Value::String(JsString::from_static(expected)),
+            "{source}"
+        );
+    }
+}
+
+#[test]
 fn nested_finally_abrupt_edges_use_typed_cleanup_and_shared_subroutines() {
     let source = r#"
         (function f(){

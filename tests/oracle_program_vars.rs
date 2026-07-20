@@ -32,6 +32,10 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "var [[first]=[40],...[second,third]]=[undefined,1,2];first+'|'+second+'|'+third+'|'+globalThis.first",
     ),
     (
+        "Program var object binding supports fixed computed and recursive properties",
+        "var objectKey='computed';var {fixed:objectFixed,[objectKey]:objectComputed,nested:{value:objectNested=3}}={fixed:1,computed:2,nested:{}};objectFixed+'|'+objectComputed+'|'+objectNested+'|'+globalThis.objectFixed+'|'+globalThis.objectComputed+'|'+globalThis.objectNested",
+    ),
+    (
         "Program var preserves an earlier script completion",
         "9;var completed=1",
     ),
@@ -81,9 +85,9 @@ struct BoundaryCase {
 }
 
 const BOUNDARY_CASES: &[BoundaryCase] = &[BoundaryCase {
-    description: "Program var nested object destructuring",
-    source: "var [{value}]=[{value:1}];value",
-    rust_message: "object destructuring bindings are not implemented yet",
+    description: "Program var object rest destructuring",
+    source: "var {...objectRest}={value:1};objectRest.value",
+    rust_message: "object rest destructuring bindings are not implemented yet",
 }];
 
 const ORACLE_PROPERTY_PROBE: &str = r#"

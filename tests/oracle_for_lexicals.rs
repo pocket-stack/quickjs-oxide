@@ -96,6 +96,10 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "classic for nested array binding supports a pattern default",
         "(function(){let result;for(let [[value]=[42]]=[];(result=value,false);){}return result;})()",
     ),
+    (
+        "classic for object binding supports fixed computed and recursive properties",
+        "(function(){let key='computed',result;for(let {fixed,[key]:computed,nested:{value=3}}={fixed:1,computed:2,nested:{}};(result=fixed+'|'+computed+'|'+value,false);){}return result;})()",
+    ),
 ];
 
 const SCRIPT_VALUE_CASES: &[(&str, &str, &str)] = &[
@@ -204,9 +208,9 @@ struct BoundaryCase {
 }
 
 const BOUNDARY_CASES: &[BoundaryCase] = &[BoundaryCase {
-    description: "classic for lexical nested object destructuring",
-    source: "(function(){for(let [{value}]=[{value:1}];false;){}return 1;})()",
-    rust_message: "object destructuring bindings are not implemented yet",
+    description: "classic for lexical object rest destructuring",
+    source: "(function(){for(let {...objectRest}={value:1};false;){}return 1;})()",
+    rust_message: "object rest destructuring bindings are not implemented yet",
 }];
 
 #[test]

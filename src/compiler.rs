@@ -1298,6 +1298,11 @@ struct Parser<'source> {
     /// Operators which make the surrounding expression cease to be an
     /// AnonymousFunctionDefinition clear this marker.
     anonymous_function_definition: Option<FunctionId>,
+    /// First implementation frontier whose surrounding syntax and declaration
+    /// conflicts must still be parsed before it becomes observable. This is
+    /// used only when a stack-balanced placeholder can safely carry parsing to
+    /// the end of the source; any later real syntax error wins naturally.
+    deferred_unsupported: Option<Error>,
 }
 
 enum RootCompileContext {
@@ -1386,6 +1391,7 @@ impl<'source> Parser<'source> {
             current_function: 0,
             in_mode: InMode::Allow,
             anonymous_function_definition: None,
+            deferred_unsupported: None,
             functions: vec![FunctionIr::new(
                 None,
                 root_kind,
@@ -1417,6 +1423,9 @@ impl<'source> Parser<'source> {
         parser.relex_current_with_strict(strict)?;
         parser.functions[0].strict = strict;
         parser.parse_script_body()?;
+        if let Some(error) = parser.deferred_unsupported {
+            return Err(error);
+        }
         Ok(FunctionTree {
             functions: parser.functions,
             source: source.into(),
@@ -2159,9 +2168,11 @@ impl<'source> Parser<'source> {
                 self.current().kind,
                 TokenKind::Punctuator(Punctuator::LeftBrace)
             ) {
-                return Err(self.unsupported_here(format!(
-                    "{loop_name} destructuring bindings are not implemented yet"
-                )));
+                return self.parse_for_object_binding_pattern(
+                    iteration_kind,
+                    ForAssignmentDeclaration::Lexical,
+                    is_const,
+                );
             }
             let token = self.current().clone();
             let TokenKind::Identifier(identifier) = token.kind else {
@@ -2215,9 +2226,11 @@ impl<'source> Parser<'source> {
                 self.current().kind,
                 TokenKind::Punctuator(Punctuator::LeftBrace)
             ) {
-                return Err(self.unsupported_here(format!(
-                    "{loop_name} destructuring bindings are not implemented yet"
-                )));
+                return self.parse_for_object_binding_pattern(
+                    iteration_kind,
+                    ForAssignmentDeclaration::Var,
+                    false,
+                );
             }
             let token = self.current().clone();
             let TokenKind::Identifier(identifier) = token.kind else {
@@ -3036,13 +3049,9 @@ impl<'source> Parser<'source> {
         loop {
             if self.is_punctuator(Punctuator::LeftBracket) {
                 self.parse_array_binding_declaration(ForAssignmentDeclaration::Lexical, is_const)?;
+            } else if self.is_punctuator(Punctuator::LeftBrace) {
+                self.parse_object_binding_declaration(ForAssignmentDeclaration::Lexical, is_const)?;
             } else {
-                if self.is_punctuator(Punctuator::LeftBrace) {
-                    return Err(self.unsupported_here(
-                        "lexical destructuring bindings are not implemented yet",
-                    ));
-                }
-
                 let token = self.current().clone();
                 let TokenKind::Identifier(identifier) = token.kind else {
                     return Err(self.syntax_here("variable name expected"));
@@ -3125,6 +3134,8 @@ impl<'source> Parser<'source> {
         loop {
             if self.is_punctuator(Punctuator::LeftBracket) {
                 self.parse_array_binding_declaration(ForAssignmentDeclaration::Var, false)?;
+            } else if self.is_punctuator(Punctuator::LeftBrace) {
+                self.parse_object_binding_declaration(ForAssignmentDeclaration::Var, false)?;
             } else {
                 let token = self.current().clone();
                 let TokenKind::Identifier(identifier) = token.kind else {

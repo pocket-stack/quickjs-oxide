@@ -68,6 +68,14 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "(function(){var s='';for(const [a,b,] in {ab:1,cd:2})s+=a+b;return s})()",
     ),
     (
+        "for-of object bindings cover var let const and fixed computed recursive properties",
+        "(function(){var result='';for(var {fixed} of [{fixed:'v'}])result+=fixed;for(let {['computed']:computed} of [{computed:'l'}])result+=computed;for(const {nested:{value}} of [{nested:{value:'c'}}])result+=value;return result})()",
+    ),
+    (
+        "for-in object bindings cover var let const and fixed computed recursive properties",
+        "(function(){var result='';for(var {0:first} in {ab:1})result+=first;for(let {[1]:second} in {ab:1})result+=second;for(const {constructor:{name}} in {ab:1})result+=name;return result})()",
+    ),
+    (
         "for-of recursively nested array bindings receive fresh lexical cells",
         "(function(){var first,second,i=0;for(const [[value]=[0]] of [[[40]],[]]){if(i++===0)first=function(){return value};else second=function(){return value}}return first()+'|'+second()})()",
     ),
@@ -620,12 +628,12 @@ fn remaining_for_in_of_destructuring_and_for_await_boundaries_remain_explicit() 
             "for-of destructuring assignment patterns are not implemented yet",
         ),
         (
-            "for(const {value} of [{value:1}])value",
-            "for-of destructuring bindings are not implemented yet",
+            "for(const {...rest} in {ab:1})rest",
+            "for-in object rest destructuring bindings are not implemented yet",
         ),
         (
-            "for(const [{value}] of [[{value:1}]])value",
-            "for-of object destructuring bindings are not implemented yet",
+            "for(const {...rest} of [{value:1}])rest",
+            "for-of object rest destructuring bindings are not implemented yet",
         ),
         (
             "for await(var value of 'a')value",

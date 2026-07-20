@@ -754,9 +754,7 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
         assert_eq!(
-            context
-                .compile("let [{value}] = [{value: 1}];")
-                .unwrap_err(),
+            context.compile("let {...rest} = {value: 1};").unwrap_err(),
             RuntimeError::Exception
         );
         assert!(context.take_exception().unwrap().is_some());
@@ -766,7 +764,7 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
         let options = CompileOptions::new("unsupported.js");
         let RuntimeError::Engine(error) = context
             .compile_with_options_preserving_unsupported_diagnostics(
-                "let [{value}] = [{value: 1}];",
+                "let {...rest} = {value: 1};",
                 &options,
             )
             .unwrap_err()
@@ -776,7 +774,7 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
         assert_eq!(error.kind(), ErrorKind::Unsupported);
         assert_eq!(
             error.message(),
-            "object destructuring bindings are not implemented yet"
+            "object rest destructuring bindings are not implemented yet"
         );
         assert!(context.take_exception().unwrap().is_none());
     }

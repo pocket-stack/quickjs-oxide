@@ -1,12 +1,12 @@
 use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ArrayBindingSite {
+enum BindingSite {
     Declaration,
     Iteration(ForIterationKind),
 }
 
-impl ArrayBindingSite {
+impl BindingSite {
     fn unsupported(self, detail: &str) -> String {
         match self {
             Self::Declaration => detail.to_owned(),
@@ -16,9 +16,26 @@ impl ArrayBindingSite {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BindingPatternKind {
+    Array,
+    Object,
+}
+
+enum ObjectBindingPropertyKey<'source> {
+    Fixed {
+        key: JsString,
+        token: Token<'source>,
+        shorthand: Option<Identifier<'source>>,
+    },
+    Computed {
+        span: Span,
+    },
+}
+
 impl<'source> Parser<'source> {
-    /// Parse an ArrayBindingPattern whose initializer appears after the
-    /// pattern in source order. QuickJS's `js_parse_destructuring_element`
+    /// Parse a BindingPattern whose initializer appears after the pattern in
+    /// source order. QuickJS's `js_parse_destructuring_element`
     /// emits the assignment fragment first, jumps forward to compile/evaluate
     /// the initializer, then jumps back with its value. Keep the same control
     /// inversion so binding registration remains a single parser pass without
@@ -28,17 +45,34 @@ impl<'source> Parser<'source> {
         declaration: ForAssignmentDeclaration,
         is_const: bool,
     ) -> Result<(), Error> {
+        self.parse_binding_declaration(declaration, is_const, BindingPatternKind::Array)
+    }
+
+    pub(super) fn parse_object_binding_declaration(
+        &mut self,
+        declaration: ForAssignmentDeclaration,
+        is_const: bool,
+    ) -> Result<(), Error> {
+        self.parse_binding_declaration(declaration, is_const, BindingPatternKind::Object)
+    }
+
+    fn parse_binding_declaration(
+        &mut self,
+        declaration: ForAssignmentDeclaration,
+        is_const: bool,
+        pattern: BindingPatternKind,
+    ) -> Result<(), Error> {
         if !matches!(
             declaration,
             ForAssignmentDeclaration::Var | ForAssignmentDeclaration::Lexical
         ) {
             return Err(Error::internal(
-                "array binding pattern received a non-declaration target",
+                "binding pattern received a non-declaration target",
             ));
         }
 
         let pattern_span = self.current().span;
-        if !self.array_binding_initializer_ahead() {
+        if !self.binding_initializer_ahead(pattern) {
             return Err(Error::syntax(
                 "variable name expected",
                 source_span(pattern_span),
@@ -52,14 +86,27 @@ impl<'source> Parser<'source> {
         self.current_ir_mut().stack_depth = entry_depth
             .checked_add(1)
             .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
-        self.parse_array_binding_pattern(declaration, is_const, ArrayBindingSite::Declaration)?;
-        self.require_stack_depth(entry_depth, "array binding assignment")?;
+        match pattern {
+            BindingPatternKind::Array => {
+                self.parse_array_binding_pattern(declaration, is_const, BindingSite::Declaration)?;
+            }
+            BindingPatternKind::Object => {
+                self.parse_object_binding_pattern(declaration, is_const, BindingSite::Declaration)?;
+            }
+        }
+        self.require_stack_depth(entry_depth, "binding pattern assignment")?;
         let done_jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
 
         let initializer_target = self.current_ir().ops.len();
         self.patch_jump(initializer_jump, initializer_target)?;
         self.current_ir_mut().stack_depth = entry_depth;
         if !self.consume_punctuator(Punctuator::Equal)? {
+            if let TokenKind::Punctuator(punctuator) = self.current().kind {
+                return Err(self.syntax_here(format!(
+                    "unexpected token in expression: '{}'",
+                    punctuator.as_str()
+                )));
+            }
             return Err(Error::syntax(
                 "variable name expected",
                 source_span(pattern_span),
@@ -72,7 +119,7 @@ impl<'source> Parser<'source> {
         // NamedEvaluation applies to a default initializer at an individual
         // binding leaf, not to the iterable which feeds the whole pattern.
         self.anonymous_function_definition = None;
-        self.require_stack_depth(entry_depth + 1, "array binding initializer")?;
+        self.require_stack_depth(entry_depth + 1, "binding pattern initializer")?;
         self.emit_instruction(Instruction::Goto(
             u32::try_from(assignment_target)
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "out of memory"))?,
@@ -85,15 +132,18 @@ impl<'source> Parser<'source> {
     }
 
     /// QuickJS first skip-scans a declaration pattern and enters
-    /// `js_parse_destructuring_element` only when the matching outer `]` is
+    /// `js_parse_destructuring_element` only when the matching outer closer is
     /// followed by `=`. This preserves declaration-level error priority for a
     /// malformed or nested pattern which has no top-level initializer.
-    fn array_binding_initializer_ahead(&self) -> bool {
-        self.array_binding_following_token()
-            .is_some_and(|token| matches!(token.kind, TokenKind::Punctuator(Punctuator::Equal)))
+    fn binding_initializer_ahead(&self, pattern: BindingPatternKind) -> bool {
+        match pattern {
+            BindingPatternKind::Array => self.array_binding_following_token(),
+            BindingPatternKind::Object => self.object_binding_following_token(),
+        }
+        .is_some_and(|token| matches!(token.kind, TokenKind::Punctuator(Punctuator::Equal)))
     }
 
-    /// Return the first token after the matching `]` without committing the
+    /// Return the first token after the matching closer without committing the
     /// lexer. QuickJS uses this skip-scan both to recognize a nested binding
     /// pattern and to prioritize a nested-rest default error before parsing or
     /// registering any inner leaf.
@@ -221,19 +271,55 @@ impl<'source> Parser<'source> {
         declaration: ForAssignmentDeclaration,
         is_const: bool,
     ) -> Result<ForAssignmentTargetInfo, Error> {
+        self.parse_for_binding_pattern(
+            iteration_kind,
+            declaration,
+            is_const,
+            BindingPatternKind::Array,
+        )
+    }
+
+    pub(super) fn parse_for_object_binding_pattern(
+        &mut self,
+        iteration_kind: ForIterationKind,
+        declaration: ForAssignmentDeclaration,
+        is_const: bool,
+    ) -> Result<ForAssignmentTargetInfo, Error> {
+        self.parse_for_binding_pattern(
+            iteration_kind,
+            declaration,
+            is_const,
+            BindingPatternKind::Object,
+        )
+    }
+
+    fn parse_for_binding_pattern(
+        &mut self,
+        iteration_kind: ForIterationKind,
+        declaration: ForAssignmentDeclaration,
+        is_const: bool,
+        pattern: BindingPatternKind,
+    ) -> Result<ForAssignmentTargetInfo, Error> {
         if !matches!(
             declaration,
             ForAssignmentDeclaration::Var | ForAssignmentDeclaration::Lexical
         ) {
             return Err(Error::internal(
-                "array binding pattern received a non-declaration target",
+                "binding pattern received a non-declaration target",
             ));
         }
-        self.parse_array_binding_pattern(
-            declaration,
-            is_const,
-            ArrayBindingSite::Iteration(iteration_kind),
-        )?;
+        match pattern {
+            BindingPatternKind::Array => self.parse_array_binding_pattern(
+                declaration,
+                is_const,
+                BindingSite::Iteration(iteration_kind),
+            )?,
+            BindingPatternKind::Object => self.parse_object_binding_pattern(
+                declaration,
+                is_const,
+                BindingSite::Iteration(iteration_kind),
+            )?,
+        }
         Ok(ForAssignmentTargetInfo {
             declaration,
             var_initializer: None,
@@ -249,7 +335,7 @@ impl<'source> Parser<'source> {
         &mut self,
         declaration: ForAssignmentDeclaration,
         is_const: bool,
-        site: ArrayBindingSite,
+        site: BindingSite,
     ) -> Result<(), Error> {
         self.expect_punctuator(Punctuator::LeftBracket)?;
         self.emit_instruction(Instruction::ForOfStart)?;
@@ -280,9 +366,22 @@ impl<'source> Parser<'source> {
                         source_span(object_binding_span),
                     ));
                 }
-                return Err(self.unsupported_here(
-                    site.unsupported("object destructuring bindings are not implemented yet"),
-                ));
+                if is_rest {
+                    self.emit_array_binding_rest(0)?;
+                } else {
+                    self.emit_instruction(Instruction::ForOfNext(0))?;
+                    self.emit_instruction(Instruction::Drop)?;
+                }
+                self.parse_nested_object_binding_element(declaration, is_const, site, is_rest)?;
+
+                if self.is_punctuator(Punctuator::RightBracket) {
+                    break;
+                }
+                if is_rest {
+                    return Err(self.syntax_here("rest element must be the last one"));
+                }
+                self.expect_punctuator(Punctuator::Comma)?;
+                continue;
             }
 
             let nested_array_span = self.current().span;
@@ -352,6 +451,12 @@ impl<'source> Parser<'source> {
                     source_span(token.span),
                 ));
             };
+            if identifier.escaped_reserved_word {
+                return Err(Error::syntax(
+                    "invalid destructuring target",
+                    source_span(token.span),
+                ));
+            }
             validate_identifier_reservation(
                 &identifier,
                 token.span,
@@ -466,6 +571,405 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
+    /// Consume one already-evaluated value and initialize an ObjectBindingPattern.
+    /// The source Object remains below each property operation until the final
+    /// drop. Fixed and computed leaf reads deliberately prepare a sloppy `var`
+    /// Reference before invoking the getter, while nested patterns fetch their
+    /// outer value before recursively preparing any inner Reference.
+    fn parse_object_binding_pattern(
+        &mut self,
+        declaration: ForAssignmentDeclaration,
+        is_const: bool,
+        site: BindingSite,
+    ) -> Result<(), Error> {
+        let pattern_span = self.current().span;
+        self.expect_punctuator(Punctuator::LeftBrace)?;
+        self.emit_instruction_at(Instruction::ToObject, source_offset(pattern_span)?)?;
+
+        while !self.is_punctuator(Punctuator::RightBrace) {
+            if self.is_punctuator(Punctuator::Ellipsis) {
+                self.parse_object_binding_rest_frontier(declaration, is_const, site)?;
+                break;
+            }
+
+            let property = self.parse_object_binding_property_name()?;
+            let shorthand = matches!(
+                &property,
+                ObjectBindingPropertyKey::Fixed {
+                    shorthand: Some(_),
+                    ..
+                }
+            );
+            if !shorthand {
+                // Pinned QuickJS advances over the expected colon here rather
+                // than validating it in `js_parse_property_name`. Preserve its
+                // malformed-pattern error priority as well as the valid path.
+                self.advance()?;
+            }
+
+            let nested_pattern = if shorthand {
+                None
+            } else {
+                self.nested_binding_pattern_kind(Punctuator::RightBrace)
+            };
+            if let Some(pattern) = nested_pattern {
+                self.emit_nested_object_property_value(&property)?;
+                self.parse_nested_binding_element(declaration, is_const, site, false, pattern)?;
+            } else {
+                self.parse_object_binding_leaf(property, declaration, is_const)?;
+            }
+
+            if self.is_punctuator(Punctuator::RightBrace) {
+                break;
+            }
+            self.expect_punctuator(Punctuator::Comma)?;
+        }
+
+        self.expect_punctuator(Punctuator::RightBrace)?;
+        self.emit_instruction(Instruction::Drop)?;
+        Ok(())
+    }
+
+    fn parse_object_binding_property_name(
+        &mut self,
+    ) -> Result<ObjectBindingPropertyKey<'source>, Error> {
+        let token = self.current().clone();
+        match token.kind.clone() {
+            TokenKind::Identifier(identifier) => {
+                let key = JsString::try_from_utf8(&identifier.value)?;
+                self.advance()?;
+                // QuickJS's `js_parse_property_name` permits shorthand only
+                // for a non-reserved identifier. An escaped reserved spelling
+                // remains an Identifier token in this lexer, but must stay on
+                // the ordinary property-name path so the later target error
+                // wins at the same token as upstream.
+                let shorthand = (!identifier.escaped_reserved_word
+                    && !self.is_punctuator(Punctuator::Colon))
+                .then_some(identifier);
+                Ok(ObjectBindingPropertyKey::Fixed {
+                    key,
+                    token,
+                    shorthand,
+                })
+            }
+            TokenKind::Keyword(keyword) => {
+                self.advance()?;
+                Ok(ObjectBindingPropertyKey::Fixed {
+                    key: JsString::from_static(keyword.as_str()),
+                    token,
+                    shorthand: None,
+                })
+            }
+            TokenKind::String(string) => {
+                if self.current_ir().strict && string.has_legacy_octal_escape {
+                    return Err(Error::syntax(
+                        "legacy octal escapes are forbidden in strict mode",
+                        source_span(token.span),
+                    ));
+                }
+                self.advance()?;
+                Ok(ObjectBindingPropertyKey::Fixed {
+                    key: JsString::try_from_utf16(string.value.utf16)?,
+                    token,
+                    shorthand: None,
+                })
+            }
+            TokenKind::Number(number) => {
+                if self.current_ir().strict
+                    && matches!(
+                        number.kind,
+                        NumberKind::LegacyOctal | NumberKind::LegacyDecimal
+                    )
+                {
+                    return Err(Error::syntax(
+                        "legacy leading-zero numeric literals are forbidden in strict mode",
+                        source_span(token.span),
+                    ));
+                }
+                self.advance()?;
+                let key = parse_number(&number)
+                    .map_err(|message| Error::syntax(message, source_span(token.span)))?
+                    .to_js_string()?;
+                Ok(ObjectBindingPropertyKey::Fixed {
+                    key,
+                    token,
+                    shorthand: None,
+                })
+            }
+            TokenKind::Punctuator(Punctuator::LeftBracket) => {
+                self.advance_expression_start()?;
+                self.parse_assignment_allow_in()?;
+                self.anonymous_function_definition = None;
+                self.expect_punctuator(Punctuator::RightBracket)?;
+                Ok(ObjectBindingPropertyKey::Computed { span: token.span })
+            }
+            TokenKind::PrivateIdentifier(_) => Err(Error::syntax(
+                "invalid property name",
+                source_span(token.span),
+            )),
+            _ => Err(Error::syntax(
+                "invalid property name",
+                source_span(token.span),
+            )),
+        }
+    }
+
+    fn nested_binding_pattern_kind(&self, closing: Punctuator) -> Option<BindingPatternKind> {
+        let (pattern, following) = if self.is_punctuator(Punctuator::LeftBracket) {
+            (
+                BindingPatternKind::Array,
+                self.array_binding_following_token(),
+            )
+        } else if self.is_punctuator(Punctuator::LeftBrace) {
+            (
+                BindingPatternKind::Object,
+                self.object_binding_following_token(),
+            )
+        } else {
+            return None;
+        };
+        let following = following?;
+        match following.kind {
+            TokenKind::Punctuator(Punctuator::Comma | Punctuator::Equal) => Some(pattern),
+            TokenKind::Punctuator(punctuator) if punctuator == closing => Some(pattern),
+            _ => None,
+        }
+    }
+
+    fn emit_nested_object_property_value(
+        &mut self,
+        property: &ObjectBindingPropertyKey<'source>,
+    ) -> Result<(), Error> {
+        match property {
+            ObjectBindingPropertyKey::Fixed { key, token, .. } => {
+                let key = self.add_constant(IrConstant::Primitive(Value::String(key.clone())))?;
+                self.emit_instruction_at(Instruction::GetField2(key), source_offset(token.span)?)?;
+            }
+            ObjectBindingPropertyKey::Computed { span } => {
+                self.emit_instruction_at(Instruction::GetArrayEl2, source_offset(*span)?)?;
+            }
+        }
+        self.anonymous_function_definition = None;
+        Ok(())
+    }
+
+    fn parse_object_binding_leaf(
+        &mut self,
+        property: ObjectBindingPropertyKey<'source>,
+        declaration: ForAssignmentDeclaration,
+        is_const: bool,
+    ) -> Result<(), Error> {
+        let (fixed_key, property_span, shorthand) = match property {
+            ObjectBindingPropertyKey::Fixed {
+                key,
+                token,
+                shorthand,
+            } => (
+                Some(key),
+                token.span,
+                shorthand.map(|identifier| (token, identifier)),
+            ),
+            ObjectBindingPropertyKey::Computed { span } => (None, span, None),
+        };
+
+        let shorthand_binding = shorthand.is_some();
+        let (token, identifier) = if let Some(binding) = shorthand {
+            binding
+        } else {
+            let token = self.current().clone();
+            let TokenKind::Identifier(identifier) = token.kind.clone() else {
+                return Err(Error::syntax(
+                    "invalid destructuring target",
+                    source_span(token.span),
+                ));
+            };
+            self.advance()?;
+            (token, identifier)
+        };
+        if identifier.escaped_reserved_word {
+            return Err(Error::syntax(
+                "invalid destructuring target",
+                source_span(token.span),
+            ));
+        }
+        validate_identifier_reservation(
+            &identifier,
+            token.span,
+            self.current_ir().strict,
+            IdentifierContext::Variable,
+        )?;
+        let invalid_lexical_let =
+            declaration == ForAssignmentDeclaration::Lexical && identifier.value == "let";
+        if invalid_lexical_let {
+            return Err(self.syntax_here("invalid lexical variable name"));
+        }
+        let name = identifier.value;
+        if self.current_ir().strict && matches!(name.as_str(), "eval" | "arguments") {
+            // For shorthand properties QuickJS has already advanced to the
+            // token following the property name when it diagnoses this case.
+            let span = if shorthand_binding {
+                self.current().span
+            } else {
+                token.span
+            };
+            return Err(Error::syntax(
+                "invalid destructuring target",
+                source_span(span),
+            ));
+        }
+        match declaration {
+            ForAssignmentDeclaration::Lexical => self.register_lexical_binding(
+                &name,
+                token.span,
+                self.current().span,
+                is_const,
+                false,
+            )?,
+            ForAssignmentDeclaration::Var => {
+                self.register_var_binding(&name, token.span, self.current().span)?;
+            }
+            ForAssignmentDeclaration::Assignment => {
+                unreachable!("object binding declaration was validated before parsing properties")
+            }
+        }
+
+        let reference_scope = self.current_ir().current_scope;
+        if fixed_key.is_none() {
+            // A leaf computed key is canonicalized before a sloppy `var`
+            // Reference is prepared and before the property getter runs.
+            self.emit_instruction(Instruction::ToPropKey)?;
+        }
+        if declaration == ForAssignmentDeclaration::Var {
+            self.emit_identifier_reference_inherited(
+                name.clone(),
+                token.span,
+                reference_scope,
+                IdentifierReferenceAccess::Prepare,
+            )?;
+            if fixed_key.is_some() {
+                // source ref -> ref source
+                self.emit_instruction(Instruction::Insert2)?;
+            } else {
+                // source key ref -> ref source key
+                self.emit_instruction(Instruction::Insert3)?;
+            }
+            self.emit_instruction(Instruction::Drop)?;
+        }
+
+        if let Some(key) = fixed_key {
+            let key = self.add_constant(IrConstant::Primitive(Value::String(key)))?;
+            self.emit_instruction_at(Instruction::GetField2(key), source_offset(property_span)?)?;
+        } else {
+            self.emit_instruction_at(Instruction::GetArrayEl2, source_offset(property_span)?)?;
+        }
+        if declaration == ForAssignmentDeclaration::Var {
+            // ref source value -> source ref value
+            self.emit_instruction(Instruction::Perm3)?;
+        }
+
+        if self.consume_punctuator(Punctuator::Equal)? {
+            self.emit_instruction(Instruction::Dup)?;
+            self.emit_instruction(Instruction::Undefined)?;
+            self.emit_instruction(Instruction::StrictEq)?;
+            let has_value = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
+            self.emit_instruction(Instruction::Drop)?;
+            self.parse_assignment_allow_in()?;
+            if self.anonymous_function_definition.take().is_some() {
+                let name_constant = self.add_constant(IrConstant::Primitive(Value::String(
+                    JsString::try_from_utf8(&name)?,
+                )))?;
+                self.emit_instruction(Instruction::SetName(name_constant))?;
+            }
+            let has_value_target = self.current_ir().ops.len();
+            self.patch_jump(has_value, has_value_target)?;
+        }
+
+        if declaration == ForAssignmentDeclaration::Var {
+            self.emit_identifier_reference_inherited(
+                name,
+                token.span,
+                reference_scope,
+                IdentifierReferenceAccess::Set,
+            )?;
+            self.emit_instruction(Instruction::Drop)?;
+        } else {
+            self.emit_identifier_inherited(
+                name,
+                token.span,
+                reference_scope,
+                IdentifierAccess::Initialize,
+            )?;
+        }
+        if shorthand_binding {
+            self.anonymous_function_definition = None;
+        }
+        Ok(())
+    }
+
+    fn parse_object_binding_rest_frontier(
+        &mut self,
+        declaration: ForAssignmentDeclaration,
+        is_const: bool,
+        site: BindingSite,
+    ) -> Result<(), Error> {
+        let rest_span = self.current().span;
+        self.advance()?;
+        let token = self.current().clone();
+        let TokenKind::Identifier(identifier) = token.kind.clone() else {
+            return Err(Error::syntax(
+                "invalid destructuring target",
+                source_span(token.span),
+            ));
+        };
+        if identifier.escaped_reserved_word {
+            return Err(Error::syntax(
+                "invalid destructuring target",
+                source_span(token.span),
+            ));
+        }
+        validate_identifier_reservation(
+            &identifier,
+            token.span,
+            self.current_ir().strict,
+            IdentifierContext::Variable,
+        )?;
+        if self.current_ir().strict && matches!(identifier.value.as_str(), "eval" | "arguments") {
+            return Err(Error::syntax(
+                "invalid destructuring target",
+                source_span(token.span),
+            ));
+        }
+        self.advance()?;
+        if !self.is_punctuator(Punctuator::RightBrace) {
+            return Err(self.syntax_here("assignment rest property must be last"));
+        }
+        if declaration == ForAssignmentDeclaration::Lexical && identifier.value == "let" {
+            return Err(self.syntax_here("invalid lexical variable name"));
+        }
+        match declaration {
+            ForAssignmentDeclaration::Lexical => self.register_lexical_binding(
+                &identifier.value,
+                token.span,
+                self.current().span,
+                is_const,
+                false,
+            )?,
+            ForAssignmentDeclaration::Var => {
+                self.register_var_binding(&identifier.value, token.span, self.current().span)?;
+            }
+            ForAssignmentDeclaration::Assignment => {
+                unreachable!("object binding declaration was validated before parsing rest")
+            }
+        }
+        if self.deferred_unsupported.is_none() {
+            self.deferred_unsupported = Some(Error::unsupported(
+                site.unsupported("object rest destructuring bindings are not implemented yet"),
+                source_span(rest_span),
+            ));
+        }
+        Ok(())
+    }
+
     /// Parse a recursively nested array after its outer iterator has produced
     /// the value. QuickJS emits the nested assignment fragment first, then
     /// jumps forward to compile a following default initializer and back to
@@ -476,18 +980,51 @@ impl<'source> Parser<'source> {
         &mut self,
         declaration: ForAssignmentDeclaration,
         is_const: bool,
-        site: ArrayBindingSite,
+        site: BindingSite,
         is_rest: bool,
+    ) -> Result<(), Error> {
+        self.parse_nested_binding_element(
+            declaration,
+            is_const,
+            site,
+            is_rest,
+            BindingPatternKind::Array,
+        )
+    }
+
+    fn parse_nested_object_binding_element(
+        &mut self,
+        declaration: ForAssignmentDeclaration,
+        is_const: bool,
+        site: BindingSite,
+        is_rest: bool,
+    ) -> Result<(), Error> {
+        self.parse_nested_binding_element(
+            declaration,
+            is_const,
+            site,
+            is_rest,
+            BindingPatternKind::Object,
+        )
+    }
+
+    fn parse_nested_binding_element(
+        &mut self,
+        declaration: ForAssignmentDeclaration,
+        is_const: bool,
+        site: BindingSite,
+        is_rest: bool,
+        pattern: BindingPatternKind,
     ) -> Result<(), Error> {
         let value_depth = self.current_ir().stack_depth;
         if value_depth == 0 {
             return Err(Error::internal(
-                "nested array binding has no value to consume",
+                "nested binding pattern has no value to consume",
             ));
         }
 
         if is_rest {
-            self.parse_array_binding_pattern(declaration, is_const, site)?;
+            self.parse_binding_pattern(pattern, declaration, is_const, site)?;
             if self.is_punctuator(Punctuator::Equal) {
                 return Err(self.syntax_here("rest element cannot have a default value"));
             }
@@ -500,8 +1037,8 @@ impl<'source> Parser<'source> {
         let use_initializer = self.emit_instruction(Instruction::IfTrue(u32::MAX))?;
         let assignment_target = self.current_ir().ops.len();
 
-        self.parse_array_binding_pattern(declaration, is_const, site)?;
-        self.require_stack_depth(value_depth - 1, "nested array binding assignment")?;
+        self.parse_binding_pattern(pattern, declaration, is_const, site)?;
+        self.require_stack_depth(value_depth - 1, "nested binding pattern assignment")?;
 
         if self.consume_punctuator(Punctuator::Equal)? {
             let done_jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
@@ -515,7 +1052,7 @@ impl<'source> Parser<'source> {
             // A default attached to a BindingPattern does not perform
             // identifier NamedEvaluation; only a leaf default does.
             self.anonymous_function_definition = None;
-            self.require_stack_depth(value_depth, "nested array binding initializer")?;
+            self.require_stack_depth(value_depth, "nested binding pattern initializer")?;
             self.emit_instruction(Instruction::Goto(
                 u32::try_from(assignment_target)
                     .map_err(|_| Error::new(ErrorKind::JsInternal, "out of memory"))?,
@@ -531,6 +1068,23 @@ impl<'source> Parser<'source> {
             self.patch_jump(use_initializer, assignment_target)?;
         }
         Ok(())
+    }
+
+    fn parse_binding_pattern(
+        &mut self,
+        pattern: BindingPatternKind,
+        declaration: ForAssignmentDeclaration,
+        is_const: bool,
+        site: BindingSite,
+    ) -> Result<(), Error> {
+        match pattern {
+            BindingPatternKind::Array => {
+                self.parse_array_binding_pattern(declaration, is_const, site)
+            }
+            BindingPatternKind::Object => {
+                self.parse_object_binding_pattern(declaration, is_const, site)
+            }
+        }
     }
 
     /// QuickJS `js_emit_spread_code`: drain the active iterator into a fresh

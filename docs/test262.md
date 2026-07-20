@@ -50,12 +50,12 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 34,880 pass;
+- 34,916 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 46,494 are classified as unsupported because of a feature, mode, host
+- 46,458 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 552 fail to parse, 1,495 fail at runtime, 135 fail in the harness, and six
+- 543 fail to parse, 1,504 fail at runtime, 135 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 38,421 variants to execution. That count includes variants
@@ -64,14 +64,14 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 34.18% (`34,880 / 102,037`);
-- conservative target-scope lower bound: 41.74%
-  (`34,880 / (102,037 - 18,475)`);
+- raw suite pass rate: 34.22% (`34,916 / 102,037`);
+- conservative target-scope lower bound: 41.78%
+  (`34,916 / (102,037 - 18,475)`);
 - pass rate among variants with a non-unsupported observed outcome: 94.10%
-  (`34,880 / 37,068`).
+  (`34,916 / 37,104`).
 
-The 41.74% figure is the useful whole-project progress floor, not a claim that
-the engine is 41.74% conformant. The 94.10% conditional rate measures quality
+The 41.78% figure is the useful whole-project progress floor, not a claim that
+the engine is 41.78% conformant. The 94.10% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -91,9 +91,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`10704652e6a0f24369203c0830bf8e70c7cf3ecd6e158823ee70dc5130d91214`
+`616026d35b7b86f6b4e6c24d22456db9ca50b64fcc00e787472e75aeebc3e3c2`
 and
-`53590c254bbb591279dc86b4bb8c668dd5f84098fb8eaa0410318e6f42e924d8`.
+`a3f633ac23d0fe6d22dcec563ec7f2296f46b2be00738176b543079b7da283e6`.
 
 ## Milestone policy
 
@@ -1873,9 +1873,56 @@ runnable variants remain 38,421, and typed parser frontiers fall from 1,204 to
 and
 `53590c254bbb591279dc86b4bb8c668dd5f84098fb8eaa0410318e6f42e924d8`.
 
-Fixed/computed object binding properties are the next separable declaration
-slice. Object rest must additionally gain exclusion-aware
-`CopyDataProperties`; it is not implied by recursive array support.
+## R2s fixed/computed recursive object binding declarations
+
+R2s extends the shared declaration lowering to fixed and computed recursive
+ObjectBindingPatterns, following QuickJS 2026-06-04. Direct
+`var`/`let`/`const`, classic `for`, and synchronous `for-in`/`for-of`
+declaration heads accept identifier, String, numeric, keyword, computed String,
+and computed Symbol property keys. Defaults use undefined-only selection and
+NamedEvaluation, and object and array patterns recurse into each other.
+Property-key conversion, sloppy `var` Reference preparation, getters,
+initializers, and writes preserve QuickJS's observable `with` ordering.
+Abrupt nested patterns retain inner-to-outer iterator unwind and the pending
+original-error priority.
+
+The dependency-audited R2s gate freezes 36 generated positive templates across
+nine direct, classic-for, and synchronous for-of declaration surfaces: 324
+paths / 648 sloppy/strict variants. All 648 are runnable and pass. The global
+`destructuring-binding` capability remains closed; the gate's exact
+one-feature scoped profile has SHA-256
+`aa6cdca241b5f0be7eb202461ba80e44132f917a66480f1c04225cedc410d0d7`.
+Normalized-manifest, manifest-file, key-set, and empty non-pass SHA-256 values
+are
+`f6d9bda32460f3d16bd8084186c05b163e0d44a8788515fe20bf58a0f32d5c2d`,
+`ab9974676a1f15442875d6b9de607a27a94a76896a949c8b9cf86b05dbac18dc`,
+`bf712cfc7a3c455a2c8188baf82032876ba0321d3bf70d4c4281e00f4b945731`,
+and
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+Focused TSV/JSONL hashes are
+`70d85400fb852c831a1088a8a53e52f8a693eea660f14fc2429983f499858d09`
+and
+`27218697cb5950df31ae2ef0610ca57d39ee531f4e33ab757a3145c72fafae52`.
+Reproduce the gate with `scripts/test-test262-object-binding.sh`.
+
+The exact R2r/R2s full join retains all 102,037 unique keys. Forty-nine
+outcomes change across 25 paths, another 71 rows change detail only, and no
+previous pass regresses. The transitions are nine `fail-parse -> fail-runtime`,
+two `fail-parse -> pass`, two `fail-runtime -> pass`, two
+`unsupported-parser -> fail-parse`, two `unsupported-parser -> fail-runtime`,
+30 `unsupported-parser -> pass`, and two `unsupported-runtime -> pass`.
+Passes rise by 36 to 34,916 while runnable variants remain 38,421. Parse
+failures become 543, runtime failures 1,504, typed parser frontiers 1,168, and
+typed runtime frontiers 74. Full TSV/JSONL SHA-256 values are
+`616026d35b7b86f6b4e6c24d22456db9ca50b64fcc00e787472e75aeebc3e3c2`
+and
+`a3f633ac23d0fe6d22dcec563ec7f2296f46b2be00738176b543079b7da283e6`.
+
+Object rest remains a typed frontier because it still needs exclusion-aware
+`CopyDataProperties`. Its `Unsupported` result is now deferred until the whole
+source has completed syntax and declaration scanning, preserving the priority
+of later syntax errors and declaration conflicts. Exclusion-aware object rest
+is the next binding slice.
 
 ## Runner contract
 
@@ -1956,6 +2003,7 @@ canonical progress report.
 ./scripts/test-test262-symbol-protocols.sh
 ./scripts/test-test262-array-binding-flat.sh
 ./scripts/test-test262-array-binding-nested.sh
+./scripts/test-test262-object-binding.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -2030,6 +2078,12 @@ declarations, classic `for`, and synchronous `for-in`/`for-of`, passing all 144
 variants in its 72-path scoped gate. The two variants of
 `staging/sm/regress/regress-469625-03.js` move to pass with no other
 full-vector outcome change, bringing the complete vector to 34,880 passes.
+R2s adds fixed and computed recursive object declaration patterns on the same
+surfaces, including object/array recursion, observable `with` Reference timing,
+and iterator unwind. All 648 variants in its 324-path scoped gate pass. The
+full vector gains 36 passes with zero previous-pass regression, reaching
+34,916 passes among 38,421 runnable variants; exclusion-aware object rest is
+the next binding slice.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS
