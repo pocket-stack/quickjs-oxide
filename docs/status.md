@@ -15,9 +15,9 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 34,918 passes and 38,421 runnable variants: 34.22% raw, a 41.79% lower
-  bound after the 18,475 pinned QuickJS target exclusions, or 94.10% among the
-  37,106 variants with a non-unsupported observed outcome. The fixed smoke now
+  has 34,933 passes and 38,421 runnable variants: 34.24% raw, a 41.80% lower
+  bound after the 18,475 pinned QuickJS target exclusions, or 94.18% among the
+  37,093 variants with a non-unsupported observed outcome. The fixed smoke now
   has 191 passes and two explicit parser-frontier results. See
   `docs/test262.md` for the denominators and why none of these figures is a
   parity claim. The first
@@ -935,6 +935,54 @@ claim full parity.
   Destructuring assignment, parameter patterns, and catch patterns remain
   separate compiler surfaces; assignment lowering is the next high-yield
   binding slice.
+
+  R2u ports ArrayAssignmentPattern lowering from QuickJS 2026-06-04 for direct
+  AssignmentExpression and synchronous `for-in`/`for-of` assignment heads.
+  The direct control-inverted path keeps an independent RHS copy, so the
+  expression returns the original iterable while the pattern consumes its
+  working value. Identifier, fixed, computed, and `super` targets prepare their
+  complete Reference before `IteratorStep`; depth-addressed steps then preserve
+  computed-key conversion, Put, `with`, and abrupt-completion order. Empty
+  patterns, elisions, undefined-only defaults with NamedEvaluation, terminal
+  rest, and recursively nested arrays share the existing iterator-region
+  machinery. Matching-closer lookahead keeps leading Array/Object literal
+  member targets on the ordinary for-head path. Valid object assignment remains
+  a typed frontier, but a destructive syntax pass lets malformed object targets
+  retain QuickJS's earlier `SyntaxError` priority.
+
+  The focused pinned-QuickJS differential passes 12/12 Rust tests covering 31
+  semantic sources, 23 exact parser CLI diagnostics, eleven exact
+  iterator-origin stack traces, the object-assignment frontier, and a Rust-only
+  smoke. The dependency-audited Test262 gate freezes 70 direct
+  flat-array paths / 131 sloppy/strict variants; all 131 are runnable and pass.
+  Its exact five-feature profile has SHA-256
+  `b2133d90974566c72ab788525254de68d260b44756a8c5981111873fb38727af`.
+  Normalized-manifest/manifest-file/key-set/empty-non-pass hashes are
+  `ee0b310ee20a89e3cff58469a4a7020a4a73980f5086fe189964a2c6c10c120f`,
+  `046679bd745132066b4982770f13236bfecdbd953b70bdba98afa60424c599c8`,
+  `093abb8f2b240a97cd1bcf5728cbd720203e91b5ed9df00d22f0394cd86ef4cb`,
+  and
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`;
+  TSV/JSONL hashes are
+  `e3b579aacafa0f63e1e17857b242311ca2512481e86f8ddbe55fcbf28267df51`
+  and
+  `832eebb660ad3f50771c60348d203cb5eaef7055098d2a07098f86d04a1b5fc8`.
+
+  The exact R2t/R2u full join retains all 102,037 unique keys and changes 33
+  outcomes: 14 `fail-parse -> pass`, one `unsupported-parser -> pass`, 14
+  `fail-parse -> unsupported-parser`, and four `fail-parse -> fail-runtime`.
+  No previous pass regresses, and there are no missing, extra, duplicate, or
+  detail-only rows. Passes rise by 15 to 34,933 while runnable variants remain
+  38,421. The newly exposed non-pass cases stop honestly at object assignment,
+  Proxy, or an existing staging semantic frontier. Full TSV/JSONL hashes are
+  `17c3c36e73ad8d098ae9d3bd3fc5c5d372187830d5e11f8532bc28471fbb4da3`
+  and
+  `e9cb57c7616c27e01e156e7754b9cbc606c40100ea632bcc651c411d10c6c8e9`.
+  ObjectAssignmentPattern is the next assignment slice; parameters and catch
+  patterns remain independent compiler surfaces. A synchronous for-head nested
+  iterator-acquisition fault also still inherits the existing for-of control
+  marker rather than QuickJS's RHS value site; its behavior is correct, but
+  that debug-frame provenance remains a separate for-of source-map follow-up.
 
   Parameter initializers and other non-simple parameters, classes/derived
   construction, and async/generator method/accessor forms stay typed frontiers.
@@ -4107,6 +4155,13 @@ VM-facing host bridge grows from 3,210 to 3,427 lines in
 `runtime/vm_host.rs`, while typed stack-depth metadata and dispatch remain in
 bytecode/VM owners. This adds the runtime behavior without resuming growth of
 the runtime facade.
+R2u again leaves `runtime.rs` unchanged at 9,822 lines. Array assignment and
+the syntax-preserving object-assignment frontier grow the bounded
+`compiler/destructuring.rs` owner from 1,247 to 1,913 lines; exact direct and
+for-head dispatch adds only 20 net lines to the `compiler.rs` facade, now
+11,860 lines. The object-frontier validator is intentionally colocated with
+the lowering it will replace when ObjectAssignmentPattern lands, rather than
+adding another runtime or compiler-facade path.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -4233,6 +4288,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_bindings -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_rest -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_array_assignment -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_for_in -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -4367,6 +4424,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-symbol-protocols.sh
 ./scripts/test-test262-array-binding-flat.sh
 ./scripts/test-test262-array-binding-nested.sh
+./scripts/test-test262-array-assignment-flat.sh
 ./scripts/test-test262-object-binding.sh
 ./scripts/test-test262-object-rest-binding.sh
 ./scripts/test-test262-full.sh

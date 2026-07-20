@@ -627,19 +627,13 @@ fn for_of_full_strip_source_and_strip_debug_stacks_match_pinned_quickjs() {
 }
 
 #[test]
-fn remaining_destructuring_assignment_and_for_await_boundaries_remain_explicit() {
+fn remaining_for_await_boundary_remains_explicit() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
-    for (source, expected) in [
-        (
-            "for([value] of [[1]])value",
-            "for-of destructuring assignment patterns are not implemented yet",
-        ),
-        (
-            "for await(var value of 'a')value",
-            "for-await-of loops are not implemented yet",
-        ),
-    ] {
+    for (source, expected) in [(
+        "for await(var value of 'a')value",
+        "for-await-of loops are not implemented yet",
+    )] {
         let Err(RuntimeError::Exception) = context.compile(source) else {
             panic!("for-of boundary was not rejected explicitly: {source}");
         };

@@ -28,7 +28,113 @@ struct BindingPatternScan<'source> {
     has_object_rest: bool,
 }
 
+/// Prepared DestructuringAssignmentTarget.  The operands represented here
+/// stay above the active iterator record until its next value has been
+/// produced; the final write deliberately uses QuickJS's NOKEEP shape.
+enum ArrayAssignmentReference {
+    Identifier(IdentifierReference),
+    Member(MemberReference),
+}
+
+enum ArrayAssignmentPatternOutcome {
+    Lowered,
+    ObjectFrontier(Span),
+}
+
+impl ArrayAssignmentReference {
+    fn depth(&self) -> u8 {
+        match self {
+            Self::Identifier(reference) => u8::from(reference.object_environment),
+            Self::Member(MemberReference::Field { .. }) => 1,
+            Self::Member(MemberReference::Computed { .. }) => 2,
+            Self::Member(MemberReference::Super { .. }) => 3,
+        }
+    }
+
+    fn inferred_name(&self) -> Option<&str> {
+        match self {
+            Self::Identifier(reference) => Some(&reference.name),
+            Self::Member(_) => None,
+        }
+    }
+
+    fn site(&self) -> Result<SourceOffset, Error> {
+        match self {
+            Self::Identifier(reference) => source_offset(reference.span),
+            Self::Member(
+                MemberReference::Field { site, .. }
+                | MemberReference::Computed { site }
+                | MemberReference::Super { site },
+            ) => Ok(*site),
+        }
+    }
+}
+
 impl<'source> Parser<'source> {
+    /// Lower a direct ArrayAssignmentPattern while preserving the complete
+    /// right-hand-side value as the AssignmentExpression result.  Parsing is
+    /// control-inverted: the pattern fragment is emitted first, then the RHS
+    /// is parsed in source order and duplicated before jumping back into it.
+    pub(super) fn parse_array_assignment_expression(&mut self) -> Result<(), Error> {
+        let entry_depth = self.current_ir().stack_depth;
+        let initializer_jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
+        let assignment_target = self.current_ir().ops.len();
+
+        // The backward edge carries the retained expression result below the
+        // separate value consumed by the destructuring iterator.
+        self.current_ir_mut().stack_depth = entry_depth
+            .checked_add(2)
+            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+        if let ArrayAssignmentPatternOutcome::ObjectFrontier(pattern_span) =
+            self.parse_array_assignment_pattern()?
+        {
+            return Err(Self::object_assignment_pattern_unsupported(pattern_span));
+        }
+        self.require_stack_depth(entry_depth + 1, "array assignment pattern")?;
+        let done_jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
+
+        let initializer_target = self.current_ir().ops.len();
+        self.patch_jump(initializer_jump, initializer_target)?;
+        self.current_ir_mut().stack_depth = entry_depth;
+        self.expect_punctuator(Punctuator::Equal)?;
+        // QuickJS restores PF_IN_ACCEPTED for a destructuring RHS even when
+        // the enclosing expression is an ExpressionNoIn.
+        self.parse_assignment_allow_in()?;
+        self.anonymous_function_definition = None;
+        self.emit_instruction(Instruction::Dup)?;
+        self.require_stack_depth(entry_depth + 2, "array assignment initializer")?;
+        self.emit_instruction(Instruction::Goto(
+            u32::try_from(assignment_target)
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "out of memory"))?,
+        ))?;
+
+        let done_target = self.current_ir().ops.len();
+        self.patch_jump(done_jump, done_target)?;
+        self.current_ir_mut().stack_depth = entry_depth + 1;
+        self.current_ir_mut().last_member_reference = None;
+        self.current_ir_mut().last_identifier_reference = None;
+        Ok(())
+    }
+
+    /// Consume the value delivered by a synchronous for-in/of edge.  Unlike
+    /// the direct expression path there is no retained RHS copy beneath the
+    /// nested iterator record.
+    pub(super) fn parse_for_array_assignment_pattern(
+        &mut self,
+        _iteration_kind: ForIterationKind,
+    ) -> Result<ForAssignmentTargetInfo, Error> {
+        if let ArrayAssignmentPatternOutcome::ObjectFrontier(pattern_span) =
+            self.parse_array_assignment_pattern()?
+        {
+            return Err(Self::object_assignment_pattern_unsupported(pattern_span));
+        }
+        Ok(ForAssignmentTargetInfo {
+            declaration: ForAssignmentDeclaration::Assignment,
+            var_initializer: None,
+            is_destructuring: true,
+        })
+    }
+
     /// Parse a BindingPattern whose initializer appears after the pattern in
     /// source order. QuickJS's `js_parse_destructuring_element`
     /// emits the assignment fragment first, jumps forward to compile/evaluate
@@ -136,6 +242,268 @@ impl<'source> Parser<'source> {
             BindingPatternKind::Object => self.object_binding_following_token(),
         }
         .is_some_and(|token| matches!(token.kind, TokenKind::Punctuator(Punctuator::Equal)))
+    }
+
+    pub(super) fn array_assignment_pattern_ahead(&self) -> bool {
+        self.array_binding_following_token()
+            .is_some_and(|token| matches!(token.kind, TokenKind::Punctuator(Punctuator::Equal)))
+    }
+
+    pub(super) fn object_assignment_pattern_ahead(&self) -> bool {
+        self.object_binding_following_token()
+            .is_some_and(|token| matches!(token.kind, TokenKind::Punctuator(Punctuator::Equal)))
+    }
+
+    pub(super) fn for_array_assignment_pattern_ahead(
+        &self,
+        iteration_kind: ForIterationKind,
+    ) -> bool {
+        self.array_binding_following_token()
+            .is_some_and(|token| Self::is_iteration_delimiter(&token, iteration_kind))
+    }
+
+    pub(super) fn for_object_assignment_pattern_ahead(
+        &self,
+        iteration_kind: ForIterationKind,
+    ) -> bool {
+        self.object_binding_following_token()
+            .is_some_and(|token| Self::is_iteration_delimiter(&token, iteration_kind))
+    }
+
+    /// Preserve QuickJS's syntax-error priority at the still-unsupported
+    /// ObjectAssignmentPattern frontier.  Validation is intentionally
+    /// destructive because both outcomes abort this compilation: malformed
+    /// targets return their exact SyntaxError, while a valid pattern reaches
+    /// the typed Unsupported result below.
+    pub(super) fn reject_object_assignment_pattern<T>(&mut self) -> Result<T, Error> {
+        let pattern_span = self.current().span;
+        self.validate_object_assignment_pattern()?;
+        Err(Self::object_assignment_pattern_unsupported(pattern_span))
+    }
+
+    fn object_assignment_pattern_unsupported(pattern_span: Span) -> Error {
+        Error::unsupported(
+            "object destructuring assignment patterns are not implemented yet",
+            source_span(pattern_span),
+        )
+    }
+
+    fn validate_object_assignment_pattern(&mut self) -> Result<(), Error> {
+        self.expect_punctuator(Punctuator::LeftBrace)?;
+        while !self.is_punctuator(Punctuator::RightBrace) {
+            if self.consume_punctuator(Punctuator::Ellipsis)? {
+                let target = self.parse_validation_assignment_reference()?;
+                self.discard_validation_assignment_reference(target)?;
+                if !self.is_punctuator(Punctuator::RightBrace) {
+                    return Err(self.syntax_here("assignment rest property must be last"));
+                }
+                break;
+            }
+
+            let property = self.parse_object_binding_property_name()?;
+            let shorthand = match &property {
+                ObjectBindingPropertyKey::Fixed {
+                    token,
+                    shorthand: Some(identifier),
+                    ..
+                } => Some((token.clone(), identifier.clone())),
+                _ => None,
+            };
+            if matches!(property, ObjectBindingPropertyKey::Computed { .. }) {
+                // Property-name expressions are evaluated only so the normal
+                // parser can validate their grammar. No source object exists
+                // on this fail-closed frontier.
+                self.emit_instruction(Instruction::Drop)?;
+            }
+
+            if let Some((token, identifier)) = shorthand {
+                validate_identifier(
+                    &identifier,
+                    token.span,
+                    self.current_ir().strict,
+                    IdentifierContext::Reference,
+                )?;
+                if self.current_ir().strict
+                    && matches!(identifier.value.as_str(), "eval" | "arguments")
+                {
+                    return Err(self.syntax_here("invalid destructuring target"));
+                }
+                self.parse_validation_assignment_default()?;
+            } else {
+                self.expect_punctuator(Punctuator::Colon)?;
+                self.validate_object_assignment_element()?;
+            }
+
+            if self.is_punctuator(Punctuator::RightBrace) {
+                break;
+            }
+            self.expect_punctuator(Punctuator::Comma)?;
+            if self.is_punctuator(Punctuator::RightBrace) {
+                break;
+            }
+        }
+        self.expect_punctuator(Punctuator::RightBrace)
+    }
+
+    fn validate_object_assignment_element(&mut self) -> Result<(), Error> {
+        let nested_pattern = self.nested_binding_pattern_kind(Punctuator::RightBrace);
+        match nested_pattern {
+            Some(BindingPatternKind::Object) => self.validate_object_assignment_pattern()?,
+            Some(BindingPatternKind::Array) => self.validate_array_assignment_pattern()?,
+            None => {
+                let target = self.parse_validation_assignment_reference()?;
+                self.discard_validation_assignment_reference(target)?;
+            }
+        }
+        self.parse_validation_assignment_default()
+    }
+
+    /// Syntax-only counterpart of `parse_array_assignment_pattern`.  A valid
+    /// nested ObjectAssignmentPattern must not stop frontier validation: the
+    /// enclosing object may contain a later malformed target whose SyntaxError
+    /// has priority over this implementation's eventual Unsupported result.
+    fn validate_array_assignment_pattern(&mut self) -> Result<(), Error> {
+        self.expect_punctuator(Punctuator::LeftBracket)?;
+        self.validate_array_assignment_pattern_body()
+    }
+
+    fn validate_array_assignment_pattern_body(&mut self) -> Result<(), Error> {
+        while !self.is_punctuator(Punctuator::RightBracket) {
+            let is_rest = self.consume_punctuator(Punctuator::Ellipsis)?;
+            let element_span = self.current().span;
+            if is_rest
+                && matches!(
+                    self.current().kind,
+                    TokenKind::Punctuator(Punctuator::Comma | Punctuator::RightBracket)
+                )
+            {
+                return Err(Error::syntax(
+                    "missing binding pattern...",
+                    source_span(element_span),
+                ));
+            }
+
+            let nested_object_follow = self
+                .is_punctuator(Punctuator::LeftBrace)
+                .then(|| self.object_binding_following_token())
+                .flatten();
+            let nested_object = nested_object_follow.as_ref().is_some_and(|token| {
+                matches!(
+                    token.kind,
+                    TokenKind::Punctuator(
+                        Punctuator::Comma | Punctuator::Equal | Punctuator::RightBracket
+                    )
+                )
+            });
+            let nested_array_follow = self
+                .is_punctuator(Punctuator::LeftBracket)
+                .then(|| self.array_binding_following_token())
+                .flatten();
+            let nested_array = nested_array_follow.as_ref().is_some_and(|token| {
+                matches!(
+                    token.kind,
+                    TokenKind::Punctuator(
+                        Punctuator::Comma | Punctuator::Equal | Punctuator::RightBracket
+                    )
+                )
+            });
+
+            if nested_object || nested_array {
+                let nested_follow = if nested_object {
+                    nested_object_follow.as_ref()
+                } else {
+                    nested_array_follow.as_ref()
+                };
+                if is_rest
+                    && nested_follow.is_some_and(|token| {
+                        matches!(token.kind, TokenKind::Punctuator(Punctuator::Equal))
+                    })
+                {
+                    return Err(Error::syntax(
+                        "rest element cannot have a default value",
+                        source_span(element_span),
+                    ));
+                }
+                if nested_object {
+                    self.validate_object_assignment_pattern()?;
+                } else {
+                    self.validate_array_assignment_pattern()?;
+                }
+                if !is_rest {
+                    self.parse_validation_assignment_default()?;
+                }
+            } else if !is_rest && self.consume_punctuator(Punctuator::Comma)? {
+                continue;
+            } else {
+                let target = self.parse_validation_assignment_reference()?;
+                self.discard_validation_assignment_reference(target)?;
+                if !is_rest {
+                    self.parse_validation_assignment_default()?;
+                }
+            }
+
+            if self.is_punctuator(Punctuator::RightBracket) {
+                break;
+            }
+            if is_rest {
+                return Err(self.syntax_here("rest element must be the last one"));
+            }
+            self.expect_punctuator(Punctuator::Comma)?;
+        }
+        self.expect_punctuator(Punctuator::RightBracket)
+    }
+
+    fn validate_array_assignment_pattern_tail(&mut self, is_rest: bool) -> Result<(), Error> {
+        if self.is_punctuator(Punctuator::RightBracket) {
+            return self.expect_punctuator(Punctuator::RightBracket);
+        }
+        if is_rest {
+            return Err(self.syntax_here("rest element must be the last one"));
+        }
+        self.expect_punctuator(Punctuator::Comma)?;
+        self.validate_array_assignment_pattern_body()
+    }
+
+    fn parse_validation_assignment_default(&mut self) -> Result<(), Error> {
+        if self.consume_punctuator(Punctuator::Equal)? {
+            self.parse_assignment_allow_in()?;
+            self.emit_instruction(Instruction::Drop)?;
+            self.anonymous_function_definition = None;
+        }
+        Ok(())
+    }
+
+    fn parse_validation_assignment_reference(&mut self) -> Result<ArrayAssignmentReference, Error> {
+        self.parse_left_hand_side_expression()?;
+        if let Some(target) = self.take_tail_identifier_reference()? {
+            self.validate_identifier_assignment_target(&target)?;
+            return Ok(ArrayAssignmentReference::Identifier(target));
+        }
+        if let Some(target) = self.take_tail_member_reference()? {
+            return Ok(ArrayAssignmentReference::Member(target));
+        }
+        Err(self.syntax_here("invalid destructuring target"))
+    }
+
+    fn discard_validation_assignment_reference(
+        &mut self,
+        target: ArrayAssignmentReference,
+    ) -> Result<(), Error> {
+        for _ in 0..target.depth() {
+            self.emit_instruction(Instruction::Drop)?;
+        }
+        Ok(())
+    }
+
+    fn is_iteration_delimiter(token: &Token<'source>, iteration_kind: ForIterationKind) -> bool {
+        match iteration_kind {
+            ForIterationKind::In => matches!(token.kind, TokenKind::Keyword(Keyword::In)),
+            ForIterationKind::Of => matches!(
+                &token.kind,
+                TokenKind::Identifier(identifier)
+                    if identifier.value == "of" && !identifier.has_escape
+            ),
+        }
     }
 
     /// Return the first token after the matching closer without committing the
@@ -348,6 +716,283 @@ impl<'source> Parser<'source> {
             var_initializer: None,
             is_destructuring: true,
         })
+    }
+
+    /// Consume one already-evaluated value with an ArrayAssignmentPattern.
+    /// Each leaf prepares its complete lvalue before IteratorStep; therefore
+    /// getters, computed-key expressions, and authored `with` selection have
+    /// the same ordering as pinned QuickJS.  The prepared operand count is
+    /// passed to ForOfNext instead of being encoded through synthetic locals.
+    fn parse_array_assignment_pattern(&mut self) -> Result<ArrayAssignmentPatternOutcome, Error> {
+        self.expect_punctuator(Punctuator::LeftBracket)?;
+        self.emit_instruction(Instruction::ForOfStart)?;
+
+        while !self.is_punctuator(Punctuator::RightBracket) {
+            let is_rest = self.consume_punctuator(Punctuator::Ellipsis)?;
+            let element_span = self.current().span;
+            if is_rest
+                && matches!(
+                    self.current().kind,
+                    TokenKind::Punctuator(Punctuator::Comma | Punctuator::RightBracket)
+                )
+            {
+                return Err(Error::syntax(
+                    "missing binding pattern...",
+                    source_span(element_span),
+                ));
+            }
+
+            // An Object literal may likewise be the base of a member target
+            // (`{ x: 1 }.x`). Only the delimiter-followed form is an actual
+            // nested ObjectAssignmentPattern, which remains a typed frontier.
+            let nested_object_follow = self
+                .is_punctuator(Punctuator::LeftBrace)
+                .then(|| self.object_binding_following_token())
+                .flatten();
+            let nested_object = nested_object_follow.as_ref().is_some_and(|token| {
+                matches!(
+                    token.kind,
+                    TokenKind::Punctuator(
+                        Punctuator::Comma | Punctuator::Equal | Punctuator::RightBracket
+                    )
+                )
+            });
+            if nested_object {
+                if is_rest
+                    && nested_object_follow.as_ref().is_some_and(|token| {
+                        matches!(token.kind, TokenKind::Punctuator(Punctuator::Equal))
+                    })
+                {
+                    return Err(Error::syntax(
+                        "rest element cannot have a default value",
+                        source_span(element_span),
+                    ));
+                }
+                self.validate_object_assignment_pattern()?;
+                if !is_rest {
+                    self.parse_validation_assignment_default()?;
+                }
+                self.validate_array_assignment_pattern_tail(is_rest)?;
+                return Ok(ArrayAssignmentPatternOutcome::ObjectFrontier(element_span));
+            }
+
+            // A leading Array literal may itself be the base of a member
+            // target (`[x].p`).  It is a nested assignment pattern only when
+            // its matching closer is followed by this pattern's delimiter or
+            // by a nested default initializer.
+            let nested_array_follow = self
+                .is_punctuator(Punctuator::LeftBracket)
+                .then(|| self.array_binding_following_token())
+                .flatten();
+            let nested_array = nested_array_follow.as_ref().is_some_and(|token| {
+                matches!(
+                    token.kind,
+                    TokenKind::Punctuator(
+                        Punctuator::Comma | Punctuator::Equal | Punctuator::RightBracket
+                    )
+                )
+            });
+            if nested_array {
+                if is_rest
+                    && nested_array_follow.as_ref().is_some_and(|token| {
+                        matches!(token.kind, TokenKind::Punctuator(Punctuator::Equal))
+                    })
+                {
+                    return Err(Error::syntax(
+                        "rest element cannot have a default value",
+                        source_span(element_span),
+                    ));
+                }
+                if is_rest {
+                    // The outer rest drain runs before the nested pattern is
+                    // entered, so QuickJS retains the preceding outer marker.
+                    self.emit_array_rest(0, None)?;
+                } else {
+                    // The parent step runs before recursion and therefore
+                    // retains the preceding outer marker.
+                    self.emit_instruction(Instruction::ForOfNext(0))?;
+                    self.emit_instruction(Instruction::Drop)?;
+                }
+                if let Some(pattern_span) = self.parse_nested_array_assignment_element(is_rest)? {
+                    if !is_rest {
+                        self.parse_validation_assignment_default()?;
+                    }
+                    self.validate_array_assignment_pattern_tail(is_rest)?;
+                    return Ok(ArrayAssignmentPatternOutcome::ObjectFrontier(pattern_span));
+                }
+            } else if !is_rest && self.consume_punctuator(Punctuator::Comma)? {
+                // QuickJS leaves an elision unmarked: a leading hole inherits
+                // the pattern opener, while a later hole retains the most
+                // recent target/default site.
+                self.emit_instruction(Instruction::ForOfNext(0))?;
+                self.emit_instruction(Instruction::Drop)?;
+                self.emit_instruction(Instruction::Drop)?;
+                continue;
+            } else {
+                self.parse_array_assignment_leaf(is_rest)?;
+            }
+
+            if self.is_punctuator(Punctuator::RightBracket) {
+                break;
+            }
+            if is_rest {
+                return Err(self.syntax_here("rest element must be the last one"));
+            }
+            self.expect_punctuator(Punctuator::Comma)?;
+        }
+
+        self.expect_punctuator(Punctuator::RightBracket)?;
+        self.emit_instruction(Instruction::IteratorClose)?;
+        self.anonymous_function_definition = None;
+        Ok(ArrayAssignmentPatternOutcome::Lowered)
+    }
+
+    fn parse_array_assignment_leaf(&mut self, is_rest: bool) -> Result<(), Error> {
+        let target = self.parse_array_assignment_reference()?;
+        let reference_depth = target.depth();
+        let inferred_name = target.inferred_name().map(str::to_owned);
+        let target_site = target.site()?;
+
+        if is_rest {
+            self.emit_array_assignment_rest(reference_depth, target_site)?;
+        } else {
+            self.emit_instruction_at(Instruction::ForOfNext(reference_depth), target_site)?;
+            self.emit_instruction(Instruction::Drop)?;
+            if self.consume_punctuator(Punctuator::Equal)? {
+                self.emit_instruction(Instruction::Dup)?;
+                self.emit_instruction(Instruction::Undefined)?;
+                self.emit_instruction(Instruction::StrictEq)?;
+                let has_value = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
+                self.emit_instruction(Instruction::Drop)?;
+                self.parse_assignment_allow_in()?;
+                let anonymous_default = self.anonymous_function_definition.take().is_some();
+                if anonymous_default && let Some(name) = inferred_name {
+                    let name_constant = self.add_constant(IrConstant::Primitive(Value::String(
+                        JsString::try_from_utf8(&name)?,
+                    )))?;
+                    self.emit_instruction(Instruction::SetName(name_constant))?;
+                }
+                let has_value_target = self.current_ir().ops.len();
+                self.patch_jump(has_value, has_value_target)?;
+            }
+        }
+
+        self.emit_array_assignment_put(target)
+    }
+
+    /// Parse a syntactic LeftHandSideExpression and leave only its Reference
+    /// operands on the stack.  Computed property keys intentionally remain in
+    /// their raw form here: PutArrayEl/PutSuperValue performs ToPropertyKey
+    /// after IteratorStep has produced the replacement value.
+    fn parse_array_assignment_reference(&mut self) -> Result<ArrayAssignmentReference, Error> {
+        self.parse_left_hand_side_expression()?;
+        if let Some(target) = self.take_tail_identifier_reference()? {
+            self.validate_identifier_assignment_target(&target)?;
+            return Ok(ArrayAssignmentReference::Identifier(target));
+        }
+        if let Some(target) = self.take_tail_member_reference()? {
+            return Ok(ArrayAssignmentReference::Member(target));
+        }
+        Err(self.syntax_here("invalid destructuring target"))
+    }
+
+    /// QuickJS PUT_LVALUE_NOKEEP: consume both the prepared Reference and the
+    /// assigned value.  A direct destructuring expression obtains its result
+    /// from the independent RHS copy below the iterator, never from this put.
+    fn emit_array_assignment_put(&mut self, target: ArrayAssignmentReference) -> Result<(), Error> {
+        match target {
+            ArrayAssignmentReference::Identifier(target) => {
+                if target.object_environment {
+                    self.emit_identifier_reference_inherited(
+                        target.name,
+                        target.span,
+                        target.scope,
+                        IdentifierReferenceAccess::Set,
+                    )?;
+                    self.emit_instruction(Instruction::Drop)?;
+                } else {
+                    self.emit_identifier_inherited(
+                        target.name,
+                        target.span,
+                        target.scope,
+                        IdentifierAccess::Put,
+                    )?;
+                }
+            }
+            ArrayAssignmentReference::Member(MemberReference::Field { key, site }) => {
+                self.emit_instruction_at(Instruction::PutField(key), site)?;
+            }
+            ArrayAssignmentReference::Member(MemberReference::Computed { site }) => {
+                self.emit_instruction_at(Instruction::PutArrayEl, site)?;
+            }
+            ArrayAssignmentReference::Member(MemberReference::Super { site }) => {
+                self.emit_instruction_at(Instruction::PutSuperValue, site)?;
+            }
+        }
+        self.anonymous_function_definition = None;
+        Ok(())
+    }
+
+    /// A default following a nested pattern is parsed after that complete
+    /// pattern in source order but must execute before its inner ForOfStart.
+    /// Emit the recursive fragment first and use the same backward-edge shape
+    /// as QuickJS's `js_parse_destructuring_element`.
+    fn parse_nested_array_assignment_element(
+        &mut self,
+        is_rest: bool,
+    ) -> Result<Option<Span>, Error> {
+        let value_depth = self.current_ir().stack_depth;
+        if value_depth == 0 {
+            return Err(Error::internal(
+                "nested assignment pattern has no value to consume",
+            ));
+        }
+
+        if is_rest {
+            let outcome = self.parse_array_assignment_pattern()?;
+            if let ArrayAssignmentPatternOutcome::ObjectFrontier(pattern_span) = outcome {
+                return Ok(Some(pattern_span));
+            }
+            if self.is_punctuator(Punctuator::Equal) {
+                return Err(self.syntax_here("rest element cannot have a default value"));
+            }
+            return Ok(None);
+        }
+
+        self.emit_instruction(Instruction::Dup)?;
+        self.emit_instruction(Instruction::Undefined)?;
+        self.emit_instruction(Instruction::StrictEq)?;
+        let use_initializer = self.emit_instruction(Instruction::IfTrue(u32::MAX))?;
+        let assignment_target = self.current_ir().ops.len();
+
+        let outcome = self.parse_array_assignment_pattern()?;
+        if let ArrayAssignmentPatternOutcome::ObjectFrontier(pattern_span) = outcome {
+            return Ok(Some(pattern_span));
+        }
+        self.require_stack_depth(value_depth - 1, "nested array assignment pattern")?;
+
+        if self.consume_punctuator(Punctuator::Equal)? {
+            let done_jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
+            let initializer_target = self.current_ir().ops.len();
+            self.patch_jump(use_initializer, initializer_target)?;
+
+            self.current_ir_mut().stack_depth = value_depth;
+            self.emit_instruction(Instruction::Drop)?;
+            self.parse_assignment_allow_in()?;
+            self.anonymous_function_definition = None;
+            self.require_stack_depth(value_depth, "nested array assignment initializer")?;
+            self.emit_instruction(Instruction::Goto(
+                u32::try_from(assignment_target)
+                    .map_err(|_| Error::new(ErrorKind::JsInternal, "out of memory"))?,
+            ))?;
+
+            let done_target = self.current_ir().ops.len();
+            self.patch_jump(done_jump, done_target)?;
+            self.current_ir_mut().stack_depth = value_depth - 1;
+        } else {
+            self.patch_jump(use_initializer, assignment_target)?;
+        }
+        Ok(None)
     }
 
     /// Consume one already-evaluated value and initialize an ArrayBindingPattern.
@@ -1215,14 +1860,35 @@ impl<'source> Parser<'source> {
     /// QuickJS `js_emit_spread_code`: drain the active iterator into a fresh
     /// Array while retaining any prepared var Reference below the result.
     fn emit_array_binding_rest(&mut self, reference_depth: u8) -> Result<(), Error> {
+        self.emit_array_rest(reference_depth, None)
+    }
+
+    fn emit_array_assignment_rest(
+        &mut self,
+        reference_depth: u8,
+        site: SourceOffset,
+    ) -> Result<(), Error> {
+        self.emit_array_rest(reference_depth, Some(site))
+    }
+
+    fn emit_array_rest(
+        &mut self,
+        reference_depth: u8,
+        site: Option<SourceOffset>,
+    ) -> Result<(), Error> {
         self.emit_instruction(Instruction::ArrayFrom(0))?;
         self.emit_instruction(Instruction::PushI32(0))?;
         let next_target = self.current_ir().ops.len();
-        self.emit_instruction(Instruction::ForOfNext(
+        let next = Instruction::ForOfNext(
             reference_depth
                 .checked_add(2)
                 .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?,
-        ))?;
+        );
+        if let Some(site) = site {
+            self.emit_instruction_at(next, site)?;
+        } else {
+            self.emit_instruction(next)?;
+        }
         let done_jump = self.emit_instruction(Instruction::IfTrue(u32::MAX))?;
         self.emit_instruction(Instruction::DefineArrayEl)?;
         self.emit_instruction(Instruction::Inc)?;

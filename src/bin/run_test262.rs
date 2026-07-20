@@ -54,6 +54,10 @@ const TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256: &str =
     "c770387473b6ba2e273ab635182b5f07ae80ad902f48057ba5e2fb4f036c723e";
 const TEST262_ARRAY_BINDING_NESTED_MANIFEST_SHA256: &str =
     "f7c7c181cdde65c84dfcb677cbe45f77884990666a774f952bc165df89f5e8a5";
+const TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256: &str =
+    "b2133d90974566c72ab788525254de68d260b44756a8c5981111873fb38727af";
+const TEST262_ARRAY_ASSIGNMENT_FLAT_MANIFEST_SHA256: &str =
+    "046679bd745132066b4982770f13236bfecdbd953b70bdba98afa60424c599c8";
 const TEST262_OBJECT_BINDING_PROFILE_SHA256: &str =
     "aa6cdca241b5f0be7eb202461ba80e44132f917a66480f1c04225cedc410d0d7";
 const TEST262_OBJECT_BINDING_MANIFEST_SHA256: &str =
@@ -572,6 +576,7 @@ enum OxideProfileKind {
     Global,
     ArrayBindingFlat,
     ArrayBindingNested,
+    ArrayAssignmentFlat,
     ObjectBinding,
     ObjectRestBinding,
     Map,
@@ -601,6 +606,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
             OxideProfileKind::ArrayBindingNested,
         ),
         (
+            root.join("tests/test262-array-assignment-flat.conf"),
+            OxideProfileKind::ArrayAssignmentFlat,
+        ),
+        (
             root.join("tests/test262-object-binding.conf"),
             OxideProfileKind::ObjectBinding,
         ),
@@ -627,7 +636,7 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         }
     }
     Err(format!(
-        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
         path.display()
     ))
 }
@@ -724,6 +733,48 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 "scoped nested array binding Test262 manifest",
             )?;
             Ok(TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256)
+        }
+        OxideProfileKind::ArrayAssignmentFlat => {
+            verify_sha256(
+                &options.oxide_profile,
+                TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256,
+                "scoped flat array assignment Test262 capability profile",
+            )?;
+            if options.all || !options.tests.is_empty() {
+                return Err(
+                    "the scoped flat array assignment Test262 capability profile requires its pinned manifest"
+                        .to_owned(),
+                );
+            }
+            let manifest = options.manifest.as_ref().ok_or_else(|| {
+                "the scoped flat array assignment Test262 capability profile requires its pinned manifest"
+                    .to_owned()
+            })?;
+            let actual = fs::canonicalize(manifest).map_err(|error| {
+                format!(
+                    "resolve scoped flat array assignment manifest {}: {error}",
+                    manifest.display()
+                )
+            })?;
+            let expected = fs::canonicalize(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/test262-array-assignment-flat.txt"),
+            )
+            .map_err(|error| {
+                format!("resolve pinned scoped flat array assignment manifest: {error}")
+            })?;
+            if actual != expected {
+                return Err(format!(
+                    "the scoped flat array assignment Test262 capability profile requires tests/test262-array-assignment-flat.txt, found {}",
+                    manifest.display()
+                ));
+            }
+            verify_sha256(
+                manifest,
+                TEST262_ARRAY_ASSIGNMENT_FLAT_MANIFEST_SHA256,
+                "scoped flat array assignment Test262 manifest",
+            )?;
+            Ok(TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256)
         }
         OxideProfileKind::ObjectBinding => {
             verify_sha256(
@@ -1189,11 +1240,12 @@ mod cli_tests {
     use std::path::Path;
 
     use super::{
-        Invocation, OxideProfileKind, TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256,
-        TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256, TEST262_MAP_PROFILE_SHA256,
-        TEST262_OBJECT_BINDING_PROFILE_SHA256, TEST262_OBJECT_REST_BINDING_PROFILE_SHA256,
-        TEST262_SET_PROFILE_SHA256, TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, default_worker_count,
-        identify_oxide_profile, parse_args, verify_oxide_profile,
+        Invocation, OxideProfileKind, TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256,
+        TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256, TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256,
+        TEST262_MAP_PROFILE_SHA256, TEST262_OBJECT_BINDING_PROFILE_SHA256,
+        TEST262_OBJECT_REST_BINDING_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
+        TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, default_worker_count, identify_oxide_profile,
+        parse_args, verify_oxide_profile,
     };
 
     fn parse(values: &[&str]) -> Result<Invocation, String> {
@@ -1291,6 +1343,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-array-binding-nested.conf")).unwrap(),
             OxideProfileKind::ArrayBindingNested
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-array-assignment-flat.conf")).unwrap(),
+            OxideProfileKind::ArrayAssignmentFlat
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-object-binding.conf")).unwrap(),
@@ -1398,6 +1454,53 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-array-binding-nested.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_flat_array_assignment_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-array-assignment-flat.conf",
+            "--manifest",
+            "tests/test262-array-assignment-flat.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/language/expressions/assignment/dstr/array-empty-val-array.js",
+            ],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-array-assignment-flat.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

@@ -2131,18 +2131,11 @@ impl<'source> Parser<'source> {
         &mut self,
         iteration_kind: ForIterationKind,
     ) -> Result<ForAssignmentTargetInfo, Error> {
-        let loop_name = if iteration_kind == ForIterationKind::In {
-            "for-in"
-        } else {
-            "for-of"
-        };
-        if matches!(
-            self.current().kind,
-            TokenKind::Punctuator(Punctuator::LeftBrace | Punctuator::LeftBracket)
-        ) {
-            return Err(self.unsupported_here(format!(
-                "{loop_name} destructuring assignment patterns are not implemented yet"
-            )));
+        if self.for_array_assignment_pattern_ahead(iteration_kind) {
+            return self.parse_for_array_assignment_pattern(iteration_kind);
+        }
+        if self.for_object_assignment_pattern_ahead(iteration_kind) {
+            return self.reject_object_assignment_pattern();
         }
 
         if self.lexical_declaration_ahead(true)? {
@@ -3751,6 +3744,17 @@ impl<'source> Parser<'source> {
         if let Some(head) = self.arrow_head_ahead() {
             return self.parse_arrow_function(head);
         }
+        // Destructuring assignment is recognized only after every arrow-head
+        // probe has had its say. Like pinned QuickJS, the Array form takes a
+        // control-inverted path only when the matching `]` is immediately
+        // followed by `=`; otherwise this remains an ordinary Array literal.
+        if self.object_assignment_pattern_ahead() {
+            return self.reject_object_assignment_pattern();
+        }
+        if self.array_assignment_pattern_ahead() {
+            return self.parse_array_assignment_expression();
+        }
+        let leading_array_literal = self.is_punctuator(Punctuator::LeftBracket);
         // QuickJS's `name0` is captured only when the AssignmentExpression
         // starts with the identifier token itself. Parenthesized lvalues are
         // valid References but intentionally do not trigger NamedEvaluation.
@@ -3772,7 +3776,7 @@ impl<'source> Parser<'source> {
                 let infer_name = direct_identifier_name.as_deref() == Some(target.name.as_str());
                 return self.parse_logical_identifier_assignment(target, logical, infer_name);
             }
-            return self.parse_logical_member_assignment(logical);
+            return self.parse_logical_member_assignment(logical, leading_array_literal);
         }
 
         let assignment_span = self.current().span;
@@ -3820,6 +3824,12 @@ impl<'source> Parser<'source> {
                 return Ok(());
             }
             let Some(target) = self.promote_tail_member_get_for_compound()? else {
+                // QuickJS consumes a compound operator after an Array literal
+                // before reporting that the literal is not an lvalue, so the
+                // diagnostic points at the first RHS token rather than `+=`.
+                if leading_array_literal {
+                    self.advance()?;
+                }
                 return Err(self.syntax_here("invalid assignment left-hand side"));
             };
             self.advance()?;
@@ -3965,8 +3975,18 @@ impl<'source> Parser<'source> {
     /// as QuickJS `js_parse_assign_expr2`. The kept member Reference is used
     /// only by the assignment branch; the short-circuit branch removes its
     /// base/key operands with `Nip` and returns the original property value.
-    fn parse_logical_member_assignment(&mut self, logical: LogicalAssignment) -> Result<(), Error> {
+    fn parse_logical_member_assignment(
+        &mut self,
+        logical: LogicalAssignment,
+        leading_array_literal: bool,
+    ) -> Result<(), Error> {
         let Some(target) = self.promote_tail_member_get_for_compound()? else {
+            // QuickJS consumes a logical-assignment operator after an Array
+            // literal before get_lvalue rejects that literal, matching the
+            // arithmetic compound-assignment diagnostic path above.
+            if leading_array_literal {
+                self.advance()?;
+            }
             return Err(self.syntax_here("invalid assignment left-hand side"));
         };
         let lvalue_depth = match target {
