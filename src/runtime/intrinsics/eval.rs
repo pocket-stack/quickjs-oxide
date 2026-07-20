@@ -246,7 +246,7 @@ impl Runtime {
             })?;
             for binding in &descriptor_scope.bindings {
                 let is_catch_scope = descriptor_scope.kind == crate::heap::EvalScopeKind::Catch;
-                if binding.is_catch_parameter != is_catch_scope
+                if (binding.is_catch_parameter && !is_catch_scope)
                     || (binding.is_catch_parameter
                         && (!binding.is_lexical
                             || binding.is_const

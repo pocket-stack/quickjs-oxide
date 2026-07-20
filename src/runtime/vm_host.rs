@@ -1534,14 +1534,10 @@ impl VmHost for RuntimeVmHost {
     }
 
     fn redeclaration_error(&mut self, index: u32) -> Result<Error, Error> {
-        // Resolve the verified constant through the runtime atom table so a
-        // malformed published operand cannot bypass the typed boundary. The
-        // pinned QuickJS diagnostic itself deliberately does not print it.
-        let _ = self.constant_property_key(index)?;
-        Ok(Error::new(
-            ErrorKind::Syntax,
-            "invalid redefinition of lexical identifier",
-        ))
+        let key = self.constant_property_key(index)?;
+        self.runtime
+            .native_atom_error(ErrorKind::Syntax, "redeclaration of '", &key, "'")
+            .map_err(runtime_error_to_vm_error)
     }
 
     fn type_of(&mut self, value: &Value) -> Result<&'static str, Error> {

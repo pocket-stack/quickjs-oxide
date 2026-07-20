@@ -7263,16 +7263,6 @@ fn catch_binding_conflicts_and_var_initializer_follow_quickjs() {
     }
     compile_unlinked_script("try {} catch (e) { { let e = 1; e; } }").unwrap();
 
-    for source in ["try {} catch ({e}) {}", "try {} catch ([e]) {}"] {
-        let error = compile_unlinked_script(source).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Unsupported, "{source}");
-        assert_eq!(
-            error.message(),
-            "catch destructuring bindings are not implemented yet",
-            "{source}"
-        );
-    }
-
     let source = "try { throw 1; } catch (e) { var e = e + 1; e; }";
     let tree = Parser::parse(source, JsString::from_static("<catch-var-test>")).unwrap();
     let catch_local = tree.functions[0]
@@ -7302,6 +7292,198 @@ fn catch_binding_conflicts_and_var_initializer_follow_quickjs() {
     assert_eq!(
         strict_error.span().unwrap().start.column,
         u32::try_from(strict_source.find(')').unwrap() + 1).unwrap()
+    );
+}
+
+#[test]
+fn catch_binding_patterns_compile_with_ordinary_lexical_provenance() {
+    for source in [
+        "try { throw [1, 2]; } catch ([first, second]) { first + second; }",
+        "try { throw { value: 42 }; } catch ({value}) { value; }",
+        "try { throw { nested: [42] }; } catch ({nested: [value]}) { value; }",
+        "try { throw [1, 2, 3]; } catch ([head, ...tail]) { head + tail.length; }",
+        "try { throw { value: 1, extra: 2 }; } catch ({value, ...rest}) { value + rest.extra; }",
+        "try { throw []; } catch ([value = function () {}]) { value.name; }",
+    ] {
+        compile_unlinked_script(source).unwrap_or_else(|error| {
+            panic!("catch binding pattern did not compile: {source}: {error}")
+        });
+    }
+
+    let source = concat!(
+        "try { throw { value: 1, nested: [], extra: 2 }; } ",
+        "catch ({value, nested: [fallback = 40], ...rest}) { ",
+        "value + fallback + rest.extra; }",
+    );
+    let tree = Parser::parse(source, JsString::from_static("<catch-pattern-scope-test>"))
+        .expect("nested catch binding pattern should parse");
+    let root = &tree.functions[0];
+    let catch_scope = root
+        .scopes
+        .iter()
+        .position(|scope| scope.kind == ScopeKind::Catch)
+        .map(ScopeId)
+        .expect("catch pattern lost its scope");
+
+    for name in ["value", "fallback", "rest"] {
+        let binding = root
+            .binding_in_scope(catch_scope, name)
+            .unwrap_or_else(|| panic!("catch pattern lost binding {name}"));
+        assert_eq!(binding.storage_scope, catch_scope, "{name}");
+        assert_eq!(binding.declaration_scope, catch_scope, "{name}");
+        assert_eq!(
+            binding.kind,
+            BindingKind::Lexical { is_const: false },
+            "{name}"
+        );
+        assert!(
+            !binding.is_catch_parameter,
+            "pattern leaf {name} incorrectly received the simple-catch marker"
+        );
+    }
+
+    let simple = Parser::parse(
+        "try { throw 1; } catch (value) { value; }",
+        JsString::from_static("<simple-catch-scope-test>"),
+    )
+    .expect("simple catch binding should parse");
+    let simple_root = &simple.functions[0];
+    let simple_scope = simple_root
+        .scopes
+        .iter()
+        .position(|scope| scope.kind == ScopeKind::Catch)
+        .map(ScopeId)
+        .expect("simple catch binding lost its scope");
+    assert!(
+        simple_root
+            .binding_in_scope(simple_scope, "value")
+            .expect("simple catch binding was not registered")
+            .is_catch_parameter,
+        "only a simple catch binding receives the Annex-B marker"
+    );
+
+    let catch_scope_entry = root
+        .ops
+        .iter()
+        .position(|operation| {
+            matches!(operation.op, super::IrOp::EnterScope(scope) if scope == catch_scope)
+        })
+        .expect("catch scope has no EnterScope marker");
+    let handler_target = root
+        .ops
+        .iter()
+        .find_map(|operation| match &operation.op {
+            super::IrOp::Bytecode(Instruction::Catch(target)) => {
+                Some(usize::try_from(*target).expect("catch target fits usize"))
+            }
+            _ => None,
+        })
+        .expect("try statement has no Catch handler");
+    assert!(
+        catch_scope_entry < handler_target,
+        "the exceptional handler must skip QuickJS's pre-label Catch EnterScope"
+    );
+    assert!(
+        matches!(
+            root.ops.get(handler_target).map(|operation| &operation.op),
+            Some(super::IrOp::PrepareCatchScope(scope)) if *scope == catch_scope
+        ),
+        "the Catch target must land on its default-undefined preparation"
+    );
+}
+
+#[test]
+fn catch_binding_pattern_diagnostics_follow_quickjs() {
+    for source in [
+        "try {} catch ([value, value]) {}",
+        "try {} catch ({first: value, second: value}) {}",
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(
+            error.message(),
+            "invalid redefinition of lexical identifier",
+            "{source}"
+        );
+    }
+
+    for source in [
+        "\"use strict\"; try {} catch ({eval}) {}",
+        "\"use strict\"; try {} catch ([arguments]) {}",
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(error.message(), "invalid destructuring target", "{source}");
+    }
+}
+
+#[test]
+fn direct_eval_profile_distinguishes_pattern_and_simple_catch_bindings() {
+    let direct = |is_catch_parameter| {
+        EvalCompileContext::direct_with_profile(
+            false,
+            vec![EvalRootBinding {
+                name: JsString::from_static("value"),
+                scope: 0,
+                is_lexical: true,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+                is_catch_parameter,
+            }],
+            EvalCallerProfile {
+                scope_kinds: vec![EvalScopeKind::Catch].into_boxed_slice(),
+                variable_target: EvalCallerVariableTarget::Global,
+            },
+            false,
+            false,
+        )
+    };
+
+    let read = compile_unlinked_eval_with_filename(
+        "value",
+        "<catch-pattern-eval>",
+        DebugInfoMode::StripDebug,
+        direct(false),
+    )
+    .expect("direct eval should read an imported catch-pattern lexical");
+    let [descriptor] = read.closure_variables() else {
+        panic!("catch-pattern eval did not retain exactly one imported binding");
+    };
+    assert_eq!(descriptor.source, ClosureSource::EvalEnvironment(0));
+    assert!(descriptor.is_lexical);
+    assert!(!descriptor.is_const);
+    assert!(
+        read.code()
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::GetVarRefCheck(0))),
+        "catch-pattern eval read lost its lexical TDZ check"
+    );
+
+    let pattern_var = compile_unlinked_eval_with_filename(
+        "var value;",
+        "<catch-pattern-eval>",
+        DebugInfoMode::StripDebug,
+        direct(false),
+    )
+    .expect("the caller lexical conflict is represented by entry bytecode");
+    assert!(
+        matches!(pattern_var.code(), [Instruction::ThrowRedeclaration(_), ..]),
+        "a pattern catch lexical must reject sloppy eval var redeclaration"
+    );
+
+    let simple_var = compile_unlinked_eval_with_filename(
+        "var value;",
+        "<simple-catch-eval>",
+        DebugInfoMode::StripDebug,
+        direct(true),
+    )
+    .expect("a simple catch binding should retain QuickJS's var exception");
+    assert!(
+        !simple_var
+            .code()
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::ThrowRedeclaration(_))),
+        "the simple-catch marker did not preserve the sloppy eval var exception"
     );
 }
 

@@ -5,8 +5,8 @@ use quickjs_oxide::{Context, Runtime, RuntimeError, Value};
 
 // Pins QuickJS 2026-06-04 ObjectBindingPattern rest lowering. The excluded-key
 // object is built before CopyDataProperties, and the rest target is a fresh
-// ordinary object. Destructuring assignment, parameters, and catch bindings
-// remain separate compiler surfaces.
+// ordinary object. Assignment and catch BindingPatterns have their own focused
+// targets; non-simple parameters remain a separate compiler surface.
 
 const DIRECT_CASES: &[(&str, &str)] = &[
     (

@@ -748,15 +748,16 @@ impl VmHost for DetachedHost<'_> {
     }
 
     fn redeclaration_error(&mut self, index: u32) -> Result<Error, Error> {
-        let Value::String(_) = self.load_constant(index)? else {
+        let Value::String(name) = self.load_constant(index)? else {
             return Err(Error::internal(
                 "redeclaration opcode referenced a non-string constant",
             ));
         };
-        Ok(Error::new(
-            ErrorKind::Syntax,
-            "invalid redefinition of lexical identifier",
-        ))
+        let mut message = crate::error::NativeErrorMessage::new();
+        message.push_utf8("redeclaration of '");
+        name.push_atom_get_str_to(&mut message);
+        message.push_utf8("'");
+        Ok(Error::from_native_message(ErrorKind::Syntax, message))
     }
 
     fn type_of(&mut self, value: &Value) -> Result<&'static str, Error> {

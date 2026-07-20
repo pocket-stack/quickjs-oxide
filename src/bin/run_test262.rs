@@ -58,6 +58,10 @@ const TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256: &str =
     "b2133d90974566c72ab788525254de68d260b44756a8c5981111873fb38727af";
 const TEST262_ARRAY_ASSIGNMENT_FLAT_MANIFEST_SHA256: &str =
     "046679bd745132066b4982770f13236bfecdbd953b70bdba98afa60424c599c8";
+const TEST262_CATCH_BINDING_PROFILE_SHA256: &str =
+    "a654327057a974e0feab6799f3c99a3104884a403cbc41bbc85f3fc226328718";
+const TEST262_CATCH_BINDING_MANIFEST_SHA256: &str =
+    "e3fb469169b069c185a7d9ea6b8cdce2fdb54d49181b7e87e33cff59a27c212e";
 const TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256: &str =
     "989f5617484d5c12a15fb26a447121fa3436b19f05cd998cf400b5d3d7179a51";
 const TEST262_OBJECT_ASSIGNMENT_FLAT_MANIFEST_SHA256: &str =
@@ -589,6 +593,7 @@ enum OxideProfileKind {
     ArrayBindingFlat,
     ArrayBindingNested,
     ArrayAssignmentFlat,
+    CatchBinding,
     ObjectAssignmentFlat,
     ObjectAssignmentNested,
     ObjectAssignmentRest,
@@ -623,6 +628,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-array-assignment-flat.conf"),
             OxideProfileKind::ArrayAssignmentFlat,
+        ),
+        (
+            root.join("tests/test262-catch-binding.conf"),
+            OxideProfileKind::CatchBinding,
         ),
         (
             root.join("tests/test262-object-assignment-flat.conf"),
@@ -663,7 +672,7 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         }
     }
     Err(format!(
-        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
         path.display()
     ))
 }
@@ -848,6 +857,45 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 "scoped flat array assignment Test262 manifest",
             )?;
             Ok(TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256)
+        }
+        OxideProfileKind::CatchBinding => {
+            verify_sha256(
+                &options.oxide_profile,
+                TEST262_CATCH_BINDING_PROFILE_SHA256,
+                "scoped catch binding Test262 capability profile",
+            )?;
+            if options.all || !options.tests.is_empty() {
+                return Err(
+                    "the scoped catch binding Test262 capability profile requires its pinned manifest"
+                        .to_owned(),
+                );
+            }
+            let manifest = options.manifest.as_ref().ok_or_else(|| {
+                "the scoped catch binding Test262 capability profile requires its pinned manifest"
+                    .to_owned()
+            })?;
+            let actual = fs::canonicalize(manifest).map_err(|error| {
+                format!(
+                    "resolve scoped catch binding manifest {}: {error}",
+                    manifest.display()
+                )
+            })?;
+            let expected = fs::canonicalize(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/test262-catch-binding.txt"),
+            )
+            .map_err(|error| format!("resolve pinned scoped catch binding manifest: {error}"))?;
+            if actual != expected {
+                return Err(format!(
+                    "the scoped catch binding Test262 capability profile requires tests/test262-catch-binding.txt, found {}",
+                    manifest.display()
+                ));
+            }
+            verify_sha256(
+                manifest,
+                TEST262_CATCH_BINDING_MANIFEST_SHA256,
+                "scoped catch binding Test262 manifest",
+            )?;
+            Ok(TEST262_CATCH_BINDING_PROFILE_SHA256)
         }
         OxideProfileKind::ObjectAssignmentFlat => verify_scoped_object_assignment_profile(
             options,
@@ -1333,7 +1381,8 @@ mod cli_tests {
     use super::{
         Invocation, OxideProfileKind, TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256, TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256,
-        TEST262_MAP_PROFILE_SHA256, TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
+        TEST262_CATCH_BINDING_PROFILE_SHA256, TEST262_MAP_PROFILE_SHA256,
+        TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_NESTED_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_REST_PROFILE_SHA256, TEST262_OBJECT_BINDING_PROFILE_SHA256,
         TEST262_OBJECT_REST_BINDING_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
@@ -1440,6 +1489,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-array-assignment-flat.conf")).unwrap(),
             OxideProfileKind::ArrayAssignmentFlat
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-catch-binding.conf")).unwrap(),
+            OxideProfileKind::CatchBinding
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-object-assignment-flat.conf")).unwrap(),
@@ -1607,6 +1660,53 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-array-assignment-flat.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_catch_binding_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-catch-binding.conf",
+            "--manifest",
+            "tests/test262-catch-binding.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_CATCH_BINDING_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/language/statements/try/dstr/obj-ptrn-empty.js",
+            ],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-catch-binding.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

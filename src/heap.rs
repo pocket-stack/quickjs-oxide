@@ -4172,7 +4172,7 @@ impl Heap {
                         "eval binding name atom disagrees with its source metadata",
                     ));
                 }
-                if binding.is_catch_parameter != (scope.kind == EvalScopeKind::Catch)
+                if (binding.is_catch_parameter && scope.kind != EvalScopeKind::Catch)
                     || (binding.is_catch_parameter
                         && (!binding.is_lexical
                             || binding.is_const

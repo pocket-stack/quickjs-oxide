@@ -15,9 +15,9 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 34,947 passes and 38,421 runnable variants: 34.25% raw, a 41.82% lower
-  bound after the 18,475 pinned QuickJS target exclusions, or 94.18% among the
-  37,107 variants with a non-unsupported observed outcome. The fixed smoke now
+  has 34,996 passes and 38,421 runnable variants: 34.30% raw, a 41.88% lower
+  bound after the 18,475 pinned QuickJS target exclusions, or 94.19% among the
+  37,154 variants with a non-unsupported observed outcome. The fixed smoke now
   has 191 passes and two explicit parser-frontier results. See
   `docs/test262.md` for the denominators and why none of these figures is a
   parity claim. The first
@@ -1034,6 +1034,53 @@ claim full parity.
   QuickJS's inherited source marker exactly; that joins the existing nested
   for-head marker as source-map debt. Destructuring parameters and catch
   patterns remain independent compiler surfaces.
+
+  R2w ports recursive catch ArrayBindingPattern and ObjectBindingPattern
+  lowering from QuickJS 2026-06-04 onto the shared declaration binding owner.
+  Identifier leaves, elisions, defaults with NamedEvaluation, terminal array
+  rest, fixed and computed object keys, object rest, and arbitrary array/object
+  recursion initialize inside the catch lexical scope. Iterator/property abrupt
+  completions reuse the verified exception and iterator-unwind paths. Pattern
+  leaves are ordinary mutable catch-scope lexicals; only a simple catch
+  identifier retains the private catch-parameter marker needed by direct-eval
+  `var` redeclaration rules. The handler target lands on explicit catch-scope
+  preparation rather than executing a normal `EnterScope`, matching the pinned
+  QuickJS control-flow shape while initializing every pattern leaf before the
+  binding operations run.
+
+  The dependency-audited R2w Test262 gate freezes 97 paths / 177 variants and
+  passes all 177. It covers the implemented synchronous try-destructuring
+  corpus, six audited parse-negative rest cases, Annex B catch-body early-error
+  integrations, and four untagged catch-scope paths. Class- and generator-valued
+  defaults remain separate frontiers. Its exact four-feature scoped profile has
+  SHA-256
+  `a654327057a974e0feab6799f3c99a3104884a403cbc41bbc85f3fc226328718`.
+  Normalized-manifest/manifest-file/key-set/empty-non-pass hashes are
+  `50c326ca60fdfa0cd5d3683df265e730c1947801db6e0892645b9bcfcd450927`,
+  `e3fb469169b069c185a7d9ea6b8cdce2fdb54d49181b7e87e33cff59a27c212e`,
+  `1f66a5b898cf1f0cb4a3dc333ee3bb4e7d5dc1361dd5a06b7c1c4be2b0573784`,
+  and
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`;
+  TSV/JSONL hashes are
+  `c1a01134926200028f476ca165ed8127566725bab5faa1a174e77b9f4f460557`
+  and
+  `4215e94bb7c8435345542d80ebfcad56ff91567cb4c45582c3cf8426f66dc3da`.
+  The broad `destructuring-binding` and `object-rest` tags remain scoped rather
+  than entering the global profile.
+
+  The exact R2v/R2w full join retains all 102,037 keys and adds 49 passes: 24
+  `unsupported-runtime -> pass`, 23 `unsupported-parser -> pass`, and two
+  `fail-runtime -> pass`, with zero previous-pass regression. Both modes of the
+  unrelated `staging/sm/Proxy/ownkeys-linear.js` move from timeout back to the
+  eventual missing-Proxy runtime failure; this is performance noise rather than
+  a catch-binding regression. Passes reach 34,996 among 38,421 runnable
+  variants; typed parser frontiers fall to 1,142, typed runtime frontiers fall
+  to 50, and timeouts fall to six. Full TSV/JSONL SHA-256 values are
+  `e00e85d148fcc5d03ff7830b0e730af0a64b478c498eaad8d018d0bf1c96898a`
+  and
+  `ace137cda9b5f55762b2e729a172adbed3715659c981c53bd809f9099fcf20ae`.
+  Destructuring parameters remain the next independent synchronous binding
+  surface.
 
   Parameter initializers and other non-simple parameters, classes/derived
   construction, and async/generator method/accessor forms stay typed frontiers.
@@ -2230,9 +2277,12 @@ claim full parity.
   state, Script completion, the pinned caught-throw captured-cell result
   `2|2|false`, and captured-cell reuse across nested abrupt-finally overrides.
   Separate checks lock compile-A/execute-in-B realm behavior, exact
-  Full/StripSource/StripDebug stacks and parser diagnostics. Catch binding
-  destructuring remains an explicit compiler frontier rather than being
-  treated as a simple identifier binding.
+  Full/StripSource/StripDebug stacks and parser diagnostics. The companion
+  `oracle_catch_destructuring` target locks recursive array/object/rest catch
+  patterns, defaults and computed keys, iterator close, abrupt initialization,
+  lexical closures, direct eval, and early errors. It also distinguishes the
+  private marker on a simple catch identifier from ordinary lexical pattern
+  leaves.
 
   The upstream anchors for this slice are `quickjs.c` 21775-21785
   (`BlockEnv`), 28225-28361 (break/continue/return through finally),
@@ -2268,8 +2318,7 @@ claim full parity.
   scoped lexical creation, Annex source writes, and argument/local hoist
   attachment)
   in QuickJS 2026-06-04. Async/generator eval declarations, `for-await`,
-  destructuring assignment, destructuring in
-  parameters or catch bindings, single-statement lexical declarations, and
+  destructuring in parameters, single-statement lexical declarations, and
   class scopes remain explicit boundaries rather than falling back to local or
   ordinary global storage.
 
@@ -2378,10 +2427,11 @@ claim full parity.
   every declared name is therefore in TDZ across every clause,
   duplicate declarations conflict across cases, and normal or abrupt exits
   close captured cells while preserving selector cleanup. This declaration
-  slice covers simple names plus recursive array/object patterns except object
-  rest, not complete SwitchStatement parity.
+  slice covers simple names plus recursive array/object/rest patterns, not
+  complete SwitchStatement parity.
   Synchronous `for-of` follows QuickJS `js_parse_for_in_of` for
-  `var`/`let`/`const`, identifier, fixed-member and computed-member targets.
+  `var`/`let`/`const` declarations plus identifier, fixed-member,
+  computed-member, and recursive array/object/rest assignment targets.
   The assignment fragment is emitted before the iterable expression and
   skipped on first entry; the head lexical environment is therefore already
   in TDZ while evaluating the iterable. Captured lexical head cells close at
@@ -2391,9 +2441,8 @@ claim full parity.
   try/finally subroutines. Recursive array declaration patterns reuse nested
   iterator records with QuickJS close semantics; recursive object declarations
   share their fixed/computed property and exclusion-aware rest lowering, then
-  unwind nested arrays in inner-to-outer order. Destructuring assignment,
-  patterns in parameters or catch bindings, and `for-await-of` remain explicit
-  frontiers.
+  unwind nested arrays in inner-to-outer order. Parameter patterns and
+  `for-await-of` remain explicit frontiers.
   The classic
   head continues to port QuickJS's
   sloppy `is_let(..., DECL_MASK_OTHER)` ambiguity; the shared statement parser
@@ -2430,8 +2479,9 @@ claim full parity.
   46508-46680 (String Iterator), plus `quickjs-opcode.h` 201-210.
 
   Synchronous `for-in` now uses the same upstream parser path for simple and
-  recursive array/object `var`/`let`/`const` declaration heads (except object
-  rest), plus identifier, fixed-member and computed-member assignment heads. Its
+  recursive array/object/rest `var`/`let`/`const` declaration heads, plus
+  identifier, fixed-member, computed-member, and recursive array/object/rest
+  assignment heads. Its
   right operand is a full comma Expression, including QuickJS's sloppy-only
   legacy `var` initializer. Typed `ForInStart` and `ForInNext` bytecode preserve
   the hidden enumeration object with stack effects 1-to-1 and 1-to-3; local
@@ -2447,9 +2497,8 @@ claim full parity.
   explicitly: dense count-only iteration converts to a current own-key visited
   set before prototype traversal, while descriptor or sparse-index conversion
   remains irreversibly slow. Differential regressions lock both mutation modes,
-  ordinary shadowing, ordering, lexical cells, labels and finally cleanup.
-  Destructuring assignment heads remain explicit parser frontiers. The VM host
-  outcomes
+  ordinary shadowing, ordering, lexical cells, labels and finally cleanup. The
+  VM host outcomes
   already preserve arbitrary JavaScript throws; Proxy enumeration and its
   duplicate prototype pre-scan/trap order still require Proxy internal methods.
   Anchors are `quickjs.c` 16282-16509 and 28546-28769, plus
@@ -3736,34 +3785,33 @@ claim full parity.
   locations, named initialization, normal `%Function%` bodies, nested script
   locals, shared switch conflicts, classic-for single-entry/cell lifetimes and
   pinned continue behavior, Program-global declaration descriptors, recursive
-  array/object/rest binding declarations, explicit nonclassic-for and remaining
-  assignment/parameter/catch destructuring boundaries, and strip-debug name
-  removal without losing read-only atoms.
+  array/object/rest binding declarations and assignments, catch BindingPatterns,
+  the remaining destructuring-parameter boundary, and strip-debug name removal
+  without losing read-only atoms.
   The companion `oracle_function_body_lexicals` target compares ordinary and
   normal-`Function` body/block/switch values, nested script block/switch locals,
   direct and transitive closure cells, repeated-entry and break/continue scope
   exits, cross-case TDZ/conflicts, TDZ/read-only CLI stacks, recursive
-  array/object/rest binding declarations, and the remaining
-  destructuring-assignment boundary with the pinned release.
+  array/object/rest binding declarations, and the remaining parameter-pattern
+  boundary with the pinned release.
   The `oracle_for_lexicals` target separately locks classic-head initialization
   and NoIn parsing, ordinary and normal-`Function` values, script-local and
   cross-eval captures, initializer/body/update cell identity, the pinned
   shared-head-cell continue quirk, labeled jumps through a nested switch,
-  conflicts, exact full/StripDebug TDZ and read-only stacks, recursive
-  array/object/rest binding declarations, and the explicit
-  destructuring-assignment boundary.
+  conflicts, exact full/StripDebug TDZ and read-only stacks, and recursive
+  array/object/rest binding declarations.
   The `oracle_program_lexicals` target locks direct Program values, declaration
   source order, repeated eval persistence, globalThis separation and VarRef
   splitting, preflight atomicity, failed-initializer behavior, exact
   full/StripDebug stacks and parser errors, recursive array/object/rest binding
-  declarations, and the still-explicit assignment/parameter/catch boundaries.
+  declarations, and the still-explicit parameter-pattern boundary.
   The `oracle_program_vars` target locks duplicate declaration records,
   no-initializer and unreachable-statement instantiation, classic-for shared
   cells, NamedEvaluation, cross-eval persistence and hidden-cell reconnection,
   exact global property attributes, data/accessor/AutoInit/inherited and
   non-extensible paths, mixed-declaration preflight atomicity, full/StripDebug
   stacks, parser conflicts, recursive array/object/rest binding declarations,
-  and explicit destructuring-assignment and nonclassic-loop boundaries.
+  and explicit nonclassic-loop boundaries.
   The `oracle_program_functions` target locks direct hoisting, duplicate and
   var/function source ordering, the pinned lexical-first asymmetry, global
   property normalization and rejection, two-pass atomicity, cross-eval cell
@@ -3801,8 +3849,9 @@ claim full parity.
   The `oracle_try_catch_finally` target locks the implemented synchronous
   exception-region boundary: catch dispatch and scopes, complete
   abrupt-finally control flow, Script completion, the pinned caught-throw cell
-  quirk, realm splitting, three debug modes, exact diagnostics, and the still
-  explicit catch-destructuring frontier.
+  quirk, realm splitting, three debug modes, and exact diagnostics. The
+  companion `oracle_catch_destructuring` target covers recursive catch
+  BindingPatterns, lexical/eval behavior, iterator unwind, and early errors.
   The `oracle_object_bindings` target locks direct, classic-for, and synchronous
   for-in/of declaration surfaces; fixed and computed String/Symbol property
   keys; object/array/rest recursion; defaults and NamedEvaluation; observable
@@ -3820,8 +3869,8 @@ claim full parity.
   precedence, nested labels/switch/finally, raw
   native-next dispatch, realm splitting, exact diagnostics, and all three
   debug modes. Generic Array iteration is now covered by `oracle_array`;
-  `for-await-of`, destructuring assignment, other binding contexts, and
-  Iterator Helpers remain separate milestones.
+  `for-await-of`, parameter BindingPatterns, and Iterator Helpers remain
+  separate milestones.
   The `oracle_for_in` target locks ordinary and representation-sensitive fast
   Array enumeration, per-level snapshots, live presence/prototype changes,
   shadowing, primitive boxing, simple assignment plus simple-name/flat-array
@@ -3857,8 +3906,7 @@ trampoline plus explicit compiler work storage is required to recover
 upstream's substantially deeper platform-dependent limits throughout.
 
 The language slice remains incomplete. Async/generator declarations,
-`for-await`, destructuring assignment, destructuring parameters and catch
-bindings, other general assignment targets,
+`for-await`, destructuring parameters, other general assignment targets,
 module resolution,
 async/generator methods, parameter-initializer inheritance of HomeObject/`super`,
 classes and derived constructors, non-simple parameter lists including
@@ -3875,8 +3923,7 @@ cover fixed and computed properties, undefined-only defaults, NamedEvaluation,
 array terminal rest, object rest, and object/array recursion. These forms also
 work in scripts, and ordinary
 bodies including classic heads are available through the normal `%Function%`
-constructor. Single-statement lexical declarations, destructuring assignment,
-patterns in parameters or catch bindings,
+constructor. Single-statement lexical declarations, patterns in parameters,
 and class lexical environments remain later compiler slices. Direct
 Program lexicals now use the production global VarRef path with two-phase
 instantiation; simple-name and recursive array/object/rest Program vars plus
@@ -4016,8 +4063,8 @@ remaining two entries of String's 53-key prototype surface, `RegExp.escape`,
 advanced RegExp grammar,
 Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. AggregateError and
-uncatchable termination state are also pending. Destructuring assignment,
-parameter and catch patterns, other iterator
+uncatchable termination state are also pending. Destructuring parameter
+patterns, other iterator
 classes and helpers, the remaining RegExp grammar/static surface and
 Unicode-backed String methods, non-simple ObjectLiteral setter parameters,
 async/generator methods, parameter-initializer `super` inheritance,
@@ -4222,6 +4269,15 @@ Array/Object invalid-target diagnostic path, while `runtime.rs` remains
 unchanged at 9,822 lines. No VM opcode or runtime-facade branch was added; the
 existing typed Reference, property, and CopyDataProperties operations carry
 the semantics.
+R2w again keeps `runtime.rs` unchanged at 9,822 lines. Catch BindingPattern
+wiring grows `compiler.rs` from 11,865 to 11,930 lines and the shared
+`compiler/destructuring.rs` owner from 1,904 to 1,945 lines. Oxide expands
+`PrepareCatchScope` to `Undefined; InitializeLocal` for every pattern leaf,
+reproducing the frame-default `undefined` state after QuickJS's exception
+handler skips `OP_enter_scope`. Ordinary semantics are oracle-locked, but the
+temporary one-slot stack use and two instructions per leaf do not yet reproduce
+QuickJS's extreme max-stack/code-size boundary exactly; a future zero-stack
+scope-preparation opcode should remove that resource-parity debt.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -4342,6 +4398,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_annex_b_statements -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_try_catch_finally -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_catch_destructuring -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_for_of -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -4492,6 +4550,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-object-assignment-rest.sh
 ./scripts/test-test262-object-binding.sh
 ./scripts/test-test262-object-rest-binding.sh
+./scripts/test-test262-catch-binding.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -4507,7 +4566,8 @@ RegExp-intrinsic differentials, the search/match/split protocol differentials,
 and the legacy compile mutation differentials, and the
 Program-var/function, Program/body/block/switch/classic-for lexical-scope,
 ordinary mapped/unmapped Arguments object,
-single/labelled Annex B, synchronous try/catch/finally, synchronous
+single/labelled Annex B, synchronous try/catch/finally with recursive
+array/object/rest catch BindingPatterns, synchronous
 for-in/for-of, Array core/literal/iterator/search/callback/mutation/change-by-copy,
 Object literal/concise-method/accessor/direct/arrow/direct-eval-super, and Object
 constructor/static-prefix/prototype

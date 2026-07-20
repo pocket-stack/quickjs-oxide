@@ -584,7 +584,7 @@ fn verify_eval_environments(
                 }
                 let is_catch_scope = scope.kind == crate::heap::EvalScopeKind::Catch;
                 let is_with_scope = scope.kind == crate::heap::EvalScopeKind::With;
-                if binding.is_catch_parameter != is_catch_scope
+                if (binding.is_catch_parameter && !is_catch_scope)
                     || (binding.is_catch_parameter
                         && (!binding.is_lexical
                             || binding.is_const
@@ -804,7 +804,7 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree_with_profile(
                 "eval root binding disagrees with its caller scope profile",
             )));
         };
-        if binding.is_catch_parameter != (scope_kind == crate::heap::EvalScopeKind::Catch)
+        if (binding.is_catch_parameter && scope_kind != crate::heap::EvalScopeKind::Catch)
             || (binding.kind == ClosureVariableKind::WithObject)
                 != (scope_kind == crate::heap::EvalScopeKind::With)
         {
@@ -4209,7 +4209,7 @@ mod tests {
     }
 
     #[test]
-    fn eval_environment_authenticates_catch_parameter_provenance() {
+    fn eval_environment_authenticates_simple_and_pattern_catch_provenance() {
         let catch_binding = EvalBinding {
             name: JsString::from_static("binding"),
             source: EvalBindingSource::Local(0),
@@ -4253,12 +4253,21 @@ mod tests {
         )))
         .unwrap();
 
-        let mut forged = environment;
-        forged.scopes[0].bindings = vec![EvalBinding {
+        let mut pattern_environment = environment.clone();
+        pattern_environment.scopes[0].bindings = vec![EvalBinding {
             is_catch_parameter: false,
-            ..catch_binding
+            ..catch_binding.clone()
         }]
         .into_boxed_slice();
+        verify_unlinked_tree(&script_with_child(lexical_local_function(
+            pattern_environment,
+            eval_code(0, false),
+        )))
+        .unwrap();
+
+        let mut forged = environment;
+        forged.scopes[0].bindings = Box::new([]);
+        forged.scopes[1].bindings = vec![catch_binding].into_boxed_slice();
         assert!(
             verify_unlinked_tree(&script_with_child(lexical_local_function(
                 forged,

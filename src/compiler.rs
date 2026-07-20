@@ -599,6 +599,12 @@ enum IrOp {
     /// is known, then lowering expands entry to lexical TDZ initialization and
     /// exit to `CloseLocal` for exactly the locals captured by children.
     EnterScope(ScopeId),
+    /// QuickJS places the Catch handler label after `OP_enter_scope`, leaving
+    /// CatchParameter slots at their frame-default `undefined` values. Oxide
+    /// starts every lexical frame slot as Uninitialized, so this handler-only
+    /// preparation explicitly reproduces the skipped-entry state without
+    /// weakening the binding's static lexical metadata.
+    PrepareCatchScope(ScopeId),
     LeaveScope(ScopeId),
     /// QuickJS's template parser does not apply the ordinary call parser's
     /// u16 argument guard.  Retain the full count until the bytecode stack
@@ -717,7 +723,7 @@ impl IrOp {
     fn stack_effect(&self) -> (usize, usize) {
         match self {
             Self::Bytecode(instruction) => instruction.stack_effect(),
-            Self::EnterScope(_) | Self::LeaveScope(_) => (0, 0),
+            Self::EnterScope(_) | Self::PrepareCatchScope(_) | Self::LeaveScope(_) => (0, 0),
             Self::TemplateCall {
                 argument_count,
                 method,
@@ -1144,7 +1150,7 @@ fn install_eval_external_bindings(
         let Some(&scope_kind) = caller_profile.scope_kinds.get(usize::from(binding.scope)) else {
             return true;
         };
-        binding.is_catch_parameter != (scope_kind == EvalScopeKind::Catch)
+        (binding.is_catch_parameter && scope_kind != EvalScopeKind::Catch)
             || (binding.kind == ClosureVariableKind::WithObject)
                 != (scope_kind == EvalScopeKind::With)
     }) || caller_profile
@@ -2483,14 +2489,23 @@ impl<'source> Parser<'source> {
 
         // A catch target receives the thrown value where the catch marker had
         // lived. Restore that exceptional stack shape explicitly before
-        // parsing the handler's linear IR.
-        let catch_target = self.current_ir().ops.len();
-        self.patch_jump(catch_jump, catch_target)?;
+        // parsing the handler's otherwise-linear IR.
         self.current_ir_mut().stack_depth = entry_depth + 1;
 
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Catch)) {
             self.advance()?;
             let catch_scope = self.push_scope(ScopeKind::Catch);
+            self.current_ir_mut().ops.push(SpannedIrOp {
+                op: IrOp::PrepareCatchScope(catch_scope),
+                pc_site: None,
+            });
+            // QuickJS emits the Catch-scope EnterScope before the exceptional
+            // handler label. The jump therefore skips TDZ initialization while
+            // still using that scope's statically allocated bindings. Oxide's
+            // typed preparation below restores QuickJS's default-undefined
+            // frame state before any pattern initializer can read a later name.
+            let catch_target = self.current_ir().ops.len() - 1;
+            self.patch_jump(catch_jump, catch_target)?;
 
             if self.is_punctuator(Punctuator::LeftBrace) {
                 // Optional catch binding: discard the exception before the
@@ -2498,45 +2513,45 @@ impl<'source> Parser<'source> {
                 self.emit_instruction(Instruction::Drop)?;
             } else {
                 self.expect_punctuator(Punctuator::LeftParen)?;
-                if self.is_punctuator(Punctuator::LeftBrace)
-                    || self.is_punctuator(Punctuator::LeftBracket)
-                {
-                    return Err(self
-                        .unsupported_here("catch destructuring bindings are not implemented yet"));
+                if self.is_punctuator(Punctuator::LeftBrace) {
+                    self.parse_catch_object_binding_pattern()?;
+                } else if self.is_punctuator(Punctuator::LeftBracket) {
+                    self.parse_catch_array_binding_pattern()?;
+                } else {
+                    let token = self.current().clone();
+                    let TokenKind::Identifier(identifier) = token.kind else {
+                        return Err(self.syntax_here("identifier expected"));
+                    };
+                    validate_identifier_reservation(
+                        &identifier,
+                        token.span,
+                        self.current_ir().strict,
+                        IdentifierContext::Variable,
+                    )?;
+                    let invalid_strict_name = self.current_ir().strict
+                        && matches!(identifier.value.as_str(), "eval" | "arguments");
+                    let name = identifier.value;
+                    self.advance()?;
+                    if invalid_strict_name {
+                        return Err(Error::syntax(
+                            "invalid variable name in strict mode",
+                            source_span(self.current().span),
+                        ));
+                    }
+                    self.register_lexical_binding(
+                        &name,
+                        token.span,
+                        self.current().span,
+                        false,
+                        false,
+                    )?;
+                    let catch_binding =
+                        self.current_ir()
+                            .binding_id_in_scope(catch_scope, &name)
+                            .ok_or_else(|| Error::internal("catch binding was not registered"))?;
+                    self.current_ir_mut().bindings[catch_binding.0].is_catch_parameter = true;
+                    self.emit_identifier(name, token.span, IdentifierAccess::Initialize)?;
                 }
-                let token = self.current().clone();
-                let TokenKind::Identifier(identifier) = token.kind else {
-                    return Err(self.syntax_here("identifier expected"));
-                };
-                validate_identifier_reservation(
-                    &identifier,
-                    token.span,
-                    self.current_ir().strict,
-                    IdentifierContext::Variable,
-                )?;
-                let invalid_strict_name = self.current_ir().strict
-                    && matches!(identifier.value.as_str(), "eval" | "arguments");
-                let name = identifier.value;
-                self.advance()?;
-                if invalid_strict_name {
-                    return Err(Error::syntax(
-                        "invalid variable name in strict mode",
-                        source_span(self.current().span),
-                    ));
-                }
-                self.register_lexical_binding(
-                    &name,
-                    token.span,
-                    self.current().span,
-                    false,
-                    false,
-                )?;
-                let catch_binding = self
-                    .current_ir()
-                    .binding_id_in_scope(catch_scope, &name)
-                    .ok_or_else(|| Error::internal("catch binding was not registered"))?;
-                self.current_ir_mut().bindings[catch_binding.0].is_catch_parameter = true;
-                self.emit_identifier(name, token.span, IdentifierAccess::Initialize)?;
                 self.expect_punctuator(Punctuator::RightParen)?;
             }
 
@@ -2583,6 +2598,8 @@ impl<'source> Parser<'source> {
         } else if matches!(self.current().kind, TokenKind::Keyword(Keyword::Finally)) {
             // A try-finally handler retains the exception as the pending value;
             // the subroutine returns to the following rethrow.
+            let catch_target = self.current_ir().ops.len();
+            self.patch_jump(catch_jump, catch_target)?;
             finally_gosubs.push(self.emit_instruction(Instruction::Gosub(u32::MAX))?);
             self.emit_instruction(Instruction::Throw)?;
         } else {
@@ -7009,7 +7026,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                     else {
                         return true;
                     };
-                    binding.is_catch_parameter != (scope_kind == EvalScopeKind::Catch)
+                    (binding.is_catch_parameter && scope_kind != EvalScopeKind::Catch)
                         || (binding.kind == ClosureVariableKind::WithObject)
                             != (scope_kind == EvalScopeKind::With)
                 }) || function
@@ -8149,10 +8166,12 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         }
 
         let mut scope_entries = vec![0_usize; function.scopes.len()];
+        let mut catch_scope_preparations = vec![0_usize; function.scopes.len()];
         let mut scope_leaves = vec![0_usize; function.scopes.len()];
         for operation in &function.ops {
             let (scope, counts) = match operation.op {
                 IrOp::EnterScope(scope) => (scope, &mut scope_entries),
+                IrOp::PrepareCatchScope(scope) => (scope, &mut catch_scope_preparations),
                 IrOp::LeaveScope(scope) => (scope, &mut scope_leaves),
                 _ => continue,
             };
@@ -8165,7 +8184,22 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         }
         for (scope_index, scope) in function.scopes.iter().enumerate() {
             let entries = scope_entries[scope_index];
+            let catch_preparations = catch_scope_preparations[scope_index];
             let leaves = scope_leaves[scope_index];
+            match scope.kind {
+                ScopeKind::Catch if catch_preparations == 1 => {}
+                ScopeKind::Catch => {
+                    return Err(Error::internal(
+                        "catch scope preparation metadata is malformed",
+                    ));
+                }
+                _ if catch_preparations == 0 => {}
+                _ => {
+                    return Err(Error::internal(
+                        "non-catch scope has catch preparation metadata",
+                    ));
+                }
+            }
             if scope_index == function.var_scope.0 {
                 if entries != 0 || leaves != 0 {
                     return Err(Error::internal(
@@ -11403,6 +11437,21 @@ fn lower_ops(operations: Vec<SpannedIrOp>, scopes: &[ScopeLifecycle]) -> Result<
                         .saturating_mul(2),
                 )
                 .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?,
+            IrOp::PrepareCatchScope(scope) => {
+                let lifecycle = scopes
+                    .get(scope.0)
+                    .ok_or_else(|| Error::internal("catch scope preparation is out of bounds"))?;
+                if !lifecycle.function_entries.is_empty() {
+                    return Err(Error::internal(
+                        "catch parameter scope contains a function entry",
+                    ));
+                }
+                lifecycle
+                    .tdz_locals
+                    .len()
+                    .checked_mul(2)
+                    .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?
+            }
             IrOp::LeaveScope(scope) => scopes
                 .get(scope.0)
                 .ok_or_else(|| Error::internal("scope exit is out of bounds"))?
@@ -11471,6 +11520,22 @@ fn lower_ops(operations: Vec<SpannedIrOp>, scopes: &[ScopeLifecycle]) -> Result<
                     code.push(Instruction::FClosure(entry.constant));
                     pc_sites.push(None);
                     code.push(Instruction::InitializeLocal(entry.local));
+                    pc_sites.push(None);
+                }
+            }
+            IrOp::PrepareCatchScope(scope) => {
+                let lifecycle = scopes
+                    .get(scope.0)
+                    .ok_or_else(|| Error::internal("catch scope preparation is out of bounds"))?;
+                if !lifecycle.function_entries.is_empty() {
+                    return Err(Error::internal(
+                        "catch parameter scope contains a function entry",
+                    ));
+                }
+                for &index in &lifecycle.tdz_locals {
+                    code.push(Instruction::Undefined);
+                    pc_sites.push(None);
+                    code.push(Instruction::InitializeLocal(index));
                     pc_sites.push(None);
                 }
             }

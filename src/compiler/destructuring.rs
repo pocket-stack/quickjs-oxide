@@ -4,6 +4,7 @@ use super::*;
 enum BindingSite {
     Declaration,
     Iteration(ForIterationKind),
+    Catch,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,6 +168,39 @@ impl<'source> Parser<'source> {
         is_const: bool,
     ) -> Result<(), Error> {
         self.parse_binding_declaration(declaration, is_const, BindingPatternKind::Object)
+    }
+
+    /// Consume the exception value delivered at a Catch target and initialize
+    /// every BoundName as a mutable lexical in the statically selected catch
+    /// scope. The exceptional edge deliberately skips that scope's EnterScope
+    /// instruction, matching the pinned QuickJS catch-entry layout.
+    /// QuickJS deliberately uses TOK_LET here rather than TOK_CATCH: only a
+    /// simple `catch (identifier)` receives the Annex-B var-redeclaration
+    /// exception represented by `IrBinding::is_catch_parameter`.
+    pub(super) fn parse_catch_array_binding_pattern(&mut self) -> Result<(), Error> {
+        self.parse_catch_binding_pattern(BindingPatternKind::Array)
+    }
+
+    pub(super) fn parse_catch_object_binding_pattern(&mut self) -> Result<(), Error> {
+        self.parse_catch_binding_pattern(BindingPatternKind::Object)
+    }
+
+    fn parse_catch_binding_pattern(&mut self, pattern: BindingPatternKind) -> Result<(), Error> {
+        let entry_depth = self.current_ir().stack_depth;
+        let expected_depth = entry_depth
+            .checked_sub(1)
+            .ok_or_else(|| Error::internal("catch binding pattern has no exception value"))?;
+        // QuickJS invokes the common destructuring-element parser with
+        // hasval=true and allow_initializer=true for a CatchParameter, so the
+        // complete pattern itself may carry a default initializer.
+        self.parse_nested_binding_element(
+            ForAssignmentDeclaration::Lexical,
+            false,
+            BindingSite::Catch,
+            false,
+            pattern,
+        )?;
+        self.require_stack_depth(expected_depth, "catch binding pattern")
     }
 
     fn parse_binding_declaration(
@@ -1244,7 +1278,14 @@ impl<'source> Parser<'source> {
         let pattern_span = self.current().span;
         let has_rest = self.object_binding_has_rest();
         self.expect_punctuator(Punctuator::LeftBrace)?;
-        self.emit_instruction_at(Instruction::ToObject, source_offset(pattern_span)?)?;
+        if site == BindingSite::Catch {
+            // QuickJS emits no source marker for CatchParameter ToObject. A
+            // top-level nullish throw therefore retains the original throw
+            // site's PC, while nested patterns inherit their preceding read.
+            self.emit_instruction(Instruction::ToObject)?;
+        } else {
+            self.emit_instruction_at(Instruction::ToObject, source_offset(pattern_span)?)?;
+        }
         if has_rest {
             // source exclusion -> exclusion source
             self.emit_instruction(Instruction::Object)?;

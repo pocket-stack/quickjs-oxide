@@ -50,12 +50,12 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 34,947 pass;
+- 34,996 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 46,455 are classified as unsupported because of a feature, mode, host
+- 46,408 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 511 fail to parse, 1,506 fail at runtime, 135 fail in the harness, and eight
+- 511 fail to parse, 1,506 fail at runtime, 135 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 38,421 variants to execution. That count includes variants
@@ -64,22 +64,23 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 34.25% (`34,947 / 102,037`);
-- conservative target-scope lower bound: 41.82%
-  (`34,947 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 94.18%
-  (`34,947 / 37,107`).
+- raw suite pass rate: 34.30% (`34,996 / 102,037`);
+- conservative target-scope lower bound: 41.88%
+  (`34,996 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 94.19%
+  (`34,996 / 37,154`).
 
-The 41.82% figure is the useful whole-project progress floor, not a claim that
-the engine is 41.82% conformant. The 94.18% conditional rate measures quality
+The 41.88% figure is the useful whole-project progress floor, not a claim that
+the engine is 41.88% conformant. The 94.19% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
 had previously failed closed as unsupported features; R2q then raises it
 slightly as 31 untagged binding variants become real passes, R2t resolves two
 more typed parser frontiers, R2u adds 15 array-assignment passes without
-admitting additional jobs, and R2v resolves 14 untagged object-assignment
-frontiers. The
+admitting additional jobs, R2v resolves 14 untagged object-assignment
+frontiers, and R2w resolves 23 parser frontiers, 24 runtime frontiers, and two
+ordinary runtime failures on the synchronous catch-binding surface. The
 capability profile currently admits 69 reviewed Test262
 feature tags and 423 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
@@ -94,9 +95,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`bbc5babdb70a470ff6d937dde2771cb7de270bc6971bfc7597e1f5bf0b24e5da`
+`e00e85d148fcc5d03ff7830b0e730af0a64b478c498eaad8d018d0bf1c96898a`
 and
-`2839c0d58d8661b6cec4f6e606d297625343756dbbd656224013c17f992743fe`.
+`ace137cda9b5f55762b2e729a172adbed3715659c981c53bd809f9099fcf20ae`.
 
 ## Milestone policy
 
@@ -2100,6 +2101,56 @@ SHA-256 values are
 and
 `2839c0d58d8661b6cec4f6e606d297625343756dbbd656224013c17f992743fe`.
 
+## R2w synchronous catch binding patterns
+
+R2w implements recursive ArrayBindingPattern and ObjectBindingPattern catch
+parameters against QuickJS 2026-06-04. Identifier leaves, elisions, defaults
+with NamedEvaluation, terminal array rest, fixed and computed object keys,
+object rest, and arbitrary array/object recursion reuse the declaration
+binding owner. The thrown value is initialized inside the catch lexical scope;
+iterator and property abrupt completions therefore reach the surrounding
+handler/finally machinery through the same verified paths as other binding
+contexts. Pattern leaves are ordinary mutable catch-scope lexicals. Only a
+simple catch identifier carries the private catch-parameter marker used by
+direct-eval `var` redeclaration rules.
+
+The dependency-audited gate freezes 97 paths / 177 variants, all runnable and
+all passing. It covers the synchronous `language/statements/try/dstr` corpus
+whose dependencies are implemented, six audited parse-negative rest cases,
+the Annex B catch-body early-error integrations, and four untagged catch-scope
+paths. Class- and generator-valued defaults remain independent frontiers. The
+runner-bound profile admits only `Symbol.iterator`, `destructuring-binding`,
+`let`, and `object-rest`; the broad binding/rest tags remain absent from the
+global profile.
+
+The scoped profile SHA-256 is
+`a654327057a974e0feab6799f3c99a3104884a403cbc41bbc85f3fc226328718`.
+Normalized-manifest, manifest-file, key-set, and empty non-pass SHA-256 values
+are
+`50c326ca60fdfa0cd5d3683df265e730c1947801db6e0892645b9bcfcd450927`,
+`e3fb469169b069c185a7d9ea6b8cdce2fdb54d49181b7e87e33cff59a27c212e`,
+`1f66a5b898cf1f0cb4a3dc333ee3bb4e7d5dc1361dd5a06b7c1c4be2b0573784`,
+and
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+Focused TSV/JSONL hashes are
+`c1a01134926200028f476ca165ed8127566725bab5faa1a174e77b9f4f460557`
+and
+`4215e94bb7c8435345542d80ebfcad56ff91567cb4c45582c3cf8426f66dc3da`.
+Reproduce the gate with `scripts/test-test262-catch-binding.sh`.
+
+The exact R2v/R2w full join retains all 102,037 keys and adds 49 passes: 24
+`unsupported-runtime -> pass`, 23 `unsupported-parser -> pass`, and two
+`fail-runtime -> pass`. No previous pass regresses. The two modes of the
+unrelated `staging/sm/Proxy/ownkeys-linear.js` move from timeout back to their
+eventual missing-Proxy runtime failure; this is recorded performance noise, not
+a catch-binding regression. Passes reach 34,996 among 38,421 runnable variants;
+typed parser frontiers fall from 1,165 to 1,142, typed runtime frontiers fall
+from 74 to 50, and timeouts fall from eight to six. Full TSV/JSONL SHA-256
+values are
+`e00e85d148fcc5d03ff7830b0e730af0a64b478c498eaad8d018d0bf1c96898a`
+and
+`ace137cda9b5f55762b2e729a172adbed3715659c981c53bd809f9099fcf20ae`.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -2185,6 +2236,7 @@ canonical progress report.
 ./scripts/test-test262-object-assignment-rest.sh
 ./scripts/test-test262-object-binding.sh
 ./scripts/test-test262-object-rest-binding.sh
+./scripts/test-test262-catch-binding.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -2281,6 +2333,11 @@ depth-0-to-3 References, defaults, object/array recursion, exclusion-aware
 rest, and iterator unwind. Its three scoped gates pass all 193 variants across
 107 paths; the exact full join adds 14 passes with zero previous-pass
 regression, reaching 34,947 passes among 38,421 runnable variants.
+R2w adds recursive array/object/rest catch BindingPatterns while preserving
+catch lexical scope, iterator unwind, direct-eval redeclaration metadata, and
+Annex B integration. Its 97-path scoped gate passes all 177 variants; the exact
+full join adds 49 passes with zero previous-pass regression, reaching 34,996
+passes among 38,421 runnable variants.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

@@ -754,9 +754,7 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
         assert_eq!(
-            context
-                .compile("try { throw {value: 1}; } catch ({value}) {}")
-                .unwrap_err(),
+            context.compile("class C {}").unwrap_err(),
             RuntimeError::Exception
         );
         assert!(context.take_exception().unwrap().is_some());
@@ -765,19 +763,13 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
         let mut context = runtime.new_context();
         let options = CompileOptions::new("unsupported.js");
         let RuntimeError::Engine(error) = context
-            .compile_with_options_preserving_unsupported_diagnostics(
-                "try { throw {value: 1}; } catch ({value}) {}",
-                &options,
-            )
+            .compile_with_options_preserving_unsupported_diagnostics("class C {}", &options)
             .unwrap_err()
         else {
             panic!("diagnostic compile did not retain its engine error");
         };
         assert_eq!(error.kind(), ErrorKind::Unsupported);
-        assert_eq!(
-            error.message(),
-            "catch destructuring bindings are not implemented yet"
-        );
+        assert_eq!(error.message(), "class syntax is not implemented yet");
         assert!(context.take_exception().unwrap().is_none());
     }
 }

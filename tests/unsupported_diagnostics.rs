@@ -1,38 +1,13 @@
-use quickjs_oxide::{CompileOptions, ErrorKind, Runtime, RuntimeError};
+use quickjs_oxide::{ErrorKind, Runtime, Value};
 
 #[test]
-fn context_can_preserve_an_implementation_frontier_without_a_js_exception() {
+fn context_compiles_and_executes_catch_destructuring_bindings() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
-    let options = CompileOptions::new("unsupported.js");
-    let RuntimeError::Engine(error) = context
-        .compile_with_options_preserving_unsupported_diagnostics(
-            "try { throw {value: 1}; } catch ({value}) {}",
-            &options,
-        )
-        .unwrap_err()
-    else {
-        panic!("diagnostic compilation did not retain its engine error");
-    };
-    assert_eq!(error.kind(), ErrorKind::Unsupported);
-    assert_eq!(
-        error.message(),
-        "catch destructuring bindings are not implemented yet"
-    );
-    assert!(context.take_exception().unwrap().is_none());
-}
-
-#[test]
-fn default_context_compilation_keeps_the_temporary_js_compatibility_boundary() {
-    let runtime = Runtime::new();
-    let mut context = runtime.new_context();
-    assert_eq!(
-        context
-            .compile("try { throw {value: 1}; } catch ({value}) {}")
-            .unwrap_err(),
-        RuntimeError::Exception
-    );
-    assert!(context.take_exception().unwrap().is_some());
+    let bytecode = context
+        .compile("try { throw {value: 42}; } catch ({value}) { value }")
+        .unwrap();
+    assert_eq!(context.execute(&bytecode).unwrap(), Value::Int(42));
 }
 
 #[test]

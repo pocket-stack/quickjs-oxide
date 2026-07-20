@@ -257,29 +257,6 @@ fn abrupt_finally_override_cell_reuse_matches_pinned_quickjs() {
 }
 
 #[test]
-fn catch_destructuring_frontier_remains_explicit() {
-    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
-        eprintln!("SKIP catch destructuring boundary: set QJS_ORACLE to upstream qjs");
-        return;
-    };
-    let description = "catch object destructuring remains a separate compiler frontier";
-    let source = "try{throw Function}catch({name}){name}";
-    assert_eq!(
-        observe_oracle_sequence(&oracle, &[source], description),
-        "return|string|Function",
-        "pinned QuickJS changed the catch-destructuring boundary fixture"
-    );
-
-    let runtime = Runtime::new();
-    let mut context = runtime.new_context();
-    assert_eq!(
-        observe_rust_eval(&runtime, &mut context, source, description),
-        "throw|object|SyntaxError|catch destructuring bindings are not implemented yet",
-        "catch destructuring was not rejected at its explicit boundary"
-    );
-}
-
-#[test]
 fn try_catch_finally_full_strip_source_and_strip_debug_stacks_match_pinned_quickjs() {
     let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
         eprintln!("SKIP try/catch/finally stack differential: set QJS_ORACLE to upstream qjs");

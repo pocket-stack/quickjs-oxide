@@ -5,8 +5,8 @@ use quickjs_oxide::{Context, Runtime, RuntimeError, Value};
 
 // This target pins the object-binding declaration path shared by direct
 // declarations, classic for heads, and for-in/of heads in QuickJS 2026-06-04.
-// Object-rest bindings use the same declaration path; destructuring assignment
-// remains a separate frontier.
+// Object-rest bindings use the same declaration path. Assignment and catch
+// BindingPatterns have their own focused targets; parameters remain separate.
 
 const DIRECT_CASES: &[(&str, &str)] = &[
     (
