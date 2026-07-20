@@ -21,8 +21,9 @@
 # parameter forms, expression/block bodies, closures, lexical this/arguments,
 # call/bind behavior, object identity, non-constructibility, strictness, and
 # direct-eval compilation. Negative/provenance, async/module/host, class/super,
-# default/rest/destructuring parameters, and built-in adjacency remain in the
-# full inventory instead of being charged to this focused gate.
+# default parameters, parameter destructuring, rest BindingPatterns, and
+# built-in adjacency remain in the full inventory instead of being charged to
+# this focused gate. Synchronous identifier rest has a separate exact gate.
 test/language/expressions/arrow-function/ArrowFunction_restricted-properties.js
 test/language/expressions/arrow-function/arrow/binding-tests-1.js
 test/language/expressions/arrow-function/arrow/binding-tests-2.js

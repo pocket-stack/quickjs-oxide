@@ -1,0 +1,38 @@
+# R2x dependency-audited synchronous identifier-rest parameter surface.
+# Rest BindingPatterns, defaults, classes, async functions, generators, and
+# modules remain separate FormalParameters frontiers.
+
+test/annexB/language/function-code/block-decl-func-skip-arguments.js
+test/built-ins/Reflect/apply/arguments-list-is-not-array-like-but-still-valid.js
+test/built-ins/Set/prototype/difference/add-not-called.js
+test/built-ins/Set/prototype/intersection/add-not-called.js
+test/built-ins/Set/prototype/symmetricDifference/add-not-called.js
+test/built-ins/Set/prototype/union/add-not-called.js
+test/built-ins/String/prototype/replaceAll/replaceValue-call-each-match-position.js
+test/built-ins/String/prototype/replaceAll/replaceValue-call-matching-empty.js
+test/language/arguments-object/unmapped/via-params-rest.js
+test/language/expressions/arrow-function/rest-param-strict-body.js
+test/language/expressions/arrow-function/rest-params-trailing-comma-early-error.js
+test/language/expressions/arrow-function/syntax/arrowparameters-cover-includes-rest-concisebody-functionbody.js
+test/language/expressions/arrow-function/syntax/arrowparameters-cover-rest-concisebody-functionbody.js
+test/language/expressions/arrow-function/syntax/arrowparameters-cover-rest-lineterminator-concisebody-functionbody.js
+test/language/expressions/arrow-function/syntax/early-errors/arrowparameters-bindingidentifier-rest.js
+test/language/expressions/arrow-function/syntax/early-errors/arrowparameters-cover-no-duplicates-rest.js
+test/language/expressions/function/rest-param-strict-body.js
+test/language/expressions/function/rest-params-trailing-comma-early-error.js
+test/language/expressions/object/method-definition/meth-rest-param-strict-body.js
+test/language/expressions/object/method-definition/meth-rest-params-trailing-comma-early-error.js
+test/language/rest-parameters/arrow-function.js
+test/language/rest-parameters/expected-argument-count.js
+test/language/rest-parameters/no-alias-arguments.js
+test/language/rest-parameters/position-invalid.js
+test/language/rest-parameters/rest-index.js
+test/language/rest-parameters/rest-parameters-apply.js
+test/language/rest-parameters/rest-parameters-call.js
+test/language/rest-parameters/rest-parameters-produce-an-array.js
+test/language/statements/function/rest-param-strict-body.js
+test/language/statements/function/rest-params-trailing-comma-early-error.js
+test/staging/sm/Function/arrow-has-duplicated.js
+test/staging/sm/Function/method-has-duplicated.js
+test/staging/sm/Function/rest-parameter-names.js
+test/staging/sm/RegExp/unicode-ignoreCase.js

@@ -567,6 +567,10 @@ pub struct FunctionMetadata {
     /// Number of leading parameters before the first default/rest parameter.
     /// This is the observable `length`, distinct from frame slot count.
     pub defined_argument_count: u16,
+    /// Physical argument slot initialized by the authenticated entry-time
+    /// `Rest`/`PutArg` pair. `None` means this bytecode has no identifier rest
+    /// parameter.
+    pub rest_parameter: Option<u16>,
     pub local_count: u16,
     /// Synthetic local initialized to the active function object for a named
     /// function expression. This is the typed equivalent of QuickJS's
@@ -3796,6 +3800,70 @@ impl Heap {
             return Err(HeapError::Invariant(
                 "defined argument count exceeds function argument slots",
             ));
+        }
+        match bytecode.metadata.rest_parameter {
+            Some(rest)
+                if rest.checked_add(1) == Some(bytecode.metadata.argument_count)
+                    && bytecode.metadata.defined_argument_count == rest =>
+            {
+                let mut rest_pc =
+                    usize::from(bytecode.metadata.eval_variable_object_local.is_some()) * 2;
+                let arguments = bytecode
+                    .code
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(pc, instruction)| match instruction {
+                        Instruction::Arguments(kind) => Some((pc, *kind)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                match arguments.as_slice() {
+                    [] => {}
+                    [(pc, crate::bytecode::ArgumentsKind::Unmapped)] if *pc == rest_pc => {
+                        if !matches!(
+                            bytecode.code.get(rest_pc + 1),
+                            Some(Instruction::PutLocal(local))
+                                if *local < bytecode.metadata.local_count
+                        ) {
+                            return Err(HeapError::Invariant(
+                                "rest parameter arguments object has no entry binding",
+                            ));
+                        }
+                        rest_pc += 2;
+                    }
+                    _ => {
+                        return Err(HeapError::Invariant(
+                            "rest parameter contains a malformed arguments prologue",
+                        ));
+                    }
+                }
+                if !matches!(
+                    bytecode.code.get(rest_pc..rest_pc + 2),
+                    Some([Instruction::Rest(start), Instruction::PutArg(target)])
+                        if *start == rest && *target == rest
+                ) || bytecode.code.iter().enumerate().any(|(pc, instruction)| {
+                    pc != rest_pc && matches!(instruction, Instruction::Rest(_))
+                }) {
+                    return Err(HeapError::Invariant(
+                        "rest parameter has no exact entry initialization",
+                    ));
+                }
+            }
+            Some(_) => {
+                return Err(HeapError::Invariant(
+                    "rest parameter metadata disagrees with argument slots",
+                ));
+            }
+            None if bytecode
+                .code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Rest(_))) =>
+            {
+                return Err(HeapError::Invariant(
+                    "rest opcode has no authenticated parameter metadata",
+                ));
+            }
+            None => {}
         }
         if bytecode
             .metadata

@@ -806,6 +806,15 @@ struct FunctionIr {
     /// arrows relay the local without carrying this metadata themselves.
     needs_home_object: bool,
     parameters: Vec<String>,
+    /// QuickJS `defined_arg_count`, exposed as the function's public `length`.
+    /// An identifier rest parameter owns a physical argument slot but is not
+    /// included in this count.
+    defined_argument_count: usize,
+    /// QuickJS `has_simple_parameter_list`. Besides early-error policy, this
+    /// selects mapped versus unmapped `arguments` for sloppy functions.
+    has_simple_parameter_list: bool,
+    /// Physical argument slot overwritten by the entry-time `OP_rest` result.
+    rest_parameter: Option<u16>,
     locals: Vec<String>,
     scopes: Vec<IrScope>,
     bindings: Vec<IrBinding>,
@@ -904,6 +913,9 @@ struct FunctionIrOptions {
     function_name: Option<String>,
     private_name_binding: bool,
     parameters: Vec<String>,
+    defined_argument_count: usize,
+    has_simple_parameter_list: bool,
+    rest_parameter: Option<u16>,
     strict: bool,
     super_capabilities: SuperCapabilities,
 }
@@ -916,6 +928,18 @@ impl FunctionIr {
         options: FunctionIrOptions,
     ) -> Result<Self, Error> {
         let super_capabilities = options.super_capabilities.validated()?;
+        if options.defined_argument_count > options.parameters.len()
+            || (options.has_simple_parameter_list
+                && (options.defined_argument_count != options.parameters.len()
+                    || options.rest_parameter.is_some()))
+            || options.rest_parameter.is_some_and(|rest| {
+                usize::from(rest) + 1 != options.parameters.len()
+                    || options.defined_argument_count != usize::from(rest)
+                    || options.has_simple_parameter_list
+            })
+        {
+            return Err(Error::internal("formal parameter metadata is malformed"));
+        }
         let (locals, eval_ret_local, synthetic_locals) =
             if matches!(kind, FunctionKind::Script | FunctionKind::Eval(_)) {
                 (
@@ -982,6 +1006,9 @@ impl FunctionIr {
             eval_variable_object_local: None,
             needs_home_object: false,
             parameters: options.parameters,
+            defined_argument_count: options.defined_argument_count,
+            has_simple_parameter_list: options.has_simple_parameter_list,
+            rest_parameter: options.rest_parameter,
             locals,
             scopes,
             bindings: Vec::new(),
@@ -1405,6 +1432,9 @@ impl<'source> Parser<'source> {
                     function_name: Some("<eval>".to_owned()),
                     private_name_binding: false,
                     parameters: Vec::new(),
+                    defined_argument_count: 0,
+                    has_simple_parameter_list: true,
+                    rest_parameter: None,
                     strict: inherited_strict,
                     super_capabilities,
                 },
@@ -6959,6 +6989,34 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         if function.scopes[function.body_scope.0].kind != expected_body {
             return Err(Error::internal("function body scope kind is malformed"));
         }
+        if function.defined_argument_count > function.parameters.len()
+            || (function.has_simple_parameter_list
+                && (function.defined_argument_count != function.parameters.len()
+                    || function.rest_parameter.is_some()))
+            || function.rest_parameter.is_some_and(|rest| {
+                usize::from(rest) + 1 != function.parameters.len()
+                    || function.defined_argument_count != usize::from(rest)
+                    || function.has_simple_parameter_list
+                    || !matches!(
+                        function.kind,
+                        FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
+                    )
+            })
+        {
+            return Err(Error::internal("formal parameter metadata is malformed"));
+        }
+        let rest_operations = function
+            .ops
+            .iter()
+            .filter(|operation| matches!(operation.op, IrOp::Bytecode(Instruction::Rest(_))))
+            .count();
+        let expected_rest_operations =
+            usize::from(function.function_hoists_installed && function.rest_parameter.is_some());
+        if rest_operations != expected_rest_operations {
+            return Err(Error::internal(
+                "rest parameter entry initialization is malformed",
+            ));
+        }
         if function.super_call_allowed && !function.super_allowed {
             return Err(Error::internal(
                 "function permits super() without SuperProperty",
@@ -7300,7 +7358,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 hoist_start = 2;
             }
             if let Some(local) = function.arguments_local {
-                let expected_kind = if function.strict {
+                let expected_kind = if function.strict || !function.has_simple_parameter_list {
                     ArgumentsKind::Unmapped
                 } else {
                     ArgumentsKind::Mapped
@@ -7320,6 +7378,26 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 ) {
                     return Err(Error::internal(
                         "installed arguments-object prologue is malformed",
+                    ));
+                }
+                hoist_start += 2;
+            }
+            if let Some(rest) = function.rest_parameter {
+                if !matches!(
+                    function.ops.get(hoist_start),
+                    Some(SpannedIrOp {
+                        op: IrOp::Bytecode(Instruction::Rest(target)),
+                        pc_site: None,
+                    }) if *target == rest
+                ) || !matches!(
+                    function.ops.get(hoist_start + 1),
+                    Some(SpannedIrOp {
+                        op: IrOp::Bytecode(Instruction::PutArg(target)),
+                        pc_site: None,
+                    }) if *target == rest
+                ) {
+                    return Err(Error::internal(
+                        "installed rest parameter prologue is malformed",
                     ));
                 }
                 hoist_start += 2;
@@ -8975,7 +9053,10 @@ fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
             hoists
                 .len()
                 .saturating_mul(2)
-                .saturating_add(usize::from(arguments_local.is_some()) * 2),
+                .saturating_add(usize::from(arguments_local.is_some()) * 2)
+                .saturating_add(
+                    usize::from(tree.functions[function_id].rest_parameter.is_some()) * 2,
+                ),
         );
         if let Some(local) = eval_variable_object_local {
             prefix.push(SpannedIrOp {
@@ -8988,7 +9069,9 @@ fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
             });
         }
         if let Some(local) = arguments_local {
-            let kind = if tree.functions[function_id].strict {
+            let kind = if tree.functions[function_id].strict
+                || !tree.functions[function_id].has_simple_parameter_list
+            {
                 ArgumentsKind::Unmapped
             } else {
                 ArgumentsKind::Mapped
@@ -8999,6 +9082,16 @@ fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
             });
             prefix.push(SpannedIrOp {
                 op: IrOp::Bytecode(Instruction::PutLocal(local)),
+                pc_site: None,
+            });
+        }
+        if let Some(rest) = tree.functions[function_id].rest_parameter {
+            prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::Rest(rest)),
+                pc_site: None,
+            });
+            prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::PutArg(rest)),
                 pc_site: None,
             });
         }
@@ -10900,8 +10993,9 @@ fn lower_unlinked_tree(
         let metadata = FunctionMetadata {
             argument_count: u16::try_from(function.parameters.len())
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "too many arguments"))?,
-            defined_argument_count: u16::try_from(function.parameters.len())
+            defined_argument_count: u16::try_from(function.defined_argument_count)
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "too many arguments"))?,
+            rest_parameter: function.rest_parameter,
             local_count: u16::try_from(function.locals.len())
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?,
             function_name_local: function.function_name_local,

@@ -294,6 +294,9 @@ fn closure_slots_deduplicate_by_storage_identity_and_reject_metadata_conflicts()
             function_name: None,
             private_name_binding: false,
             parameters: Vec::new(),
+            defined_argument_count: 0,
+            has_simple_parameter_list: true,
+            rest_parameter: None,
             strict: false,
             super_capabilities: SuperCapabilities::NONE,
         },
@@ -603,6 +606,9 @@ fn captured_with_object_has_close_lifetime_without_lexical_tdz() {
                 function_name: None,
                 private_name_binding: false,
                 parameters: Vec::new(),
+                defined_argument_count: 0,
+                has_simple_parameter_list: true,
+                rest_parameter: None,
                 strict,
                 super_capabilities: SuperCapabilities::NONE,
             },
@@ -6908,6 +6914,185 @@ fn implicit_arguments_binding_is_lazy_and_precedes_body_hoists() {
 }
 
 #[test]
+fn identifier_rest_parameters_publish_quickjs_length_and_entry_order() {
+    let script = compile_unlinked_script(
+        "(function(left,...rest){ function rest(){ return 42; } return arguments; })",
+    )
+    .unwrap();
+    let function = script.constants()[0].as_child().unwrap();
+    assert_eq!(function.metadata().argument_count, 2);
+    assert_eq!(function.metadata().defined_argument_count, 1);
+    assert!(matches!(
+        function.code(),
+        [
+            Instruction::Arguments(ArgumentsKind::Unmapped),
+            Instruction::PutLocal(0),
+            Instruction::Rest(1),
+            Instruction::PutArg(1),
+            Instruction::FClosure(0),
+            Instruction::PutArg(1),
+            ..
+        ]
+    ));
+
+    let script = compile_unlinked_script("({method(left,...rest){return rest}})").unwrap();
+    let method = script.constants()[0].as_child().unwrap();
+    assert_eq!(method.metadata().argument_count, 2);
+    assert_eq!(method.metadata().defined_argument_count, 1);
+    assert!(matches!(
+        method.code(),
+        [Instruction::Rest(1), Instruction::PutArg(1), ..]
+    ));
+
+    let script = compile_unlinked_script("(left,...rest)=>rest").unwrap();
+    let arrow = script.constants()[0].as_child().unwrap();
+    assert_eq!(arrow.metadata().argument_count, 2);
+    assert_eq!(arrow.metadata().defined_argument_count, 1);
+    assert!(matches!(
+        arrow.code(),
+        [Instruction::Rest(1), Instruction::PutArg(1), ..]
+    ));
+}
+
+#[test]
+fn identifier_rest_parameters_execute_across_sync_function_forms() {
+    assert_eq!(
+        evaluate_in_context(
+            r#"(function(){
+                function ordinary(left,...rest){
+                    return left+'|'+rest.length+'|'+rest[0]+'|'+rest[1]+'|'+Array.isArray(rest);
+                }
+                var arrow=(left,...rest)=>left+'|'+rest.length+'|'+rest[0]+'|'+rest[1];
+                var object={base:40,method(left,...rest){
+                    return this.base+'|'+left+'|'+rest.length+'|'+rest[0]+'|'+rest[1];
+                }};
+                var dynamic=Function('left','...rest','return left+rest[0]+rest[1]');
+                return ordinary(40,1,2)+';'+arrow(40,1,2)+';'+object.method(1,1,2)+';'+
+                    dynamic(40,1,1)+';'+ordinary.length+'|'+arrow.length+'|'+
+                    object.method.length+'|'+dynamic.length;
+            })()"#,
+        ),
+        Value::String(JsString::from_static(
+            "40|2|1|2|true;40|2|1|2;40|1|2|1|2;42;1|1|1|1"
+        ))
+    );
+
+    assert_eq!(
+        evaluate_in_context(
+            r#"(function(left,...rest){
+                arguments[0]=7;
+                arguments[1]=8;
+                var first=left+'|'+rest[0];
+                left=9;
+                rest[0]=10;
+                return first+'|'+left+'|'+rest[0]+'|'+arguments[0]+'|'+arguments[1];
+            })(1,2)"#,
+        ),
+        Value::String(JsString::from_static("1|2|9|10|7|8"))
+    );
+
+    assert_eq!(
+        evaluate_in_context(
+            r#"(function(){
+                var retained=(function(...rest){var rest;return Array.isArray(rest)+'|'+rest.length})();
+                var hoisted=(function(...rest){function rest(){return 42}return typeof rest+'|'+rest()})();
+                var capture=(function(...rest){return function(){return rest[0]+rest[1]}})(40,2);
+                return retained+';'+hoisted+';'+capture();
+            })()"#,
+        ),
+        Value::String(JsString::from_static("true|0;function|42;42"))
+    );
+}
+
+#[test]
+fn identifier_rest_array_is_allocated_in_the_callee_realm() {
+    let runtime = Runtime::new();
+    let mut defining = runtime.new_context();
+    let mut caller = runtime.new_context();
+    let Value::Object(function) = defining
+        .eval("(function(...rest){return Object.getPrototypeOf(rest)===Array.prototype})")
+        .unwrap()
+    else {
+        panic!("rest source did not produce a function");
+    };
+    let function = runtime.as_callable(&function).unwrap().unwrap();
+    assert_eq!(
+        caller
+            .call(
+                &function,
+                Value::Undefined,
+                &[Value::Int(40), Value::Int(2)]
+            )
+            .unwrap(),
+        Value::Bool(true)
+    );
+}
+
+#[test]
+fn identifier_rest_parameter_early_errors_match_quickjs_policy() {
+    for source in [
+        "function f(...rest,next){}",
+        "function f(...rest,){}",
+        "function f(...rest=[]){}",
+        "function f(value,...value,){}",
+        "(...rest,next)=>0",
+        "(...rest,)=>0",
+        "(...rest=[])=>0",
+        "(value,...value,)=>0",
+        "({method(value,...value,){}})",
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(error.message(), "expecting ')'", "{source}");
+    }
+
+    for source in [
+        "function f(value,value,...rest){}",
+        "(value,value,...rest)=>0",
+        "({method(value,value,...rest){}})",
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(
+            error.message(),
+            "duplicate argument names not allowed in this context",
+            "{source}"
+        );
+    }
+
+    for source in [
+        "function f(...rest){'use strict';}",
+        "function f(value,...value){'use strict';}",
+        "(...rest)=>{'use strict';}",
+        "(value,...value)=>{'use strict';}",
+        "({method(value,...value){'use strict';}})",
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(
+            error.message(),
+            "\"use strict\" not allowed in function with default or destructuring parameter",
+            "{source}"
+        );
+    }
+
+    for source in ["({get value(...rest){}})", "({set value(...rest){}})"] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(
+            error.message(),
+            "invalid number of arguments for getter or setter",
+            "{source}"
+        );
+    }
+
+    compile_unlinked_script("function f(value,value){}")
+        .expect("a sloppy ordinary simple parameter list may contain duplicates");
+    compile_unlinked_script("'use strict';function f(...rest){}")
+        .expect("inherited strictness does not make a rest parameter directive invalid");
+}
+
+#[test]
 fn var_initializer_named_evaluation_follows_quickjs_set_name_marker() {
     for source in [
         "(function() { var f = function() {}; return f; })()",
@@ -7114,6 +7299,9 @@ fn quickjs_closure_slot_limit_is_65534_and_uses_internal_error() {
             function_name: None,
             private_name_binding: false,
             parameters: Vec::new(),
+            defined_argument_count: 0,
+            has_simple_parameter_list: true,
+            rest_parameter: None,
             strict: false,
             super_capabilities: SuperCapabilities::NONE,
         },
@@ -8357,6 +8545,7 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
         "({...null})",
         "({__proto__:null,a:1})",
         "({a(){}})",
+        "({a(...rest){return rest}})",
         "({get(){}})",
         "({set(value){}})",
         "({[1](){}})",
@@ -8376,7 +8565,6 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
     for source in [
         "({*a(){}})",
         "({async a(){}})",
-        "({a(...rest){}})",
         "({a(value=1){}})",
         "({a({value}){}})",
         "({set a(value=1){}})",

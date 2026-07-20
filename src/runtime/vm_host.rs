@@ -1813,6 +1813,26 @@ impl VmHost for RuntimeVmHost {
         Ok(Completion::Return(Value::Object(object)))
     }
 
+    fn create_rest(&mut self, start: u16) -> Result<Completion, Error> {
+        let start = usize::from(start);
+        if start > self.arguments.len() || self.actual_argument_count > self.arguments.len() {
+            return Err(Error::internal(
+                "rest parameter start exceeds the active argument frame",
+            ));
+        }
+        let values = self
+            .arguments
+            .iter()
+            .take(self.actual_argument_count)
+            .skip(start)
+            .map(|binding| read_frame_binding(&self.runtime, binding))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.runtime
+            .new_array_from_values(self.current_realm, values)
+            .map(|array| Completion::Return(Value::Object(array)))
+            .map_err(runtime_error_to_vm_error)
+    }
+
     fn object(&mut self) -> Result<Completion, Error> {
         self.runtime
             .new_ordinary_object_in_realm(self.current_realm)

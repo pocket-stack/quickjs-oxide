@@ -179,6 +179,9 @@ pub(crate) trait VmHost {
     /// Create the current ordinary function's mapped or unmapped arguments
     /// object in its defining realm.
     fn create_arguments(&mut self, kind: ArgumentsKind) -> Result<Completion, Error>;
+    /// Collect the active frame's actual arguments from `start` onward into a
+    /// fresh Array in the callee realm, matching QuickJS `OP_rest`.
+    fn create_rest(&mut self, start: u16) -> Result<Completion, Error>;
     /// Create a fresh ordinary Object in the executing bytecode's realm.
     fn object(&mut self) -> Result<Completion, Error>;
     /// Read the active bytecode function's authenticated HomeObject. Detached
@@ -535,6 +538,8 @@ struct DetachedHost<'a> {
     #[cfg(test)]
     arguments_results: VecDeque<(ArgumentsKind, Completion)>,
     #[cfg(test)]
+    rest_results: VecDeque<(u16, Completion)>,
+    #[cfg(test)]
     set_object_prototype_results: VecDeque<Completion>,
     #[cfg(test)]
     set_object_prototype_inputs: Vec<(Value, Value)>,
@@ -615,6 +620,8 @@ impl<'a> DetachedHost<'a> {
             dynamic_environment_operations: Vec::new(),
             #[cfg(test)]
             arguments_results: VecDeque::new(),
+            #[cfg(test)]
+            rest_results: VecDeque::new(),
             #[cfg(test)]
             set_object_prototype_results: VecDeque::new(),
             #[cfg(test)]
@@ -820,6 +827,20 @@ impl VmHost for DetachedHost<'_> {
         let _ = kind;
         Err(Error::internal(
             "detached VM cannot create runtime-owned arguments objects",
+        ))
+    }
+
+    fn create_rest(&mut self, start: u16) -> Result<Completion, Error> {
+        #[cfg(test)]
+        if let Some((expected, outcome)) = self.rest_results.pop_front() {
+            if expected != start {
+                return Err(Error::internal("unexpected detached rest start"));
+            }
+            return Ok(outcome);
+        }
+        let _ = start;
+        Err(Error::internal(
+            "detached VM cannot create runtime-owned rest arrays",
         ))
     }
 
@@ -1673,6 +1694,10 @@ impl CallFrame {
                 Completion::Return(arguments) => self.stack.push(arguments),
                 Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
             },
+            Instruction::Rest(start) => match host.create_rest(*start)? {
+                Completion::Return(rest) => self.stack.push(rest),
+                Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+            },
             Instruction::VariableEnvironment => match host.create_variable_environment()? {
                 Completion::Return(environment) => self.stack.push(environment),
                 Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
@@ -2186,6 +2211,7 @@ impl CallFrame {
             if matches!(
                 instruction,
                 Instruction::Arguments(_)
+                    | Instruction::Rest(_)
                     | Instruction::VariableEnvironment
                     | Instruction::HasEvalVariable { .. }
                     | Instruction::GetEvalVariable { .. }
@@ -2313,6 +2339,7 @@ impl CallFrame {
             Instruction::Arguments(_) => {
                 unreachable!("arguments-object dispatch was bypassed")
             }
+            Instruction::Rest(_) => unreachable!("rest-parameter dispatch was bypassed"),
             Instruction::VariableEnvironment
             | Instruction::HasEvalVariable { .. }
             | Instruction::GetEvalVariable { .. }
@@ -3892,6 +3919,39 @@ mod tests {
         let mut host = DetachedHost::new(&function);
         host.arguments_results
             .push_back((ArgumentsKind::Unmapped, Completion::Throw(thrown.clone())));
+        assert_eq!(
+            CallFrame::new(1)
+                .execute(&function.code, &mut host)
+                .unwrap(),
+            Completion::Throw(thrown)
+        );
+    }
+
+    #[test]
+    fn rest_opcode_forwards_start_and_host_completion() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::Rest(2), Instruction::Return],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        function.verify().unwrap();
+
+        let mut host = DetachedHost::new(&function);
+        host.rest_results
+            .push_back((2, Completion::Return(Value::Int(42))));
+        assert_eq!(
+            CallFrame::new(1)
+                .execute(&function.code, &mut host)
+                .unwrap(),
+            Completion::Return(Value::Int(42))
+        );
+
+        let thrown = Value::String(JsString::from_static("rest throw"));
+        let mut host = DetachedHost::new(&function);
+        host.rest_results
+            .push_back((2, Completion::Throw(thrown.clone())));
         assert_eq!(
             CallFrame::new(1)
                 .execute(&function.code, &mut host)

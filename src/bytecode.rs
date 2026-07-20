@@ -116,6 +116,11 @@ pub enum Instruction {
     /// arguments binding. Runtime creation still occurs in the entry prologue,
     /// before body function hoists.
     Arguments(ArgumentsKind),
+    /// QuickJS `OP_rest`: collect the actual arguments beginning at this
+    /// formal-parameter index into a fresh Array in the callee realm. The
+    /// operand may equal `argument_count` for a rest BindingPattern, which
+    /// owns no physical argument slot.
+    Rest(u16),
     /// QuickJS `OP_special_object` with `OP_SPECIAL_OBJECT_VAR_OBJECT`: create
     /// the null-prototype object which stores names introduced by sloppy
     /// direct eval in this activation.
@@ -484,6 +489,7 @@ impl Instruction {
             | Self::PushHomeObject
             | Self::PushNewTarget
             | Self::Arguments(_)
+            | Self::Rest(_)
             | Self::VariableEnvironment
             | Self::HasEvalVariable { .. }
             | Self::GetEvalVariable { .. }
@@ -1315,6 +1321,24 @@ mod tests {
         };
         assert_eq!(
             undersized.verify().unwrap_err().message(),
+            "declared maximum stack is smaller than required"
+        );
+
+        let rest = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::Rest(3), Instruction::Return],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        assert_eq!(rest.verify().unwrap().max_stack, 1);
+
+        let undersized_rest = BytecodeFunction {
+            max_stack: 0,
+            ..rest
+        };
+        assert_eq!(
+            undersized_rest.verify().unwrap_err().message(),
             "declared maximum stack is smaller than required"
         );
     }

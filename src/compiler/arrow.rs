@@ -13,6 +13,7 @@ impl<'source> Parser<'source> {
         let parent_strict = self.functions[parent].strict;
         let mut parameters = Vec::new();
         let mut parameter_tokens = Vec::new();
+        let mut rest_parameter = None;
 
         match head {
             ArrowHead::Identifier => {
@@ -31,18 +32,17 @@ impl<'source> Parser<'source> {
                 self.expect_punctuator(Punctuator::LeftParen)?;
                 if !self.consume_punctuator(Punctuator::RightParen)? {
                     loop {
-                        if self.is_punctuator(Punctuator::Ellipsis) {
-                            return Err(self.unsupported_here(
-                                "arrow rest parameters are not implemented yet",
-                            ));
-                        }
+                        let is_rest = self.consume_punctuator(Punctuator::Ellipsis)?;
                         if matches!(
                             self.current().kind,
                             TokenKind::Punctuator(Punctuator::LeftBracket | Punctuator::LeftBrace)
                         ) {
-                            return Err(self.unsupported_here(
-                                "arrow destructuring parameters are not implemented yet",
-                            ));
+                            let feature = if is_rest {
+                                "arrow rest destructuring parameters are not implemented yet"
+                            } else {
+                                "arrow destructuring parameters are not implemented yet"
+                            };
+                            return Err(self.unsupported_here(feature));
                         }
                         let token = self.current().clone();
                         let TokenKind::Identifier(identifier) = token.kind else {
@@ -54,19 +54,26 @@ impl<'source> Parser<'source> {
                             false,
                             IdentifierContext::Argument,
                         )?;
-                        if parameters.contains(&identifier.value) {
-                            return Err(Error::syntax(
-                                "duplicate argument names not allowed in this context",
-                                source_span(token.span),
-                            ));
-                        }
                         if parameters.len() >= MAX_LOCAL_VARIABLES {
                             return Err(Error::new(ErrorKind::JsInternal, "too many arguments")
                                 .with_span(source_span(token.span)));
                         }
                         parameters.push(identifier.value.clone());
                         parameter_tokens.push((identifier, token.span));
+                        if is_rest {
+                            rest_parameter =
+                                Some(u16::try_from(parameters.len() - 1).map_err(|_| {
+                                    Error::new(ErrorKind::JsInternal, "too many arguments")
+                                })?);
+                        }
                         self.advance()?;
+                        if is_rest {
+                            if !self.is_punctuator(Punctuator::RightParen) {
+                                return Err(self.syntax_here("expecting ')'"));
+                            }
+                            self.advance()?;
+                            break;
+                        }
                         if self.is_punctuator(Punctuator::Equal) {
                             return Err(self.unsupported_here(
                                 "arrow default parameters are not implemented yet",
@@ -101,9 +108,24 @@ impl<'source> Parser<'source> {
         if block_body {
             self.relex_current_with_strict(strict)?;
         }
+        let has_simple_parameter_list = rest_parameter.is_none();
+        if has_use_strict && !has_simple_parameter_list {
+            return Err(Error::syntax(
+                "\"use strict\" not allowed in function with default or destructuring parameter",
+                source_span(self.current().span),
+            ));
+        }
         if strict {
             for (identifier, span) in &parameter_tokens {
                 validate_identifier(identifier, *span, true, IdentifierContext::Argument)?;
+            }
+        }
+        for (index, parameter) in parameters.iter().enumerate() {
+            if parameters[..index].contains(parameter) {
+                return Err(Error::syntax(
+                    "duplicate argument names not allowed in this context",
+                    source_span(self.current().span),
+                ));
             }
         }
 
@@ -127,6 +149,9 @@ impl<'source> Parser<'source> {
             FunctionIrOptions {
                 function_name: None,
                 private_name_binding: false,
+                defined_argument_count: rest_parameter.map_or(parameters.len(), usize::from),
+                has_simple_parameter_list,
+                rest_parameter,
                 parameters,
                 strict,
                 super_capabilities,

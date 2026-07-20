@@ -11,8 +11,9 @@ struct Case {
 }
 
 // Pins the synchronous, non-generator ObjectLiteral concise-method slice from
-// QuickJS 2026-06-04. Accessors, async methods, generators, default/rest/
-// destructuring parameters, and `super` deliberately belong to later slices.
+// QuickJS 2026-06-04. Identifier rest parameters, accessors, and `super` have
+// separate oracles; async methods, generators, defaults, parameter
+// destructuring, and rest BindingPatterns deliberately belong to later slices.
 const CASES: &[Case] = &[
     Case {
         group: "property-keys",

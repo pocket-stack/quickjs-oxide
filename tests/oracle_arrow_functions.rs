@@ -11,8 +11,9 @@ struct Case {
 }
 
 // Pins the synchronous, simple-parameter ArrowFunction slice from QuickJS
-// 2026-06-04. Default/rest/destructuring parameters and async arrows belong to
-// later slices; the lexical environment cases here must already be correct
+// 2026-06-04. Identifier rest parameters have their own oracle; defaults,
+// parameter destructuring, rest BindingPatterns, and async arrows belong to
+// later slices. The lexical environment cases here must already be correct
 // before the simpler syntax is treated as an ordinary function shorthand.
 const CASES: &[Case] = &[
     Case {

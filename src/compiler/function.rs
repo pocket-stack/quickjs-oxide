@@ -144,55 +144,74 @@ impl<'source> Parser<'source> {
 
         let mut parameters = Vec::new();
         let mut parameter_tokens = Vec::new();
+        let mut rest_parameter = None;
         let mut parameter_list_end_span = self.current().span;
         if self.is_punctuator(Punctuator::RightParen) {
             self.advance()?;
         } else {
             loop {
+                let is_rest = self.consume_punctuator(Punctuator::Ellipsis)?;
                 if let Some(method_kind) = options.object_method_kind {
                     let role = match method_kind {
                         DefineMethodKind::Method => "object method",
                         DefineMethodKind::Getter => "object getter",
                         DefineMethodKind::Setter => "object setter",
                     };
-                    if self.is_punctuator(Punctuator::Ellipsis) {
-                        if !matches!(method_kind, DefineMethodKind::Method) {
-                            return Err(Error::syntax(
-                                "invalid number of arguments for getter or setter",
-                                source_span(self.current().span),
-                            ));
-                        }
-                        return Err(self.unsupported_here(format!(
-                            "{role} rest parameters are not implemented yet"
-                        )));
+                    if is_rest && !matches!(method_kind, DefineMethodKind::Method) {
+                        return Err(Error::syntax(
+                            "invalid number of arguments for getter or setter",
+                            source_span(self.current().span),
+                        ));
                     }
                     if matches!(
                         self.current().kind,
                         TokenKind::Punctuator(Punctuator::LeftBracket | Punctuator::LeftBrace)
                     ) {
+                        let feature = if is_rest {
+                            "rest destructuring parameters"
+                        } else {
+                            "destructuring parameters"
+                        };
                         return Err(self.unsupported_here(format!(
-                            "{role} destructuring parameters are not implemented yet"
+                            "{role} {feature} are not implemented yet"
                         )));
                     }
+                } else if is_rest
+                    && matches!(
+                        self.current().kind,
+                        TokenKind::Punctuator(Punctuator::LeftBracket | Punctuator::LeftBrace)
+                    )
+                {
+                    return Err(self.unsupported_here(
+                        "rest destructuring parameters are not implemented yet",
+                    ));
                 }
                 let token = self.current().clone();
                 let TokenKind::Identifier(identifier) = token.kind else {
                     return Err(self.syntax_here("missing formal parameter"));
                 };
                 validate_identifier(&identifier, token.span, false, IdentifierContext::Argument)?;
-                if options.reject_duplicate_parameters && parameters.contains(&identifier.value) {
-                    return Err(Error::syntax(
-                        "duplicate argument names not allowed in this context",
-                        source_span(token.span),
-                    ));
-                }
                 parameter_tokens.push((identifier.clone(), token.span));
                 parameters.push(identifier.value);
                 if parameters.len() > MAX_LOCAL_VARIABLES {
                     return Err(Error::new(ErrorKind::JsInternal, "too many arguments")
                         .with_span(source_span(token.span)));
                 }
+                if is_rest {
+                    rest_parameter =
+                        Some(u16::try_from(parameters.len() - 1).map_err(|_| {
+                            Error::new(ErrorKind::JsInternal, "too many arguments")
+                        })?);
+                }
                 self.advance()?;
+                if is_rest {
+                    if !self.is_punctuator(Punctuator::RightParen) {
+                        return Err(self.syntax_here("expecting ')'"));
+                    }
+                    parameter_list_end_span = self.current().span;
+                    self.advance()?;
+                    break;
+                }
                 if let Some(method_kind) = options.object_method_kind {
                     if self.is_punctuator(Punctuator::Equal) {
                         let role = match method_kind {
@@ -244,6 +263,13 @@ impl<'source> Parser<'source> {
         let has_use_strict = self.directive_prologue_has_use_strict(self.cursor, parent_strict)?;
         let strict = self.functions[parent].strict || has_use_strict;
         self.relex_current_with_strict(strict)?;
+        let has_simple_parameter_list = rest_parameter.is_none();
+        if has_use_strict && !has_simple_parameter_list {
+            return Err(Error::syntax(
+                "\"use strict\" not allowed in function with default or destructuring parameter",
+                source_span(self.current().span),
+            ));
+        }
         if strict {
             let strict_validation_span = self.current().span;
             if let Some((identifier, _)) = &function_name_token {
@@ -254,15 +280,18 @@ impl<'source> Parser<'source> {
                     IdentifierContext::FunctionName,
                 )?;
             }
-            for (index, (identifier, _)) in parameter_tokens.iter().enumerate() {
+            for (identifier, _) in &parameter_tokens {
                 validate_identifier(
                     identifier,
                     strict_validation_span,
                     true,
                     IdentifierContext::Argument,
                 )?;
-                let parameter = &identifier.value;
-                if !options.reject_duplicate_parameters && parameters[..index].contains(parameter) {
+            }
+        }
+        if options.reject_duplicate_parameters || strict || !has_simple_parameter_list {
+            for (index, parameter) in parameters.iter().enumerate() {
+                if parameters[..index].contains(parameter) {
                     return Err(Error::syntax(
                         "duplicate argument names not allowed in this context",
                         source_span(self.current().span),
@@ -299,6 +328,9 @@ impl<'source> Parser<'source> {
             FunctionIrOptions {
                 function_name,
                 private_name_binding: options.private_name_binding && function_name_token.is_some(),
+                defined_argument_count: rest_parameter.map_or(parameters.len(), usize::from),
+                has_simple_parameter_list,
+                rest_parameter,
                 parameters,
                 strict,
                 super_capabilities,

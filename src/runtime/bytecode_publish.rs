@@ -1034,6 +1034,87 @@ fn verify_unlinked_tree_with_root(
                 "defined argument count exceeds function argument slots",
             )));
         }
+        match function.metadata().rest_parameter {
+            Some(rest)
+                if !is_root
+                    && rest.checked_add(1) == Some(function.metadata().argument_count)
+                    && function.metadata().defined_argument_count == rest =>
+            {
+                let mut rest_pc =
+                    usize::from(function.metadata().eval_variable_object_local.is_some()) * 2;
+                let arguments = function
+                    .code()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(pc, instruction)| match instruction {
+                        crate::bytecode::Instruction::Arguments(kind) => Some((pc, *kind)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                match arguments.as_slice() {
+                    [] => {}
+                    [(pc, crate::bytecode::ArgumentsKind::Unmapped)] if *pc == rest_pc => {
+                        let Some(crate::bytecode::Instruction::PutLocal(local)) =
+                            function.code().get(rest_pc + 1)
+                        else {
+                            return Err(RuntimeError::Engine(Error::internal(
+                                "rest parameter arguments object has no entry binding",
+                            )));
+                        };
+                        let definition = function
+                            .local_definitions()
+                            .get(usize::from(*local))
+                            .ok_or_else(|| {
+                                RuntimeError::Engine(Error::internal(
+                                    "rest parameter arguments binding is out of bounds",
+                                ))
+                            })?;
+                        if definition
+                            .name
+                            .as_ref()
+                            .is_none_or(|name| name.utf16_units().ne("arguments".encode_utf16()))
+                        {
+                            return Err(RuntimeError::Engine(Error::internal(
+                                "rest parameter arguments binding is not authenticated",
+                            )));
+                        }
+                        rest_pc += 2;
+                    }
+                    _ => {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "rest parameter contains a malformed arguments prologue",
+                        )));
+                    }
+                }
+                if !matches!(
+                    function.code().get(rest_pc..rest_pc + 2),
+                    Some([
+                        crate::bytecode::Instruction::Rest(start),
+                        crate::bytecode::Instruction::PutArg(target),
+                    ]) if *start == rest && *target == rest
+                ) || function.code().iter().enumerate().any(|(pc, instruction)| {
+                    pc != rest_pc && matches!(instruction, crate::bytecode::Instruction::Rest(_))
+                }) {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "rest parameter has no exact entry initialization",
+                    )));
+                }
+            }
+            Some(_) => {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "rest parameter metadata disagrees with argument slots",
+                )));
+            }
+            None if function.code().iter().any(|instruction| {
+                matches!(instruction, crate::bytecode::Instruction::Rest(_))
+            }) =>
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "rest opcode has no authenticated parameter metadata",
+                )));
+            }
+            None => {}
+        }
         if function
             .metadata()
             .function_name_local
@@ -2064,6 +2145,13 @@ fn verify_unlinked_tree_with_root(
                 {
                     return Err(RuntimeError::Engine(Error::internal(
                         "argument bytecode operand is out of bounds",
+                    )));
+                }
+                crate::bytecode::Instruction::Rest(start)
+                    if *start > function.metadata().argument_count =>
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "rest bytecode operand is out of bounds",
                     )));
                 }
                 crate::bytecode::Instruction::GetVarRef(index)
@@ -3685,6 +3773,220 @@ mod tests {
                     .contains("reference opcode referenced a non-string name constant")
             );
         }
+    }
+
+    #[test]
+    fn identifier_rest_metadata_authenticates_its_exact_entry_pair() {
+        let valid = UnlinkedFunction::new(
+            vec![
+                Instruction::Rest(1),
+                Instruction::PutArg(1),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                argument_count: 2,
+                defined_argument_count: 1,
+                rest_parameter: Some(1),
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        verify_unlinked_tree(&script_with_child(valid)).unwrap();
+
+        let unauthenticated = UnlinkedFunction::new(
+            vec![
+                Instruction::Rest(1),
+                Instruction::PutArg(1),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                argument_count: 2,
+                defined_argument_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(
+            verify_unlinked_tree(&script_with_child(unauthenticated))
+                .unwrap_err()
+                .to_string()
+                .contains("no authenticated parameter metadata")
+        );
+
+        let misplaced = UnlinkedFunction::new(
+            vec![
+                Instruction::Undefined,
+                Instruction::Drop,
+                Instruction::Rest(1),
+                Instruction::PutArg(1),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                argument_count: 2,
+                defined_argument_count: 1,
+                rest_parameter: Some(1),
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(
+            verify_unlinked_tree(&script_with_child(misplaced))
+                .unwrap_err()
+                .to_string()
+                .contains("no exact entry initialization")
+        );
+
+        let wrong_target = UnlinkedFunction::new(
+            vec![
+                Instruction::Rest(1),
+                Instruction::PutArg(0),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                argument_count: 2,
+                defined_argument_count: 1,
+                rest_parameter: Some(1),
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(
+            verify_unlinked_tree(&script_with_child(wrong_target))
+                .unwrap_err()
+                .to_string()
+                .contains("no exact entry initialization")
+        );
+
+        let duplicate = UnlinkedFunction::new(
+            vec![
+                Instruction::Rest(1),
+                Instruction::PutArg(1),
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::Rest(1),
+                Instruction::PutArg(1),
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                argument_count: 2,
+                defined_argument_count: 1,
+                rest_parameter: Some(1),
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(
+            verify_unlinked_tree(&script_with_child(duplicate))
+                .unwrap_err()
+                .to_string()
+                .contains("no exact entry initialization")
+        );
+
+        let mapped_arguments = UnlinkedFunction::new(
+            vec![
+                Instruction::Arguments(crate::bytecode::ArgumentsKind::Mapped),
+                Instruction::PutLocal(0),
+                Instruction::Rest(1),
+                Instruction::PutArg(1),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                argument_count: 2,
+                defined_argument_count: 1,
+                rest_parameter: Some(1),
+                local_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(
+            verify_unlinked_tree(&script_with_child(mapped_arguments))
+                .unwrap_err()
+                .to_string()
+                .contains("malformed arguments prologue")
+        );
+
+        let forged_arguments_local = UnlinkedFunction::new(
+            vec![
+                Instruction::Arguments(crate::bytecode::ArgumentsKind::Unmapped),
+                Instruction::PutLocal(0),
+                Instruction::Rest(1),
+                Instruction::PutArg(1),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                argument_count: 2,
+                defined_argument_count: 1,
+                rest_parameter: Some(1),
+                local_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(
+            verify_unlinked_tree(&script_with_child(forged_arguments_local))
+                .unwrap_err()
+                .to_string()
+                .contains("arguments binding is not authenticated")
+        );
+
+        let malformed_metadata = UnlinkedFunction::new(
+            vec![
+                Instruction::Rest(1),
+                Instruction::PutArg(1),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                argument_count: 1,
+                defined_argument_count: 1,
+                rest_parameter: Some(1),
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(
+            verify_unlinked_tree(&script_with_child(malformed_metadata))
+                .unwrap_err()
+                .to_string()
+                .contains("metadata disagrees with argument slots")
+        );
+
+        let root_rest = UnlinkedFunction::new(
+            vec![
+                Instruction::Rest(1),
+                Instruction::PutArg(1),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                argument_count: 2,
+                defined_argument_count: 1,
+                rest_parameter: Some(1),
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        assert!(
+            verify_unlinked_tree(&root_rest)
+                .unwrap_err()
+                .to_string()
+                .contains("metadata disagrees with argument slots")
+        );
     }
 
     #[test]
