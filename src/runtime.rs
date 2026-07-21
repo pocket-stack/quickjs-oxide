@@ -381,6 +381,9 @@ struct PublishedFunctionSnapshot {
     local_definitions: Rc<[VariableDefinition]>,
     closure_variables: Rc<[ClosureVariable]>,
     eval_environments: Rc<[EvalEnvironment<Atom>]>,
+    /// Parameter-scope variable-object slot, carried separately from the
+    /// body `<var>` slot in `FunctionMetadata`.
+    arg_eval_variable_object_local: Option<u16>,
     metadata: FunctionMetadata,
     realm: ContextId,
 }
@@ -2904,6 +2907,7 @@ impl Runtime {
                     ClosureVariableKind::FunctionName
                     | ClosureVariableKind::GlobalFunction
                     | ClosureVariableKind::EvalVariableObject
+                    | ClosureVariableKind::ArgEvalVariableObject
                     | ClosureVariableKind::WithObject => {
                         return Err(RuntimeError::Invariant(
                             "global declaration has non-global binding metadata",
@@ -2955,6 +2959,7 @@ impl Runtime {
                         ClosureVariableKind::FunctionName
                         | ClosureVariableKind::GlobalFunction
                         | ClosureVariableKind::EvalVariableObject
+                        | ClosureVariableKind::ArgEvalVariableObject
                         | ClosureVariableKind::WithObject => {
                             return Err(RuntimeError::Invariant(
                                 "global declaration has non-global binding metadata",
@@ -4337,6 +4342,10 @@ impl Runtime {
             local_definitions: bytecode.local_definitions.clone(),
             closure_variables: bytecode.closure_variables.clone(),
             eval_environments: bytecode.eval_environments.clone(),
+            arg_eval_variable_object_local: bytecode
+                .parameter_environment
+                .as_ref()
+                .and_then(|layout| layout.arg_eval_variable_object_local),
             metadata: bytecode.metadata,
             realm: bytecode.realm,
         })

@@ -174,6 +174,9 @@ pub(super) struct RuntimeVmHost {
     /// Exact local slot authenticated by bytecode metadata as this frame's
     /// hidden sloppy-eval variable object.
     eval_variable_object_local: Option<u16>,
+    /// Exact local slot authenticated by the parameter-environment layout as
+    /// the independent hidden sloppy-eval argument-scope variable object.
+    arg_eval_variable_object_local: Option<u16>,
     closure_slots: Vec<VarRefRoot>,
     arguments: Vec<FrameBinding>,
     locals: Vec<FrameBinding>,
@@ -205,6 +208,7 @@ impl RuntimeVmHost {
             closure_variables: Rc::from([]),
             eval_environments: Rc::from([]),
             eval_variable_object_local: None,
+            arg_eval_variable_object_local: None,
             closure_slots: Vec::new(),
             arguments: Vec::new(),
             locals: Vec::new(),
@@ -229,6 +233,7 @@ impl RuntimeVmHost {
             local_definitions,
             closure_variables,
             eval_environments,
+            arg_eval_variable_object_local,
             metadata,
             realm,
         } = runtime.snapshot_function_bytecode(bytecode)?;
@@ -259,6 +264,7 @@ impl RuntimeVmHost {
             closure_variables,
             eval_environments,
             eval_variable_object_local: metadata.eval_variable_object_local,
+            arg_eval_variable_object_local,
             closure_slots,
             arguments: arguments.into_iter().map(FrameBinding::Direct).collect(),
             locals: locals.into_iter().map(FrameBinding::Direct).collect(),
@@ -417,6 +423,16 @@ impl RuntimeVmHost {
         Ok(())
     }
 
+    fn eval_variable_object_local_kind(&self, index: u16) -> Option<ClosureVariableKind> {
+        if self.eval_variable_object_local == Some(index) {
+            return Some(ClosureVariableKind::EvalVariableObject);
+        }
+        if self.arg_eval_variable_object_local == Some(index) {
+            return Some(ClosureVariableKind::ArgEvalVariableObject);
+        }
+        None
+    }
+
     fn validate_eval_environment(
         &self,
         environment: &EvalEnvironment<Atom>,
@@ -448,61 +464,187 @@ impl RuntimeVmHost {
                 "eval environment super capability disagrees with caller bytecode",
             ));
         }
+        let first_function_anchor = environment
+            .scopes
+            .iter()
+            .position(|scope| {
+                matches!(
+                    scope.kind,
+                    crate::heap::EvalScopeKind::FunctionRoot
+                        | crate::heap::EvalScopeKind::Parameter
+                )
+            })
+            .and_then(|scope| u16::try_from(scope).ok())
+            .ok_or_else(|| {
+                Error::internal(
+                    "eval environment contains no representable current function anchor",
+                )
+            })?;
         match environment.variable_environment {
-            EvalVariableEnvironment::Global => {}
-            EvalVariableEnvironment::Scope(scope) => {
+            EvalVariableEnvironment::Global => {
+                let current_body_is_program = first_function_anchor
+                    .checked_sub(1)
+                    .and_then(|scope| environment.scopes.get(usize::from(scope)))
+                    .is_some_and(|scope| scope.kind == crate::heap::EvalScopeKind::ProgramBody);
+                if !current_body_is_program
+                    || (caller_strict && caller_metadata.eval_kind != crate::heap::EvalKind::None)
+                {
+                    return Err(Error::internal(
+                        "global eval variable environment escaped an authored Script root",
+                    ));
+                }
+            }
+            EvalVariableEnvironment::StrictLocal(scope) => {
+                if !caller_strict {
+                    return Err(Error::internal(
+                        "sloppy eval environment selected a strict-local destination",
+                    ));
+                }
+                if scope != first_function_anchor {
+                    return Err(Error::internal(
+                        "strict eval variable environment selected the wrong current function segment",
+                    ));
+                }
+                let current_body_is_program = first_function_anchor
+                    .checked_sub(1)
+                    .and_then(|scope| environment.scopes.get(usize::from(scope)))
+                    .is_some_and(|scope| scope.kind == crate::heap::EvalScopeKind::ProgramBody);
+                if current_body_is_program
+                    && caller_metadata.eval_kind == crate::heap::EvalKind::None
+                {
+                    return Err(Error::internal(
+                        "authored Script eval environment used a non-canonical strict-local target",
+                    ));
+                }
                 let Some(scope) = environment.scopes.get(usize::from(scope)) else {
                     return Err(Error::internal(
                         "eval variable-environment scope is out of bounds",
                     ));
                 };
-                if scope.kind != crate::heap::EvalScopeKind::FunctionRoot {
+                if !matches!(
+                    scope.kind,
+                    crate::heap::EvalScopeKind::FunctionRoot
+                        | crate::heap::EvalScopeKind::Parameter
+                ) {
                     return Err(Error::internal(
-                        "eval variable environment did not select a function root",
+                        "strict eval variable environment did not select a function anchor",
                     ));
                 }
             }
-            EvalVariableEnvironment::Closure(index) => {
-                if caller_strict
-                    || !environment.scopes.iter().any(|scope| {
-                        scope.bindings.iter().any(|binding| {
-                            binding.source == EvalBindingSource::Closure(index)
-                                && binding.kind == ClosureVariableKind::EvalVariableObject
-                                && !binding.is_lexical
-                                && !binding.is_const
-                                && !binding.is_catch_parameter
-                        })
-                    })
-                {
+            EvalVariableEnvironment::VariableObject { scope, source } => {
+                if caller_strict || matches!(source, EvalBindingSource::Argument(_)) {
                     return Err(Error::internal(
-                        "eval closure variable environment is not authentic",
+                        "eval variable-object destination is not authentic",
                     ));
                 }
-                let descriptor =
-                    *self
-                        .closure_variables
-                        .get(usize::from(index))
-                        .ok_or_else(|| {
-                            Error::internal("eval closure variable environment is out of bounds")
-                        })?;
-                if descriptor.kind != ClosureVariableKind::EvalVariableObject
-                    || descriptor.is_lexical
-                    || descriptor.is_const
+                let target_matches_function_segment = if caller_metadata.eval_kind
+                    == crate::heap::EvalKind::None
                 {
+                    scope == first_function_anchor && matches!(source, EvalBindingSource::Local(_))
+                } else {
+                    caller_metadata.eval_kind == crate::heap::EvalKind::Direct
+                        && scope > first_function_anchor
+                        && matches!(source, EvalBindingSource::Closure(_))
+                };
+                if !target_matches_function_segment {
                     return Err(Error::internal(
-                        "eval closure variable environment descriptor is malformed",
+                        "eval variable object selected the wrong current function segment",
                     ));
                 }
-                let root = self.closure_slots.get(usize::from(index)).ok_or_else(|| {
-                    Error::internal("eval closure variable environment slot is out of bounds")
+                let target_scope = environment.scopes.get(usize::from(scope)).ok_or_else(|| {
+                    Error::internal("eval variable-object scope is out of bounds")
                 })?;
-                self.runtime
-                    .validate_var_ref_metadata(root, descriptor)
-                    .map_err(|error| Error::internal(error.to_string()))?;
+                let expected_kind = match target_scope.kind {
+                    crate::heap::EvalScopeKind::FunctionRoot => {
+                        ClosureVariableKind::EvalVariableObject
+                    }
+                    crate::heap::EvalScopeKind::Parameter => {
+                        ClosureVariableKind::ArgEvalVariableObject
+                    }
+                    _ => {
+                        return Err(Error::internal(
+                            "eval variable object selected a non-function scope",
+                        ));
+                    }
+                };
+                if target_scope
+                    .bindings
+                    .iter()
+                    .filter(|binding| {
+                        binding.source == source
+                            && binding.kind == expected_kind
+                            && !binding.is_lexical
+                            && !binding.is_const
+                            && !binding.is_catch_parameter
+                    })
+                    .count()
+                    != 1
+                {
+                    return Err(Error::internal("eval variable-object target is not exact"));
+                }
+                match source {
+                    EvalBindingSource::Local(index) => {
+                        if self.eval_variable_object_local_kind(index) != Some(expected_kind) {
+                            return Err(Error::internal(
+                                "eval variable-object local role is not authentic",
+                            ));
+                        }
+                        let definition = self.local_definition(index)?;
+                        if definition.kind != expected_kind
+                            || definition.is_lexical
+                            || definition.is_const
+                        {
+                            return Err(Error::internal(
+                                "eval variable-object local definition is malformed",
+                            ));
+                        }
+                        self.locals.get(usize::from(index)).ok_or_else(|| {
+                            Error::internal("eval variable-object local is out of bounds")
+                        })?;
+                    }
+                    EvalBindingSource::Closure(index) => {
+                        let descriptor = *self
+                            .closure_variables
+                            .get(usize::from(index))
+                            .ok_or_else(|| {
+                                Error::internal("eval variable-object closure is out of bounds")
+                            })?;
+                        if descriptor.kind != expected_kind
+                            || descriptor.is_lexical
+                            || descriptor.is_const
+                        {
+                            return Err(Error::internal(
+                                "eval variable-object closure descriptor is malformed",
+                            ));
+                        }
+                        let root = self.closure_slots.get(usize::from(index)).ok_or_else(|| {
+                            Error::internal("eval variable-object closure slot is out of bounds")
+                        })?;
+                        self.runtime
+                            .validate_var_ref_metadata(root, descriptor)
+                            .map_err(|error| Error::internal(error.to_string()))?;
+                    }
+                    EvalBindingSource::Argument(_) => unreachable!(
+                        "argument variable-object source was rejected before validation"
+                    ),
+                }
             }
         }
         for scope in &environment.scopes {
             for binding in &scope.bindings {
+                if binding.kind.is_eval_variable_object()
+                    && match scope.kind {
+                        crate::heap::EvalScopeKind::FunctionRoot => false,
+                        crate::heap::EvalScopeKind::Parameter => {
+                            binding.kind != ClosureVariableKind::ArgEvalVariableObject
+                        }
+                        _ => true,
+                    }
+                {
+                    return Err(Error::internal(
+                        "eval variable-object binding escaped its authenticated function anchor",
+                    ));
+                }
                 match binding.source {
                     EvalBindingSource::Local(index) => {
                         let definition = self.local_definition(index)?;
@@ -691,13 +833,13 @@ impl RuntimeVmHost {
     fn eval_variable_object(&self, source: EvalVariableSource) -> Result<ObjectRef, Error> {
         let value = match source {
             EvalVariableSource::Local(index) => {
-                if self.eval_variable_object_local != Some(index) {
+                let Some(expected_kind) = self.eval_variable_object_local_kind(index) else {
                     return Err(Error::internal(
                         "eval variable opcode referenced an unauthenticated local",
                     ));
-                }
+                };
                 let definition = self.local_definition(index)?;
-                if definition.kind != ClosureVariableKind::EvalVariableObject {
+                if definition.kind != expected_kind {
                     return Err(Error::internal(
                         "eval variable opcode referenced a non-variable-object local",
                     ));
@@ -731,7 +873,7 @@ impl RuntimeVmHost {
                     .ok_or_else(|| {
                         Error::internal("eval variable-object closure index is out of bounds")
                     })?;
-                if descriptor.kind != ClosureVariableKind::EvalVariableObject {
+                if !descriptor.kind.is_eval_variable_object() {
                     return Err(Error::internal(
                         "eval variable opcode referenced a non-variable-object closure",
                     ));
@@ -1185,6 +1327,7 @@ impl Runtime {
             local_definitions,
             closure_variables,
             eval_environments,
+            arg_eval_variable_object_local,
             metadata,
             realm,
         } = self.snapshot_function_bytecode(&bytecode)?;
@@ -1232,6 +1375,7 @@ impl Runtime {
             closure_variables,
             eval_environments,
             eval_variable_object_local: metadata.eval_variable_object_local,
+            arg_eval_variable_object_local,
             closure_slots,
             arguments: frame_arguments,
             locals: frame_locals,
@@ -1849,7 +1993,9 @@ impl VmHost for RuntimeVmHost {
     }
 
     fn create_variable_environment(&mut self) -> Result<Completion, Error> {
-        if self.eval_variable_object_local.is_none() {
+        if self.eval_variable_object_local.is_none()
+            && self.arg_eval_variable_object_local.is_none()
+        {
             return Err(Error::internal(
                 "variable-environment creation has no authenticated local",
             ));
@@ -3438,6 +3584,114 @@ mod tests {
         assert_eq!(
             error.message(),
             "eval environment permits super() without SuperProperty"
+        );
+    }
+
+    #[test]
+    fn strict_script_global_eval_anchor_is_not_valid_for_functions_or_eval_roots() {
+        let runtime = Runtime::new();
+        let context = runtime.new_context();
+        let host = RuntimeVmHost::empty_for_test(runtime, context.realm);
+        let strict_script = EvalEnvironment::<Atom> {
+            scopes: vec![
+                crate::heap::EvalScope {
+                    kind: crate::heap::EvalScopeKind::ProgramBody,
+                    bindings: Box::new([]),
+                },
+                crate::heap::EvalScope {
+                    kind: crate::heap::EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+            ]
+            .into_boxed_slice(),
+            variable_environment: EvalVariableEnvironment::Global,
+            caller_strict: true,
+            super_call_allowed: false,
+            super_allowed: false,
+        };
+        host.validate_eval_environment(
+            &strict_script,
+            true,
+            FunctionMetadata {
+                strict: true,
+                ..FunctionMetadata::default()
+            },
+        )
+        .unwrap();
+
+        let mut strict_eval_local = strict_script.clone();
+        strict_eval_local.variable_environment = EvalVariableEnvironment::StrictLocal(1);
+        assert_eq!(
+            host.validate_eval_environment(
+                &strict_eval_local,
+                true,
+                FunctionMetadata {
+                    strict: true,
+                    ..FunctionMetadata::default()
+                },
+            )
+            .unwrap_err()
+            .message(),
+            "authored Script eval environment used a non-canonical strict-local target"
+        );
+        host.validate_eval_environment(
+            &strict_eval_local,
+            true,
+            FunctionMetadata {
+                strict: true,
+                eval_kind: crate::heap::EvalKind::Direct,
+                ..FunctionMetadata::default()
+            },
+        )
+        .unwrap();
+
+        let mut strict_function = strict_script.clone();
+        strict_function.scopes = vec![
+            crate::heap::EvalScope {
+                kind: crate::heap::EvalScopeKind::FunctionBody,
+                bindings: Box::new([]),
+            },
+            crate::heap::EvalScope {
+                kind: crate::heap::EvalScopeKind::FunctionRoot,
+                bindings: Box::new([]),
+            },
+            crate::heap::EvalScope {
+                kind: crate::heap::EvalScopeKind::ProgramBody,
+                bindings: Box::new([]),
+            },
+            crate::heap::EvalScope {
+                kind: crate::heap::EvalScopeKind::FunctionRoot,
+                bindings: Box::new([]),
+            },
+        ]
+        .into_boxed_slice();
+        assert_eq!(
+            host.validate_eval_environment(
+                &strict_function,
+                true,
+                FunctionMetadata {
+                    strict: true,
+                    ..FunctionMetadata::default()
+                },
+            )
+            .unwrap_err()
+            .message(),
+            "global eval variable environment escaped an authored Script root"
+        );
+
+        assert_eq!(
+            host.validate_eval_environment(
+                &strict_script,
+                true,
+                FunctionMetadata {
+                    strict: true,
+                    eval_kind: crate::heap::EvalKind::Direct,
+                    ..FunctionMetadata::default()
+                },
+            )
+            .unwrap_err()
+            .message(),
+            "global eval variable environment escaped an authored Script root"
         );
     }
 }

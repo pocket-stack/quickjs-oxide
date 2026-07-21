@@ -1,6 +1,6 @@
 # Implementation status
 
-Last audited: 2026-07-21. The completion definition remains
+Last audited: 2026-07-22. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
@@ -15,9 +15,9 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 35,178 passes and 38,421 runnable variants: 34.48% raw, a 42.10% lower
-  bound after the 18,475 pinned QuickJS target exclusions, or 94.66% among the
-  37,161 variants with a non-unsupported observed outcome. The fixed smoke now
+  has 35,244 passes and 38,421 runnable variants: 34.54% raw, a 42.18% lower
+  bound after the 18,475 pinned QuickJS target exclusions, or 94.67% among the
+  37,228 variants with a non-unsupported observed outcome. The fixed smoke now
   has 191 passes and two explicit parser-frontier results. See
   `docs/test262.md` for the denominators and why none of these figures is a
   parity claim. The first
@@ -1267,18 +1267,58 @@ claim full parity.
   and eight-way contention can make the pre-existing 15,000-property
   `Proxy/ownkeys-linear.js` setup cross 30 seconds before reaching the missing
   `Proxy` frontier. Focused gates retain their existing parallel defaults.
-  Direct eval plus async/generator/class callables remain explicit later
-  milestones.
+  R3b implements sloppy direct eval in and below that non-simple Parameter
+  Environment. Following pinned QuickJS, each activation now owns separate
+  body `<var>` and parameter `<arg_var>` variable objects. Body lookup is
+  static body -> `<var>` -> `<arg_var>` -> outer, while parameter lookup is
+  static parameter -> `<arg_var>` -> outer; strict eval keeps its declarations
+  local. Compiler, unlinked publication, complete-tree publication, Heap, and
+  VM exchange typed `FunctionRoot`/`Parameter` target metadata instead of
+  inferring either object from an untyped closure slot.
 
-  One entry-prologue composition debt also remains. R2i fixes the pseudo-local
-  group itself to QuickJS's HomeObject, `new.target`, then `this` order, but the
-  compiler still installs
-  that group and the var-object/arguments/function-hoist group with separate
-  prepend passes. The later prepend therefore leaves the declaration group
-  before the pseudo locals, opposite QuickJS's complete entry prefix. Closures
-  capture the intended cells and the mixed-entry oracle observes no semantic
-  divergence; a single composer must eventually publish all entry groups once
-  in upstream order.
+  QuickJS's parameter-time synthetic `arguments` cell is now distinct from a
+  named `arguments` parameter and from the ordinary body binding. Descendant
+  arrows append a late body-arguments closure only when authored code really
+  captures it; an eval-only descendant does not manufacture one. BindingPattern
+  initializers may read or close over the synthetic cell, body closures may
+  retain `<arg_var>`, and the publication validators authenticate each exact
+  role, sentinel, capture segment, and lifecycle operation.
+
+  The entry composer now emits and verifies one upstream-ordered prefix:
+  HomeObject, `new.target`, `this`, arguments, `<var>`, `<arg_var>`, then the
+  reverse TDZ prologue. Global function hoists follow that prefix. This closes
+  the composition debt recorded by R3a while keeping ordinary script
+  `PushThis; PutLocal(eval_completion)` bytecode distinct from a hidden
+  `<this>` pseudo binding.
+
+  The R3b QuickJS oracle contains 42 reviewed vectors: 13 parameter-target, 7
+  environment-split, 4 dynamic-object, 13 arguments, 1 entry-order, 2
+  scope-switch, and 2 strict-eval cases. All four Rust integration tests pass.
+  The focused Test262 gate freezes 71 `noStrict` paths / 71 sloppy variants:
+  48 arguments/direct-eval matrix cases, 16 scope open/close cases, 4
+  redeclaration negatives, 2 computed/default cases, and 1 staging composite.
+  All 71 pass in Oxide and in pinned QuickJS `run-test262 -a -m`. Profile,
+  manifest, key-set, focused TSV, and focused JSONL SHA-256 values are
+  `98b5e323db1b4be493c1e05b8937a1060b71f7a1cc126087d05e88e7c2a2b335`,
+  `3df66805796888dd41acbc007b2a958aba5751e9694c0deffa5f0efba19c61a1`,
+  `08aeb2a3e23a3a3e1bb6e03262d730cd0bbaec1d9aff0f9cc744ebc3ce003938`,
+  `e2759eb05400218abb31e257fe60bedfcb321e05bbffc0018d9042b60c87ec12`,
+  and
+  `a25aaf9087fc356b4b5b3d8437a52cf19166c76ec09aeefc5569f4297a93844d`.
+
+  The exact R3a/R3b full join retains all 102,037 unique keys and every prior
+  pass. All 66 focused `unsupported-parser` variants become passes. Outside the
+  manifest, one untagged staging case reaches its known implicit-`this`
+  runtime mismatch and two variants reach the generator-method typed runtime
+  frontier. Those are the only three other outcome or row changes: the join
+  has no missing, extra, duplicate, same-outcome-detail, or regressed-pass
+  keys. Passes reach 35,244 among 38,421 runnable variants; full TSV/JSONL
+  SHA-256 values are
+  `41ef0f16cbae0aa05cdc0bfb13e38130b9b87b1ac958fe6e807541140cda918a`
+  and
+  `ecd12b154863534e80f5ac0f40ee6615f1a8743856e9e4f9ca98b44e00a793a0`.
+
+  Async, generator, and class callables remain explicit later milestones.
 
   Generator/async and destructuring eval declarations, classes/derived
   constructors, and ill-formed UTF-16 source stay explicit frontiers.
@@ -2362,9 +2402,11 @@ claim full parity.
   `for-in`. Identifier-rest lists now use the forced-unmapped path and are
   covered across ordinary functions, synchronous methods, arrows, and
   `%Function%` by R2x. Identifier defaults use the independent Parameter
-  Environment and forced-unmapped path in R2y. Parameter direct eval,
-  destructuring parameters, rest BindingPatterns, and async/generator function
-  forms remain separate slices.
+  Environment and forced-unmapped path in R2y. R2z/R3a add synchronous
+  recursive parameter BindingPatterns, including terminal rest patterns and
+  standalone parameter expressions; R3b adds direct eval in and below that
+  Parameter Environment. Async/generator function forms remain separate
+  slices.
 
   Ordinary declarations in brace blocks and a switch CaseBlock use QuickJS's
   distinct scoped-function path. The binding is registered immediately after
@@ -2482,8 +2524,9 @@ claim full parity.
   initializer parsing, Parameter-scope TDZ and closure cells, raw/unmapped
   `arguments`, `length`, NamedEvaluation, body-hoist ordering, `this`/`super`,
   default-plus-rest composition, and the pinned QuickJS-only `2|1` body/raw-
-  argument split. Direct eval is excluded from every case source until its
-  independent Parameter-Environment ABI lands.
+  argument split. That R2y oracle deliberately excluded direct eval; the R3b
+  oracle now locks its independent `<var>` / `<arg_var>` Parameter-Environment
+  ABI.
 
   The upstream anchors for the catch/finally slice are `quickjs.c` 21775-21785
   (`BlockEnv`), 28225-28361 (break/continue/return through finally),
@@ -4078,8 +4121,8 @@ claim full parity.
   precedence, nested labels/switch/finally, raw
   native-next dispatch, realm splitting, exact diagnostics, and all three
   debug modes. Generic Array iteration is now covered by `oracle_array`;
-  `for-await-of`, parameter BindingPatterns, and Iterator Helpers remain
-  separate milestones.
+  `for-await-of` and Iterator Helpers remain separate milestones, while
+  synchronous parameter BindingPatterns are covered independently by R2z/R3a.
   The `oracle_for_in` target locks ordinary and representation-sensitive fast
   Array enumeration, per-level snapshots, live presence/prototype changes,
   shadowing, primitive boxing, simple assignment plus simple-name/flat-array
@@ -4115,11 +4158,10 @@ trampoline plus explicit compiler work storage is required to recover
 upstream's substantially deeper platform-dependent limits throughout.
 
 The language slice remains incomplete. Async/generator declarations,
-`for-await`, parameter BindingPatterns, other general assignment targets,
-module resolution, async/generator methods, direct eval in or below a Parameter
-Environment, classes and derived constructors, non-simple ObjectLiteral
-accessor parameters, async/generator parameter forms, and callable Proxy
-classes are not yet implemented.
+`for-await`, other general assignment targets, module resolution,
+async/generator methods and parameter forms, classes and derived constructors,
+non-simple ObjectLiteral accessor forms outside the covered synchronous setter
+slice, and callable Proxy classes are not yet implemented.
 Unsupported declaration contexts are rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` supports
 simple identifiers and recursive array/object/rest patterns in direct Program
@@ -4130,8 +4172,8 @@ cover fixed and computed properties, undefined-only defaults, NamedEvaluation,
 array terminal rest, object rest, and object/array recursion. These forms also
 work in scripts, and ordinary
 bodies including classic heads are available through the normal `%Function%`
-constructor. Single-statement lexical declarations, patterns in parameters,
-and class lexical environments remain later compiler slices. Direct
+constructor. Single-statement lexical declarations and class lexical
+environments remain later compiler slices. Direct
 Program lexicals now use the production global VarRef path with two-phase
 instantiation; simple-name and recursive array/object/rest Program vars plus
 direct ordinary function declarations use ordered, kind-specific global
@@ -4174,12 +4216,13 @@ accessors and Error backtraces. Strip-debug compilation also removes ordinary
 lexical vardef and captured-relay names while retaining atoms needed by
 read-only execution; bytecode debug serialization remains pending. The normal
 `%Function%` graph is present; dynamic formal parameters support identifiers,
-identifier defaults, and one terminal identifier-rest parameter, including the
-same Parameter Environment semantics as authored ordinary functions. Bodies
-remain limited to the current statement, expression, and simple
-body/block/switch/classic-for and for-in/of-head lexical-declaration grammar.
-Parameter BindingPatterns, rest BindingPatterns, generator/async kinds, and
-Proxy new-target realms remain pending.
+identifier defaults, one terminal identifier-rest parameter, and recursive
+array/object/rest BindingPatterns, including mixed standalone parameter
+expressions and the same Parameter Environment semantics as authored ordinary
+functions. Bodies remain limited to the current statement, expression, and
+simple body/block/switch/classic-for and for-in/of-head lexical-declaration
+grammar.
+Generator/async kinds and Proxy new-target realms remain pending.
 Compiler input is still UTF-8,
 so dynamic source containing an unpaired UTF-16 surrogate throws an explicit
 implementation-gap `InternalError` instead of being silently rewritten. The
@@ -4266,18 +4309,18 @@ Prefix/postfix update expressions
 (including QuickJS's valid `++x ** 2` form) are implemented for the current
 identifier and ordinary fixed/computed member References. Sloppy
 direct-identifier delete is implemented
-for the current static scope tree and defining-realm global object. Dynamic
-object-environment lookup/deletion introduced by `with` or direct `eval`, the
-remaining two entries of String's 53-key prototype surface, `RegExp.escape`,
-advanced RegExp grammar,
-Proxy/exotic internal methods, and the full
-`function_accessors.js` fixture are still pending. AggregateError and
-uncatchable termination state are also pending. Parameter BindingPatterns,
-direct eval in or below a Parameter Environment, other iterator classes and
-helpers, the remaining RegExp grammar/static surface and Unicode-backed String
-methods, non-simple ObjectLiteral setter parameters, async/generator methods,
-classes/derived constructors, exotic-source spread, and the rest of the
-builtin table build on those layers.
+for the current static scope tree and defining-realm global object. Sloppy
+direct-eval object-environment lookup/deletion is implemented for the current
+synchronous script/function and Parameter-Environment surfaces;
+`with`-introduced dynamic object environments, the remaining two entries of
+String's 53-key prototype surface, `RegExp.escape`, advanced RegExp grammar,
+Proxy/exotic internal methods, and the full `function_accessors.js` fixture are
+still pending. AggregateError and uncatchable termination state are also
+pending. Other iterator classes and helpers, the remaining RegExp
+grammar/static surface and Unicode-backed String methods, non-simple
+ObjectLiteral setter forms outside the covered synchronous slice,
+async/generator methods, classes/derived constructors, exotic-source spread,
+and the rest of the builtin table build on those layers.
 
 The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
@@ -4486,6 +4529,15 @@ handler skips `OP_enter_scope`. Ordinary semantics are oracle-locked, but the
 temporary one-slot stack use and two instructions per leaf do not yet reproduce
 QuickJS's extreme max-stack/code-size boundary exactly; a future zero-stack
 scope-preparation opcode should remove that resource-parity debt.
+R3b keeps the runtime facade bounded: `runtime.rs` moves only from the R3a
+baseline of 9,826 lines to 9,835. The complete synchronous parameter-direct-
+eval path raises `compiler.rs` from 13,164 to 13,760 lines, while cross-layer
+authentication and its adversarial tests raise `heap.rs` from 11,874 to 12,397,
+`runtime/bytecode_publish.rs` from 6,811 to 7,737, and
+`runtime/vm_host.rs` from 3,443 to 3,697. Keeping the execution facade at a
+nine-line delta is intentional; the compiler, heap, and publisher totals are
+explicit phase-split debt, not a precedent for continuing to grow those
+owners.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -4767,6 +4819,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-identifier-defaults.sh
 ./scripts/test-test262-parameter-binding-patterns.sh
 ./scripts/test-test262-parameter-expression-binding-patterns.sh
+./scripts/test-test262-parameter-direct-eval.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -4783,8 +4836,9 @@ and the legacy compile mutation differentials, and the
 Program-var/function, Program/body/block/switch/classic-for lexical-scope,
 ordinary mapped/unmapped Arguments object,
 single/labelled Annex B, synchronous try/catch/finally with recursive
-array/object/rest catch BindingPatterns, synchronous identifier-only rest and
-default parameters across ordinary functions, object methods, arrows, and the
+array/object/rest catch BindingPatterns, synchronous identifier rest/default
+and recursive BindingPattern parameters, and direct eval in their Parameter
+Environments across ordinary functions, object methods, arrows, and the
 `Function` constructor, synchronous
 for-in/for-of, Array core/literal/iterator/search/callback/mutation/change-by-copy,
 Object literal/concise-method/accessor/direct/arrow/direct-eval-super, and Object

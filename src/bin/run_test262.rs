@@ -66,6 +66,10 @@ const TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256: &str =
     "5c98d19ccb72c7e2c577ddc98ee4ac83d43a0ba7d49175a8ebe271866d0feab6";
 const TEST262_IDENTIFIER_DEFAULTS_MANIFEST_SHA256: &str =
     "264bb2b25e7502eed86f8a5df1b3fe8c0ccdeecd43171af390764b5e053a6472";
+const TEST262_PARAMETER_DIRECT_EVAL_PROFILE_SHA256: &str =
+    "98b5e323db1b4be493c1e05b8937a1060b71f7a1cc126087d05e88e7c2a2b335";
+const TEST262_PARAMETER_DIRECT_EVAL_MANIFEST_SHA256: &str =
+    "3df66805796888dd41acbc007b2a958aba5751e9694c0deffa5f0efba19c61a1";
 const TEST262_PARAMETER_BINDING_PATTERNS_PROFILE_SHA256: &str =
     "1f25a0648044b6cb3027e23bc58032b2b2fc3517cd0a29b35d5e4d0844fc6e5e";
 const TEST262_PARAMETER_BINDING_PATTERNS_MANIFEST_SHA256: &str =
@@ -611,6 +615,7 @@ enum OxideProfileKind {
     ArrayAssignmentFlat,
     CatchBinding,
     IdentifierDefaults,
+    ParameterDirectEval,
     ParameterBindingPatterns,
     ParameterExpressionBindingPatterns,
     IdentifierRest,
@@ -656,6 +661,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-identifier-defaults.conf"),
             OxideProfileKind::IdentifierDefaults,
+        ),
+        (
+            root.join("tests/test262-parameter-direct-eval.conf"),
+            OxideProfileKind::ParameterDirectEval,
         ),
         (
             root.join("tests/test262-parameter-binding-patterns.conf"),
@@ -708,7 +717,7 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         }
     }
     Err(format!(
-        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-parameter-expression-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-direct-eval.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-parameter-expression-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
         path.display()
     ))
 }
@@ -981,6 +990,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256,
             "tests/test262-identifier-defaults.txt",
             TEST262_IDENTIFIER_DEFAULTS_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::ParameterDirectEval => verify_scoped_pinned_profile(
+            options,
+            "parameter direct eval",
+            TEST262_PARAMETER_DIRECT_EVAL_PROFILE_SHA256,
+            "tests/test262-parameter-direct-eval.txt",
+            TEST262_PARAMETER_DIRECT_EVAL_MANIFEST_SHA256,
         ),
         OxideProfileKind::ParameterBindingPatterns => verify_scoped_pinned_profile(
             options,
@@ -1526,6 +1542,7 @@ mod cli_tests {
         TEST262_OBJECT_ASSIGNMENT_REST_PROFILE_SHA256, TEST262_OBJECT_BINDING_PROFILE_SHA256,
         TEST262_OBJECT_REST_BINDING_PROFILE_SHA256,
         TEST262_PARAMETER_BINDING_PATTERNS_PROFILE_SHA256,
+        TEST262_PARAMETER_DIRECT_EVAL_PROFILE_SHA256,
         TEST262_PARAMETER_EXPRESSION_BINDING_PATTERNS_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
         TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, default_worker_count, identify_oxide_profile,
         parse_args, verify_oxide_profile,
@@ -1638,6 +1655,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-identifier-defaults.conf")).unwrap(),
             OxideProfileKind::IdentifierDefaults
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-parameter-direct-eval.conf")).unwrap(),
+            OxideProfileKind::ParameterDirectEval
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-parameter-binding-patterns.conf"))
@@ -1959,6 +1980,53 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-identifier-defaults.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_parameter_direct_eval_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-parameter-direct-eval.conf",
+            "--manifest",
+            "tests/test262-parameter-direct-eval.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_PARAMETER_DIRECT_EVAL_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/language/function-code/eval-param-env-with-computed-key.js",
+            ],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-parameter-direct-eval.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

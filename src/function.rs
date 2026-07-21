@@ -430,6 +430,15 @@ impl UnlinkedVariableDefinition {
         }
     }
 
+    fn arg_eval_variable_object() -> Self {
+        Self {
+            name: Some(crate::value::JsString::from_static("<arg_var>")),
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::ArgEvalVariableObject,
+        }
+    }
+
     pub(crate) fn with_object() -> Self {
         Self {
             name: Some(crate::value::JsString::from_static("<with>")),
@@ -563,6 +572,14 @@ impl UnlinkedFunction {
         layout: Option<ParameterEnvironmentLayout>,
     ) -> Self {
         self.parameter_environment = layout;
+        if let Some(index) = self
+            .parameter_environment
+            .as_ref()
+            .and_then(|layout| layout.arg_eval_variable_object_local)
+            && let Some(definition) = self.local_definitions.get_mut(usize::from(index))
+        {
+            *definition = UnlinkedVariableDefinition::arg_eval_variable_object();
+        }
         self
     }
 
@@ -598,6 +615,15 @@ impl UnlinkedFunction {
         if let Some(index) = self.metadata.eval_variable_object_local {
             if let Some(definition) = local_definitions.get_mut(usize::from(index)) {
                 *definition = UnlinkedVariableDefinition::eval_variable_object();
+            }
+        }
+        if let Some(index) = self
+            .parameter_environment
+            .as_ref()
+            .and_then(|layout| layout.arg_eval_variable_object_local)
+        {
+            if let Some(definition) = local_definitions.get_mut(usize::from(index)) {
+                *definition = UnlinkedVariableDefinition::arg_eval_variable_object();
             }
         }
         self.argument_definitions = argument_definitions;
@@ -802,7 +828,7 @@ mod tests {
                 bindings: Box::new([]),
             }]
             .into_boxed_slice(),
-            variable_environment: EvalVariableEnvironment::Scope(0),
+            variable_environment: EvalVariableEnvironment::StrictLocal(0),
             caller_strict: true,
             super_call_allowed: false,
             super_allowed: false,

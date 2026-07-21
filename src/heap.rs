@@ -449,7 +449,7 @@ pub struct ContextData {
     pub throw_type_error: Option<ObjectId>,
     /// Original realm-local `%eval%` identity. QuickJS caches this callable
     /// separately from the writable/configurable global `eval` property so
-    /// future direct-eval dispatch can compare identity after user mutation.
+    /// direct-eval dispatch can compare identity after user mutation.
     pub eval_function: Option<ObjectId>,
     pub global_object: ObjectId,
     /// Null-prototype storage for global lexical bindings (`let`/`const`).
@@ -603,9 +603,9 @@ pub struct ParameterEnvironmentLayout {
     pub argument_cells: Box<[ParameterArgumentCell]>,
     pub pattern_copies: Box<[ParameterPatternCopy]>,
     pub default_sources: Box<[ParameterDefaultSource]>,
-    /// Reserved for QuickJS's sloppy direct-eval arg-scope `arguments` cell.
+    /// QuickJS's sloppy direct-eval arg-scope `arguments` cell.
     pub synthetic_arguments_local: Option<u16>,
-    /// Reserved for the independent sloppy direct-eval `<arg_var>` object.
+    /// The independent sloppy direct-eval `<arg_var>` object.
     pub arg_eval_variable_object_local: Option<u16>,
 }
 
@@ -758,7 +758,13 @@ pub(crate) fn validate_parameter_bytecode_layout(
     let mut explicit_body_pc = None;
     if let Some(layout) = parameter_environment {
         explicit_body_pc = validate_explicit_parameter_environment_layout(metadata, code, layout)?;
-        if has_pattern_parameters || parameter_locals == 0 {
+        let has_extended_parameter_entry = metadata.eval_variable_object_local.is_some()
+            || layout.synthetic_arguments_local.is_some()
+            || layout.arg_eval_variable_object_local.is_some()
+            || code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Eval { .. }));
+        if has_pattern_parameters || parameter_locals == 0 || has_extended_parameter_entry {
             return Ok(explicit_body_pc);
         }
     }
@@ -806,7 +812,30 @@ pub(crate) fn validate_parameter_bytecode_layout(
                 if rest.checked_add(1) == Some(metadata.argument_count)
                     && metadata.defined_argument_count == rest =>
             {
-                let mut rest_pc = usize::from(metadata.eval_variable_object_local.is_some()) * 2;
+                let mut rest_pc = 0_usize;
+                let mut pseudo_rank = 0_u8;
+                let mut entry_targets = Vec::with_capacity(5);
+                while let Some([source, Instruction::PutLocal(local)]) =
+                    code.get(rest_pc..rest_pc + 2)
+                {
+                    let rank = match source {
+                        Instruction::PushHomeObject => 1,
+                        Instruction::PushNewTarget => 2,
+                        Instruction::PushThis => 3,
+                        _ => break,
+                    };
+                    if rank <= pseudo_rank
+                        || *local >= metadata.local_count
+                        || metadata.eval_variable_object_local == Some(*local)
+                        || metadata.function_name_local == Some(*local)
+                        || entry_targets.contains(local)
+                    {
+                        return Err("rest parameter contains a malformed pseudo-binding prologue");
+                    }
+                    pseudo_rank = rank;
+                    entry_targets.push(*local);
+                    rest_pc += 2;
+                }
                 let arguments = code
                     .iter()
                     .enumerate()
@@ -818,15 +847,48 @@ pub(crate) fn validate_parameter_bytecode_layout(
                 match arguments.as_slice() {
                     [] => {}
                     [(pc, crate::bytecode::ArgumentsKind::Unmapped)] if *pc == rest_pc => {
-                        if !matches!(
-                            code.get(rest_pc + 1),
-                            Some(Instruction::PutLocal(local)) if *local < metadata.local_count
-                        ) {
+                        let Some(Instruction::PutLocal(local)) = code.get(rest_pc + 1) else {
+                            return Err("rest parameter arguments object has no entry binding");
+                        };
+                        if *local >= metadata.local_count
+                            || metadata.eval_variable_object_local == Some(*local)
+                            || metadata.function_name_local == Some(*local)
+                            || entry_targets.contains(local)
+                        {
                             return Err("rest parameter arguments object has no entry binding");
                         }
+                        entry_targets.push(*local);
                         rest_pc += 2;
                     }
                     _ => return Err("rest parameter contains a malformed arguments prologue"),
+                }
+                match metadata.eval_variable_object_local {
+                    Some(local)
+                        if local < metadata.local_count
+                            && metadata.function_name_local != Some(local)
+                            && !entry_targets.contains(&local)
+                            && matches!(
+                                code.get(rest_pc..rest_pc + 2),
+                                Some([
+                                    Instruction::VariableEnvironment,
+                                    Instruction::PutLocal(target),
+                                ]) if *target == local
+                            ) =>
+                    {
+                        rest_pc += 2;
+                    }
+                    Some(_) => {
+                        return Err("eval variable-object local has no exact entry prologue");
+                    }
+                    None => {}
+                }
+                if code
+                    .iter()
+                    .filter(|instruction| matches!(instruction, Instruction::VariableEnvironment))
+                    .count()
+                    != usize::from(metadata.eval_variable_object_local.is_some())
+                {
+                    return Err("variable-environment opcode has no authenticated local");
                 }
                 if !matches!(
                     code.get(rest_pc..rest_pc + 2),
@@ -875,6 +937,33 @@ pub(crate) fn validate_parameter_bytecode_layout(
     }
 
     let mut entry_pc = 0_usize;
+    // QuickJS materializes an owned HomeObject/NewTarget/this cell before
+    // entering the argument scope when parameter code needs one. The compiler
+    // emits the same fixed-order pairs before the arguments object and the
+    // parameter TDZ reset; every target must remain outside the leading
+    // parameter-local range.
+    let mut pseudo_rank = 0_u8;
+    let mut pseudo_targets = Vec::with_capacity(3);
+    while let Some([source, Instruction::PutLocal(local)]) = code.get(entry_pc..entry_pc + 2) {
+        let rank = match source {
+            Instruction::PushHomeObject => 1,
+            Instruction::PushNewTarget => 2,
+            Instruction::PushThis => 3,
+            _ => break,
+        };
+        if rank <= pseudo_rank
+            || *local < parameter_locals
+            || *local >= metadata.local_count
+            || metadata.function_name_local == Some(*local)
+            || pseudo_targets.contains(local)
+        {
+            return Err("parameter environment contains a malformed pseudo-binding prologue");
+        }
+        pseudo_rank = rank;
+        pseudo_targets.push(*local);
+        entry_pc += 2;
+    }
+
     let arguments = code
         .iter()
         .enumerate()
@@ -892,6 +981,7 @@ pub(crate) fn validate_parameter_bytecode_layout(
             if *local < parameter_locals
                 || *local >= metadata.local_count
                 || metadata.function_name_local == Some(*local)
+                || pseudo_targets.contains(local)
             {
                 return Err("parameter environment arguments object has no entry binding");
             }
@@ -900,34 +990,6 @@ pub(crate) fn validate_parameter_bytecode_layout(
         }
         _ => return Err("parameter environment contains a malformed arguments prologue"),
     };
-
-    // QuickJS materializes an owned HomeObject/NewTarget/this cell before
-    // entering the argument scope when parameter code needs one. The compiler
-    // emits the same fixed-order pairs between the ordinary entry prefix and
-    // the parameter TDZ reset; every target must remain outside the leading
-    // parameter-local range.
-    let mut pseudo_rank = 0_u8;
-    let mut pseudo_targets = Vec::with_capacity(3);
-    while let Some([source, Instruction::PutLocal(local)]) = code.get(entry_pc..entry_pc + 2) {
-        let rank = match source {
-            Instruction::PushHomeObject => 1,
-            Instruction::PushNewTarget => 2,
-            Instruction::PushThis => 3,
-            _ => break,
-        };
-        if rank <= pseudo_rank
-            || *local < parameter_locals
-            || *local >= metadata.local_count
-            || arguments_local == Some(*local)
-            || metadata.function_name_local == Some(*local)
-            || pseudo_targets.contains(local)
-        {
-            return Err("parameter environment contains a malformed pseudo-binding prologue");
-        }
-        pseudo_rank = rank;
-        pseudo_targets.push(*local);
-        entry_pc += 2;
-    }
 
     let parameter_count = usize::from(parameter_locals);
     for (offset, local) in (0..parameter_locals).rev().enumerate() {
@@ -1186,16 +1248,6 @@ fn validate_explicit_parameter_environment_layout(
     if parameter_locals > metadata.local_count {
         return Err("parameter environment exceeds function local slots");
     }
-    if metadata.eval_variable_object_local.is_some()
-        || layout.synthetic_arguments_local.is_some()
-        || layout.arg_eval_variable_object_local.is_some()
-        || code
-            .iter()
-            .any(|instruction| matches!(instruction, Instruction::Eval { .. }))
-    {
-        return Err("direct eval is not supported in a parameter environment");
-    }
-
     let marker = usize::try_from(layout.initialization_end)
         .map_err(|_| "parameter environment marker is outside bytecode")?;
     if !matches!(code.get(marker), Some(Instruction::Nop)) {
@@ -1213,9 +1265,6 @@ fn validate_explicit_parameter_environment_layout(
         .argument_cells
         .len()
         .checked_add(layout.pattern_copies.len())
-        .and_then(|count| {
-            count.checked_add(usize::from(layout.synthetic_arguments_local.is_some()))
-        })
         .ok_or("parameter environment cell count overflowed")?;
     if expected_cells != usize::from(parameter_locals) {
         return Err("parameter environment layout does not cover every cell");
@@ -1318,8 +1367,28 @@ fn validate_explicit_parameter_environment_layout(
     }
     if let Some(local) = layout.synthetic_arguments_local {
         let local = usize::from(local);
-        if local >= cell_roles.len() || std::mem::replace(&mut cell_roles[local], true) {
+        if local < cell_roles.len()
+            || local >= usize::from(metadata.local_count)
+            || metadata.eval_variable_object_local == u16::try_from(local).ok()
+            || metadata.function_name_local == u16::try_from(local).ok()
+            || body_targets.get(local).copied().unwrap_or(false)
+        {
             return Err("synthetic parameter arguments cell overlaps or is out of bounds");
+        }
+    }
+    if let Some(local) = layout.arg_eval_variable_object_local {
+        let local = usize::from(local);
+        if local < cell_roles.len()
+            || local >= usize::from(metadata.local_count)
+            || layout.synthetic_arguments_local == u16::try_from(local).ok()
+            || metadata.eval_variable_object_local == u16::try_from(local).ok()
+            || metadata.function_name_local == u16::try_from(local).ok()
+            || body_targets.get(local).copied().unwrap_or(false)
+        {
+            return Err("parameter eval variable-object local overlaps or is out of bounds");
+        }
+        if metadata.strict || metadata.eval_variable_object_local.is_none() {
+            return Err("parameter eval variable object escaped a sloppy eval-enabled function");
         }
     }
     if cell_roles.iter().any(|covered| !covered) {
@@ -1327,23 +1396,6 @@ fn validate_explicit_parameter_environment_layout(
     }
 
     let mut entry_pc = 0_usize;
-    let arguments_prologues = code
-        .iter()
-        .enumerate()
-        .filter_map(|(pc, instruction)| match instruction {
-            Instruction::Arguments(kind) => Some((pc, *kind)),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    match arguments_prologues.as_slice() {
-        [] => {}
-        [(0, crate::bytecode::ArgumentsKind::Unmapped)] if matches!(code.get(1), Some(Instruction::PutLocal(local)) if *local >= parameter_locals && *local < metadata.local_count) =>
-        {
-            entry_pc = 2;
-        }
-        _ => return Err("parameter environment contains a malformed arguments prologue"),
-    }
-
     let mut pseudo_rank = 0_u8;
     let mut pseudo_targets = Vec::with_capacity(3);
     while let Some([source, Instruction::PutLocal(local)]) = code.get(entry_pc..entry_pc + 2) {
@@ -1357,12 +1409,104 @@ fn validate_explicit_parameter_environment_layout(
             || *local < parameter_locals
             || *local >= metadata.local_count
             || pseudo_targets.contains(local)
+            || metadata.eval_variable_object_local == Some(*local)
+            || layout.synthetic_arguments_local == Some(*local)
+            || layout.arg_eval_variable_object_local == Some(*local)
+            || metadata.function_name_local == Some(*local)
+            || body_targets
+                .get(usize::from(*local))
+                .copied()
+                .unwrap_or(false)
         {
             return Err("parameter environment contains a malformed pseudo-binding prologue");
         }
         pseudo_rank = rank;
         pseudo_targets.push(*local);
         entry_pc += 2;
+    }
+
+    let arguments_prologues = code
+        .iter()
+        .enumerate()
+        .filter_map(|(pc, instruction)| match instruction {
+            Instruction::Arguments(kind) => Some((pc, *kind)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    match layout.synthetic_arguments_local {
+        None => match arguments_prologues.as_slice() {
+            [] => {}
+            [(pc, crate::bytecode::ArgumentsKind::Unmapped)] => {
+                let Some(Instruction::PutLocal(local)) = code.get(entry_pc + 1) else {
+                    return Err("parameter environment arguments object has no entry binding");
+                };
+                if *pc != entry_pc {
+                    return Err("parameter environment arguments object is not at function entry");
+                }
+                if *local < parameter_locals
+                    || *local >= metadata.local_count
+                    || metadata.eval_variable_object_local == Some(*local)
+                    || layout.arg_eval_variable_object_local == Some(*local)
+                    || metadata.function_name_local == Some(*local)
+                    || pseudo_targets.contains(local)
+                {
+                    return Err("parameter environment arguments object has no entry binding");
+                }
+                entry_pc += 2;
+            }
+            _ => return Err("parameter environment contains a malformed arguments prologue"),
+        },
+        Some(synthetic) => {
+            if !matches!(
+                arguments_prologues.as_slice(),
+                [(pc, crate::bytecode::ArgumentsKind::Unmapped)] if *pc == entry_pc
+            ) || !matches!(
+                code.get(entry_pc..entry_pc + 4),
+                Some([
+                    Instruction::Arguments(crate::bytecode::ArgumentsKind::Unmapped),
+                    Instruction::Dup,
+                    Instruction::InitializeLocal(target),
+                    Instruction::PutLocal(body),
+                ]) if *target == synthetic
+                    && *body >= parameter_locals
+                    && *body < metadata.local_count
+                    && *body != synthetic
+                    && metadata.eval_variable_object_local != Some(*body)
+                    && layout.arg_eval_variable_object_local != Some(*body)
+                    && metadata.function_name_local != Some(*body)
+                    && !pseudo_targets.contains(body)
+            ) {
+                return Err("parameter environment contains a malformed arguments prologue");
+            }
+            entry_pc += 4;
+        }
+    }
+
+    let mut variable_environment_targets = Vec::with_capacity(2);
+    for expected in [
+        metadata.eval_variable_object_local,
+        layout.arg_eval_variable_object_local,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !matches!(
+            code.get(entry_pc..entry_pc + 2),
+            Some([Instruction::VariableEnvironment, Instruction::PutLocal(target)])
+                if *target == expected
+        ) {
+            return Err("eval variable-object local has no exact entry prologue");
+        }
+        variable_environment_targets.push(expected);
+        entry_pc += 2;
+    }
+    if code
+        .iter()
+        .filter(|instruction| matches!(instruction, Instruction::VariableEnvironment))
+        .count()
+        != variable_environment_targets.len()
+    {
+        return Err("variable-environment opcode has no authenticated local");
     }
 
     for (offset, local) in (0..parameter_locals).rev().enumerate() {
@@ -1425,22 +1569,21 @@ fn validate_explicit_parameter_environment_layout(
         return Err("parameter pattern copy phase overlaps the TDZ prologue");
     }
 
-    if has_pattern {
-        for cell in layout.argument_cells.iter() {
-            let argument = cell.argument;
-            let argument_index = usize::from(argument);
-            let parameter_local = usize::from(cell.parameter_local);
-            let initializer_pc = initializer_pcs[parameter_local]
-                .ok_or("parameter argument cell has no exact initialization")?;
-            let raw_reads = code[..marker]
-                .iter()
-                .enumerate()
-                .filter_map(|(pc, instruction)| {
-                    matches!(instruction, Instruction::GetArg(source) if *source == argument)
-                        .then_some(pc)
-                })
-                .collect::<Vec<_>>();
-            let raw_writes = code[..marker]
+    for cell in layout.argument_cells.iter() {
+        let argument = cell.argument;
+        let argument_index = usize::from(argument);
+        let parameter_local = usize::from(cell.parameter_local);
+        let initializer_pc = initializer_pcs[parameter_local]
+            .ok_or("parameter argument cell has no exact initialization")?;
+        let raw_reads = code[..marker]
+            .iter()
+            .enumerate()
+            .filter_map(|(pc, instruction)| {
+                matches!(instruction, Instruction::GetArg(source) if *source == argument)
+                    .then_some(pc)
+            })
+            .collect::<Vec<_>>();
+        let raw_writes = code[..marker]
             .iter()
             .enumerate()
             .filter_map(|(pc, instruction)| {
@@ -1449,68 +1592,69 @@ fn validate_explicit_parameter_environment_layout(
             })
             .collect::<Vec<_>>();
 
-            if metadata.rest_parameter == Some(argument) {
-                if defaulted_arguments[argument_index]
-                    || !raw_reads.is_empty()
-                    || raw_writes.as_slice() != [initializer_pc.saturating_sub(1)]
-                    || initializer_pc < 3
-                    || !matches!(
-                        code.get(initializer_pc - 3..=initializer_pc),
-                        Some([
-                            Instruction::Rest(start),
-                            Instruction::Dup,
-                            Instruction::PutArg(target),
-                            Instruction::InitializeLocal(local),
-                        ]) if *start == argument && *target == argument && usize::from(*local) == parameter_local
-                    )
-                {
-                    return Err("parameter rest cell has no exact initialization");
-                }
-                continue;
-            }
-
-            if defaulted_arguments[argument_index] {
-                let Some(&source_pc) = raw_reads.first().filter(|_| raw_reads.len() == 1) else {
-                    return Err("parameter default cell has no exact argument selection");
-                };
-                if raw_writes.as_slice() != [initializer_pc.saturating_sub(1)]
-                    || initializer_pc < 2
-                    || !matches!(
-                        code.get(source_pc..source_pc + 5),
-                        Some([
-                            Instruction::GetArg(source),
-                            Instruction::Dup,
-                            Instruction::Undefined,
-                            Instruction::StrictEq,
-                            Instruction::IfFalse(target),
-                        ]) if *source == argument && usize::try_from(*target).ok() == Some(initializer_pc)
-                    )
-                    || !matches!(
-                        code.get(initializer_pc - 2..=initializer_pc),
-                        Some([
-                            Instruction::Dup,
-                            Instruction::PutArg(target),
-                            Instruction::InitializeLocal(local),
-                        ]) if *target == argument && usize::from(*local) == parameter_local
-                    )
-                {
-                    return Err("parameter default cell has no exact argument selection");
-                }
-            } else if raw_reads.as_slice() != [initializer_pc.saturating_sub(1)]
-                || !raw_writes.is_empty()
-                || initializer_pc == 0
+        if metadata.rest_parameter == Some(argument) {
+            if defaulted_arguments[argument_index]
+                || !raw_reads.is_empty()
+                || raw_writes.as_slice() != [initializer_pc.saturating_sub(1)]
+                || initializer_pc < 3
                 || !matches!(
-                    code.get(initializer_pc - 1..=initializer_pc),
+                    code.get(initializer_pc - 3..=initializer_pc),
                     Some([
-                        Instruction::GetArg(source),
+                        Instruction::Rest(start),
+                        Instruction::Dup,
+                        Instruction::PutArg(target),
                         Instruction::InitializeLocal(local),
-                    ]) if *source == argument && usize::from(*local) == parameter_local
+                    ]) if *start == argument && *target == argument && usize::from(*local) == parameter_local
                 )
             {
-                return Err("plain parameter argument cell has no exact initialization");
+                return Err("parameter rest cell has no exact initialization");
             }
+            continue;
         }
 
+        if defaulted_arguments[argument_index] {
+            let Some(&source_pc) = raw_reads.first().filter(|_| raw_reads.len() == 1) else {
+                return Err("parameter default cell has no exact argument selection");
+            };
+            if raw_writes.as_slice() != [initializer_pc.saturating_sub(1)]
+                || initializer_pc < 2
+                || !matches!(
+                    code.get(source_pc..source_pc + 5),
+                    Some([
+                        Instruction::GetArg(source),
+                        Instruction::Dup,
+                        Instruction::Undefined,
+                        Instruction::StrictEq,
+                        Instruction::IfFalse(target),
+                    ]) if *source == argument && usize::try_from(*target).ok() == Some(initializer_pc)
+                )
+                || !matches!(
+                    code.get(initializer_pc - 2..=initializer_pc),
+                    Some([
+                        Instruction::Dup,
+                        Instruction::PutArg(target),
+                        Instruction::InitializeLocal(local),
+                    ]) if *target == argument && usize::from(*local) == parameter_local
+                )
+            {
+                return Err("parameter default cell has no exact argument selection");
+            }
+        } else if raw_reads.as_slice() != [initializer_pc.saturating_sub(1)]
+            || !raw_writes.is_empty()
+            || initializer_pc == 0
+            || !matches!(
+                code.get(initializer_pc - 1..=initializer_pc),
+                Some([
+                    Instruction::GetArg(source),
+                    Instruction::InitializeLocal(local),
+                ]) if *source == argument && usize::from(*local) == parameter_local
+            )
+        {
+            return Err("plain parameter argument cell has no exact initialization");
+        }
+    }
+
+    if has_pattern {
         if arguments.iter().filter(|mapped| !**mapped).count()
             != usize::from(metadata.pattern_argument_count)
         {
@@ -1645,10 +1789,15 @@ fn validate_explicit_parameter_environment_layout(
     }
 
     let mut body_pc = marker + 1;
-    let mut closed = vec![false; usize::from(parameter_locals)];
+    let mut parameter_owned = vec![false; usize::from(metadata.local_count)];
+    parameter_owned[..usize::from(parameter_locals)].fill(true);
+    if let Some(local) = layout.synthetic_arguments_local {
+        parameter_owned[usize::from(local)] = true;
+    }
+    let mut closed = vec![false; usize::from(metadata.local_count)];
     while let Some(Instruction::CloseLocal(local)) = code.get(body_pc) {
         let local = usize::from(*local);
-        if local >= closed.len() {
+        if !parameter_owned.get(local).copied().unwrap_or(false) {
             break;
         }
         if std::mem::replace(&mut closed[local], true) {
@@ -1669,7 +1818,12 @@ fn validate_explicit_parameter_environment_layout(
             | Instruction::CloseLocal(local) => Some(*local),
             _ => None,
         };
-        local.is_some_and(|local| local < parameter_locals)
+        local.is_some_and(|local| {
+            parameter_owned
+                .get(usize::from(local))
+                .copied()
+                .unwrap_or(false)
+        })
     }) {
         return Err("function body accesses a parameter-environment cell");
     }
@@ -1732,6 +1886,9 @@ pub(crate) fn validate_pattern_parameter_bytecode_layout(
         }
     }
 
+    let synthetic_arguments_local =
+        parameter_environment.and_then(|layout| layout.synthetic_arguments_local);
+    let mut synthetic_arguments_initialization_pc = None;
     let mut arguments_pcs =
         code.iter()
             .enumerate()
@@ -1740,17 +1897,41 @@ pub(crate) fn validate_pattern_parameter_bytecode_layout(
                 _ => None,
             });
     if let Some((pc, kind)) = arguments_pcs.next() {
-        let expected_pc = usize::from(metadata.eval_variable_object_local.is_some()) * 2;
+        let mut expected_pc = 0_usize;
+        while matches!(
+            code.get(expected_pc..expected_pc + 2),
+            Some([
+                Instruction::PushHomeObject | Instruction::PushNewTarget | Instruction::PushThis,
+                Instruction::PutLocal(_),
+            ])
+        ) {
+            expected_pc += 2;
+        }
+        let arguments_shape_matches = match synthetic_arguments_local {
+            Some(synthetic) => matches!(
+                code.get(pc..pc + 4),
+                Some([
+                    Instruction::Arguments(crate::bytecode::ArgumentsKind::Unmapped),
+                    Instruction::Dup,
+                    Instruction::InitializeLocal(target),
+                    Instruction::PutLocal(body),
+                ]) if *target == synthetic && *body < metadata.local_count
+            ),
+            None => matches!(
+                code.get(pc + 1),
+                Some(Instruction::PutLocal(local)) if *local < metadata.local_count
+            ),
+        };
         if arguments_pcs.next().is_some()
             || pc != expected_pc
             || pc >= marker
             || kind != crate::bytecode::ArgumentsKind::Unmapped
-            || !matches!(
-                code.get(pc + 1),
-                Some(Instruction::PutLocal(local)) if *local < metadata.local_count
-            )
+            || !arguments_shape_matches
         {
             return Err("parameter BindingPattern contains a malformed arguments prologue");
+        }
+        if synthetic_arguments_local.is_some() {
+            synthetic_arguments_initialization_pc = Some(pc + 2);
         }
     }
 
@@ -1774,7 +1955,18 @@ pub(crate) fn validate_pattern_parameter_bytecode_layout(
             | Instruction::CloseLocal(local) => Some(*local),
             _ => None,
         };
+        let is_synthetic_arguments_access = match instruction {
+            Instruction::InitializeLocal(local) => {
+                synthetic_arguments_local == Some(*local)
+                    && synthetic_arguments_initialization_pc == Some(pc)
+            }
+            Instruction::GetLocalCheck(local)
+            | Instruction::PutLocalCheck(local)
+            | Instruction::SetLocalCheck(local) => synthetic_arguments_local == Some(*local),
+            _ => false,
+        };
         if pc < marker
+            && !is_synthetic_arguments_access
             && local.is_some_and(|local| {
                 local >= metadata.parameter_environment_local_count
                     && lexical_locals
@@ -1957,11 +2149,24 @@ pub enum ClosureVariableKind {
     /// this binding; eval-created names are properties of that object rather
     /// than fabricated ordinary locals.
     EvalVariableObject,
+    /// QuickJS's hidden `<arg_var>` binding. A sloppy authored function with
+    /// both a Parameter Environment and a syntactic direct-eval site stores a
+    /// second, independent variable object here. Parameter-phase lookup uses
+    /// this object as its declaration target; body lookup consults it only
+    /// after the ordinary `<var>` object.
+    ArgEvalVariableObject,
     /// QuickJS's hidden `<with>` binding. The binding carries the object
     /// environment introduced by one sloppy `with` statement and is relayed
     /// through closures and direct-eval environment descriptors without ever
     /// becoming a source-visible lexical or variable binding.
     WithObject,
+}
+
+impl ClosureVariableKind {
+    #[must_use]
+    pub const fn is_eval_variable_object(self) -> bool {
+        matches!(self, Self::EvalVariableObject | Self::ArgEvalVariableObject)
+    }
 }
 
 /// Runtime-independent closure metadata stored beside child bytecode.
@@ -2003,6 +2208,10 @@ pub enum EvalBindingSource {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EvalScopeKind {
     FunctionRoot,
+    /// QuickJS's parentless argument scope for a function whose formal
+    /// parameters contain expressions. This terminates one function segment
+    /// without making the function's body/root bindings visible.
+    Parameter,
     FunctionBody,
     ProgramBody,
     Block,
@@ -2017,12 +2226,19 @@ pub enum EvalScopeKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EvalVariableEnvironment {
     Global,
-    Scope(u16),
-    /// Synthetic direct-eval roots do not own the sloppy caller's variable
-    /// environment.  The exact imported closure slot which carries QuickJS's
-    /// hidden `<var>` object remains the declaration destination for a nested
-    /// direct eval compiled from that root.
-    Closure(u16),
+    /// Strict direct eval always creates declarations in its own eval frame.
+    /// The scope ordinal authenticates the current caller-function segment
+    /// which grants that strict-local destination; it may be a FunctionRoot or
+    /// a parentless Parameter scope.
+    StrictLocal(u16),
+    /// Sloppy direct eval writes declarations through one exact hidden
+    /// variable-object binding. `scope` identifies the descriptor scope which
+    /// must contain `source`; publication rejects an Argument source and
+    /// authenticates whether it is the body `<var>` or parameter `<arg_var>`.
+    VariableObject {
+        scope: u16,
+        source: EvalBindingSource,
+    },
 }
 
 /// Caller-side provenance retained while compiling one synthetic eval root.
@@ -5098,6 +5314,25 @@ impl Heap {
                 "eval variable-object and function-name locals overlap",
             ));
         }
+        let arg_eval_variable_object_local = bytecode
+            .parameter_environment
+            .as_ref()
+            .and_then(|layout| layout.arg_eval_variable_object_local);
+        if arg_eval_variable_object_local
+            .is_some_and(|index| index >= bytecode.metadata.local_count)
+        {
+            return Err(HeapError::Invariant(
+                "parameter eval variable-object local is outside bytecode local slots",
+            ));
+        }
+        if let Some(index) = arg_eval_variable_object_local
+            && (bytecode.metadata.eval_variable_object_local == Some(index)
+                || bytecode.metadata.function_name_local == Some(index))
+        {
+            return Err(HeapError::Invariant(
+                "parameter eval variable-object local overlaps another private local",
+            ));
+        }
         if bytecode.argument_definitions.len() != usize::from(bytecode.metadata.argument_count) {
             return Err(HeapError::Invariant(
                 "argument definition count does not match bytecode metadata",
@@ -5192,12 +5427,26 @@ impl Heap {
                     ));
                 }
             }
+            if let Some(index) = layout.synthetic_arguments_local {
+                let definition = &bytecode.local_definitions[usize::from(index)];
+                if definition.kind != ClosureVariableKind::Normal
+                    || !definition.is_lexical
+                    || definition.is_const
+                    || definition.name.is_none()
+                {
+                    return Err(HeapError::Invariant(
+                        "synthetic parameter arguments definition is not authenticated",
+                    ));
+                }
+            }
         }
         for (index, definition) in bytecode.local_definitions.iter().enumerate() {
             let is_function_name =
                 bytecode.metadata.function_name_local == u16::try_from(index).ok();
             let is_eval_variable_object =
                 bytecode.metadata.eval_variable_object_local == u16::try_from(index).ok();
+            let is_arg_eval_variable_object =
+                arg_eval_variable_object_local == u16::try_from(index).ok();
             if is_function_name {
                 if definition.kind != ClosureVariableKind::FunctionName
                     || definition.is_lexical
@@ -5216,6 +5465,16 @@ impl Heap {
                 {
                     return Err(HeapError::Invariant(
                         "eval variable-object definition disagrees with bytecode metadata",
+                    ));
+                }
+            } else if is_arg_eval_variable_object {
+                if definition.kind != ClosureVariableKind::ArgEvalVariableObject
+                    || definition.is_lexical
+                    || definition.is_const
+                    || definition.name.is_none()
+                {
+                    return Err(HeapError::Invariant(
+                        "parameter eval variable-object definition disagrees with bytecode layout",
                     ));
                 }
             } else if definition.kind == ClosureVariableKind::WithObject {
@@ -5337,7 +5596,7 @@ impl Heap {
                     "global function declaration descriptor has lexical metadata",
                 ));
             }
-            if descriptor.kind == ClosureVariableKind::EvalVariableObject
+            if descriptor.kind.is_eval_variable_object()
                 && (descriptor.is_lexical
                     || descriptor.is_const
                     || !matches!(
@@ -5410,6 +5669,7 @@ impl Heap {
                 descriptor.kind,
                 ClosureVariableKind::FunctionName
                     | ClosureVariableKind::EvalVariableObject
+                    | ClosureVariableKind::ArgEvalVariableObject
                     | ClosureVariableKind::WithObject
             );
             let allows_name = requires_name
@@ -5488,130 +5748,256 @@ impl Heap {
                 }
             }
         }
-        for scope in bytecode
-            .eval_environments
-            .iter()
-            .flat_map(|environment| environment.scopes.iter())
-        {
-            if scope.kind == EvalScopeKind::With && scope.bindings.len() != 1 {
-                return Err(HeapError::Invariant(
-                    "eval with scope does not contain exactly one object binding",
-                ));
-            }
-            for binding in &scope.bindings {
-                if binding.name.is_null() {
-                    return Err(HeapError::Invariant("eval binding name is the null atom"));
-                }
-                let source_name_matches = match binding.source {
-                    EvalBindingSource::Local(index) => bytecode
-                        .local_definitions
-                        .get(usize::from(index))
-                        .is_some_and(|definition| definition.name == Some(binding.name)),
-                    EvalBindingSource::Argument(index) => bytecode
-                        .argument_definitions
-                        .get(usize::from(index))
-                        .is_some_and(|definition| definition.name == Some(binding.name)),
-                    EvalBindingSource::Closure(index) => bytecode
-                        .closure_variables
-                        .get(usize::from(index))
-                        .is_some_and(|descriptor| {
-                            descriptor.name == ClosureVariableName::Atom(binding.name)
-                        }),
-                };
-                if !source_name_matches {
-                    return Err(HeapError::Invariant(
-                        "eval binding name atom disagrees with its source metadata",
-                    ));
-                }
-                if (binding.is_catch_parameter && scope.kind != EvalScopeKind::Catch)
-                    || (binding.is_catch_parameter
-                        && (!binding.is_lexical
-                            || binding.is_const
-                            || binding.kind != ClosureVariableKind::Normal))
-                {
-                    return Err(HeapError::Invariant(
-                        "eval catch binding metadata disagrees with its scope",
-                    ));
-                }
-                if (binding.kind == ClosureVariableKind::WithObject)
-                    != (scope.kind == EvalScopeKind::With)
-                    || (binding.kind == ClosureVariableKind::WithObject
-                        && (binding.is_lexical
-                            || binding.is_const
-                            || binding.is_catch_parameter
-                            || matches!(binding.source, EvalBindingSource::Argument(_))))
-                {
-                    return Err(HeapError::Invariant(
-                        "eval with-object binding metadata disagrees with its scope",
-                    ));
-                }
-                if binding.kind == ClosureVariableKind::EvalVariableObject {
-                    if binding.is_lexical || binding.is_const || binding.is_catch_parameter {
+        for environment in bytecode.eval_environments.iter() {
+            let first_function_anchor = environment
+                .scopes
+                .iter()
+                .position(|scope| {
+                    matches!(
+                        scope.kind,
+                        EvalScopeKind::FunctionRoot | EvalScopeKind::Parameter
+                    )
+                })
+                .and_then(|scope| u16::try_from(scope).ok())
+                .ok_or(HeapError::Invariant(
+                    "eval environment contains no representable current function anchor",
+                ))?;
+            match environment.variable_environment {
+                EvalVariableEnvironment::Global => {
+                    let current_body_is_program = first_function_anchor
+                        .checked_sub(1)
+                        .and_then(|scope| environment.scopes.get(usize::from(scope)))
+                        .is_some_and(|scope| scope.kind == EvalScopeKind::ProgramBody);
+                    if !current_body_is_program
+                        || (environment.caller_strict
+                            && bytecode.metadata.eval_kind != EvalKind::None)
+                    {
                         return Err(HeapError::Invariant(
-                            "eval variable-object binding has invalid metadata",
+                            "global eval variable environment escaped an authored Script root",
                         ));
                     }
-                    let authenticated = match binding.source {
-                        EvalBindingSource::Local(index) => {
-                            bytecode.metadata.eval_variable_object_local == Some(index)
-                                && bytecode
-                                    .local_definitions
-                                    .get(usize::from(index))
-                                    .is_some_and(|definition| {
-                                        definition.kind == ClosureVariableKind::EvalVariableObject
-                                    })
-                        }
-                        EvalBindingSource::Closure(index) => bytecode
-                            .closure_variables
-                            .get(usize::from(index))
-                            .is_some_and(|descriptor| {
-                                descriptor.kind == ClosureVariableKind::EvalVariableObject
-                            }),
-                        EvalBindingSource::Argument(_) => false,
+                }
+                EvalVariableEnvironment::StrictLocal(scope) if environment.caller_strict => {
+                    if scope != first_function_anchor {
+                        return Err(HeapError::Invariant(
+                            "strict eval variable environment selected the wrong current function segment",
+                        ));
+                    }
+                    let current_body_is_program = first_function_anchor
+                        .checked_sub(1)
+                        .and_then(|scope| environment.scopes.get(usize::from(scope)))
+                        .is_some_and(|scope| scope.kind == EvalScopeKind::ProgramBody);
+                    if current_body_is_program && bytecode.metadata.eval_kind == EvalKind::None {
+                        return Err(HeapError::Invariant(
+                            "authored Script eval environment used a non-canonical strict-local target",
+                        ));
+                    }
+                    let Some(scope) = environment.scopes.get(usize::from(scope)) else {
+                        return Err(HeapError::Invariant(
+                            "strict eval variable-environment scope is out of bounds",
+                        ));
                     };
-                    if !authenticated {
+                    if !matches!(
+                        scope.kind,
+                        EvalScopeKind::FunctionRoot | EvalScopeKind::Parameter
+                    ) {
                         return Err(HeapError::Invariant(
-                            "eval variable-object binding source is not authenticated",
+                            "strict eval variable environment has the wrong function segment anchor",
                         ));
                     }
                 }
-                if binding.kind == ClosureVariableKind::WithObject {
-                    let authenticated = match binding.source {
+                EvalVariableEnvironment::VariableObject { scope, source }
+                    if !environment.caller_strict =>
+                {
+                    let target_matches_function_segment =
+                        if bytecode.metadata.eval_kind == EvalKind::None {
+                            scope == first_function_anchor
+                                && matches!(source, EvalBindingSource::Local(_))
+                        } else {
+                            bytecode.metadata.eval_kind == EvalKind::Direct
+                                && scope > first_function_anchor
+                                && matches!(source, EvalBindingSource::Closure(_))
+                        };
+                    if !target_matches_function_segment {
+                        return Err(HeapError::Invariant(
+                            "eval variable object selected the wrong current function segment",
+                        ));
+                    }
+                    let Some(scope) = environment.scopes.get(usize::from(scope)) else {
+                        return Err(HeapError::Invariant(
+                            "eval variable-object scope is out of bounds",
+                        ));
+                    };
+                    let expected_kind = match scope.kind {
+                        EvalScopeKind::FunctionRoot => ClosureVariableKind::EvalVariableObject,
+                        EvalScopeKind::Parameter => ClosureVariableKind::ArgEvalVariableObject,
+                        _ => {
+                            return Err(HeapError::Invariant(
+                                "eval variable object has the wrong function segment scope",
+                            ));
+                        }
+                    };
+                    if matches!(source, EvalBindingSource::Argument(_))
+                        || scope
+                            .bindings
+                            .iter()
+                            .filter(|binding| {
+                                binding.source == source && binding.kind == expected_kind
+                            })
+                            .count()
+                            != 1
+                    {
+                        return Err(HeapError::Invariant(
+                            "eval variable-object target is not exact",
+                        ));
+                    }
+                }
+                EvalVariableEnvironment::StrictLocal(_)
+                | EvalVariableEnvironment::VariableObject { .. } => {
+                    return Err(HeapError::Invariant(
+                        "eval variable environment disagrees with caller strictness",
+                    ));
+                }
+            }
+            for scope in environment.scopes.iter() {
+                if scope.kind == EvalScopeKind::With && scope.bindings.len() != 1 {
+                    return Err(HeapError::Invariant(
+                        "eval with scope does not contain exactly one object binding",
+                    ));
+                }
+                for binding in &scope.bindings {
+                    if binding.name.is_null() {
+                        return Err(HeapError::Invariant("eval binding name is the null atom"));
+                    }
+                    let source_name_matches = match binding.source {
                         EvalBindingSource::Local(index) => bytecode
                             .local_definitions
                             .get(usize::from(index))
-                            .is_some_and(|definition| {
-                                definition.kind == ClosureVariableKind::WithObject
-                                    && !definition.is_lexical
-                                    && !definition.is_const
-                            }),
+                            .is_some_and(|definition| definition.name == Some(binding.name)),
+                        EvalBindingSource::Argument(index) => bytecode
+                            .argument_definitions
+                            .get(usize::from(index))
+                            .is_some_and(|definition| definition.name == Some(binding.name)),
                         EvalBindingSource::Closure(index) => bytecode
                             .closure_variables
                             .get(usize::from(index))
                             .is_some_and(|descriptor| {
-                                descriptor.kind == ClosureVariableKind::WithObject
-                                    && !descriptor.is_lexical
-                                    && !descriptor.is_const
+                                descriptor.name == ClosureVariableName::Atom(binding.name)
                             }),
-                        EvalBindingSource::Argument(_) => false,
                     };
-                    if !authenticated {
+                    if !source_name_matches {
                         return Err(HeapError::Invariant(
-                            "eval with-object binding source is not authenticated",
+                            "eval binding name atom disagrees with its source metadata",
                         ));
                     }
+                    if (binding.is_catch_parameter && scope.kind != EvalScopeKind::Catch)
+                        || (binding.is_catch_parameter
+                            && (!binding.is_lexical
+                                || binding.is_const
+                                || binding.kind != ClosureVariableKind::Normal))
+                    {
+                        return Err(HeapError::Invariant(
+                            "eval catch binding metadata disagrees with its scope",
+                        ));
+                    }
+                    if (binding.kind == ClosureVariableKind::WithObject)
+                        != (scope.kind == EvalScopeKind::With)
+                        || (binding.kind == ClosureVariableKind::WithObject
+                            && (binding.is_lexical
+                                || binding.is_const
+                                || binding.is_catch_parameter
+                                || matches!(binding.source, EvalBindingSource::Argument(_))))
+                    {
+                        return Err(HeapError::Invariant(
+                            "eval with-object binding metadata disagrees with its scope",
+                        ));
+                    }
+                    if binding.kind.is_eval_variable_object() {
+                        let role_allowed = match scope.kind {
+                            EvalScopeKind::FunctionRoot => true,
+                            EvalScopeKind::Parameter => {
+                                binding.kind == ClosureVariableKind::ArgEvalVariableObject
+                            }
+                            _ => false,
+                        };
+                        if !role_allowed
+                            || binding.is_lexical
+                            || binding.is_const
+                            || binding.is_catch_parameter
+                        {
+                            return Err(HeapError::Invariant(
+                                "eval variable-object binding has invalid metadata",
+                            ));
+                        }
+                        let authenticated = match binding.source {
+                            EvalBindingSource::Local(index) => {
+                                let expected = match binding.kind {
+                                    ClosureVariableKind::EvalVariableObject => {
+                                        bytecode.metadata.eval_variable_object_local
+                                    }
+                                    ClosureVariableKind::ArgEvalVariableObject => {
+                                        arg_eval_variable_object_local
+                                    }
+                                    _ => {
+                                        unreachable!("eval variable-object role was checked above")
+                                    }
+                                };
+                                expected == Some(index)
+                                    && bytecode
+                                        .local_definitions
+                                        .get(usize::from(index))
+                                        .is_some_and(|definition| definition.kind == binding.kind)
+                            }
+                            EvalBindingSource::Closure(index) => bytecode
+                                .closure_variables
+                                .get(usize::from(index))
+                                .is_some_and(|descriptor| descriptor.kind == binding.kind),
+                            EvalBindingSource::Argument(_) => false,
+                        };
+                        if !authenticated {
+                            return Err(HeapError::Invariant(
+                                "eval variable-object binding source is not authenticated",
+                            ));
+                        }
+                    }
+                    if binding.kind == ClosureVariableKind::WithObject {
+                        let authenticated = match binding.source {
+                            EvalBindingSource::Local(index) => bytecode
+                                .local_definitions
+                                .get(usize::from(index))
+                                .is_some_and(|definition| {
+                                    definition.kind == ClosureVariableKind::WithObject
+                                        && !definition.is_lexical
+                                        && !definition.is_const
+                                }),
+                            EvalBindingSource::Closure(index) => bytecode
+                                .closure_variables
+                                .get(usize::from(index))
+                                .is_some_and(|descriptor| {
+                                    descriptor.kind == ClosureVariableKind::WithObject
+                                        && !descriptor.is_lexical
+                                        && !descriptor.is_const
+                                }),
+                            EvalBindingSource::Argument(_) => false,
+                        };
+                        if !authenticated {
+                            return Err(HeapError::Invariant(
+                                "eval with-object binding source is not authenticated",
+                            ));
+                        }
+                    }
+                    let Some(count) = owned_name_atoms.get_mut(&binding.name) else {
+                        return Err(HeapError::Invariant(
+                            "eval binding name atom is not owned by bytecode metadata",
+                        ));
+                    };
+                    if *count == 0 {
+                        return Err(HeapError::Invariant(
+                            "eval binding name atom ownership multiplicity is too small",
+                        ));
+                    }
+                    *count -= 1;
                 }
-                let Some(count) = owned_name_atoms.get_mut(&binding.name) else {
-                    return Err(HeapError::Invariant(
-                        "eval binding name atom is not owned by bytecode metadata",
-                    ));
-                };
-                if *count == 0 {
-                    return Err(HeapError::Invariant(
-                        "eval binding name atom ownership multiplicity is too small",
-                    ));
-                }
-                *count -= 1;
             }
         }
         let (index, generation) = self.reserve(HeapNodeKind::FunctionBytecode)?;
@@ -10987,6 +11373,117 @@ mod tests {
     }
 
     #[test]
+    fn strict_script_global_eval_anchor_is_fail_closed_at_heap_boundary() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let prototype = leaf(&mut heap, shape);
+        let context = heap
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+                prototype,
+            ))
+            .unwrap();
+        heap.release_object(prototype).unwrap();
+
+        let code: Rc<[Instruction]> = Rc::from([]);
+        let make_bytecode = |scopes: Vec<EvalScope<Atom>>, eval_kind, variable_environment| {
+            let mut bytecode = bytecode(&code, context, Vec::new(), Vec::new());
+            bytecode.metadata.strict = true;
+            bytecode.metadata.eval_kind = eval_kind;
+            bytecode.eval_environments = Rc::from([EvalEnvironment {
+                scopes: scopes.into_boxed_slice(),
+                variable_environment,
+                caller_strict: true,
+                super_call_allowed: false,
+                super_allowed: false,
+            }]);
+            bytecode
+        };
+        let script_scopes = || {
+            vec![
+                EvalScope {
+                    kind: EvalScopeKind::ProgramBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+            ]
+        };
+
+        let published = heap
+            .allocate_function_bytecode(make_bytecode(
+                script_scopes(),
+                EvalKind::None,
+                EvalVariableEnvironment::Global,
+            ))
+            .unwrap();
+        heap.release_function_bytecode(published).unwrap();
+
+        assert_eq!(
+            heap.allocate_function_bytecode(make_bytecode(
+                script_scopes(),
+                EvalKind::None,
+                EvalVariableEnvironment::StrictLocal(1),
+            )),
+            Err(HeapError::Invariant(
+                "authored Script eval environment used a non-canonical strict-local target"
+            ))
+        );
+        let synthetic = heap
+            .allocate_function_bytecode(make_bytecode(
+                script_scopes(),
+                EvalKind::Direct,
+                EvalVariableEnvironment::StrictLocal(1),
+            ))
+            .unwrap();
+        heap.release_function_bytecode(synthetic).unwrap();
+
+        let function_scopes = vec![
+            EvalScope {
+                kind: EvalScopeKind::FunctionBody,
+                bindings: Box::new([]),
+            },
+            EvalScope {
+                kind: EvalScopeKind::FunctionRoot,
+                bindings: Box::new([]),
+            },
+            EvalScope {
+                kind: EvalScopeKind::ProgramBody,
+                bindings: Box::new([]),
+            },
+            EvalScope {
+                kind: EvalScopeKind::FunctionRoot,
+                bindings: Box::new([]),
+            },
+        ];
+        assert_eq!(
+            heap.allocate_function_bytecode(make_bytecode(
+                function_scopes,
+                EvalKind::None,
+                EvalVariableEnvironment::Global,
+            )),
+            Err(HeapError::Invariant(
+                "global eval variable environment escaped an authored Script root"
+            ))
+        );
+        assert_eq!(
+            heap.allocate_function_bytecode(make_bytecode(
+                script_scopes(),
+                EvalKind::Direct,
+                EvalVariableEnvironment::Global,
+            )),
+            Err(HeapError::Invariant(
+                "global eval variable environment escaped an authored Script root"
+            ))
+        );
+
+        heap.release_context(context).unwrap();
+        heap.release_shape(shape).unwrap();
+    }
+
+    #[test]
     fn with_object_metadata_is_fail_closed_at_the_heap_boundary() {
         let mut heap = Heap::new();
         let shape = empty_shape(&mut heap);
@@ -11056,17 +11553,27 @@ mod tests {
             kind: ClosureVariableKind::Normal,
         }]);
         argument_source.eval_environments = Rc::from([EvalEnvironment {
-            scopes: Box::new([EvalScope {
-                kind: EvalScopeKind::With,
-                bindings: Box::new([EvalBinding {
-                    name,
-                    source: EvalBindingSource::Argument(0),
-                    is_lexical: false,
-                    is_const: false,
-                    kind: ClosureVariableKind::WithObject,
-                    is_catch_parameter: false,
-                }]),
-            }]),
+            scopes: Box::new([
+                EvalScope {
+                    kind: EvalScopeKind::With,
+                    bindings: Box::new([EvalBinding {
+                        name,
+                        source: EvalBindingSource::Argument(0),
+                        is_lexical: false,
+                        is_const: false,
+                        kind: ClosureVariableKind::WithObject,
+                        is_catch_parameter: false,
+                    }]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::ProgramBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+            ]),
             variable_environment: EvalVariableEnvironment::Global,
             caller_strict: false,
             super_call_allowed: false,
@@ -11082,17 +11589,27 @@ mod tests {
         let other_name = Atom::from_raw(46);
         let with_scope = |source| {
             Rc::from([EvalEnvironment {
-                scopes: Box::new([EvalScope {
-                    kind: EvalScopeKind::With,
-                    bindings: Box::new([EvalBinding {
-                        name: other_name,
-                        source,
-                        is_lexical: false,
-                        is_const: false,
-                        kind: ClosureVariableKind::WithObject,
-                        is_catch_parameter: false,
-                    }]),
-                }]),
+                scopes: Box::new([
+                    EvalScope {
+                        kind: EvalScopeKind::With,
+                        bindings: Box::new([EvalBinding {
+                            name: other_name,
+                            source,
+                            is_lexical: false,
+                            is_const: false,
+                            kind: ClosureVariableKind::WithObject,
+                            is_catch_parameter: false,
+                        }]),
+                    },
+                    EvalScope {
+                        kind: EvalScopeKind::ProgramBody,
+                        bindings: Box::new([]),
+                    },
+                    EvalScope {
+                        kind: EvalScopeKind::FunctionRoot,
+                        bindings: Box::new([]),
+                    },
+                ]),
                 variable_environment: EvalVariableEnvironment::Global,
                 caller_strict: false,
                 super_call_allowed: false,
@@ -11275,20 +11792,26 @@ mod tests {
                 kind: ClosureVariableKind::Normal,
             }]);
             bytecode.eval_environments = Rc::from([EvalEnvironment {
-                scopes: vec![EvalScope {
-                    kind: EvalScopeKind::FunctionRoot,
-                    bindings: vec![EvalBinding {
-                        name,
-                        source: EvalBindingSource::Local(0),
-                        is_lexical: false,
-                        is_const: false,
-                        kind: ClosureVariableKind::Normal,
-                        is_catch_parameter: false,
-                    }]
-                    .into_boxed_slice(),
-                }]
+                scopes: vec![
+                    EvalScope {
+                        kind: EvalScopeKind::ProgramBody,
+                        bindings: Box::new([]),
+                    },
+                    EvalScope {
+                        kind: EvalScopeKind::FunctionRoot,
+                        bindings: vec![EvalBinding {
+                            name,
+                            source: EvalBindingSource::Local(0),
+                            is_lexical: false,
+                            is_const: false,
+                            kind: ClosureVariableKind::Normal,
+                            is_catch_parameter: false,
+                        }]
+                        .into_boxed_slice(),
+                    },
+                ]
                 .into_boxed_slice(),
-                variable_environment: EvalVariableEnvironment::Scope(0),
+                variable_environment: EvalVariableEnvironment::Global,
                 caller_strict: false,
                 super_call_allowed: false,
                 super_allowed: false,

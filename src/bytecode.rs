@@ -447,8 +447,8 @@ pub enum Instruction {
     /// compares the resolved callee with the executing realm's original
     /// `%eval%`; a replacement callee falls back to an ordinary call with an
     /// undefined receiver. `environment` selects the immutable linked lexical
-    /// environment published beside this function's bytecode; it is retained
-    /// even while String-source direct evaluation remains unsupported.
+    /// environment published beside this function's bytecode; String-source
+    /// execution retains it for authenticated nested direct-eval relays.
     Eval {
         argument_count: u16,
         environment: u16,

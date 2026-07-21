@@ -77,20 +77,56 @@ fn unlinked_closure_name<'a>(
     }
 }
 
+const fn eval_variable_object_sentinel(kind: ClosureVariableKind) -> Option<&'static str> {
+    match kind {
+        ClosureVariableKind::EvalVariableObject => Some("<var>"),
+        ClosureVariableKind::ArgEvalVariableObject => Some("<arg_var>"),
+        ClosureVariableKind::Normal
+        | ClosureVariableKind::FunctionName
+        | ClosureVariableKind::GlobalFunction
+        | ClosureVariableKind::WithObject => None,
+    }
+}
+
+fn eval_variable_object_local_kind(
+    function: &UnlinkedFunction,
+    index: u16,
+) -> Option<ClosureVariableKind> {
+    if function.metadata().eval_variable_object_local == Some(index) {
+        return Some(ClosureVariableKind::EvalVariableObject);
+    }
+    if function
+        .parameter_environment()
+        .and_then(|layout| layout.arg_eval_variable_object_local)
+        == Some(index)
+    {
+        return Some(ClosureVariableKind::ArgEvalVariableObject);
+    }
+    None
+}
+
 fn verify_eval_variable_source(
     function: &UnlinkedFunction,
     source: EvalVariableSource,
 ) -> Result<(), RuntimeError> {
     match source {
         EvalVariableSource::Local(index) => {
-            if function.metadata().eval_variable_object_local != Some(index)
+            let kind = eval_variable_object_local_kind(function, index);
+            if kind.is_none()
                 || function
                     .local_definitions()
                     .get(usize::from(index))
                     .is_none_or(|definition| {
-                        definition.kind != ClosureVariableKind::EvalVariableObject
+                        Some(definition.kind) != kind
                             || definition.is_lexical
                             || definition.is_const
+                            || eval_variable_object_sentinel(definition.kind).is_none_or(
+                                |sentinel| {
+                                    definition.name.as_ref().is_none_or(|name| {
+                                        name.utf16_units().ne(sentinel.encode_utf16())
+                                    })
+                                },
+                            )
                     })
             {
                 return Err(RuntimeError::Engine(Error::internal(
@@ -103,7 +139,7 @@ fn verify_eval_variable_source(
                 .closure_variables()
                 .get(usize::from(index))
                 .is_none_or(|descriptor| {
-                    descriptor.kind != ClosureVariableKind::EvalVariableObject
+                    !descriptor.kind.is_eval_variable_object()
                         || descriptor.is_lexical
                         || descriptor.is_const
                         || !matches!(
@@ -113,6 +149,17 @@ fn verify_eval_variable_source(
                                 | ClosureSource::EvalEnvironment(_)
                         )
                 })
+                || function
+                    .closure_variables()
+                    .get(usize::from(index))
+                    .is_some_and(|descriptor| {
+                        eval_variable_object_sentinel(descriptor.kind).is_none_or(|sentinel| {
+                            unlinked_closure_name(function, descriptor)
+                                .ok()
+                                .flatten()
+                                .is_none_or(|name| name.utf16_units().ne(sentinel.encode_utf16()))
+                        })
+                    })
             {
                 return Err(RuntimeError::Engine(Error::internal(
                     "eval variable opcode did not reference an authenticated closure",
@@ -224,53 +271,87 @@ fn verify_eval_scope_topology(
 
     let mut segment_start = 0;
     let mut segment_count = 0;
-    let mut first_function_root = None;
+    let mut first_function_anchor = None;
     while segment_start < environment.scopes.len() {
-        let function_root = environment.scopes[segment_start..]
+        let function_anchor = environment.scopes[segment_start..]
             .iter()
-            .position(|scope| scope.kind == crate::heap::EvalScopeKind::FunctionRoot)
+            .position(|scope| {
+                matches!(
+                    scope.kind,
+                    crate::heap::EvalScopeKind::FunctionRoot
+                        | crate::heap::EvalScopeKind::Parameter
+                )
+            })
             .map(|offset| segment_start + offset)
             .ok_or_else(|| {
                 RuntimeError::Engine(Error::internal(
-                    "eval scope segment contains no function root",
+                    "eval scope segment contains no function anchor",
                 ))
             })?;
-        first_function_root.get_or_insert(function_root);
+        first_function_anchor.get_or_insert(function_anchor);
 
-        let final_segment = function_root + 1 == environment.scopes.len();
+        let final_segment = function_anchor + 1 == environment.scopes.len();
         let synthetic_root_segment = synthetic_eval_tree && segment_count == function_depth;
-        let imported_segment = synthetic_eval_tree
-            && function_root
-                .checked_sub(1)
-                .is_some_and(|body_scope| body_scope >= imported_scope_start);
-        let expected_body = if final_segment || synthetic_root_segment {
-            crate::heap::EvalScopeKind::ProgramBody
-        } else {
-            crate::heap::EvalScopeKind::FunctionBody
-        };
-        if function_root == segment_start
-            || (!imported_segment && environment.scopes[function_root - 1].kind != expected_body)
-            || (imported_segment
-                && !matches!(
-                    environment.scopes[function_root - 1].kind,
+        let imported_segment = synthetic_eval_tree && segment_start >= imported_scope_start;
+        match environment.scopes[function_anchor].kind {
+            crate::heap::EvalScopeKind::FunctionRoot => {
+                let expected_body = if final_segment || synthetic_root_segment {
+                    crate::heap::EvalScopeKind::ProgramBody
+                } else {
                     crate::heap::EvalScopeKind::FunctionBody
-                        | crate::heap::EvalScopeKind::ProgramBody
-                ))
-        {
-            return Err(RuntimeError::Engine(Error::internal(format!(
-                "eval scope segment {segment_count} has the wrong body scope {:?}, expected {expected_body:?} at function depth {function_depth}",
-                function_root
-                    .checked_sub(1)
-                    .and_then(|index| environment.scopes.get(index))
-                    .map(|scope| scope.kind),
-            ))));
+                };
+                if function_anchor == segment_start
+                    || (!imported_segment
+                        && environment.scopes[function_anchor - 1].kind != expected_body)
+                    || (imported_segment
+                        && !matches!(
+                            environment.scopes[function_anchor - 1].kind,
+                            crate::heap::EvalScopeKind::FunctionBody
+                                | crate::heap::EvalScopeKind::ProgramBody
+                        ))
+                {
+                    return Err(RuntimeError::Engine(Error::internal(format!(
+                        "eval scope segment {segment_count} has the wrong body scope {:?}, expected {expected_body:?} at function depth {function_depth}",
+                        function_anchor
+                            .checked_sub(1)
+                            .and_then(|index| environment.scopes.get(index))
+                            .map(|scope| scope.kind),
+                    ))));
+                }
+            }
+            crate::heap::EvalScopeKind::Parameter => {
+                if synthetic_root_segment
+                    || environment.scopes[segment_start..function_anchor]
+                        .iter()
+                        .any(|scope| {
+                            matches!(
+                                scope.kind,
+                                crate::heap::EvalScopeKind::FunctionBody
+                                    | crate::heap::EvalScopeKind::ProgramBody
+                            )
+                        })
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "parameter eval scope segment exposed a body scope",
+                    )));
+                }
+            }
+            _ => unreachable!("function anchor kind was selected above"),
         }
-        if environment.scopes[segment_start..function_root - 1]
+        let body_exclusive_end = if environment.scopes[function_anchor].kind
+            == crate::heap::EvalScopeKind::FunctionRoot
+        {
+            function_anchor.saturating_sub(1)
+        } else {
+            function_anchor
+        };
+        if environment.scopes[segment_start..body_exclusive_end]
             .iter()
             .any(|scope| {
                 matches!(
                     scope.kind,
                     crate::heap::EvalScopeKind::FunctionRoot
+                        | crate::heap::EvalScopeKind::Parameter
                         | crate::heap::EvalScopeKind::FunctionBody
                         | crate::heap::EvalScopeKind::ProgramBody
                 )
@@ -281,7 +362,7 @@ fn verify_eval_scope_topology(
             )));
         }
 
-        for binding in environment.scopes[segment_start..=function_root]
+        for binding in environment.scopes[segment_start..=function_anchor]
             .iter()
             .flat_map(|scope| scope.bindings.iter())
         {
@@ -302,7 +383,7 @@ fn verify_eval_scope_topology(
         }
 
         segment_count += 1;
-        segment_start = function_root + 1;
+        segment_start = function_anchor + 1;
     }
     let expected_segments = function_depth
         .checked_add(1)
@@ -317,9 +398,9 @@ fn verify_eval_scope_topology(
             "eval environment segment count disagrees with its function-tree depth",
         )));
     }
-    first_function_root.ok_or_else(|| {
+    first_function_anchor.ok_or_else(|| {
         RuntimeError::Engine(Error::internal(
-            "eval environment contains no function root scope",
+            "eval environment contains no function anchor scope",
         ))
     })
 }
@@ -398,7 +479,13 @@ fn verify_eval_imported_suffix(
         expected_profile
             .scope_kinds
             .iter()
-            .filter(|kind| **kind == crate::heap::EvalScopeKind::FunctionRoot)
+            .filter(|kind| {
+                matches!(
+                    **kind,
+                    crate::heap::EvalScopeKind::FunctionRoot
+                        | crate::heap::EvalScopeKind::Parameter
+                )
+            })
             .count(),
         suffix_start,
     ))
@@ -447,65 +534,33 @@ fn verify_eval_environments(
             } else {
                 (0, environment.scopes.len())
             };
-        let first_function_root = verify_eval_scope_topology(
+        let first_function_anchor = verify_eval_scope_topology(
             environment,
             function_depth,
             synthetic_eval_tree,
             imported_segment_count,
             imported_scope_start,
         )?;
-        if synthetic_eval_root {
-            let expected_profile = expected_profile.ok_or_else(|| {
-                RuntimeError::Engine(Error::internal("synthetic eval root has no caller profile"))
-            })?;
-            let variable_target_matches = if function.metadata().strict {
-                environment.variable_environment
-                    == crate::heap::EvalVariableEnvironment::Scope(
-                        u16::try_from(first_function_root).map_err(|_| {
-                            RuntimeError::Engine(Error::internal(
-                                "eval function root index exceeds bytecode range",
-                            ))
-                        })?,
-                    )
-            } else {
-                match (
-                    expected_profile.variable_target,
-                    environment.variable_environment,
-                ) {
-                    (
-                        EvalCallerVariableTarget::Global,
-                        crate::heap::EvalVariableEnvironment::Global,
-                    ) => true,
-                    (
-                        EvalCallerVariableTarget::ExternalBinding(expected),
-                        crate::heap::EvalVariableEnvironment::Closure(actual),
-                    ) => {
-                        closure_origins.get(usize::from(actual)).copied().flatten()
-                            == Some(expected)
-                    }
-                    (EvalCallerVariableTarget::StrictLocal, _) => false,
-                    _ => false,
-                }
-            };
-            if !variable_target_matches {
-                return Err(RuntimeError::Engine(Error::internal(
-                    "nested eval variable target disagrees with its caller profile",
-                )));
-            }
-        }
+        let first_function_anchor = u16::try_from(first_function_anchor).map_err(|_| {
+            RuntimeError::Engine(Error::internal(
+                "eval function anchor index exceeds bytecode range",
+            ))
+        })?;
         match environment.variable_environment {
             crate::heap::EvalVariableEnvironment::Global => {
-                if !is_root {
+                // Authored Script code always resolves its caller variable
+                // environment through the global Program segment, even when
+                // the Script itself is strict. A synthetic strict eval root
+                // must instead own a StrictLocal destination.
+                if !is_root
+                    || (environment.caller_strict
+                        && function.metadata().eval_kind != EvalKind::None)
+                {
                     return Err(RuntimeError::Engine(Error::internal(
-                        "non-root eval environment used the global variable environment",
+                        "global eval variable environment escaped an authored Script root",
                     )));
                 }
-                if synthetic_eval_root && function.metadata().strict {
-                    return Err(RuntimeError::Engine(Error::internal(
-                        "strict eval root used the global variable environment",
-                    )));
-                }
-                if environment.scopes[..first_function_root]
+                if environment.scopes[..usize::from(first_function_anchor)]
                     .iter()
                     .find(|scope| {
                         matches!(
@@ -521,53 +576,151 @@ fn verify_eval_environments(
                     )));
                 }
             }
-            crate::heap::EvalVariableEnvironment::Scope(index) => {
-                if is_root && (!synthetic_eval_root || !function.metadata().strict) {
+            crate::heap::EvalVariableEnvironment::StrictLocal(index) => {
+                if !environment.caller_strict || index != first_function_anchor {
                     return Err(RuntimeError::Engine(Error::internal(
-                        "root eval environment used an invalid local variable scope",
+                        "strict eval variable environment has the wrong function anchor",
                     )));
                 }
-                if usize::from(index) != first_function_root {
+                if is_root && function.metadata().eval_kind == EvalKind::None {
                     return Err(RuntimeError::Engine(Error::internal(
-                        "eval variable environment did not reference its current function root scope",
+                        "authored Script eval environment used a non-canonical strict-local target",
+                    )));
+                }
+                let anchor = &environment.scopes[usize::from(index)];
+                if !matches!(
+                    anchor.kind,
+                    crate::heap::EvalScopeKind::FunctionRoot
+                        | crate::heap::EvalScopeKind::Parameter
+                ) {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "strict eval variable environment selected a non-function scope",
                     )));
                 }
             }
-            crate::heap::EvalVariableEnvironment::Closure(index) => {
-                if !synthetic_eval_root
-                    || function.metadata().strict
-                    || function.metadata().eval_kind != EvalKind::Direct
-                {
+            crate::heap::EvalVariableEnvironment::VariableObject { scope, source } => {
+                if environment.caller_strict {
                     return Err(RuntimeError::Engine(Error::internal(
-                        "non-sloppy-direct eval environment used a closure variable environment",
+                        "strict eval environment selected a variable object",
                     )));
                 }
-                let descriptor = function
-                    .closure_variables()
-                    .get(usize::from(index))
-                    .ok_or_else(|| {
-                        RuntimeError::Engine(Error::internal(
-                            "eval closure variable environment is out of bounds",
-                        ))
-                    })?;
-                if descriptor.source != ClosureSource::EvalEnvironment(index)
-                    || descriptor.kind != ClosureVariableKind::EvalVariableObject
-                    || descriptor.is_lexical
-                    || descriptor.is_const
-                    || !environment.scopes.iter().any(|scope| {
-                        scope.bindings.iter().any(|binding| {
-                            binding.source == crate::heap::EvalBindingSource::Closure(index)
-                                && binding.kind == ClosureVariableKind::EvalVariableObject
+                let target_matches_function_segment = if synthetic_eval_root {
+                    function.metadata().eval_kind == EvalKind::Direct
+                        && usize::from(scope) >= imported_scope_start
+                        && matches!(source, crate::heap::EvalBindingSource::Closure(_))
+                } else {
+                    scope == first_function_anchor
+                        && matches!(source, crate::heap::EvalBindingSource::Local(_))
+                };
+                if !target_matches_function_segment {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "eval variable object selected the wrong current function segment",
+                    )));
+                }
+                let target_scope = environment.scopes.get(usize::from(scope)).ok_or_else(|| {
+                    RuntimeError::Engine(Error::internal(
+                        "eval variable-object scope is out of bounds",
+                    ))
+                })?;
+                let expected_kind = match target_scope.kind {
+                    crate::heap::EvalScopeKind::FunctionRoot => {
+                        ClosureVariableKind::EvalVariableObject
+                    }
+                    crate::heap::EvalScopeKind::Parameter => {
+                        ClosureVariableKind::ArgEvalVariableObject
+                    }
+                    _ => {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "eval variable object selected a non-function scope",
+                        )));
+                    }
+                };
+                if matches!(source, crate::heap::EvalBindingSource::Argument(_))
+                    || target_scope
+                        .bindings
+                        .iter()
+                        .filter(|binding| {
+                            binding.source == source
+                                && binding.kind == expected_kind
                                 && !binding.is_lexical
                                 && !binding.is_const
                                 && !binding.is_catch_parameter
                         })
-                    })
+                        .count()
+                        != 1
                 {
                     return Err(RuntimeError::Engine(Error::internal(
-                        "eval closure variable environment is not authenticated",
+                        "eval variable-object target is not exact",
                     )));
                 }
+                match source {
+                    crate::heap::EvalBindingSource::Local(index)
+                        if eval_variable_object_local_kind(function, index)
+                            == Some(expected_kind) => {}
+                    crate::heap::EvalBindingSource::Closure(index) => {
+                        let descriptor = function
+                            .closure_variables()
+                            .get(usize::from(index))
+                            .ok_or_else(|| {
+                                RuntimeError::Engine(Error::internal(
+                                    "eval variable-object closure is out of bounds",
+                                ))
+                            })?;
+                        if descriptor.kind != expected_kind
+                            || descriptor.is_lexical
+                            || descriptor.is_const
+                        {
+                            return Err(RuntimeError::Engine(Error::internal(
+                                "eval variable-object closure role is not authenticated",
+                            )));
+                        }
+                    }
+                    crate::heap::EvalBindingSource::Local(_)
+                    | crate::heap::EvalBindingSource::Argument(_) => {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "eval variable-object source is not authenticated",
+                        )));
+                    }
+                }
+            }
+        }
+
+        if synthetic_eval_root {
+            let expected_profile = expected_profile.ok_or_else(|| {
+                RuntimeError::Engine(Error::internal("synthetic eval root has no caller profile"))
+            })?;
+            let variable_target_matches = if function.metadata().strict {
+                matches!(
+                    environment.variable_environment,
+                    crate::heap::EvalVariableEnvironment::StrictLocal(actual)
+                        if actual == first_function_anchor
+                )
+            } else {
+                match (
+                    expected_profile.variable_target,
+                    environment.variable_environment,
+                ) {
+                    (
+                        EvalCallerVariableTarget::Global,
+                        crate::heap::EvalVariableEnvironment::Global,
+                    ) => true,
+                    (
+                        EvalCallerVariableTarget::ExternalBinding(expected),
+                        crate::heap::EvalVariableEnvironment::VariableObject {
+                            source: crate::heap::EvalBindingSource::Closure(actual),
+                            ..
+                        },
+                    ) => {
+                        closure_origins.get(usize::from(actual)).copied().flatten()
+                            == Some(expected)
+                    }
+                    _ => false,
+                }
+            };
+            if !variable_target_matches {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "nested eval variable target disagrees with its caller profile",
+                )));
             }
         }
 
@@ -609,6 +762,28 @@ fn verify_eval_environments(
                     return Err(RuntimeError::Engine(Error::internal(
                         "eval with-object binding metadata disagrees with its scope",
                     )));
+                }
+                if binding.kind.is_eval_variable_object() {
+                    let role_allowed = match scope.kind {
+                        crate::heap::EvalScopeKind::FunctionRoot => true,
+                        crate::heap::EvalScopeKind::Parameter => {
+                            binding.kind == ClosureVariableKind::ArgEvalVariableObject
+                        }
+                        _ => false,
+                    };
+                    if !role_allowed
+                        || binding.is_lexical
+                        || binding.is_const
+                        || binding.is_catch_parameter
+                        || matches!(binding.source, crate::heap::EvalBindingSource::Argument(_))
+                        || eval_variable_object_sentinel(binding.kind).is_none_or(|sentinel| {
+                            binding.name.utf16_units().ne(sentinel.encode_utf16())
+                        })
+                    {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "eval variable-object binding metadata disagrees with its scope",
+                        )));
+                    }
                 }
                 let expected = match binding.source {
                     crate::heap::EvalBindingSource::Local(index) => {
@@ -733,12 +908,31 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree(
             scope_kinds[usize::from(binding.scope)] = crate::heap::EvalScopeKind::Catch;
         }
     }
+    for (scope, scope_kind) in scope_kinds.iter_mut().enumerate() {
+        let has_parameter_object = expected_bindings.iter().any(|binding| {
+            usize::from(binding.scope) == scope
+                && binding.kind == ClosureVariableKind::ArgEvalVariableObject
+        });
+        let has_body_object = expected_bindings.iter().any(|binding| {
+            usize::from(binding.scope) == scope
+                && binding.kind == ClosureVariableKind::EvalVariableObject
+        });
+        if has_parameter_object && !has_body_object {
+            *scope_kind = crate::heap::EvalScopeKind::Parameter;
+        }
+    }
     let variable_target = if caller_strict {
         EvalCallerVariableTarget::StrictLocal
     } else {
         expected_bindings
             .iter()
-            .position(|binding| binding.kind == ClosureVariableKind::EvalVariableObject)
+            .position(|binding| {
+                matches!(
+                    binding.kind,
+                    ClosureVariableKind::EvalVariableObject
+                        | ClosureVariableKind::ArgEvalVariableObject
+                )
+            })
             .and_then(|index| u16::try_from(index).ok())
             .map(EvalCallerVariableTarget::ExternalBinding)
             .unwrap_or(EvalCallerVariableTarget::Global)
@@ -827,12 +1021,25 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree_with_profile(
                 "eval root catch binding has invalid binding metadata",
             )));
         }
-        if binding.kind == ClosureVariableKind::EvalVariableObject
-            && (binding.is_lexical || binding.is_const || binding.is_catch_parameter)
-        {
-            return Err(RuntimeError::Engine(Error::internal(
-                "eval root variable-object binding has invalid binding metadata",
-            )));
+        if binding.kind.is_eval_variable_object() {
+            let role_allowed = match scope_kind {
+                crate::heap::EvalScopeKind::FunctionRoot => true,
+                crate::heap::EvalScopeKind::Parameter => {
+                    binding.kind == ClosureVariableKind::ArgEvalVariableObject
+                }
+                _ => false,
+            };
+            if !role_allowed
+                || binding.is_lexical
+                || binding.is_const
+                || binding.is_catch_parameter
+                || eval_variable_object_sentinel(binding.kind)
+                    .is_none_or(|sentinel| binding.name.utf16_units().ne(sentinel.encode_utf16()))
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "eval root variable-object binding has invalid binding metadata",
+                )));
+            }
         }
         if binding.kind == ClosureVariableKind::WithObject
             && (binding.is_lexical
@@ -869,7 +1076,7 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree_with_profile(
     }
     let has_variable_object = expected_bindings
         .iter()
-        .any(|binding| binding.kind == ClosureVariableKind::EvalVariableObject);
+        .any(|binding| binding.kind.is_eval_variable_object());
     match (caller_strict, expected_profile.variable_target) {
         (false, EvalCallerVariableTarget::Global) if !has_variable_object => {}
         (true, EvalCallerVariableTarget::StrictLocal) if kind == EvalKind::Direct => {}
@@ -877,7 +1084,19 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree_with_profile(
             if expected_bindings
                 .get(usize::from(index))
                 .is_some_and(|binding| {
-                    binding.kind == ClosureVariableKind::EvalVariableObject
+                    let target_role_matches = expected_profile
+                        .scope_kinds
+                        .get(usize::from(binding.scope))
+                        .is_some_and(|scope_kind| match scope_kind {
+                            crate::heap::EvalScopeKind::FunctionRoot => {
+                                binding.kind == ClosureVariableKind::EvalVariableObject
+                            }
+                            crate::heap::EvalScopeKind::Parameter => {
+                                binding.kind == ClosureVariableKind::ArgEvalVariableObject
+                            }
+                            _ => false,
+                        });
+                    target_role_matches
                         && !binding.is_lexical
                         && !binding.is_const
                         && !binding.is_catch_parameter
@@ -935,7 +1154,6 @@ fn verify_unlinked_tree_with_root(
         root_origins,
         root_function_name_origins,
         0_usize,
-        false,
     )];
     while let Some((
         function,
@@ -943,23 +1161,12 @@ fn verify_unlinked_tree_with_root(
         closure_origins,
         function_name_origins,
         function_id,
-        inherited_parameter_environment,
     )) = pending.pop()
     {
         let is_root = function_depth == 0;
-        let under_parameter_environment =
-            inherited_parameter_environment || function.parameter_environment().is_some();
-        if under_parameter_environment
-            && (function.metadata().eval_variable_object_local.is_some()
-                || !function.eval_environments().is_empty()
-                || function.code().iter().any(|instruction| {
-                    matches!(instruction, crate::bytecode::Instruction::Eval { .. })
-                }))
-        {
-            return Err(RuntimeError::Engine(Error::internal(
-                "direct eval in or below a parameter environment is not supported",
-            )));
-        }
+        let arg_eval_variable_object_local = function
+            .parameter_environment()
+            .and_then(|layout| layout.arg_eval_variable_object_local);
         let expected_eval_kind = if is_root {
             match root_publication {
                 RootPublication::Script => EvalKind::None,
@@ -1095,19 +1302,13 @@ fn verify_unlinked_tree_with_root(
             {
                 *allowed = true;
             }
+            if let Some(local) = arg_eval_variable_object_local
+                && let Some(allowed) = allowed.get_mut(usize::from(local))
+            {
+                *allowed = true;
+            }
 
             let mut entry_pc = 0_usize;
-            if matches!(
-                function.code().first(),
-                Some(crate::bytecode::Instruction::Arguments(_))
-            ) {
-                if let Some(crate::bytecode::Instruction::PutLocal(local)) = function.code().get(1)
-                    && let Some(allowed) = allowed.get_mut(usize::from(*local))
-                {
-                    *allowed = true;
-                }
-                entry_pc = 2;
-            }
             while let Some([source, crate::bytecode::Instruction::PutLocal(local)]) =
                 function.code().get(entry_pc..entry_pc + 2)
             {
@@ -1124,6 +1325,30 @@ fn verify_unlinked_tree_with_root(
                 }
                 entry_pc += 2;
             }
+            if let Some(layout) = function.parameter_environment()
+                && let Some(synthetic) = layout.synthetic_arguments_local
+                && matches!(
+                    function.code().get(entry_pc..entry_pc + 4),
+                    Some([
+                        crate::bytecode::Instruction::Arguments(_),
+                        crate::bytecode::Instruction::Dup,
+                        crate::bytecode::Instruction::InitializeLocal(target),
+                        crate::bytecode::Instruction::PutLocal(_),
+                    ]) if *target == synthetic
+                )
+            {
+                if let Some(allowed) = allowed.get_mut(usize::from(synthetic)) {
+                    *allowed = true;
+                }
+            } else if matches!(
+                function.code().get(entry_pc),
+                Some(crate::bytecode::Instruction::Arguments(_))
+            ) && let Some(crate::bytecode::Instruction::PutLocal(local)) =
+                function.code().get(entry_pc + 1)
+                && let Some(allowed) = allowed.get_mut(usize::from(*local))
+            {
+                *allowed = true;
+            }
             allowed
         });
         if (function.metadata().rest_parameter.is_some()
@@ -1134,15 +1359,62 @@ fn verify_unlinked_tree_with_root(
                 matches!(instruction, crate::bytecode::Instruction::Arguments(_))
             })
         {
-            let Some(crate::bytecode::Instruction::PutLocal(local)) = function.code().get(pc + 1)
-            else {
-                return Err(RuntimeError::Engine(Error::internal(
-                    "formal parameter arguments object has no entry binding",
-                )));
+            let local = if let Some(synthetic) = function
+                .parameter_environment()
+                .and_then(|layout| layout.synthetic_arguments_local)
+            {
+                let Some(
+                    [
+                        crate::bytecode::Instruction::Arguments(_),
+                        crate::bytecode::Instruction::Dup,
+                        crate::bytecode::Instruction::InitializeLocal(target),
+                        crate::bytecode::Instruction::PutLocal(body),
+                    ],
+                ) = function.code().get(pc..pc + 4)
+                else {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "parameter arguments object has no exact dual binding",
+                    )));
+                };
+                if *target != synthetic {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "parameter arguments object initialized the wrong synthetic cell",
+                    )));
+                }
+                let synthetic_definition = function
+                    .local_definitions()
+                    .get(usize::from(synthetic))
+                    .ok_or_else(|| {
+                        RuntimeError::Engine(Error::internal(
+                            "synthetic parameter arguments binding is out of bounds",
+                        ))
+                    })?;
+                if synthetic_definition.kind != ClosureVariableKind::Normal
+                    || !synthetic_definition.is_lexical
+                    || synthetic_definition.is_const
+                    || synthetic_definition
+                        .name
+                        .as_ref()
+                        .is_none_or(|name| name.utf16_units().ne("arguments".encode_utf16()))
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "synthetic parameter arguments binding is not authenticated",
+                    )));
+                }
+                *body
+            } else {
+                let Some(crate::bytecode::Instruction::PutLocal(local)) =
+                    function.code().get(pc + 1)
+                else {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "formal parameter arguments object has no entry binding",
+                    )));
+                };
+                *local
             };
             let definition = function
                 .local_definitions()
-                .get(usize::from(*local))
+                .get(usize::from(local))
                 .ok_or_else(|| {
                     RuntimeError::Engine(Error::internal(
                         "formal parameter arguments binding is out of bounds",
@@ -1179,12 +1451,27 @@ fn verify_unlinked_tree_with_root(
                 "eval variable-object local is outside bytecode local slots",
             )));
         }
+        if arg_eval_variable_object_local
+            .is_some_and(|index| index >= function.metadata().local_count)
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "parameter eval variable-object local is outside bytecode local slots",
+            )));
+        }
         if function.metadata().eval_variable_object_local.is_some()
             && function.metadata().eval_variable_object_local
                 == function.metadata().function_name_local
         {
             return Err(RuntimeError::Engine(Error::internal(
                 "eval variable-object and function-name locals overlap",
+            )));
+        }
+        if arg_eval_variable_object_local.is_some_and(|index| {
+            Some(index) == function.metadata().eval_variable_object_local
+                || Some(index) == function.metadata().function_name_local
+        }) {
+            return Err(RuntimeError::Engine(Error::internal(
+                "parameter eval variable-object local overlaps another hidden local",
             )));
         }
         // GetSuper is also used by derived-constructor `super()`, while the
@@ -1208,6 +1495,16 @@ fn verify_unlinked_tree_with_root(
         {
             return Err(RuntimeError::Engine(Error::internal(
                 "eval variable-object local escaped a sloppy ordinary function",
+            )));
+        }
+        if arg_eval_variable_object_local.is_some()
+            && (function.metadata().strict
+                || function.metadata().eval_kind != EvalKind::None
+                || function.metadata().function_kind != FunctionKind::Normal
+                || function.metadata().eval_variable_object_local.is_none())
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "parameter eval variable-object local escaped a sloppy eval-enabled function",
             )));
         }
         if is_root
@@ -1322,10 +1619,7 @@ fn verify_unlinked_tree_with_root(
             }
         }
         if function.parameter_environment().is_some() {
-            let mut entry_pc = usize::from(matches!(
-                function.code().first(),
-                Some(crate::bytecode::Instruction::Arguments(_))
-            )) * 2;
+            let mut entry_pc = 0_usize;
             while let Some([source, crate::bytecode::Instruction::PutLocal(local)]) =
                 function.code().get(entry_pc..entry_pc + 2)
             {
@@ -1363,6 +1657,8 @@ fn verify_unlinked_tree_with_root(
                 function.metadata().function_name_local == u16::try_from(index).ok();
             let is_eval_variable_object =
                 function.metadata().eval_variable_object_local == u16::try_from(index).ok();
+            let is_arg_eval_variable_object =
+                arg_eval_variable_object_local == u16::try_from(index).ok();
             if is_function_name {
                 if definition.kind != ClosureVariableKind::FunctionName
                     || definition.is_lexical
@@ -1384,6 +1680,19 @@ fn verify_unlinked_tree_with_root(
                 {
                     return Err(RuntimeError::Engine(Error::internal(
                         "eval variable-object definition disagrees with bytecode metadata",
+                    )));
+                }
+            } else if is_arg_eval_variable_object {
+                if definition.kind != ClosureVariableKind::ArgEvalVariableObject
+                    || definition.is_lexical
+                    || definition.is_const
+                    || definition
+                        .name
+                        .as_ref()
+                        .is_none_or(|name| name.utf16_units().ne("<arg_var>".encode_utf16()))
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "parameter eval variable-object definition disagrees with its layout",
                     )));
                 }
             } else if definition.kind == ClosureVariableKind::WithObject {
@@ -1409,38 +1718,65 @@ fn verify_unlinked_tree_with_root(
                 )));
             }
         }
-        match function.metadata().eval_variable_object_local {
-            Some(index)
-                if matches!(
-                    function.code(),
-                    [
-                        crate::bytecode::Instruction::VariableEnvironment,
-                        crate::bytecode::Instruction::PutLocal(target),
-                        ..
-                    ] if *target == index
-                ) && !function.code()[2..].iter().any(|instruction| {
+        if function.parameter_environment().is_none() {
+            let mut variable_environment_pc = 0_usize;
+            while matches!(
+                function
+                    .code()
+                    .get(variable_environment_pc..variable_environment_pc + 2),
+                Some([
+                    crate::bytecode::Instruction::PushHomeObject
+                        | crate::bytecode::Instruction::PushNewTarget
+                        | crate::bytecode::Instruction::PushThis,
+                    crate::bytecode::Instruction::PutLocal(_),
+                ])
+            ) {
+                variable_environment_pc += 2;
+            }
+            if matches!(
+                function.code().get(variable_environment_pc),
+                Some(crate::bytecode::Instruction::Arguments(_))
+            ) && matches!(
+                function.code().get(variable_environment_pc + 1),
+                Some(crate::bytecode::Instruction::PutLocal(_))
+            ) {
+                variable_environment_pc += 2;
+            }
+            match function.metadata().eval_variable_object_local {
+                Some(index)
+                    if matches!(
+                        function
+                            .code()
+                            .get(variable_environment_pc..variable_environment_pc + 2),
+                        Some([
+                            crate::bytecode::Instruction::VariableEnvironment,
+                            crate::bytecode::Instruction::PutLocal(target),
+                        ]) if *target == index
+                    ) && function.code().iter().enumerate().all(|(pc, instruction)| {
+                        pc == variable_environment_pc
+                            || !matches!(
+                                instruction,
+                                crate::bytecode::Instruction::VariableEnvironment
+                            )
+                    }) => {}
+                Some(_) => {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "eval variable-object local has no exact entry prologue",
+                    )));
+                }
+                None if function.code().iter().any(|instruction| {
                     matches!(
                         instruction,
                         crate::bytecode::Instruction::VariableEnvironment
                     )
-                }) => {}
-            Some(_) => {
-                return Err(RuntimeError::Engine(Error::internal(
-                    "eval variable-object local has no exact entry prologue",
-                )));
+                }) =>
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "variable-environment opcode has no authenticated local",
+                    )));
+                }
+                None => {}
             }
-            None if function.code().iter().any(|instruction| {
-                matches!(
-                    instruction,
-                    crate::bytecode::Instruction::VariableEnvironment
-                )
-            }) =>
-            {
-                return Err(RuntimeError::Engine(Error::internal(
-                    "variable-environment opcode has no authenticated local",
-                )));
-            }
-            None => {}
         }
         if function.closure_variables().len() != usize::from(function.metadata().closure_count) {
             return Err(RuntimeError::Engine(Error::internal(
@@ -1502,9 +1838,9 @@ fn verify_unlinked_tree_with_root(
                         && !caller_strict
                         && (kind == EvalKind::Indirect
                             || (kind == EvalKind::Direct
-                                && !expected_bindings.iter().any(|binding| {
-                                    binding.kind == ClosureVariableKind::EvalVariableObject
-                                })))
+                                && !expected_bindings
+                                    .iter()
+                                    .any(|binding| binding.kind.is_eval_variable_object())))
                 }
             };
         for (descriptor_index, descriptor) in function.closure_variables().iter().enumerate() {
@@ -1542,7 +1878,7 @@ fn verify_unlinked_tree_with_root(
                     "global function binding kind escaped a declaration relay",
                 )));
             }
-            if descriptor.kind == ClosureVariableKind::EvalVariableObject
+            if descriptor.kind.is_eval_variable_object()
                 && (descriptor.is_lexical
                     || descriptor.is_const
                     || !matches!(
@@ -1574,6 +1910,7 @@ fn verify_unlinked_tree_with_root(
                 descriptor.kind,
                 ClosureVariableKind::FunctionName
                     | ClosureVariableKind::EvalVariableObject
+                    | ClosureVariableKind::ArgEvalVariableObject
                     | ClosureVariableKind::WithObject
             ) || matches!(
                 descriptor.source,
@@ -1583,6 +1920,15 @@ fn verify_unlinked_tree_with_root(
                     | ClosureSource::EvalEnvironment(_)
             );
             let name = unlinked_closure_name(function, descriptor)?;
+            if descriptor.kind.is_eval_variable_object()
+                && eval_variable_object_sentinel(descriptor.kind).is_none_or(|sentinel| {
+                    name.is_none_or(|name| name.utf16_units().ne(sentinel.encode_utf16()))
+                })
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "eval variable-object descriptor lost its role sentinel",
+                )));
+            }
             if descriptor.kind == ClosureVariableKind::WithObject
                 && name.is_none_or(|name| name.utf16_units().ne("<with>".encode_utf16()))
             {
@@ -1763,8 +2109,43 @@ fn verify_unlinked_tree_with_root(
             }
         }
         let mut global_function_initializer_pcs = HashMap::new();
-        let global_function_prologue_offset = usize::from(matches!(
-            function.code().first(),
+        let mut global_function_prologue_offset = 0_usize;
+        let mut pseudo_rank = 0_u8;
+        let mut pseudo_targets = Vec::with_capacity(3);
+        while let Some([source, crate::bytecode::Instruction::PutLocal(local)]) = function
+            .code()
+            .get(global_function_prologue_offset..global_function_prologue_offset + 2)
+        {
+            let (rank, expected_name) = match source {
+                crate::bytecode::Instruction::PushHomeObject => (1, "<home_object>"),
+                crate::bytecode::Instruction::PushNewTarget => (2, "<new.target>"),
+                crate::bytecode::Instruction::PushThis => (3, "<this>"),
+                _ => break,
+            };
+            let Some(definition) = function.local_definitions().get(usize::from(*local)) else {
+                break;
+            };
+            let is_pseudo_binding = definition.kind == ClosureVariableKind::Normal
+                && !definition.is_lexical
+                && !definition.is_const
+                && definition
+                    .name
+                    .as_ref()
+                    .is_some_and(|name| name.utf16_units().eq(expected_name.encode_utf16()));
+            if !is_pseudo_binding {
+                break;
+            }
+            if rank <= pseudo_rank || pseudo_targets.contains(local) {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "global function pseudo-binding prologue is malformed",
+                )));
+            }
+            pseudo_rank = rank;
+            pseudo_targets.push(*local);
+            global_function_prologue_offset += 2;
+        }
+        global_function_prologue_offset += usize::from(matches!(
+            function.code().get(global_function_prologue_offset),
             Some(crate::bytecode::Instruction::ThrowRedeclaration(_))
         ));
         for (ordinal, name) in global_function_declarations.iter().enumerate() {
@@ -2097,14 +2478,17 @@ fn verify_unlinked_tree_with_root(
                 crate::bytecode::Instruction::GetLocal(index)
                 | crate::bytecode::Instruction::PutLocal(index)
                 | crate::bytecode::Instruction::SetLocal(index)
-                    if function.metadata().eval_variable_object_local == Some(*index)
-                        && !matches!(
-                            (pc, instruction),
-                            (1, crate::bytecode::Instruction::PutLocal(_))
-                        ) =>
+                    if eval_variable_object_local_kind(function, *index).is_some()
+                        && !(matches!(instruction, crate::bytecode::Instruction::PutLocal(_))
+                            && pc.checked_sub(1).is_some_and(|previous| {
+                                matches!(
+                                    function.code().get(previous),
+                                    Some(crate::bytecode::Instruction::VariableEnvironment)
+                                )
+                            })) =>
                 {
                     return Err(RuntimeError::Engine(Error::internal(
-                        "ordinary local opcode referenced the private eval variable object",
+                        "ordinary local opcode referenced a private eval variable object",
                     )));
                 }
                 crate::bytecode::Instruction::GetLocal(index)
@@ -2205,6 +2589,7 @@ fn verify_unlinked_tree_with_root(
                             matches!(
                                 descriptor.kind,
                                 ClosureVariableKind::EvalVariableObject
+                                    | ClosureVariableKind::ArgEvalVariableObject
                                     | ClosureVariableKind::WithObject
                             )
                         }) =>
@@ -2384,8 +2769,15 @@ fn verify_unlinked_tree_with_root(
                             }
                             ClosureSource::ParentLocal(index)
                                 if instantiated_in_body
-                                    && index
-                                        < function.metadata().parameter_environment_local_count =>
+                                    && (index
+                                        < function
+                                            .metadata()
+                                            .parameter_environment_local_count
+                                        || function.parameter_environment().is_some_and(
+                                            |layout| {
+                                                layout.synthetic_arguments_local == Some(index)
+                                            },
+                                        )) =>
                             {
                                 return Err(RuntimeError::Engine(Error::internal(
                                     "function body closure captured a parameter-environment cell",
@@ -2424,6 +2816,9 @@ fn verify_unlinked_tree_with_root(
                                         >= function
                                             .metadata()
                                             .parameter_environment_local_count
+                                    && function.parameter_environment().is_none_or(|layout| {
+                                        layout.synthetic_arguments_local != Some(index)
+                                    })
                                     && function
                                         .local_definitions()
                                         .get(usize::from(index))
@@ -2485,6 +2880,7 @@ fn verify_unlinked_tree_with_root(
                                     definition.kind,
                                     ClosureVariableKind::FunctionName
                                         | ClosureVariableKind::EvalVariableObject
+                                        | ClosureVariableKind::ArgEvalVariableObject
                                 )
                                 || descriptor_name.is_some())
                                 && descriptor_name != definition.name.as_ref()
@@ -2571,6 +2967,7 @@ fn verify_unlinked_tree_with_root(
                                     descriptor.kind,
                                     ClosureVariableKind::FunctionName
                                         | ClosureVariableKind::EvalVariableObject
+                                        | ClosureVariableKind::ArgEvalVariableObject
                                 )
                                 || descriptor_name.is_some())
                                 && descriptor_name != unlinked_closure_name(function, parent)?
@@ -2677,7 +3074,6 @@ fn verify_unlinked_tree_with_root(
                     child_origins,
                     child_function_name_origins,
                     child_id,
-                    under_parameter_environment,
                 ));
             } else if constant.as_primitive().is_none()
                 && constant.as_regexp().is_none()
@@ -2912,8 +3308,8 @@ mod tests {
                 },
             ]
             .into_boxed_slice(),
-            variable_environment: EvalVariableEnvironment::Scope(1),
-            caller_strict: false,
+            variable_environment: EvalVariableEnvironment::StrictLocal(1),
+            caller_strict: true,
             super_call_allowed: false,
             super_allowed: false,
         }
@@ -2948,6 +3344,7 @@ mod tests {
             FunctionMetadata {
                 local_count: 1,
                 max_stack: 1,
+                strict: true,
                 ..FunctionMetadata::default()
             },
         )
@@ -2977,7 +3374,15 @@ mod tests {
                 },
                 EvalScope {
                     kind: EvalScopeKind::FunctionRoot,
-                    bindings: Box::new([]),
+                    bindings: vec![EvalBinding {
+                        name: JsString::from_static("<var>"),
+                        source: EvalBindingSource::Local(1),
+                        is_lexical: false,
+                        is_const: false,
+                        kind: ClosureVariableKind::EvalVariableObject,
+                        is_catch_parameter: false,
+                    }]
+                    .into_boxed_slice(),
                 },
                 EvalScope {
                     kind: EvalScopeKind::ProgramBody,
@@ -2989,28 +3394,42 @@ mod tests {
                 },
             ]
             .into_boxed_slice(),
-            variable_environment: EvalVariableEnvironment::Scope(2),
+            variable_environment: EvalVariableEnvironment::VariableObject {
+                scope: 2,
+                source: EvalBindingSource::Local(1),
+            },
             caller_strict: false,
             super_call_allowed: false,
             super_allowed: false,
         };
+        let mut code = vec![Instruction::VariableEnvironment, Instruction::PutLocal(1)];
+        code.extend(eval_code(0, false));
         UnlinkedFunction::new(
-            eval_code(0, false),
+            code,
             Vec::new(),
             FunctionMetadata {
-                local_count: 1,
+                local_count: 2,
+                eval_variable_object_local: Some(1),
                 max_stack: 1,
                 ..FunctionMetadata::default()
             },
         )
         .with_variable_definitions(
             Vec::new(),
-            vec![UnlinkedVariableDefinition {
-                name: Some(JsString::from_static(definition_name)),
-                is_lexical: false,
-                is_const: false,
-                kind: ClosureVariableKind::WithObject,
-            }],
+            vec![
+                UnlinkedVariableDefinition {
+                    name: Some(JsString::from_static(definition_name)),
+                    is_lexical: false,
+                    is_const: false,
+                    kind: ClosureVariableKind::WithObject,
+                },
+                UnlinkedVariableDefinition {
+                    name: Some(JsString::from_static("<var>")),
+                    is_lexical: false,
+                    is_const: false,
+                    kind: ClosureVariableKind::EvalVariableObject,
+                },
+            ],
         )
         .with_eval_environments(vec![environment])
     }
@@ -3137,7 +3556,7 @@ mod tests {
         binding_sources: [u16; 2],
         variable_target: u16,
     ) -> UnlinkedFunction {
-        let names = ["<var:outer>", "<var:inner>"];
+        let names = ["<var>", "<var>"];
         let constants = names
             .iter()
             .map(|name| {
@@ -3202,7 +3621,10 @@ mod tests {
                 },
             ]
             .into_boxed_slice(),
-            variable_environment: EvalVariableEnvironment::Closure(variable_target),
+            variable_environment: EvalVariableEnvironment::VariableObject {
+                scope: 3,
+                source: EvalBindingSource::Closure(variable_target),
+            },
             caller_strict: false,
             super_call_allowed: false,
             super_allowed: false,
@@ -3384,14 +3806,14 @@ mod tests {
     fn recursive_eval_root_authenticates_imported_suffix_origins_and_target() {
         let expected = [
             eval_root_binding(
-                "<var:outer>",
+                "<var>",
                 1,
                 false,
                 false,
                 ClosureVariableKind::EvalVariableObject,
             ),
             eval_root_binding(
-                "<var:inner>",
+                "<var>",
                 1,
                 false,
                 false,
@@ -3756,6 +4178,69 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("illegal global declaration")
+        );
+    }
+
+    #[test]
+    fn eval_root_authenticates_the_parameter_variable_object_role_and_target() {
+        let expected = [eval_root_binding(
+            "<arg_var>",
+            0,
+            false,
+            false,
+            ClosureVariableKind::ArgEvalVariableObject,
+        )];
+        let imported = eval_root_with_descriptors(
+            EvalKind::Direct,
+            vec![(
+                ClosureSource::EvalEnvironment(0),
+                "<arg_var>",
+                false,
+                false,
+                ClosureVariableKind::ArgEvalVariableObject,
+            )],
+        );
+        verify_unlinked_eval_tree(&imported, EvalKind::Direct, false, &expected, false, false)
+            .unwrap();
+
+        let wrong_role = EvalCallerProfile {
+            scope_kinds: vec![EvalScopeKind::FunctionRoot].into_boxed_slice(),
+            variable_target: EvalCallerVariableTarget::ExternalBinding(0),
+        };
+        assert!(
+            verify_unlinked_eval_tree_with_profile(
+                &imported,
+                EvalKind::Direct,
+                false,
+                &expected,
+                &wrong_role,
+                false,
+                false,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("variable target is not authenticated")
+        );
+
+        let wrong_sentinel = [eval_root_binding(
+            "<var>",
+            0,
+            false,
+            false,
+            ClosureVariableKind::ArgEvalVariableObject,
+        )];
+        assert!(
+            verify_unlinked_eval_tree(
+                &imported,
+                EvalKind::Direct,
+                false,
+                &wrong_sentinel,
+                false,
+                false,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("invalid binding metadata")
         );
     }
 
@@ -4273,6 +4758,84 @@ mod tests {
             ordinary_metadata(),
         )))
         .unwrap();
+
+        let synthetic_metadata = FunctionMetadata {
+            argument_count: 1,
+            defined_argument_count: 1,
+            pattern_argument_count: 1,
+            parameter_pattern_end: Some(9),
+            parameter_environment_local_count: 1,
+            local_count: 4,
+            max_stack: 2,
+            ..FunctionMetadata::default()
+        };
+        let synthetic_layout = ParameterEnvironmentLayout {
+            initialization_end: 9,
+            argument_cells: Box::new([]),
+            pattern_copies: vec![ParameterPatternCopy {
+                parameter_local: 0,
+                body_local: 2,
+            }]
+            .into_boxed_slice(),
+            default_sources: Box::new([]),
+            synthetic_arguments_local: Some(1),
+            arg_eval_variable_object_local: None,
+        };
+        let synthetic_code = || {
+            vec![
+                Instruction::Arguments(crate::bytecode::ArgumentsKind::Unmapped),
+                Instruction::Dup,
+                Instruction::InitializeLocal(1),
+                Instruction::PutLocal(3),
+                Instruction::SetLocalUninitialized(0),
+                Instruction::GetArg(0),
+                Instruction::InitializeLocal(0),
+                Instruction::GetLocalCheck(0),
+                Instruction::PutLocal(2),
+                Instruction::Nop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ]
+        };
+        let unnamed_arguments = [true];
+        let lexical_locals = [true, true, false, false];
+        validate_pattern_parameter_bytecode_layout(
+            &synthetic_metadata,
+            &synthetic_code(),
+            &unnamed_arguments,
+            &lexical_locals,
+            Some(&synthetic_layout),
+        )
+        .unwrap();
+        let mut checked_read = synthetic_code();
+        checked_read[8] = Instruction::GetLocalCheck(1);
+        validate_pattern_parameter_bytecode_layout(
+            &synthetic_metadata,
+            &checked_read,
+            &unnamed_arguments,
+            &lexical_locals,
+            Some(&synthetic_layout),
+        )
+        .unwrap();
+        for forged in [
+            Instruction::SetLocalUninitialized(1),
+            Instruction::CloseLocal(1),
+            Instruction::InitializeLocal(1),
+        ] {
+            let mut code = synthetic_code();
+            code[8] = forged;
+            assert!(
+                validate_pattern_parameter_bytecode_layout(
+                    &synthetic_metadata,
+                    &code,
+                    &unnamed_arguments,
+                    &lexical_locals,
+                    Some(&synthetic_layout),
+                )
+                .unwrap_err()
+                .contains("body lexical local")
+            );
+        }
 
         let capture_child = |source, name: Option<&'static str>, is_lexical| {
             let constants = name
@@ -4840,6 +5403,19 @@ mod tests {
         )))
         .unwrap();
 
+        let mut missing_default_only_argument = default_only_code();
+        missing_default_only_argument[1] = Instruction::Undefined;
+        assert!(
+            verify_unlinked_tree(&script_with_child(make_default_only(
+                missing_default_only_argument,
+                Vec::new(),
+                default_only_metadata(),
+            )))
+            .unwrap_err()
+            .to_string()
+            .contains("default cell has no exact argument selection")
+        );
+
         let mut missing_default_only_environment = default_only_metadata();
         missing_default_only_environment.parameter_environment_local_count = 0;
         assert!(
@@ -4881,8 +5457,8 @@ mod tests {
                 },
             ]
             .into_boxed_slice(),
-            variable_environment: EvalVariableEnvironment::Scope(1),
-            caller_strict: false,
+            variable_environment: EvalVariableEnvironment::StrictLocal(1),
+            caller_strict: true,
             super_call_allowed: false,
             super_allowed: false,
         };
@@ -4891,6 +5467,7 @@ mod tests {
             Vec::new(),
             FunctionMetadata {
                 max_stack: 1,
+                strict: true,
                 ..FunctionMetadata::default()
             },
         )
@@ -4910,6 +5487,7 @@ mod tests {
             Vec::new(),
             FunctionMetadata {
                 max_stack: 1,
+                strict: true,
                 ..FunctionMetadata::default()
             },
         )
@@ -4919,12 +5497,7 @@ mod tests {
             vec![UnlinkedConstant::child(eval_descendant)],
             default_only_metadata(),
         );
-        assert!(
-            verify_unlinked_tree(&script_with_child(parameter_parent))
-                .unwrap_err()
-                .to_string()
-                .contains("below a parameter environment")
-        );
+        verify_unlinked_tree(&script_with_child(parameter_parent)).unwrap();
 
         let mut missing_environment = metadata();
         missing_environment.parameter_environment_local_count = 0;
@@ -5016,11 +5589,13 @@ mod tests {
 
         let mut wrong_rest_target = code();
         wrong_rest_target[14] = Instruction::PutArg(0);
+        let error = verify_unlinked_tree(&script_with_child(make(wrong_rest_target, metadata())))
+            .unwrap_err();
         assert!(
-            verify_unlinked_tree(&script_with_child(make(wrong_rest_target, metadata())))
-                .unwrap_err()
+            error
                 .to_string()
-                .contains("rest parameter has no exact initialization")
+                .contains("parameter default cell has no exact argument selection"),
+            "{error}",
         );
 
         let missing_default = vec![
@@ -5040,7 +5615,7 @@ mod tests {
             verify_unlinked_tree(&script_with_child(make(missing_default, metadata())))
                 .unwrap_err()
                 .to_string()
-                .contains("first default parameter has no default entry initialization")
+                .contains("parameter default cell has no exact argument selection")
         );
 
         let mut wrong_default_target = code();
@@ -5049,7 +5624,7 @@ mod tests {
             verify_unlinked_tree(&script_with_child(make(wrong_default_target, metadata())))
                 .unwrap_err()
                 .to_string()
-                .contains("default parameter has no exact selection branch")
+                .contains("parameter default cell has no exact argument selection")
         );
 
         let mut missing_default_sync = code();
@@ -5058,7 +5633,7 @@ mod tests {
             verify_unlinked_tree(&script_with_child(make(missing_default_sync, metadata())))
                 .unwrap_err()
                 .to_string()
-                .contains("default parameter has no exact argument synchronization")
+                .contains("parameter default cell has no exact argument selection")
         );
 
         let mut wrong_default_argument = code();
@@ -5067,7 +5642,7 @@ mod tests {
             verify_unlinked_tree(&script_with_child(make(wrong_default_argument, metadata())))
                 .unwrap_err()
                 .to_string()
-                .contains("default parameter has no exact argument synchronization")
+                .contains("parameter default cell has no exact argument selection")
         );
 
         let mut raw_argument_rhs = code();
@@ -5076,7 +5651,7 @@ mod tests {
             verify_unlinked_tree(&script_with_child(make(raw_argument_rhs, metadata())))
                 .unwrap_err()
                 .to_string()
-                .contains("initializer bypasses parameter cells")
+                .contains("parameter rest cell has no exact initialization")
         );
 
         let mut unchecked_parameter_rhs = code();
@@ -5186,7 +5761,7 @@ mod tests {
             verify_unlinked_tree(&script_with_child(make(own_eval, metadata())))
                 .unwrap_err()
                 .to_string()
-                .contains("direct eval")
+                .contains("environment operand is out of bounds")
         );
 
         let ordinary_code = code();
@@ -5694,6 +6269,7 @@ mod tests {
             Vec::new(),
             FunctionMetadata {
                 max_stack: 1,
+                strict: true,
                 ..FunctionMetadata::default()
             },
         )
@@ -5787,6 +6363,7 @@ mod tests {
             Vec::new(),
             FunctionMetadata {
                 max_stack: 1,
+                strict: true,
                 ..FunctionMetadata::default()
             },
         )
@@ -6027,8 +6604,8 @@ mod tests {
                 },
             ]
             .into_boxed_slice(),
-            variable_environment: EvalVariableEnvironment::Scope(2),
-            caller_strict: false,
+            variable_environment: EvalVariableEnvironment::StrictLocal(2),
+            caller_strict: true,
             super_call_allowed: false,
             super_allowed: false,
         };
@@ -6100,6 +6677,347 @@ mod tests {
     }
 
     #[test]
+    fn eval_variable_object_target_cannot_forge_an_ancestor_function_anchor() {
+        let variable_name = JsString::from_static("<var>");
+        let current_binding = EvalBinding {
+            name: variable_name.clone(),
+            source: EvalBindingSource::Local(0),
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::EvalVariableObject,
+            is_catch_parameter: false,
+        };
+        let ancestor_binding = EvalBinding {
+            source: EvalBindingSource::Closure(0),
+            ..current_binding.clone()
+        };
+        let environment = EvalEnvironment {
+            scopes: vec![
+                EvalScope {
+                    kind: EvalScopeKind::FunctionBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: vec![current_binding].into_boxed_slice(),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: vec![ancestor_binding].into_boxed_slice(),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::ProgramBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+            ]
+            .into_boxed_slice(),
+            variable_environment: EvalVariableEnvironment::VariableObject {
+                scope: 3,
+                source: EvalBindingSource::Closure(0),
+            },
+            caller_strict: false,
+            super_call_allowed: false,
+            super_allowed: false,
+        };
+        let mut inner_code = vec![Instruction::VariableEnvironment, Instruction::PutLocal(0)];
+        inner_code.extend(eval_code(0, false));
+        let inner = UnlinkedFunction::new_with_closure_variables(
+            inner_code,
+            vec![UnlinkedConstant::primitive(Value::String(variable_name.clone())).unwrap()],
+            FunctionMetadata {
+                local_count: 1,
+                closure_count: 1,
+                eval_variable_object_local: Some(0),
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentLocal(0),
+                name: ClosureVariableName::Constant(0),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::EvalVariableObject,
+            }],
+        )
+        .with_variable_definitions(
+            Vec::new(),
+            vec![UnlinkedVariableDefinition {
+                name: Some(variable_name.clone()),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::EvalVariableObject,
+            }],
+        )
+        .with_eval_environments(vec![environment]);
+        let outer = UnlinkedFunction::new(
+            vec![
+                Instruction::VariableEnvironment,
+                Instruction::PutLocal(0),
+                Instruction::FClosure(0),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(inner)],
+            FunctionMetadata {
+                local_count: 1,
+                eval_variable_object_local: Some(0),
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_variable_definitions(
+            Vec::new(),
+            vec![UnlinkedVariableDefinition {
+                name: Some(variable_name),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::EvalVariableObject,
+            }],
+        );
+
+        let error = verify_unlinked_tree(&script_with_child(outer)).unwrap_err();
+        assert!(
+            error.to_string().contains("wrong current function segment"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn eval_variable_object_target_cannot_forge_an_ancestor_parameter_anchor() {
+        let body_name = JsString::from_static("<var>");
+        let parameter_name = JsString::from_static("<arg_var>");
+        let environment = EvalEnvironment {
+            scopes: vec![
+                EvalScope {
+                    kind: EvalScopeKind::FunctionBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: vec![EvalBinding {
+                        name: body_name.clone(),
+                        source: EvalBindingSource::Local(0),
+                        is_lexical: false,
+                        is_const: false,
+                        kind: ClosureVariableKind::EvalVariableObject,
+                        is_catch_parameter: false,
+                    }]
+                    .into_boxed_slice(),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::Parameter,
+                    bindings: vec![EvalBinding {
+                        name: parameter_name.clone(),
+                        source: EvalBindingSource::Closure(0),
+                        is_lexical: false,
+                        is_const: false,
+                        kind: ClosureVariableKind::ArgEvalVariableObject,
+                        is_catch_parameter: false,
+                    }]
+                    .into_boxed_slice(),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::ProgramBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+            ]
+            .into_boxed_slice(),
+            variable_environment: EvalVariableEnvironment::VariableObject {
+                scope: 2,
+                source: EvalBindingSource::Closure(0),
+            },
+            caller_strict: false,
+            super_call_allowed: false,
+            super_allowed: false,
+        };
+        let mut inner_code = vec![Instruction::VariableEnvironment, Instruction::PutLocal(0)];
+        inner_code.extend(eval_code(0, false));
+        let inner = UnlinkedFunction::new_with_closure_variables(
+            inner_code,
+            vec![UnlinkedConstant::primitive(Value::String(parameter_name.clone())).unwrap()],
+            FunctionMetadata {
+                local_count: 1,
+                closure_count: 1,
+                eval_variable_object_local: Some(0),
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+            vec![ClosureVariable {
+                source: ClosureSource::ParentLocal(1),
+                name: ClosureVariableName::Constant(0),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::ArgEvalVariableObject,
+            }],
+        )
+        .with_variable_definitions(
+            Vec::new(),
+            vec![UnlinkedVariableDefinition {
+                name: Some(body_name.clone()),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::EvalVariableObject,
+            }],
+        )
+        .with_eval_environments(vec![environment]);
+        let outer = UnlinkedFunction::new(
+            vec![
+                Instruction::VariableEnvironment,
+                Instruction::PutLocal(0),
+                Instruction::VariableEnvironment,
+                Instruction::PutLocal(1),
+                Instruction::Nop,
+                Instruction::FClosure(0),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(inner)],
+            FunctionMetadata {
+                local_count: 2,
+                eval_variable_object_local: Some(0),
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_parameter_environment(Some(ParameterEnvironmentLayout {
+            initialization_end: 4,
+            argument_cells: Box::new([]),
+            pattern_copies: Box::new([]),
+            default_sources: Box::new([]),
+            synthetic_arguments_local: None,
+            arg_eval_variable_object_local: Some(1),
+        }))
+        .with_variable_definitions(
+            Vec::new(),
+            vec![
+                UnlinkedVariableDefinition {
+                    name: Some(body_name),
+                    is_lexical: false,
+                    is_const: false,
+                    kind: ClosureVariableKind::EvalVariableObject,
+                },
+                UnlinkedVariableDefinition {
+                    name: Some(parameter_name),
+                    is_lexical: false,
+                    is_const: false,
+                    kind: ClosureVariableKind::ArgEvalVariableObject,
+                },
+            ],
+        );
+
+        let error = verify_unlinked_tree(&script_with_child(outer)).unwrap_err();
+        assert!(
+            error.to_string().contains("wrong current function segment"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn strict_script_global_eval_anchor_does_not_leak_to_strict_functions() {
+        let strict_script = UnlinkedFunction::new(
+            eval_code(0, false),
+            Vec::new(),
+            FunctionMetadata {
+                max_stack: 1,
+                strict: true,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_eval_environments(vec![EvalEnvironment {
+            scopes: vec![
+                EvalScope {
+                    kind: EvalScopeKind::ProgramBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+            ]
+            .into_boxed_slice(),
+            variable_environment: EvalVariableEnvironment::Global,
+            caller_strict: true,
+            super_call_allowed: false,
+            super_allowed: false,
+        }]);
+        verify_unlinked_tree(&strict_script).unwrap();
+
+        let mut non_canonical_script_environment = strict_script.eval_environments()[0].clone();
+        non_canonical_script_environment.variable_environment =
+            EvalVariableEnvironment::StrictLocal(1);
+        let non_canonical_script = UnlinkedFunction::new(
+            eval_code(0, false),
+            Vec::new(),
+            FunctionMetadata {
+                max_stack: 1,
+                strict: true,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_eval_environments(vec![non_canonical_script_environment.clone()]);
+        let error = verify_unlinked_tree(&non_canonical_script).unwrap_err();
+        assert!(
+            error.to_string().contains("non-canonical strict-local"),
+            "{error}"
+        );
+
+        let synthetic_strict_eval = UnlinkedFunction::new(
+            eval_code(0, false),
+            Vec::new(),
+            FunctionMetadata {
+                max_stack: 1,
+                strict: true,
+                eval_kind: EvalKind::Direct,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_eval_environments(vec![non_canonical_script_environment]);
+        verify_unlinked_eval_tree(
+            &synthetic_strict_eval,
+            EvalKind::Direct,
+            false,
+            &[],
+            false,
+            false,
+        )
+        .unwrap();
+
+        let mut forged_function = ordinary_environment(None);
+        forged_function.variable_environment = EvalVariableEnvironment::Global;
+        let function = UnlinkedFunction::new(
+            eval_code(0, false),
+            Vec::new(),
+            FunctionMetadata {
+                max_stack: 1,
+                strict: true,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_eval_environments(vec![forged_function]);
+        let error = verify_unlinked_tree(&script_with_child(function)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("escaped an authored Script root"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn eval_environment_rejects_malformed_function_segments() {
         let mut environment = ordinary_environment(None);
         environment.scopes[2].kind = EvalScopeKind::FunctionBody;
@@ -6108,6 +7026,7 @@ mod tests {
             Vec::new(),
             FunctionMetadata {
                 max_stack: 1,
+                strict: true,
                 ..FunctionMetadata::default()
             },
         )
@@ -6126,6 +7045,7 @@ mod tests {
             Vec::new(),
             FunctionMetadata {
                 max_stack: 1,
+                strict: true,
                 ..FunctionMetadata::default()
             },
         )
@@ -6205,6 +7125,7 @@ mod tests {
             FunctionMetadata {
                 closure_count: 1,
                 max_stack: 1,
+                strict: true,
                 ..FunctionMetadata::default()
             },
             vec![ClosureVariable {
@@ -6412,8 +7333,8 @@ mod tests {
                 },
             ]
             .into_boxed_slice(),
-            variable_environment: EvalVariableEnvironment::Scope(1),
-            caller_strict: false,
+            variable_environment: EvalVariableEnvironment::StrictLocal(1),
+            caller_strict: true,
             super_call_allowed: false,
             super_allowed: false,
         };
@@ -6437,6 +7358,7 @@ mod tests {
             FunctionMetadata {
                 closure_count: 1,
                 max_stack: 1,
+                strict: true,
                 ..FunctionMetadata::default()
             },
             vec![ClosureVariable {
@@ -6550,8 +7472,8 @@ mod tests {
                 },
             ]
             .into_boxed_slice(),
-            variable_environment: EvalVariableEnvironment::Scope(1),
-            caller_strict: false,
+            variable_environment: EvalVariableEnvironment::StrictLocal(1),
+            caller_strict: true,
             super_call_allowed: false,
             super_allowed: false,
         };
@@ -6561,6 +7483,7 @@ mod tests {
             FunctionMetadata {
                 closure_count: 1,
                 max_stack: 1,
+                strict: true,
                 ..FunctionMetadata::default()
             },
             vec![ClosureVariable {
@@ -6703,19 +7626,20 @@ mod tests {
     #[test]
     fn eval_variable_scope_must_select_the_current_function_root() {
         let mut environment = ordinary_environment(None);
-        environment.variable_environment = EvalVariableEnvironment::Scope(0);
+        environment.variable_environment = EvalVariableEnvironment::StrictLocal(0);
         let function = UnlinkedFunction::new(
             eval_code(0, false),
             Vec::new(),
             FunctionMetadata {
                 max_stack: 1,
+                strict: true,
                 ..FunctionMetadata::default()
             },
         )
         .with_eval_environments(vec![environment]);
 
         let error = verify_unlinked_tree(&script_with_child(function)).unwrap_err();
-        assert!(error.to_string().contains("current function root scope"));
+        assert!(error.to_string().contains("wrong function anchor"));
     }
 
     #[test]
@@ -6725,6 +7649,7 @@ mod tests {
             Vec::new(),
             FunctionMetadata {
                 max_stack: 1,
+                strict: true,
                 ..FunctionMetadata::default()
             },
         )
@@ -6791,8 +7716,8 @@ mod tests {
                 },
             ]
             .into_boxed_slice(),
-            variable_environment: EvalVariableEnvironment::Scope(1),
-            caller_strict: false,
+            variable_environment: EvalVariableEnvironment::StrictLocal(1),
+            caller_strict: true,
             super_call_allowed: false,
             super_allowed: false,
         };
@@ -6801,6 +7726,7 @@ mod tests {
             Vec::new(),
             FunctionMetadata {
                 max_stack: 1,
+                strict: true,
                 ..FunctionMetadata::default()
             },
         )

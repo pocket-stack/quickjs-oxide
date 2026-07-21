@@ -72,9 +72,24 @@ pub(super) fn ensure_eval_visible_pseudo_bindings(
     // nearest ordinary-function or method owner so the eval descriptor can
     // relay it through the same closure chain as an authored arrow reference.
     let mut arguments_owner = Some(consuming_function);
+    let mut definition_scope = None;
     while let Some(function_id) = arguments_owner {
         let function = &tree.functions[function_id];
         if matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method) {
+            // A child created while a non-simple parameter list is executing
+            // cannot see that function's body-owned implicit `arguments`
+            // binding.  QuickJS stops at this nearest arguments owner instead
+            // of falling through to an enclosing function.  An authored
+            // parameter named `arguments` (or the synthetic alias installed
+            // for this owner's own direct eval) is already carried by the
+            // Parameter scope and needs no lazy root binding here.
+            if definition_scope.is_some_and(|scope| {
+                function
+                    .parameter_scope
+                    .is_some_and(|parameter| function.scope_is_within(scope, parameter))
+            }) {
+                break;
+            }
             let span = function.source.span;
             find_or_create_own_binding(tree, function_id, ScopeId(0), "arguments", span)?;
             break;
@@ -86,6 +101,7 @@ pub(super) fn ensure_eval_visible_pseudo_bindings(
         {
             break;
         }
+        definition_scope = function.parent.map(|parent| parent.definition_scope);
         arguments_owner = function.parent.map(|parent| parent.function);
     }
 

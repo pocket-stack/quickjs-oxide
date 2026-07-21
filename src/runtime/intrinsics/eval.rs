@@ -273,21 +273,56 @@ impl Runtime {
                         "direct eval with-object binding metadata is not authentic",
                     ));
                 }
+                if binding.kind.is_eval_variable_object() {
+                    let role_allowed = match descriptor_scope.kind {
+                        crate::heap::EvalScopeKind::FunctionRoot => true,
+                        crate::heap::EvalScopeKind::Parameter => {
+                            binding.kind == ClosureVariableKind::ArgEvalVariableObject
+                        }
+                        _ => false,
+                    };
+                    let sentinel = match binding.kind {
+                        ClosureVariableKind::EvalVariableObject => "<var>",
+                        ClosureVariableKind::ArgEvalVariableObject => "<arg_var>",
+                        _ => unreachable!("function anchor selected a variable-object role"),
+                    };
+                    if !role_allowed
+                        || binding.is_lexical
+                        || binding.is_const
+                        || binding.is_catch_parameter
+                        || matches!(binding.source, crate::heap::EvalBindingSource::Argument(_))
+                        || name.utf16_units().ne(sentinel.encode_utf16())
+                    {
+                        return Err(RuntimeError::Invariant(
+                            "direct eval variable-object binding metadata is not authentic",
+                        ));
+                    }
+                }
                 let external_index = u16::try_from(bindings.len()).map_err(|_| {
                     RuntimeError::Invariant("direct eval binding index exceeds bytecode range")
                 })?;
-                let targets_variable_environment = match environment.descriptor.variable_environment
-                {
-                    EvalVariableEnvironment::Global => false,
-                    EvalVariableEnvironment::Scope(target_scope) => {
-                        target_scope == scope
-                            && binding.kind == ClosureVariableKind::EvalVariableObject
-                    }
-                    EvalVariableEnvironment::Closure(target_closure) => {
-                        binding.source == crate::heap::EvalBindingSource::Closure(target_closure)
-                            && binding.kind == ClosureVariableKind::EvalVariableObject
-                    }
-                };
+                let targets_variable_environment =
+                    match environment.descriptor.variable_environment {
+                        EvalVariableEnvironment::Global
+                        | EvalVariableEnvironment::StrictLocal(_) => false,
+                        EvalVariableEnvironment::VariableObject {
+                            scope: target_scope,
+                            source,
+                        } => {
+                            let target_kind = match descriptor_scope.kind {
+                                crate::heap::EvalScopeKind::FunctionRoot => {
+                                    ClosureVariableKind::EvalVariableObject
+                                }
+                                crate::heap::EvalScopeKind::Parameter => {
+                                    ClosureVariableKind::ArgEvalVariableObject
+                                }
+                                _ => ClosureVariableKind::Normal,
+                            };
+                            target_scope == scope
+                                && binding.source == source
+                                && binding.kind == target_kind
+                        }
+                    };
                 if targets_variable_environment && variable_target.replace(external_index).is_some()
                 {
                     return Err(RuntimeError::Invariant(
@@ -304,25 +339,37 @@ impl Runtime {
                 });
             }
         }
-        let variable_target = if environment.descriptor.caller_strict {
-            EvalCallerVariableTarget::StrictLocal
-        } else {
-            match environment.descriptor.variable_environment {
-                EvalVariableEnvironment::Global if variable_target.is_none() => {
+        let variable_target = match environment.descriptor.variable_environment {
+            EvalVariableEnvironment::Global if variable_target.is_none() => {
+                if environment.descriptor.caller_strict {
+                    // A strict authored Script still has the global caller
+                    // variable environment, but strict direct eval creates
+                    // its declarations in the eval root's own local record.
+                    EvalCallerVariableTarget::StrictLocal
+                } else {
                     EvalCallerVariableTarget::Global
                 }
-                EvalVariableEnvironment::Scope(_) | EvalVariableEnvironment::Closure(_) => {
-                    EvalCallerVariableTarget::ExternalBinding(variable_target.ok_or(
-                        RuntimeError::Invariant(
-                            "direct eval variable environment has no target binding",
-                        ),
-                    )?)
-                }
-                EvalVariableEnvironment::Global => {
-                    return Err(RuntimeError::Invariant(
-                        "global eval environment unexpectedly selected a binding target",
-                    ));
-                }
+            }
+            EvalVariableEnvironment::StrictLocal(_)
+                if environment.descriptor.caller_strict && variable_target.is_none() =>
+            {
+                EvalCallerVariableTarget::StrictLocal
+            }
+            EvalVariableEnvironment::VariableObject { .. }
+                if !environment.descriptor.caller_strict =>
+            {
+                EvalCallerVariableTarget::ExternalBinding(variable_target.ok_or(
+                    RuntimeError::Invariant(
+                        "direct eval variable environment has no target binding",
+                    ),
+                )?)
+            }
+            EvalVariableEnvironment::Global
+            | EvalVariableEnvironment::StrictLocal(_)
+            | EvalVariableEnvironment::VariableObject { .. } => {
+                return Err(RuntimeError::Invariant(
+                    "direct eval variable environment disagrees with caller strictness or target",
+                ));
             }
         };
         let caller_profile = EvalCallerProfile {
@@ -459,7 +506,7 @@ impl Runtime {
             && match kind {
                 EvalKind::Direct => !bindings
                     .iter()
-                    .any(|binding| binding.kind == ClosureVariableKind::EvalVariableObject),
+                    .any(|binding| binding.kind.is_eval_variable_object()),
                 EvalKind::Indirect => true,
                 EvalKind::None => false,
             };
@@ -496,6 +543,7 @@ impl Runtime {
                         | ClosureVariableKind::FunctionName
                         | ClosureVariableKind::GlobalFunction
                         | ClosureVariableKind::EvalVariableObject
+                        | ClosureVariableKind::ArgEvalVariableObject
                         | ClosureVariableKind::WithObject => {
                             return Err(RuntimeError::Invariant(
                                 "eval global declaration has non-global binding metadata",
@@ -556,7 +604,7 @@ impl Runtime {
                     "eval catch binding has invalid binding metadata",
                 ));
             }
-            if expected.kind == ClosureVariableKind::EvalVariableObject
+            if expected.kind.is_eval_variable_object()
                 && (expected.is_lexical || expected.is_const || expected.is_catch_parameter)
             {
                 return Err(RuntimeError::Invariant(
@@ -627,6 +675,7 @@ impl Runtime {
                         | ClosureVariableKind::FunctionName
                         | ClosureVariableKind::GlobalFunction
                         | ClosureVariableKind::EvalVariableObject
+                        | ClosureVariableKind::ArgEvalVariableObject
                         | ClosureVariableKind::WithObject => {
                             return Err(RuntimeError::Invariant(
                                 "eval global declaration has non-global binding metadata",

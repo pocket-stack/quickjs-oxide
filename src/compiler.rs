@@ -110,12 +110,31 @@ impl EvalCompileContext {
                 scope_kinds[usize::from(binding.scope)] = EvalScopeKind::Catch;
             }
         }
+        for (scope, scope_kind) in scope_kinds.iter_mut().enumerate() {
+            let has_parameter_object = bindings.iter().any(|binding| {
+                usize::from(binding.scope) == scope
+                    && binding.kind == ClosureVariableKind::ArgEvalVariableObject
+            });
+            let has_body_object = bindings.iter().any(|binding| {
+                usize::from(binding.scope) == scope
+                    && binding.kind == ClosureVariableKind::EvalVariableObject
+            });
+            if has_parameter_object && !has_body_object {
+                *scope_kind = EvalScopeKind::Parameter;
+            }
+        }
         let variable_target = if caller_strict {
             EvalCallerVariableTarget::StrictLocal
         } else {
             bindings
                 .iter()
-                .position(|binding| binding.kind == ClosureVariableKind::EvalVariableObject)
+                .position(|binding| {
+                    matches!(
+                        binding.kind,
+                        ClosureVariableKind::EvalVariableObject
+                            | ClosureVariableKind::ArgEvalVariableObject
+                    )
+                })
                 .and_then(|index| u16::try_from(index).ok())
                 .map(EvalCallerVariableTarget::ExternalBinding)
                 .unwrap_or(EvalCallerVariableTarget::Global)
@@ -245,6 +264,11 @@ const EVAL_RET_LOCAL_NAME: &str = "<ret>";
 // QuickJS `JS_ATOM__var_`: the null-prototype variable object used by sloppy
 // direct eval. Source text cannot spell this binding identity.
 const EVAL_VARIABLE_OBJECT_LOCAL_NAME: &str = "<var>";
+// QuickJS `JS_ATOM__arg_var_`: the independent null-prototype variable
+// object selected by sloppy direct eval while a non-simple parameter list is
+// being evaluated. It remains live for the whole activation so body eval can
+// consult it after the ordinary `<var>` object.
+const ARG_EVAL_VARIABLE_OBJECT_LOCAL_NAME: &str = "<arg_var>";
 // QuickJS `JS_ATOM__with_`: the object-environment binding owned by one
 // sloppy `with` scope. Source text cannot spell this binding identity.
 const WITH_OBJECT_LOCAL_NAME: &str = "<with>";
@@ -357,6 +381,7 @@ enum BindingKind {
     Lexical { is_const: bool },
     FunctionName { is_const: bool },
     EvalVariableObject,
+    ArgEvalVariableObject,
     WithObject,
 }
 
@@ -825,6 +850,15 @@ struct FunctionIr {
     /// containing syntactic direct eval. Its identity is explicit rather than
     /// inferred from local allocation order.
     eval_variable_object_local: Option<u16>,
+    /// Hidden `<arg_var>` object used by sloppy direct eval in a parentless
+    /// Parameter Environment. Unlike authored parameter cells, this slot is
+    /// rooted for the full activation and is projected into both parameter
+    /// and body eval descriptors.
+    arg_eval_variable_object_local: Option<u16>,
+    /// Sloppy Parameter Environment alias of the ordinary function's
+    /// unmapped arguments object. QuickJS skips this cell's ordinary TDZ reset
+    /// and initializes it together with the body arguments binding.
+    synthetic_parameter_arguments_local: Option<u16>,
     /// A lazily allocated HomeObject pseudo local requires the published
     /// method function to retain its object literal as HomeObject. Descendant
     /// arrows relay the local without carrying this metadata themselves.
@@ -1065,6 +1099,8 @@ impl FunctionIr {
             this_local: None,
             new_target_local: None,
             eval_variable_object_local: None,
+            arg_eval_variable_object_local: None,
+            synthetic_parameter_arguments_local: None,
             needs_home_object: false,
             parameters: options.parameters,
             parameter_names: Vec::new(),
@@ -1270,16 +1306,22 @@ fn install_eval_external_bindings(
             "eval caller bindings disagree with their scope profile",
         ));
     }
-    let has_variable_object = bindings
-        .iter()
-        .any(|binding| binding.kind == ClosureVariableKind::EvalVariableObject);
+    let has_variable_object = bindings.iter().any(|binding| {
+        matches!(
+            binding.kind,
+            ClosureVariableKind::EvalVariableObject | ClosureVariableKind::ArgEvalVariableObject
+        )
+    });
     match (caller_strict, caller_profile.variable_target) {
         (false, EvalCallerVariableTarget::Global) if !has_variable_object => {}
         (true, EvalCallerVariableTarget::StrictLocal) if kind == EvalKind::Direct => {}
         (false, EvalCallerVariableTarget::ExternalBinding(index))
             if bindings.get(usize::from(index)).is_some_and(|binding| {
-                binding.kind == ClosureVariableKind::EvalVariableObject
-                    && !binding.is_lexical
+                matches!(
+                    binding.kind,
+                    ClosureVariableKind::EvalVariableObject
+                        | ClosureVariableKind::ArgEvalVariableObject
+                ) && !binding.is_lexical
                     && !binding.is_const
                     && !binding.is_catch_parameter
             }) => {}
@@ -1331,6 +1373,16 @@ fn install_eval_external_bindings(
                 "eval variable object binding metadata is malformed",
             ));
         }
+        if binding.kind == ClosureVariableKind::ArgEvalVariableObject
+            && (binding.is_lexical
+                || binding.is_const
+                || binding.is_catch_parameter
+                || binding.name.to_utf8_lossy() != ARG_EVAL_VARIABLE_OBJECT_LOCAL_NAME)
+        {
+            return Err(Error::internal(
+                "argument eval variable object binding metadata is malformed",
+            ));
+        }
         if binding.kind == ClosureVariableKind::WithObject
             && (binding.is_lexical
                 || binding.is_const
@@ -1352,6 +1404,11 @@ fn install_eval_external_bindings(
             ClosureVariableKind::EvalVariableObject if !binding.is_lexical && !binding.is_const => {
                 BindingKind::EvalVariableObject
             }
+            ClosureVariableKind::ArgEvalVariableObject
+                if !binding.is_lexical && !binding.is_const =>
+            {
+                BindingKind::ArgEvalVariableObject
+            }
             ClosureVariableKind::WithObject if !binding.is_lexical && !binding.is_const => {
                 BindingKind::WithObject
             }
@@ -1359,6 +1416,7 @@ fn install_eval_external_bindings(
             | ClosureVariableKind::FunctionName
             | ClosureVariableKind::GlobalFunction
             | ClosureVariableKind::EvalVariableObject
+            | ClosureVariableKind::ArgEvalVariableObject
             | ClosureVariableKind::WithObject => {
                 return Err(Error::internal(
                     "eval caller binding flags are inconsistent",
@@ -3444,8 +3502,11 @@ impl<'source> Parser<'source> {
                     .external_bindings
                     .get(usize::from(index))
                     .filter(|binding| {
-                        binding.kind == ClosureVariableKind::EvalVariableObject
-                            && !binding.is_lexical
+                        matches!(
+                            binding.kind,
+                            ClosureVariableKind::EvalVariableObject
+                                | ClosureVariableKind::ArgEvalVariableObject
+                        ) && !binding.is_lexical
                             && !binding.is_const
                             && !binding.is_catch_parameter
                     })
@@ -3477,7 +3538,11 @@ impl<'source> Parser<'source> {
             let index = u16::try_from(index)
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"))?;
             if index == object_index {
-                if binding.kind != ClosureVariableKind::EvalVariableObject {
+                if !matches!(
+                    binding.kind,
+                    ClosureVariableKind::EvalVariableObject
+                        | ClosureVariableKind::ArgEvalVariableObject
+                ) {
                     return Err(Error::internal(
                         "eval variable object external index changed",
                     ));
@@ -3507,6 +3572,7 @@ impl<'source> Parser<'source> {
                 | ClosureVariableKind::FunctionName
                 | ClosureVariableKind::GlobalFunction
                 | ClosureVariableKind::EvalVariableObject
+                | ClosureVariableKind::ArgEvalVariableObject
                 | ClosureVariableKind::WithObject => {
                     return Err(Error::internal(
                         "eval caller binding flags are inconsistent",
@@ -3736,7 +3802,10 @@ impl<'source> Parser<'source> {
                     // authored environments and may be shadowed there.
                     ""
                 }
-                (BindingStorage::Local(_), BindingKind::EvalVariableObject) => "",
+                (
+                    BindingStorage::Local(_),
+                    BindingKind::EvalVariableObject | BindingKind::ArgEvalVariableObject,
+                ) => "",
                 (BindingStorage::Local(_), BindingKind::WithObject) => {
                     return Err(Error::internal(
                         "with object binding leaked into the function var scope",
@@ -4578,13 +4647,6 @@ impl<'source> Parser<'source> {
                 } else {
                     self.take_direct_eval_scope()?
                 };
-                if direct_eval_scope.is_some()
-                    && self.current_function_is_parameter_environment_descendant()
-                {
-                    return Err(self.unsupported_here(
-                        "direct eval with identifier default parameters is not implemented yet",
-                    ));
-                }
                 // An authored `with` may turn an identifier call into a method
                 // call whose receiver is the selected object environment. The
                 // unresolved Reference keeps the same two-slot call shape even
@@ -6818,26 +6880,6 @@ impl<'source> Parser<'source> {
         &mut self.functions[self.current_function]
     }
 
-    fn current_function_is_parameter_environment_descendant(&self) -> bool {
-        let mut function_id = self.current_function;
-        loop {
-            let function = &self.functions[function_id];
-            if function.parameter_scope.is_some() {
-                return true;
-            }
-            let Some(parent) = function.parent else {
-                return false;
-            };
-            if self.functions[parent.function]
-                .parameter_scope
-                .is_some_and(|scope| scope == parent.definition_scope)
-            {
-                return true;
-            }
-            function_id = parent.function;
-        }
-    }
-
     /// Add one physical argument input without deciding where authored reads
     /// resolve. A later default may promote every source binding to the
     /// independent parameter environment while retaining these slots as the
@@ -7679,7 +7721,22 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         }
         if let Some(parameter_scope) = function.parameter_scope {
             let scope = &function.scopes[parameter_scope.0];
-            if scope.bindings.len() != function.parameter_locals.len() {
+            let authored_cells = function.parameter_locals.len();
+            let synthetic_arguments_matches = function
+                .synthetic_parameter_arguments_local
+                .is_none_or(|local| {
+                    scope.bindings.last().is_some_and(|binding| {
+                        function.bindings[binding.0].storage == BindingStorage::Local(local)
+                    })
+                });
+            if scope.bindings.len()
+                != authored_cells
+                    .checked_add(usize::from(
+                        function.synthetic_parameter_arguments_local.is_some(),
+                    ))
+                    .ok_or_else(|| Error::new(ErrorKind::JsInternal, "too many local variables"))?
+                || !synthetic_arguments_matches
+            {
                 return Err(Error::internal(
                     "parameter environment does not own every parameter cell",
                 ));
@@ -7687,7 +7744,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             for (cell, (&local, &binding_id)) in function
                 .parameter_locals
                 .iter()
-                .zip(&scope.bindings)
+                .zip(&scope.bindings[..authored_cells])
                 .enumerate()
             {
                 let binding = function
@@ -7884,8 +7941,11 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                             .external_bindings
                             .get(usize::from(index))
                             .is_some_and(|binding| {
-                                binding.kind == ClosureVariableKind::EvalVariableObject
-                                    && !binding.is_lexical
+                                matches!(
+                                    binding.kind,
+                                    ClosureVariableKind::EvalVariableObject
+                                        | ClosureVariableKind::ArgEvalVariableObject
+                                ) && !binding.is_lexical
                                     && !binding.is_const
                                     && !binding.is_catch_parameter
                             }) => {}
@@ -7936,10 +7996,13 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             if !matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method)
                 || usize::from(index) >= function.locals.len()
                 || function.locals[usize::from(index)] != "arguments"
-                || function
+                || (function
                     .parameters
                     .iter()
                     .any(|parameter| parameter.as_deref() == Some("arguments"))
+                    && !(function.parameter_scope.is_some()
+                        && !function.strict
+                        && function.eval_variable_object_local.is_some()))
                 || !matches_binding
             {
                 return Err(Error::internal(
@@ -8058,6 +8121,68 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 ));
             }
         }
+        let arg_eval_variable_object_bindings = function
+            .bindings
+            .iter()
+            .filter(|binding| {
+                binding.kind == BindingKind::ArgEvalVariableObject
+                    && matches!(binding.storage, BindingStorage::Local(_))
+            })
+            .collect::<Vec<_>>();
+        match (
+            function.arg_eval_variable_object_local,
+            arg_eval_variable_object_bindings.as_slice(),
+        ) {
+            (Some(index), [binding])
+                if function.parameter_scope.is_some()
+                    && function.eval_variable_object_local.is_some()
+                    && !function.strict
+                    && binding.name == ARG_EVAL_VARIABLE_OBJECT_LOCAL_NAME
+                    && binding.storage == BindingStorage::Local(index)
+                    && binding.storage_scope == function.var_scope
+                    && binding.declaration_scope == function.var_scope
+                    && binding.declaration_span.is_none() => {}
+            (None, []) => {}
+            _ => {
+                return Err(Error::internal(
+                    "argument eval variable object local metadata is malformed",
+                ));
+            }
+        }
+        let synthetic_arguments_bindings = function
+            .bindings
+            .iter()
+            .filter(|binding| {
+                matches!(binding.storage, BindingStorage::Local(index)
+                    if function.synthetic_parameter_arguments_local == Some(index))
+            })
+            .collect::<Vec<_>>();
+        match (
+            function.synthetic_parameter_arguments_local,
+            synthetic_arguments_bindings.as_slice(),
+        ) {
+            (Some(index), [binding])
+                if matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method)
+                    && !function.strict
+                    && function.arg_eval_variable_object_local.is_some()
+                    && function.parameter_scope == Some(binding.storage_scope)
+                    && binding.declaration_scope == binding.storage_scope
+                    && binding.name == "arguments"
+                    && binding.kind == (BindingKind::Lexical { is_const: false })
+                    && binding.declaration_span.is_none()
+                    && function.locals.get(usize::from(index)).map(String::as_str)
+                        == Some("arguments")
+                    && !function
+                        .parameter_names
+                        .iter()
+                        .any(|name| name == "arguments") => {}
+            (None, []) => {}
+            _ => {
+                return Err(Error::internal(
+                    "synthetic parameter arguments metadata is malformed",
+                ));
+            }
+        }
         if function.strict
             && function.bindings.iter().any(|binding| {
                 binding.kind == BindingKind::WithObject
@@ -8107,25 +8232,51 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         }
         if function.function_hoists_installed {
             let mut hoist_start = 0_usize;
-            if let Some(local) = function.eval_variable_object_local {
-                if !matches!(
-                    function.ops.first(),
-                    Some(SpannedIrOp {
-                        op: IrOp::Bytecode(Instruction::VariableEnvironment),
-                        pc_site: None,
-                    })
-                ) || !matches!(
-                    function.ops.get(1),
-                    Some(SpannedIrOp {
-                        op: IrOp::Bytecode(Instruction::PutLocal(target)),
-                        pc_site: None,
-                    }) if *target == local
-                ) {
+            for (local, pseudo) in [
+                (function.home_object_local, PseudoBinding::HomeObject),
+                (function.new_target_local, PseudoBinding::NewTarget),
+                (function.this_local, PseudoBinding::This),
+            ] {
+                let Some(local) = local else {
+                    continue;
+                };
+                let push_matches = match pseudo {
+                    PseudoBinding::HomeObject => matches!(
+                        function.ops.get(hoist_start),
+                        Some(SpannedIrOp {
+                            op: IrOp::Bytecode(Instruction::PushHomeObject),
+                            pc_site: None,
+                        })
+                    ),
+                    PseudoBinding::NewTarget => matches!(
+                        function.ops.get(hoist_start),
+                        Some(SpannedIrOp {
+                            op: IrOp::Bytecode(Instruction::PushNewTarget),
+                            pc_site: None,
+                        })
+                    ),
+                    PseudoBinding::This => matches!(
+                        function.ops.get(hoist_start),
+                        Some(SpannedIrOp {
+                            op: IrOp::Bytecode(Instruction::PushThis),
+                            pc_site: None,
+                        })
+                    ),
+                };
+                if !push_matches
+                    || !matches!(
+                        function.ops.get(hoist_start + 1),
+                        Some(SpannedIrOp {
+                            op: IrOp::Bytecode(Instruction::PutLocal(target)),
+                            pc_site: None,
+                        }) if *target == local
+                    )
+                {
                     return Err(Error::internal(
-                        "installed eval-variable-object prologue is malformed",
+                        "installed pseudo-binding prologue is malformed",
                     ));
                 }
-                hoist_start = 2;
+                hoist_start += 2;
             }
             if let Some(local) = function.arguments_local {
                 let expected_kind = if function.strict || !function.has_simple_parameter_list {
@@ -8139,6 +8290,58 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         op: IrOp::Bytecode(Instruction::Arguments(kind)),
                         pc_site: None,
                     }) if *kind == expected_kind
+                ) {
+                    return Err(Error::internal(
+                        "installed arguments-object prologue is malformed",
+                    ));
+                }
+                hoist_start += 1;
+                if let Some(synthetic) = function.synthetic_parameter_arguments_local {
+                    if !matches!(
+                        function.ops.get(hoist_start),
+                        Some(SpannedIrOp {
+                            op: IrOp::Bytecode(Instruction::Dup),
+                            pc_site: None,
+                        })
+                    ) || !matches!(
+                        function.ops.get(hoist_start + 1),
+                        Some(SpannedIrOp {
+                            op: IrOp::Bytecode(Instruction::InitializeLocal(target)),
+                            pc_site: None,
+                        }) if *target == synthetic
+                    ) {
+                        return Err(Error::internal(
+                            "installed parameter arguments alias prologue is malformed",
+                        ));
+                    }
+                    hoist_start += 2;
+                }
+                if !matches!(
+                    function.ops.get(hoist_start),
+                    Some(SpannedIrOp {
+                        op: IrOp::Bytecode(Instruction::PutLocal(target)),
+                        pc_site: None,
+                    }) if *target == local
+                ) {
+                    return Err(Error::internal(
+                        "installed arguments-object prologue is malformed",
+                    ));
+                }
+                hoist_start += 1;
+            }
+            for local in [
+                function.eval_variable_object_local,
+                function.arg_eval_variable_object_local,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if !matches!(
+                    function.ops.get(hoist_start),
+                    Some(SpannedIrOp {
+                        op: IrOp::Bytecode(Instruction::VariableEnvironment),
+                        pc_site: None,
+                    })
                 ) || !matches!(
                     function.ops.get(hoist_start + 1),
                     Some(SpannedIrOp {
@@ -8147,7 +8350,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                     }) if *target == local
                 ) {
                     return Err(Error::internal(
-                        "installed arguments-object prologue is malformed",
+                        "installed eval-variable-object prologue is malformed",
                     ));
                 }
                 hoist_start += 2;
@@ -8686,6 +8889,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         for (index, external) in function.external_bindings.iter().enumerate() {
             let sentinel = match external.kind {
                 ClosureVariableKind::EvalVariableObject => EVAL_VARIABLE_OBJECT_LOCAL_NAME,
+                ClosureVariableKind::ArgEvalVariableObject => ARG_EVAL_VARIABLE_OBJECT_LOCAL_NAME,
                 ClosureVariableKind::WithObject => WITH_OBJECT_LOCAL_NAME,
                 ClosureVariableKind::Normal
                 | ClosureVariableKind::FunctionName
@@ -8895,6 +9099,11 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                             {
                                 BindingKind::EvalVariableObject
                             }
+                            ClosureVariableKind::ArgEvalVariableObject
+                                if !external.is_lexical && !external.is_const =>
+                            {
+                                BindingKind::ArgEvalVariableObject
+                            }
                             ClosureVariableKind::WithObject
                                 if !external.is_lexical && !external.is_const =>
                             {
@@ -8904,6 +9113,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                             | ClosureVariableKind::FunctionName
                             | ClosureVariableKind::GlobalFunction
                             | ClosureVariableKind::EvalVariableObject
+                            | ClosureVariableKind::ArgEvalVariableObject
                             | ClosureVariableKind::WithObject => {
                                 return Err(Error::internal(
                                     "eval external binding flags are inconsistent",
@@ -9272,13 +9482,17 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
                     };
                     tree.functions[function_id].ops[operation_index].op = operation;
                 }
+                finalize_eval_closure_suffixes(tree, function_id)?;
             }
         }
     }
-    install_pseudo_binding_prologues(tree)?;
     install_global_function_hoists(tree)?;
     install_eval_declaration_hoists(tree)?;
     install_function_body_hoists(tree)?;
+    // Every prepend pass runs after identifier linking. Install pseudo
+    // activation cells last so the final bytecode order mirrors QuickJS:
+    // HomeObject/new.target/this, arguments, `<var>`, then `<arg_var>`.
+    install_pseudo_binding_prologues(tree)?;
     validate_scope_graph(tree)
 }
 
@@ -9288,58 +9502,159 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
 /// children authored before the eval call must resolve through the same object.
 fn install_eval_variable_objects(tree: &mut FunctionTree) -> Result<(), Error> {
     for function in &mut tree.functions {
-        let needs_object = matches!(
+        let has_direct_eval = matches!(
             function.kind,
             FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
-        ) && !function.strict
-            && function
-                .ops
-                .iter()
-                .any(|operation| matches!(operation.op, IrOp::EvalCall { .. }));
-        if !needs_object {
-            if function.eval_variable_object_local.is_some() {
+        ) && function
+            .ops
+            .iter()
+            .any(|operation| matches!(operation.op, IrOp::EvalCall { .. }));
+        let needs_objects = has_direct_eval && !function.strict;
+        if !needs_objects {
+            if function.eval_variable_object_local.is_some()
+                || function.arg_eval_variable_object_local.is_some()
+                || function.synthetic_parameter_arguments_local.is_some()
+            {
                 return Err(Error::internal(
-                    "function retained an unnecessary eval variable object",
+                    "function retained unnecessary parameter-eval state",
                 ));
             }
             continue;
         }
-        if function.eval_variable_object_local.is_some() {
+        if function.eval_variable_object_local.is_some()
+            || function.arg_eval_variable_object_local.is_some()
+            || function.synthetic_parameter_arguments_local.is_some()
+        {
             return Err(Error::internal(
-                "eval variable object was installed more than once",
+                "eval variable objects were installed more than once",
             ));
         }
-        if function.locals.len() >= MAX_LOCAL_VARIABLES {
-            return Err(Error::new(
-                ErrorKind::JsInternal,
-                "too many local variables",
-            ));
-        }
-        let index = u16::try_from(function.locals.len())
-            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
-        function
-            .locals
-            .push(EVAL_VARIABLE_OBJECT_LOCAL_NAME.to_owned());
-        function.add_binding(
-            function.var_scope,
-            function.var_scope,
-            EVAL_VARIABLE_OBJECT_LOCAL_NAME.to_owned(),
-            BindingStorage::Local(index),
+        function.eval_variable_object_local = Some(allocate_hidden_eval_object(
+            function,
+            EVAL_VARIABLE_OBJECT_LOCAL_NAME,
             BindingKind::EvalVariableObject,
-            None,
-        );
-        function.eval_variable_object_local = Some(index);
+        )?);
+        if function.parameter_scope.is_some() {
+            function.arg_eval_variable_object_local = Some(allocate_hidden_eval_object(
+                function,
+                ARG_EVAL_VARIABLE_OBJECT_LOCAL_NAME,
+                BindingKind::ArgEvalVariableObject,
+            )?);
+            install_parameter_eval_arguments(function)?;
+        }
     }
+    Ok(())
+}
+
+fn allocate_hidden_eval_object(
+    function: &mut FunctionIr,
+    name: &'static str,
+    kind: BindingKind,
+) -> Result<u16, Error> {
+    if function.locals.len() >= MAX_LOCAL_VARIABLES {
+        return Err(Error::new(
+            ErrorKind::JsInternal,
+            "too many local variables",
+        ));
+    }
+    let index = u16::try_from(function.locals.len())
+        .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+    function.locals.push(name.to_owned());
+    function.add_binding(
+        function.var_scope,
+        function.var_scope,
+        name.to_owned(),
+        BindingStorage::Local(index),
+        kind,
+        None,
+    );
+    Ok(index)
+}
+
+/// QuickJS gives sloppy ordinary functions with parameter direct eval two
+/// bindings for one unmapped arguments object: the usual FunctionRoot binding
+/// and, when no authored parameter shadows it, a Parameter-scoped lexical
+/// alias. A named physical `arguments` parameter does not suppress the body
+/// object on this path; a BindingPattern body local is reused and later
+/// overwritten by the authenticated parameter copy.
+fn install_parameter_eval_arguments(function: &mut FunctionIr) -> Result<(), Error> {
+    if !matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method) {
+        return Ok(());
+    }
+    let parameter_scope = function
+        .parameter_scope
+        .ok_or_else(|| Error::internal("parameter eval arguments has no parameter scope"))?;
+    if function.arguments_local.is_none() {
+        let reusable = function.scopes[function.var_scope.0]
+            .bindings
+            .iter()
+            .rev()
+            .filter_map(|binding| function.bindings.get(binding.0))
+            .find_map(|binding| {
+                (binding.name == "arguments"
+                    && binding.kind == BindingKind::Normal
+                    && matches!(binding.storage, BindingStorage::Local(_)))
+                .then_some(binding.storage)
+            });
+        let local = match reusable {
+            Some(BindingStorage::Local(local)) => local,
+            Some(_) => unreachable!("reusable arguments storage is local"),
+            None => {
+                if function.locals.len() >= MAX_LOCAL_VARIABLES {
+                    return Err(Error::new(
+                        ErrorKind::JsInternal,
+                        "too many local variables",
+                    ));
+                }
+                let local = u16::try_from(function.locals.len())
+                    .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+                function.locals.push("arguments".to_owned());
+                function.add_binding(
+                    function.var_scope,
+                    function.var_scope,
+                    "arguments".to_owned(),
+                    BindingStorage::Local(local),
+                    BindingKind::Normal,
+                    None,
+                );
+                local
+            }
+        };
+        function.arguments_local = Some(local);
+    }
+
+    if function.scopes[parameter_scope.0]
+        .bindings
+        .iter()
+        .any(|binding| function.bindings[binding.0].name == "arguments")
+    {
+        return Ok(());
+    }
+    if function.locals.len() >= MAX_LOCAL_VARIABLES {
+        return Err(Error::new(
+            ErrorKind::JsInternal,
+            "too many local variables",
+        ));
+    }
+    let local = u16::try_from(function.locals.len())
+        .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+    function.locals.push("arguments".to_owned());
+    function.add_binding(
+        parameter_scope,
+        parameter_scope,
+        "arguments".to_owned(),
+        BindingStorage::Local(local),
+        BindingKind::Lexical { is_const: false },
+        None,
+    );
+    function.synthetic_parameter_arguments_local = Some(local);
     Ok(())
 }
 
 const fn eval_scope_kind(kind: ScopeKind) -> EvalScopeKind {
     match kind {
         ScopeKind::FunctionRoot => EvalScopeKind::FunctionRoot,
-        // Syntactic direct eval in or below this scope is rejected at parse
-        // time until the separate `<arg_var>` variable-environment ABI lands.
-        // No published eval descriptor may therefore observe this projection.
-        ScopeKind::Parameter => EvalScopeKind::FunctionRoot,
+        ScopeKind::Parameter => EvalScopeKind::Parameter,
         ScopeKind::FunctionBody => EvalScopeKind::FunctionBody,
         ScopeKind::ProgramBody => EvalScopeKind::ProgramBody,
         ScopeKind::Block => EvalScopeKind::Block,
@@ -9424,6 +9739,118 @@ fn link_eval_environments(tree: &mut FunctionTree, function_id: FunctionId) -> R
     Ok(())
 }
 
+/// QuickJS builds a caller bytecode's direct-eval closure prefix before
+/// resolving ordinary identifiers, then `add_closure_variables` appends the
+/// caller's final closure vector when eval source is compiled. Usually the
+/// early scope walk already projected every such slot. One observable exception
+/// is `arguments`: a closure created in a non-simple parameter initializer does
+/// not see the owner's body arguments binding merely because it contains eval,
+/// but an authored (or descendant-arrow) `arguments` reference can add that
+/// relay later. Append that exact late slot without inventing another function
+/// scope segment.
+fn finalize_eval_closure_suffixes(
+    tree: &mut FunctionTree,
+    function_id: FunctionId,
+) -> Result<(), Error> {
+    if tree.functions[function_id].eval_environments.is_empty() {
+        return Ok(());
+    }
+
+    let suffix = {
+        let function = &tree.functions[function_id];
+        function
+            .closure_variables
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(index, descriptor)| {
+                (!matches!(
+                    descriptor.source,
+                    ClosureSource::Global
+                        | ClosureSource::GlobalDeclaration
+                        | ClosureSource::ParentGlobal(_)
+                ))
+                .then_some((index, descriptor))
+            })
+            .map(|(index, descriptor)| {
+                let name = match descriptor.name {
+                    ClosureVariableName::Constant(name) => {
+                        match function.constants.get(name as usize) {
+                            Some(IrConstant::Primitive(Value::String(name))) => name.clone(),
+                            _ => {
+                                return Err(Error::internal(
+                                    "eval-visible closure name is not a string constant",
+                                ));
+                            }
+                        }
+                    }
+                    ClosureVariableName::None | ClosureVariableName::Atom(_) => {
+                        return Err(Error::internal(
+                            "eval-visible closure slot retained no compiler string name",
+                        ));
+                    }
+                };
+                let index = u16::try_from(index)
+                    .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"))?;
+                Ok((index, descriptor, name))
+            })
+            .collect::<Result<Vec<_>, Error>>()?
+    };
+
+    for environment in &mut tree.functions[function_id].eval_environments {
+        let used = environment
+            .scopes
+            .iter()
+            .flat_map(|scope| scope.bindings.iter())
+            .filter_map(|binding| match binding.source {
+                EvalBindingSource::Closure(index) => Some(index),
+                EvalBindingSource::Local(_) | EvalBindingSource::Argument(_) => None,
+            })
+            .collect::<Vec<_>>();
+        let mut late = Vec::new();
+        for &(index, descriptor, ref name) in &suffix {
+            if used.contains(&index) {
+                continue;
+            }
+            if descriptor.kind != ClosureVariableKind::Normal
+                || descriptor.is_lexical
+                || descriptor.is_const
+                || name.to_utf8_lossy() != "arguments"
+                || matches!(descriptor.source, ClosureSource::EvalEnvironment(_))
+            {
+                return Err(Error::internal(
+                    "unexpected late direct-eval closure suffix binding",
+                ));
+            }
+            late.push(EvalBinding {
+                name: name.clone(),
+                source: EvalBindingSource::Closure(index),
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+                is_catch_parameter: false,
+            });
+        }
+        if late.is_empty() {
+            continue;
+        }
+        let anchor = environment
+            .scopes
+            .last_mut()
+            .filter(|scope| {
+                matches!(
+                    scope.kind,
+                    EvalScopeKind::FunctionRoot | EvalScopeKind::Parameter
+                )
+            })
+            .ok_or_else(|| Error::internal("eval closure suffix has no outer function anchor"))?;
+        let mut bindings = anchor.bindings.to_vec();
+        bindings.extend(late);
+        anchor.bindings = bindings.into_boxed_slice();
+    }
+    Ok(())
+}
+
 fn link_eval_environment(
     tree: &mut FunctionTree,
     consuming_function: FunctionId,
@@ -9433,6 +9860,11 @@ fn link_eval_environment(
     let caller_kind = tree.functions[consuming_function].kind;
     let super_call_allowed = tree.functions[consuming_function].super_call_allowed;
     let super_allowed = tree.functions[consuming_function].super_allowed;
+    let current_parameter_phase = tree.functions[consuming_function]
+        .parameter_scope
+        .is_some_and(|parameter| {
+            tree.functions[consuming_function].scope_is_within(call_scope, parameter)
+        });
     let mut scope_path = Vec::<(FunctionId, ScopeId)>::new();
     let mut owner = consuming_function;
     let mut scope = call_scope;
@@ -9456,7 +9888,7 @@ fn link_eval_environment(
     }
 
     let mut scopes = Vec::with_capacity(scope_path.len());
-    let mut current_function_root = None;
+    let mut current_function_segment = None;
     for (owner, scope) in scope_path {
         let (kind, binding_snapshots, pattern_parameter_initialization) = {
             let function = &tree.functions[owner];
@@ -9468,22 +9900,26 @@ fn link_eval_environment(
             if ir_scope.kind == ScopeKind::FunctionRoot
                 && function.eval_variable_object_local.is_some()
             {
-                // Existing authored root bindings precede `<var>`. The lazy
-                // `arguments` object and private function name are the two
-                // QuickJS pseudo-bindings exposed after `<var>` to eval source.
+                // Existing authored root bindings precede `<var>`, which in
+                // turn precedes `<arg_var>`. Lazy pseudo-bindings are fallback
+                // bindings after both dynamic objects.
                 ordered.sort_by_key(|binding| {
                     let binding = &function.bindings[binding.0];
                     match binding.kind {
                         BindingKind::EvalVariableObject => 1_u8,
-                        BindingKind::FunctionName { .. } => 2,
+                        BindingKind::ArgEvalVariableObject => 2,
+                        BindingKind::FunctionName { .. } => 3,
                         BindingKind::Normal
                             if matches!(
                                 binding.storage,
                                 BindingStorage::Local(index)
                                     if function.arguments_local == Some(index)
+                                        && function
+                                            .eval_variable_object_local
+                                            .is_some_and(|object| index > object)
                             ) =>
                         {
-                            2
+                            3
                         }
                         BindingKind::Normal
                         | BindingKind::Lexical { .. }
@@ -9491,7 +9927,7 @@ fn link_eval_environment(
                     }
                 });
             }
-            let bindings = ordered
+            let mut bindings = ordered
                 .into_iter()
                 .map(|binding| {
                     function
@@ -9508,6 +9944,40 @@ fn link_eval_environment(
                         .ok_or_else(|| Error::internal("eval binding is out of bounds"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            if ir_scope.kind == ScopeKind::Parameter {
+                // The Parameter scope is deliberately parentless, but QuickJS
+                // projects a small set of activation-root pseudo bindings into
+                // eval's argument-scope closure: `<arg_var>`, HomeObject,
+                // new.target, this, and the private function-expression name.
+                // Raw arguments, body declarations, the body arguments object,
+                // and `<var>` remain excluded.
+                let mut pseudo = function.scopes[function.var_scope.0]
+                    .bindings
+                    .iter()
+                    .rev()
+                    .filter_map(|binding| function.bindings.get(binding.0))
+                    .filter(|binding| {
+                        binding.kind == BindingKind::ArgEvalVariableObject
+                            || matches!(binding.kind, BindingKind::FunctionName { .. })
+                            || matches!(binding.storage, BindingStorage::Local(index)
+                                if function.home_object_local == Some(index)
+                                    || function.new_target_local == Some(index)
+                                    || function.this_local == Some(index))
+                    })
+                    .map(|binding| {
+                        (
+                            binding.name.clone(),
+                            binding.storage,
+                            binding.kind,
+                            binding.is_catch_parameter,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                pseudo.sort_by_key(|(_, _, kind, _)| {
+                    u8::from(*kind != BindingKind::ArgEvalVariableObject)
+                });
+                bindings.extend(pseudo);
+            }
             (
                 ir_scope.kind,
                 bindings,
@@ -9534,8 +10004,10 @@ fn link_eval_environment(
 
         let scope_ordinal = u16::try_from(scopes.len())
             .map_err(|_| Error::new(ErrorKind::JsInternal, "too many eval scopes"))?;
-        if owner == consuming_function && kind == ScopeKind::FunctionRoot {
-            current_function_root = Some(scope_ordinal);
+        if owner == consuming_function
+            && matches!(kind, ScopeKind::FunctionRoot | ScopeKind::Parameter)
+        {
+            current_function_segment = Some(scope_ordinal);
         }
 
         let mut bindings = Vec::with_capacity(binding_snapshots.len());
@@ -9610,6 +10082,11 @@ fn link_eval_environment(
     // flattened external slot through any intervening eval-created function.
     let imported_profile = tree.functions[0].eval_caller_profile.clone();
     let imported_bindings = tree.functions[0].external_bindings.clone();
+    let imported_target = match imported_profile.variable_target {
+        EvalCallerVariableTarget::ExternalBinding(index) => Some(index),
+        EvalCallerVariableTarget::Global | EvalCallerVariableTarget::StrictLocal => None,
+    };
+    let mut imported_variable_target = None;
     for (scope_index, kind) in imported_profile.scope_kinds.iter().copied().enumerate() {
         let scope_index = u16::try_from(scope_index)
             .map_err(|_| Error::new(ErrorKind::JsInternal, "too many eval scopes"))?;
@@ -9619,6 +10096,8 @@ fn link_eval_environment(
             .filter(|(_, binding)| binding.scope == scope_index)
             .map(|(index, binding)| (index, binding.clone()))
             .collect::<Vec<_>>();
+        let emitted_scope = u16::try_from(scopes.len())
+            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many eval scopes"))?;
         let mut bindings = Vec::with_capacity(snapshots.len());
         for (external_index, binding) in snapshots {
             let external_index = u16::try_from(external_index)
@@ -9638,6 +10117,11 @@ fn link_eval_environment(
                 {
                     BindingKind::EvalVariableObject
                 }
+                ClosureVariableKind::ArgEvalVariableObject
+                    if !binding.is_lexical && !binding.is_const =>
+                {
+                    BindingKind::ArgEvalVariableObject
+                }
                 ClosureVariableKind::WithObject if !binding.is_lexical && !binding.is_const => {
                     BindingKind::WithObject
                 }
@@ -9645,6 +10129,7 @@ fn link_eval_environment(
                 | ClosureVariableKind::FunctionName
                 | ClosureVariableKind::GlobalFunction
                 | ClosureVariableKind::EvalVariableObject
+                | ClosureVariableKind::ArgEvalVariableObject
                 | ClosureVariableKind::WithObject => {
                     return Err(Error::internal(
                         "imported eval binding flags are inconsistent",
@@ -9674,6 +10159,15 @@ fn link_eval_environment(
                 }
                 EvalBindingSource::Closure(closure)
             };
+            if imported_target == Some(external_index)
+                && imported_variable_target
+                    .replace((emitted_scope, source))
+                    .is_some()
+            {
+                return Err(Error::internal(
+                    "imported eval variable target was projected more than once",
+                ));
+            }
             bindings.push(EvalBinding {
                 name: binding.name,
                 source,
@@ -9689,51 +10183,73 @@ fn link_eval_environment(
         });
     }
 
-    let variable_environment =
-        match caller_kind {
-            FunctionKind::Script => EvalVariableEnvironment::Global,
-            FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow => {
-                EvalVariableEnvironment::Scope(current_function_root.ok_or_else(|| {
-                    Error::internal("eval environment has no current function root")
-                })?)
-            }
-            FunctionKind::Eval(_) if caller_strict => {
-                EvalVariableEnvironment::Scope(current_function_root.ok_or_else(|| {
-                    Error::internal("strict eval environment has no current function root")
-                })?)
-            }
-            FunctionKind::Eval(EvalKind::Direct) => {
-                match tree.functions[consuming_function]
-                    .eval_caller_profile
-                    .variable_target
-                {
-                    EvalCallerVariableTarget::Global => EvalVariableEnvironment::Global,
-                    EvalCallerVariableTarget::ExternalBinding(index) => {
-                        EvalVariableEnvironment::Closure(index)
-                    }
-                    EvalCallerVariableTarget::StrictLocal => {
-                        return Err(Error::internal(
-                            "sloppy eval root retained a strict-local variable target",
-                        ));
-                    }
+    let current_function_segment = current_function_segment
+        .ok_or_else(|| Error::internal("eval environment has no current function segment"))?;
+    let variable_environment = match caller_kind {
+        FunctionKind::Script => EvalVariableEnvironment::Global,
+        FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow => {
+            if caller_strict {
+                EvalVariableEnvironment::StrictLocal(current_function_segment)
+            } else {
+                let local = if current_parameter_phase {
+                    tree.functions[consuming_function]
+                        .arg_eval_variable_object_local
+                        .ok_or_else(|| {
+                            Error::internal("parameter eval environment has no `<arg_var>` local")
+                        })?
+                } else {
+                    tree.functions[consuming_function]
+                        .eval_variable_object_local
+                        .ok_or_else(|| {
+                            Error::internal("body eval environment has no `<var>` local")
+                        })?
+                };
+                EvalVariableEnvironment::VariableObject {
+                    scope: current_function_segment,
+                    source: EvalBindingSource::Local(local),
                 }
             }
-            FunctionKind::Eval(EvalKind::Indirect) => {
-                if tree.functions[consuming_function]
-                    .eval_caller_profile
-                    .variable_target
-                    != EvalCallerVariableTarget::Global
-                {
+        }
+        FunctionKind::Eval(_) if caller_strict => {
+            EvalVariableEnvironment::StrictLocal(current_function_segment)
+        }
+        FunctionKind::Eval(EvalKind::Direct) => {
+            match tree.functions[consuming_function]
+                .eval_caller_profile
+                .variable_target
+            {
+                EvalCallerVariableTarget::Global => EvalVariableEnvironment::Global,
+                EvalCallerVariableTarget::ExternalBinding(_) => imported_variable_target
+                    .map(|(scope, source)| EvalVariableEnvironment::VariableObject {
+                        scope,
+                        source,
+                    })
+                    .ok_or_else(|| {
+                        Error::internal("sloppy eval root lost its imported variable target")
+                    })?,
+                EvalCallerVariableTarget::StrictLocal => {
                     return Err(Error::internal(
-                        "indirect eval root retained a caller variable target",
+                        "sloppy eval root retained a strict-local variable target",
                     ));
                 }
-                EvalVariableEnvironment::Global
             }
-            FunctionKind::Eval(EvalKind::None) => {
-                return Err(Error::internal("eval root has no eval kind"));
+        }
+        FunctionKind::Eval(EvalKind::Indirect) => {
+            if tree.functions[consuming_function]
+                .eval_caller_profile
+                .variable_target
+                != EvalCallerVariableTarget::Global
+            {
+                return Err(Error::internal(
+                    "indirect eval root retained a caller variable target",
+                ));
             }
-        };
+            EvalVariableEnvironment::Global
+        }
+        FunctionKind::Eval(EvalKind::None) => {
+            return Err(Error::internal("eval root has no eval kind"));
+        }
+    };
     Ok(EvalEnvironment {
         scopes: scopes.into_boxed_slice(),
         variable_environment,
@@ -9924,26 +10440,23 @@ fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
         let hoists = ordered_hoisted_functions(&tree.functions[function_id])?;
         let arguments_local = tree.functions[function_id].arguments_local;
         let eval_variable_object_local = tree.functions[function_id].eval_variable_object_local;
+        let arg_eval_variable_object_local =
+            tree.functions[function_id].arg_eval_variable_object_local;
+        let synthetic_arguments_local =
+            tree.functions[function_id].synthetic_parameter_arguments_local;
         let has_parameter_environment = tree.functions[function_id].parameter_scope.is_some();
         let has_pattern_parameters = tree.functions[function_id].pattern_parameter_initialization;
         let mut prefix = Vec::with_capacity(
             usize::from(arguments_local.is_some()) * 2
+                + usize::from(synthetic_arguments_local.is_some()) * 2
+                + usize::from(eval_variable_object_local.is_some()) * 2
+                + usize::from(arg_eval_variable_object_local.is_some()) * 2
                 + usize::from(
                     tree.functions[function_id].rest_parameter.is_some()
                         && !has_parameter_environment
                         && !has_pattern_parameters,
                 ) * 2,
         );
-        if let Some(local) = eval_variable_object_local {
-            prefix.push(SpannedIrOp {
-                op: IrOp::Bytecode(Instruction::VariableEnvironment),
-                pc_site: None,
-            });
-            prefix.push(SpannedIrOp {
-                op: IrOp::Bytecode(Instruction::PutLocal(local)),
-                pc_site: None,
-            });
-        }
         if let Some(local) = arguments_local {
             let kind = if tree.functions[function_id].strict
                 || !tree.functions[function_id].has_simple_parameter_list
@@ -9954,6 +10467,29 @@ fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
             };
             prefix.push(SpannedIrOp {
                 op: IrOp::Bytecode(Instruction::Arguments(kind)),
+                pc_site: None,
+            });
+            if let Some(synthetic) = synthetic_arguments_local {
+                prefix.push(SpannedIrOp {
+                    op: IrOp::Bytecode(Instruction::Dup),
+                    pc_site: None,
+                });
+                prefix.push(SpannedIrOp {
+                    op: IrOp::Bytecode(Instruction::InitializeLocal(synthetic)),
+                    pc_site: None,
+                });
+            }
+            prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::PutLocal(local)),
+                pc_site: None,
+            });
+        }
+        for local in [eval_variable_object_local, arg_eval_variable_object_local]
+            .into_iter()
+            .flatten()
+        {
+            prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::VariableEnvironment),
                 pc_site: None,
             });
             prefix.push(SpannedIrOp {
@@ -10732,7 +11268,13 @@ fn resolve_identifier_path(
                 });
             }
         } else if pseudo.is_none() {
-            push_owned_eval_variable_source(tree, owner, consuming_function, &mut sources)?;
+            push_owned_eval_variable_sources(
+                tree,
+                owner,
+                consuming_function,
+                terminal_scope_kind,
+                &mut sources,
+            )?;
         }
 
         let Some(parent) = tree.functions[owner].parent else {
@@ -10826,26 +11368,49 @@ fn resolved_binding_operation(
     )
 }
 
-fn push_owned_eval_variable_source(
+fn push_owned_eval_variable_sources(
     tree: &mut FunctionTree,
     defining_function: FunctionId,
     consuming_function: FunctionId,
+    terminal_scope_kind: ScopeKind,
     sources: &mut Vec<DynamicEnvironmentSource>,
 ) -> Result<(), Error> {
-    let Some(index) = tree.functions[defining_function].eval_variable_object_local else {
-        return Ok(());
+    let (body, parameter) = {
+        let function = &tree.functions[defining_function];
+        (
+            function.eval_variable_object_local,
+            function.arg_eval_variable_object_local,
+        )
     };
-    push_dynamic_environment_source(
-        tree,
-        defining_function,
-        consuming_function,
-        ResolvedBinding {
-            storage: BindingStorage::Local(index),
-            kind: BindingKind::EvalVariableObject,
-        },
-        EVAL_VARIABLE_OBJECT_LOCAL_NAME,
-        sources,
-    )
+    if terminal_scope_kind != ScopeKind::Parameter
+        && let Some(index) = body
+    {
+        push_dynamic_environment_source(
+            tree,
+            defining_function,
+            consuming_function,
+            ResolvedBinding {
+                storage: BindingStorage::Local(index),
+                kind: BindingKind::EvalVariableObject,
+            },
+            EVAL_VARIABLE_OBJECT_LOCAL_NAME,
+            sources,
+        )?;
+    }
+    if let Some(index) = parameter {
+        push_dynamic_environment_source(
+            tree,
+            defining_function,
+            consuming_function,
+            ResolvedBinding {
+                storage: BindingStorage::Local(index),
+                kind: BindingKind::ArgEvalVariableObject,
+            },
+            ARG_EVAL_VARIABLE_OBJECT_LOCAL_NAME,
+            sources,
+        )?;
+    }
+    Ok(())
 }
 
 fn push_dynamic_environment_source(
@@ -10876,12 +11441,14 @@ fn push_dynamic_environment_source(
         BindingStorage::External(closure)
     };
     let source = match (binding.kind, storage) {
-        (BindingKind::EvalVariableObject, BindingStorage::Local(index)) => {
-            DynamicEnvironmentSource::Eval(EvalVariableSource::Local(index))
-        }
-        (BindingKind::EvalVariableObject, BindingStorage::External(index)) => {
-            DynamicEnvironmentSource::Eval(EvalVariableSource::Closure(index))
-        }
+        (
+            BindingKind::EvalVariableObject | BindingKind::ArgEvalVariableObject,
+            BindingStorage::Local(index),
+        ) => DynamicEnvironmentSource::Eval(EvalVariableSource::Local(index)),
+        (
+            BindingKind::EvalVariableObject | BindingKind::ArgEvalVariableObject,
+            BindingStorage::External(index),
+        ) => DynamicEnvironmentSource::Eval(EvalVariableSource::Closure(index)),
         (BindingKind::WithObject, BindingStorage::Local(index)) => {
             DynamicEnvironmentSource::With(WithObjectSource::Local(index))
         }
@@ -10915,12 +11482,18 @@ fn resolve_eval_external_chain(
             .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"))?;
         if matches!(
             binding.kind,
-            ClosureVariableKind::EvalVariableObject | ClosureVariableKind::WithObject
+            ClosureVariableKind::EvalVariableObject
+                | ClosureVariableKind::ArgEvalVariableObject
+                | ClosureVariableKind::WithObject
         ) {
             let (kind, sentinel) = match binding.kind {
                 ClosureVariableKind::EvalVariableObject => (
                     BindingKind::EvalVariableObject,
                     EVAL_VARIABLE_OBJECT_LOCAL_NAME,
+                ),
+                ClosureVariableKind::ArgEvalVariableObject => (
+                    BindingKind::ArgEvalVariableObject,
+                    ARG_EVAL_VARIABLE_OBJECT_LOCAL_NAME,
                 ),
                 ClosureVariableKind::WithObject => {
                     (BindingKind::WithObject, WITH_OBJECT_LOCAL_NAME)
@@ -10955,6 +11528,7 @@ fn resolve_eval_external_chain(
             | ClosureVariableKind::FunctionName
             | ClosureVariableKind::GlobalFunction
             | ClosureVariableKind::EvalVariableObject
+            | ClosureVariableKind::ArgEvalVariableObject
             | ClosureVariableKind::WithObject => {
                 return Err(Error::internal(
                     "eval caller binding flags are inconsistent",
@@ -11011,7 +11585,7 @@ fn global_declaration_operation(
                 "global declaration has function-name binding metadata",
             ));
         }
-        BindingKind::EvalVariableObject => {
+        BindingKind::EvalVariableObject | BindingKind::ArgEvalVariableObject => {
             return Err(Error::internal(
                 "eval variable object reached global declaration resolution",
             ));
@@ -11331,7 +11905,9 @@ fn binding_instruction(
         )),
         (
             BindingStorage::Local(_),
-            BindingKind::EvalVariableObject | BindingKind::WithObject,
+            BindingKind::EvalVariableObject
+            | BindingKind::ArgEvalVariableObject
+            | BindingKind::WithObject,
             _,
         ) => Err(Error::internal(
             "hidden object binding reached source binding instruction selection",
@@ -11418,7 +11994,12 @@ fn closure_binding_operation(
     name: &str,
 ) -> Result<IrOp, Error> {
     match (kind, access) {
-        (BindingKind::EvalVariableObject | BindingKind::WithObject, _) => Err(Error::internal(
+        (
+            BindingKind::EvalVariableObject
+            | BindingKind::ArgEvalVariableObject
+            | BindingKind::WithObject,
+            _,
+        ) => Err(Error::internal(
             "hidden object binding reached source closure operation selection",
         )),
         (
@@ -11490,6 +12071,7 @@ const fn closure_kind(kind: BindingKind) -> ClosureVariableKind {
         BindingKind::Normal | BindingKind::Lexical { .. } => ClosureVariableKind::Normal,
         BindingKind::FunctionName { .. } => ClosureVariableKind::FunctionName,
         BindingKind::EvalVariableObject => ClosureVariableKind::EvalVariableObject,
+        BindingKind::ArgEvalVariableObject => ClosureVariableKind::ArgEvalVariableObject,
         BindingKind::WithObject => ClosureVariableKind::WithObject,
     }
 }
@@ -11547,11 +12129,13 @@ fn capture_binding_path(
     for function_id in path {
         let function = &mut tree.functions[function_id];
         let descriptor_name = if retain_name
+            || !function.eval_environments.is_empty()
             || matches!(
                 original_kind,
                 BindingKind::Lexical { .. }
                     | BindingKind::FunctionName { .. }
                     | BindingKind::EvalVariableObject
+                    | BindingKind::ArgEvalVariableObject
                     | BindingKind::WithObject
             ) {
             ClosureVariableName::Constant(ensure_string_constant(function, name)?)
@@ -11643,6 +12227,11 @@ fn binding_kind_from_closure_descriptor(descriptor: ClosureVariable) -> Result<B
         {
             Ok(BindingKind::EvalVariableObject)
         }
+        ClosureVariableKind::ArgEvalVariableObject
+            if !descriptor.is_lexical && !descriptor.is_const =>
+        {
+            Ok(BindingKind::ArgEvalVariableObject)
+        }
         ClosureVariableKind::WithObject if !descriptor.is_lexical && !descriptor.is_const => {
             Ok(BindingKind::WithObject)
         }
@@ -11650,6 +12239,7 @@ fn binding_kind_from_closure_descriptor(descriptor: ClosureVariable) -> Result<B
         | ClosureVariableKind::FunctionName
         | ClosureVariableKind::GlobalFunction
         | ClosureVariableKind::EvalVariableObject
+        | ClosureVariableKind::ArgEvalVariableObject
         | ClosureVariableKind::WithObject => Err(Error::internal(
             "captured closure descriptor has inconsistent binding metadata",
         )),
@@ -11818,7 +12408,7 @@ fn build_scope_lifecycles(
                             constant,
                             local: index,
                         });
-                    } else {
+                    } else if function.synthetic_parameter_arguments_local != Some(index) {
                         lifecycle.tdz_locals.push(index);
                     }
                 }
@@ -11991,6 +12581,12 @@ fn lower_unlinked_tree(
                     is_const: false,
                     kind: ClosureVariableKind::EvalVariableObject,
                 },
+                BindingKind::ArgEvalVariableObject => UnlinkedVariableDefinition {
+                    name: Some(JsString::from_static(ARG_EVAL_VARIABLE_OBJECT_LOCAL_NAME)),
+                    is_lexical: false,
+                    is_const: false,
+                    kind: ClosureVariableKind::ArgEvalVariableObject,
+                },
                 BindingKind::WithObject => UnlinkedVariableDefinition::with_object(),
             };
         }
@@ -12051,8 +12647,8 @@ fn lower_unlinked_tree(
                     argument_cells: argument_cells.into_boxed_slice(),
                     pattern_copies: pattern_copies.into_boxed_slice(),
                     default_sources: function.parameter_default_sources.into_boxed_slice(),
-                    synthetic_arguments_local: None,
-                    arg_eval_variable_object_local: None,
+                    synthetic_arguments_local: function.synthetic_parameter_arguments_local,
+                    arg_eval_variable_object_local: function.arg_eval_variable_object_local,
                 })
             })
             .transpose()?;

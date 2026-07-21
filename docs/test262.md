@@ -50,12 +50,12 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 35,178 pass;
+- 35,244 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 46,401 are classified as unsupported because of a feature, mode, host
+- 46,334 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 391 fail to parse, 1,538 fail at runtime, 48 fail in the harness, and six
+- 391 fail to parse, 1,539 fail at runtime, 48 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 38,421 variants to execution. That count includes variants
@@ -64,14 +64,14 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 34.48% (`35,178 / 102,037`);
-- conservative target-scope lower bound: 42.10%
-  (`35,178 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 94.66%
-  (`35,178 / 37,161`).
+- raw suite pass rate: 34.54% (`35,244 / 102,037`);
+- conservative target-scope lower bound: 42.18%
+  (`35,244 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 94.67%
+  (`35,244 / 37,228`).
 
-The 42.10% figure is the useful whole-project progress floor, not a claim that
-the engine is 42.10% conformant. The 94.66% conditional rate measures quality
+The 42.18% figure is the useful whole-project progress floor, not a claim that
+the engine is 42.18% conformant. The 94.67% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -90,7 +90,11 @@ from synchronous no-default parameter BindingPatterns, while moving 11 old
 failures to the deeper Parameter-Environment frontier and keeping the runnable
 count fixed. R3a adds 12 passes from the combined parameter-expression and
 BindingPattern path, moves two typed runtime frontiers to their already-known
-adjacent failures, and again keeps the runnable count fixed. The capability
+adjacent failures, and again keeps the runnable count fixed. R3b adds 66 passes
+from direct eval in non-simple Parameter Environments; one untagged staging
+variant reaches its known implicit-`this` runtime mismatch and two reach the
+generator-method typed runtime frontier, while the runnable count remains
+fixed. The capability
 profile currently admits 69 reviewed Test262
 feature tags and 423 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
@@ -110,9 +114,9 @@ parallel defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`a529e8bc7556be32188fa20dd9a2db121e7feba4cc0dede5d4a1882b4ba363ec`
+`41ef0f16cbae0aa05cdc0bfb13e38130b9b87b1ac958fe6e807541140cda918a`
 and
-`78839d051f03908350eded05b8ea99c6d9843f4668ec4aa3673b50ca60e710da`.
+`ecd12b154863534e80f5ac0f40ee6615f1a8743856e9e4f9ca98b44e00a793a0`.
 
 ## Milestone policy
 
@@ -2399,9 +2403,9 @@ complete-tree publication, and heap installation. It records the initialization
 boundary, named argument cells, pattern-copy map, raw default sources, future
 synthetic-arguments and eval variable-object slots, and authenticates the exact
 TDZ, initialization, default-branch, reverse-copy, body-access, closure-capture,
-and control-flow topology. Future direct eval support cannot silently reuse or
-reinterpret this ABI; direct eval in or below this environment remains a typed
-frontier for the separate `<arg_var>` variable-object milestone.
+and control-flow topology. R3a deliberately made future direct eval use a typed
+extension point instead of silently reusing this ABI. R3b below fills that
+`<arg_var>` extension.
 
 The runner-bound R3a gate derives 117 dependency-clean generated paths from
 each of four synchronous surfaces: 468 paths / 936 sloppy/strict variants, all
@@ -2439,6 +2443,69 @@ are
 `a529e8bc7556be32188fa20dd9a2db121e7feba4cc0dede5d4a1882b4ba363ec`
 and
 `78839d051f03908350eded05b8ea99c6d9843f4668ec4aa3673b50ca60e710da`.
+Async, generator, and class callables remain later callable milestones.
+
+## R3b direct eval in Parameter Environments
+
+R3b implements sloppy direct eval in and below a synchronous non-simple
+Parameter Environment with the two hidden variable objects used by pinned
+QuickJS. The body environment owns `<var>` and resolves static body bindings,
+then `<var>`, then `<arg_var>`, then outer scopes. Parameter initializers own
+`<arg_var>` and resolve static parameter cells, then `<arg_var>`, then outer
+scopes. Strict eval still uses a local declaration target.
+
+The cross-layer ABI is explicit: `ClosureVariableKind` distinguishes the
+parameter variable object, `EvalScopeKind` distinguishes the Parameter scope,
+and `EvalVariableEnvironment` carries the exact scope and source selected for
+declarations. Compiler, both publication boundaries, Heap, and VM authenticate
+the target role and sentinel rather than guessing from closure order.
+
+The implementation also reproduces QuickJS's synthetic parameter `arguments`
+cell. It remains separate from a named `arguments` formal and from the body
+binding, is initialized before either variable object, and is available to
+BindingPattern expressions and closures. A descendant arrow receives a late
+body-arguments closure suffix only for a real authored capture; eval alone does
+not synthesize one. Body closures may retain the authenticated `<arg_var>`
+object after the outer activation returns.
+
+The QuickJS oracle freezes 42 cases across parameter declaration targets,
+body/parameter object separation, deletion and lifetime, `arguments`, entry
+ordering, computed/default scope selection, and strict eval. All four oracle
+integration tests pass. The dependency-audited Test262 gate contains 71
+`noStrict` paths / 71 sloppy variants: 48 arguments/direct-eval cases, 16
+scope-open/close cases, 4 redeclaration negatives, 2 computed/default cases,
+and 1 staging composite. Oxide and pinned QuickJS `run-test262 -a -m` both run
+and pass all 71.
+
+Profile, manifest, key-set, focused TSV, and focused JSONL SHA-256 values are
+`98b5e323db1b4be493c1e05b8937a1060b71f7a1cc126087d05e88e7c2a2b335`,
+`3df66805796888dd41acbc007b2a958aba5751e9694c0deffa5f0efba19c61a1`,
+`08aeb2a3e23a3a3e1bb6e03262d730cd0bbaec1d9aff0f9cc744ebc3ce003938`,
+`e2759eb05400218abb31e257fe60bedfcb321e05bbffc0018d9042b60c87ec12`,
+and
+`a25aaf9087fc356b4b5b3d8437a52cf19166c76ec09aeefc5569f4297a93844d`.
+
+The exact R3a/R3b full join matches all 102,037 unique keys with no duplicates,
+missing or extra rows, previous-pass regressions, or same-outcome detail drift.
+It records 69 outcome changes: all 66 focused `unsupported-parser` variants
+become passes; outside the manifest,
+`staging/sm/Function/implicit-this-in-parameter-expression.js` advances to its
+known runtime mismatch and the sloppy/strict variants of
+`staging/sm/Function/function-name-method.js` advance to the generator-method
+typed runtime frontier. Passes reach 35,244 among 38,421 runnable variants.
+Full TSV/JSONL SHA-256 values are
+`41ef0f16cbae0aa05cdc0bfb13e38130b9b87b1ac958fe6e807541140cda918a`
+and
+`ecd12b154863534e80f5ac0f40ee6615f1a8743856e9e4f9ca98b44e00a793a0`.
+
+Reproduce the focused gates with:
+
+```sh
+./scripts/test-test262-parameter-direct-eval.sh
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_parameter_direct_eval -- --nocapture
+```
+
 Async, generator, and class callables remain later callable milestones.
 
 ## Runner contract
@@ -2531,6 +2598,7 @@ canonical progress report.
 ./scripts/test-test262-identifier-defaults.sh
 ./scripts/test-test262-parameter-binding-patterns.sh
 ./scripts/test-test262-parameter-expression-binding-patterns.sh
+./scripts/test-test262-parameter-direct-eval.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -2652,9 +2720,13 @@ later callable milestones.
 R3a combines standalone `=` parameter expressions with synchronous
 BindingPatterns on those surfaces. Its dependency-audited 468-path scoped gate
 passes all 936 variants; the full join adds 12 passes with zero previous-pass
-regression, reaching 35,178 passes among 38,421 runnable variants. Direct eval
-in or below the Parameter Environment remains the next independent environment
-milestone; async/generator/class forms remain later callable milestones.
+regression, reaching 35,178 passes among 38,421 runnable variants.
+R3b adds the separate `<var>` / `<arg_var>` direct-eval environment model. Its
+71-path scoped gate passes all 71 sloppy variants and its 42-case QuickJS
+differential passes all four integration tests. The full join adds 66 passes
+with zero previous-pass regression, reaching 35,244 passes among 38,421
+runnable variants. Async, generator, and class forms remain later callable
+milestones.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

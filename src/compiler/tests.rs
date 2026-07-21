@@ -8,6 +8,7 @@ use crate::heap::{
     ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
     EvalBindingSource, EvalCallerProfile, EvalCallerVariableTarget, EvalKind, EvalRootBinding,
     EvalScopeKind, EvalVariableEnvironment, ParameterDefaultSource,
+    validate_parameter_bytecode_layout,
 };
 use crate::lexer::{LexError, LexErrorKind, Lexer, Position, Span};
 use crate::object::{
@@ -4194,6 +4195,33 @@ fn eval_compiler_rejects_incoherent_caller_variable_profiles() {
 }
 
 #[test]
+fn strict_script_direct_eval_uses_a_local_eval_declaration_target() {
+    let script = compile_unlinked_script("'use strict'; eval('var x = 42; x')").unwrap();
+    assert!(script.metadata().strict);
+    assert_eq!(script.eval_environments().len(), 1);
+    assert!(script.eval_environments()[0].caller_strict);
+    assert_eq!(
+        script.eval_environments()[0].variable_environment,
+        EvalVariableEnvironment::Global
+    );
+
+    assert_eq!(
+        evaluate_in_context("'use strict'; eval('var x = 42; x')"),
+        Value::Int(42)
+    );
+    assert_eq!(
+        evaluate_in_context("'use strict'; eval('var x = 42'); typeof x"),
+        Value::String(JsString::from_static("undefined"))
+    );
+    assert_eq!(
+        evaluate_in_context(
+            "(function(){ return eval(\"'use strict'; eval('var x = 42; x')\") })()",
+        ),
+        Value::Int(42)
+    );
+}
+
+#[test]
 fn compiler_keeps_eval_lexicals_local_and_compiles_eval_declarations() {
     let root = compile_unlinked_eval_with_filename(
         "let answer = 40; const increment = 2; answer + increment",
@@ -4274,14 +4302,11 @@ fn sloppy_eval_function_owns_hidden_variable_object_and_orders_eval_pseudo_bindi
         .metadata()
         .eval_variable_object_local
         .expect("sloppy direct eval did not allocate <var>");
-    assert!(matches!(
-        function.code(),
-        [
-            Instruction::VariableEnvironment,
-            Instruction::PutLocal(local),
-            ..
-        ] if *local == object_local
-    ));
+    assert!(function.code().windows(2).any(|window| matches!(
+        window,
+        [Instruction::VariableEnvironment, Instruction::PutLocal(local)]
+            if *local == object_local
+    )));
     assert_eq!(
         function.local_definitions()[usize::from(object_local)].kind,
         ClosureVariableKind::EvalVariableObject
@@ -4337,6 +4362,71 @@ fn sloppy_eval_function_owns_hidden_variable_object_and_orders_eval_pseudo_bindi
     assert!(
         !dynamically_resolves_private_name,
         "authored private name was incorrectly wrapped by the eval variable object",
+    );
+}
+
+#[test]
+fn parameter_environment_descendant_arguments_capture_keeps_a_body_only_prologue() {
+    let script = compile_unlinked_script(
+        "(function(a=(()=>[eval('typeof arguments'),arguments.length].join('|'))()){return a})",
+    )
+    .unwrap();
+    let function = script.constants()[0].as_child().unwrap();
+    let layout = function
+        .parameter_environment()
+        .expect("outer function has a parameter environment");
+    assert_eq!(layout.synthetic_arguments_local, None);
+    validate_parameter_bytecode_layout(function.metadata(), function.code(), Some(layout)).unwrap();
+    let arguments_local = function
+        .code()
+        .windows(2)
+        .find_map(|window| match window {
+            [
+                Instruction::Arguments(ArgumentsKind::Unmapped),
+                Instruction::PutLocal(local),
+            ] => Some(*local),
+            _ => None,
+        })
+        .expect("outer function has one body-only arguments prologue");
+    assert!(
+        function.local_definitions()[usize::from(arguments_local)]
+            .name
+            .as_ref()
+            .is_some_and(|name| name.to_utf8_lossy() == "arguments")
+    );
+    let arrow = function
+        .constants()
+        .iter()
+        .find_map(|constant| constant.as_child())
+        .expect("parameter initializer arrow");
+    let binding = arrow.eval_environments()[0]
+        .scopes
+        .iter()
+        .flat_map(|scope| scope.bindings.iter())
+        .find(|binding| binding.name.to_utf8_lossy() == "arguments")
+        .expect("late arguments closure is visible to direct eval");
+    let EvalBindingSource::Closure(closure) = binding.source else {
+        panic!("late arguments binding did not use the caller closure suffix");
+    };
+    let descriptor = arrow.closure_variables()[usize::from(closure)];
+    assert!(
+        matches!(descriptor.source, ClosureSource::ParentLocal(local) if local == arguments_local)
+    );
+}
+
+#[test]
+fn binding_pattern_initializers_can_read_and_capture_parameter_arguments() {
+    assert_eq!(
+        evaluate_in_context(
+            "(function({x=arguments[0].answer}={},a=eval('0')){return x})({x:undefined,answer:42})",
+        ),
+        Value::Int(42)
+    );
+    assert_eq!(
+        evaluate_in_context(
+            "(function({x=()=>arguments[0].answer}={},a=eval('0')){return x()})({x:undefined,answer:42})",
+        ),
+        Value::Int(42)
     );
 }
 
@@ -4580,11 +4670,15 @@ fn compiler_links_and_deduplicates_direct_eval_scope_descriptors() {
         .collect::<Vec<_>>();
     assert_eq!(instructions, [(1, 0), (1, 0), (1, 1)]);
     assert_eq!(inner.eval_environments().len(), 2);
+    let eval_variable_object = inner.metadata().eval_variable_object_local.unwrap();
 
     let block = &inner.eval_environments()[0];
     assert_eq!(
         block.variable_environment,
-        EvalVariableEnvironment::Scope(2)
+        EvalVariableEnvironment::VariableObject {
+            scope: 2,
+            source: EvalBindingSource::Local(eval_variable_object),
+        }
     );
     assert!(!block.caller_strict);
     assert_eq!(block.scopes[0].kind, EvalScopeKind::Block);
@@ -4655,7 +4749,10 @@ fn compiler_links_and_deduplicates_direct_eval_scope_descriptors() {
     assert!(matches!(first_outer_lex.1, EvalBindingSource::Closure(_)));
     assert_eq!(
         inner.eval_environments()[1].variable_environment,
-        EvalVariableEnvironment::Scope(1)
+        EvalVariableEnvironment::VariableObject {
+            scope: 1,
+            source: EvalBindingSource::Local(eval_variable_object),
+        }
     );
 
     let block_only = inner
@@ -7386,6 +7483,41 @@ fn identifier_rest_parameters_publish_quickjs_length_and_entry_order() {
         arrow.code(),
         [Instruction::Rest(1), Instruction::PutArg(1), ..]
     ));
+}
+
+#[test]
+fn identifier_rest_with_direct_eval_uses_the_extended_entry_order() {
+    let script =
+        compile_unlinked_script("function f(...rest){ return eval('this.marker') + rest[0] }")
+            .unwrap();
+    let function = script.constants()[0].as_child().unwrap();
+    let eval_variable_object = function.metadata().eval_variable_object_local.unwrap();
+    let variable_environment = function
+        .code()
+        .windows(2)
+        .position(|window| {
+            matches!(
+                window,
+                [
+                    Instruction::VariableEnvironment,
+                    Instruction::PutLocal(target),
+                ] if *target == eval_variable_object
+            )
+        })
+        .unwrap();
+    let rest = function
+        .code()
+        .windows(2)
+        .position(|window| matches!(window, [Instruction::Rest(0), Instruction::PutArg(0)]))
+        .unwrap();
+    assert!(variable_environment < rest);
+
+    assert_eq!(
+        evaluate_in_context(
+            "(function(...rest){ return eval('this.marker') + rest[0] }).call({marker:40},2)",
+        ),
+        Value::Int(42)
+    );
 }
 
 #[test]

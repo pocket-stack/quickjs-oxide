@@ -416,7 +416,10 @@ fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy(
             },
         ]
         .into_boxed_slice(),
-        variable_environment: EvalVariableEnvironment::Scope(2),
+        variable_environment: EvalVariableEnvironment::VariableObject {
+            scope: 2,
+            source: EvalBindingSource::Local(1),
+        },
         caller_strict: false,
         super_call_allowed: false,
         super_allowed: false,
