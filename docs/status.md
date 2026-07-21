@@ -1,6 +1,6 @@
 # Implementation status
 
-Last audited: 2026-07-20. The completion definition remains
+Last audited: 2026-07-21. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
@@ -15,9 +15,9 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 35,144 passes and 38,421 runnable variants: 34.44% raw, a 42.06% lower
-  bound after the 18,475 pinned QuickJS target exclusions, or 94.60% among the
-  37,152 variants with a non-unsupported observed outcome. The fixed smoke now
+  has 35,166 passes and 38,421 runnable variants: 34.46% raw, a 42.08% lower
+  bound after the 18,475 pinned QuickJS target exclusions, or 94.67% among the
+  37,147 variants with a non-unsupported observed outcome. The fixed smoke now
   has 191 passes and two explicit parser-frontier results. See
   `docs/test262.md` for the denominators and why none of these figures is a
   parity claim. The first
@@ -1178,8 +1178,45 @@ claim full parity.
   Direct eval in or below a Parameter Environment remains an explicit
   `Unsupported` boundary because QuickJS parity requires independent `<var>`
   and `<arg_var>` variable objects and exact function-segment topology; it is
-  intentionally not approximated here. Parameter BindingPatterns, async,
-  generator, and class forms remain later FormalParameters milestones.
+  intentionally not approximated here.
+
+  R2z adds synchronous FormalParameters BindingPatterns on the QuickJS
+  `SKIP_HAS_ASSIGNMENT == 0` path. Ordinary declarations/expressions, object
+  methods, arrows, the `Function` constructor, and one-argument setters share
+  recursive array/object/rest lowering. Ordinary patterns reserve anonymous
+  physical argument slots; terminal rest patterns reserve no slot and retain
+  QuickJS's observable `length` quirks, including its zero-initialized
+  bytecode-record behavior when a function has no arguments or locals.
+  Pattern initialization runs in FunctionRoot before body lexical entry and
+  before body function hoists, with unmapped `arguments`, direct eval, computed
+  keys, HomeObject/`super`, iterator closing, and closure visibility matched to
+  the pinned source. Both publication boundaries authenticate the anonymous
+  reads, rest start, initialization marker, control-flow boundary, arguments
+  prologue, and the prohibition on direct body-lexical access. The complete
+  tree publisher additionally authenticates child instantiation and rejects
+  pattern-phase closure capture of a body lexical cell.
+
+  The runner-bound R2z gate derives 37 dependency-clean generated paths from
+  each of four synchronous surfaces and adds one direct unmapped-arguments
+  consumer: 149 paths / 298 variants, all passing. Its three-feature scoped
+  profile contains 12 audited negatives. Profile/manifest/key-set/focused
+  TSV/JSONL hashes are
+  `1f25a0648044b6cb3027e23bc58032b2b2fc3517cd0a29b35d5e4d0844fc6e5e`,
+  `9cb9662c3c5860e05ba2199be6d3818091e64780ccf7ef61c6d63276a6747f60`,
+  `3dbed4631c1c6670bae9256f82773b62ad7a82facda80dac0fb72187fd546e92`,
+  `9ef03e119426a2f65dadf3898e63fa48af05469e2f194f1d6c3ab20a3d8cc9db`,
+  and
+  `0a23a3e1252ddfa2cf0d8fd708b1c0646f13a8d5ccf45098b4ed102c0f3814c1`.
+  The exact full join retains all 102,037 keys and every previous pass. It adds
+  22 passes, moves 11 old failures to the explicit Parameter-Environment
+  frontier, and changes only 14 same-frontier diagnostics. Passes reach 35,166
+  among 38,421 runnable variants; full TSV/JSONL hashes are
+  `5d85f32719d07937a0e352cc665911c94014ae1f910292100821692c9cbe4546`
+  and
+  `2818623121c2991151fdb0c055090283fd5f131e5dcfdd135b97fcdb77df708c`.
+  BindingPatterns whose FormalParameters contain a standalone `=` require the
+  independent Parameter Environment and are the next R3a boundary; async,
+  generator, and class forms remain later callable milestones.
   One entry-prologue composition debt also remains. R2i fixes the pseudo-local
   group itself to QuickJS's HomeObject, `new.target`, then `this` order, but the
   compiler still installs
@@ -4675,6 +4712,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-catch-binding.sh
 ./scripts/test-test262-identifier-rest.sh
 ./scripts/test-test262-identifier-defaults.sh
+./scripts/test-test262-parameter-binding-patterns.sh
 ./scripts/test-test262-full.sh
 ```
 

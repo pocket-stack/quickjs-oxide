@@ -11,7 +11,6 @@ impl<'source> Parser<'source> {
         let function_span = self.current().span;
         let parent = self.current_function;
         let parent_strict = self.functions[parent].strict;
-        let mut parameters = Vec::new();
         let mut parameter_tokens = Vec::new();
         let child = self.functions.len();
         let parent_scope = self.functions[parent].current_scope;
@@ -52,7 +51,6 @@ impl<'source> Parser<'source> {
                     ));
                 };
                 validate_identifier(&identifier, token.span, false, IdentifierContext::Argument)?;
-                parameters.push(identifier.value.clone());
                 self.register_plain_identifier_parameter(identifier.value.clone(), token.span)?;
                 parameter_tokens.push((identifier, token.span));
                 self.advance()?;
@@ -62,16 +60,53 @@ impl<'source> Parser<'source> {
                 if !self.consume_punctuator(Punctuator::RightParen)? {
                     loop {
                         let is_rest = self.consume_punctuator(Punctuator::Ellipsis)?;
-                        if matches!(
-                            self.current().kind,
-                            TokenKind::Punctuator(Punctuator::LeftBracket | Punctuator::LeftBrace)
-                        ) {
-                            let feature = if is_rest {
-                                "arrow rest destructuring parameters are not implemented yet"
+                        let pattern = match self.current().kind {
+                            TokenKind::Punctuator(Punctuator::LeftBracket) => Some(true),
+                            TokenKind::Punctuator(Punctuator::LeftBrace) => Some(false),
+                            _ => None,
+                        };
+                        if let Some(array_pattern) = pattern {
+                            let has_assignment = if array_pattern {
+                                self.array_parameter_binding_has_assignment()
                             } else {
-                                "arrow destructuring parameters are not implemented yet"
+                                self.object_parameter_binding_has_assignment()
                             };
-                            return Err(self.unsupported_here(feature));
+                            if has_assignment == Some(true)
+                                || self.current_ir().parameter_scope.is_some()
+                            {
+                                return Err(self.unsupported_here(
+                                    "arrow BindingPatterns with parameter expressions are not implemented yet",
+                                ));
+                            }
+                            let span = self.current().span;
+                            self.activate_pattern_parameter_initialization()?;
+                            if is_rest {
+                                let start = self.register_rest_pattern_parameter()?;
+                                if array_pattern {
+                                    self.parse_array_rest_parameter_binding_pattern(start)?;
+                                } else {
+                                    self.parse_object_rest_parameter_binding_pattern(start)?;
+                                }
+                                if !self.is_punctuator(Punctuator::RightParen) {
+                                    return Err(self.syntax_here("expecting ')'"));
+                                }
+                                self.advance()?;
+                                break;
+                            }
+                            let argument = self.append_pattern_parameter(span)?;
+                            if array_pattern {
+                                self.parse_array_parameter_binding_pattern(argument)?;
+                            } else {
+                                self.parse_object_parameter_binding_pattern(argument)?;
+                            }
+                            if self.consume_punctuator(Punctuator::RightParen)? {
+                                break;
+                            }
+                            self.expect_punctuator(Punctuator::Comma)?;
+                            if self.consume_punctuator(Punctuator::RightParen)? {
+                                break;
+                            }
+                            continue;
                         }
                         let token = self.current().clone();
                         let TokenKind::Identifier(identifier) = token.kind else {
@@ -83,15 +118,10 @@ impl<'source> Parser<'source> {
                             false,
                             IdentifierContext::Argument,
                         )?;
-                        if parameters.len() >= MAX_LOCAL_VARIABLES {
-                            return Err(Error::new(ErrorKind::JsInternal, "too many arguments")
-                                .with_span(source_span(token.span)));
-                        }
-                        parameters.push(identifier.value.clone());
                         parameter_tokens.push((identifier, token.span));
-                        let parameter = parameters
+                        let parameter = parameter_tokens
                             .last()
-                            .cloned()
+                            .map(|(identifier, _)| identifier.value.clone())
                             .ok_or_else(|| Error::internal("arrow parameter disappeared"))?;
                         self.advance()?;
                         if is_rest {
@@ -148,6 +178,7 @@ impl<'source> Parser<'source> {
                 validate_identifier(identifier, *span, true, IdentifierContext::Argument)?;
             }
         }
+        let parameters = &self.functions[child].parameter_names;
         for (index, parameter) in parameters.iter().enumerate() {
             if parameters[..index].contains(parameter) {
                 return Err(Error::syntax(

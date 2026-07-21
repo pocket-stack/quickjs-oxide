@@ -5,6 +5,7 @@ enum BindingSite {
     Declaration,
     Iteration(ForIterationKind),
     Catch,
+    Parameter,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +28,7 @@ enum ObjectBindingPropertyKey<'source> {
 struct BindingPatternScan<'source> {
     following: Token<'source>,
     has_object_rest: bool,
+    has_assignment: bool,
 }
 
 /// Prepared DestructuringAssignmentTarget.  The operands represented here
@@ -348,6 +350,24 @@ impl<'source> Parser<'source> {
             .is_some_and(|scan| scan.has_object_rest)
     }
 
+    pub(super) fn array_parameter_binding_has_assignment(&self) -> Option<bool> {
+        self.parameter_binding_has_assignment(Punctuator::LeftBracket)
+    }
+
+    pub(super) fn object_parameter_binding_has_assignment(&self) -> Option<bool> {
+        self.parameter_binding_has_assignment(Punctuator::LeftBrace)
+    }
+
+    fn parameter_binding_has_assignment(&self, opening: Punctuator) -> Option<bool> {
+        self.binding_pattern_scan(opening).map(|scan| {
+            scan.has_assignment
+                || matches!(
+                    scan.following.kind,
+                    TokenKind::Punctuator(Punctuator::Equal)
+                )
+        })
+    }
+
     fn binding_pattern_following_token(&self, opening: Punctuator) -> Option<Token<'source>> {
         self.binding_pattern_scan(opening)
             .map(|scan| scan.following)
@@ -369,6 +389,7 @@ impl<'source> Parser<'source> {
         let mut goal = LexicalGoal::Div;
         let mut regexp_allowed = true;
         let mut has_object_rest = false;
+        let mut has_assignment = false;
 
         loop {
             let requested_goal = goal;
@@ -395,6 +416,9 @@ impl<'source> Parser<'source> {
                 && matches!(token.kind, TokenKind::Punctuator(Punctuator::Ellipsis))
             {
                 has_object_rest = true;
+            }
+            if matches!(token.kind, TokenKind::Punctuator(Punctuator::Equal)) {
+                has_assignment = true;
             }
 
             match &token.kind {
@@ -429,6 +453,7 @@ impl<'source> Parser<'source> {
                         return Some(BindingPatternScan {
                             following: lexer.next_token().ok()?,
                             has_object_rest,
+                            has_assignment,
                         });
                     }
                 }
@@ -445,6 +470,7 @@ impl<'source> Parser<'source> {
                         return Some(BindingPatternScan {
                             following: lexer.next_token().ok()?,
                             has_object_rest,
+                            has_assignment,
                         });
                     }
                 }
@@ -537,6 +563,62 @@ impl<'source> Parser<'source> {
             var_initializer: None,
             is_destructuring: true,
         })
+    }
+
+    pub(super) fn parse_array_parameter_binding_pattern(
+        &mut self,
+        argument: u16,
+    ) -> Result<(), Error> {
+        self.parse_parameter_binding_pattern(argument, BindingPatternKind::Array)
+    }
+
+    pub(super) fn parse_object_parameter_binding_pattern(
+        &mut self,
+        argument: u16,
+    ) -> Result<(), Error> {
+        self.parse_parameter_binding_pattern(argument, BindingPatternKind::Object)
+    }
+
+    pub(super) fn parse_array_rest_parameter_binding_pattern(
+        &mut self,
+        start: u16,
+    ) -> Result<(), Error> {
+        self.parse_rest_parameter_binding_pattern(start, BindingPatternKind::Array)
+    }
+
+    pub(super) fn parse_object_rest_parameter_binding_pattern(
+        &mut self,
+        start: u16,
+    ) -> Result<(), Error> {
+        self.parse_rest_parameter_binding_pattern(start, BindingPatternKind::Object)
+    }
+
+    fn parse_rest_parameter_binding_pattern(
+        &mut self,
+        start: u16,
+        pattern: BindingPatternKind,
+    ) -> Result<(), Error> {
+        self.emit_instruction(Instruction::Rest(start))?;
+        self.parse_binding_pattern(
+            pattern,
+            ForAssignmentDeclaration::Var,
+            false,
+            BindingSite::Parameter,
+        )
+    }
+
+    fn parse_parameter_binding_pattern(
+        &mut self,
+        argument: u16,
+        pattern: BindingPatternKind,
+    ) -> Result<(), Error> {
+        self.emit_instruction(Instruction::GetArg(argument))?;
+        self.parse_binding_pattern(
+            pattern,
+            ForAssignmentDeclaration::Var,
+            false,
+            BindingSite::Parameter,
+        )
     }
 
     fn parse_assignment_pattern(&mut self, pattern: BindingPatternKind) -> Result<(), Error> {
@@ -1181,7 +1263,15 @@ impl<'source> Parser<'source> {
                     )?;
                 }
                 ForAssignmentDeclaration::Var => {
-                    self.register_var_binding(&name, token.span, self.current().span)?;
+                    if site == BindingSite::Parameter {
+                        self.register_pattern_parameter_binding(
+                            &name,
+                            token.span,
+                            self.current().span,
+                        )?;
+                    } else {
+                        self.register_var_binding(&name, token.span, self.current().span)?;
+                    }
                 }
                 ForAssignmentDeclaration::Assignment => {
                     unreachable!("array binding declaration was validated before parsing elements")
@@ -1295,7 +1385,7 @@ impl<'source> Parser<'source> {
 
         while !self.is_punctuator(Punctuator::RightBrace) {
             if self.is_punctuator(Punctuator::Ellipsis) {
-                self.parse_object_binding_rest(declaration, is_const, has_rest)?;
+                self.parse_object_binding_rest(declaration, is_const, site, has_rest)?;
                 break;
             }
 
@@ -1330,6 +1420,7 @@ impl<'source> Parser<'source> {
                     property,
                     declaration,
                     is_const,
+                    site,
                     computed_key_is_canonical,
                 )?;
             }
@@ -1518,6 +1609,7 @@ impl<'source> Parser<'source> {
         property: ObjectBindingPropertyKey<'source>,
         declaration: ForAssignmentDeclaration,
         is_const: bool,
+        site: BindingSite,
         computed_key_is_canonical: bool,
     ) -> Result<(), Error> {
         let (fixed_key, property_span, shorthand) = match property {
@@ -1587,7 +1679,15 @@ impl<'source> Parser<'source> {
                 false,
             )?,
             ForAssignmentDeclaration::Var => {
-                self.register_var_binding(&name, token.span, self.current().span)?;
+                if site == BindingSite::Parameter {
+                    self.register_pattern_parameter_binding(
+                        &name,
+                        token.span,
+                        self.current().span,
+                    )?;
+                } else {
+                    self.register_var_binding(&name, token.span, self.current().span)?;
+                }
             }
             ForAssignmentDeclaration::Assignment => {
                 unreachable!("object binding declaration was validated before parsing properties")
@@ -1671,6 +1771,7 @@ impl<'source> Parser<'source> {
         &mut self,
         declaration: ForAssignmentDeclaration,
         is_const: bool,
+        site: BindingSite,
         has_rest: bool,
     ) -> Result<(), Error> {
         let rest_span = self.current().span;
@@ -1716,7 +1817,15 @@ impl<'source> Parser<'source> {
                 false,
             )?,
             ForAssignmentDeclaration::Var => {
-                self.register_var_binding(&identifier.value, token.span, self.current().span)?;
+                if site == BindingSite::Parameter {
+                    self.register_pattern_parameter_binding(
+                        &identifier.value,
+                        token.span,
+                        self.current().span,
+                    )?;
+                } else {
+                    self.register_var_binding(&identifier.value, token.span, self.current().span)?;
+                }
             }
             ForAssignmentDeclaration::Assignment => {
                 unreachable!("object binding declaration was validated before parsing rest")

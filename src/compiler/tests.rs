@@ -6914,6 +6914,221 @@ fn implicit_arguments_binding_is_lazy_and_precedes_body_hoists() {
 }
 
 #[test]
+fn parameter_binding_patterns_publish_quickjs_anonymous_argument_abi() {
+    let script =
+        compile_unlinked_script("(function(left,[a,b],{c},...[rest]){return left+a+b+c+rest})")
+            .unwrap();
+    let function = script.constants()[0].as_child().unwrap();
+    assert_eq!(function.metadata().argument_count, 3);
+    assert_eq!(function.metadata().defined_argument_count, 4);
+    assert_eq!(function.metadata().rest_parameter, None);
+    assert_eq!(function.metadata().rest_pattern_start, Some(3));
+    assert_eq!(function.metadata().parameter_environment_local_count, 0);
+    assert_eq!(function.metadata().pattern_argument_count, 2);
+    let marker = usize::try_from(
+        function
+            .metadata()
+            .parameter_pattern_end
+            .expect("pattern initialization marker"),
+    )
+    .unwrap();
+    assert!(matches!(
+        function.code().get(marker),
+        Some(Instruction::Nop)
+    ));
+    assert_eq!(
+        function
+            .argument_definitions()
+            .iter()
+            .map(|definition| definition.name.is_some())
+            .collect::<Vec<_>>(),
+        vec![true, false, false]
+    );
+    assert_eq!(
+        function
+            .code()
+            .iter()
+            .enumerate()
+            .filter_map(|(pc, instruction)| match instruction {
+                Instruction::GetArg(argument) if pc < marker => Some(*argument),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert!(
+        function.code()[..marker]
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::Rest(3)))
+    );
+    assert!(!function.code()[marker + 1..].iter().any(|instruction| {
+        matches!(
+            instruction,
+            Instruction::GetArg(1)
+                | Instruction::PutArg(1)
+                | Instruction::SetArg(1)
+                | Instruction::GetArg(2)
+                | Instruction::PutArg(2)
+                | Instruction::SetArg(2)
+        )
+    }));
+
+    let rest_only = compile_unlinked_script("(function(...[a,b]){})").unwrap();
+    let rest_only = rest_only.constants()[0].as_child().unwrap();
+    assert_eq!(rest_only.metadata().argument_count, 0);
+    assert_eq!(rest_only.metadata().defined_argument_count, 1);
+    assert_eq!(rest_only.metadata().rest_pattern_start, Some(0));
+    assert_eq!(rest_only.metadata().pattern_argument_count, 0);
+    assert_eq!(rest_only.argument_definitions(), []);
+}
+
+#[test]
+fn parameter_binding_patterns_execute_across_sync_function_forms() {
+    assert_eq!(
+        evaluate_in_context(
+            r#"(function(){
+                var out=[];
+                function declaration([a],{b}){return a+b}
+                out.push(declaration([40],{b:2}));
+                out.push((function([a]){return a+2})([40]));
+                out.push((([a])=>a+2)([40]));
+                out.push(({base:40,method([a]){return this.base+a}}).method([2]));
+                out.push(Function('[a]','return a+2')([40]));
+                var assigned;
+                var setter={set value([a]){assigned=a}};
+                setter.value=[42];
+                out.push(assigned);
+                return out.join('|');
+            })()"#,
+        ),
+        Value::String(JsString::from_static("42|42|42|42|42|42"))
+    );
+
+    assert_eq!(
+        evaluate_in_context(
+            r#"(function([a,,[b,...tail]],{x:y,[String('z')]:z,...rest}){
+                return a+'|'+b+'|'+tail.join(',')+'|'+y+'|'+z+'|'+rest.extra;
+            })([1,0,[2,3,4]],{x:5,z:6,extra:7})"#,
+        ),
+        Value::String(JsString::from_static("1|2|3,4|5|6|7"))
+    );
+
+    assert_eq!(
+        evaluate_in_context(
+            r#"(function(...[a,b]){
+                return a+b+'|'+arguments.length+'|'+(function(...[]){}).length+'|'+
+                    (function(...{}){}).length+'|'+(function(...[[]]){}).length+'|'+
+                    (function(...[,]){}).length+'|'+(function(...[x]){}).length+'|'+
+                    (function(...{x}){}).length+'|'+(function(...[]){var x}).length+'|'+
+                    (function(...[]){return arguments}).length+'|'+
+                    (function(...[]){return this}).length+'|'+
+                    (function(...[]){return new.target}).length+'|'+
+                    (function(...[]){return function(){return this}}).length+'|'+
+                    (function(...[]){return ()=>this}).length+'|'+
+                    (function named(...[]){return named}).length+'|'+
+                    (function(x,...[]){}).length+'|'+(function(x,...[y]){}).length+'|'+
+                    (function mixed([x],...rest){return x+rest[0]+'|'+mixed.length})([40],2);
+            })(40,2)"#,
+        ),
+        Value::String(JsString::from_static(
+            "42|2|0|0|0|0|1|1|1|1|1|1|0|1|1|2|2|42|1"
+        ))
+    );
+}
+
+#[test]
+fn parameter_binding_patterns_follow_quickjs_scope_arguments_and_hoist_order() {
+    assert_eq!(
+        evaluate_in_context(
+            r#"(function(){
+                var results=[];
+                results.push((function([a]){
+                    arguments[0]=[9];
+                    a=7;
+                    return a+'|'+arguments[0][0];
+                })([1]));
+                results.push((function([a]){var a;return a})([42]));
+                results.push((function([a]){
+                    function a(){return 42}
+                    return typeof a+'|'+a();
+                })([1]));
+                var key='outer';
+                results.push((function({[String(key)]:value}){
+                    var key='body';
+                    return value;
+                })({undefined:42,outer:1}));
+                var lexical='outer';
+                results.push((function({[lexical]:value}){
+                    let lexical='body';
+                    return value;
+                })({outer:42}));
+                results.push((function([a]){return eval('a')})([42]));
+                results.push((function({[eval('"key"')]:value}){
+                    return value;
+                })({key:42}));
+                results.push((function({[arguments]:arguments}){
+                    return arguments;
+                })({undefined:1,"[object Arguments]":42}));
+                results.push((function({[(()=>eval('typeof key'))()]:value}){
+                    var key='body';
+                    return value;
+                })({undefined:42}));
+                results.push((function(){
+                    return (([a])=>a+arguments[1])([40]);
+                })(0,2));
+                return results.join(';');
+            })()"#,
+        ),
+        Value::String(JsString::from_static(
+            "7|9;42;function|42;42;42;42;42;42;42;42"
+        ))
+    );
+
+    assert_eq!(
+        evaluate_in_context(
+            r#"(function(){
+                var saved;
+                function capture(fn){saved=fn;return 'undefined'}
+                return (function({[capture(()=>key)]:value}){
+                    var key='body';
+                    return value+'|'+saved();
+                })({undefined:42});
+            })()"#,
+        ),
+        Value::String(JsString::from_static("42|body"))
+    );
+}
+
+#[test]
+fn parameter_binding_pattern_assignment_prescan_matches_quickjs_token_rule() {
+    assert_eq!(
+        evaluate_in_context(
+            "(function(){var key=0;return (function({[(key+=1)]:value}){return value})({1:42})})()",
+        ),
+        Value::Int(42)
+    );
+
+    for source in [
+        "(function([a=1]){})",
+        "(function([a],b=1){})",
+        "(function(a=1,[b]){})",
+        "(function({[(key=1)]:value}){})",
+        "(function(...[a=1]){})",
+        "(([a=1])=>a)",
+        "({method({value=1}){}})",
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Unsupported, "{source}");
+        assert!(
+            error.message().contains("parameter")
+                && (error.message().contains("BindingPattern")
+                    || error.message().contains("BindingPatterns")),
+            "{source}: {error}"
+        );
+    }
+}
+
+#[test]
 fn identifier_rest_parameters_publish_quickjs_length_and_entry_order() {
     let script = compile_unlinked_script(
         "(function(left,...rest){ function rest(){ return 42; } return arguments; })",
@@ -8673,11 +8888,13 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
         "({a(){}})",
         "({a(...rest){return rest}})",
         "({a(value=1){}})",
+        "({a({value}){}})",
         "({get(){}})",
         "({set(value){}})",
         "({[1](){}})",
         "({get a(){}})",
         "({set a(value){}})",
+        "({set a({value}){}})",
         "({get ['a'](){}})",
         "({set [1](value,){}})",
         "({get get(){}})",
@@ -8692,14 +8909,9 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
     for source in [
         "({*a(){}})",
         "({async a(){}})",
-        "({a({value}){}})",
         "({set a(value=1){}})",
-        "({set a({value}){}})",
         "({get a(value=1){}})",
-        "({get a({value}){}})",
         "({set a(left=1,right){}})",
-        "({set a({left},right){}})",
-        "({set a([left],right){}})",
     ] {
         assert!(
             compile_unlinked_script(source)
@@ -8711,10 +8923,13 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
     }
     for source in [
         "({get a(value){}})",
+        "({get a({value}){}})",
         "({get a(...rest){}})",
         "({set a(){}})",
         "({set a(...rest){}})",
         "({set a(left,right){}})",
+        "({set a({left},right){}})",
+        "({set a([left],right){}})",
         "({set a(value,value){}})",
     ] {
         assert_eq!(

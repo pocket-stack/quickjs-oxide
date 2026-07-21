@@ -564,18 +564,38 @@ pub enum BytecodeConstant {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct FunctionMetadata {
     pub argument_count: u16,
-    /// Number of leading parameters before the first default/rest parameter.
-    /// This is the observable `length`, distinct from frame slot count.
+    /// QuickJS's observable `length`, distinct from frame slot count. A
+    /// no-default terminal rest BindingPattern normally increments this even
+    /// though it owns no physical slot. QuickJS loses that increment when the
+    /// compiled function has zero arguments and zero locals because its
+    /// zero-initialized bytecode record skips the metadata copy. Direct
+    /// owning-function HomeObject/`this`/`new.target` reads count as QuickJS
+    /// hidden locals even though this bytecode model does not allocate them a
+    /// slot.
     pub defined_argument_count: u16,
     /// Physical argument slot initialized by authenticated `Rest` bytecode.
     /// `None` means this bytecode has no identifier rest parameter.
     pub rest_parameter: Option<u16>,
+    /// First trailing argument consumed by a terminal rest BindingPattern.
+    /// This equals `argument_count` because QuickJS allocates no named frame
+    /// slot for the rest Array before destructuring it.
+    pub rest_pattern_start: Option<u16>,
     /// Number of leading locals owned by the independent parameter
     /// environment. Identifier-default lowering currently keeps one mutable
     /// lexical cell per physical argument, so a non-zero value must equal
     /// `argument_count`; keeping the boundary explicit makes publication reject
     /// bytecode which merely resembles a default-parameter prologue.
     pub parameter_environment_local_count: u16,
+    /// Number of physical argument slots whose authored formal is a
+    /// BindingPattern rather than a BindingIdentifier. The exact positions are
+    /// cross-checked against anonymous argument definitions at publication;
+    /// keeping the count explicit distinguishes semantic anonymity from
+    /// ordinary bytecode whose debug argument names were erased.
+    pub pattern_argument_count: u16,
+    /// Bytecode PC of the authenticated Nop separating non-default parameter
+    /// BindingPattern evaluation from the authored body. `None` means every
+    /// physical argument slot has a direct BindingIdentifier.
+    pub parameter_pattern_end: Option<u32>,
     pub local_count: u16,
     /// Synthetic local initialized to the active function object for a named
     /// function expression. This is the typed equivalent of QuickJS's
@@ -615,6 +635,29 @@ pub struct FunctionMetadata {
     pub constructor_kind: ConstructorKind,
 }
 
+/// Whether pinned QuickJS copies `defined_arg_count` out of its parser record.
+///
+/// QuickJS gates that copy on `arg_count + var_count > 0`. Most Rust locals
+/// correspond directly to QuickJS variables, but owning-function HomeObject,
+/// `this`, and `new.target` reads use dedicated bytecode here while QuickJS
+/// resolves each to a hidden variable. This predicate keeps the observable
+/// empty terminal rest-BindingPattern `length` quirk shared by lowering and
+/// both publication boundaries.
+pub(crate) fn quickjs_copies_defined_argument_count(
+    argument_count: usize,
+    local_count: usize,
+    code: &[Instruction],
+) -> bool {
+    argument_count != 0
+        || local_count != 0
+        || code.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::PushHomeObject | Instruction::PushThis | Instruction::PushNewTarget
+            )
+        })
+}
+
 /// Authenticate the call-frame ABI encoded by formal-parameter bytecode.
 ///
 /// This stays independent from compiler IR so both unlinked publication and
@@ -626,12 +669,77 @@ pub(crate) fn validate_parameter_bytecode_layout(
     metadata: &FunctionMetadata,
     code: &[Instruction],
 ) -> Result<Option<usize>, &'static str> {
-    if metadata.defined_argument_count > metadata.argument_count {
+    if metadata.rest_parameter.is_some() && metadata.rest_pattern_start.is_some() {
+        return Err("identifier rest and rest BindingPattern metadata overlap");
+    }
+    let maximum_defined_arguments = metadata
+        .argument_count
+        .checked_add(u16::from(metadata.rest_pattern_start.is_some()))
+        .ok_or("defined argument count overflowed function argument slots")?;
+    if metadata.defined_argument_count > maximum_defined_arguments {
         return Err("defined argument count exceeds function argument slots");
+    }
+    if metadata
+        .rest_pattern_start
+        .is_some_and(|start| start != metadata.argument_count)
+    {
+        return Err("rest BindingPattern metadata disagrees with argument slots");
+    }
+    if metadata.pattern_argument_count > metadata.argument_count {
+        return Err("pattern argument count exceeds function argument slots");
+    }
+    let has_pattern_parameters =
+        metadata.pattern_argument_count != 0 || metadata.rest_pattern_start.is_some();
+    if let Some(end) = metadata.parameter_pattern_end {
+        if !has_pattern_parameters {
+            return Err("parameter initialization marker has no BindingPattern");
+        }
+        let end = usize::try_from(end)
+            .map_err(|_| "parameter BindingPattern marker is outside bytecode")?;
+        if !matches!(code.get(end), Some(Instruction::Nop)) {
+            return Err("parameter BindingPattern marker is outside bytecode");
+        }
+    } else if has_pattern_parameters {
+        return Err("parameter BindingPattern has no initialization marker");
     }
 
     let parameter_locals = metadata.parameter_environment_local_count;
     if parameter_locals == 0 {
+        if metadata.parameter_pattern_end.is_some() {
+            return match (metadata.rest_parameter, metadata.rest_pattern_start) {
+                (Some(rest), None)
+                    if rest.checked_add(1) == Some(metadata.argument_count)
+                        && metadata.defined_argument_count == rest =>
+                {
+                    Ok(None)
+                }
+                (Some(_), None) => Err("rest parameter metadata disagrees with argument slots"),
+                (None, Some(start))
+                    if metadata.defined_argument_count
+                        == if quickjs_copies_defined_argument_count(
+                            usize::from(metadata.argument_count),
+                            usize::from(metadata.local_count),
+                            code,
+                        ) {
+                            start.saturating_add(1)
+                        } else {
+                            0
+                        } =>
+                {
+                    Ok(None)
+                }
+                (None, Some(_)) => {
+                    Err("rest BindingPattern metadata disagrees with function length")
+                }
+                (None, None) if metadata.defined_argument_count == metadata.argument_count => {
+                    Ok(None)
+                }
+                (None, None) => Err("default parameter metadata has no parameter environment"),
+                (Some(_), Some(_)) => {
+                    Err("identifier rest and rest BindingPattern metadata overlap")
+                }
+            };
+        }
         return match metadata.rest_parameter {
             Some(rest)
                 if rest.checked_add(1) == Some(metadata.argument_count)
@@ -684,7 +792,10 @@ pub(crate) fn validate_parameter_bytecode_layout(
         };
     }
 
-    if parameter_locals != metadata.argument_count
+    if metadata.pattern_argument_count != 0
+        || metadata.parameter_pattern_end.is_some()
+        || metadata.rest_pattern_start.is_some()
+        || parameter_locals != metadata.argument_count
         || parameter_locals > metadata.local_count
         || metadata.defined_argument_count >= metadata.argument_count
         || metadata.rest_parameter.is_some_and(|rest| {
@@ -993,6 +1104,192 @@ pub(crate) fn validate_parameter_bytecode_layout(
         return Err("function body jumps back into parameter initialization");
     }
     Ok(Some(body_pc))
+}
+
+/// Authenticate the source-only argument slots and entry segment used by a
+/// non-default formal-parameter BindingPattern.
+///
+/// QuickJS gives an ordinary BindingPattern one anonymous physical argument
+/// slot, while a terminal rest BindingPattern owns no slot at all. The public
+/// argument definitions are therefore required to agree with the bytecode
+/// segment instead of treating a missing argument name as harmless debug
+/// metadata. `parameter_pattern_end` is the compiler-authored boundary: entry
+/// destructuring may branch within it, but the function body cannot re-enter
+/// it and cannot read an anonymous raw argument after destructuring.
+pub(crate) fn validate_pattern_parameter_bytecode_layout(
+    metadata: &FunctionMetadata,
+    code: &[Instruction],
+    unnamed_arguments: &[bool],
+    lexical_locals: &[bool],
+) -> Result<(), &'static str> {
+    if unnamed_arguments.len() != usize::from(metadata.argument_count) {
+        return Err("argument definition count does not match bytecode metadata");
+    }
+    if lexical_locals.len() != usize::from(metadata.local_count) {
+        return Err("local definition count does not match bytecode metadata");
+    }
+
+    let has_pattern = metadata.pattern_argument_count != 0 || metadata.rest_pattern_start.is_some();
+    if !has_pattern {
+        return if metadata.parameter_pattern_end.is_some() {
+            Err("parameter initialization marker has no BindingPattern")
+        } else {
+            Ok(())
+        };
+    }
+    if unnamed_arguments.iter().filter(|unnamed| **unnamed).count()
+        != usize::from(metadata.pattern_argument_count)
+    {
+        return Err("pattern argument definitions disagree with bytecode metadata");
+    }
+    let Some(marker) = metadata.parameter_pattern_end else {
+        return Err("parameter BindingPattern has no initialization marker");
+    };
+    if metadata.parameter_environment_local_count != 0 {
+        return Err("parameter BindingPattern escaped into a parameter environment");
+    }
+    let marker = usize::try_from(marker)
+        .map_err(|_| "parameter BindingPattern marker is outside bytecode")?;
+    if !matches!(code.get(marker), Some(Instruction::Nop)) {
+        return Err("parameter BindingPattern marker is outside bytecode");
+    }
+
+    if let Some(rest) = metadata.rest_parameter {
+        if unnamed_arguments
+            .get(usize::from(rest))
+            .copied()
+            .unwrap_or(true)
+        {
+            return Err("identifier rest parameter has no named argument slot");
+        }
+    }
+
+    let mut arguments_pcs =
+        code.iter()
+            .enumerate()
+            .filter_map(|(pc, instruction)| match instruction {
+                Instruction::Arguments(kind) => Some((pc, *kind)),
+                _ => None,
+            });
+    if let Some((pc, kind)) = arguments_pcs.next() {
+        let expected_pc = usize::from(metadata.eval_variable_object_local.is_some()) * 2;
+        if arguments_pcs.next().is_some()
+            || pc != expected_pc
+            || pc >= marker
+            || kind != crate::bytecode::ArgumentsKind::Unmapped
+            || !matches!(
+                code.get(pc + 1),
+                Some(Instruction::PutLocal(local)) if *local < metadata.local_count
+            )
+        {
+            return Err("parameter BindingPattern contains a malformed arguments prologue");
+        }
+    }
+
+    let expected_unnamed_reads = unnamed_arguments
+        .iter()
+        .enumerate()
+        .filter_map(|(argument, unnamed)| unnamed.then_some(argument))
+        .collect::<Vec<_>>();
+    let mut unnamed_reads = Vec::with_capacity(expected_unnamed_reads.len());
+    let mut rest_operations = Vec::new();
+    for (pc, instruction) in code.iter().enumerate() {
+        let local = match instruction {
+            Instruction::GetLocal(local)
+            | Instruction::PutLocal(local)
+            | Instruction::SetLocal(local)
+            | Instruction::SetLocalUninitialized(local)
+            | Instruction::GetLocalCheck(local)
+            | Instruction::InitializeLocal(local)
+            | Instruction::PutLocalCheck(local)
+            | Instruction::SetLocalCheck(local)
+            | Instruction::CloseLocal(local) => Some(*local),
+            _ => None,
+        };
+        if pc < marker
+            && local.is_some_and(|local| {
+                lexical_locals
+                    .get(usize::from(local))
+                    .copied()
+                    .unwrap_or(false)
+            })
+        {
+            return Err("parameter BindingPattern bytecode accessed a body lexical local");
+        }
+
+        match instruction {
+            Instruction::GetArg(argument)
+                if unnamed_arguments
+                    .get(usize::from(*argument))
+                    .copied()
+                    .unwrap_or(false) =>
+            {
+                if pc >= marker {
+                    return Err("function body reads an anonymous pattern argument slot");
+                }
+                unnamed_reads.push(usize::from(*argument));
+            }
+            Instruction::PutArg(argument) | Instruction::SetArg(argument)
+                if unnamed_arguments
+                    .get(usize::from(*argument))
+                    .copied()
+                    .unwrap_or(false) =>
+            {
+                return Err("bytecode writes an anonymous pattern argument slot");
+            }
+            Instruction::Rest(start) => rest_operations.push((pc, *start)),
+            _ => {}
+        }
+
+        let target = match instruction {
+            Instruction::Goto(target)
+            | Instruction::IfFalse(target)
+            | Instruction::IfTrue(target)
+            | Instruction::Catch(target)
+            | Instruction::Gosub(target) => Some(*target),
+            _ => None,
+        };
+        if let Some(target) = target {
+            let target = usize::try_from(target)
+                .map_err(|_| "parameter BindingPattern jump target is outside bytecode")?;
+            if pc < marker && target > marker {
+                return Err("parameter BindingPattern escaped its initialization segment");
+            }
+            if pc > marker && target <= marker {
+                return Err("function body jumps back into pattern initialization");
+            }
+        }
+    }
+    if unnamed_reads != expected_unnamed_reads {
+        return Err("anonymous pattern arguments do not have exact entry reads");
+    }
+
+    match (metadata.rest_parameter, metadata.rest_pattern_start) {
+        (Some(rest), None)
+            if matches!(
+                rest_operations.as_slice(),
+                [(pc, start)]
+                    if *pc < marker
+                        && *start == rest
+                        && matches!(code.get(*pc + 1), Some(Instruction::PutArg(target)) if *target == rest)
+            ) =>
+        {
+            Ok(())
+        }
+        (Some(_), None) => Err("identifier rest parameter has no exact pattern-segment entry"),
+        (None, Some(rest))
+            if matches!(
+                rest_operations.as_slice(),
+                [(pc, start)] if *pc < marker && *start == rest
+            ) =>
+        {
+            Ok(())
+        }
+        (None, Some(_)) => Err("rest BindingPattern has no exact entry initialization"),
+        (None, None) if rest_operations.is_empty() => Ok(()),
+        (None, None) => Err("rest opcode has no authenticated parameter metadata"),
+        (Some(_), Some(_)) => Err("identifier rest and rest BindingPattern metadata overlap"),
+    }
 }
 
 /// QuickJS eval type carried by one synthetic eval bytecode root.
@@ -4218,6 +4515,23 @@ impl Heap {
                 "local definition count does not match bytecode metadata",
             ));
         }
+        let unnamed_arguments = bytecode
+            .argument_definitions
+            .iter()
+            .map(|definition| definition.name.is_none())
+            .collect::<Vec<_>>();
+        let lexical_locals = bytecode
+            .local_definitions
+            .iter()
+            .map(|definition| definition.is_lexical)
+            .collect::<Vec<_>>();
+        validate_pattern_parameter_bytecode_layout(
+            &bytecode.metadata,
+            &bytecode.code,
+            &unnamed_arguments,
+            &lexical_locals,
+        )
+        .map_err(HeapError::Invariant)?;
         for definition in bytecode.argument_definitions.iter() {
             if definition.kind != ClosureVariableKind::Normal
                 || definition.is_lexical
@@ -9868,6 +10182,107 @@ mod tests {
             ))
         );
         assert_eq!(heap.counts().function_bytecode_nodes, 0);
+
+        heap.release_context(context).unwrap();
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn bytecode_allocation_rejects_pattern_access_to_body_lexical() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let prototype = leaf(&mut heap, shape);
+        let context = heap
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+                prototype,
+            ))
+            .unwrap();
+        heap.release_object(prototype).unwrap();
+
+        let code: Rc<[Instruction]> = Rc::from([
+            Instruction::GetArg(0),
+            Instruction::Drop,
+            Instruction::GetLocalCheck(1),
+            Instruction::Drop,
+            Instruction::Nop,
+            Instruction::GetLocal(0),
+            Instruction::Return,
+        ]);
+        let mut malformed = bytecode(&code, context, Vec::new(), Vec::new());
+        malformed.metadata.argument_count = 1;
+        malformed.metadata.defined_argument_count = 1;
+        malformed.metadata.pattern_argument_count = 1;
+        malformed.metadata.parameter_pattern_end = Some(4);
+        malformed.metadata.local_count = 2;
+        malformed.metadata.max_stack = 1;
+        malformed.argument_definitions = Rc::from([VariableDefinition {
+            name: None,
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+        }]);
+        malformed.local_definitions = Rc::from([
+            VariableDefinition {
+                name: None,
+                is_lexical: false,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            },
+            VariableDefinition {
+                name: None,
+                is_lexical: true,
+                is_const: false,
+                kind: ClosureVariableKind::Normal,
+            },
+        ]);
+        assert_eq!(
+            heap.allocate_function_bytecode(malformed),
+            Err(HeapError::Invariant(
+                "parameter BindingPattern bytecode accessed a body lexical local"
+            ))
+        );
+
+        let empty_rest = |body_value, defined_argument_count| {
+            let code: Rc<[Instruction]> = Rc::from([
+                Instruction::Rest(0),
+                Instruction::Drop,
+                Instruction::Nop,
+                body_value,
+                Instruction::Return,
+            ]);
+            let mut candidate = bytecode(&code, context, Vec::new(), Vec::new());
+            candidate.metadata.defined_argument_count = defined_argument_count;
+            candidate.metadata.rest_pattern_start = Some(0);
+            candidate.metadata.parameter_pattern_end = Some(2);
+            candidate.metadata.max_stack = 1;
+            candidate
+        };
+        let direct_this = heap
+            .allocate_function_bytecode(empty_rest(Instruction::PushThis, 1))
+            .unwrap();
+        heap.release_function_bytecode(direct_this).unwrap();
+        let direct_new_target = heap
+            .allocate_function_bytecode(empty_rest(Instruction::PushNewTarget, 1))
+            .unwrap();
+        heap.release_function_bytecode(direct_new_target).unwrap();
+        let mut direct_home_object = empty_rest(Instruction::PushHomeObject, 1);
+        direct_home_object.metadata.needs_home_object = true;
+        let direct_home_object = heap.allocate_function_bytecode(direct_home_object).unwrap();
+        heap.release_function_bytecode(direct_home_object).unwrap();
+        assert_eq!(
+            heap.allocate_function_bytecode(empty_rest(Instruction::Undefined, 1)),
+            Err(HeapError::Invariant(
+                "rest BindingPattern metadata disagrees with function length"
+            ))
+        );
+        assert_eq!(
+            heap.allocate_function_bytecode(empty_rest(Instruction::PushThis, 0)),
+            Err(HeapError::Invariant(
+                "rest BindingPattern metadata disagrees with function length"
+            ))
+        );
 
         heap.release_context(context).unwrap();
         heap.release_shape(shape).unwrap();

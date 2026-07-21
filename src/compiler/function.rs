@@ -183,7 +183,6 @@ impl<'source> Parser<'source> {
         self.current_function = child;
         self.expect_punctuator(Punctuator::LeftParen)?;
 
-        let mut parameters = Vec::new();
         let mut parameter_tokens = Vec::new();
         let mut parameter_list_end_span = self.current().span;
         if self.is_punctuator(Punctuator::RightParen) {
@@ -192,39 +191,74 @@ impl<'source> Parser<'source> {
             loop {
                 let is_rest = self.consume_punctuator(Punctuator::Ellipsis)?;
                 if let Some(method_kind) = options.object_method_kind {
-                    let role = match method_kind {
-                        DefineMethodKind::Method => "object method",
-                        DefineMethodKind::Getter => "object getter",
-                        DefineMethodKind::Setter => "object setter",
-                    };
                     if is_rest && !matches!(method_kind, DefineMethodKind::Method) {
                         return Err(Error::syntax(
                             "invalid number of arguments for getter or setter",
                             source_span(self.current().span),
                         ));
                     }
-                    if matches!(
-                        self.current().kind,
-                        TokenKind::Punctuator(Punctuator::LeftBracket | Punctuator::LeftBrace)
-                    ) {
-                        let feature = if is_rest {
-                            "rest destructuring parameters"
-                        } else {
-                            "destructuring parameters"
-                        };
-                        return Err(self.unsupported_here(format!(
-                            "{role} {feature} are not implemented yet"
-                        )));
+                }
+                let pattern = match self.current().kind {
+                    TokenKind::Punctuator(Punctuator::LeftBracket) => Some(true),
+                    TokenKind::Punctuator(Punctuator::LeftBrace) => Some(false),
+                    _ => None,
+                };
+                if let Some(array_pattern) = pattern {
+                    let has_assignment = if array_pattern {
+                        self.array_parameter_binding_has_assignment()
+                    } else {
+                        self.object_parameter_binding_has_assignment()
+                    };
+                    if has_assignment == Some(true) || self.current_ir().parameter_scope.is_some() {
+                        return Err(self.unsupported_here(
+                            "parameter BindingPatterns with parameter expressions are not implemented yet",
+                        ));
                     }
-                } else if is_rest
-                    && matches!(
-                        self.current().kind,
-                        TokenKind::Punctuator(Punctuator::LeftBracket | Punctuator::LeftBrace)
-                    )
-                {
-                    return Err(self.unsupported_here(
-                        "rest destructuring parameters are not implemented yet",
-                    ));
+                    let span = self.current().span;
+                    self.activate_pattern_parameter_initialization()?;
+                    if is_rest {
+                        let start = self.register_rest_pattern_parameter()?;
+                        if array_pattern {
+                            self.parse_array_rest_parameter_binding_pattern(start)?;
+                        } else {
+                            self.parse_object_rest_parameter_binding_pattern(start)?;
+                        }
+                        if !self.is_punctuator(Punctuator::RightParen) {
+                            return Err(self.syntax_here("expecting ')'"));
+                        }
+                        parameter_list_end_span = self.current().span;
+                        self.advance()?;
+                        break;
+                    }
+                    let argument = self.append_pattern_parameter(span)?;
+                    if array_pattern {
+                        self.parse_array_parameter_binding_pattern(argument)?;
+                    } else {
+                        self.parse_object_parameter_binding_pattern(argument)?;
+                    }
+
+                    if !self.consume_punctuator(Punctuator::Comma)? {
+                        if !self.is_punctuator(Punctuator::RightParen) {
+                            return Err(Error::syntax(
+                                "expecting ','",
+                                source_span(self.current().span),
+                            ));
+                        }
+                        parameter_list_end_span = self.current().span;
+                        self.advance()?;
+                        break;
+                    }
+                    if self.is_punctuator(Punctuator::RightParen) {
+                        if options.allow_trailing_parameter_comma {
+                            parameter_list_end_span = self.current().span;
+                            self.advance()?;
+                            break;
+                        }
+                        return Err(self.unsupported_here(
+                            "a trailing comma in this parameter list is not implemented yet",
+                        ));
+                    }
+                    continue;
                 }
                 let token = self.current().clone();
                 let TokenKind::Identifier(identifier) = token.kind else {
@@ -233,7 +267,6 @@ impl<'source> Parser<'source> {
                 validate_identifier(&identifier, token.span, false, IdentifierContext::Argument)?;
                 parameter_tokens.push((identifier.clone(), token.span));
                 let parameter = identifier.value;
-                parameters.push(parameter.clone());
                 self.advance()?;
                 if is_rest {
                     self.register_rest_identifier_parameter(parameter, token.span)?;
@@ -286,7 +319,7 @@ impl<'source> Parser<'source> {
         }
         if options
             .accessor_parameter_count
-            .is_some_and(|expected| parameters.len() != expected)
+            .is_some_and(|expected| self.functions[child].parameters.len() != expected)
         {
             return Err(Error::syntax(
                 "invalid number of arguments for getter or setter",
@@ -325,6 +358,7 @@ impl<'source> Parser<'source> {
             }
         }
         if options.reject_duplicate_parameters || strict || !has_simple_parameter_list {
+            let parameters = &self.functions[child].parameter_names;
             for (index, parameter) in parameters.iter().enumerate() {
                 if parameters[..index].contains(parameter) {
                     return Err(Error::syntax(

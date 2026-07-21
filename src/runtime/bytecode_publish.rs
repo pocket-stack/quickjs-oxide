@@ -8,7 +8,7 @@ use crate::bytecode::{
 };
 use crate::heap::{
     EvalBinding, EvalCallerProfile, EvalCallerVariableTarget, EvalKind, EvalRootBinding, EvalScope,
-    validate_parameter_bytecode_layout,
+    validate_parameter_bytecode_layout, validate_pattern_parameter_bytecode_layout,
 };
 
 /// Intern every semantically retained direct-eval binding name while keeping
@@ -1045,7 +1045,10 @@ fn verify_unlinked_tree_with_root(
                 "bytecode local count exceeds QuickJS JS_MAX_LOCAL_VARS",
             )));
         }
-        if is_root && function.metadata().rest_parameter.is_some() {
+        if is_root
+            && (function.metadata().rest_parameter.is_some()
+                || function.metadata().rest_pattern_start.is_some())
+        {
             return Err(RuntimeError::Engine(Error::internal(
                 "rest parameter metadata disagrees with argument slots",
             )));
@@ -1055,9 +1058,31 @@ fn verify_unlinked_tree_with_root(
                 "synthetic root contains parameter-environment metadata",
             )));
         }
+        if is_root
+            && (function.metadata().pattern_argument_count != 0
+                || function.metadata().parameter_pattern_end.is_some())
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "synthetic root contains formal-parameter metadata",
+            )));
+        }
         let parameter_body_pc =
             validate_parameter_bytecode_layout(function.metadata(), function.code())
                 .map_err(|message| RuntimeError::Engine(Error::internal(message)))?;
+        let pattern_body_pc = function
+            .metadata()
+            .parameter_pattern_end
+            .map(|marker| {
+                usize::try_from(marker)
+                    .ok()
+                    .and_then(|marker| marker.checked_add(1))
+                    .ok_or_else(|| {
+                        RuntimeError::Engine(Error::internal(
+                            "parameter BindingPattern marker is outside bytecode",
+                        ))
+                    })
+            })
+            .transpose()?;
         let parameter_initializer_capture_locals = parameter_body_pc.map(|_| {
             let mut allowed = vec![false; usize::from(function.metadata().local_count)];
             allowed[..usize::from(function.metadata().parameter_environment_local_count)]
@@ -1099,7 +1124,9 @@ fn verify_unlinked_tree_with_root(
             allowed
         });
         if (function.metadata().rest_parameter.is_some()
-            || function.metadata().parameter_environment_local_count != 0)
+            || function.metadata().rest_pattern_start.is_some()
+            || function.metadata().parameter_environment_local_count != 0
+            || function.metadata().parameter_pattern_end.is_some())
             && let Some((pc, _)) = function.code().iter().enumerate().find(|(_, instruction)| {
                 matches!(instruction, crate::bytecode::Instruction::Arguments(_))
             })
@@ -1206,6 +1233,23 @@ fn verify_unlinked_tree_with_root(
                 "local definition count does not match bytecode metadata",
             )));
         }
+        let unnamed_arguments = function
+            .argument_definitions()
+            .iter()
+            .map(|definition| definition.name.is_none())
+            .collect::<Vec<_>>();
+        let lexical_locals = function
+            .local_definitions()
+            .iter()
+            .map(|definition| definition.is_lexical)
+            .collect::<Vec<_>>();
+        validate_pattern_parameter_bytecode_layout(
+            function.metadata(),
+            function.code(),
+            &unnamed_arguments,
+            &lexical_locals,
+        )
+        .map_err(|message| RuntimeError::Engine(Error::internal(message)))?;
         for definition in function.argument_definitions() {
             if definition.kind != ClosureVariableKind::Normal
                 || definition.is_lexical
@@ -2311,6 +2355,33 @@ fn verify_unlinked_tree_with_root(
                             {
                                 return Err(RuntimeError::Engine(Error::internal(
                                     "parameter initializer closure captured a body-only local",
+                                )));
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let Some(body_pc) = pattern_body_pc {
+                        let instantiated_in_pattern = closure_pcs.iter().any(|pc| *pc < body_pc);
+                        match descriptor.source {
+                            ClosureSource::ParentArgument(index)
+                                if function
+                                    .argument_definitions()
+                                    .get(usize::from(index))
+                                    .is_some_and(|definition| definition.name.is_none()) =>
+                            {
+                                return Err(RuntimeError::Engine(Error::internal(
+                                    "child closure captured an anonymous pattern argument slot",
+                                )));
+                            }
+                            ClosureSource::ParentLocal(index)
+                                if instantiated_in_pattern
+                                    && function
+                                        .local_definitions()
+                                        .get(usize::from(index))
+                                        .is_some_and(|definition| definition.is_lexical) =>
+                            {
+                                return Err(RuntimeError::Engine(Error::internal(
+                                    "pattern initializer closure captured a body lexical local",
                                 )));
                             }
                             _ => {}
@@ -4115,6 +4186,418 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("metadata disagrees with argument slots")
+        );
+    }
+
+    #[test]
+    fn parameter_binding_pattern_metadata_authenticates_anonymous_entry_segments() {
+        let ordinary_metadata = || FunctionMetadata {
+            argument_count: 1,
+            defined_argument_count: 1,
+            pattern_argument_count: 1,
+            parameter_pattern_end: Some(2),
+            local_count: 1,
+            max_stack: 1,
+            ..FunctionMetadata::default()
+        };
+        let ordinary_code = || {
+            vec![
+                Instruction::GetArg(0),
+                Instruction::PutLocal(0),
+                Instruction::Nop,
+                Instruction::GetLocal(0),
+                Instruction::Return,
+            ]
+        };
+        let make_ordinary = |code, metadata| {
+            UnlinkedFunction::new(code, Vec::new(), metadata).with_variable_definitions(
+                vec![UnlinkedVariableDefinition::ordinary(None)],
+                vec![UnlinkedVariableDefinition::ordinary(Some(
+                    JsString::from_static("value"),
+                ))],
+            )
+        };
+        verify_unlinked_tree(&script_with_child(make_ordinary(
+            ordinary_code(),
+            ordinary_metadata(),
+        )))
+        .unwrap();
+
+        let capture_child = |source, name: Option<&'static str>, is_lexical| {
+            let constants = name
+                .map(|name| {
+                    vec![
+                        UnlinkedConstant::primitive(Value::String(JsString::from_static(name)))
+                            .unwrap(),
+                    ]
+                })
+                .unwrap_or_default();
+            UnlinkedFunction::new_with_closure_variables(
+                vec![
+                    if is_lexical {
+                        Instruction::GetVarRefCheck(0)
+                    } else {
+                        Instruction::GetVarRef(0)
+                    },
+                    Instruction::Return,
+                ],
+                constants,
+                FunctionMetadata {
+                    closure_count: 1,
+                    max_stack: 1,
+                    ..FunctionMetadata::default()
+                },
+                vec![ClosureVariable {
+                    source,
+                    name: if name.is_some() {
+                        ClosureVariableName::Constant(0)
+                    } else {
+                        ClosureVariableName::None
+                    },
+                    is_lexical,
+                    is_const: false,
+                    kind: ClosureVariableKind::Normal,
+                }],
+            )
+        };
+        let pattern_closure_code = || {
+            vec![
+                Instruction::GetArg(0),
+                Instruction::PutLocal(0),
+                Instruction::FClosure(0),
+                Instruction::Drop,
+                Instruction::Nop,
+                Instruction::GetLocal(0),
+                Instruction::Return,
+            ]
+        };
+        let mut closure_metadata = ordinary_metadata();
+        closure_metadata.parameter_pattern_end = Some(4);
+
+        let valid_root_capture = UnlinkedFunction::new(
+            pattern_closure_code(),
+            vec![UnlinkedConstant::child(capture_child(
+                ClosureSource::ParentLocal(0),
+                Some("value"),
+                false,
+            ))],
+            closure_metadata,
+        )
+        .with_variable_definitions(
+            vec![UnlinkedVariableDefinition::ordinary(None)],
+            vec![UnlinkedVariableDefinition::ordinary(Some(
+                JsString::from_static("value"),
+            ))],
+        );
+        verify_unlinked_tree(&script_with_child(valid_root_capture)).unwrap();
+
+        let anonymous_argument_capture = UnlinkedFunction::new(
+            pattern_closure_code(),
+            vec![UnlinkedConstant::child(capture_child(
+                ClosureSource::ParentArgument(0),
+                None,
+                false,
+            ))],
+            closure_metadata,
+        )
+        .with_variable_definitions(
+            vec![UnlinkedVariableDefinition::ordinary(None)],
+            vec![UnlinkedVariableDefinition::ordinary(Some(
+                JsString::from_static("value"),
+            ))],
+        );
+        assert!(
+            verify_unlinked_tree(&script_with_child(anonymous_argument_capture))
+                .unwrap_err()
+                .to_string()
+                .contains("anonymous pattern argument slot")
+        );
+
+        let body_lexical_capture = UnlinkedFunction::new(
+            pattern_closure_code(),
+            vec![UnlinkedConstant::child(capture_child(
+                ClosureSource::ParentLocal(1),
+                Some("body"),
+                true,
+            ))],
+            FunctionMetadata {
+                local_count: 2,
+                ..closure_metadata
+            },
+        )
+        .with_variable_definitions(
+            vec![UnlinkedVariableDefinition::ordinary(None)],
+            vec![
+                UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("value"))),
+                UnlinkedVariableDefinition::lexical(Some(JsString::from_static("body")), false),
+            ],
+        );
+        assert!(
+            verify_unlinked_tree(&script_with_child(body_lexical_capture))
+                .unwrap_err()
+                .to_string()
+                .contains("pattern initializer closure captured a body lexical local")
+        );
+
+        let direct_body_lexical_access = UnlinkedFunction::new(
+            vec![
+                Instruction::GetArg(0),
+                Instruction::Drop,
+                Instruction::GetLocalCheck(1),
+                Instruction::Drop,
+                Instruction::Nop,
+                Instruction::GetLocal(0),
+                Instruction::Return,
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                local_count: 2,
+                parameter_pattern_end: Some(4),
+                ..ordinary_metadata()
+            },
+        )
+        .with_variable_definitions(
+            vec![UnlinkedVariableDefinition::ordinary(None)],
+            vec![
+                UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("value"))),
+                UnlinkedVariableDefinition::lexical(Some(JsString::from_static("body")), false),
+            ],
+        );
+        assert!(
+            verify_unlinked_tree(&script_with_child(direct_body_lexical_access))
+                .unwrap_err()
+                .to_string()
+                .contains("accessed a body lexical local")
+        );
+
+        let rest_pattern = UnlinkedFunction::new(
+            vec![
+                Instruction::Rest(0),
+                Instruction::PutLocal(0),
+                Instruction::Nop,
+                Instruction::GetLocal(0),
+                Instruction::Return,
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                argument_count: 0,
+                defined_argument_count: 1,
+                rest_pattern_start: Some(0),
+                parameter_pattern_end: Some(2),
+                local_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_variable_definitions(
+            Vec::new(),
+            vec![UnlinkedVariableDefinition::ordinary(Some(
+                JsString::from_static("value"),
+            ))],
+        );
+        verify_unlinked_tree(&script_with_child(rest_pattern)).unwrap();
+
+        let empty_rest_metadata = |defined_argument_count| FunctionMetadata {
+            defined_argument_count,
+            rest_pattern_start: Some(0),
+            parameter_pattern_end: Some(2),
+            max_stack: 1,
+            ..FunctionMetadata::default()
+        };
+        let empty_rest_code = |body_value| {
+            vec![
+                Instruction::Rest(0),
+                Instruction::Drop,
+                Instruction::Nop,
+                body_value,
+                Instruction::Return,
+            ]
+        };
+        verify_unlinked_tree(&script_with_child(UnlinkedFunction::new(
+            empty_rest_code(Instruction::Undefined),
+            Vec::new(),
+            empty_rest_metadata(0),
+        )))
+        .unwrap();
+        for pseudo_read in [
+            Instruction::PushHomeObject,
+            Instruction::PushThis,
+            Instruction::PushNewTarget,
+        ] {
+            let mut metadata = empty_rest_metadata(1);
+            metadata.needs_home_object = matches!(&pseudo_read, Instruction::PushHomeObject);
+            verify_unlinked_tree(&script_with_child(UnlinkedFunction::new(
+                empty_rest_code(pseudo_read),
+                Vec::new(),
+                metadata,
+            )))
+            .unwrap();
+        }
+        assert!(
+            verify_unlinked_tree(&script_with_child(UnlinkedFunction::new(
+                empty_rest_code(Instruction::Undefined),
+                Vec::new(),
+                empty_rest_metadata(1),
+            )))
+            .unwrap_err()
+            .to_string()
+            .contains("metadata disagrees with function length")
+        );
+        assert!(
+            verify_unlinked_tree(&script_with_child(UnlinkedFunction::new(
+                empty_rest_code(Instruction::PushThis),
+                Vec::new(),
+                empty_rest_metadata(0),
+            )))
+            .unwrap_err()
+            .to_string()
+            .contains("metadata disagrees with function length")
+        );
+
+        let mut missing_marker = ordinary_metadata();
+        missing_marker.parameter_pattern_end = None;
+        assert!(
+            verify_unlinked_tree(&script_with_child(make_ordinary(
+                ordinary_code(),
+                missing_marker,
+            )))
+            .unwrap_err()
+            .to_string()
+            .contains("no initialization marker")
+        );
+
+        let named_slot = UnlinkedFunction::new(ordinary_code(), Vec::new(), ordinary_metadata())
+            .with_variable_definitions(
+                vec![UnlinkedVariableDefinition::ordinary(Some(
+                    JsString::from_static("forged"),
+                ))],
+                vec![UnlinkedVariableDefinition::ordinary(Some(
+                    JsString::from_static("value"),
+                ))],
+            );
+        assert!(
+            verify_unlinked_tree(&script_with_child(named_slot))
+                .unwrap_err()
+                .to_string()
+                .contains("definitions disagree with bytecode metadata")
+        );
+
+        let mut missing_read = ordinary_code();
+        missing_read[0] = Instruction::Undefined;
+        assert!(
+            verify_unlinked_tree(&script_with_child(make_ordinary(
+                missing_read,
+                ordinary_metadata(),
+            )))
+            .unwrap_err()
+            .to_string()
+            .contains("exact entry reads")
+        );
+
+        let mut body_read = ordinary_code();
+        body_read.insert(3, Instruction::GetArg(0));
+        body_read.insert(4, Instruction::Drop);
+        assert!(
+            verify_unlinked_tree(&script_with_child(make_ordinary(
+                body_read,
+                ordinary_metadata(),
+            )))
+            .unwrap_err()
+            .to_string()
+            .contains("function body reads")
+        );
+
+        let mut anonymous_write = ordinary_code();
+        anonymous_write.insert(2, Instruction::Undefined);
+        anonymous_write.insert(3, Instruction::PutArg(0));
+        let mut write_metadata = ordinary_metadata();
+        write_metadata.parameter_pattern_end = Some(4);
+        assert!(
+            verify_unlinked_tree(&script_with_child(make_ordinary(
+                anonymous_write,
+                write_metadata,
+            )))
+            .unwrap_err()
+            .to_string()
+            .contains("writes an anonymous")
+        );
+
+        let escaped_segment = vec![
+            Instruction::GetArg(0),
+            Instruction::Drop,
+            Instruction::Goto(4),
+            Instruction::Nop,
+            Instruction::Undefined,
+            Instruction::Return,
+        ];
+        let mut escaped_metadata = ordinary_metadata();
+        escaped_metadata.parameter_pattern_end = Some(3);
+        assert!(
+            verify_unlinked_tree(&script_with_child(make_ordinary(
+                escaped_segment,
+                escaped_metadata,
+            )))
+            .unwrap_err()
+            .to_string()
+            .contains("escaped its initialization segment")
+        );
+
+        let body_reentry = vec![
+            Instruction::GetArg(0),
+            Instruction::Drop,
+            Instruction::Nop,
+            Instruction::Goto(2),
+        ];
+        assert!(
+            verify_unlinked_tree(&script_with_child(make_ordinary(
+                body_reentry,
+                ordinary_metadata(),
+            )))
+            .unwrap_err()
+            .to_string()
+            .contains("jumps back into pattern initialization")
+        );
+
+        let mapped_arguments = UnlinkedFunction::new(
+            vec![
+                Instruction::Arguments(crate::bytecode::ArgumentsKind::Mapped),
+                Instruction::PutLocal(0),
+                Instruction::GetArg(0),
+                Instruction::PutLocal(1),
+                Instruction::Nop,
+                Instruction::GetLocal(1),
+                Instruction::Return,
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                argument_count: 1,
+                defined_argument_count: 1,
+                pattern_argument_count: 1,
+                parameter_pattern_end: Some(4),
+                local_count: 2,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_variable_definitions(
+            vec![UnlinkedVariableDefinition::ordinary(None)],
+            vec![
+                UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("arguments"))),
+                UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("value"))),
+            ],
+        );
+        assert!(
+            verify_unlinked_tree(&script_with_child(mapped_arguments))
+                .unwrap_err()
+                .to_string()
+                .contains("malformed arguments prologue")
+        );
+
+        assert!(
+            verify_unlinked_tree(&make_ordinary(ordinary_code(), ordinary_metadata()))
+                .unwrap_err()
+                .to_string()
+                .contains("synthetic root contains formal-parameter metadata")
         );
     }
 

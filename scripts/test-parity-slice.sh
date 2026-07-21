@@ -105,6 +105,7 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/test-test262-catch-binding.sh
 ./scripts/test-test262-identifier-rest.sh
 ./scripts/test-test262-identifier-defaults.sh
+./scripts/test-test262-parameter-binding-patterns.sh
 ./scripts/test-test262-full.sh
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ./scripts/check-rust-only.sh

@@ -66,6 +66,10 @@ const TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256: &str =
     "5c98d19ccb72c7e2c577ddc98ee4ac83d43a0ba7d49175a8ebe271866d0feab6";
 const TEST262_IDENTIFIER_DEFAULTS_MANIFEST_SHA256: &str =
     "264bb2b25e7502eed86f8a5df1b3fe8c0ccdeecd43171af390764b5e053a6472";
+const TEST262_PARAMETER_BINDING_PATTERNS_PROFILE_SHA256: &str =
+    "1f25a0648044b6cb3027e23bc58032b2b2fc3517cd0a29b35d5e4d0844fc6e5e";
+const TEST262_PARAMETER_BINDING_PATTERNS_MANIFEST_SHA256: &str =
+    "9cb9662c3c5860e05ba2199be6d3818091e64780ccf7ef61c6d63276a6747f60";
 const TEST262_IDENTIFIER_REST_PROFILE_SHA256: &str =
     "da6a76cb6338019f5c233e252bf6d40b7f3eb5c4235a6967cf78f9a74917dced";
 const TEST262_IDENTIFIER_REST_MANIFEST_SHA256: &str =
@@ -603,6 +607,7 @@ enum OxideProfileKind {
     ArrayAssignmentFlat,
     CatchBinding,
     IdentifierDefaults,
+    ParameterBindingPatterns,
     IdentifierRest,
     ObjectAssignmentFlat,
     ObjectAssignmentNested,
@@ -648,6 +653,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
             OxideProfileKind::IdentifierDefaults,
         ),
         (
+            root.join("tests/test262-parameter-binding-patterns.conf"),
+            OxideProfileKind::ParameterBindingPatterns,
+        ),
+        (
             root.join("tests/test262-identifier-rest.conf"),
             OxideProfileKind::IdentifierRest,
         ),
@@ -690,7 +699,7 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         }
     }
     Err(format!(
-        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
         path.display()
     ))
 }
@@ -963,6 +972,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256,
             "tests/test262-identifier-defaults.txt",
             TEST262_IDENTIFIER_DEFAULTS_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::ParameterBindingPatterns => verify_scoped_pinned_profile(
+            options,
+            "parameter BindingPatterns",
+            TEST262_PARAMETER_BINDING_PATTERNS_PROFILE_SHA256,
+            "tests/test262-parameter-binding-patterns.txt",
+            TEST262_PARAMETER_BINDING_PATTERNS_MANIFEST_SHA256,
         ),
         OxideProfileKind::IdentifierRest => {
             verify_sha256(
@@ -1492,7 +1508,8 @@ mod cli_tests {
         TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_NESTED_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_REST_PROFILE_SHA256, TEST262_OBJECT_BINDING_PROFILE_SHA256,
-        TEST262_OBJECT_REST_BINDING_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
+        TEST262_OBJECT_REST_BINDING_PROFILE_SHA256,
+        TEST262_PARAMETER_BINDING_PATTERNS_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
         TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, default_worker_count, identify_oxide_profile,
         parse_args, verify_oxide_profile,
     };
@@ -1604,6 +1621,11 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-identifier-defaults.conf")).unwrap(),
             OxideProfileKind::IdentifierDefaults
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-parameter-binding-patterns.conf"))
+                .unwrap(),
+            OxideProfileKind::ParameterBindingPatterns
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-identifier-rest.conf")).unwrap(),
@@ -1913,6 +1935,53 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-identifier-defaults.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_parameter_binding_patterns_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-parameter-binding-patterns.conf",
+            "--manifest",
+            "tests/test262-parameter-binding-patterns.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_PARAMETER_BINDING_PATTERNS_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/language/statements/function/dstr/obj-ptrn-empty.js",
+            ],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-parameter-binding-patterns.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {
