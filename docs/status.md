@@ -15,9 +15,9 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 35,084 passes and 38,421 runnable variants: 34.38% raw, a 41.99% lower
-  bound after the 18,475 pinned QuickJS target exclusions, or 94.40% among the
-  37,165 variants with a non-unsupported observed outcome. The fixed smoke now
+  has 35,144 passes and 38,421 runnable variants: 34.44% raw, a 42.06% lower
+  bound after the 18,475 pinned QuickJS target exclusions, or 94.60% among the
+  37,152 variants with a non-unsupported observed outcome. The fixed smoke now
   has 191 passes and two explicit parser-frontier results. See
   `docs/test262.md` for the denominators and why none of these figures is a
   parity claim. The first
@@ -1122,12 +1122,64 @@ claim full parity.
   and
   `6a1971269b694b9c5e344884714f9f2234619a3200b6ff2e25a69e2b45e26fb9`.
   This is not complete rest or FormalParameters support: Parameter
-  Environments and defaults, parameter destructuring, rest BindingPatterns,
-  and async/generator/class forms remain explicit frontiers.
+  Environments and defaults land in R2y, while parameter destructuring, rest
+  BindingPatterns, and async/generator/class forms remain explicit frontiers.
 
-  Parameter initializers, Parameter Environments, parameter destructuring,
-  classes/derived construction, and async/generator method/accessor forms stay
-  typed frontiers.
+  R2y adds synchronous `BindingIdentifier = Initializer` parameters to ordinary
+  functions, object methods, arrows, and the `Function` constructor. Parsing
+  now establishes the child function before consuming its formals and creates
+  a real, parentless Parameter scope at the first default. One mutable lexical
+  cell per parameter is reset to TDZ and initialized left-to-right; initializer
+  closures retain those cells, later/self references throw, outer bindings and
+  function pseudo-bindings remain visible, and body declarations stay hidden
+  until the body scope is entered. The body deliberately continues to read and
+  write raw argument slots, matching pinned QuickJS's observable `2|1` split
+  between a body assignment and an initializer closure rather than silently
+  adopting the different Node/spec result.
+
+  Default substitution writes the selected value back to the physical argument
+  slot before initializing the lexical cell, non-simple `arguments` is
+  unmapped, function `length` stops before the first default, NamedEvaluation
+  supplies anonymous function/arrow names, and defaults compose with terminal
+  identifier rest. Body function hoists are installed only after leaving the
+  Parameter scope and entering the body scope. Immutable bytecode metadata now
+  publishes the leading parameter-local count; both publication boundaries
+  authenticate the structural ABI: reverse-order TDZ reset, left-to-right
+  single initialization, default+rest's exact
+  `Rest/Dup/PutArg/InitializeLocal` shape, and any preceding pseudo-binding
+  pair. The unlinked boundary additionally authenticates mutable lexical
+  definitions and the HomeObject, `new.target`, and `this` binding names. It
+  also binds every referenced child closure to the segment which instantiates
+  it: initializer closures cannot capture raw argument slots, and body
+  closures cannot recapture Parameter cells after that environment closes.
+
+  The pinned QuickJS oracle freezes 15 semantic vectors, including the target's
+  raw-argument/parameter-cell split. The runner-bound Test262 gate freezes 76
+  paths / 143 variants and passes all 143. Its scoped profile admits only
+  `default-parameters` and the required `super` cases plus 19 exact negative
+  paths; `default-parameters` remains absent from the global profile. Profile,
+  manifest-file, focused TSV, and focused JSONL SHA-256 values are
+  `5c98d19ccb72c7e2c577ddc98ee4ac83d43a0ba7d49175a8ebe271866d0feab6`,
+  `264bb2b25e7502eed86f8a5df1b3fe8c0ccdeecd43171af390764b5e053a6472`,
+  `822fd6c4606948e56c3e146886b3a2883eaaa4428cd6acd37b6625d051b3da1a`,
+  and
+  `7d617915770a4c5625d1167480524fc4f9f28f8a100ae75860d79b13f6d22fef`.
+
+  The exact R2x/R2y full join retains all 102,037 unique keys and every
+  previous pass. It adds 60 passes: 35 `fail-parse -> pass` and 25
+  `unsupported-parser -> pass`. Thirty-eight former parse failures now stop at
+  the explicit direct-eval/destructuring/class parser frontier and 16 reach
+  already-known runtime frontiers; 64 rows keep their outcome while exposing a
+  deeper diagnostic. There are no missing, extra, or duplicate keys. Passes
+  reach 35,144 among 38,421 runnable variants. Full TSV/JSONL SHA-256 values are
+  `e02a1e768065e63af6908932dc7ba8e5ff9ec552c3dc6adbce55db91a74eb866`
+  and
+  `b762e44abbca482419b5e24ed4479a1726a8c7d25232907538c71780829d4def`.
+  Direct eval in or below a Parameter Environment remains an explicit
+  `Unsupported` boundary because QuickJS parity requires independent `<var>`
+  and `<arg_var>` variable objects and exact function-segment topology; it is
+  intentionally not approximated here. Parameter BindingPatterns, async,
+  generator, and class forms remain later FormalParameters milestones.
   One entry-prologue composition debt also remains. R2i fixes the pseudo-local
   group itself to QuickJS's HomeObject, `new.target`, then `this` order, but the
   compiler still installs
@@ -2219,9 +2271,10 @@ claim full parity.
   fast/slow and mapping-detach transitions, including representation-sensitive
   `for-in`. Identifier-rest lists now use the forced-unmapped path and are
   covered across ordinary functions, synchronous methods, arrows, and
-  `%Function%` by R2x. Parameter Environments for defaults and destructuring,
-  rest BindingPatterns, and async/generator function forms remain separate
-  slices.
+  `%Function%` by R2x. Identifier defaults use the independent Parameter
+  Environment and forced-unmapped path in R2y. Parameter direct eval,
+  destructuring parameters, rest BindingPatterns, and async/generator function
+  forms remain separate slices.
 
   Ordinary declarations in brace blocks and a switch CaseBlock use QuickJS's
   distinct scoped-function path. The binding is registered immediately after
@@ -2335,6 +2388,12 @@ claim full parity.
   `arguments`, entry/hoist order, closures and receiver behavior,
   `call`/`apply`, direct eval, the `Function` constructor, and exact
   diagnostics.
+  The R2y `oracle_identifier_default_parameters` matrix then locks child-first
+  initializer parsing, Parameter-scope TDZ and closure cells, raw/unmapped
+  `arguments`, `length`, NamedEvaluation, body-hoist ordering, `this`/`super`,
+  default-plus-rest composition, and the pinned QuickJS-only `2|1` body/raw-
+  argument split. Direct eval is excluded from every case source until its
+  independent Parameter-Environment ABI lands.
 
   The upstream anchors for the catch/finally slice are `quickjs.c` 21775-21785
   (`BlockEnv`), 28225-28361 (break/continue/return through finally),
@@ -3908,6 +3967,10 @@ claim full parity.
   ordinary functions, synchronous object methods, arrows, and the `Function`
   constructor, including realm, length, `arguments`, entry-order, and
   diagnostic behavior.
+  The `oracle_identifier_default_parameters` target covers synchronous
+  identifier defaults on the same four surfaces, including TDZ, initializer
+  closures, body hoists, `arguments`, `length`, anonymous names, `this`,
+  `super`, default-plus-rest, and the pinned raw-argument/parameter-cell split.
   The `oracle_object_bindings` target locks direct, classic-for, and synchronous
   for-in/of declaration surfaces; fixed and computed String/Symbol property
   keys; object/array/rest recursion; defaults and NamedEvaluation; observable
@@ -3962,13 +4025,11 @@ trampoline plus explicit compiler work storage is required to recover
 upstream's substantially deeper platform-dependent limits throughout.
 
 The language slice remains incomplete. Async/generator declarations,
-`for-await`, destructuring parameters, other general assignment targets,
-module resolution,
-async/generator methods, parameter-initializer inheritance of HomeObject/`super`,
-classes and derived constructors, non-simple parameter lists including
-ObjectLiteral setters, async and non-simple Arrow forms, and callable Proxy
-classes are not yet
-implemented.
+`for-await`, parameter BindingPatterns, other general assignment targets,
+module resolution, async/generator methods, direct eval in or below a Parameter
+Environment, classes and derived constructors, non-simple ObjectLiteral
+accessor parameters, async/generator parameter forms, and callable Proxy
+classes are not yet implemented.
 Unsupported declaration contexts are rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` supports
 simple identifiers and recursive array/object/rest patterns in direct Program
@@ -4022,12 +4083,13 @@ including combined short options and their effect on `toString`, function debug
 accessors and Error backtraces. Strip-debug compilation also removes ordinary
 lexical vardef and captured-relay names while retaining atoms needed by
 read-only execution; bytecode debug serialization remains pending. The normal
-`%Function%` graph is present, but dynamic formal parameters remain limited to
-simple identifiers plus one terminal identifier-rest parameter, and bodies to
-the current statement, expression, and simple body/block/switch/classic-for and
-for-in/of-head lexical-declaration grammar. Defaults, parameter destructuring,
-rest BindingPatterns and their Parameter Environment semantics,
-generator/async kinds, and Proxy new-target realms remain pending.
+`%Function%` graph is present; dynamic formal parameters support identifiers,
+identifier defaults, and one terminal identifier-rest parameter, including the
+same Parameter Environment semantics as authored ordinary functions. Bodies
+remain limited to the current statement, expression, and simple
+body/block/switch/classic-for and for-in/of-head lexical-declaration grammar.
+Parameter BindingPatterns, rest BindingPatterns, generator/async kinds, and
+Proxy new-target realms remain pending.
 Compiler input is still UTF-8,
 so dynamic source containing an unpaired UTF-16 surrogate throws an explicit
 implementation-gap `InternalError` instead of being silently rewritten. The
@@ -4120,13 +4182,12 @@ remaining two entries of String's 53-key prototype surface, `RegExp.escape`,
 advanced RegExp grammar,
 Proxy/exotic internal methods, and the full
 `function_accessors.js` fixture are still pending. AggregateError and
-uncatchable termination state are also pending. Destructuring parameter
-patterns, other iterator
-classes and helpers, the remaining RegExp grammar/static surface and
-Unicode-backed String methods, non-simple ObjectLiteral setter parameters,
-async/generator methods, parameter-initializer `super` inheritance,
-classes/derived constructors, exotic-source spread, and the rest of
-the builtin table build on those layers.
+uncatchable termination state are also pending. Parameter BindingPatterns,
+direct eval in or below a Parameter Environment, other iterator classes and
+helpers, the remaining RegExp grammar/static surface and Unicode-backed String
+methods, non-simple ObjectLiteral setter parameters, async/generator methods,
+classes/derived constructors, exotic-source spread, and the rest of the
+builtin table build on those layers.
 
 The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
@@ -4460,6 +4521,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_rest_parameters -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_identifier_default_parameters -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_for_of -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_object_bindings -- --nocapture
@@ -4611,6 +4674,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-object-rest-binding.sh
 ./scripts/test-test262-catch-binding.sh
 ./scripts/test-test262-identifier-rest.sh
+./scripts/test-test262-identifier-defaults.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -4627,8 +4691,8 @@ and the legacy compile mutation differentials, and the
 Program-var/function, Program/body/block/switch/classic-for lexical-scope,
 ordinary mapped/unmapped Arguments object,
 single/labelled Annex B, synchronous try/catch/finally with recursive
-array/object/rest catch BindingPatterns, synchronous identifier-only rest
-parameters across ordinary functions, object methods, arrows, and the
+array/object/rest catch BindingPatterns, synchronous identifier-only rest and
+default parameters across ordinary functions, object methods, arrows, and the
 `Function` constructor, synchronous
 for-in/for-of, Array core/literal/iterator/search/callback/mutation/change-by-copy,
 Object literal/concise-method/accessor/direct/arrow/direct-eval-super, and Object

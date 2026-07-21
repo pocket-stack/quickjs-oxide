@@ -50,12 +50,12 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 35,084 pass;
+- 35,144 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 46,397 are classified as unsupported because of a feature, mode, host
+- 46,410 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 501 fail to parse, 1,526 fail at runtime, 48 fail in the harness, and six
+- 412 fail to parse, 1,542 fail at runtime, 48 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 38,421 variants to execution. That count includes variants
@@ -64,14 +64,14 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 34.38% (`35,084 / 102,037`);
-- conservative target-scope lower bound: 41.99%
-  (`35,084 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 94.40%
-  (`35,084 / 37,165`).
+- raw suite pass rate: 34.44% (`35,144 / 102,037`);
+- conservative target-scope lower bound: 42.06%
+  (`35,144 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 94.60%
+  (`35,144 / 37,152`).
 
-The 41.99% figure is the useful whole-project progress floor, not a claim that
-the engine is 41.99% conformant. The 94.40% conditional rate measures quality
+The 42.06% figure is the useful whole-project progress floor, not a claim that
+the engine is 42.06% conformant. The 94.60% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -82,7 +82,10 @@ admitting additional jobs, R2v resolves 14 untagged object-assignment
 frontiers, and R2w resolves 23 parser frontiers, 24 runtime frontiers, and two
 ordinary runtime failures on the synchronous catch-binding surface. R2x then
 adds 88 passes from the synchronous identifier-rest surface and its untagged
-harness consumers without admitting additional jobs. The
+harness consumers without admitting additional jobs. R2y adds another 60
+passes from synchronous identifier defaults and moves direct-eval,
+destructuring, class, and missing-intrinsic consumers to their deeper explicit
+frontiers, again without changing the runnable count. The
 capability profile currently admits 69 reviewed Test262
 feature tags and 423 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
@@ -97,9 +100,9 @@ milestone; the current byte expectations use a fixed
 `TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
 installation; Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`1ff253545ba69824b686e23d40998645a57330d83fa01a8bf9a39fa2994e4959`
+`e02a1e768065e63af6908932dc7ba8e5ff9ec552c3dc6adbce55db91a74eb866`
 and
-`6a1971269b694b9c5e344884714f9f2234619a3200b6ff2e25a69e2b45e26fb9`.
+`b762e44abbca482419b5e24ed4479a1726a8c7d25232907538c71780829d4def`.
 
 ## Milestone policy
 
@@ -2216,6 +2219,85 @@ Full TSV/JSONL SHA-256 values are
 and
 `6a1971269b694b9c5e344884714f9f2234619a3200b6ff2e25a69e2b45e26fb9`.
 
+## R2y synchronous identifier-default parameters
+
+R2y implements `BindingIdentifier = Initializer` for synchronous ordinary
+function declarations and expressions, object methods, arrows, and the
+`Function` constructor against QuickJS 2026-06-04. The parser establishes the
+callee before parsing its formals and creates a parentless Parameter
+Environment at the first default. All parameter lexical cells begin in TDZ and
+initialize left-to-right; earlier cells, outer bindings, `arguments`, `this`,
+`new.target`, `super`, and the private function name retain their applicable
+visibility while body declarations do not leak into initializers.
+
+The implementation intentionally preserves a pinned QuickJS behavior which
+differs from current Node/spec behavior: initializer closures retain the
+lexical parameter cell, while the authored function body reads and writes the
+raw argument slot. Thus assigning `a = 2` in the body after an initializer
+captured default `a = 1` produces the differential result `2|1`. Default
+substitution also updates the raw slot before lexical initialization,
+`arguments` is unmapped, `length` stops before the first default,
+NamedEvaluation names anonymous functions/arrows, body hoists run after the
+Parameter Environment closes, and a default composes with terminal identifier
+rest.
+
+The immutable function metadata carries the leading Parameter-local count.
+Unlinked publication and final heap allocation share one structural validator
+for the exact reverse TDZ reset, left-to-right single initialization,
+default-plus-rest ABI, and fixed-order pseudo-binding prologue. The unlinked
+boundary additionally authenticates lexical definitions and pseudo-binding
+names, and binds each `FClosure` capture source to its bytecode segment:
+initializer closures may capture Parameter cells but not raw argument slots,
+while body closures use raw argument slots and cannot recover a closed
+Parameter cell. Direct eval remains deliberately unsupported in or below a
+Parameter Environment: matching the target requires independent `<arg_var>`
+and body `<var>` objects plus function-segment topology, so this milestone does
+not substitute a one-environment approximation.
+
+The runner-bound scoped gate freezes 76 paths / 143 sloppy/strict variants.
+All 143 are runnable and pass. Its profile admits only `default-parameters`
+and the required `super` surface, together with 19 audited negative paths;
+`default-parameters` remains absent from the repository-wide profile. The
+15-case pinned QuickJS oracle separately covers undefined/supplied values,
+initializer skipping, all four parser surfaces, later/self TDZ, unmapped
+`arguments`, `length`, body hoists and initializer closures, NamedEvaluation,
+default-plus-rest, the target-specific raw-argument split, and private named
+function bindings across direct/captured reads and strict/sloppy writes.
+
+Profile, normalized-manifest, manifest-file, key-set, and empty non-pass
+SHA-256 values are
+`5c98d19ccb72c7e2c577ddc98ee4ac83d43a0ba7d49175a8ebe271866d0feab6`,
+`8427bc44409269c8edbcef0c1615c7c0c37c6fbbe270c2beb119a9deb3a85bf7`,
+`264bb2b25e7502eed86f8a5df1b3fe8c0ccdeecd43171af390764b5e053a6472`,
+`26c1a2ac0ab8da8cfa6aca04b724cd4dece1205dfb65b093cd7888343c7c0174`,
+and
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+Focused TSV/JSONL hashes are
+`822fd6c4606948e56c3e146886b3a2883eaaa4428cd6acd37b6625d051b3da1a`
+and
+`7d617915770a4c5625d1167480524fc4f9f28f8a100ae75860d79b13f6d22fef`.
+
+Reproduce the focused gates with:
+
+```sh
+./scripts/test-test262-identifier-defaults.sh
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_identifier_default_parameters -- --nocapture
+```
+
+The exact R2x/R2y full join retains all 102,037 unique keys and every previous
+pass. It adds 60 passes: 35 `fail-parse -> pass` and 25
+`unsupported-parser -> pass`. The 54 other outcome changes are 38
+`fail-parse -> unsupported-parser` transitions at the explicit direct-eval,
+destructuring, and class boundaries plus 16 `fail-parse -> fail-runtime`
+transitions at already-known runtime frontiers. Sixty-four same-outcome rows
+now expose a deeper diagnostic; there are no missing, extra, or duplicate
+keys. Passes reach 35,144 among 38,421 runnable variants. Full TSV/JSONL
+SHA-256 values are
+`e02a1e768065e63af6908932dc7ba8e5ff9ec552c3dc6adbce55db91a74eb866`
+and
+`b762e44abbca482419b5e24ed4479a1726a8c7d25232907538c71780829d4def`.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -2303,6 +2385,7 @@ canonical progress report.
 ./scripts/test-test262-object-rest-binding.sh
 ./scripts/test-test262-catch-binding.sh
 ./scripts/test-test262-identifier-rest.sh
+./scripts/test-test262-identifier-defaults.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -2410,6 +2493,12 @@ passes all 65 variants; the full join adds 88 passes with zero previous-pass
 regression, reaching 35,084 passes among 38,421 runnable variants. Parameter
 Environments, defaults, parameter destructuring, rest BindingPatterns, and
 async/generator/class forms remain later FormalParameters milestones.
+R2y adds synchronous identifier defaults and a real Parameter Environment to
+the same four surfaces. Its exact 76-path scoped gate passes all 143 variants;
+the full join adds 60 passes with zero previous-pass regression, reaching
+35,144 passes among 38,421 runnable variants. Parameter direct eval,
+BindingPatterns, and async/generator/class forms remain explicit later
+FormalParameters milestones.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

@@ -7005,6 +7005,132 @@ fn identifier_rest_parameters_execute_across_sync_function_forms() {
 }
 
 #[test]
+fn identifier_default_parameters_execute_across_sync_function_forms() {
+    assert_eq!(
+        evaluate_in_context(
+            r#"(function(){
+                function ordinary(a=40,b=a+2){return b}
+                var arrow=(a=40,b=a+2)=>b;
+                var object={base:40,method(a=this.base,b=a+2){return b}};
+                var dynamic=Function('a=40','b=a+2','return b');
+                return ordinary()+'|'+arrow()+'|'+object.method()+'|'+dynamic()+'|'+
+                    ordinary.length+'|'+arrow.length+'|'+object.method.length+'|'+dynamic.length;
+            })()"#,
+        ),
+        Value::String(JsString::from_static("42|42|42|42|0|0|0|0"))
+    );
+}
+
+#[test]
+fn identifier_default_before_rest_uses_the_parameter_environment_abi() {
+    let script = compile_unlinked_script("function f(a=40,...rest){return a+rest.length}").unwrap();
+    let function = script.constants()[0].as_child().unwrap();
+    assert_eq!(function.metadata().argument_count, 2);
+    assert_eq!(function.metadata().defined_argument_count, 0);
+    assert_eq!(function.metadata().rest_parameter, Some(1));
+    assert_eq!(function.metadata().parameter_environment_local_count, 2);
+    assert!(matches!(
+        function.code(),
+        [
+            Instruction::SetLocalUninitialized(1),
+            Instruction::SetLocalUninitialized(0),
+            ..
+        ]
+    ));
+    assert!(function.code().windows(4).any(|window| matches!(
+        window,
+        [
+            Instruction::Rest(1),
+            Instruction::Dup,
+            Instruction::PutArg(1),
+            Instruction::InitializeLocal(1),
+        ]
+    )));
+
+    assert_eq!(
+        evaluate_in_context("(function(a=40,...rest){return a+rest.length})(undefined,1,1)"),
+        Value::Int(42)
+    );
+}
+
+#[test]
+fn identifier_default_parameter_environment_matches_quickjs_tdz_and_body_split() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    for source in [
+        "(function(a=b,b=2){return a})()",
+        "(function(a=a){return a})()",
+        "((a=b,b=2)=>a)()",
+        "({method(a=a){return a}}).method()",
+    ] {
+        let (name, _) = evaluate_error(&runtime, &mut context, source);
+        assert_eq!(name, JsString::from_static("ReferenceError"), "{source}");
+    }
+
+    assert_eq!(
+        evaluate_in_context(
+            r#"(function(){
+                var read;
+                function f(a=1,b=(read=function(){return a},0)){
+                    a=2;
+                    return a+'|'+read();
+                }
+                return f();
+            })()"#,
+        ),
+        // Pinned QuickJS keeps body reads on the raw argument slot while the
+        // initializer closure retains the lexical parameter cell.
+        Value::String(JsString::from_static("2|1"))
+    );
+}
+
+#[test]
+fn identifier_default_parameter_uses_private_function_name_before_body_shadowing() {
+    assert_eq!(
+        evaluate_in_context(
+            r#"(function(){
+                var read=(function f(a=f){var f;return typeof a+'|'+(a===undefined)+'|'+typeof f})();
+                var closure=(function f(a=()=>f){var f=1;return typeof a()+'|'+(a()===f)})();
+                var write=(function f(a=(f=1)){var f;return typeof f+'|'+(f===1)})();
+                return read+';'+closure+';'+write;
+            })()"#,
+        ),
+        Value::String(JsString::from_static(
+            "function|false|undefined;function|false;undefined|false"
+        ))
+    );
+
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let (name, message) = evaluate_error(
+        &runtime,
+        &mut context,
+        "(function(){'use strict';return (function f(a=(f=1)){var f;return typeof f})()})()",
+    );
+    assert_eq!(name, JsString::from_static("TypeError"));
+    assert_eq!(message, JsString::from_static("'f' is read-only"));
+}
+
+#[test]
+fn identifier_default_parameters_run_before_body_hoists_and_use_unmapped_arguments() {
+    assert_eq!(
+        evaluate_in_context(
+            r#"(function(){
+                var outer=40;
+                function f(a=outer,b=arguments[0]){
+                    var outer=1;
+                    function a(){return 42}
+                    arguments[0]=7;
+                    return a()+'|'+b+'|'+arguments.length;
+                }
+                return f(undefined);
+            })()"#,
+        ),
+        Value::String(JsString::from_static("42|undefined|1"))
+    );
+}
+
+#[test]
 fn identifier_rest_array_is_allocated_in_the_callee_realm() {
     let runtime = Runtime::new();
     let mut defining = runtime.new_context();
@@ -8546,6 +8672,7 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
         "({__proto__:null,a:1})",
         "({a(){}})",
         "({a(...rest){return rest}})",
+        "({a(value=1){}})",
         "({get(){}})",
         "({set(value){}})",
         "({[1](){}})",
@@ -8565,7 +8692,6 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
     for source in [
         "({*a(){}})",
         "({async a(){}})",
-        "({a(value=1){}})",
         "({a({value}){}})",
         "({set a(value=1){}})",
         "({set a({value}){}})",

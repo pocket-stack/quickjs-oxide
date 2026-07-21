@@ -834,6 +834,7 @@ mod tests {
             Vec::new(),
             FunctionMetadata {
                 argument_count: 1,
+                defined_argument_count: 1,
                 local_count: 2,
                 function_name_local: Some(1),
                 strict: true,

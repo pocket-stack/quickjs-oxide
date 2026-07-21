@@ -438,6 +438,7 @@ fn string_direct_eval_materializes_exact_caller_cells_but_non_string_stays_lazy(
         ],
         FunctionMetadata {
             argument_count: 1,
+            defined_argument_count: 1,
             local_count: 2,
             eval_variable_object_local: Some(1),
             closure_count: 1,
@@ -4032,6 +4033,7 @@ fn boolean_primitive_accessors_writes_and_delete_preserve_raw_receiver_semantics
         vec![Instruction::PushThis, Instruction::Throw],
         FunctionMetadata {
             argument_count: 1,
+            defined_argument_count: 1,
             max_stack: 1,
             strict: true,
             ..FunctionMetadata::default()
@@ -4043,6 +4045,7 @@ fn boolean_primitive_accessors_writes_and_delete_preserve_raw_receiver_semantics
         vec![Instruction::PushThis, Instruction::Throw],
         FunctionMetadata {
             argument_count: 1,
+            defined_argument_count: 1,
             max_stack: 1,
             ..FunctionMetadata::default()
         },
@@ -5158,6 +5161,7 @@ fn call_frame_loads_arguments_and_moves_values_through_locals() {
         Vec::new(),
         FunctionMetadata {
             argument_count: 2,
+            defined_argument_count: 2,
             local_count: 1,
             max_stack: 2,
             ..FunctionMetadata::default()
@@ -5195,6 +5199,7 @@ fn runtime_typeof_distinguishes_callable_and_ordinary_objects() {
         Vec::new(),
         FunctionMetadata {
             argument_count: 1,
+            defined_argument_count: 1,
             max_stack: 1,
             ..FunctionMetadata::default()
         },
@@ -9500,6 +9505,7 @@ fn unified_active_frames_preserve_order_caller_pc_and_defining_realms() {
         ],
         FunctionMetadata {
             argument_count: 1,
+            defined_argument_count: 1,
             max_stack: 1,
             strict: false,
             ..FunctionMetadata::default()
@@ -9516,6 +9522,7 @@ fn unified_active_frames_preserve_order_caller_pc_and_defining_realms() {
         ],
         FunctionMetadata {
             argument_count: 2,
+            defined_argument_count: 2,
             max_stack: 2,
             strict: true,
             ..FunctionMetadata::default()
@@ -9637,6 +9644,7 @@ fn unified_active_frames_restore_after_return_throw_and_engine_error() {
         ],
         FunctionMetadata {
             argument_count: 1,
+            defined_argument_count: 1,
             max_stack: 1,
             strict: true,
             ..FunctionMetadata::default()
@@ -9653,6 +9661,7 @@ fn unified_active_frames_restore_after_return_throw_and_engine_error() {
         ],
         FunctionMetadata {
             argument_count: 2,
+            defined_argument_count: 2,
             max_stack: 2,
             strict: true,
             ..FunctionMetadata::default()
@@ -9885,6 +9894,7 @@ fn fclosure_call_and_call_method_follow_quickjs_stack_layout() {
         Vec::new(),
         FunctionMetadata {
             argument_count: 1,
+            defined_argument_count: 1,
             max_stack: 2,
             strict: true,
             ..FunctionMetadata::default()
@@ -10141,6 +10151,7 @@ fn context_invokes_getters_and_setters_with_the_original_receiver() {
         vec![Instruction::PushFalse, Instruction::Return],
         FunctionMetadata {
             argument_count: 1,
+            defined_argument_count: 1,
             max_stack: 1,
             strict: true,
             ..FunctionMetadata::default()
@@ -10172,6 +10183,7 @@ fn context_invokes_getters_and_setters_with_the_original_receiver() {
         vec![Instruction::GetArg(0), Instruction::Throw],
         FunctionMetadata {
             argument_count: 1,
+            defined_argument_count: 1,
             max_stack: 1,
             strict: true,
             ..FunctionMetadata::default()
@@ -10208,6 +10220,7 @@ fn context_invokes_getters_and_setters_with_the_original_receiver() {
         ],
         FunctionMetadata {
             argument_count: 1,
+            defined_argument_count: 1,
             max_stack: 2,
             strict: true,
             ..FunctionMetadata::default()
@@ -10294,6 +10307,7 @@ fn prepared_setter_action_roots_callable_receiver_and_argument() {
         vec![Instruction::GetArg(0), Instruction::Return],
         FunctionMetadata {
             argument_count: 1,
+            defined_argument_count: 1,
             max_stack: 1,
             strict: true,
             ..FunctionMetadata::default()
@@ -11099,6 +11113,7 @@ fn publication_rejects_vardef_and_checked_opcode_mismatches_before_allocation() 
             Vec::new(),
             FunctionMetadata {
                 argument_count: 1,
+                defined_argument_count: 1,
                 max_stack: 1,
                 ..FunctionMetadata::default()
             },
@@ -11376,6 +11391,7 @@ fn publication_rejects_malformed_function_name_metadata_and_writes() {
         ),
         FunctionMetadata {
             argument_count: 1,
+            defined_argument_count: 1,
             max_stack: 1,
             ..FunctionMetadata::default()
         },
@@ -12379,6 +12395,7 @@ fn parent_argument_and_transitive_parent_closure_capture_share_identity() {
         vec![UnlinkedConstant::child(middle)],
         FunctionMetadata {
             argument_count: 1,
+            defined_argument_count: 1,
             max_stack: 1,
             strict: true,
             ..FunctionMetadata::default()

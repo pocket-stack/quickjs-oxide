@@ -306,6 +306,11 @@ impl StatementPosition {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ScopeKind {
     FunctionRoot,
+    /// Declarative environment used while evaluating non-simple formal
+    /// parameters. It is deliberately parentless: parameter initializers may
+    /// see parameter cells and selected function pseudo-bindings, but never
+    /// declarations from the authored body variable environment.
+    Parameter,
     FunctionBody,
     ProgramBody,
     Block,
@@ -815,6 +820,14 @@ struct FunctionIr {
     has_simple_parameter_list: bool,
     /// Physical argument slot overwritten by the entry-time `OP_rest` result.
     rest_parameter: Option<u16>,
+    /// Independent declarative scope used by identifier default parameters.
+    /// QuickJS calls this its argument scope; keeping the identity explicit
+    /// lets resolution enforce the body-variable visibility barrier.
+    parameter_scope: Option<ScopeId>,
+    /// One initializer-visible mutable cell per parameter when
+    /// `parameter_scope` exists. Raw argument slots remain independently
+    /// body-visible and writable, matching QuickJS's split environment.
+    parameter_locals: Vec<u16>,
     locals: Vec<String>,
     scopes: Vec<IrScope>,
     bindings: Vec<IrBinding>,
@@ -1009,6 +1022,8 @@ impl FunctionIr {
             defined_argument_count: options.defined_argument_count,
             has_simple_parameter_list: options.has_simple_parameter_list,
             rest_parameter: options.rest_parameter,
+            parameter_scope: None,
+            parameter_locals: Vec::new(),
             locals,
             scopes,
             bindings: Vec::new(),
@@ -4501,6 +4516,13 @@ impl<'source> Parser<'source> {
                 } else {
                     self.take_direct_eval_scope()?
                 };
+                if direct_eval_scope.is_some()
+                    && self.current_function_is_parameter_environment_descendant()
+                {
+                    return Err(self.unsupported_here(
+                        "direct eval with identifier default parameters is not implemented yet",
+                    ));
+                }
                 // An authored `with` may turn an identifier call into a method
                 // call whose receiver is the selected object environment. The
                 // unresolved Reference keeps the same two-slot call shape even
@@ -6734,6 +6756,246 @@ impl<'source> Parser<'source> {
         &mut self.functions[self.current_function]
     }
 
+    fn current_function_is_parameter_environment_descendant(&self) -> bool {
+        let mut function_id = self.current_function;
+        loop {
+            let function = &self.functions[function_id];
+            if function.parameter_scope.is_some() {
+                return true;
+            }
+            let Some(parent) = function.parent else {
+                return false;
+            };
+            if self.functions[parent.function]
+                .parameter_scope
+                .is_some_and(|scope| scope == parent.definition_scope)
+            {
+                return true;
+            }
+            function_id = parent.function;
+        }
+    }
+
+    /// Add one physical argument input without deciding where authored reads
+    /// resolve. A later default may promote every source binding to the
+    /// independent parameter environment while retaining these slots as the
+    /// call-frame input ABI.
+    fn append_identifier_parameter(&mut self, name: String, span: Span) -> Result<u16, Error> {
+        let function = self.current_ir_mut();
+        if function.parameters.len() >= MAX_LOCAL_VARIABLES {
+            return Err(Error::new(ErrorKind::JsInternal, "too many arguments")
+                .with_span(source_span(span)));
+        }
+        let index = u16::try_from(function.parameters.len())
+            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many arguments"))?;
+        function.parameters.push(name.clone());
+        function.add_binding(
+            function.var_scope,
+            function.var_scope,
+            name,
+            BindingStorage::Argument(index),
+            BindingKind::Normal,
+            None,
+        );
+        Ok(index)
+    }
+
+    fn allocate_parameter_local(&mut self, argument: u16, span: Span) -> Result<u16, Error> {
+        let function = self.current_ir_mut();
+        let parameter_scope = function
+            .parameter_scope
+            .ok_or_else(|| Error::internal("parameter local has no parameter scope"))?;
+        if usize::from(argument) != function.parameter_locals.len()
+            || function.parameters.get(usize::from(argument)).is_none()
+        {
+            return Err(Error::internal(
+                "parameter locals were not allocated in argument order",
+            ));
+        }
+        if function.locals.len() >= MAX_LOCAL_VARIABLES {
+            return Err(
+                Error::new(ErrorKind::JsInternal, "too many local variables")
+                    .with_span(source_span(span)),
+            );
+        }
+        let local = u16::try_from(function.locals.len())
+            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+        let name = function.parameters[usize::from(argument)].clone();
+        function.locals.push(name.clone());
+        function.parameter_locals.push(local);
+        function.add_binding(
+            parameter_scope,
+            parameter_scope,
+            name,
+            BindingStorage::Local(local),
+            BindingKind::Lexical { is_const: false },
+            Some(span),
+        );
+        Ok(local)
+    }
+
+    /// QuickJS creates its argument scope before evaluating the first default.
+    /// The Oxide parser can activate it lazily because identifier references
+    /// are resolved only after the complete function has been parsed. Earlier
+    /// plain parameters are backfilled in source order before the current
+    /// initializer begins.
+    fn activate_identifier_parameter_environment(
+        &mut self,
+        current: u16,
+        span: Span,
+    ) -> Result<u16, Error> {
+        if self.current_ir().parameter_scope.is_some() {
+            return self.allocate_parameter_local(current, span);
+        }
+
+        let (body_scope, parameter_count) = {
+            let function = self.current_ir_mut();
+            if !matches!(
+                function.kind,
+                FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
+            ) || usize::from(current) + 1 != function.parameters.len()
+                || function.ops.len() != 1
+                || !matches!(
+                    function.ops.first(),
+                    Some(SpannedIrOp {
+                        op: IrOp::EnterScope(scope),
+                        pc_site: None,
+                    }) if *scope == function.body_scope
+                )
+            {
+                return Err(Error::internal(
+                    "parameter environment was activated after body bytecode",
+                ));
+            }
+            let body_scope = function.body_scope;
+            function.ops.clear();
+            let parameter_scope = ScopeId(function.scopes.len());
+            function.scopes.push(IrScope {
+                parent: None,
+                kind: ScopeKind::Parameter,
+                bindings: Vec::new(),
+            });
+            function.parameter_scope = Some(parameter_scope);
+            function.current_scope = parameter_scope;
+            function.ops.push(SpannedIrOp {
+                op: IrOp::EnterScope(parameter_scope),
+                pc_site: None,
+            });
+            (body_scope, function.parameters.len())
+        };
+
+        for argument in 0..parameter_count {
+            let argument = u16::try_from(argument)
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many arguments"))?;
+            let local = self.allocate_parameter_local(argument, span)?;
+            if argument < current {
+                self.emit_instruction(Instruction::GetArg(argument))?;
+                self.emit_instruction(Instruction::InitializeLocal(local))?;
+            }
+        }
+        if self.current_ir().body_scope != body_scope {
+            return Err(Error::internal(
+                "parameter environment changed the function body scope",
+            ));
+        }
+        self.current_ir()
+            .parameter_locals
+            .get(usize::from(current))
+            .copied()
+            .ok_or_else(|| Error::internal("current parameter local was not allocated"))
+    }
+
+    fn register_plain_identifier_parameter(
+        &mut self,
+        name: String,
+        span: Span,
+    ) -> Result<(), Error> {
+        let argument = self.append_identifier_parameter(name, span)?;
+        if self.current_ir().has_simple_parameter_list {
+            self.current_ir_mut().defined_argument_count = self.current_ir().parameters.len();
+        }
+        if self.current_ir().parameter_scope.is_some() {
+            let local = self.allocate_parameter_local(argument, span)?;
+            self.emit_instruction(Instruction::GetArg(argument))?;
+            self.emit_instruction(Instruction::InitializeLocal(local))?;
+        }
+        Ok(())
+    }
+
+    fn parse_default_identifier_parameter(
+        &mut self,
+        name: String,
+        span: Span,
+    ) -> Result<(), Error> {
+        let argument = self.append_identifier_parameter(name.clone(), span)?;
+        self.current_ir_mut().has_simple_parameter_list = false;
+        let local = self.activate_identifier_parameter_environment(argument, span)?;
+
+        self.expect_punctuator(Punctuator::Equal)?;
+        self.emit_instruction(Instruction::GetArg(argument))?;
+        self.emit_instruction(Instruction::Dup)?;
+        self.emit_instruction(Instruction::Undefined)?;
+        self.emit_instruction(Instruction::StrictEq)?;
+        let has_value = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
+        self.emit_instruction(Instruction::Drop)?;
+        self.anonymous_function_definition = None;
+        self.parse_assignment_allow_in()?;
+        if self.anonymous_function_definition.take().is_some() {
+            let name = self.add_constant(IrConstant::Primitive(Value::String(
+                JsString::try_from_utf8(&name)?,
+            )))?;
+            self.emit_instruction(Instruction::SetName(name))?;
+        }
+        self.emit_instruction(Instruction::Dup)?;
+        self.emit_instruction(Instruction::PutArg(argument))?;
+        let has_value_target = self.current_ir().ops.len();
+        self.patch_jump(has_value, has_value_target)?;
+        self.emit_instruction(Instruction::InitializeLocal(local))?;
+        Ok(())
+    }
+
+    fn register_rest_identifier_parameter(
+        &mut self,
+        name: String,
+        span: Span,
+    ) -> Result<(), Error> {
+        let argument = self.append_identifier_parameter(name, span)?;
+        self.current_ir_mut().has_simple_parameter_list = false;
+        self.current_ir_mut().rest_parameter = Some(argument);
+        if self.current_ir().parameter_scope.is_some() {
+            let local = self.allocate_parameter_local(argument, span)?;
+            self.emit_instruction(Instruction::Rest(argument))?;
+            self.emit_instruction(Instruction::Dup)?;
+            self.emit_instruction(Instruction::PutArg(argument))?;
+            self.emit_instruction(Instruction::InitializeLocal(local))?;
+        }
+        Ok(())
+    }
+
+    fn finish_identifier_parameter_environment(&mut self) -> Result<(), Error> {
+        let Some(parameter_scope) = self.current_ir().parameter_scope else {
+            return Ok(());
+        };
+        if self.current_ir().current_scope != parameter_scope || self.current_ir().stack_depth != 0
+        {
+            return Err(Error::internal(
+                "parameter environment finished with unbalanced parser state",
+            ));
+        }
+        let body_scope = self.current_ir().body_scope;
+        let function = self.current_ir_mut();
+        function.ops.push(SpannedIrOp {
+            op: IrOp::LeaveScope(parameter_scope),
+            pc_site: None,
+        });
+        function.current_scope = body_scope;
+        function.ops.push(SpannedIrOp {
+            op: IrOp::EnterScope(body_scope),
+            pc_site: None,
+        });
+        Ok(())
+    }
+
     fn push_scope(&mut self, kind: ScopeKind) -> ScopeId {
         let function = self.current_ir_mut();
         let parent = function.current_scope;
@@ -6989,29 +7251,94 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         if function.scopes[function.body_scope.0].kind != expected_body {
             return Err(Error::internal("function body scope kind is malformed"));
         }
+        match function.parameter_scope {
+            Some(scope)
+                if scope != function.var_scope
+                    && scope != function.body_scope
+                    && function.scopes.get(scope.0).is_some_and(|scope| {
+                        scope.kind == ScopeKind::Parameter && scope.parent.is_none()
+                    })
+                    && matches!(
+                        function.kind,
+                        FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
+                    ) => {}
+            None => {}
+            Some(_) => {
+                return Err(Error::internal(
+                    "parameter environment scope metadata is malformed",
+                ));
+            }
+        }
+        let has_parameter_environment = function.parameter_scope.is_some();
         if function.defined_argument_count > function.parameters.len()
             || (function.has_simple_parameter_list
                 && (function.defined_argument_count != function.parameters.len()
-                    || function.rest_parameter.is_some()))
+                    || function.rest_parameter.is_some()
+                    || has_parameter_environment))
             || function.rest_parameter.is_some_and(|rest| {
                 usize::from(rest) + 1 != function.parameters.len()
-                    || function.defined_argument_count != usize::from(rest)
+                    || if has_parameter_environment {
+                        function.defined_argument_count > usize::from(rest)
+                    } else {
+                        function.defined_argument_count != usize::from(rest)
+                    }
                     || function.has_simple_parameter_list
                     || !matches!(
                         function.kind,
                         FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
                     )
             })
+            || has_parameter_environment
+                && (function.has_simple_parameter_list
+                    || function.parameters.is_empty()
+                    || function.defined_argument_count >= function.parameters.len()
+                    || function.parameter_locals.len() != function.parameters.len())
+            || !has_parameter_environment && !function.parameter_locals.is_empty()
         {
             return Err(Error::internal("formal parameter metadata is malformed"));
+        }
+        if let Some(parameter_scope) = function.parameter_scope {
+            let scope = &function.scopes[parameter_scope.0];
+            if scope.bindings.len() != function.parameters.len() {
+                return Err(Error::internal(
+                    "parameter environment does not own every parameter cell",
+                ));
+            }
+            for (argument, ((parameter, &local), &binding_id)) in function
+                .parameters
+                .iter()
+                .zip(&function.parameter_locals)
+                .zip(&scope.bindings)
+                .enumerate()
+            {
+                let binding = function
+                    .bindings
+                    .get(binding_id.0)
+                    .ok_or_else(|| Error::internal("parameter binding is out of bounds"))?;
+                if usize::from(local) != argument
+                    || function.locals.get(argument) != Some(parameter)
+                    || binding.name != *parameter
+                    || binding.storage != BindingStorage::Local(local)
+                    || binding.storage_scope != parameter_scope
+                    || binding.declaration_scope != parameter_scope
+                    || binding.kind != (BindingKind::Lexical { is_const: false })
+                    || binding.is_catch_parameter
+                {
+                    return Err(Error::internal(
+                        "parameter environment cell metadata is malformed",
+                    ));
+                }
+            }
         }
         let rest_operations = function
             .ops
             .iter()
             .filter(|operation| matches!(operation.op, IrOp::Bytecode(Instruction::Rest(_))))
             .count();
-        let expected_rest_operations =
-            usize::from(function.function_hoists_installed && function.rest_parameter.is_some());
+        let expected_rest_operations = usize::from(
+            function.rest_parameter.is_some()
+                && (has_parameter_environment || function.function_hoists_installed),
+        );
         if rest_operations != expected_rest_operations {
             return Err(Error::internal(
                 "rest parameter entry initialization is malformed",
@@ -7382,7 +7709,10 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 }
                 hoist_start += 2;
             }
-            if let Some(rest) = function.rest_parameter {
+            if let Some(rest) = function
+                .rest_parameter
+                .filter(|_| function.parameter_scope.is_none())
+            {
                 if !matches!(
                     function.ops.get(hoist_start),
                     Some(SpannedIrOp {
@@ -7400,12 +7730,22 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         "installed rest parameter prologue is malformed",
                     ));
                 }
-                hoist_start += 2;
             }
+            let body_hoist_start = function
+                .ops
+                .iter()
+                .position(|operation| {
+                    matches!(
+                        operation.op,
+                        IrOp::EnterScope(scope) if scope == function.body_scope
+                    )
+                })
+                .and_then(|entry| entry.checked_add(1))
+                .ok_or_else(|| Error::internal("installed function has no body scope entry"))?;
             for (ordinal, hoist) in ordered_hoisted_functions(function)?.into_iter().enumerate() {
                 let closure_pc = ordinal
                     .checked_mul(2)
-                    .and_then(|pc| pc.checked_add(hoist_start))
+                    .and_then(|pc| pc.checked_add(body_hoist_start))
                     .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
                 if !matches!(
                     function.ops.get(closure_pc),
@@ -7427,13 +7767,22 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                             pc_site: None,
                         }) if *target == index
                     ),
-                    BindingStorage::Local(index) => matches!(
-                        function.ops.get(closure_pc + 1),
-                        Some(SpannedIrOp {
-                            op: IrOp::Bytecode(Instruction::PutLocal(target)),
-                            pc_site: None,
-                        }) if *target == index
-                    ),
+                    BindingStorage::Local(index) => match binding.kind {
+                        BindingKind::Lexical { .. } => matches!(
+                            function.ops.get(closure_pc + 1),
+                            Some(SpannedIrOp {
+                                op: IrOp::Bytecode(Instruction::PutLocalCheck(target)),
+                                pc_site: None,
+                            }) if *target == index
+                        ),
+                        _ => matches!(
+                            function.ops.get(closure_pc + 1),
+                            Some(SpannedIrOp {
+                                op: IrOp::Bytecode(Instruction::PutLocal(target)),
+                                pc_site: None,
+                            }) if *target == index
+                        ),
+                    },
                     BindingStorage::Global => false,
                     BindingStorage::External(_) => false,
                 };
@@ -7877,7 +8226,13 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         }
 
         for (scope_index, scope) in function.scopes.iter().enumerate() {
-            if scope_index > 0 && scope.parent.is_none_or(|parent| parent.0 >= scope_index) {
+            let valid_parameter_root = scope.kind == ScopeKind::Parameter
+                && function.parameter_scope == Some(ScopeId(scope_index))
+                && scope.parent.is_none();
+            if scope_index > 0
+                && !valid_parameter_root
+                && scope.parent.is_none_or(|parent| parent.0 >= scope_index)
+            {
                 return Err(Error::internal("lexical scope parent is malformed"));
             }
         }
@@ -8015,7 +8370,8 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                             let scope_kind = function.scopes[binding.storage_scope.0].kind;
                             let supported_scope = matches!(
                                 scope_kind,
-                                ScopeKind::Block
+                                ScopeKind::Parameter
+                                    | ScopeKind::Block
                                     | ScopeKind::If
                                     | ScopeKind::For
                                     | ScopeKind::Switch
@@ -8305,6 +8661,16 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         ));
                     }
                 }
+            } else if function.parameter_scope == Some(ScopeId(scope_index)) {
+                if scope.kind != ScopeKind::Parameter
+                    || scope.parent.is_some()
+                    || entries != 1
+                    || leaves != 1
+                {
+                    return Err(Error::internal(
+                        "parameter scope lifecycle metadata is malformed",
+                    ));
+                }
             } else if entries != 1 || leaves == 0 || scope.parent.is_none() {
                 return Err(Error::internal(
                     "nested scope lifecycle metadata is malformed",
@@ -8361,6 +8727,31 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             }
             FunctionKind::Script | FunctionKind::Eval(_) => {
                 return Err(Error::internal("function-name binding metadata disagrees"));
+            }
+        }
+        if let Some(function_name_local) = function.function_name_local {
+            let root_bindings = &function.scopes[function.var_scope.0].bindings;
+            let Some(function_name_position) = root_bindings.iter().position(|binding| {
+                function.bindings[binding.0].storage == BindingStorage::Local(function_name_local)
+                    && matches!(
+                        function.bindings[binding.0].kind,
+                        BindingKind::FunctionName { .. }
+                    )
+            }) else {
+                return Err(Error::internal(
+                    "function-name binding is missing from the function root",
+                ));
+            };
+            let function_name = function.function_name.as_deref().ok_or_else(|| {
+                Error::internal("function-name local has no intrinsic function name")
+            })?;
+            if root_bindings[..function_name_position]
+                .iter()
+                .any(|binding| function.bindings[binding.0].name == function_name)
+            {
+                return Err(Error::internal(
+                    "private function name does not precede same-named body bindings",
+                ));
             }
         }
         let root_kind = matches!(function.kind, FunctionKind::Script | FunctionKind::Eval(_));
@@ -8487,6 +8878,10 @@ fn install_eval_variable_objects(tree: &mut FunctionTree) -> Result<(), Error> {
 const fn eval_scope_kind(kind: ScopeKind) -> EvalScopeKind {
     match kind {
         ScopeKind::FunctionRoot => EvalScopeKind::FunctionRoot,
+        // Syntactic direct eval in or below this scope is rejected at parse
+        // time until the separate `<arg_var>` variable-environment ABI lands.
+        // No published eval descriptor may therefore observe this projection.
+        ScopeKind::Parameter => EvalScopeKind::FunctionRoot,
         ScopeKind::FunctionBody => EvalScopeKind::FunctionBody,
         ScopeKind::ProgramBody => EvalScopeKind::ProgramBody,
         ScopeKind::Block => EvalScopeKind::Block,
@@ -9049,14 +9444,13 @@ fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
         let hoists = ordered_hoisted_functions(&tree.functions[function_id])?;
         let arguments_local = tree.functions[function_id].arguments_local;
         let eval_variable_object_local = tree.functions[function_id].eval_variable_object_local;
+        let has_parameter_environment = tree.functions[function_id].parameter_scope.is_some();
         let mut prefix = Vec::with_capacity(
-            hoists
-                .len()
-                .saturating_mul(2)
-                .saturating_add(usize::from(arguments_local.is_some()) * 2)
-                .saturating_add(
-                    usize::from(tree.functions[function_id].rest_parameter.is_some()) * 2,
-                ),
+            usize::from(arguments_local.is_some()) * 2
+                + usize::from(
+                    tree.functions[function_id].rest_parameter.is_some()
+                        && !has_parameter_environment,
+                ) * 2,
         );
         if let Some(local) = eval_variable_object_local {
             prefix.push(SpannedIrOp {
@@ -9085,7 +9479,10 @@ fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
                 pc_site: None,
             });
         }
-        if let Some(rest) = tree.functions[function_id].rest_parameter {
+        if let Some(rest) = tree.functions[function_id]
+            .rest_parameter
+            .filter(|_| !has_parameter_environment)
+        {
             prefix.push(SpannedIrOp {
                 op: IrOp::Bytecode(Instruction::Rest(rest)),
                 pc_site: None,
@@ -9095,26 +9492,45 @@ fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
                 pc_site: None,
             });
         }
+        let mut body_hoists = Vec::with_capacity(hoists.len().saturating_mul(2));
         for hoist in hoists {
             let binding = &tree.functions[function_id].bindings[hoist.binding.0];
-            prefix.push(SpannedIrOp {
+            body_hoists.push(SpannedIrOp {
                 op: IrOp::MakeClosure(hoist.constant),
                 pc_site: None,
             });
-            let instruction = match binding.storage {
-                BindingStorage::Argument(index) => Instruction::PutArg(index),
-                BindingStorage::Local(index) => Instruction::PutLocal(index),
-                BindingStorage::External(_) | BindingStorage::Global => {
+            let instruction = match (binding.storage, binding.kind) {
+                (BindingStorage::Argument(index), _) => Instruction::PutArg(index),
+                (BindingStorage::Local(index), BindingKind::Lexical { .. }) => {
+                    Instruction::PutLocalCheck(index)
+                }
+                (BindingStorage::Local(index), _) => Instruction::PutLocal(index),
+                (BindingStorage::External(_) | BindingStorage::Global, _) => {
                     return Err(Error::internal(
                         "ordinary function hoist targeted global storage",
                     ));
                 }
             };
-            prefix.push(SpannedIrOp {
+            body_hoists.push(SpannedIrOp {
                 op: IrOp::Bytecode(instruction),
                 pc_site: None,
             });
         }
+        let body_entry = tree.functions[function_id]
+            .ops
+            .iter()
+            .position(|operation| {
+                matches!(
+                    operation.op,
+                    IrOp::EnterScope(scope) if scope == tree.functions[function_id].body_scope
+                )
+            })
+            .ok_or_else(|| Error::internal("function body has no scope entry"))?;
+        insert_hoist_fragment(
+            &mut tree.functions[function_id],
+            body_entry + 1,
+            body_hoists,
+        )?;
         prepend_hoist_prefix(&mut tree.functions[function_id], prefix)?;
         tree.functions[function_id].function_hoists_installed = true;
     }
@@ -9144,6 +9560,56 @@ fn ordered_hoisted_functions(function: &FunctionIr) -> Result<Vec<IrHoistedFunct
         BindingStorage::Global => unreachable!("validated above"),
     });
     Ok(hoists)
+}
+
+fn insert_hoist_fragment(
+    function: &mut FunctionIr,
+    at: usize,
+    fragment: Vec<SpannedIrOp>,
+) -> Result<(), Error> {
+    if fragment.is_empty() {
+        return Ok(());
+    }
+    if at > function.ops.len() {
+        return Err(Error::internal("function hoist insertion is out of bounds"));
+    }
+    let shift = u32::try_from(fragment.len())
+        .map_err(|_| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+    for scoped in &mut function.scoped_functions {
+        if scoped.authored_closure >= at {
+            scoped.authored_closure = scoped
+                .authored_closure
+                .checked_add(fragment.len())
+                .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+        }
+    }
+    for annex in &mut function.program_annex_functions {
+        if annex.authored_closure >= at {
+            annex.authored_closure = annex
+                .authored_closure
+                .checked_add(fragment.len())
+                .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+        }
+    }
+    for operation in &mut function.ops {
+        let target = match &mut operation.op {
+            IrOp::Bytecode(
+                Instruction::Goto(target)
+                | Instruction::IfFalse(target)
+                | Instruction::IfTrue(target)
+                | Instruction::Catch(target)
+                | Instruction::Gosub(target),
+            ) => target,
+            _ => continue,
+        };
+        if usize::try_from(*target).is_ok_and(|target| target >= at) {
+            *target = target
+                .checked_add(shift)
+                .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+        }
+    }
+    function.ops.splice(at..at, fragment);
+    Ok(())
 }
 
 fn prepend_hoist_prefix(
@@ -9645,7 +10111,7 @@ fn resolve_identifier_path(
     let mut owner = consuming_function;
     let mut scope = use_scope;
     loop {
-        loop {
+        let terminal_scope_kind = loop {
             let (scope_kind, parent, exact, with_binding) = {
                 let function = tree
                     .functions
@@ -9716,11 +10182,14 @@ fn resolve_identifier_path(
             }
 
             let Some(parent) = parent else {
-                debug_assert_eq!(scope_kind, ScopeKind::FunctionRoot);
-                break;
+                debug_assert!(matches!(
+                    scope_kind,
+                    ScopeKind::FunctionRoot | ScopeKind::Parameter
+                ));
+                break scope_kind;
             };
             scope = parent;
-        }
+        };
 
         let own_binding = if let Some(pseudo) = pseudo {
             find_or_create_own_pseudo_binding(tree, owner, pseudo, span)?
@@ -9744,6 +10213,8 @@ fn resolve_identifier_path(
             }
             if matches!(tree.functions[owner].kind, FunctionKind::Eval(_)) {
                 None
+            } else if terminal_scope_kind == ScopeKind::Parameter {
+                find_or_create_parameter_special_binding(tree, owner, name, span)?
             } else {
                 find_or_create_own_binding(tree, owner, ScopeId(0), name, span)?
             }
@@ -10205,6 +10676,116 @@ fn ensure_string_constant(function: &mut FunctionIr, name: &str) -> Result<u32, 
     Ok(index)
 }
 
+/// A parentless parameter environment is a deliberate visibility barrier, not
+/// a second path into the body FunctionRoot. Only bindings which ECMAScript
+/// establishes before parameter evaluation may cross it.
+fn find_or_create_parameter_special_binding(
+    tree: &mut FunctionTree,
+    function_id: FunctionId,
+    name: &str,
+    span: Span,
+) -> Result<Option<ResolvedBinding>, Error> {
+    let function = tree
+        .functions
+        .get(function_id)
+        .ok_or_else(|| Error::internal("parameter binding owner is out of bounds"))?;
+    let arguments = name == "arguments"
+        && matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method)
+        && !function
+            .parameters
+            .iter()
+            .any(|parameter| parameter == name);
+    let private_name =
+        function.private_name_binding && function.function_name.as_deref() == Some(name);
+    if arguments {
+        find_or_create_own_binding(tree, function_id, ScopeId(0), name, span)
+    } else if private_name {
+        find_or_create_private_function_name_binding(tree, function_id, name, span)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Materialize a named function expression's private self binding without
+/// consulting same-named body declarations. The private name is outside the
+/// function body environment: a parameter initializer must see it, while an
+/// authored body `var`/function of the same name must continue to shadow it.
+fn find_or_create_private_function_name_binding(
+    tree: &mut FunctionTree,
+    function_id: FunctionId,
+    name: &str,
+    span: Span,
+) -> Result<Option<ResolvedBinding>, Error> {
+    let function = tree
+        .functions
+        .get(function_id)
+        .ok_or_else(|| Error::internal("function-name binding owner is out of bounds"))?;
+    if !function.private_name_binding || function.function_name.as_deref() != Some(name) {
+        return Ok(None);
+    }
+    if let Some(index) = function.function_name_local {
+        let kind = BindingKind::FunctionName {
+            is_const: function.strict,
+        };
+        if function.bindings.iter().any(|binding| {
+            binding.name == name
+                && binding.storage == BindingStorage::Local(index)
+                && binding.kind == kind
+        }) {
+            return Ok(Some(ResolvedBinding {
+                storage: BindingStorage::Local(index),
+                kind,
+            }));
+        }
+        return Err(Error::internal(
+            "function-name local is missing its private binding",
+        ));
+    }
+
+    let function = &mut tree.functions[function_id];
+    if function.locals.len() >= MAX_LOCAL_VARIABLES {
+        return Err(
+            Error::new(ErrorKind::JsInternal, "too many local variables")
+                .with_span(source_span(span)),
+        );
+    }
+    let index = u16::try_from(function.locals.len())
+        .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+    let kind = BindingKind::FunctionName {
+        is_const: function.strict,
+    };
+    let root = function.var_scope;
+    let insertion = function.scopes[root.0]
+        .bindings
+        .iter()
+        .position(|binding| function.bindings[binding.0].name == name)
+        .unwrap_or(function.scopes[root.0].bindings.len());
+    function.locals.push(name.to_owned());
+    function.function_name_local = Some(index);
+    let binding = function.add_binding(
+        root,
+        root,
+        name.to_owned(),
+        BindingStorage::Local(index),
+        kind,
+        None,
+    );
+    let appended = function.scopes[root.0]
+        .bindings
+        .pop()
+        .ok_or_else(|| Error::internal("function-name binding was not appended"))?;
+    if appended != binding {
+        return Err(Error::internal(
+            "function-name binding append order is malformed",
+        ));
+    }
+    function.scopes[root.0].bindings.insert(insertion, binding);
+    Ok(Some(ResolvedBinding {
+        storage: BindingStorage::Local(index),
+        kind,
+    }))
+}
+
 fn find_or_create_own_binding(
     tree: &mut FunctionTree,
     function_id: FunctionId,
@@ -10250,36 +10831,7 @@ fn find_or_create_own_binding(
             kind: BindingKind::Normal,
         }));
     }
-    if !function.private_name_binding || function.function_name.as_deref() != Some(name) {
-        return Ok(None);
-    }
-
-    let function = &mut tree.functions[function_id];
-    if function.locals.len() >= MAX_LOCAL_VARIABLES {
-        return Err(
-            Error::new(ErrorKind::JsInternal, "too many local variables")
-                .with_span(source_span(span)),
-        );
-    }
-    let index = u16::try_from(function.locals.len())
-        .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
-    let kind = BindingKind::FunctionName {
-        is_const: function.strict,
-    };
-    function.locals.push(name.to_owned());
-    function.function_name_local = Some(index);
-    function.add_binding(
-        function.var_scope,
-        function.var_scope,
-        name.to_owned(),
-        BindingStorage::Local(index),
-        kind,
-        None,
-    );
-    Ok(Some(ResolvedBinding {
-        storage: BindingStorage::Local(index),
-        kind,
-    }))
+    find_or_create_private_function_name_binding(tree, function_id, name, span)
 }
 
 fn binding_instruction(
@@ -10996,6 +11548,8 @@ fn lower_unlinked_tree(
             defined_argument_count: u16::try_from(function.defined_argument_count)
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "too many arguments"))?,
             rest_parameter: function.rest_parameter,
+            parameter_environment_local_count: u16::try_from(function.parameter_locals.len())
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?,
             local_count: u16::try_from(function.locals.len())
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?,
             function_name_local: function.function_name_local,

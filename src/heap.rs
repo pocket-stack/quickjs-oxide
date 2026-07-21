@@ -567,10 +567,15 @@ pub struct FunctionMetadata {
     /// Number of leading parameters before the first default/rest parameter.
     /// This is the observable `length`, distinct from frame slot count.
     pub defined_argument_count: u16,
-    /// Physical argument slot initialized by the authenticated entry-time
-    /// `Rest`/`PutArg` pair. `None` means this bytecode has no identifier rest
-    /// parameter.
+    /// Physical argument slot initialized by authenticated `Rest` bytecode.
+    /// `None` means this bytecode has no identifier rest parameter.
     pub rest_parameter: Option<u16>,
+    /// Number of leading locals owned by the independent parameter
+    /// environment. Identifier-default lowering currently keeps one mutable
+    /// lexical cell per physical argument, so a non-zero value must equal
+    /// `argument_count`; keeping the boundary explicit makes publication reject
+    /// bytecode which merely resembles a default-parameter prologue.
+    pub parameter_environment_local_count: u16,
     pub local_count: u16,
     /// Synthetic local initialized to the active function object for a named
     /// function expression. This is the typed equivalent of QuickJS's
@@ -608,6 +613,386 @@ pub struct FunctionMetadata {
     pub has_prototype: bool,
     /// Base/derived constructor protocol carried by QuickJS bytecode.
     pub constructor_kind: ConstructorKind,
+}
+
+/// Authenticate the call-frame ABI encoded by formal-parameter bytecode.
+///
+/// This stays independent from compiler IR so both unlinked publication and
+/// the final heap allocation boundary authenticate the same structural ABI.
+/// The unlinked publisher separately authenticates source-level binding names.
+/// A successful parameter environment returns the first body instruction so
+/// that the unlinked boundary can authenticate segment-specific captures.
+pub(crate) fn validate_parameter_bytecode_layout(
+    metadata: &FunctionMetadata,
+    code: &[Instruction],
+) -> Result<Option<usize>, &'static str> {
+    if metadata.defined_argument_count > metadata.argument_count {
+        return Err("defined argument count exceeds function argument slots");
+    }
+
+    let parameter_locals = metadata.parameter_environment_local_count;
+    if parameter_locals == 0 {
+        return match metadata.rest_parameter {
+            Some(rest)
+                if rest.checked_add(1) == Some(metadata.argument_count)
+                    && metadata.defined_argument_count == rest =>
+            {
+                let mut rest_pc = usize::from(metadata.eval_variable_object_local.is_some()) * 2;
+                let arguments = code
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(pc, instruction)| match instruction {
+                        Instruction::Arguments(kind) => Some((pc, *kind)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                match arguments.as_slice() {
+                    [] => {}
+                    [(pc, crate::bytecode::ArgumentsKind::Unmapped)] if *pc == rest_pc => {
+                        if !matches!(
+                            code.get(rest_pc + 1),
+                            Some(Instruction::PutLocal(local)) if *local < metadata.local_count
+                        ) {
+                            return Err("rest parameter arguments object has no entry binding");
+                        }
+                        rest_pc += 2;
+                    }
+                    _ => return Err("rest parameter contains a malformed arguments prologue"),
+                }
+                if !matches!(
+                    code.get(rest_pc..rest_pc + 2),
+                    Some([Instruction::Rest(start), Instruction::PutArg(target)])
+                        if *start == rest && *target == rest
+                ) || code.iter().enumerate().any(|(pc, instruction)| {
+                    pc != rest_pc && matches!(instruction, Instruction::Rest(_))
+                }) {
+                    return Err("rest parameter has no exact entry initialization");
+                }
+                Ok(None)
+            }
+            Some(_) => Err("rest parameter metadata disagrees with argument slots"),
+            None if metadata.defined_argument_count != metadata.argument_count => {
+                Err("default parameter metadata has no parameter environment")
+            }
+            None if code
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Rest(_))) =>
+            {
+                Err("rest opcode has no authenticated parameter metadata")
+            }
+            None => Ok(None),
+        };
+    }
+
+    if parameter_locals != metadata.argument_count
+        || parameter_locals > metadata.local_count
+        || metadata.defined_argument_count >= metadata.argument_count
+        || metadata.rest_parameter.is_some_and(|rest| {
+            rest.checked_add(1) != Some(metadata.argument_count)
+                || metadata.defined_argument_count >= rest
+        })
+    {
+        return Err("parameter environment metadata disagrees with function slots");
+    }
+    if metadata.eval_variable_object_local.is_some()
+        || code
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::Eval { .. }))
+    {
+        return Err("direct eval is not supported in a parameter environment");
+    }
+
+    let mut entry_pc = 0_usize;
+    let arguments = code
+        .iter()
+        .enumerate()
+        .filter_map(|(pc, instruction)| match instruction {
+            Instruction::Arguments(kind) => Some((pc, *kind)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let arguments_local = match arguments.as_slice() {
+        [] => None,
+        [(pc, crate::bytecode::ArgumentsKind::Unmapped)] if *pc == entry_pc => {
+            let Some(Instruction::PutLocal(local)) = code.get(entry_pc + 1) else {
+                return Err("parameter environment arguments object has no entry binding");
+            };
+            if *local < parameter_locals
+                || *local >= metadata.local_count
+                || metadata.function_name_local == Some(*local)
+            {
+                return Err("parameter environment arguments object has no entry binding");
+            }
+            entry_pc += 2;
+            Some(*local)
+        }
+        _ => return Err("parameter environment contains a malformed arguments prologue"),
+    };
+
+    // QuickJS materializes an owned HomeObject/NewTarget/this cell before
+    // entering the argument scope when parameter code needs one. The compiler
+    // emits the same fixed-order pairs between the ordinary entry prefix and
+    // the parameter TDZ reset; every target must remain outside the leading
+    // parameter-local range.
+    let mut pseudo_rank = 0_u8;
+    let mut pseudo_targets = Vec::with_capacity(3);
+    while let Some([source, Instruction::PutLocal(local)]) = code.get(entry_pc..entry_pc + 2) {
+        let rank = match source {
+            Instruction::PushHomeObject => 1,
+            Instruction::PushNewTarget => 2,
+            Instruction::PushThis => 3,
+            _ => break,
+        };
+        if rank <= pseudo_rank
+            || *local < parameter_locals
+            || *local >= metadata.local_count
+            || arguments_local == Some(*local)
+            || metadata.function_name_local == Some(*local)
+            || pseudo_targets.contains(local)
+        {
+            return Err("parameter environment contains a malformed pseudo-binding prologue");
+        }
+        pseudo_rank = rank;
+        pseudo_targets.push(*local);
+        entry_pc += 2;
+    }
+
+    let parameter_count = usize::from(parameter_locals);
+    for (offset, local) in (0..parameter_locals).rev().enumerate() {
+        if !matches!(
+            code.get(entry_pc + offset),
+            Some(Instruction::SetLocalUninitialized(target)) if *target == local
+        ) {
+            return Err("parameter environment has no exact TDZ entry initialization");
+        }
+    }
+    let parameter_body_pc = entry_pc + parameter_count;
+    let mut initializer_pcs = vec![None; parameter_count];
+    for (pc, instruction) in code.iter().enumerate() {
+        let Instruction::InitializeLocal(target) = instruction else {
+            continue;
+        };
+        let target = usize::from(*target);
+        if target >= parameter_count {
+            continue;
+        }
+        if initializer_pcs[target].replace(pc).is_some() {
+            return Err("parameter cell does not have one exact initializer");
+        }
+    }
+    let mut previous_initializer = None;
+    for initializer in &initializer_pcs {
+        let Some(pc) = *initializer else {
+            return Err("parameter cell does not have one exact initializer");
+        };
+        if pc < parameter_body_pc || previous_initializer.is_some_and(|previous| previous >= pc) {
+            return Err("parameter cells are not initialized left to right");
+        }
+        previous_initializer = Some(pc);
+    }
+    let initializer_pcs = initializer_pcs
+        .into_iter()
+        .map(|pc| pc.expect("parameter initializer presence checked above"))
+        .collect::<Vec<_>>();
+    if code.iter().enumerate().any(|(pc, instruction)| {
+        matches!(instruction, Instruction::SetLocalUninitialized(local) if *local < parameter_locals)
+            && !(entry_pc..parameter_body_pc).contains(&pc)
+    }) {
+        return Err("parameter cell has an unauthenticated TDZ reset");
+    }
+
+    // Consume the compiler's contiguous argument-initialization ABI. The
+    // public `defined_argument_count` identifies the first default, while
+    // later slots are distinguished by their exact plain/default skeleton.
+    // This authenticates the branch which skips an initializer as well as the
+    // raw argument-slot synchronization on the default path.
+    let mut parameter_pc = parameter_body_pc;
+    let mut authenticated_rest_pc = None;
+    for (local, &initializer_pc) in (0..parameter_locals).zip(&initializer_pcs) {
+        if metadata.rest_parameter == Some(local) {
+            if !matches!(
+                code.get(parameter_pc..parameter_pc + 4),
+                Some([
+                    Instruction::Rest(start),
+                    Instruction::Dup,
+                    Instruction::PutArg(argument),
+                    Instruction::InitializeLocal(target),
+                ]) if *start == local && *argument == local && *target == local
+            ) || initializer_pc != parameter_pc + 3
+            {
+                return Err("parameter-environment rest parameter has no exact initialization");
+            }
+            authenticated_rest_pc = Some(parameter_pc);
+            parameter_pc += 4;
+            continue;
+        }
+
+        let plain = matches!(
+            code.get(parameter_pc..parameter_pc + 2),
+            Some([Instruction::GetArg(argument), Instruction::InitializeLocal(target)])
+                if *argument == local && *target == local
+        ) && initializer_pc == parameter_pc + 1;
+        if plain {
+            if local == metadata.defined_argument_count {
+                return Err("first default parameter has no default entry initialization");
+            }
+            parameter_pc += 2;
+            continue;
+        }
+        if local < metadata.defined_argument_count {
+            return Err("leading plain parameter has no exact entry initialization");
+        }
+
+        let Some(default_header_end) = parameter_pc.checked_add(6) else {
+            return Err("default parameter entry initialization overflowed bytecode");
+        };
+        if !matches!(
+            code.get(parameter_pc..default_header_end),
+            Some([
+                Instruction::GetArg(argument),
+                Instruction::Dup,
+                Instruction::Undefined,
+                Instruction::StrictEq,
+                Instruction::IfFalse(target),
+                Instruction::Drop,
+            ]) if *argument == local && usize::try_from(*target).ok() == Some(initializer_pc)
+        ) {
+            return Err("default parameter has no exact selection branch");
+        }
+        let Some(sync_pc) = initializer_pc.checked_sub(2) else {
+            return Err("default parameter has no exact argument synchronization");
+        };
+        if sync_pc <= default_header_end
+            || !matches!(
+                code.get(sync_pc..initializer_pc + 1),
+                Some([
+                    Instruction::Dup,
+                    Instruction::PutArg(argument),
+                    Instruction::InitializeLocal(target),
+                ]) if *argument == local && *target == local
+            )
+        {
+            return Err("default parameter has no exact argument synchronization");
+        }
+        for instruction in &code[default_header_end..sync_pc] {
+            if matches!(
+                instruction,
+                Instruction::GetArg(_)
+                    | Instruction::PutArg(_)
+                    | Instruction::SetArg(_)
+                    | Instruction::Rest(_)
+            ) {
+                return Err("default parameter initializer bypasses parameter cells");
+            }
+            let unauthenticated_local_access = match instruction {
+                Instruction::GetLocal(target) => {
+                    *target < parameter_locals
+                        || (arguments_local != Some(*target)
+                            && metadata.function_name_local != Some(*target)
+                            && !pseudo_targets.contains(target))
+                }
+                Instruction::PutLocal(target) | Instruction::SetLocal(target) => {
+                    arguments_local != Some(*target)
+                }
+                Instruction::GetLocalCheck(target)
+                | Instruction::PutLocalCheck(target)
+                | Instruction::SetLocalCheck(target) => *target >= parameter_locals,
+                Instruction::SetLocalUninitialized(_)
+                | Instruction::InitializeLocal(_)
+                | Instruction::CloseLocal(_) => {
+                    return Err(
+                        "default parameter initializer has an unauthenticated local lifecycle",
+                    );
+                }
+                _ => false,
+            };
+            if unauthenticated_local_access {
+                return Err("default parameter initializer has an unauthenticated local access");
+            }
+            let target = match instruction {
+                Instruction::Goto(target)
+                | Instruction::IfFalse(target)
+                | Instruction::IfTrue(target)
+                | Instruction::Catch(target)
+                | Instruction::Gosub(target) => Some(*target),
+                _ => None,
+            };
+            if target.is_some_and(|target| {
+                usize::try_from(target)
+                    .ok()
+                    .is_none_or(|target| !(default_header_end..=sync_pc).contains(&target))
+            }) {
+                return Err("default parameter initializer escaped its entry segment");
+            }
+        }
+        parameter_pc = initializer_pc + 1;
+    }
+
+    let rest_pcs = code
+        .iter()
+        .enumerate()
+        .filter_map(|(pc, instruction)| matches!(instruction, Instruction::Rest(_)).then_some(pc))
+        .collect::<Vec<_>>();
+    match (metadata.rest_parameter, authenticated_rest_pc) {
+        (Some(_), Some(expected)) if rest_pcs.as_slice() == [expected] => {}
+        (Some(_), _) => {
+            return Err("parameter-environment rest parameter is not unique");
+        }
+        (None, None) if rest_pcs.is_empty() => {}
+        (None, None) => {
+            return Err("rest opcode has no authenticated parameter metadata");
+        }
+        (None, Some(_)) => {
+            return Err("rest opcode has no authenticated parameter metadata");
+        }
+    }
+    let mut body_pc = parameter_pc;
+    let mut closed_parameter_cells = vec![false; parameter_count];
+    while let Some(Instruction::CloseLocal(target)) = code.get(body_pc) {
+        let target = usize::from(*target);
+        if target >= parameter_count {
+            break;
+        }
+        if std::mem::replace(&mut closed_parameter_cells[target], true) {
+            return Err("parameter cell is closed more than once");
+        }
+        body_pc += 1;
+    }
+    if code[body_pc..].iter().any(|instruction| {
+        let target = match instruction {
+            Instruction::GetLocal(target)
+            | Instruction::PutLocal(target)
+            | Instruction::SetLocal(target)
+            | Instruction::SetLocalUninitialized(target)
+            | Instruction::GetLocalCheck(target)
+            | Instruction::InitializeLocal(target)
+            | Instruction::PutLocalCheck(target)
+            | Instruction::SetLocalCheck(target)
+            | Instruction::CloseLocal(target) => Some(*target),
+            _ => None,
+        };
+        target.is_some_and(|target| target < parameter_locals)
+    }) {
+        return Err("function body accesses a parameter-environment cell");
+    }
+    if code.iter().skip(body_pc).any(|instruction| {
+        let target = match instruction {
+            Instruction::Goto(target)
+            | Instruction::IfFalse(target)
+            | Instruction::IfTrue(target)
+            | Instruction::Catch(target)
+            | Instruction::Gosub(target) => Some(*target),
+            _ => None,
+        };
+        target.is_some_and(|target| {
+            usize::try_from(target)
+                .ok()
+                .is_some_and(|target| target < body_pc)
+        })
+    }) {
+        return Err("function body jumps back into parameter initialization");
+    }
+    Ok(Some(body_pc))
 }
 
 /// QuickJS eval type carried by one synthetic eval bytecode root.
@@ -3796,75 +4181,8 @@ impl Heap {
                 "bytecode local count exceeds QuickJS JS_MAX_LOCAL_VARS",
             ));
         }
-        if bytecode.metadata.defined_argument_count > bytecode.metadata.argument_count {
-            return Err(HeapError::Invariant(
-                "defined argument count exceeds function argument slots",
-            ));
-        }
-        match bytecode.metadata.rest_parameter {
-            Some(rest)
-                if rest.checked_add(1) == Some(bytecode.metadata.argument_count)
-                    && bytecode.metadata.defined_argument_count == rest =>
-            {
-                let mut rest_pc =
-                    usize::from(bytecode.metadata.eval_variable_object_local.is_some()) * 2;
-                let arguments = bytecode
-                    .code
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(pc, instruction)| match instruction {
-                        Instruction::Arguments(kind) => Some((pc, *kind)),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                match arguments.as_slice() {
-                    [] => {}
-                    [(pc, crate::bytecode::ArgumentsKind::Unmapped)] if *pc == rest_pc => {
-                        if !matches!(
-                            bytecode.code.get(rest_pc + 1),
-                            Some(Instruction::PutLocal(local))
-                                if *local < bytecode.metadata.local_count
-                        ) {
-                            return Err(HeapError::Invariant(
-                                "rest parameter arguments object has no entry binding",
-                            ));
-                        }
-                        rest_pc += 2;
-                    }
-                    _ => {
-                        return Err(HeapError::Invariant(
-                            "rest parameter contains a malformed arguments prologue",
-                        ));
-                    }
-                }
-                if !matches!(
-                    bytecode.code.get(rest_pc..rest_pc + 2),
-                    Some([Instruction::Rest(start), Instruction::PutArg(target)])
-                        if *start == rest && *target == rest
-                ) || bytecode.code.iter().enumerate().any(|(pc, instruction)| {
-                    pc != rest_pc && matches!(instruction, Instruction::Rest(_))
-                }) {
-                    return Err(HeapError::Invariant(
-                        "rest parameter has no exact entry initialization",
-                    ));
-                }
-            }
-            Some(_) => {
-                return Err(HeapError::Invariant(
-                    "rest parameter metadata disagrees with argument slots",
-                ));
-            }
-            None if bytecode
-                .code
-                .iter()
-                .any(|instruction| matches!(instruction, Instruction::Rest(_))) =>
-            {
-                return Err(HeapError::Invariant(
-                    "rest opcode has no authenticated parameter metadata",
-                ));
-            }
-            None => {}
-        }
+        validate_parameter_bytecode_layout(&bytecode.metadata, &bytecode.code)
+            .map_err(HeapError::Invariant)?;
         if bytecode
             .metadata
             .function_name_local
@@ -3907,6 +4225,19 @@ impl Heap {
             {
                 return Err(HeapError::Invariant(
                     "argument definition is not an ordinary mutable binding",
+                ));
+            }
+        }
+        for index in 0..usize::from(bytecode.metadata.parameter_environment_local_count) {
+            let argument = &bytecode.argument_definitions[index];
+            let local = &bytecode.local_definitions[index];
+            if local.kind != ClosureVariableKind::Normal
+                || !local.is_lexical
+                || local.is_const
+                || local.name.is_some_and(|name| argument.name != Some(name))
+            {
+                return Err(HeapError::Invariant(
+                    "parameter environment definition disagrees with argument metadata",
                 ));
             }
         }
@@ -9523,6 +9854,7 @@ mod tests {
 
         let mut lexical_argument = bytecode(&code, context, Vec::new(), Vec::new());
         lexical_argument.metadata.argument_count = 1;
+        lexical_argument.metadata.defined_argument_count = 1;
         lexical_argument.argument_definitions = Rc::from([VariableDefinition {
             name: None,
             is_lexical: true,
@@ -9662,6 +9994,7 @@ mod tests {
 
         let mut argument_source = bytecode(&code, context, Vec::new(), vec![name]);
         argument_source.metadata.argument_count = 1;
+        argument_source.metadata.defined_argument_count = 1;
         argument_source.argument_definitions = Rc::from([VariableDefinition {
             name: Some(name),
             is_lexical: false,

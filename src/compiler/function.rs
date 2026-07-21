@@ -1,8 +1,7 @@
 use super::{
-    Error, ErrorKind, FunctionId, FunctionIr, FunctionIrOptions, FunctionKind, FunctionSourceInfo,
-    Identifier, IdentifierContext, IrConstant, IrOp, MAX_LOCAL_VARIABLES, ParentLink, Parser,
-    Punctuator, SourceOffset, Span, SuperCapabilities, TokenKind, source_offset, source_span,
-    validate_identifier,
+    Error, FunctionId, FunctionIr, FunctionIrOptions, FunctionKind, FunctionSourceInfo, Identifier,
+    IdentifierContext, IrConstant, IrOp, ParentLink, Parser, Punctuator, SourceOffset, Span,
+    SuperCapabilities, TokenKind, source_offset, source_span, validate_identifier,
 };
 use crate::bytecode::DefineMethodKind;
 
@@ -33,7 +32,7 @@ impl FunctionDefinitionOptions {
             kind: FunctionKind::Ordinary,
             private_name_binding,
             reject_duplicate_parameters: false,
-            allow_trailing_parameter_comma: false,
+            allow_trailing_parameter_comma: true,
             object_method_kind: None,
             accessor_parameter_count: None,
         }
@@ -140,11 +139,52 @@ impl<'source> Parser<'source> {
             span: function_span,
             name: function_name_token,
         } = header;
+        let parent = self.current_function;
+        let parent_strict = self.functions[parent].strict;
+        let function_name = function_name_token
+            .as_ref()
+            .map(|(identifier, _)| identifier.value.clone());
+        let child = self.functions.len();
+        let parent_scope = self.functions[parent].current_scope;
+        let super_capabilities = match options.kind {
+            FunctionKind::Method => SuperCapabilities::PROPERTY,
+            FunctionKind::Ordinary => SuperCapabilities::NONE,
+            _ => {
+                return Err(Error::internal(
+                    "ordinary function parser received an invalid function kind",
+                ));
+            }
+        };
+        // Parameter initializers are function code. Establish the child before
+        // consuming `(` so every initializer, nested closure and pseudo-binding
+        // reference is authored in the callee rather than its parent.
+        self.functions.push(FunctionIr::new(
+            Some(ParentLink {
+                function: parent,
+                definition_scope: parent_scope,
+            }),
+            options.kind,
+            FunctionSourceInfo {
+                span: function_span,
+                definition: source_offset(function_span)?,
+                range: None,
+            },
+            FunctionIrOptions {
+                function_name,
+                private_name_binding: options.private_name_binding && function_name_token.is_some(),
+                defined_argument_count: 0,
+                has_simple_parameter_list: true,
+                rest_parameter: None,
+                parameters: Vec::new(),
+                strict: parent_strict,
+                super_capabilities,
+            },
+        )?);
+        self.current_function = child;
         self.expect_punctuator(Punctuator::LeftParen)?;
 
         let mut parameters = Vec::new();
         let mut parameter_tokens = Vec::new();
-        let mut rest_parameter = None;
         let mut parameter_list_end_span = self.current().span;
         if self.is_punctuator(Punctuator::RightParen) {
             self.advance()?;
@@ -192,19 +232,11 @@ impl<'source> Parser<'source> {
                 };
                 validate_identifier(&identifier, token.span, false, IdentifierContext::Argument)?;
                 parameter_tokens.push((identifier.clone(), token.span));
-                parameters.push(identifier.value);
-                if parameters.len() > MAX_LOCAL_VARIABLES {
-                    return Err(Error::new(ErrorKind::JsInternal, "too many arguments")
-                        .with_span(source_span(token.span)));
-                }
-                if is_rest {
-                    rest_parameter =
-                        Some(u16::try_from(parameters.len() - 1).map_err(|_| {
-                            Error::new(ErrorKind::JsInternal, "too many arguments")
-                        })?);
-                }
+                let parameter = identifier.value;
+                parameters.push(parameter.clone());
                 self.advance()?;
                 if is_rest {
+                    self.register_rest_identifier_parameter(parameter, token.span)?;
                     if !self.is_punctuator(Punctuator::RightParen) {
                         return Err(self.syntax_here("expecting ')'"));
                     }
@@ -212,8 +244,10 @@ impl<'source> Parser<'source> {
                     self.advance()?;
                     break;
                 }
-                if let Some(method_kind) = options.object_method_kind {
-                    if self.is_punctuator(Punctuator::Equal) {
+                if self.is_punctuator(Punctuator::Equal) {
+                    if let Some(method_kind) = options.object_method_kind
+                        && !matches!(method_kind, DefineMethodKind::Method)
+                    {
                         let role = match method_kind {
                             DefineMethodKind::Method => "object method",
                             DefineMethodKind::Getter => "object getter",
@@ -223,6 +257,9 @@ impl<'source> Parser<'source> {
                             "{role} default parameters are not implemented yet"
                         )));
                     }
+                    self.parse_default_identifier_parameter(parameter, token.span)?;
+                } else {
+                    self.register_plain_identifier_parameter(parameter, token.span)?;
                 }
                 if !self.consume_punctuator(Punctuator::Comma)? {
                     if !self.is_punctuator(Punctuator::RightParen) {
@@ -258,12 +295,10 @@ impl<'source> Parser<'source> {
         }
         self.expect_punctuator(Punctuator::LeftBrace)?;
 
-        let parent = self.current_function;
-        let parent_strict = self.functions[parent].strict;
         let has_use_strict = self.directive_prologue_has_use_strict(self.cursor, parent_strict)?;
-        let strict = self.functions[parent].strict || has_use_strict;
+        let strict = parent_strict || has_use_strict;
         self.relex_current_with_strict(strict)?;
-        let has_simple_parameter_list = rest_parameter.is_none();
+        let has_simple_parameter_list = self.functions[child].has_simple_parameter_list;
         if has_use_strict && !has_simple_parameter_list {
             return Err(Error::syntax(
                 "\"use strict\" not allowed in function with default or destructuring parameter",
@@ -299,44 +334,8 @@ impl<'source> Parser<'source> {
                 }
             }
         }
-
-        let function_name = function_name_token
-            .as_ref()
-            .map(|(identifier, _)| identifier.value.clone());
-        let child = self.functions.len();
-        let parent_scope = self.functions[parent].current_scope;
-        let super_capabilities = match options.kind {
-            FunctionKind::Method => SuperCapabilities::PROPERTY,
-            FunctionKind::Ordinary => SuperCapabilities::NONE,
-            _ => {
-                return Err(Error::internal(
-                    "ordinary function parser received an invalid function kind",
-                ));
-            }
-        };
-        self.functions.push(FunctionIr::new(
-            Some(ParentLink {
-                function: parent,
-                definition_scope: parent_scope,
-            }),
-            options.kind,
-            FunctionSourceInfo {
-                span: function_span,
-                definition: source_offset(function_span)?,
-                range: None,
-            },
-            FunctionIrOptions {
-                function_name,
-                private_name_binding: options.private_name_binding && function_name_token.is_some(),
-                defined_argument_count: rest_parameter.map_or(parameters.len(), usize::from),
-                has_simple_parameter_list,
-                rest_parameter,
-                parameters,
-                strict,
-                super_capabilities,
-            },
-        )?);
-        self.current_function = child;
+        self.functions[child].strict = strict;
+        self.finish_identifier_parameter_environment()?;
         self.parse_function_body()?;
         let closing_brace = self.current().span;
         let mut parent_context = self.lexer.context();

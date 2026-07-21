@@ -8,6 +8,7 @@ use crate::bytecode::{
 };
 use crate::heap::{
     EvalBinding, EvalCallerProfile, EvalCallerVariableTarget, EvalKind, EvalRootBinding, EvalScope,
+    validate_parameter_bytecode_layout,
 };
 
 /// Intern every semantically retained direct-eval binding name while keeping
@@ -934,6 +935,7 @@ fn verify_unlinked_tree_with_root(
         root_origins,
         root_function_name_origins,
         0_usize,
+        false,
     )];
     while let Some((
         function,
@@ -941,9 +943,23 @@ fn verify_unlinked_tree_with_root(
         closure_origins,
         function_name_origins,
         function_id,
+        inherited_parameter_environment,
     )) = pending.pop()
     {
         let is_root = function_depth == 0;
+        let under_parameter_environment = inherited_parameter_environment
+            || function.metadata().parameter_environment_local_count != 0;
+        if under_parameter_environment
+            && (function.metadata().eval_variable_object_local.is_some()
+                || !function.eval_environments().is_empty()
+                || function.code().iter().any(|instruction| {
+                    matches!(instruction, crate::bytecode::Instruction::Eval { .. })
+                }))
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "direct eval in or below a parameter environment is not supported",
+            )));
+        }
         let expected_eval_kind = if is_root {
             match root_publication {
                 RootPublication::Script => EvalKind::None,
@@ -1029,91 +1045,91 @@ fn verify_unlinked_tree_with_root(
                 "bytecode local count exceeds QuickJS JS_MAX_LOCAL_VARS",
             )));
         }
-        if function.metadata().defined_argument_count > function.metadata().argument_count {
+        if is_root && function.metadata().rest_parameter.is_some() {
             return Err(RuntimeError::Engine(Error::internal(
-                "defined argument count exceeds function argument slots",
+                "rest parameter metadata disagrees with argument slots",
             )));
         }
-        match function.metadata().rest_parameter {
-            Some(rest)
-                if !is_root
-                    && rest.checked_add(1) == Some(function.metadata().argument_count)
-                    && function.metadata().defined_argument_count == rest =>
+        if is_root && function.metadata().parameter_environment_local_count != 0 {
+            return Err(RuntimeError::Engine(Error::internal(
+                "synthetic root contains parameter-environment metadata",
+            )));
+        }
+        let parameter_body_pc =
+            validate_parameter_bytecode_layout(function.metadata(), function.code())
+                .map_err(|message| RuntimeError::Engine(Error::internal(message)))?;
+        let parameter_initializer_capture_locals = parameter_body_pc.map(|_| {
+            let mut allowed = vec![false; usize::from(function.metadata().local_count)];
+            allowed[..usize::from(function.metadata().parameter_environment_local_count)]
+                .fill(true);
+            if let Some(local) = function.metadata().function_name_local
+                && let Some(allowed) = allowed.get_mut(usize::from(local))
             {
-                let mut rest_pc =
-                    usize::from(function.metadata().eval_variable_object_local.is_some()) * 2;
-                let arguments = function
-                    .code()
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(pc, instruction)| match instruction {
-                        crate::bytecode::Instruction::Arguments(kind) => Some((pc, *kind)),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                match arguments.as_slice() {
-                    [] => {}
-                    [(pc, crate::bytecode::ArgumentsKind::Unmapped)] if *pc == rest_pc => {
-                        let Some(crate::bytecode::Instruction::PutLocal(local)) =
-                            function.code().get(rest_pc + 1)
-                        else {
-                            return Err(RuntimeError::Engine(Error::internal(
-                                "rest parameter arguments object has no entry binding",
-                            )));
-                        };
-                        let definition = function
-                            .local_definitions()
-                            .get(usize::from(*local))
-                            .ok_or_else(|| {
-                                RuntimeError::Engine(Error::internal(
-                                    "rest parameter arguments binding is out of bounds",
-                                ))
-                            })?;
-                        if definition
-                            .name
-                            .as_ref()
-                            .is_none_or(|name| name.utf16_units().ne("arguments".encode_utf16()))
-                        {
-                            return Err(RuntimeError::Engine(Error::internal(
-                                "rest parameter arguments binding is not authenticated",
-                            )));
-                        }
-                        rest_pc += 2;
-                    }
-                    _ => {
-                        return Err(RuntimeError::Engine(Error::internal(
-                            "rest parameter contains a malformed arguments prologue",
-                        )));
-                    }
+                *allowed = true;
+            }
+
+            let mut entry_pc = 0_usize;
+            if matches!(
+                function.code().first(),
+                Some(crate::bytecode::Instruction::Arguments(_))
+            ) {
+                if let Some(crate::bytecode::Instruction::PutLocal(local)) = function.code().get(1)
+                    && let Some(allowed) = allowed.get_mut(usize::from(*local))
+                {
+                    *allowed = true;
                 }
+                entry_pc = 2;
+            }
+            while let Some([source, crate::bytecode::Instruction::PutLocal(local)]) =
+                function.code().get(entry_pc..entry_pc + 2)
+            {
                 if !matches!(
-                    function.code().get(rest_pc..rest_pc + 2),
-                    Some([
-                        crate::bytecode::Instruction::Rest(start),
-                        crate::bytecode::Instruction::PutArg(target),
-                    ]) if *start == rest && *target == rest
-                ) || function.code().iter().enumerate().any(|(pc, instruction)| {
-                    pc != rest_pc && matches!(instruction, crate::bytecode::Instruction::Rest(_))
-                }) {
-                    return Err(RuntimeError::Engine(Error::internal(
-                        "rest parameter has no exact entry initialization",
-                    )));
+                    source,
+                    crate::bytecode::Instruction::PushHomeObject
+                        | crate::bytecode::Instruction::PushNewTarget
+                        | crate::bytecode::Instruction::PushThis
+                ) {
+                    break;
                 }
+                if let Some(allowed) = allowed.get_mut(usize::from(*local)) {
+                    *allowed = true;
+                }
+                entry_pc += 2;
             }
-            Some(_) => {
+            allowed
+        });
+        if (function.metadata().rest_parameter.is_some()
+            || function.metadata().parameter_environment_local_count != 0)
+            && let Some((pc, _)) = function.code().iter().enumerate().find(|(_, instruction)| {
+                matches!(instruction, crate::bytecode::Instruction::Arguments(_))
+            })
+        {
+            let Some(crate::bytecode::Instruction::PutLocal(local)) = function.code().get(pc + 1)
+            else {
                 return Err(RuntimeError::Engine(Error::internal(
-                    "rest parameter metadata disagrees with argument slots",
+                    "formal parameter arguments object has no entry binding",
                 )));
-            }
-            None if function.code().iter().any(|instruction| {
-                matches!(instruction, crate::bytecode::Instruction::Rest(_))
-            }) =>
+            };
+            let definition = function
+                .local_definitions()
+                .get(usize::from(*local))
+                .ok_or_else(|| {
+                    RuntimeError::Engine(Error::internal(
+                        "formal parameter arguments binding is out of bounds",
+                    ))
+                })?;
+            if definition.kind != ClosureVariableKind::Normal
+                || definition.is_lexical
+                || definition.is_const
+                || definition
+                    .name
+                    .as_ref()
+                    .is_none_or(|name| name.utf16_units().ne("arguments".encode_utf16()))
             {
                 return Err(RuntimeError::Engine(Error::internal(
-                    "rest opcode has no authenticated parameter metadata",
+                    "formal parameter arguments binding is not authenticated",
                 )));
             }
-            None => {}
         }
         if function
             .metadata()
@@ -1198,6 +1214,59 @@ fn verify_unlinked_tree_with_root(
                 return Err(RuntimeError::Engine(Error::internal(
                     "argument definition is not an ordinary mutable binding",
                 )));
+            }
+        }
+        for index in 0..usize::from(function.metadata().parameter_environment_local_count) {
+            let argument = &function.argument_definitions()[index];
+            let local = &function.local_definitions()[index];
+            if local.kind != ClosureVariableKind::Normal
+                || !local.is_lexical
+                || local.is_const
+                || local
+                    .name
+                    .as_ref()
+                    .is_some_and(|name| argument.name.as_ref() != Some(name))
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "parameter environment definition disagrees with argument metadata",
+                )));
+            }
+        }
+        if function.metadata().parameter_environment_local_count != 0 {
+            let mut entry_pc = usize::from(matches!(
+                function.code().first(),
+                Some(crate::bytecode::Instruction::Arguments(_))
+            )) * 2;
+            while let Some([source, crate::bytecode::Instruction::PutLocal(local)]) =
+                function.code().get(entry_pc..entry_pc + 2)
+            {
+                let expected_name = match source {
+                    crate::bytecode::Instruction::PushHomeObject => "<home_object>",
+                    crate::bytecode::Instruction::PushNewTarget => "<new.target>",
+                    crate::bytecode::Instruction::PushThis => "<this>",
+                    _ => break,
+                };
+                let definition = function
+                    .local_definitions()
+                    .get(usize::from(*local))
+                    .ok_or_else(|| {
+                        RuntimeError::Engine(Error::internal(
+                            "parameter pseudo-binding local is out of bounds",
+                        ))
+                    })?;
+                if definition.kind != ClosureVariableKind::Normal
+                    || definition.is_lexical
+                    || definition.is_const
+                    || definition
+                        .name
+                        .as_ref()
+                        .is_none_or(|name| name.utf16_units().ne(expected_name.encode_utf16()))
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "parameter pseudo-binding definition is not authenticated",
+                    )));
+                }
+                entry_pc += 2;
             }
         }
         for (index, definition) in function.local_definitions().iter().enumerate() {
@@ -1678,6 +1747,23 @@ fn verify_unlinked_tree_with_root(
             function.metadata().max_stack,
         )?;
 
+        let mut child_closure_pcs = vec![Vec::new(); function.constants().len()];
+        for (pc, instruction) in function.code().iter().enumerate() {
+            let crate::bytecode::Instruction::FClosure(index) = instruction else {
+                continue;
+            };
+            let Ok(index) = usize::try_from(*index) else {
+                continue;
+            };
+            if function
+                .constants()
+                .get(index)
+                .is_some_and(|constant| constant.as_child().is_some())
+            {
+                child_closure_pcs[index].push(pc);
+            }
+        }
+
         let mut referenced_eval_environments = vec![false; function.eval_environments().len()];
         for instruction in function.code() {
             let crate::bytecode::Instruction::Eval { environment, .. } = instruction else {
@@ -1702,11 +1788,15 @@ fn verify_unlinked_tree_with_root(
         }
 
         let mut captured_locals = vec![false; usize::from(function.metadata().local_count)];
-        for child in function
+        for (constant_index, child) in function
             .constants()
             .iter()
-            .filter_map(UnlinkedConstant::as_child)
+            .enumerate()
+            .filter_map(|(index, constant)| constant.as_child().map(|child| (index, child)))
         {
+            if child_closure_pcs[constant_index].is_empty() {
+                continue;
+            }
             for descriptor in child.closure_variables() {
                 if let ClosureSource::ParentLocal(index) = descriptor.source {
                     if let Some(captured) = captured_locals.get_mut(usize::from(index)) {
@@ -1768,7 +1858,9 @@ fn verify_unlinked_tree_with_root(
             let first_child_view = function
                 .constants()
                 .iter()
-                .filter_map(UnlinkedConstant::as_child)
+                .enumerate()
+                .filter(|(constant_index, _)| !child_closure_pcs[*constant_index].is_empty())
+                .filter_map(|(_, constant)| constant.as_child())
                 .find_map(|child| {
                     child
                         .closure_variables()
@@ -2176,8 +2268,9 @@ fn verify_unlinked_tree_with_root(
         }
         let mut local_flags = vec![None; usize::from(function.metadata().local_count)];
         let mut argument_flags = vec![None; usize::from(function.metadata().argument_count)];
-        for constant in function.constants() {
+        for (constant_index, constant) in function.constants().iter().enumerate() {
             if let Some(child) = constant.as_child() {
+                let closure_pcs = &child_closure_pcs[constant_index];
                 let child_id = next_function_id;
                 next_function_id = next_function_id.checked_add(1).ok_or_else(|| {
                     RuntimeError::Engine(Error::internal(
@@ -2188,6 +2281,41 @@ fn verify_unlinked_tree_with_root(
                     Vec::with_capacity(child.closure_variables().len());
                 let mut child_physical_sources = HashSet::new();
                 for (descriptor_index, descriptor) in child.closure_variables().iter().enumerate() {
+                    if let (Some(body_pc), Some(initializer_capture_locals)) =
+                        (parameter_body_pc, &parameter_initializer_capture_locals)
+                    {
+                        let instantiated_in_initializer =
+                            closure_pcs.iter().any(|pc| *pc < body_pc);
+                        let instantiated_in_body = closure_pcs.iter().any(|pc| *pc >= body_pc);
+                        match descriptor.source {
+                            ClosureSource::ParentArgument(_) if instantiated_in_initializer => {
+                                return Err(RuntimeError::Engine(Error::internal(
+                                    "parameter initializer closure captured a raw argument slot",
+                                )));
+                            }
+                            ClosureSource::ParentLocal(index)
+                                if instantiated_in_body
+                                    && index
+                                        < function.metadata().parameter_environment_local_count =>
+                            {
+                                return Err(RuntimeError::Engine(Error::internal(
+                                    "function body closure captured a parameter-environment cell",
+                                )));
+                            }
+                            ClosureSource::ParentLocal(index)
+                                if instantiated_in_initializer
+                                    && !initializer_capture_locals
+                                        .get(usize::from(index))
+                                        .copied()
+                                        .unwrap_or(false) =>
+                            {
+                                return Err(RuntimeError::Engine(Error::internal(
+                                    "parameter initializer closure captured a body-only local",
+                                )));
+                            }
+                            _ => {}
+                        }
+                    }
                     if matches!(
                         descriptor.source,
                         ClosureSource::ParentLocal(_)
@@ -2429,6 +2557,7 @@ fn verify_unlinked_tree_with_root(
                     child_origins,
                     child_function_name_origins,
                     child_id,
+                    under_parameter_environment,
                 ));
             } else if constant.as_primitive().is_none()
                 && constant.as_regexp().is_none()
@@ -3805,7 +3934,7 @@ mod tests {
             Vec::new(),
             FunctionMetadata {
                 argument_count: 2,
-                defined_argument_count: 1,
+                defined_argument_count: 2,
                 max_stack: 1,
                 ..FunctionMetadata::default()
             },
@@ -3986,6 +4115,500 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("metadata disagrees with argument slots")
+        );
+    }
+
+    #[test]
+    fn identifier_default_metadata_authenticates_parameter_environment_layout() {
+        let metadata = || FunctionMetadata {
+            argument_count: 2,
+            defined_argument_count: 0,
+            rest_parameter: Some(1),
+            parameter_environment_local_count: 2,
+            local_count: 2,
+            max_stack: 3,
+            ..FunctionMetadata::default()
+        };
+        let code = || {
+            vec![
+                Instruction::SetLocalUninitialized(1),
+                Instruction::SetLocalUninitialized(0),
+                Instruction::GetArg(0),
+                Instruction::Dup,
+                Instruction::Undefined,
+                Instruction::StrictEq,
+                Instruction::IfFalse(11),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Dup,
+                Instruction::PutArg(0),
+                Instruction::InitializeLocal(0),
+                Instruction::Rest(1),
+                Instruction::Dup,
+                Instruction::PutArg(1),
+                Instruction::InitializeLocal(1),
+                Instruction::Undefined,
+                Instruction::Return,
+            ]
+        };
+        let make_with_constants = |code, constants, metadata| {
+            UnlinkedFunction::new(code, constants, metadata).with_variable_definitions(
+                vec![
+                    UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("a"))),
+                    UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("rest"))),
+                ],
+                vec![
+                    UnlinkedVariableDefinition::lexical(Some(JsString::from_static("a")), false),
+                    UnlinkedVariableDefinition::lexical(Some(JsString::from_static("rest")), false),
+                ],
+            )
+        };
+        let make = |code, metadata| make_with_constants(code, Vec::new(), metadata);
+        let make_with_body_local = |code, metadata| {
+            UnlinkedFunction::new(code, Vec::new(), metadata).with_variable_definitions(
+                vec![
+                    UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("a"))),
+                    UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("rest"))),
+                ],
+                vec![
+                    UnlinkedVariableDefinition::lexical(Some(JsString::from_static("a")), false),
+                    UnlinkedVariableDefinition::lexical(Some(JsString::from_static("rest")), false),
+                    UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("body"))),
+                ],
+            )
+        };
+        let capture_child = |source, is_lexical| {
+            UnlinkedFunction::new_with_closure_variables(
+                vec![
+                    if is_lexical {
+                        Instruction::GetVarRefCheck(0)
+                    } else {
+                        Instruction::GetVarRef(0)
+                    },
+                    Instruction::Return,
+                ],
+                vec![
+                    UnlinkedConstant::primitive(Value::String(JsString::from_static("a"))).unwrap(),
+                ],
+                FunctionMetadata {
+                    closure_count: 1,
+                    max_stack: 1,
+                    ..FunctionMetadata::default()
+                },
+                vec![ClosureVariable {
+                    source,
+                    name: ClosureVariableName::Constant(0),
+                    is_lexical,
+                    is_const: false,
+                    kind: ClosureVariableKind::Normal,
+                }],
+            )
+        };
+
+        verify_unlinked_tree(&script_with_child(make(code(), metadata()))).unwrap();
+
+        let default_only_metadata = || FunctionMetadata {
+            argument_count: 1,
+            defined_argument_count: 0,
+            parameter_environment_local_count: 1,
+            local_count: 1,
+            max_stack: 3,
+            ..FunctionMetadata::default()
+        };
+        let default_only_code = || {
+            vec![
+                Instruction::SetLocalUninitialized(0),
+                Instruction::GetArg(0),
+                Instruction::Dup,
+                Instruction::Undefined,
+                Instruction::StrictEq,
+                Instruction::IfFalse(10),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Dup,
+                Instruction::PutArg(0),
+                Instruction::InitializeLocal(0),
+                Instruction::Undefined,
+                Instruction::Return,
+            ]
+        };
+        let make_default_only = |code, constants, metadata| {
+            UnlinkedFunction::new(code, constants, metadata).with_variable_definitions(
+                vec![UnlinkedVariableDefinition::ordinary(Some(
+                    JsString::from_static("value"),
+                ))],
+                vec![UnlinkedVariableDefinition::lexical(
+                    Some(JsString::from_static("value")),
+                    false,
+                )],
+            )
+        };
+        verify_unlinked_tree(&script_with_child(make_default_only(
+            default_only_code(),
+            Vec::new(),
+            default_only_metadata(),
+        )))
+        .unwrap();
+
+        let mut missing_default_only_environment = default_only_metadata();
+        missing_default_only_environment.parameter_environment_local_count = 0;
+        assert!(
+            verify_unlinked_tree(&script_with_child(make_default_only(
+                default_only_code(),
+                Vec::new(),
+                missing_default_only_environment,
+            )))
+            .unwrap_err()
+            .to_string()
+            .contains("default parameter metadata has no parameter environment")
+        );
+
+        let eval_descendant_environment = EvalEnvironment {
+            scopes: vec![
+                EvalScope {
+                    kind: EvalScopeKind::FunctionBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::ProgramBody,
+                    bindings: Box::new([]),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+            ]
+            .into_boxed_slice(),
+            variable_environment: EvalVariableEnvironment::Scope(1),
+            caller_strict: false,
+            super_call_allowed: false,
+            super_allowed: false,
+        };
+        let plain_eval_descendant = UnlinkedFunction::new(
+            eval_code(0, false),
+            Vec::new(),
+            FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_eval_environments(vec![eval_descendant_environment.clone()]);
+        let plain_parent = UnlinkedFunction::new(
+            vec![Instruction::Undefined, Instruction::Return],
+            vec![UnlinkedConstant::child(plain_eval_descendant)],
+            FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        verify_unlinked_tree(&script_with_child(plain_parent)).unwrap();
+
+        let eval_descendant = UnlinkedFunction::new(
+            eval_code(0, false),
+            Vec::new(),
+            FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_eval_environments(vec![eval_descendant_environment]);
+        let parameter_parent = make_default_only(
+            default_only_code(),
+            vec![UnlinkedConstant::child(eval_descendant)],
+            default_only_metadata(),
+        );
+        assert!(
+            verify_unlinked_tree(&script_with_child(parameter_parent))
+                .unwrap_err()
+                .to_string()
+                .contains("below a parameter environment")
+        );
+
+        let mut missing_environment = metadata();
+        missing_environment.parameter_environment_local_count = 0;
+        assert!(
+            verify_unlinked_tree(&script_with_child(make(code(), missing_environment)))
+                .unwrap_err()
+                .to_string()
+                .contains("metadata disagrees with argument slots")
+        );
+
+        let mut wrong_tdz = code();
+        wrong_tdz.swap(0, 1);
+        assert!(
+            verify_unlinked_tree(&script_with_child(make(wrong_tdz, metadata())))
+                .unwrap_err()
+                .to_string()
+                .contains("exact TDZ entry initialization")
+        );
+
+        let mut forged_pseudo_code = code();
+        forged_pseudo_code.insert(0, Instruction::PushThis);
+        forged_pseudo_code.insert(1, Instruction::PutLocal(2));
+        forged_pseudo_code[8] = Instruction::IfFalse(13);
+        let mut forged_pseudo_metadata = metadata();
+        forged_pseudo_metadata.local_count = 3;
+        let forged_pseudo =
+            UnlinkedFunction::new(forged_pseudo_code, Vec::new(), forged_pseudo_metadata)
+                .with_variable_definitions(
+                    vec![
+                        UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("a"))),
+                        UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("rest"))),
+                    ],
+                    vec![
+                        UnlinkedVariableDefinition::lexical(
+                            Some(JsString::from_static("a")),
+                            false,
+                        ),
+                        UnlinkedVariableDefinition::lexical(
+                            Some(JsString::from_static("rest")),
+                            false,
+                        ),
+                        UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("forged"))),
+                    ],
+                );
+        assert!(
+            verify_unlinked_tree(&script_with_child(forged_pseudo))
+                .unwrap_err()
+                .to_string()
+                .contains("pseudo-binding definition is not authenticated")
+        );
+
+        let mut pseudo_write_code = code();
+        pseudo_write_code.insert(0, Instruction::PushThis);
+        pseudo_write_code.insert(1, Instruction::PutLocal(2));
+        pseudo_write_code[8] = Instruction::IfFalse(14);
+        pseudo_write_code.insert(11, Instruction::SetLocal(2));
+        let mut pseudo_write_metadata = metadata();
+        pseudo_write_metadata.local_count = 3;
+        let pseudo_write =
+            UnlinkedFunction::new(pseudo_write_code, Vec::new(), pseudo_write_metadata)
+                .with_variable_definitions(
+                    vec![
+                        UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("a"))),
+                        UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("rest"))),
+                    ],
+                    vec![
+                        UnlinkedVariableDefinition::lexical(
+                            Some(JsString::from_static("a")),
+                            false,
+                        ),
+                        UnlinkedVariableDefinition::lexical(
+                            Some(JsString::from_static("rest")),
+                            false,
+                        ),
+                        UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("<this>"))),
+                    ],
+                );
+        assert!(
+            verify_unlinked_tree(&script_with_child(pseudo_write))
+                .unwrap_err()
+                .to_string()
+                .contains("initializer has an unauthenticated local access")
+        );
+
+        let mut wrong_rest_target = code();
+        wrong_rest_target[14] = Instruction::PutArg(0);
+        assert!(
+            verify_unlinked_tree(&script_with_child(make(wrong_rest_target, metadata())))
+                .unwrap_err()
+                .to_string()
+                .contains("rest parameter has no exact initialization")
+        );
+
+        let missing_default = vec![
+            Instruction::SetLocalUninitialized(1),
+            Instruction::SetLocalUninitialized(0),
+            Instruction::GetArg(0),
+            Instruction::InitializeLocal(0),
+            Instruction::Rest(1),
+            Instruction::Dup,
+            Instruction::PutArg(1),
+            Instruction::InitializeLocal(1),
+            Instruction::Undefined,
+            Instruction::Return,
+        ];
+        assert!(
+            verify_unlinked_tree(&script_with_child(make(missing_default, metadata())))
+                .unwrap_err()
+                .to_string()
+                .contains("first default parameter has no default entry initialization")
+        );
+
+        let mut wrong_default_target = code();
+        wrong_default_target[6] = Instruction::IfFalse(12);
+        assert!(
+            verify_unlinked_tree(&script_with_child(make(wrong_default_target, metadata())))
+                .unwrap_err()
+                .to_string()
+                .contains("default parameter has no exact selection branch")
+        );
+
+        let mut missing_default_sync = code();
+        missing_default_sync[10] = Instruction::Drop;
+        assert!(
+            verify_unlinked_tree(&script_with_child(make(missing_default_sync, metadata())))
+                .unwrap_err()
+                .to_string()
+                .contains("default parameter has no exact argument synchronization")
+        );
+
+        let mut wrong_default_argument = code();
+        wrong_default_argument[10] = Instruction::PutArg(1);
+        assert!(
+            verify_unlinked_tree(&script_with_child(make(wrong_default_argument, metadata())))
+                .unwrap_err()
+                .to_string()
+                .contains("default parameter has no exact argument synchronization")
+        );
+
+        let mut raw_argument_rhs = code();
+        raw_argument_rhs[8] = Instruction::GetArg(1);
+        assert!(
+            verify_unlinked_tree(&script_with_child(make(raw_argument_rhs, metadata())))
+                .unwrap_err()
+                .to_string()
+                .contains("initializer bypasses parameter cells")
+        );
+
+        let mut unchecked_parameter_rhs = code();
+        unchecked_parameter_rhs[8] = Instruction::GetLocal(0);
+        assert!(
+            verify_unlinked_tree(&script_with_child(make(
+                unchecked_parameter_rhs,
+                metadata()
+            )))
+            .unwrap_err()
+            .to_string()
+            .contains("initializer has an unauthenticated local access")
+        );
+
+        let mut body_local_rhs = code();
+        body_local_rhs[8] = Instruction::GetLocal(2);
+        let mut body_local_metadata = metadata();
+        body_local_metadata.local_count = 3;
+        assert!(
+            verify_unlinked_tree(&script_with_child(make_with_body_local(
+                body_local_rhs,
+                body_local_metadata,
+            )))
+            .unwrap_err()
+            .to_string()
+            .contains("initializer has an unauthenticated local access")
+        );
+
+        let mut initializer_parameter_capture = code();
+        initializer_parameter_capture[8] = Instruction::FClosure(0);
+        initializer_parameter_capture.insert(16, Instruction::CloseLocal(0));
+        verify_unlinked_tree(&script_with_child(make_with_constants(
+            initializer_parameter_capture,
+            vec![UnlinkedConstant::child(capture_child(
+                ClosureSource::ParentLocal(0),
+                true,
+            ))],
+            metadata(),
+        )))
+        .unwrap();
+
+        let mut initializer_raw_argument_capture = code();
+        initializer_raw_argument_capture[8] = Instruction::FClosure(0);
+        assert!(
+            verify_unlinked_tree(&script_with_child(make_with_constants(
+                initializer_raw_argument_capture,
+                vec![UnlinkedConstant::child(capture_child(
+                    ClosureSource::ParentArgument(0),
+                    false,
+                ))],
+                metadata(),
+            )))
+            .unwrap_err()
+            .to_string()
+            .contains("initializer closure captured a raw argument slot")
+        );
+
+        let mut body_raw_argument_capture = code();
+        body_raw_argument_capture.insert(16, Instruction::FClosure(0));
+        body_raw_argument_capture.insert(17, Instruction::Drop);
+        verify_unlinked_tree(&script_with_child(make_with_constants(
+            body_raw_argument_capture,
+            vec![UnlinkedConstant::child(capture_child(
+                ClosureSource::ParentArgument(0),
+                false,
+            ))],
+            metadata(),
+        )))
+        .unwrap();
+
+        let mut body_parameter_capture = code();
+        body_parameter_capture.insert(16, Instruction::CloseLocal(0));
+        body_parameter_capture.insert(17, Instruction::FClosure(0));
+        body_parameter_capture.insert(18, Instruction::Drop);
+        assert!(
+            verify_unlinked_tree(&script_with_child(make_with_constants(
+                body_parameter_capture,
+                vec![UnlinkedConstant::child(capture_child(
+                    ClosureSource::ParentLocal(0),
+                    true,
+                ))],
+                metadata(),
+            )))
+            .unwrap_err()
+            .to_string()
+            .contains("body closure captured a parameter-environment cell")
+        );
+
+        let mut body_parameter_cell = code();
+        body_parameter_cell.insert(16, Instruction::GetLocalCheck(0));
+        assert!(
+            verify_unlinked_tree(&script_with_child(make(body_parameter_cell, metadata())))
+                .unwrap_err()
+                .to_string()
+                .contains("function body accesses a parameter-environment cell")
+        );
+
+        let mut own_eval = code();
+        own_eval.insert(
+            own_eval.len() - 1,
+            Instruction::Eval {
+                argument_count: 0,
+                environment: 0,
+            },
+        );
+        assert!(
+            verify_unlinked_tree(&script_with_child(make(own_eval, metadata())))
+                .unwrap_err()
+                .to_string()
+                .contains("direct eval")
+        );
+
+        let ordinary_locals = UnlinkedFunction::new(code(), Vec::new(), metadata());
+        assert!(
+            verify_unlinked_tree(&script_with_child(ordinary_locals))
+                .unwrap_err()
+                .to_string()
+                .contains("definition disagrees with argument metadata")
+        );
+
+        let mut root_metadata = metadata();
+        root_metadata.rest_parameter = None;
+        let error = verify_unlinked_tree(&make(code(), root_metadata)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("synthetic root contains parameter-environment metadata"),
+            "{error}"
         );
     }
 

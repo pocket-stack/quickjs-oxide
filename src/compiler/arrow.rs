@@ -13,7 +13,35 @@ impl<'source> Parser<'source> {
         let parent_strict = self.functions[parent].strict;
         let mut parameters = Vec::new();
         let mut parameter_tokens = Vec::new();
-        let mut rest_parameter = None;
+        let child = self.functions.len();
+        let parent_scope = self.functions[parent].current_scope;
+        let super_capabilities = SuperCapabilities {
+            super_call_allowed: self.functions[parent].super_call_allowed,
+            super_allowed: self.functions[parent].super_allowed,
+        };
+        self.functions.push(FunctionIr::new(
+            Some(ParentLink {
+                function: parent,
+                definition_scope: parent_scope,
+            }),
+            FunctionKind::Arrow,
+            FunctionSourceInfo {
+                span: function_span,
+                definition: source_offset(function_span)?,
+                range: None,
+            },
+            FunctionIrOptions {
+                function_name: None,
+                private_name_binding: false,
+                defined_argument_count: 0,
+                has_simple_parameter_list: true,
+                rest_parameter: None,
+                parameters: Vec::new(),
+                strict: parent_strict,
+                super_capabilities,
+            },
+        )?);
+        self.current_function = child;
 
         match head {
             ArrowHead::Identifier => {
@@ -25,6 +53,7 @@ impl<'source> Parser<'source> {
                 };
                 validate_identifier(&identifier, token.span, false, IdentifierContext::Argument)?;
                 parameters.push(identifier.value.clone());
+                self.register_plain_identifier_parameter(identifier.value.clone(), token.span)?;
                 parameter_tokens.push((identifier, token.span));
                 self.advance()?;
             }
@@ -60,14 +89,13 @@ impl<'source> Parser<'source> {
                         }
                         parameters.push(identifier.value.clone());
                         parameter_tokens.push((identifier, token.span));
-                        if is_rest {
-                            rest_parameter =
-                                Some(u16::try_from(parameters.len() - 1).map_err(|_| {
-                                    Error::new(ErrorKind::JsInternal, "too many arguments")
-                                })?);
-                        }
+                        let parameter = parameters
+                            .last()
+                            .cloned()
+                            .ok_or_else(|| Error::internal("arrow parameter disappeared"))?;
                         self.advance()?;
                         if is_rest {
+                            self.register_rest_identifier_parameter(parameter, token.span)?;
                             if !self.is_punctuator(Punctuator::RightParen) {
                                 return Err(self.syntax_here("expecting ')'"));
                             }
@@ -75,9 +103,9 @@ impl<'source> Parser<'source> {
                             break;
                         }
                         if self.is_punctuator(Punctuator::Equal) {
-                            return Err(self.unsupported_here(
-                                "arrow default parameters are not implemented yet",
-                            ));
+                            self.parse_default_identifier_parameter(parameter, token.span)?;
+                        } else {
+                            self.register_plain_identifier_parameter(parameter, token.span)?;
                         }
                         if self.consume_punctuator(Punctuator::RightParen)? {
                             break;
@@ -108,7 +136,7 @@ impl<'source> Parser<'source> {
         if block_body {
             self.relex_current_with_strict(strict)?;
         }
-        let has_simple_parameter_list = rest_parameter.is_none();
+        let has_simple_parameter_list = self.functions[child].has_simple_parameter_list;
         if has_use_strict && !has_simple_parameter_list {
             return Err(Error::syntax(
                 "\"use strict\" not allowed in function with default or destructuring parameter",
@@ -129,35 +157,8 @@ impl<'source> Parser<'source> {
             }
         }
 
-        let child = self.functions.len();
-        let parent_scope = self.functions[parent].current_scope;
-        let super_capabilities = SuperCapabilities {
-            super_call_allowed: self.functions[parent].super_call_allowed,
-            super_allowed: self.functions[parent].super_allowed,
-        };
-        self.functions.push(FunctionIr::new(
-            Some(ParentLink {
-                function: parent,
-                definition_scope: parent_scope,
-            }),
-            FunctionKind::Arrow,
-            FunctionSourceInfo {
-                span: function_span,
-                definition: source_offset(function_span)?,
-                range: None,
-            },
-            FunctionIrOptions {
-                function_name: None,
-                private_name_binding: false,
-                defined_argument_count: rest_parameter.map_or(parameters.len(), usize::from),
-                has_simple_parameter_list,
-                rest_parameter,
-                parameters,
-                strict,
-                super_capabilities,
-            },
-        )?);
-        self.current_function = child;
+        self.functions[child].strict = strict;
+        self.finish_identifier_parameter_environment()?;
 
         let range_end = if block_body {
             self.parse_function_body()?;
