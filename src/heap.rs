@@ -560,6 +560,55 @@ pub enum BytecodeConstant {
     Function(FunctionBytecodeId),
 }
 
+/// Body storage selected for one named physical parameter after its
+/// initializer-visible lexical cell has been initialized. Ordinary parameter
+/// environments keep the raw argument slot; the explicit enum leaves room
+/// for QuickJS's direct-eval `arguments` override without weakening the ABI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ParameterBodyStorage {
+    Argument(u16),
+    Local(u16),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ParameterArgumentCell {
+    pub argument: u16,
+    pub parameter_local: u16,
+    pub body: ParameterBodyStorage,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ParameterPatternCopy {
+    pub parameter_local: u16,
+    pub body_local: u16,
+}
+
+/// Authored top-level initializer attached to one formal. Defaults nested
+/// inside a BindingPattern deliberately do not appear here: QuickJS lets only
+/// the whole formal initializer cut `Function.length` and select the incoming
+/// argument before destructuring.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ParameterDefaultSource {
+    Argument(u16),
+    RestPattern(u16),
+}
+
+/// Immutable, publication-authenticated description of QuickJS's parentless
+/// argument scope. `Some` with empty cell arrays is semantically meaningful:
+/// a standalone `=` can create a zero-cell environment whose expressions are
+/// still barred from the function's variable scope.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ParameterEnvironmentLayout {
+    pub initialization_end: u32,
+    pub argument_cells: Box<[ParameterArgumentCell]>,
+    pub pattern_copies: Box<[ParameterPatternCopy]>,
+    pub default_sources: Box<[ParameterDefaultSource]>,
+    /// Reserved for QuickJS's sloppy direct-eval arg-scope `arguments` cell.
+    pub synthetic_arguments_local: Option<u16>,
+    /// Reserved for the independent sloppy direct-eval `<arg_var>` object.
+    pub arg_eval_variable_object_local: Option<u16>,
+}
+
 /// Immutable execution metadata kept beside bytecode.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct FunctionMetadata {
@@ -581,10 +630,10 @@ pub struct FunctionMetadata {
     /// slot for the rest Array before destructuring it.
     pub rest_pattern_start: Option<u16>,
     /// Number of leading locals owned by the independent parameter
-    /// environment. Identifier-default lowering currently keeps one mutable
-    /// lexical cell per physical argument, so a non-zero value must equal
-    /// `argument_count`; keeping the boundary explicit makes publication reject
-    /// bytecode which merely resembles a default-parameter prologue.
+    /// environment. Each named formal contributes one mutable cell and each
+    /// BindingPattern contributes one per BoundName; a standalone `=` can also
+    /// create a meaningful zero-cell environment. The immutable layout assigns
+    /// every leading cell an argument or pattern-copy role.
     pub parameter_environment_local_count: u16,
     /// Number of physical argument slots whose authored formal is a
     /// BindingPattern rather than a BindingIdentifier. The exact positions are
@@ -592,9 +641,10 @@ pub struct FunctionMetadata {
     /// keeping the count explicit distinguishes semantic anonymity from
     /// ordinary bytecode whose debug argument names were erased.
     pub pattern_argument_count: u16,
-    /// Bytecode PC of the authenticated Nop separating non-default parameter
-    /// BindingPattern evaluation from the authored body. `None` means every
-    /// physical argument slot has a direct BindingIdentifier.
+    /// Bytecode PC of the authenticated Nop separating BindingPattern
+    /// evaluation from the authored body. Parameter environments without a
+    /// BindingPattern carry the same boundary only in
+    /// `ParameterEnvironmentLayout::initialization_end`.
     pub parameter_pattern_end: Option<u32>,
     pub local_count: u16,
     /// Synthetic local initialized to the active function object for a named
@@ -668,6 +718,7 @@ pub(crate) fn quickjs_copies_defined_argument_count(
 pub(crate) fn validate_parameter_bytecode_layout(
     metadata: &FunctionMetadata,
     code: &[Instruction],
+    parameter_environment: Option<&ParameterEnvironmentLayout>,
 ) -> Result<Option<usize>, &'static str> {
     if metadata.rest_parameter.is_some() && metadata.rest_pattern_start.is_some() {
         return Err("identifier rest and rest BindingPattern metadata overlap");
@@ -704,6 +755,16 @@ pub(crate) fn validate_parameter_bytecode_layout(
     }
 
     let parameter_locals = metadata.parameter_environment_local_count;
+    let mut explicit_body_pc = None;
+    if let Some(layout) = parameter_environment {
+        explicit_body_pc = validate_explicit_parameter_environment_layout(metadata, code, layout)?;
+        if has_pattern_parameters || parameter_locals == 0 {
+            return Ok(explicit_body_pc);
+        }
+    }
+    if parameter_environment.is_none() && parameter_locals != 0 {
+        return Err("parameter-environment cells have no immutable layout");
+    }
     if parameter_locals == 0 {
         if metadata.parameter_pattern_end.is_some() {
             return match (metadata.rest_parameter, metadata.rest_pattern_start) {
@@ -1058,6 +1119,16 @@ pub(crate) fn validate_parameter_bytecode_layout(
         }
     }
     let mut body_pc = parameter_pc;
+    if let Some(layout) = parameter_environment {
+        if usize::try_from(layout.initialization_end).ok() != Some(body_pc)
+            || !matches!(code.get(body_pc), Some(Instruction::Nop))
+        {
+            return Err("parameter environment marker does not follow exact initialization");
+        }
+        body_pc += 1;
+    } else if explicit_body_pc.is_some() {
+        return Err("parameter environment lost its immutable layout");
+    }
     let mut closed_parameter_cells = vec![false; parameter_count];
     while let Some(Instruction::CloseLocal(target)) = code.get(body_pc) {
         let target = usize::from(*target);
@@ -1106,8 +1177,507 @@ pub(crate) fn validate_parameter_bytecode_layout(
     Ok(Some(body_pc))
 }
 
+fn validate_explicit_parameter_environment_layout(
+    metadata: &FunctionMetadata,
+    code: &[Instruction],
+    layout: &ParameterEnvironmentLayout,
+) -> Result<Option<usize>, &'static str> {
+    let parameter_locals = metadata.parameter_environment_local_count;
+    if parameter_locals > metadata.local_count {
+        return Err("parameter environment exceeds function local slots");
+    }
+    if metadata.eval_variable_object_local.is_some()
+        || layout.synthetic_arguments_local.is_some()
+        || layout.arg_eval_variable_object_local.is_some()
+        || code
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::Eval { .. }))
+    {
+        return Err("direct eval is not supported in a parameter environment");
+    }
+
+    let marker = usize::try_from(layout.initialization_end)
+        .map_err(|_| "parameter environment marker is outside bytecode")?;
+    if !matches!(code.get(marker), Some(Instruction::Nop)) {
+        return Err("parameter environment marker is outside bytecode");
+    }
+    let has_pattern = metadata.pattern_argument_count != 0 || metadata.rest_pattern_start.is_some();
+    match (has_pattern, metadata.parameter_pattern_end) {
+        (true, Some(pattern_end)) if pattern_end == layout.initialization_end => {}
+        (true, _) => return Err("parameter BindingPattern marker disagrees with its environment"),
+        (false, None) => {}
+        (false, Some(_)) => return Err("parameter marker has no BindingPattern"),
+    }
+
+    let expected_cells = layout
+        .argument_cells
+        .len()
+        .checked_add(layout.pattern_copies.len())
+        .and_then(|count| {
+            count.checked_add(usize::from(layout.synthetic_arguments_local.is_some()))
+        })
+        .ok_or("parameter environment cell count overflowed")?;
+    if expected_cells != usize::from(parameter_locals) {
+        return Err("parameter environment layout does not cover every cell");
+    }
+    let mut cell_roles = vec![false; usize::from(parameter_locals)];
+    let mut arguments = vec![false; usize::from(metadata.argument_count)];
+    let mut defaulted_arguments = vec![false; usize::from(metadata.argument_count)];
+    let mut rest_pattern_defaulted = false;
+    let mut previous_default = None;
+    for source in layout.default_sources.iter().copied() {
+        let formal = match source {
+            ParameterDefaultSource::Argument(argument) => {
+                let argument_index = usize::from(argument);
+                if argument_index >= defaulted_arguments.len()
+                    || std::mem::replace(&mut defaulted_arguments[argument_index], true)
+                    || metadata.rest_parameter == Some(argument)
+                {
+                    return Err("parameter default source overlaps or is out of bounds");
+                }
+                argument
+            }
+            ParameterDefaultSource::RestPattern(start)
+                if metadata.rest_pattern_start == Some(start) && !rest_pattern_defaulted =>
+            {
+                rest_pattern_defaulted = true;
+                start
+            }
+            ParameterDefaultSource::RestPattern(_) => {
+                return Err("parameter default source disagrees with rest BindingPattern");
+            }
+        };
+        if previous_default.is_some_and(|previous| previous >= formal) {
+            return Err("parameter default sources are not in formal order");
+        }
+        previous_default = Some(formal);
+    }
+    let expected_defined_arguments = if let Some(first_default) =
+        layout.default_sources.first().map(|source| match source {
+            ParameterDefaultSource::Argument(argument)
+            | ParameterDefaultSource::RestPattern(argument) => *argument,
+        }) {
+        first_default
+    } else {
+        match (metadata.rest_parameter, metadata.rest_pattern_start) {
+            (Some(rest), None) => rest,
+            (None, Some(start))
+                if quickjs_copies_defined_argument_count(
+                    usize::from(metadata.argument_count),
+                    usize::from(metadata.local_count),
+                    code,
+                ) =>
+            {
+                start
+                    .checked_add(1)
+                    .ok_or("defined argument count overflowed function argument slots")?
+            }
+            (None, Some(_)) => 0,
+            (None, None) => metadata.argument_count,
+            (Some(_), Some(_)) => {
+                return Err("identifier rest and rest BindingPattern metadata overlap");
+            }
+        }
+    };
+    if metadata.defined_argument_count != expected_defined_arguments {
+        return Err("parameter default sources disagree with function length");
+    }
+    let mut body_targets = vec![false; usize::from(metadata.local_count)];
+    for cell in layout.argument_cells.iter() {
+        let local = usize::from(cell.parameter_local);
+        let argument = usize::from(cell.argument);
+        if local >= cell_roles.len()
+            || std::mem::replace(&mut cell_roles[local], true)
+            || argument >= arguments.len()
+            || std::mem::replace(&mut arguments[argument], true)
+        {
+            return Err("parameter argument cell mapping overlaps or is out of bounds");
+        }
+        match cell.body {
+            ParameterBodyStorage::Argument(body) if body == cell.argument => {}
+            ParameterBodyStorage::Argument(_) => {
+                return Err("parameter body argument mapping changed physical slots");
+            }
+            ParameterBodyStorage::Local(_) => {
+                return Err("parameter body local storage requires direct-eval support");
+            }
+        }
+    }
+    for copy in layout.pattern_copies.iter() {
+        let source = usize::from(copy.parameter_local);
+        if source >= cell_roles.len() || std::mem::replace(&mut cell_roles[source], true) {
+            return Err("parameter pattern copy source overlaps or is out of bounds");
+        }
+        let target = usize::from(copy.body_local);
+        if copy.body_local < parameter_locals
+            || target >= body_targets.len()
+            || std::mem::replace(&mut body_targets[target], true)
+        {
+            return Err("parameter pattern copy target overlaps or is out of bounds");
+        }
+    }
+    if let Some(local) = layout.synthetic_arguments_local {
+        let local = usize::from(local);
+        if local >= cell_roles.len() || std::mem::replace(&mut cell_roles[local], true) {
+            return Err("synthetic parameter arguments cell overlaps or is out of bounds");
+        }
+    }
+    if cell_roles.iter().any(|covered| !covered) {
+        return Err("parameter environment layout left an untyped cell");
+    }
+
+    let mut entry_pc = 0_usize;
+    let arguments_prologues = code
+        .iter()
+        .enumerate()
+        .filter_map(|(pc, instruction)| match instruction {
+            Instruction::Arguments(kind) => Some((pc, *kind)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    match arguments_prologues.as_slice() {
+        [] => {}
+        [(0, crate::bytecode::ArgumentsKind::Unmapped)] if matches!(code.get(1), Some(Instruction::PutLocal(local)) if *local >= parameter_locals && *local < metadata.local_count) =>
+        {
+            entry_pc = 2;
+        }
+        _ => return Err("parameter environment contains a malformed arguments prologue"),
+    }
+
+    let mut pseudo_rank = 0_u8;
+    let mut pseudo_targets = Vec::with_capacity(3);
+    while let Some([source, Instruction::PutLocal(local)]) = code.get(entry_pc..entry_pc + 2) {
+        let rank = match source {
+            Instruction::PushHomeObject => 1,
+            Instruction::PushNewTarget => 2,
+            Instruction::PushThis => 3,
+            _ => break,
+        };
+        if rank <= pseudo_rank
+            || *local < parameter_locals
+            || *local >= metadata.local_count
+            || pseudo_targets.contains(local)
+        {
+            return Err("parameter environment contains a malformed pseudo-binding prologue");
+        }
+        pseudo_rank = rank;
+        pseudo_targets.push(*local);
+        entry_pc += 2;
+    }
+
+    for (offset, local) in (0..parameter_locals).rev().enumerate() {
+        if !matches!(
+            code.get(entry_pc + offset),
+            Some(Instruction::SetLocalUninitialized(target)) if *target == local
+        ) {
+            return Err("parameter environment has no exact TDZ entry initialization");
+        }
+    }
+    let initialization_pc = entry_pc + usize::from(parameter_locals);
+    if initialization_pc > marker {
+        return Err("parameter environment marker precedes its TDZ prologue");
+    }
+
+    let mut initializer_pcs = vec![None; usize::from(parameter_locals)];
+    for (pc, instruction) in code.iter().enumerate() {
+        let Instruction::InitializeLocal(local) = instruction else {
+            continue;
+        };
+        let local = usize::from(*local);
+        if local >= initializer_pcs.len() {
+            continue;
+        }
+        if pc < initialization_pc || pc >= marker || initializer_pcs[local].replace(pc).is_some() {
+            return Err("parameter cell does not have one exact initializer");
+        }
+    }
+    let mut previous = None;
+    for &initializer in &initializer_pcs {
+        let Some(initializer) = initializer else {
+            return Err("parameter cell does not have one exact initializer");
+        };
+        if previous.is_some_and(|previous| previous >= initializer) {
+            return Err("parameter cells are not initialized in BoundName order");
+        }
+        previous = Some(initializer);
+    }
+    if code.iter().enumerate().any(|(pc, instruction)| {
+        matches!(instruction, Instruction::SetLocalUninitialized(local) if *local < parameter_locals)
+            && !(entry_pc..initialization_pc).contains(&pc)
+    }) {
+        return Err("parameter cell has an unauthenticated TDZ reset");
+    }
+
+    let copy_start = marker
+        .checked_sub(layout.pattern_copies.len().saturating_mul(2))
+        .ok_or("parameter copy phase begins outside bytecode")?;
+    for (offset, copy) in layout.pattern_copies.iter().rev().enumerate() {
+        let pc = copy_start + offset * 2;
+        if !matches!(
+            code.get(pc..pc + 2),
+            Some([Instruction::GetLocalCheck(source), Instruction::PutLocal(target)])
+                if *source == copy.parameter_local && *target == copy.body_local
+        ) {
+            return Err("parameter pattern copy phase disagrees with immutable layout");
+        }
+    }
+    if copy_start < initialization_pc {
+        return Err("parameter pattern copy phase overlaps the TDZ prologue");
+    }
+
+    if has_pattern {
+        for cell in layout.argument_cells.iter() {
+            let argument = cell.argument;
+            let argument_index = usize::from(argument);
+            let parameter_local = usize::from(cell.parameter_local);
+            let initializer_pc = initializer_pcs[parameter_local]
+                .ok_or("parameter argument cell has no exact initialization")?;
+            let raw_reads = code[..marker]
+                .iter()
+                .enumerate()
+                .filter_map(|(pc, instruction)| {
+                    matches!(instruction, Instruction::GetArg(source) if *source == argument)
+                        .then_some(pc)
+                })
+                .collect::<Vec<_>>();
+            let raw_writes = code[..marker]
+            .iter()
+            .enumerate()
+            .filter_map(|(pc, instruction)| {
+                matches!(instruction, Instruction::PutArg(target) | Instruction::SetArg(target) if *target == argument)
+                    .then_some(pc)
+            })
+            .collect::<Vec<_>>();
+
+            if metadata.rest_parameter == Some(argument) {
+                if defaulted_arguments[argument_index]
+                    || !raw_reads.is_empty()
+                    || raw_writes.as_slice() != [initializer_pc.saturating_sub(1)]
+                    || initializer_pc < 3
+                    || !matches!(
+                        code.get(initializer_pc - 3..=initializer_pc),
+                        Some([
+                            Instruction::Rest(start),
+                            Instruction::Dup,
+                            Instruction::PutArg(target),
+                            Instruction::InitializeLocal(local),
+                        ]) if *start == argument && *target == argument && usize::from(*local) == parameter_local
+                    )
+                {
+                    return Err("parameter rest cell has no exact initialization");
+                }
+                continue;
+            }
+
+            if defaulted_arguments[argument_index] {
+                let Some(&source_pc) = raw_reads.first().filter(|_| raw_reads.len() == 1) else {
+                    return Err("parameter default cell has no exact argument selection");
+                };
+                if raw_writes.as_slice() != [initializer_pc.saturating_sub(1)]
+                    || initializer_pc < 2
+                    || !matches!(
+                        code.get(source_pc..source_pc + 5),
+                        Some([
+                            Instruction::GetArg(source),
+                            Instruction::Dup,
+                            Instruction::Undefined,
+                            Instruction::StrictEq,
+                            Instruction::IfFalse(target),
+                        ]) if *source == argument && usize::try_from(*target).ok() == Some(initializer_pc)
+                    )
+                    || !matches!(
+                        code.get(initializer_pc - 2..=initializer_pc),
+                        Some([
+                            Instruction::Dup,
+                            Instruction::PutArg(target),
+                            Instruction::InitializeLocal(local),
+                        ]) if *target == argument && usize::from(*local) == parameter_local
+                    )
+                {
+                    return Err("parameter default cell has no exact argument selection");
+                }
+            } else if raw_reads.as_slice() != [initializer_pc.saturating_sub(1)]
+                || !raw_writes.is_empty()
+                || initializer_pc == 0
+                || !matches!(
+                    code.get(initializer_pc - 1..=initializer_pc),
+                    Some([
+                        Instruction::GetArg(source),
+                        Instruction::InitializeLocal(local),
+                    ]) if *source == argument && usize::from(*local) == parameter_local
+                )
+            {
+                return Err("plain parameter argument cell has no exact initialization");
+            }
+        }
+
+        if arguments.iter().filter(|mapped| !**mapped).count()
+            != usize::from(metadata.pattern_argument_count)
+        {
+            return Err("parameter argument-cell map disagrees with BindingPattern slots");
+        }
+        let validate_pattern_default = |source_pc: usize,
+                                        expected: bool|
+         -> Result<(), &'static str> {
+            let initializer_pc = match code.get(source_pc + 1..source_pc + 5) {
+                Some(
+                    [
+                        Instruction::Dup,
+                        Instruction::Undefined,
+                        Instruction::StrictEq,
+                        Instruction::IfTrue(target),
+                    ],
+                ) => usize::try_from(*target).ok(),
+                _ => None,
+            };
+            if !expected {
+                return if initializer_pc.is_some() {
+                    Err("BindingPattern has an unauthenticated top-level initializer")
+                } else {
+                    Ok(())
+                };
+            }
+            let Some(initializer_pc) = initializer_pc else {
+                return Err("BindingPattern default has no exact argument selection");
+            };
+            let assignment_pc = source_pc + 5;
+            let Some(Instruction::Goto(done_pc)) =
+                initializer_pc.checked_sub(1).and_then(|pc| code.get(pc))
+            else {
+                return Err("BindingPattern default has no exact argument selection");
+            };
+            let Some(done_pc) = usize::try_from(*done_pc).ok() else {
+                return Err("BindingPattern default has no exact argument selection");
+            };
+            if initializer_pc <= assignment_pc
+                || initializer_pc >= copy_start
+                || !matches!(code.get(initializer_pc), Some(Instruction::Drop))
+                || done_pc <= initializer_pc
+                || done_pc > copy_start
+                || !matches!(
+                    done_pc.checked_sub(1).and_then(|pc| code.get(pc)),
+                    Some(Instruction::Goto(target)) if usize::try_from(*target).ok() == Some(assignment_pc)
+                )
+            {
+                return Err("BindingPattern default has no exact argument selection");
+            }
+            Ok(())
+        };
+        for (argument, mapped) in arguments.iter().copied().enumerate() {
+            if mapped {
+                continue;
+            }
+            let argument = u16::try_from(argument)
+                .map_err(|_| "parameter BindingPattern argument is out of bounds")?;
+            let mut sources =
+                code[..copy_start]
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(pc, instruction)| {
+                        matches!(instruction, Instruction::GetArg(source) if *source == argument)
+                            .then_some(pc)
+                    });
+            let Some(source_pc) = sources.next() else {
+                return Err("parameter BindingPattern has no exact raw argument source");
+            };
+            if sources.next().is_some()
+            || code[..marker].iter().any(|instruction| {
+                matches!(instruction, Instruction::PutArg(target) | Instruction::SetArg(target) if *target == argument)
+            })
+        {
+            return Err("parameter BindingPattern bypasses its anonymous argument slot");
+        }
+            validate_pattern_default(source_pc, defaulted_arguments[usize::from(argument)])?;
+        }
+        if let Some(start) = metadata.rest_pattern_start {
+            let mut sources =
+                code[..copy_start]
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(pc, instruction)| {
+                        matches!(instruction, Instruction::Rest(source) if *source == start)
+                            .then_some(pc)
+                    });
+            let Some(source_pc) = sources.next() else {
+                return Err("rest BindingPattern has no exact raw argument source");
+            };
+            if sources.next().is_some() {
+                return Err("rest BindingPattern bypasses its raw argument source");
+            }
+            validate_pattern_default(source_pc, rest_pattern_defaulted)?;
+        }
+    }
+
+    let rest_pcs = code
+        .iter()
+        .enumerate()
+        .filter_map(|(pc, instruction)| match instruction {
+            Instruction::Rest(start) => Some((pc, *start)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    match (metadata.rest_parameter, metadata.rest_pattern_start) {
+        (Some(rest), None) if matches!(rest_pcs.as_slice(), [(pc, start)] if *pc < marker && *start == rest) =>
+            {}
+        (None, Some(rest)) if matches!(rest_pcs.as_slice(), [(pc, start)] if *pc < marker && *start == rest) =>
+            {}
+        (None, None) if rest_pcs.is_empty() => {}
+        (Some(_), Some(_)) => {
+            return Err("identifier rest and rest BindingPattern metadata overlap");
+        }
+        _ => return Err("parameter environment rest opcode disagrees with metadata"),
+    }
+
+    for (pc, instruction) in code.iter().enumerate() {
+        let target = match instruction {
+            Instruction::Goto(target)
+            | Instruction::IfFalse(target)
+            | Instruction::IfTrue(target)
+            | Instruction::Catch(target)
+            | Instruction::Gosub(target) => usize::try_from(*target).ok(),
+            _ => None,
+        };
+        if target.is_some_and(|target| {
+            (pc < copy_start && target > copy_start) || (pc > marker && target <= marker)
+        }) {
+            return Err("bytecode crosses the parameter environment boundary");
+        }
+    }
+
+    let mut body_pc = marker + 1;
+    let mut closed = vec![false; usize::from(parameter_locals)];
+    while let Some(Instruction::CloseLocal(local)) = code.get(body_pc) {
+        let local = usize::from(*local);
+        if local >= closed.len() {
+            break;
+        }
+        if std::mem::replace(&mut closed[local], true) {
+            return Err("parameter cell is closed more than once");
+        }
+        body_pc += 1;
+    }
+    if code[body_pc..].iter().any(|instruction| {
+        let local = match instruction {
+            Instruction::GetLocal(local)
+            | Instruction::PutLocal(local)
+            | Instruction::SetLocal(local)
+            | Instruction::SetLocalUninitialized(local)
+            | Instruction::GetLocalCheck(local)
+            | Instruction::InitializeLocal(local)
+            | Instruction::PutLocalCheck(local)
+            | Instruction::SetLocalCheck(local)
+            | Instruction::CloseLocal(local) => Some(*local),
+            _ => None,
+        };
+        local.is_some_and(|local| local < parameter_locals)
+    }) {
+        return Err("function body accesses a parameter-environment cell");
+    }
+    Ok(Some(body_pc))
+}
+
 /// Authenticate the source-only argument slots and entry segment used by a
-/// non-default formal-parameter BindingPattern.
+/// formal-parameter BindingPattern.
 ///
 /// QuickJS gives an ordinary BindingPattern one anonymous physical argument
 /// slot, while a terminal rest BindingPattern owns no slot at all. The public
@@ -1121,6 +1691,7 @@ pub(crate) fn validate_pattern_parameter_bytecode_layout(
     code: &[Instruction],
     unnamed_arguments: &[bool],
     lexical_locals: &[bool],
+    parameter_environment: Option<&ParameterEnvironmentLayout>,
 ) -> Result<(), &'static str> {
     if unnamed_arguments.len() != usize::from(metadata.argument_count) {
         return Err("argument definition count does not match bytecode metadata");
@@ -1145,9 +1716,6 @@ pub(crate) fn validate_pattern_parameter_bytecode_layout(
     let Some(marker) = metadata.parameter_pattern_end else {
         return Err("parameter BindingPattern has no initialization marker");
     };
-    if metadata.parameter_environment_local_count != 0 {
-        return Err("parameter BindingPattern escaped into a parameter environment");
-    }
     let marker = usize::try_from(marker)
         .map_err(|_| "parameter BindingPattern marker is outside bytecode")?;
     if !matches!(code.get(marker), Some(Instruction::Nop)) {
@@ -1208,10 +1776,11 @@ pub(crate) fn validate_pattern_parameter_bytecode_layout(
         };
         if pc < marker
             && local.is_some_and(|local| {
-                lexical_locals
-                    .get(usize::from(local))
-                    .copied()
-                    .unwrap_or(false)
+                local >= metadata.parameter_environment_local_count
+                    && lexical_locals
+                        .get(usize::from(local))
+                        .copied()
+                        .unwrap_or(false)
             })
         {
             return Err("parameter BindingPattern bytecode accessed a body lexical local");
@@ -1265,18 +1834,37 @@ pub(crate) fn validate_pattern_parameter_bytecode_layout(
     }
 
     match (metadata.rest_parameter, metadata.rest_pattern_start) {
-        (Some(rest), None)
-            if matches!(
-                rest_operations.as_slice(),
-                [(pc, start)]
-                    if *pc < marker
-                        && *start == rest
-                        && matches!(code.get(*pc + 1), Some(Instruction::PutArg(target)) if *target == rest)
-            ) =>
-        {
-            Ok(())
+        (Some(rest), None) => {
+            let valid = matches!(rest_operations.as_slice(), [(pc, start)] if {
+                *pc < marker
+                    && *start == rest
+                    && match parameter_environment {
+                        Some(layout) => layout
+                            .argument_cells
+                            .iter()
+                            .find(|cell| cell.argument == rest)
+                            .is_some_and(|cell| {
+                                matches!(
+                                    code.get(*pc + 1..*pc + 4),
+                                    Some([
+                                        Instruction::Dup,
+                                        Instruction::PutArg(target),
+                                        Instruction::InitializeLocal(local),
+                                    ]) if *target == rest && *local == cell.parameter_local
+                                )
+                            }),
+                        None => matches!(
+                            code.get(*pc + 1),
+                            Some(Instruction::PutArg(target)) if *target == rest
+                        ),
+                    }
+            });
+            if valid {
+                Ok(())
+            } else {
+                Err("identifier rest parameter has no exact pattern-segment entry")
+            }
         }
-        (Some(_), None) => Err("identifier rest parameter has no exact pattern-segment entry"),
         (None, Some(rest))
             if matches!(
                 rest_operations.as_slice(),
@@ -1531,6 +2119,7 @@ pub struct FunctionBytecodeData {
     pub constants: Rc<[BytecodeConstant]>,
     pub realm: ContextId,
     pub metadata: FunctionMetadata,
+    pub parameter_environment: Option<ParameterEnvironmentLayout>,
     /// Intrinsic source-level name. Contextual `SetName` inference remains a
     /// separate opcode and is only emitted for anonymous definitions.
     pub func_name: Option<JsString>,
@@ -4478,8 +5067,12 @@ impl Heap {
                 "bytecode local count exceeds QuickJS JS_MAX_LOCAL_VARS",
             ));
         }
-        validate_parameter_bytecode_layout(&bytecode.metadata, &bytecode.code)
-            .map_err(HeapError::Invariant)?;
+        validate_parameter_bytecode_layout(
+            &bytecode.metadata,
+            &bytecode.code,
+            bytecode.parameter_environment.as_ref(),
+        )
+        .map_err(HeapError::Invariant)?;
         if bytecode
             .metadata
             .function_name_local
@@ -4530,6 +5123,7 @@ impl Heap {
             &bytecode.code,
             &unnamed_arguments,
             &lexical_locals,
+            bytecode.parameter_environment.as_ref(),
         )
         .map_err(HeapError::Invariant)?;
         for definition in bytecode.argument_definitions.iter() {
@@ -4542,17 +5136,61 @@ impl Heap {
                 ));
             }
         }
-        for index in 0..usize::from(bytecode.metadata.parameter_environment_local_count) {
-            let argument = &bytecode.argument_definitions[index];
-            let local = &bytecode.local_definitions[index];
-            if local.kind != ClosureVariableKind::Normal
-                || !local.is_lexical
-                || local.is_const
-                || local.name.is_some_and(|name| argument.name != Some(name))
+        if let Some(layout) = bytecode.parameter_environment.as_ref() {
+            let parameter_definitions = bytecode
+                .local_definitions
+                .iter()
+                .take(usize::from(
+                    bytecode.metadata.parameter_environment_local_count,
+                ))
+                .collect::<Vec<_>>();
+            for (index, local) in parameter_definitions.iter().enumerate() {
+                if local.kind != ClosureVariableKind::Normal
+                    || !local.is_lexical
+                    || local.is_const
+                    || local.name.is_none()
+                    || parameter_definitions[..index]
+                        .iter()
+                        .any(|earlier| earlier.name == local.name)
+                {
+                    return Err(HeapError::Invariant(
+                        "parameter environment cell definition is not authenticated",
+                    ));
+                }
+            }
+            let mut mapped_arguments = vec![false; bytecode.argument_definitions.len()];
+            for cell in layout.argument_cells.iter() {
+                mapped_arguments[usize::from(cell.argument)] = true;
+                let argument = &bytecode.argument_definitions[usize::from(cell.argument)];
+                let local = &bytecode.local_definitions[usize::from(cell.parameter_local)];
+                if argument.name.is_none() || argument.name != local.name {
+                    return Err(HeapError::Invariant(
+                        "parameter argument cell name disagrees with its physical argument",
+                    ));
+                }
+            }
+            if bytecode
+                .argument_definitions
+                .iter()
+                .zip(mapped_arguments)
+                .any(|(argument, mapped)| argument.name.is_some() != mapped)
             {
                 return Err(HeapError::Invariant(
-                    "parameter environment definition disagrees with argument metadata",
+                    "parameter argument-cell map is not one-to-one with named arguments",
                 ));
+            }
+            for copy in layout.pattern_copies.iter() {
+                let source = &bytecode.local_definitions[usize::from(copy.parameter_local)];
+                let target = &bytecode.local_definitions[usize::from(copy.body_local)];
+                if target.kind != ClosureVariableKind::Normal
+                    || target.is_lexical
+                    || target.is_const
+                    || source.name != target.name
+                {
+                    return Err(HeapError::Invariant(
+                        "parameter pattern copy definitions are not same-name lexical-to-root storage",
+                    ));
+                }
             }
         }
         for (index, definition) in bytecode.local_definitions.iter().enumerate() {
@@ -10063,6 +10701,7 @@ mod tests {
             constants: constants.into(),
             realm,
             metadata: FunctionMetadata::default(),
+            parameter_environment: None,
             func_name: None,
             argument_definitions: Rc::from([]),
             local_definitions: Rc::from([]),

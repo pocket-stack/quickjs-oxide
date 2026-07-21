@@ -26,7 +26,9 @@ use crate::heap::{
     ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
     EvalBinding, EvalBindingSource, EvalCallerProfile, EvalCallerVariableTarget, EvalEnvironment,
     EvalKind, EvalRootBinding, EvalScope, EvalScopeKind, EvalVariableEnvironment,
-    FunctionKind as BytecodeFunctionKind, FunctionMetadata, quickjs_copies_defined_argument_count,
+    FunctionKind as BytecodeFunctionKind, FunctionMetadata, ParameterArgumentCell,
+    ParameterBodyStorage, ParameterDefaultSource, ParameterEnvironmentLayout, ParameterPatternCopy,
+    quickjs_copies_defined_argument_count,
 };
 use crate::lexer::{
     Identifier, Keyword, LexError, LexErrorKind, Lexer, LexicalGoal, NumberKind, NumericRadix,
@@ -778,6 +780,14 @@ impl IrOp {
 }
 
 #[derive(Debug)]
+struct IrParameterPatternBinding {
+    name: String,
+    parameter_local: u16,
+    body_local: Option<u16>,
+    declaration_span: Span,
+}
+
+#[derive(Debug)]
 struct FunctionIr {
     /// Parent function plus the scope which was current at this function's
     /// definition. This is QuickJS `parent` + `parent_scope_level` as one
@@ -844,14 +854,24 @@ struct FunctionIr {
     /// QuickJS calls this its argument scope; keeping the identity explicit
     /// lets resolution enforce the body-variable visibility barrier.
     parameter_scope: Option<ScopeId>,
-    /// One initializer-visible mutable cell per parameter when
-    /// `parameter_scope` exists. Raw argument slots remain independently
-    /// body-visible and writable, matching QuickJS's split environment.
+    /// Every initializer-visible mutable cell owned by `parameter_scope`, in
+    /// FormalParameters BoundName order. Identifier formals contribute one
+    /// cell while a BindingPattern contributes one cell per leaf.
     parameter_locals: Vec<u16>,
-    /// Parameter BindingPatterns without `=` execute in the ordinary function
-    /// variable environment, but before the authored body scope is entered.
-    /// The explicit phase keeps body lexical declarations and function hoists
-    /// out of computed keys and iterator evaluation.
+    /// Parameter-scope cell selected by each physical named argument. An
+    /// anonymous BindingPattern slot has no direct cell because destructuring
+    /// initializes its individual BoundNames instead.
+    parameter_argument_locals: Vec<Option<u16>>,
+    /// Parameter-scope BindingPattern leaves which must be copied into fresh
+    /// FunctionRoot variables after every parameter expression has run.
+    parameter_pattern_bindings: Vec<IrParameterPatternBinding>,
+    /// Top-level formal initializers in source order. Pattern-leaf defaults
+    /// create the argument scope but do not cut Function.length, so they are
+    /// intentionally absent from this list.
+    parameter_default_sources: Vec<ParameterDefaultSource>,
+    /// At least one BindingPattern is initialized before the authored body.
+    /// Without a Parameter Environment it runs in FunctionRoot; with one it
+    /// runs in the parentless parameter scope and is copied out at the end.
     pattern_parameter_initialization: bool,
     locals: Vec<String>,
     scopes: Vec<IrScope>,
@@ -966,6 +986,7 @@ impl FunctionIr {
         options: FunctionIrOptions,
     ) -> Result<Self, Error> {
         let super_capabilities = options.super_capabilities.validated()?;
+        let parameter_count = options.parameters.len();
         if options.defined_argument_count > options.parameters.len()
             || (options.has_simple_parameter_list
                 && (options.defined_argument_count != options.parameters.len()
@@ -1053,6 +1074,9 @@ impl FunctionIr {
             rest_pattern_start: None,
             parameter_scope: None,
             parameter_locals: Vec::new(),
+            parameter_argument_locals: vec![None; parameter_count],
+            parameter_pattern_bindings: Vec::new(),
+            parameter_default_sources: Vec::new(),
             pattern_parameter_initialization: false,
             locals,
             scopes,
@@ -3310,7 +3334,11 @@ impl<'source> Parser<'source> {
                 && !function
                     .parameters
                     .iter()
-                    .any(|parameter| parameter.as_deref() == Some("arguments"));
+                    .any(|parameter| parameter.as_deref() == Some("arguments"))
+                && !function
+                    .parameter_pattern_bindings
+                    .iter()
+                    .any(|binding| binding.name == "arguments");
         if let Some((binding_scope, binding)) =
             function.binding_id_from_scope(function.current_scope, name)
             && matches!(
@@ -6816,6 +6844,17 @@ impl<'source> Parser<'source> {
     /// call-frame input ABI.
     fn append_identifier_parameter(&mut self, name: String, span: Span) -> Result<u16, Error> {
         let function = self.current_ir_mut();
+        if function.parameter_scope.is_some()
+            && function
+                .parameter_names
+                .iter()
+                .any(|parameter| parameter == &name)
+        {
+            return Err(Error::syntax(
+                "duplicate parameter names not allowed in this context",
+                source_span(span),
+            ));
+        }
         if function.parameters.len() >= MAX_LOCAL_VARIABLES {
             return Err(Error::new(ErrorKind::JsInternal, "too many arguments")
                 .with_span(source_span(span)));
@@ -6823,6 +6862,7 @@ impl<'source> Parser<'source> {
         let index = u16::try_from(function.parameters.len())
             .map_err(|_| Error::new(ErrorKind::JsInternal, "too many arguments"))?;
         function.parameters.push(Some(name.clone()));
+        function.parameter_argument_locals.push(None);
         function.parameter_names.push(name.clone());
         function.add_binding(
             function.var_scope,
@@ -6847,13 +6887,8 @@ impl<'source> Parser<'source> {
         }
         let index = u16::try_from(function.parameters.len())
             .map_err(|_| Error::new(ErrorKind::JsInternal, "too many arguments"))?;
-        if function.defined_argument_count != usize::from(index) {
-            return Err(self.unsupported_here(
-                "parameter BindingPatterns after a parameter expression are not implemented yet",
-            ));
-        }
         function.parameters.push(None);
-        function.defined_argument_count += 1;
+        function.parameter_argument_locals.push(None);
         function.has_simple_parameter_list = false;
         Ok(index)
     }
@@ -6867,10 +6902,14 @@ impl<'source> Parser<'source> {
         if function.pattern_parameter_initialization {
             return Ok(());
         }
-        if function.parameter_scope.is_some() {
-            return Err(self.unsupported_here(
-                "parameter BindingPatterns with parameter expressions are not implemented yet",
-            ));
+        if let Some(parameter_scope) = function.parameter_scope {
+            if function.current_scope != parameter_scope {
+                return Err(Error::internal(
+                    "pattern parameter escaped its parameter environment",
+                ));
+            }
+            function.pattern_parameter_initialization = true;
+            return Ok(());
         }
         if function.stack_depth != 0
             || function.ops.len() != 1
@@ -6898,8 +6937,12 @@ impl<'source> Parser<'source> {
         declaration_span: Span,
         conflict_span: Span,
     ) -> Result<(), Error> {
+        let expected_scope = self
+            .current_ir()
+            .parameter_scope
+            .unwrap_or(self.current_ir().var_scope);
         if !self.current_ir().pattern_parameter_initialization
-            || self.current_ir().current_scope != self.current_ir().var_scope
+            || self.current_ir().current_scope != expected_scope
         {
             return Err(Error::internal(
                 "pattern parameter binding escaped its initialization phase",
@@ -6917,21 +6960,28 @@ impl<'source> Parser<'source> {
             ));
         }
         self.current_ir_mut().parameter_names.push(name.to_owned());
-        self.register_var_binding(name, declaration_span, conflict_span)
+        if self.current_ir().parameter_scope.is_none() {
+            return self.register_var_binding(name, declaration_span, conflict_span);
+        }
+
+        let parameter_local =
+            self.allocate_parameter_binding_local(name.to_owned(), declaration_span)?;
+        self.current_ir_mut()
+            .parameter_pattern_bindings
+            .push(IrParameterPatternBinding {
+                name: name.to_owned(),
+                parameter_local,
+                body_local: None,
+                declaration_span,
+            });
+        Ok(())
     }
 
-    fn allocate_parameter_local(&mut self, argument: u16, span: Span) -> Result<u16, Error> {
+    fn allocate_parameter_binding_local(&mut self, name: String, span: Span) -> Result<u16, Error> {
         let function = self.current_ir_mut();
         let parameter_scope = function
             .parameter_scope
             .ok_or_else(|| Error::internal("parameter local has no parameter scope"))?;
-        if usize::from(argument) != function.parameter_locals.len()
-            || function.parameters.get(usize::from(argument)).is_none()
-        {
-            return Err(Error::internal(
-                "parameter locals were not allocated in argument order",
-            ));
-        }
         if function.locals.len() >= MAX_LOCAL_VARIABLES {
             return Err(
                 Error::new(ErrorKind::JsInternal, "too many local variables")
@@ -6940,9 +6990,6 @@ impl<'source> Parser<'source> {
         }
         let local = u16::try_from(function.locals.len())
             .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
-        let name = function.parameters[usize::from(argument)]
-            .clone()
-            .ok_or_else(|| Error::internal("parameter local referenced an unnamed argument"))?;
         function.locals.push(name.clone());
         function.parameter_locals.push(local);
         function.add_binding(
@@ -6956,11 +7003,73 @@ impl<'source> Parser<'source> {
         Ok(local)
     }
 
-    /// QuickJS creates its argument scope before evaluating the first default.
-    /// The Oxide parser can activate it lazily because identifier references
-    /// are resolved only after the complete function has been parsed. Earlier
-    /// plain parameters are backfilled in source order before the current
-    /// initializer begins.
+    fn allocate_parameter_local(&mut self, argument: u16, span: Span) -> Result<u16, Error> {
+        let argument_index = usize::from(argument);
+        let name = self
+            .current_ir()
+            .parameters
+            .get(argument_index)
+            .and_then(Clone::clone)
+            .ok_or_else(|| Error::internal("parameter local referenced an unnamed argument"))?;
+        if self
+            .current_ir()
+            .parameter_argument_locals
+            .get(argument_index)
+            .is_none_or(Option::is_some)
+        {
+            return Err(Error::internal(
+                "parameter argument cell was allocated more than once",
+            ));
+        }
+        let local = self.allocate_parameter_binding_local(name, span)?;
+        self.current_ir_mut().parameter_argument_locals[argument_index] = Some(local);
+        Ok(local)
+    }
+
+    /// Create QuickJS's parentless argument scope. Valid source reaches this
+    /// from the whole-list standalone-`=` pre-scan, before the first formal is
+    /// parsed; the lazy caller remains as a defensive fallback for malformed
+    /// or scanner-limit input which later exposes an identifier default.
+    fn activate_parameter_environment_from_scan(&mut self) -> Result<(), Error> {
+        if self.current_ir().parameter_scope.is_some() {
+            return Ok(());
+        }
+        let function = self.current_ir_mut();
+        if !matches!(
+            function.kind,
+            FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
+        ) || !function.parameters.is_empty()
+            || !function.parameter_names.is_empty()
+            || function.pattern_parameter_initialization
+            || function.ops.len() != 1
+            || !matches!(
+                function.ops.first(),
+                Some(SpannedIrOp {
+                    op: IrOp::EnterScope(scope),
+                    pc_site: None,
+                }) if *scope == function.body_scope
+            )
+        {
+            return Err(Error::internal(
+                "parameter environment pre-scan ran after formal parsing",
+            ));
+        }
+        function.ops.clear();
+        let parameter_scope = ScopeId(function.scopes.len());
+        function.scopes.push(IrScope {
+            parent: None,
+            kind: ScopeKind::Parameter,
+            bindings: Vec::new(),
+        });
+        function.parameter_scope = Some(parameter_scope);
+        function.current_scope = parameter_scope;
+        function.ops.push(SpannedIrOp {
+            op: IrOp::EnterScope(parameter_scope),
+            pc_site: None,
+        });
+        Ok(())
+    }
+
     fn activate_identifier_parameter_environment(
         &mut self,
         current: u16,
@@ -6970,12 +7079,14 @@ impl<'source> Parser<'source> {
             return self.allocate_parameter_local(current, span);
         }
 
-        let (body_scope, parameter_count) = {
+        let parameter_count = {
             let function = self.current_ir_mut();
             if !matches!(
                 function.kind,
                 FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
             ) || usize::from(current) + 1 != function.parameters.len()
+                || function.pattern_parameter_initialization
+                || function.parameters.iter().any(Option::is_none)
                 || function.ops.len() != 1
                 || !matches!(
                     function.ops.first(),
@@ -6989,7 +7100,6 @@ impl<'source> Parser<'source> {
                     "parameter environment was activated after body bytecode",
                 ));
             }
-            let body_scope = function.body_scope;
             function.ops.clear();
             let parameter_scope = ScopeId(function.scopes.len());
             function.scopes.push(IrScope {
@@ -7003,7 +7113,7 @@ impl<'source> Parser<'source> {
                 op: IrOp::EnterScope(parameter_scope),
                 pc_site: None,
             });
-            (body_scope, function.parameters.len())
+            function.parameters.len()
         };
 
         for argument in 0..parameter_count {
@@ -7015,15 +7125,11 @@ impl<'source> Parser<'source> {
                 self.emit_instruction(Instruction::InitializeLocal(local))?;
             }
         }
-        if self.current_ir().body_scope != body_scope {
-            return Err(Error::internal(
-                "parameter environment changed the function body scope",
-            ));
-        }
         self.current_ir()
-            .parameter_locals
+            .parameter_argument_locals
             .get(usize::from(current))
             .copied()
+            .flatten()
             .ok_or_else(|| Error::internal("current parameter local was not allocated"))
     }
 
@@ -7033,10 +7139,7 @@ impl<'source> Parser<'source> {
         span: Span,
     ) -> Result<(), Error> {
         let argument = self.append_identifier_parameter(name, span)?;
-        if self.current_ir().has_simple_parameter_list
-            || (self.current_ir().pattern_parameter_initialization
-                && self.current_ir().defined_argument_count == usize::from(argument))
-        {
+        if self.current_ir().defined_argument_count == usize::from(argument) {
             self.current_ir_mut().defined_argument_count += 1;
         }
         if self.current_ir().parameter_scope.is_some() {
@@ -7052,13 +7155,11 @@ impl<'source> Parser<'source> {
         name: String,
         span: Span,
     ) -> Result<(), Error> {
-        if self.current_ir().pattern_parameter_initialization {
-            return Err(self.unsupported_here(
-                "parameter expressions combined with BindingPatterns are not implemented yet",
-            ));
-        }
         let argument = self.append_identifier_parameter(name.clone(), span)?;
         self.current_ir_mut().has_simple_parameter_list = false;
+        self.current_ir_mut()
+            .parameter_default_sources
+            .push(ParameterDefaultSource::Argument(argument));
         let local = self.activate_identifier_parameter_environment(argument, span)?;
 
         self.expect_punctuator(Punctuator::Equal)?;
@@ -7108,10 +7209,8 @@ impl<'source> Parser<'source> {
     fn register_rest_pattern_parameter(&mut self) -> Result<u16, Error> {
         let function = self.current_ir_mut();
         if !function.pattern_parameter_initialization
-            || function.parameter_scope.is_some()
             || function.rest_parameter.is_some()
             || function.rest_pattern_start.is_some()
-            || function.defined_argument_count != function.parameters.len()
         {
             return Err(Error::internal(
                 "rest BindingPattern has malformed formal metadata",
@@ -7121,23 +7220,92 @@ impl<'source> Parser<'source> {
             .map_err(|_| Error::new(ErrorKind::JsInternal, "too many arguments"))?;
         function.has_simple_parameter_list = false;
         function.rest_pattern_start = Some(start);
-        function.defined_argument_count = function
-            .defined_argument_count
-            .checked_add(1)
-            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "too many arguments"))?;
         Ok(start)
+    }
+
+    fn finish_pattern_parameter_length(
+        &mut self,
+        argument: u16,
+        has_initializer: bool,
+    ) -> Result<(), Error> {
+        let function = self.current_ir_mut();
+        if has_initializer {
+            let source = if function.rest_pattern_start == Some(argument)
+                && usize::from(argument) == function.parameters.len()
+            {
+                ParameterDefaultSource::RestPattern(argument)
+            } else {
+                ParameterDefaultSource::Argument(argument)
+            };
+            function.parameter_default_sources.push(source);
+        }
+        if !has_initializer && function.defined_argument_count == usize::from(argument) {
+            function.defined_argument_count = function
+                .defined_argument_count
+                .checked_add(1)
+                .ok_or_else(|| Error::new(ErrorKind::JsInternal, "too many arguments"))?;
+        }
+        Ok(())
+    }
+
+    fn allocate_parameter_pattern_body_bindings(&mut self) -> Result<Vec<(u16, u16)>, Error> {
+        let function = self.current_ir_mut();
+        let mut copies = Vec::with_capacity(function.parameter_pattern_bindings.len());
+        for binding_index in 0..function.parameter_pattern_bindings.len() {
+            let (name, parameter_local, declaration_span) = {
+                let binding = &function.parameter_pattern_bindings[binding_index];
+                (
+                    binding.name.clone(),
+                    binding.parameter_local,
+                    binding.declaration_span,
+                )
+            };
+            if function
+                .binding_in_scope(function.var_scope, &name)
+                .is_some()
+            {
+                return Err(Error::internal(
+                    "parameter pattern body binding already exists",
+                ));
+            }
+            if function.locals.len() >= MAX_LOCAL_VARIABLES {
+                return Err(
+                    Error::new(ErrorKind::JsInternal, "too many local variables")
+                        .with_span(source_span(declaration_span)),
+                );
+            }
+            let body_local = u16::try_from(function.locals.len())
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+            function.locals.push(name.clone());
+            function.add_binding(
+                function.var_scope,
+                function.var_scope,
+                name,
+                BindingStorage::Local(body_local),
+                BindingKind::Normal,
+                Some(declaration_span),
+            );
+            function.parameter_pattern_bindings[binding_index].body_local = Some(body_local);
+            copies.push((parameter_local, body_local));
+        }
+        Ok(copies)
     }
 
     fn finish_identifier_parameter_environment(&mut self) -> Result<(), Error> {
         if let Some(parameter_scope) = self.current_ir().parameter_scope {
             if self.current_ir().current_scope != parameter_scope
                 || self.current_ir().stack_depth != 0
-                || self.current_ir().pattern_parameter_initialization
             {
                 return Err(Error::internal(
                     "parameter environment finished with unbalanced parser state",
                 ));
             }
+            let copies = self.allocate_parameter_pattern_body_bindings()?;
+            for (parameter_local, body_local) in copies.into_iter().rev() {
+                self.emit_instruction(Instruction::GetLocalCheck(parameter_local))?;
+                self.emit_instruction(Instruction::PutLocal(body_local))?;
+            }
+            self.emit(IrOp::ParameterInitializationEnd)?;
             let body_scope = self.current_ir().body_scope;
             let function = self.current_ir_mut();
             function.ops.push(SpannedIrOp {
@@ -7458,14 +7626,15 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             || (function.has_simple_parameter_list
                 && (function.defined_argument_count != function.parameters.len()
                     || function.rest_parameter.is_some()
-                    || has_parameter_environment))
+                    || function.rest_pattern_start.is_some()
+                    || has_parameter_environment
+                    || has_pattern_parameters
+                    || function.parameters.iter().any(Option::is_none)))
             || function.rest_parameter.is_some_and(|rest| {
                 usize::from(rest) + 1 != function.parameters.len()
-                    || if has_parameter_environment {
-                        function.defined_argument_count > usize::from(rest)
-                    } else {
-                        function.defined_argument_count != usize::from(rest)
-                    }
+                    || function.defined_argument_count > usize::from(rest)
+                    || (!has_parameter_environment
+                        && function.defined_argument_count != usize::from(rest))
                     || function.has_simple_parameter_list
                     || !matches!(
                         function.kind,
@@ -7475,22 +7644,24 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             || function.rest_parameter.is_some() && function.rest_pattern_start.is_some()
             || function.rest_pattern_start.is_some_and(|start| {
                 usize::from(start) != function.parameters.len()
-                    || function.defined_argument_count != usize::from(start) + 1
+                    || function.defined_argument_count > usize::from(start) + 1
                     || function.has_simple_parameter_list
                     || !has_pattern_parameters
-                    || has_parameter_environment
             })
             || has_parameter_environment
                 && (function.has_simple_parameter_list
-                    || has_pattern_parameters
-                    || function.parameters.is_empty()
-                    || function.defined_argument_count >= function.parameters.len()
-                    || function.parameter_locals.len() != function.parameters.len()
-                    || function.parameters.iter().any(Option::is_none))
-            || !has_parameter_environment && !function.parameter_locals.is_empty()
+                    || function.parameter_locals.len() != function.parameter_names.len())
+            || function.parameter_argument_locals.len() != function.parameters.len()
+            || !has_parameter_environment
+                && (!function.parameter_locals.is_empty()
+                    || function
+                        .parameter_argument_locals
+                        .iter()
+                        .any(Option::is_some)
+                    || !function.parameter_pattern_bindings.is_empty()
+                    || !function.parameter_default_sources.is_empty())
             || has_pattern_parameters
                 && (function.has_simple_parameter_list
-                    || has_parameter_environment
                     || (!function.parameters.iter().any(Option::is_none)
                         && function.rest_pattern_start.is_none()))
         {
@@ -7501,22 +7672,21 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             .iter()
             .filter(|operation| matches!(operation.op, IrOp::ParameterInitializationEnd))
             .count();
-        if parameter_markers != usize::from(has_pattern_parameters) {
+        if parameter_markers != usize::from(has_pattern_parameters || has_parameter_environment) {
             return Err(Error::internal(
                 "pattern parameter marker metadata is malformed",
             ));
         }
         if let Some(parameter_scope) = function.parameter_scope {
             let scope = &function.scopes[parameter_scope.0];
-            if scope.bindings.len() != function.parameters.len() {
+            if scope.bindings.len() != function.parameter_locals.len() {
                 return Err(Error::internal(
                     "parameter environment does not own every parameter cell",
                 ));
             }
-            for (argument, ((parameter, &local), &binding_id)) in function
-                .parameters
+            for (cell, (&local, &binding_id)) in function
+                .parameter_locals
                 .iter()
-                .zip(&function.parameter_locals)
                 .zip(&scope.bindings)
                 .enumerate()
             {
@@ -7524,9 +7694,8 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                     .bindings
                     .get(binding_id.0)
                     .ok_or_else(|| Error::internal("parameter binding is out of bounds"))?;
-                if usize::from(local) != argument
-                    || function.locals.get(argument) != parameter.as_ref()
-                    || parameter.as_deref() != Some(binding.name.as_str())
+                if usize::from(local) != cell
+                    || function.locals.get(cell).map(String::as_str) != Some(binding.name.as_str())
                     || binding.storage != BindingStorage::Local(local)
                     || binding.storage_scope != parameter_scope
                     || binding.declaration_scope != parameter_scope
@@ -7535,6 +7704,68 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 {
                     return Err(Error::internal(
                         "parameter environment cell metadata is malformed",
+                    ));
+                }
+            }
+            for (argument, parameter) in function.parameters.iter().enumerate() {
+                match (parameter, function.parameter_argument_locals[argument]) {
+                    (Some(name), Some(local))
+                        if function
+                            .locals
+                            .get(usize::from(local))
+                            .is_some_and(|local_name| local_name == name) => {}
+                    (None, None) => {}
+                    _ => {
+                        return Err(Error::internal(
+                            "parameter argument-to-cell metadata is malformed",
+                        ));
+                    }
+                }
+            }
+            let mut previous_default = None;
+            for source in function.parameter_default_sources.iter().copied() {
+                let formal = match source {
+                    ParameterDefaultSource::Argument(argument)
+                        if usize::from(argument) < function.parameters.len()
+                            && function.rest_parameter != Some(argument) =>
+                    {
+                        argument
+                    }
+                    ParameterDefaultSource::RestPattern(start)
+                        if function.rest_pattern_start == Some(start) =>
+                    {
+                        start
+                    }
+                    _ => {
+                        return Err(Error::internal(
+                            "parameter default source metadata is malformed",
+                        ));
+                    }
+                };
+                if previous_default.is_some_and(|previous| previous >= formal) {
+                    return Err(Error::internal(
+                        "parameter default sources are not in formal order",
+                    ));
+                }
+                previous_default = Some(formal);
+            }
+            for pattern in &function.parameter_pattern_bindings {
+                let Some(body_local) = pattern.body_local else {
+                    return Err(Error::internal(
+                        "parameter pattern body binding was not allocated",
+                    ));
+                };
+                let parameter_binding = function.binding_in_scope(parameter_scope, &pattern.name);
+                let body_binding = function.binding_in_scope(function.var_scope, &pattern.name);
+                if parameter_binding.is_none_or(|binding| {
+                    binding.storage != BindingStorage::Local(pattern.parameter_local)
+                }) || body_binding.is_none_or(|binding| {
+                    binding.storage != BindingStorage::Local(body_local)
+                        || binding.kind != BindingKind::Normal
+                }) || function.locals.get(usize::from(body_local)) != Some(&pattern.name)
+                {
+                    return Err(Error::internal(
+                        "parameter pattern copy metadata is malformed",
                     ));
                 }
             }
@@ -11741,6 +11972,7 @@ fn lower_unlinked_tree(
             let name = if debug_info == DebugInfoMode::StripDebug
                 && !retain_eval_names
                 && matches!(binding.kind, BindingKind::Lexical { .. })
+                && !function.parameter_locals.contains(&index)
             {
                 None
             } else {
@@ -11768,8 +12000,62 @@ fn lower_unlinked_tree(
                 .get(function_id)
                 .ok_or_else(|| Error::internal("captured-local function is out of bounds"))?,
         )?;
+        let parameter_environment_parts = function
+            .parameter_scope
+            .map(|_| {
+                let argument_cells = function
+                    .parameter_argument_locals
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(argument, local)| {
+                        local.map(|parameter_local| {
+                            u16::try_from(argument).map(|argument| ParameterArgumentCell {
+                                argument,
+                                parameter_local,
+                                body: ParameterBodyStorage::Argument(argument),
+                            })
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| Error::new(ErrorKind::JsInternal, "too many arguments"))?;
+                let pattern_copies = function
+                    .parameter_pattern_bindings
+                    .iter()
+                    .map(|binding| {
+                        binding
+                            .body_local
+                            .map(|body_local| ParameterPatternCopy {
+                                parameter_local: binding.parameter_local,
+                                body_local,
+                            })
+                            .ok_or_else(|| {
+                                Error::internal("parameter pattern body binding was not allocated")
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, Error>((argument_cells, pattern_copies))
+            })
+            .transpose()?;
+        let has_pattern_parameters = function.pattern_parameter_initialization;
         let lowered_ops = lower_ops(function.ops, &scope_lifecycles)?;
-        let parameter_pattern_end = lowered_ops.parameter_initialization_end;
+        let parameter_initialization_end = lowered_ops.parameter_initialization_end;
+        let parameter_pattern_end = has_pattern_parameters
+            .then_some(parameter_initialization_end)
+            .flatten();
+        let parameter_environment = parameter_environment_parts
+            .map(|(argument_cells, pattern_copies)| {
+                Ok::<_, Error>(ParameterEnvironmentLayout {
+                    initialization_end: parameter_initialization_end.ok_or_else(|| {
+                        Error::internal("parameter environment has no initialization marker")
+                    })?,
+                    argument_cells: argument_cells.into_boxed_slice(),
+                    pattern_copies: pattern_copies.into_boxed_slice(),
+                    default_sources: function.parameter_default_sources.into_boxed_slice(),
+                    synthetic_arguments_local: None,
+                    arg_eval_variable_object_local: None,
+                })
+            })
+            .transpose()?;
         let code = lowered_ops.code;
         let constant_count = function.constants.len();
         let constants = function
@@ -11888,6 +12174,7 @@ fn lower_unlinked_tree(
             )
         };
         let unlinked = unlinked
+            .with_parameter_environment(parameter_environment)
             .with_eval_environments(function.eval_environments)
             .with_name(func_name)
             .with_variable_definitions(argument_definitions, local_definitions);

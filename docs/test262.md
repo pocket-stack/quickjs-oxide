@@ -50,12 +50,12 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 35,166 pass;
+- 35,178 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 46,415 are classified as unsupported because of a feature, mode, host
+- 46,401 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 391 fail to parse, 1,536 fail at runtime, 48 fail in the harness, and six
+- 391 fail to parse, 1,538 fail at runtime, 48 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 38,421 variants to execution. That count includes variants
@@ -64,14 +64,14 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 34.46% (`35,166 / 102,037`);
-- conservative target-scope lower bound: 42.08%
-  (`35,166 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 94.67%
-  (`35,166 / 37,147`).
+- raw suite pass rate: 34.48% (`35,178 / 102,037`);
+- conservative target-scope lower bound: 42.10%
+  (`35,178 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 94.66%
+  (`35,178 / 37,161`).
 
-The 42.08% figure is the useful whole-project progress floor, not a claim that
-the engine is 42.08% conformant. The 94.67% conditional rate measures quality
+The 42.10% figure is the useful whole-project progress floor, not a claim that
+the engine is 42.10% conformant. The 94.66% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -88,8 +88,10 @@ destructuring, class, and missing-intrinsic consumers to their deeper explicit
 frontiers, again without changing the runnable count. R2z then adds 22 passes
 from synchronous no-default parameter BindingPatterns, while moving 11 old
 failures to the deeper Parameter-Environment frontier and keeping the runnable
-count fixed. The
-capability profile currently admits 69 reviewed Test262
+count fixed. R3a adds 12 passes from the combined parameter-expression and
+BindingPattern path, moves two typed runtime frontiers to their already-known
+adjacent failures, and again keeps the runnable count fixed. The capability
+profile currently admits 69 reviewed Test262
 feature tags and 423 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
 lands can only make the measurement more representative. Focused QuickJS
@@ -99,13 +101,18 @@ The complete TSV/JSONL reports are generated under `target/` rather than
 committed (together they are tens of megabytes). Their complete hashes and
 outcome summary are pinned in `tests/test262-full-baseline.txt`. Runner ordering
 was cross-checked at five and eight workers through the scoped RegExp modifier
-milestone; the current byte expectations use a fixed
-`TZ=America/Los_Angeles`. The hash gate therefore requires a Unix-like zoneinfo
-installation; Windows still lacks the corresponding IANA-zone backend.
+milestone. The canonical full gate now uses four workers because its 30-second
+budget is wall-clock based and the untagged `Proxy/ownkeys-linear.js` performs
+15,000 precondition property insertions before reaching the missing `Proxy`
+frontier; eight concurrent workers can make those two already-failing variants
+scheduler-dependent. Focused gates and the generic runner retain their existing
+parallel defaults. The current byte expectations use a fixed
+`TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
+installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`5d85f32719d07937a0e352cc665911c94014ae1f910292100821692c9cbe4546`
+`a529e8bc7556be32188fa20dd9a2db121e7feba4cc0dede5d4a1882b4ba363ec`
 and
-`2818623121c2991151fdb0c055090283fd5f131e5dcfdd135b97fcdb77df708c`.
+`78839d051f03908350eded05b8ea99c6d9843f4668ec4aa3673b50ca60e710da`.
 
 ## Milestone policy
 
@@ -2367,6 +2374,73 @@ and
 BindingPatterns whose FormalParameters contain a standalone `=` are the next
 R3a milestone; async, generator, and class forms remain later callable slices.
 
+## R3a synchronous parameter-expression BindingPatterns
+
+R3a completes synchronous BindingPatterns on QuickJS's Parameter Environment
+path. A standalone `=` token anywhere in FormalParameters now pre-creates the
+parentless argument scope before parsing the first parameter. The bounded
+QuickJS-style lookahead retains an assignment already observed if its
+256-delimiter safety limit is reached. Every identifier and pattern BoundName
+is allocated in that lexical scope in source order, including the meaningful
+zero-cell Parameter Environment.
+
+Named parameters still keep their physical argument slot for body reads.
+BindingPatterns use anonymous physical sources, then copy their initialized
+cells into fresh ordinary body locals only after every parameter initializer
+has run. Initializer closures therefore capture the Parameter Environment,
+while body closures and body bytecode observe the copied locals. Whole-pattern
+defaults, leaf defaults, mixed named/pattern parameters, terminal rest
+patterns, function `length`, duplicate-name diagnostics, implicit `arguments`,
+getter/setter arity quirks, and QuickJS's accepted but unreachable rest-pattern
+initializer are all covered by focused differentials.
+
+An immutable `ParameterEnvironmentLayout` crosses unlinked publication,
+complete-tree publication, and heap installation. It records the initialization
+boundary, named argument cells, pattern-copy map, raw default sources, future
+synthetic-arguments and eval variable-object slots, and authenticates the exact
+TDZ, initialization, default-branch, reverse-copy, body-access, closure-capture,
+and control-flow topology. Future direct eval support cannot silently reuse or
+reinterpret this ABI; direct eval in or below this environment remains a typed
+frontier for the separate `<arg_var>` variable-object milestone.
+
+The runner-bound R3a gate derives 117 dependency-clean generated paths from
+each of four synchronous surfaces: 468 paths / 936 sloppy/strict variants, all
+runnable and passing. Its scoped profile admits only `Symbol.iterator`,
+`default-parameters`, `destructuring-binding`, and `object-rest`, together with
+36 audited negative paths. Profile, normalized-manifest/manifest-file, key-set,
+focused TSV, and focused JSONL SHA-256 values are
+`0addc7345b6576e1944afc3d5d84cffe16e299e44af09245e78c08cb29207f7b`,
+`1db4662456a3ea231c7ce3f629d5224a8cb19d38d13d69c83e43f6407aac21c0`,
+`5d4d801025b940f11608d4110169daf6f15427a063e26ca0b1770587a11f464b`,
+`e7292d11cc347daf9016b28a987626ee648fc64e4740161ce843058a6fe7265c`,
+and
+`e6ad140b2e960920c4586455ee9905b4c982ba63e4aa7a9cfc102542c0de8827`.
+The QuickJS oracle target contains 20 semantic/early-error vectors and passes
+all four Rust integration tests. The pinned Test262 tree contains no exact
+BindingPattern + standalone `=` + terminal identifier-rest combination, so
+three of those oracle vectors explicitly freeze that cross-feature entry ABI
+across ordinary functions, arrows, and object methods.
+
+Reproduce the focused gates with:
+
+```sh
+./scripts/test-test262-parameter-expression-binding-patterns.sh
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_parameter_expression_binding_patterns -- --nocapture
+```
+
+The exact R2z/R3a full join retains all 102,037 unique keys and every previous
+pass. Twelve `unsupported-parser` variants become passes, while two untagged
+staging variants advance from the old typed runtime frontier to already-known
+generator/async/class runtime failures. Fifteen same-outcome rows expose deeper
+diagnostics. There are no missing, extra, duplicate, or previous-pass-regressed
+keys. Passes reach 35,178 among 38,421 runnable variants; full TSV/JSONL hashes
+are
+`a529e8bc7556be32188fa20dd9a2db121e7feba4cc0dede5d4a1882b4ba363ec`
+and
+`78839d051f03908350eded05b8ea99c6d9843f4668ec4aa3673b50ca60e710da`.
+Async, generator, and class callables remain later callable milestones.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -2456,6 +2530,7 @@ canonical progress report.
 ./scripts/test-test262-identifier-rest.sh
 ./scripts/test-test262-identifier-defaults.sh
 ./scripts/test-test262-parameter-binding-patterns.sh
+./scripts/test-test262-parameter-expression-binding-patterns.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -2574,6 +2649,12 @@ passes with zero previous-pass regression, reaching 35,166 passes among 38,421
 runnable variants. BindingPatterns combined with standalone `=` parameter
 expressions are the next R3a milestone; async/generator/class forms remain
 later callable milestones.
+R3a combines standalone `=` parameter expressions with synchronous
+BindingPatterns on those surfaces. Its dependency-audited 468-path scoped gate
+passes all 936 variants; the full join adds 12 passes with zero previous-pass
+regression, reaching 35,178 passes among 38,421 runnable variants. Direct eval
+in or below the Parameter Environment remains the next independent environment
+milestone; async/generator/class forms remain later callable milestones.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

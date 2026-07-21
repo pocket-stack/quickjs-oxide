@@ -15,9 +15,9 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 35,166 passes and 38,421 runnable variants: 34.46% raw, a 42.08% lower
-  bound after the 18,475 pinned QuickJS target exclusions, or 94.67% among the
-  37,147 variants with a non-unsupported observed outcome. The fixed smoke now
+  has 35,178 passes and 38,421 runnable variants: 34.48% raw, a 42.10% lower
+  bound after the 18,475 pinned QuickJS target exclusions, or 94.66% among the
+  37,161 variants with a non-unsupported observed outcome. The fixed smoke now
   has 191 passes and two explicit parser-frontier results. See
   `docs/test262.md` for the denominators and why none of these figures is a
   parity claim. The first
@@ -1217,6 +1217,59 @@ claim full parity.
   BindingPatterns whose FormalParameters contain a standalone `=` require the
   independent Parameter Environment and are the next R3a boundary; async,
   generator, and class forms remain later callable milestones.
+
+  R3a completes synchronous parameter-expression BindingPatterns on that
+  independent Parameter Environment. A standalone `=` anywhere in the whole
+  FormalParameters list creates the parentless argument scope before the first
+  parameter is parsed, and every identifier/pattern BoundName receives a TDZ
+  cell in source order. Named parameters preserve raw physical argument reads;
+  pattern names are initialized in the argument scope and copied to fresh body
+  locals only after all defaults have run. Initializer and body closures thus
+  retain QuickJS's distinct capture targets. The zero-cell environment,
+  whole-pattern versus leaf-default `length`, rest-pattern initializer quirk,
+  getter/setter arity, duplicate-name priority, and hidden `arguments` object
+  cases are pinned by focused QuickJS differentials.
+
+  The immutable `ParameterEnvironmentLayout` crosses both publication
+  boundaries into the heap and records initialization, named argument cells,
+  pattern copies, raw default sources, and reserved future eval/arguments
+  slots. The publishers and Heap independently authenticate TDZ order, exact
+  initialization/default/copy skeletons, cross-phase jumps, body reads, and
+  child closure captures. This makes direct eval in or below the Parameter
+  Environment an explicit later `<arg_var>` ABI extension rather than an
+  approximation.
+
+  The dependency-audited R3a gate derives 117 paths from each of four
+  synchronous surfaces: 468 paths / 936 variants, all passing. Its four-feature
+  scoped profile contains 36 audited negatives. Profile/manifest/key-set/
+  focused TSV/JSONL hashes are
+  `0addc7345b6576e1944afc3d5d84cffe16e299e44af09245e78c08cb29207f7b`,
+  `1db4662456a3ea231c7ce3f629d5224a8cb19d38d13d69c83e43f6407aac21c0`,
+  `5d4d801025b940f11608d4110169daf6f15427a063e26ca0b1770587a11f464b`,
+  `e7292d11cc347daf9016b28a987626ee648fc64e4740161ce843058a6fe7265c`,
+  and
+  `e6ad140b2e960920c4586455ee9905b4c982ba63e4aa7a9cfc102542c0de8827`.
+  The 20-vector QuickJS oracle passes all four integration tests. Pinned
+  Test262 has no exact BindingPattern + standalone `=` + terminal
+  identifier-rest path, so three custom vectors freeze that otherwise invisible
+  cross-feature entry shape across functions, arrows, and object methods.
+
+  The exact R2z/R3a full join retains all 102,037 keys and every prior pass.
+  Twelve `unsupported-parser` variants become passes, two untagged staging
+  variants advance from the typed runtime frontier to existing adjacent
+  failures, and 15 same-outcome rows expose deeper diagnostics. There are no
+  missing, extra, duplicate, or regressed-pass keys. Passes reach 35,178 among
+  38,421 runnable variants; full TSV/JSONL hashes are
+  `a529e8bc7556be32188fa20dd9a2db121e7feba4cc0dede5d4a1882b4ba363ec`
+  and
+  `78839d051f03908350eded05b8ea99c6d9843f4668ec4aa3673b50ca60e710da`.
+  The canonical complete gate now uses four workers: its timeout is wall-clock,
+  and eight-way contention can make the pre-existing 15,000-property
+  `Proxy/ownkeys-linear.js` setup cross 30 seconds before reaching the missing
+  `Proxy` frontier. Focused gates retain their existing parallel defaults.
+  Direct eval plus async/generator/class callables remain explicit later
+  milestones.
+
   One entry-prologue composition debt also remains. R2i fixes the pseudo-local
   group itself to QuickJS's HomeObject, `new.target`, then `this` order, but the
   compiler still installs
@@ -4713,6 +4766,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-identifier-rest.sh
 ./scripts/test-test262-identifier-defaults.sh
 ./scripts/test-test262-parameter-binding-patterns.sh
+./scripts/test-test262-parameter-expression-binding-patterns.sh
 ./scripts/test-test262-full.sh
 ```
 

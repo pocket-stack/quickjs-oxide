@@ -350,22 +350,18 @@ impl<'source> Parser<'source> {
             .is_some_and(|scan| scan.has_object_rest)
     }
 
-    pub(super) fn array_parameter_binding_has_assignment(&self) -> Option<bool> {
-        self.parameter_binding_has_assignment(Punctuator::LeftBracket)
-    }
-
-    pub(super) fn object_parameter_binding_has_assignment(&self) -> Option<bool> {
-        self.parameter_binding_has_assignment(Punctuator::LeftBrace)
-    }
-
-    fn parameter_binding_has_assignment(&self, opening: Punctuator) -> Option<bool> {
-        self.binding_pattern_scan(opening).map(|scan| {
-            scan.has_assignment
-                || matches!(
-                    scan.following.kind,
-                    TokenKind::Punctuator(Punctuator::Equal)
-                )
-        })
+    /// QuickJS pre-scans the complete parenthesized FormalParameters before
+    /// parsing the first binding. Any standalone `=` token at any delimiter
+    /// depth selects the independent parentless argument scope.
+    pub(super) fn parenthesized_parameter_has_assignment(&self) -> Option<bool> {
+        let mut assignment_seen = false;
+        self.binding_pattern_scan_recording_assignment(Punctuator::LeftParen, &mut assignment_seen)
+            .map(|scan| scan.has_assignment)
+            // QuickJS stops its skip scan at the 256-level delimiter bound but
+            // still publishes bits accumulated before that point. In particular,
+            // an earlier `=` must create the argument scope even when the suffix is
+            // too deep for the lookahead scanner to finish.
+            .or_else(|| assignment_seen.then_some(true))
     }
 
     fn binding_pattern_following_token(&self, opening: Punctuator) -> Option<Token<'source>> {
@@ -374,10 +370,20 @@ impl<'source> Parser<'source> {
     }
 
     fn binding_pattern_scan(&self, opening: Punctuator) -> Option<BindingPatternScan<'source>> {
+        let mut assignment_seen = false;
+        self.binding_pattern_scan_recording_assignment(opening, &mut assignment_seen)
+    }
+
+    fn binding_pattern_scan_recording_assignment(
+        &self,
+        opening: Punctuator,
+        assignment_seen: &mut bool,
+    ) -> Option<BindingPatternScan<'source>> {
         if !self.is_punctuator(opening) {
             return None;
         }
         let root = match opening {
+            Punctuator::LeftParen => ForHeadDelimiter::Parenthesis,
             Punctuator::LeftBracket => ForHeadDelimiter::Bracket,
             Punctuator::LeftBrace => ForHeadDelimiter::Brace,
             _ => return None,
@@ -419,6 +425,7 @@ impl<'source> Parser<'source> {
             }
             if matches!(token.kind, TokenKind::Punctuator(Punctuator::Equal)) {
                 has_assignment = true;
+                *assignment_seen = true;
             }
 
             match &token.kind {
@@ -443,6 +450,13 @@ impl<'source> Parser<'source> {
                 TokenKind::Punctuator(Punctuator::RightParen) => {
                     if delimiters.pop() != Some(ForHeadDelimiter::Parenthesis) {
                         return None;
+                    }
+                    if root == ForHeadDelimiter::Parenthesis && delimiters.is_empty() {
+                        return Some(BindingPatternScan {
+                            following: lexer.next_token().ok()?,
+                            has_object_rest,
+                            has_assignment,
+                        });
                     }
                 }
                 TokenKind::Punctuator(Punctuator::RightBracket) => {
@@ -568,28 +582,28 @@ impl<'source> Parser<'source> {
     pub(super) fn parse_array_parameter_binding_pattern(
         &mut self,
         argument: u16,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         self.parse_parameter_binding_pattern(argument, BindingPatternKind::Array)
     }
 
     pub(super) fn parse_object_parameter_binding_pattern(
         &mut self,
         argument: u16,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         self.parse_parameter_binding_pattern(argument, BindingPatternKind::Object)
     }
 
     pub(super) fn parse_array_rest_parameter_binding_pattern(
         &mut self,
         start: u16,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         self.parse_rest_parameter_binding_pattern(start, BindingPatternKind::Array)
     }
 
     pub(super) fn parse_object_rest_parameter_binding_pattern(
         &mut self,
         start: u16,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         self.parse_rest_parameter_binding_pattern(start, BindingPatternKind::Object)
     }
 
@@ -597,28 +611,74 @@ impl<'source> Parser<'source> {
         &mut self,
         start: u16,
         pattern: BindingPatternKind,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         self.emit_instruction(Instruction::Rest(start))?;
-        self.parse_binding_pattern(
-            pattern,
-            ForAssignmentDeclaration::Var,
-            false,
-            BindingSite::Parameter,
-        )
+        self.parse_parameter_binding_pattern_value(pattern)
     }
 
     fn parse_parameter_binding_pattern(
         &mut self,
         argument: u16,
         pattern: BindingPatternKind,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         self.emit_instruction(Instruction::GetArg(argument))?;
+        self.parse_parameter_binding_pattern_value(pattern)
+    }
+
+    fn parse_parameter_binding_pattern_value(
+        &mut self,
+        pattern: BindingPatternKind,
+    ) -> Result<bool, Error> {
+        let opening = match pattern {
+            BindingPatternKind::Array => Punctuator::LeftBracket,
+            BindingPatternKind::Object => Punctuator::LeftBrace,
+        };
+        let has_initializer = self
+            .binding_pattern_following_token(opening)
+            .is_some_and(|token| matches!(token.kind, TokenKind::Punctuator(Punctuator::Equal)));
+        if !has_initializer {
+            self.parse_binding_pattern(
+                pattern,
+                ForAssignmentDeclaration::Var,
+                false,
+                BindingSite::Parameter,
+            )?;
+            return Ok(false);
+        }
+
+        let value_depth = self.current_ir().stack_depth;
+        self.emit_instruction(Instruction::Dup)?;
+        self.emit_instruction(Instruction::Undefined)?;
+        self.emit_instruction(Instruction::StrictEq)?;
+        let use_initializer = self.emit_instruction(Instruction::IfTrue(u32::MAX))?;
+        let assignment_target = self.current_ir().ops.len();
+
         self.parse_binding_pattern(
             pattern,
             ForAssignmentDeclaration::Var,
             false,
             BindingSite::Parameter,
-        )
+        )?;
+        self.require_stack_depth(value_depth - 1, "parameter BindingPattern assignment")?;
+        self.expect_punctuator(Punctuator::Equal)?;
+
+        let done_jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
+        let initializer_target = self.current_ir().ops.len();
+        self.patch_jump(use_initializer, initializer_target)?;
+        self.current_ir_mut().stack_depth = value_depth;
+        self.emit_instruction(Instruction::Drop)?;
+        self.parse_assignment_allow_in()?;
+        self.anonymous_function_definition = None;
+        self.require_stack_depth(value_depth, "parameter BindingPattern initializer")?;
+        self.emit_instruction(Instruction::Goto(
+            u32::try_from(assignment_target)
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "out of memory"))?,
+        ))?;
+
+        let done_target = self.current_ir().ops.len();
+        self.patch_jump(done_jump, done_target)?;
+        self.current_ir_mut().stack_depth = value_depth - 1;
+        Ok(true)
     }
 
     fn parse_assignment_pattern(&mut self, pattern: BindingPatternKind) -> Result<(), Error> {
@@ -1283,7 +1343,11 @@ impl<'source> Parser<'source> {
             // assignment. Lexical bindings have a fixed cell and need no
             // reference operand.
             let reference_scope = self.current_ir().current_scope;
-            let next_offset = if declaration == ForAssignmentDeclaration::Var {
+            let parameter_lexical = declaration == ForAssignmentDeclaration::Var
+                && site == BindingSite::Parameter
+                && self.current_ir().parameter_scope.is_some();
+            let next_offset = if declaration == ForAssignmentDeclaration::Var && !parameter_lexical
+            {
                 self.emit_identifier_reference_inherited(
                     name.clone(),
                     token.span,
@@ -1319,7 +1383,7 @@ impl<'source> Parser<'source> {
                     self.patch_jump(has_value, has_value_target)?;
                 }
             }
-            if declaration == ForAssignmentDeclaration::Var {
+            if declaration == ForAssignmentDeclaration::Var && !parameter_lexical {
                 self.emit_identifier_reference_inherited(
                     name,
                     token.span,
@@ -1695,12 +1759,15 @@ impl<'source> Parser<'source> {
         }
 
         let reference_scope = self.current_ir().current_scope;
+        let parameter_lexical = declaration == ForAssignmentDeclaration::Var
+            && site == BindingSite::Parameter
+            && self.current_ir().parameter_scope.is_some();
         if fixed_key.is_none() && !computed_key_is_canonical {
             // A leaf computed key is canonicalized before a sloppy `var`
             // Reference is prepared and before the property getter runs.
             self.emit_instruction(Instruction::ToPropKey)?;
         }
-        if declaration == ForAssignmentDeclaration::Var {
+        if declaration == ForAssignmentDeclaration::Var && !parameter_lexical {
             self.emit_identifier_reference_inherited(
                 name.clone(),
                 token.span,
@@ -1723,7 +1790,7 @@ impl<'source> Parser<'source> {
         } else {
             self.emit_instruction_at(Instruction::GetArrayEl2, source_offset(property_span)?)?;
         }
-        if declaration == ForAssignmentDeclaration::Var {
+        if declaration == ForAssignmentDeclaration::Var && !parameter_lexical {
             // ref source value -> source ref value
             self.emit_instruction(Instruction::Perm3)?;
         }
@@ -1745,7 +1812,7 @@ impl<'source> Parser<'source> {
             self.patch_jump(has_value, has_value_target)?;
         }
 
-        if declaration == ForAssignmentDeclaration::Var {
+        if declaration == ForAssignmentDeclaration::Var && !parameter_lexical {
             self.emit_identifier_reference_inherited(
                 name,
                 token.span,
@@ -1838,7 +1905,10 @@ impl<'source> Parser<'source> {
         }
 
         let reference_scope = self.current_ir().current_scope;
-        if declaration == ForAssignmentDeclaration::Var {
+        let parameter_lexical = declaration == ForAssignmentDeclaration::Var
+            && site == BindingSite::Parameter
+            && self.current_ir().parameter_scope.is_some();
+        if declaration == ForAssignmentDeclaration::Var && !parameter_lexical {
             // QuickJS prepares a potentially dynamic sloppy-var Reference
             // before allocating/enumerating the rest object.
             self.emit_identifier_reference_inherited(
@@ -1849,11 +1919,12 @@ impl<'source> Parser<'source> {
             )?;
         }
         self.emit_instruction(Instruction::Object)?;
-        let (source_depth, excluded_depth) = if declaration == ForAssignmentDeclaration::Var {
-            (2, 3)
-        } else {
-            (1, 2)
-        };
+        let (source_depth, excluded_depth) =
+            if declaration == ForAssignmentDeclaration::Var && !parameter_lexical {
+                (2, 3)
+            } else {
+                (1, 2)
+            };
         self.emit_instruction_at(
             Instruction::CopyDataPropertiesExcluded {
                 target_depth: 0,
@@ -1862,7 +1933,7 @@ impl<'source> Parser<'source> {
             },
             source_offset(rest_span)?,
         )?;
-        if declaration == ForAssignmentDeclaration::Var {
+        if declaration == ForAssignmentDeclaration::Var && !parameter_lexical {
             self.emit_identifier_reference_inherited(
                 identifier.value,
                 token.span,

@@ -56,6 +56,12 @@ impl<'source> Parser<'source> {
                 self.advance()?;
             }
             ArrowHead::Parenthesized => {
+                let has_parameter_expressions = self
+                    .parenthesized_parameter_has_assignment()
+                    .unwrap_or(false);
+                if has_parameter_expressions {
+                    self.activate_parameter_environment_from_scan()?;
+                }
                 self.expect_punctuator(Punctuator::LeftParen)?;
                 if !self.consume_punctuator(Punctuator::RightParen)? {
                     loop {
@@ -66,27 +72,16 @@ impl<'source> Parser<'source> {
                             _ => None,
                         };
                         if let Some(array_pattern) = pattern {
-                            let has_assignment = if array_pattern {
-                                self.array_parameter_binding_has_assignment()
-                            } else {
-                                self.object_parameter_binding_has_assignment()
-                            };
-                            if has_assignment == Some(true)
-                                || self.current_ir().parameter_scope.is_some()
-                            {
-                                return Err(self.unsupported_here(
-                                    "arrow BindingPatterns with parameter expressions are not implemented yet",
-                                ));
-                            }
                             let span = self.current().span;
                             self.activate_pattern_parameter_initialization()?;
                             if is_rest {
                                 let start = self.register_rest_pattern_parameter()?;
-                                if array_pattern {
-                                    self.parse_array_rest_parameter_binding_pattern(start)?;
+                                let has_initializer = if array_pattern {
+                                    self.parse_array_rest_parameter_binding_pattern(start)?
                                 } else {
-                                    self.parse_object_rest_parameter_binding_pattern(start)?;
-                                }
+                                    self.parse_object_rest_parameter_binding_pattern(start)?
+                                };
+                                self.finish_pattern_parameter_length(start, has_initializer)?;
                                 if !self.is_punctuator(Punctuator::RightParen) {
                                     return Err(self.syntax_here("expecting ')'"));
                                 }
@@ -94,11 +89,12 @@ impl<'source> Parser<'source> {
                                 break;
                             }
                             let argument = self.append_pattern_parameter(span)?;
-                            if array_pattern {
-                                self.parse_array_parameter_binding_pattern(argument)?;
+                            let has_initializer = if array_pattern {
+                                self.parse_array_parameter_binding_pattern(argument)?
                             } else {
-                                self.parse_object_parameter_binding_pattern(argument)?;
-                            }
+                                self.parse_object_parameter_binding_pattern(argument)?
+                            };
+                            self.finish_pattern_parameter_length(argument, has_initializer)?;
                             if self.consume_punctuator(Punctuator::RightParen)? {
                                 break;
                             }

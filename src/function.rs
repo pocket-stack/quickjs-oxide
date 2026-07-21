@@ -22,7 +22,7 @@ use crate::bytecode::Instruction;
 use crate::debug::Pc2LineTable;
 use crate::heap::{
     ClosureVariable, ClosureVariableKind, EvalEnvironment, FunctionBytecodeId, FunctionMetadata,
-    HeapError,
+    HeapError, ParameterEnvironmentLayout,
 };
 use crate::regexp::CompiledRegExp;
 use crate::runtime::Runtime;
@@ -366,6 +366,7 @@ pub(crate) struct UnlinkedFunction {
     code: Vec<Instruction>,
     constants: Vec<UnlinkedConstant>,
     metadata: FunctionMetadata,
+    parameter_environment: Option<ParameterEnvironmentLayout>,
     func_name: Option<crate::value::JsString>,
     argument_definitions: Vec<UnlinkedVariableDefinition>,
     local_definitions: Vec<UnlinkedVariableDefinition>,
@@ -456,6 +457,7 @@ pub(crate) struct UnlinkedFunctionParts {
     pub(crate) code: Vec<Instruction>,
     pub(crate) constants: Vec<UnlinkedConstant>,
     pub(crate) metadata: FunctionMetadata,
+    pub(crate) parameter_environment: Option<ParameterEnvironmentLayout>,
     pub(crate) func_name: Option<crate::value::JsString>,
     pub(crate) argument_definitions: Vec<UnlinkedVariableDefinition>,
     pub(crate) local_definitions: Vec<UnlinkedVariableDefinition>,
@@ -502,6 +504,7 @@ impl UnlinkedFunction {
             code,
             constants,
             metadata,
+            parameter_environment: None,
             func_name: None,
             argument_definitions,
             local_definitions,
@@ -530,6 +533,7 @@ impl UnlinkedFunction {
             code,
             constants,
             metadata,
+            parameter_environment: None,
             func_name: None,
             argument_definitions,
             local_definitions,
@@ -547,6 +551,18 @@ impl UnlinkedFunction {
         eval_environments: Vec<EvalEnvironment<JsString>>,
     ) -> Self {
         self.eval_environments = eval_environments;
+        self
+    }
+
+    /// Attach the exact parentless parameter-scope ABI. An empty layout is
+    /// retained rather than folded into `None` because environment existence
+    /// is observable independently from authored BoundName count.
+    #[must_use]
+    pub(crate) fn with_parameter_environment(
+        mut self,
+        layout: Option<ParameterEnvironmentLayout>,
+    ) -> Self {
+        self.parameter_environment = layout;
         self
     }
 
@@ -612,6 +628,11 @@ impl UnlinkedFunction {
     }
 
     #[must_use]
+    pub(crate) const fn parameter_environment(&self) -> Option<&ParameterEnvironmentLayout> {
+        self.parameter_environment.as_ref()
+    }
+
+    #[must_use]
     pub(crate) fn func_name(&self) -> Option<&crate::value::JsString> {
         self.func_name.as_ref()
     }
@@ -648,6 +669,7 @@ impl UnlinkedFunction {
             code: self.code,
             constants: self.constants,
             metadata: self.metadata,
+            parameter_environment: self.parameter_environment,
             func_name: self.func_name,
             argument_definitions: self.argument_definitions,
             local_definitions: self.local_definitions,

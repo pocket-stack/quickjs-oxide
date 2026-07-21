@@ -7,9 +7,9 @@ use crate::error::ErrorKind;
 use crate::heap::{
     ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
     EvalBindingSource, EvalCallerProfile, EvalCallerVariableTarget, EvalKind, EvalRootBinding,
-    EvalScopeKind, EvalVariableEnvironment,
+    EvalScopeKind, EvalVariableEnvironment, ParameterDefaultSource,
 };
-use crate::lexer::{LexError, LexErrorKind, Position, Span};
+use crate::lexer::{LexError, LexErrorKind, Lexer, Position, Span};
 use crate::object::{
     AccessorValue, CompleteOrdinaryPropertyDescriptor, DescriptorField, OrdinaryPropertyDescriptor,
     PropertyKey, WellKnownSymbol,
@@ -21,7 +21,7 @@ use crate::vm::Vm;
 use super::{
     BindingKind, BindingStorage, EVAL_VARIABLE_OBJECT_LOCAL_NAME, EvalCompileContext, FunctionIr,
     FunctionIrOptions, FunctionKind, FunctionSourceInfo, FunctionTree, HOME_OBJECT_LOCAL_NAME,
-    IrScope, MAX_BYTECODE_STACK, MAX_CALL_ARGUMENTS, MAX_LOCAL_VARIABLES, Parser, ScopeId,
+    InMode, IrScope, MAX_BYTECODE_STACK, MAX_CALL_ARGUMENTS, MAX_LOCAL_VARIABLES, Parser, ScopeId,
     ScopeKind, SourceOffset, SuperCapabilities, THIS_LOCAL_NAME, WITH_OBJECT_LOCAL_NAME,
     build_scope_lifecycles, compile_script, compile_unlinked_eval_with_filename,
     compile_unlinked_script, compile_unlinked_script_with_filename, ensure_closure_variable,
@@ -7117,15 +7117,234 @@ fn parameter_binding_pattern_assignment_prescan_matches_quickjs_token_rule() {
         "(([a=1])=>a)",
         "({method({value=1}){}})",
     ] {
-        let error = compile_unlinked_script(source).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Unsupported, "{source}");
+        let script = compile_unlinked_script(source)
+            .unwrap_or_else(|error| panic!("parameter expression {source:?}: {error}"));
+        let function = script.constants()[0].as_child().unwrap();
         assert!(
-            error.message().contains("parameter")
-                && (error.message().contains("BindingPattern")
-                    || error.message().contains("BindingPatterns")),
-            "{source}: {error}"
+            function.parameter_environment().is_some(),
+            "standalone '=' did not publish a Parameter Environment for {source}"
         );
     }
+}
+
+#[test]
+fn parameter_assignment_prescan_retains_quickjs_bits_at_the_depth_bound() {
+    let source = format!("(a=1,{}0{})", "(".repeat(260), ")".repeat(260));
+    let mut lexer = Lexer::new(&source);
+    let first = lexer.next_token().unwrap();
+    let source_span = first.span;
+    let parser = Parser {
+        lexer,
+        tokens: vec![first],
+        cursor: 0,
+        current_function: 0,
+        in_mode: InMode::Allow,
+        functions: vec![
+            FunctionIr::new(
+                None,
+                FunctionKind::Script,
+                FunctionSourceInfo {
+                    span: source_span,
+                    definition: SourceOffset::try_from_usize(0).unwrap(),
+                    range: None,
+                },
+                FunctionIrOptions {
+                    function_name: Some("<scan-test>".to_owned()),
+                    private_name_binding: false,
+                    parameters: Vec::new(),
+                    defined_argument_count: 0,
+                    has_simple_parameter_list: true,
+                    rest_parameter: None,
+                    strict: false,
+                    super_capabilities: SuperCapabilities::NONE,
+                },
+            )
+            .unwrap(),
+        ],
+        anonymous_function_definition: None,
+    };
+
+    assert_eq!(parser.parenthesized_parameter_has_assignment(), Some(true));
+}
+
+#[test]
+fn parameter_expression_binding_patterns_publish_the_quickjs_argument_scope_abi() {
+    let script = compile_unlinked_script(
+        "(function(left,[a,b=left],{c},right=a+b+c){return left+a+b+c+right})",
+    )
+    .unwrap();
+    let function = script.constants()[0].as_child().unwrap();
+    let layout = function
+        .parameter_environment()
+        .expect("standalone '=' creates the parentless argument scope");
+
+    assert_eq!(function.metadata().argument_count, 4);
+    assert_eq!(function.metadata().defined_argument_count, 3);
+    assert_eq!(function.metadata().parameter_environment_local_count, 5);
+    assert_eq!(function.metadata().pattern_argument_count, 2);
+    assert_eq!(
+        function
+            .argument_definitions()
+            .iter()
+            .map(|definition| definition.name.is_some())
+            .collect::<Vec<_>>(),
+        vec![true, false, false, true]
+    );
+    assert_eq!(
+        layout
+            .argument_cells
+            .iter()
+            .map(|cell| (cell.argument, cell.parameter_local))
+            .collect::<Vec<_>>(),
+        vec![(0, 0), (3, 4)]
+    );
+    assert_eq!(
+        layout
+            .pattern_copies
+            .iter()
+            .map(|copy| (copy.parameter_local, copy.body_local))
+            .collect::<Vec<_>>(),
+        vec![(1, 5), (2, 6), (3, 7)]
+    );
+    assert_eq!(
+        layout.default_sources.as_ref(),
+        [ParameterDefaultSource::Argument(3)]
+    );
+    assert_eq!(
+        function.metadata().parameter_pattern_end,
+        Some(layout.initialization_end)
+    );
+}
+
+#[test]
+fn parameter_expression_binding_patterns_match_quickjs_scope_copy_and_length_quirks() {
+    assert_eq!(
+        evaluate_in_context(
+            "(function(){var key='outer';return (function({[String(key)]:value},[x=1]){var key='body';return value})({outer:42,undefined:1},[])})()",
+        ),
+        Value::Int(42)
+    );
+    assert_eq!(
+        evaluate_in_context("(function([a],b=(a=5)){return a})([1])"),
+        Value::Int(5)
+    );
+    assert_eq!(
+        evaluate_in_context(
+            "(function(){var saved;var body=(function([a],f=(saved=()=>a)){var read=()=>a;a=2;return read})([1]);return body()+'|'+saved()})()",
+        ),
+        Value::String(JsString::from_static("2|1"))
+    );
+    assert_eq!(
+        evaluate_in_context(
+            "[(function([a=1],b){}).length,(function([a]=[1],b){}).length,(function(a,[b=1],c){}).length,(function(a,[b]=[1],c){}).length,(function(a,...[b=1]){}).length,(function(a=1,...[b]){}).length].join('|')",
+        ),
+        Value::String(JsString::from_static("2|0|3|1|2|0"))
+    );
+    assert_eq!(
+        evaluate_in_context(
+            "(function(){var source={};return (function({}=source){var source=null;return 42})()})()",
+        ),
+        Value::Int(42)
+    );
+    assert_eq!(
+        evaluate_in_context(
+            "(function(){return (function(...[a]=[99]){return String(a)} )()+'|'+(function(...[a]=[99]){return a})(42)+'|'+(function(...[a]=[99]){}).length})()",
+        ),
+        Value::String(JsString::from_static("undefined|42|0"))
+    );
+    assert_eq!(
+        evaluate_in_context(
+            "(function(){var out;({set value([a]=[42]){out=a}}).value=undefined;return out})()",
+        ),
+        Value::Int(42)
+    );
+}
+
+#[test]
+fn parameter_expression_binding_patterns_compose_identifier_rest_across_surfaces() {
+    assert_eq!(
+        evaluate_in_context(
+            r#"(function(){
+                function ordinary([a=1],...rest){return a+'|'+rest.join(',')}
+                var arrow=([a=1],...rest)=>a+'|'+rest.join(',');
+                var object={method([a=1],...rest){return a+'|'+rest.join(',')}};
+                return ordinary([],2,3)+';'+arrow([],2,3)+';'+object.method([],2,3);
+            })()"#,
+        ),
+        Value::String(JsString::from_static("1|2,3;1|2,3;1|2,3"))
+    );
+    assert_eq!(
+        evaluate_in_context(
+            r#"(function(){
+                function ordinary([a]=[1],...rest){return a+'|'+rest.join(',')}
+                var arrow=([a]=[1],...rest)=>a+'|'+rest.join(',');
+                var object={method([a]=[1],...rest){return a+'|'+rest.join(',')}};
+                return ordinary(undefined,2,3)+';'+arrow(undefined,2,3)+';'+
+                    object.method(undefined,2,3);
+            })()"#,
+        ),
+        Value::String(JsString::from_static("1|2,3;1|2,3;1|2,3"))
+    );
+    assert_eq!(
+        evaluate_in_context(
+            r#"(function(){
+                function later([a],b=1,...rest){return a+'|'+b+'|'+rest.join(',')}
+                function earlier(a=0,[b],...rest){return a+'|'+b+'|'+rest.join(',')}
+                function empty({},b=1,...rest){return b+'|'+rest.join(',')}
+                return later([40],undefined,2,3)+';'+earlier(undefined,[40],2,3)+';'+
+                    empty({},undefined,2,3);
+            })()"#,
+        ),
+        Value::String(JsString::from_static("40|1|2,3;0|40|2,3;1|2,3"))
+    );
+}
+
+#[test]
+fn parameter_expression_binding_arguments_and_duplicate_order_match_quickjs() {
+    let script =
+        compile_unlinked_script("(function({arguments=1}){var arguments;return arguments})")
+            .unwrap();
+    let function = script.constants()[0].as_child().unwrap();
+    assert!(function.parameter_environment().is_some());
+    assert!(
+        function
+            .code()
+            .iter()
+            .all(|instruction| !matches!(instruction, Instruction::Arguments(_)))
+    );
+    assert_eq!(
+        evaluate_in_context("(function({arguments=1}){var arguments;return arguments})({})"),
+        Value::Int(1)
+    );
+
+    for source in [
+        "function f(a,a=1){'use strict'}",
+        "({m(a,a=1){'use strict'}})",
+        "(a,a=1)=>{'use strict'}",
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(
+            error.message(),
+            "duplicate parameter names not allowed in this context",
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn parameter_expression_binding_cells_and_body_copies_survive_gc_independently() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    context
+        .eval(
+            "var initializerRead,bodyRead;bodyRead=(function([a],f=(initializerRead=()=>a)){var read=()=>a;a=2;return read})([1])",
+        )
+        .unwrap();
+    runtime.run_gc().unwrap();
+    assert_eq!(
+        context.eval("bodyRead()+'|'+initializerRead()").unwrap(),
+        Value::String(JsString::from_static("2|1"))
+    );
 }
 
 #[test]
@@ -8894,6 +9113,7 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
         "({[1](){}})",
         "({get a(){}})",
         "({set a(value){}})",
+        "({set a(value=1){}})",
         "({set a({value}){}})",
         "({get ['a'](){}})",
         "({set [1](value,){}})",
@@ -8906,13 +9126,7 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
             .unwrap_or_else(|error| panic!("valid Object literal {source:?}: {error}"));
     }
 
-    for source in [
-        "({*a(){}})",
-        "({async a(){}})",
-        "({set a(value=1){}})",
-        "({get a(value=1){}})",
-        "({set a(left=1,right){}})",
-    ] {
+    for source in ["({*a(){}})", "({async a(){}})"] {
         assert!(
             compile_unlinked_script(source)
                 .unwrap_err()
@@ -8923,11 +9137,13 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
     }
     for source in [
         "({get a(value){}})",
+        "({get a(value=1){}})",
         "({get a({value}){}})",
         "({get a(...rest){}})",
         "({set a(){}})",
         "({set a(...rest){}})",
         "({set a(left,right){}})",
+        "({set a(left=1,right){}})",
         "({set a({left},right){}})",
         "({set a([left],right){}})",
         "({set a(value,value){}})",

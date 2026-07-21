@@ -947,8 +947,8 @@ fn verify_unlinked_tree_with_root(
     )) = pending.pop()
     {
         let is_root = function_depth == 0;
-        let under_parameter_environment = inherited_parameter_environment
-            || function.metadata().parameter_environment_local_count != 0;
+        let under_parameter_environment =
+            inherited_parameter_environment || function.parameter_environment().is_some();
         if under_parameter_environment
             && (function.metadata().eval_variable_object_local.is_some()
                 || !function.eval_environments().is_empty()
@@ -1053,7 +1053,7 @@ fn verify_unlinked_tree_with_root(
                 "rest parameter metadata disagrees with argument slots",
             )));
         }
-        if is_root && function.metadata().parameter_environment_local_count != 0 {
+        if is_root && function.parameter_environment().is_some() {
             return Err(RuntimeError::Engine(Error::internal(
                 "synthetic root contains parameter-environment metadata",
             )));
@@ -1066,9 +1066,12 @@ fn verify_unlinked_tree_with_root(
                 "synthetic root contains formal-parameter metadata",
             )));
         }
-        let parameter_body_pc =
-            validate_parameter_bytecode_layout(function.metadata(), function.code())
-                .map_err(|message| RuntimeError::Engine(Error::internal(message)))?;
+        let parameter_body_pc = validate_parameter_bytecode_layout(
+            function.metadata(),
+            function.code(),
+            function.parameter_environment(),
+        )
+        .map_err(|message| RuntimeError::Engine(Error::internal(message)))?;
         let pattern_body_pc = function
             .metadata()
             .parameter_pattern_end
@@ -1125,7 +1128,7 @@ fn verify_unlinked_tree_with_root(
         });
         if (function.metadata().rest_parameter.is_some()
             || function.metadata().rest_pattern_start.is_some()
-            || function.metadata().parameter_environment_local_count != 0
+            || function.parameter_environment().is_some()
             || function.metadata().parameter_pattern_end.is_some())
             && let Some((pc, _)) = function.code().iter().enumerate().find(|(_, instruction)| {
                 matches!(instruction, crate::bytecode::Instruction::Arguments(_))
@@ -1248,6 +1251,7 @@ fn verify_unlinked_tree_with_root(
             function.code(),
             &unnamed_arguments,
             &lexical_locals,
+            function.parameter_environment(),
         )
         .map_err(|message| RuntimeError::Engine(Error::internal(message)))?;
         for definition in function.argument_definitions() {
@@ -1260,23 +1264,64 @@ fn verify_unlinked_tree_with_root(
                 )));
             }
         }
-        for index in 0..usize::from(function.metadata().parameter_environment_local_count) {
-            let argument = &function.argument_definitions()[index];
-            let local = &function.local_definitions()[index];
-            if local.kind != ClosureVariableKind::Normal
-                || !local.is_lexical
-                || local.is_const
-                || local
-                    .name
-                    .as_ref()
-                    .is_some_and(|name| argument.name.as_ref() != Some(name))
+        if let Some(layout) = function.parameter_environment() {
+            let parameter_definitions = function
+                .local_definitions()
+                .iter()
+                .take(usize::from(
+                    function.metadata().parameter_environment_local_count,
+                ))
+                .collect::<Vec<_>>();
+            for (index, local) in parameter_definitions.iter().enumerate() {
+                if local.kind != ClosureVariableKind::Normal
+                    || !local.is_lexical
+                    || local.is_const
+                    || local.name.is_none()
+                    || parameter_definitions[..index]
+                        .iter()
+                        .any(|earlier| earlier.name == local.name)
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "parameter environment cell definition is not authenticated",
+                    )));
+                }
+            }
+            let mut mapped_arguments = vec![false; function.argument_definitions().len()];
+            for cell in layout.argument_cells.iter() {
+                mapped_arguments[usize::from(cell.argument)] = true;
+                let argument = &function.argument_definitions()[usize::from(cell.argument)];
+                let local = &function.local_definitions()[usize::from(cell.parameter_local)];
+                if argument.name.is_none() || argument.name.as_ref() != local.name.as_ref() {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "parameter argument cell name disagrees with its physical argument",
+                    )));
+                }
+            }
+            if function
+                .argument_definitions()
+                .iter()
+                .zip(mapped_arguments)
+                .any(|(argument, mapped)| argument.name.is_some() != mapped)
             {
                 return Err(RuntimeError::Engine(Error::internal(
-                    "parameter environment definition disagrees with argument metadata",
+                    "parameter argument-cell map is not one-to-one with named arguments",
                 )));
             }
+            for copy in layout.pattern_copies.iter() {
+                let source = &function.local_definitions()[usize::from(copy.parameter_local)];
+                let target = &function.local_definitions()[usize::from(copy.body_local)];
+                if target.kind != ClosureVariableKind::Normal
+                    || target.is_lexical
+                    || target.is_const
+                    || source.name.as_ref() != target.name.as_ref()
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "parameter pattern copy definitions are not same-name lexical-to-root storage",
+                    )));
+                }
+            }
         }
-        if function.metadata().parameter_environment_local_count != 0 {
+        if function.parameter_environment().is_some() {
             let mut entry_pc = usize::from(matches!(
                 function.code().first(),
                 Some(crate::bytecode::Instruction::Arguments(_))
@@ -2375,6 +2420,10 @@ fn verify_unlinked_tree_with_root(
                             }
                             ClosureSource::ParentLocal(index)
                                 if instantiated_in_pattern
+                                    && index
+                                        >= function
+                                            .metadata()
+                                            .parameter_environment_local_count
                                     && function
                                         .local_definitions()
                                         .get(usize::from(index))
@@ -2801,6 +2850,7 @@ pub(super) fn flatten_unlinked_tree(
             code: frame.code,
             constants: frame.constants,
             metadata: frame.metadata,
+            parameter_environment: frame.parameter_environment,
             func_name: frame.func_name,
             argument_definitions: frame.argument_definitions,
             local_definitions: frame.local_definitions,
@@ -2837,7 +2887,8 @@ mod tests {
     use crate::bytecode::Instruction;
     use crate::heap::{
         EvalBinding, EvalBindingSource, EvalEnvironment, EvalScope, EvalScopeKind,
-        EvalVariableEnvironment,
+        EvalVariableEnvironment, ParameterArgumentCell, ParameterBodyStorage,
+        ParameterDefaultSource, ParameterPatternCopy,
     };
 
     fn ordinary_environment(binding: Option<EvalBinding<JsString>>) -> EvalEnvironment<JsString> {
@@ -4603,6 +4654,33 @@ mod tests {
 
     #[test]
     fn identifier_default_metadata_authenticates_parameter_environment_layout() {
+        let parameter_environment = |code: &[Instruction], metadata: FunctionMetadata| {
+            let initialization_end = code
+                .iter()
+                .position(|instruction| matches!(instruction, Instruction::Nop))
+                .and_then(|pc| u32::try_from(pc).ok())
+                .expect("parameter fixture has an initialization marker");
+            ParameterEnvironmentLayout {
+                initialization_end,
+                argument_cells: (0..metadata.argument_count)
+                    .map(|argument| ParameterArgumentCell {
+                        argument,
+                        parameter_local: argument,
+                        body: ParameterBodyStorage::Argument(argument),
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+                pattern_copies: Box::new([]),
+                default_sources: (0..metadata.argument_count)
+                    .filter(|argument| *argument >= metadata.defined_argument_count)
+                    .filter(|argument| metadata.rest_parameter != Some(*argument))
+                    .map(ParameterDefaultSource::Argument)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+                synthetic_arguments_local: None,
+                arg_eval_variable_object_local: None,
+            }
+        };
         let metadata = || FunctionMetadata {
             argument_count: 2,
             defined_argument_count: 0,
@@ -4630,35 +4708,57 @@ mod tests {
                 Instruction::Dup,
                 Instruction::PutArg(1),
                 Instruction::InitializeLocal(1),
+                Instruction::Nop,
                 Instruction::Undefined,
                 Instruction::Return,
             ]
         };
-        let make_with_constants = |code, constants, metadata| {
-            UnlinkedFunction::new(code, constants, metadata).with_variable_definitions(
-                vec![
-                    UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("a"))),
-                    UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("rest"))),
-                ],
-                vec![
-                    UnlinkedVariableDefinition::lexical(Some(JsString::from_static("a")), false),
-                    UnlinkedVariableDefinition::lexical(Some(JsString::from_static("rest")), false),
-                ],
-            )
+        let make_with_constants = |code: Vec<Instruction>,
+                                   constants: Vec<UnlinkedConstant>,
+                                   metadata: FunctionMetadata| {
+            let layout = (metadata.parameter_environment_local_count != 0)
+                .then(|| parameter_environment(&code, metadata));
+            UnlinkedFunction::new(code, constants, metadata)
+                .with_parameter_environment(layout)
+                .with_variable_definitions(
+                    vec![
+                        UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("a"))),
+                        UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("rest"))),
+                    ],
+                    vec![
+                        UnlinkedVariableDefinition::lexical(
+                            Some(JsString::from_static("a")),
+                            false,
+                        ),
+                        UnlinkedVariableDefinition::lexical(
+                            Some(JsString::from_static("rest")),
+                            false,
+                        ),
+                    ],
+                )
         };
         let make = |code, metadata| make_with_constants(code, Vec::new(), metadata);
-        let make_with_body_local = |code, metadata| {
-            UnlinkedFunction::new(code, Vec::new(), metadata).with_variable_definitions(
-                vec![
-                    UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("a"))),
-                    UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("rest"))),
-                ],
-                vec![
-                    UnlinkedVariableDefinition::lexical(Some(JsString::from_static("a")), false),
-                    UnlinkedVariableDefinition::lexical(Some(JsString::from_static("rest")), false),
-                    UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("body"))),
-                ],
-            )
+        let make_with_body_local = |code: Vec<Instruction>, metadata: FunctionMetadata| {
+            let layout = parameter_environment(&code, metadata);
+            UnlinkedFunction::new(code, Vec::new(), metadata)
+                .with_parameter_environment(Some(layout))
+                .with_variable_definitions(
+                    vec![
+                        UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("a"))),
+                        UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("rest"))),
+                    ],
+                    vec![
+                        UnlinkedVariableDefinition::lexical(
+                            Some(JsString::from_static("a")),
+                            false,
+                        ),
+                        UnlinkedVariableDefinition::lexical(
+                            Some(JsString::from_static("rest")),
+                            false,
+                        ),
+                        UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("body"))),
+                    ],
+                )
         };
         let capture_child = |source, is_lexical| {
             UnlinkedFunction::new_with_closure_variables(
@@ -4711,20 +4811,27 @@ mod tests {
                 Instruction::Dup,
                 Instruction::PutArg(0),
                 Instruction::InitializeLocal(0),
+                Instruction::Nop,
                 Instruction::Undefined,
                 Instruction::Return,
             ]
         };
-        let make_default_only = |code, constants, metadata| {
-            UnlinkedFunction::new(code, constants, metadata).with_variable_definitions(
-                vec![UnlinkedVariableDefinition::ordinary(Some(
-                    JsString::from_static("value"),
-                ))],
-                vec![UnlinkedVariableDefinition::lexical(
-                    Some(JsString::from_static("value")),
-                    false,
-                )],
-            )
+        let make_default_only = |code: Vec<Instruction>,
+                                 constants: Vec<UnlinkedConstant>,
+                                 metadata: FunctionMetadata| {
+            let layout = (metadata.parameter_environment_local_count != 0)
+                .then(|| parameter_environment(&code, metadata));
+            UnlinkedFunction::new(code, constants, metadata)
+                .with_parameter_environment(layout)
+                .with_variable_definitions(
+                    vec![UnlinkedVariableDefinition::ordinary(Some(
+                        JsString::from_static("value"),
+                    ))],
+                    vec![UnlinkedVariableDefinition::lexical(
+                        Some(JsString::from_static("value")),
+                        false,
+                    )],
+                )
         };
         verify_unlinked_tree(&script_with_child(make_default_only(
             default_only_code(),
@@ -4843,8 +4950,11 @@ mod tests {
         forged_pseudo_code[8] = Instruction::IfFalse(13);
         let mut forged_pseudo_metadata = metadata();
         forged_pseudo_metadata.local_count = 3;
+        let forged_pseudo_layout =
+            parameter_environment(&forged_pseudo_code, forged_pseudo_metadata);
         let forged_pseudo =
             UnlinkedFunction::new(forged_pseudo_code, Vec::new(), forged_pseudo_metadata)
+                .with_parameter_environment(Some(forged_pseudo_layout))
                 .with_variable_definitions(
                     vec![
                         UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("a"))),
@@ -4876,8 +4986,10 @@ mod tests {
         pseudo_write_code.insert(11, Instruction::SetLocal(2));
         let mut pseudo_write_metadata = metadata();
         pseudo_write_metadata.local_count = 3;
+        let pseudo_write_layout = parameter_environment(&pseudo_write_code, pseudo_write_metadata);
         let pseudo_write =
             UnlinkedFunction::new(pseudo_write_code, Vec::new(), pseudo_write_metadata)
+                .with_parameter_environment(Some(pseudo_write_layout))
                 .with_variable_definitions(
                     vec![
                         UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("a"))),
@@ -4920,6 +5032,7 @@ mod tests {
             Instruction::Dup,
             Instruction::PutArg(1),
             Instruction::InitializeLocal(1),
+            Instruction::Nop,
             Instruction::Undefined,
             Instruction::Return,
         ];
@@ -4994,7 +5107,7 @@ mod tests {
 
         let mut initializer_parameter_capture = code();
         initializer_parameter_capture[8] = Instruction::FClosure(0);
-        initializer_parameter_capture.insert(16, Instruction::CloseLocal(0));
+        initializer_parameter_capture.insert(17, Instruction::CloseLocal(0));
         verify_unlinked_tree(&script_with_child(make_with_constants(
             initializer_parameter_capture,
             vec![UnlinkedConstant::child(capture_child(
@@ -5022,8 +5135,8 @@ mod tests {
         );
 
         let mut body_raw_argument_capture = code();
-        body_raw_argument_capture.insert(16, Instruction::FClosure(0));
-        body_raw_argument_capture.insert(17, Instruction::Drop);
+        body_raw_argument_capture.insert(17, Instruction::FClosure(0));
+        body_raw_argument_capture.insert(18, Instruction::Drop);
         verify_unlinked_tree(&script_with_child(make_with_constants(
             body_raw_argument_capture,
             vec![UnlinkedConstant::child(capture_child(
@@ -5035,9 +5148,9 @@ mod tests {
         .unwrap();
 
         let mut body_parameter_capture = code();
-        body_parameter_capture.insert(16, Instruction::CloseLocal(0));
-        body_parameter_capture.insert(17, Instruction::FClosure(0));
-        body_parameter_capture.insert(18, Instruction::Drop);
+        body_parameter_capture.insert(17, Instruction::CloseLocal(0));
+        body_parameter_capture.insert(18, Instruction::FClosure(0));
+        body_parameter_capture.insert(19, Instruction::Drop);
         assert!(
             verify_unlinked_tree(&script_with_child(make_with_constants(
                 body_parameter_capture,
@@ -5053,7 +5166,7 @@ mod tests {
         );
 
         let mut body_parameter_cell = code();
-        body_parameter_cell.insert(16, Instruction::GetLocalCheck(0));
+        body_parameter_cell.insert(17, Instruction::GetLocalCheck(0));
         assert!(
             verify_unlinked_tree(&script_with_child(make(body_parameter_cell, metadata())))
                 .unwrap_err()
@@ -5076,12 +5189,16 @@ mod tests {
                 .contains("direct eval")
         );
 
-        let ordinary_locals = UnlinkedFunction::new(code(), Vec::new(), metadata());
+        let ordinary_code = code();
+        let ordinary_metadata = metadata();
+        let ordinary_layout = parameter_environment(&ordinary_code, ordinary_metadata);
+        let ordinary_locals = UnlinkedFunction::new(ordinary_code, Vec::new(), ordinary_metadata)
+            .with_parameter_environment(Some(ordinary_layout));
         assert!(
             verify_unlinked_tree(&script_with_child(ordinary_locals))
                 .unwrap_err()
                 .to_string()
-                .contains("definition disagrees with argument metadata")
+                .contains("parameter environment cell definition is not authenticated")
         );
 
         let mut root_metadata = metadata();
@@ -5091,6 +5208,266 @@ mod tests {
             error
                 .to_string()
                 .contains("synthetic root contains parameter-environment metadata"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn mixed_parameter_environment_metadata_authenticates_cells_copies_and_defaults() {
+        let metadata = |marker| FunctionMetadata {
+            argument_count: 2,
+            defined_argument_count: 2,
+            parameter_environment_local_count: 2,
+            pattern_argument_count: 1,
+            parameter_pattern_end: Some(marker),
+            local_count: 3,
+            max_stack: 1,
+            ..FunctionMetadata::default()
+        };
+        let layout = |marker| ParameterEnvironmentLayout {
+            initialization_end: marker,
+            argument_cells: vec![ParameterArgumentCell {
+                argument: 0,
+                parameter_local: 0,
+                body: ParameterBodyStorage::Argument(0),
+            }]
+            .into_boxed_slice(),
+            pattern_copies: vec![ParameterPatternCopy {
+                parameter_local: 1,
+                body_local: 2,
+            }]
+            .into_boxed_slice(),
+            default_sources: Box::new([]),
+            synthetic_arguments_local: None,
+            arg_eval_variable_object_local: None,
+        };
+        let code = || {
+            vec![
+                Instruction::SetLocalUninitialized(1),
+                Instruction::SetLocalUninitialized(0),
+                Instruction::GetArg(0),
+                Instruction::InitializeLocal(0),
+                Instruction::GetArg(1),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::InitializeLocal(1),
+                Instruction::GetLocalCheck(1),
+                Instruction::PutLocal(2),
+                Instruction::Nop,
+                Instruction::GetLocal(2),
+                Instruction::Return,
+            ]
+        };
+        let definitions = |function: UnlinkedFunction, target_name, target_lexical| {
+            function.with_variable_definitions(
+                vec![
+                    UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("a"))),
+                    UnlinkedVariableDefinition::ordinary(None),
+                ],
+                vec![
+                    UnlinkedVariableDefinition::lexical(Some(JsString::from_static("a")), false),
+                    UnlinkedVariableDefinition::lexical(Some(JsString::from_static("b")), false),
+                    if target_lexical {
+                        UnlinkedVariableDefinition::lexical(Some(target_name), false)
+                    } else {
+                        UnlinkedVariableDefinition::ordinary(Some(target_name))
+                    },
+                ],
+            )
+        };
+        let make = |code, metadata, layout| {
+            definitions(
+                UnlinkedFunction::new(code, Vec::new(), metadata)
+                    .with_parameter_environment(layout),
+                JsString::from_static("b"),
+                false,
+            )
+        };
+
+        verify_unlinked_tree(&script_with_child(make(
+            code(),
+            metadata(10),
+            Some(layout(10)),
+        )))
+        .unwrap();
+
+        let error =
+            verify_unlinked_tree(&script_with_child(make(code(), metadata(10), None))).unwrap_err();
+        assert!(error.to_string().contains("immutable layout"), "{error}");
+
+        let mut wrong_copy_source = layout(10);
+        wrong_copy_source.pattern_copies[0].parameter_local = 0;
+        let error = verify_unlinked_tree(&script_with_child(make(
+            code(),
+            metadata(10),
+            Some(wrong_copy_source),
+        )))
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("copy source overlaps"),
+            "{error}"
+        );
+
+        let mut wrong_tdz = code();
+        wrong_tdz.swap(0, 1);
+        let error = verify_unlinked_tree(&script_with_child(make(
+            wrong_tdz,
+            metadata(10),
+            Some(layout(10)),
+        )))
+        .unwrap_err();
+        assert!(error.to_string().contains("exact TDZ"), "{error}");
+
+        let mut duplicate_initializer = code();
+        duplicate_initializer[7] = Instruction::InitializeLocal(0);
+        let error = verify_unlinked_tree(&script_with_child(make(
+            duplicate_initializer,
+            metadata(10),
+            Some(layout(10)),
+        )))
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("one exact initializer"),
+            "{error}"
+        );
+
+        let mut wrong_copy_code = code();
+        wrong_copy_code[8] = Instruction::GetLocalCheck(0);
+        let error = verify_unlinked_tree(&script_with_child(make(
+            wrong_copy_code,
+            metadata(10),
+            Some(layout(10)),
+        )))
+        .unwrap_err();
+        assert!(error.to_string().contains("copy phase"), "{error}");
+
+        let mut body_cell_read = code();
+        body_cell_read.insert(11, Instruction::GetLocalCheck(1));
+        body_cell_read.insert(12, Instruction::Drop);
+        let error = verify_unlinked_tree(&script_with_child(make(
+            body_cell_read,
+            metadata(10),
+            Some(layout(10)),
+        )))
+        .unwrap_err();
+        assert!(error.to_string().contains("body accesses"), "{error}");
+
+        let mut bypassed_plain_cell = code();
+        bypassed_plain_cell[2] = Instruction::Undefined;
+        let error = verify_unlinked_tree(&script_with_child(make(
+            bypassed_plain_cell,
+            metadata(10),
+            Some(layout(10)),
+        )))
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("plain parameter argument cell"),
+            "{error}"
+        );
+
+        let mut raw_named_bypass = code();
+        raw_named_bypass.insert(8, Instruction::GetArg(0));
+        raw_named_bypass.insert(9, Instruction::Drop);
+        let error = verify_unlinked_tree(&script_with_child(make(
+            raw_named_bypass,
+            metadata(12),
+            Some(layout(12)),
+        )))
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("plain parameter argument cell"),
+            "{error}"
+        );
+
+        let wrong_target_definition = definitions(
+            UnlinkedFunction::new(code(), Vec::new(), metadata(10))
+                .with_parameter_environment(Some(layout(10))),
+            JsString::from_static("not_b"),
+            false,
+        );
+        let error = verify_unlinked_tree(&script_with_child(wrong_target_definition)).unwrap_err();
+        assert!(error.to_string().contains("same-name"), "{error}");
+
+        let lexical_target_definition = definitions(
+            UnlinkedFunction::new(code(), Vec::new(), metadata(10))
+                .with_parameter_environment(Some(layout(10))),
+            JsString::from_static("b"),
+            true,
+        );
+        let error =
+            verify_unlinked_tree(&script_with_child(lexical_target_definition)).unwrap_err();
+        assert!(error.to_string().contains("body lexical local"), "{error}");
+
+        let default_metadata = FunctionMetadata {
+            argument_count: 1,
+            defined_argument_count: 0,
+            pattern_argument_count: 1,
+            parameter_pattern_end: Some(10),
+            max_stack: 3,
+            ..FunctionMetadata::default()
+        };
+        let default_layout = ParameterEnvironmentLayout {
+            initialization_end: 10,
+            argument_cells: Box::new([]),
+            pattern_copies: Box::new([]),
+            default_sources: vec![ParameterDefaultSource::Argument(0)].into_boxed_slice(),
+            synthetic_arguments_local: None,
+            arg_eval_variable_object_local: None,
+        };
+        let default_code = vec![
+            Instruction::GetArg(0),
+            Instruction::Dup,
+            Instruction::Undefined,
+            Instruction::StrictEq,
+            Instruction::IfTrue(7),
+            Instruction::Drop,
+            Instruction::Goto(10),
+            Instruction::Drop,
+            Instruction::Undefined,
+            Instruction::Goto(5),
+            Instruction::Nop,
+            Instruction::Undefined,
+            Instruction::Return,
+        ];
+        let make_default = |code, metadata, layout| {
+            UnlinkedFunction::new(code, Vec::new(), metadata)
+                .with_parameter_environment(Some(layout))
+                .with_variable_definitions(
+                    vec![UnlinkedVariableDefinition::ordinary(None)],
+                    Vec::new(),
+                )
+        };
+        verify_unlinked_tree(&script_with_child(make_default(
+            default_code,
+            default_metadata,
+            default_layout.clone(),
+        )))
+        .unwrap();
+
+        let missing_selection = vec![
+            Instruction::GetArg(0),
+            Instruction::Drop,
+            Instruction::Nop,
+            Instruction::Undefined,
+            Instruction::Return,
+        ];
+        let missing_selection_metadata = FunctionMetadata {
+            parameter_pattern_end: Some(2),
+            max_stack: 1,
+            ..default_metadata
+        };
+        let mut missing_selection_layout = default_layout;
+        missing_selection_layout.initialization_end = 2;
+        let error = verify_unlinked_tree(&script_with_child(make_default(
+            missing_selection,
+            missing_selection_metadata,
+            missing_selection_layout,
+        )))
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("default has no exact argument selection"),
             "{error}"
         );
     }
