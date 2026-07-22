@@ -715,11 +715,83 @@ pub(crate) fn quickjs_copies_defined_argument_count(
 /// The unlinked publisher separately authenticates source-level binding names.
 /// A successful parameter environment returns the first body instruction so
 /// that the unlinked boundary can authenticate segment-specific captures.
+fn validate_class_constructor_guard(
+    metadata: &FunctionMetadata,
+    code: &[Instruction],
+) -> Result<Option<usize>, &'static str> {
+    let guard_pcs = code
+        .iter()
+        .enumerate()
+        .filter_map(|(pc, instruction)| matches!(instruction, Instruction::CheckCtor).then_some(pc))
+        .collect::<Vec<_>>();
+    let is_base_class_constructor = metadata.constructor_kind == ConstructorKind::Base
+        && metadata.strict
+        && !metadata.has_prototype;
+    let guard_pc = match (is_base_class_constructor, guard_pcs.as_slice()) {
+        (true, [pc]) => *pc,
+        (true, []) => return Err("base class constructor has no constructor-call guard"),
+        (true, _) => return Err("base class constructor guard is not unique"),
+        (false, []) => return Ok(None),
+        (false, _) => return Err("non-class function contains a constructor-call guard"),
+    };
+
+    // The guard may follow only entry ABI work: authenticated pseudo-binding
+    // materialization, lexical TDZ reset, arguments/eval objects and function
+    // hoists. Parameter-specific validators below pin it to the exact slot
+    // between that prologue and the first parameter selection skeleton.
+    let mut depth = 0_usize;
+    for instruction in &code[..guard_pc] {
+        if !matches!(
+            instruction,
+            Instruction::PushHomeObject
+                | Instruction::PushNewTarget
+                | Instruction::PushThis
+                | Instruction::FClosure(_)
+                | Instruction::Arguments(_)
+                | Instruction::VariableEnvironment
+                | Instruction::Dup
+                | Instruction::PutLocal(_)
+                | Instruction::InitializeLocal(_)
+                | Instruction::SetLocalUninitialized(_)
+        ) {
+            return Err("class constructor guard is not in the entry prologue");
+        }
+        let (popped, pushed) = instruction.stack_effect();
+        depth = depth
+            .checked_sub(popped)
+            .ok_or("class constructor entry prologue has stack underflow")?
+            .checked_add(pushed)
+            .ok_or("class constructor entry prologue has stack overflow")?;
+    }
+    if depth != 0 {
+        return Err("class constructor guard interrupts its entry prologue");
+    }
+    Ok(Some(guard_pc))
+}
+
+fn consume_class_constructor_guard(
+    guard_pc: Option<usize>,
+    expected_pc: usize,
+) -> Result<usize, &'static str> {
+    match guard_pc {
+        Some(actual) if actual == expected_pc => expected_pc
+            .checked_add(1)
+            .ok_or("class constructor guard position overflowed bytecode"),
+        Some(_) => Err("class constructor guard is not at parameter entry"),
+        None => Ok(expected_pc),
+    }
+}
+
 pub(crate) fn validate_parameter_bytecode_layout(
     metadata: &FunctionMetadata,
     code: &[Instruction],
+    parameter_initializer_locals: &[bool],
     parameter_environment: Option<&ParameterEnvironmentLayout>,
 ) -> Result<Option<usize>, &'static str> {
+    if parameter_initializer_locals.len() != usize::from(metadata.local_count) {
+        return Err("parameter-initializer local classification has the wrong length");
+    }
+    let class_constructor_guard = validate_class_constructor_guard(metadata, code)?;
     if metadata.rest_parameter.is_some() && metadata.rest_pattern_start.is_some() {
         return Err("identifier rest and rest BindingPattern metadata overlap");
     }
@@ -757,7 +829,12 @@ pub(crate) fn validate_parameter_bytecode_layout(
     let parameter_locals = metadata.parameter_environment_local_count;
     let mut explicit_body_pc = None;
     if let Some(layout) = parameter_environment {
-        explicit_body_pc = validate_explicit_parameter_environment_layout(metadata, code, layout)?;
+        explicit_body_pc = validate_explicit_parameter_environment_layout(
+            metadata,
+            code,
+            layout,
+            class_constructor_guard,
+        )?;
         let has_extended_parameter_entry = metadata.eval_variable_object_local.is_some()
             || layout.synthetic_arguments_local.is_some()
             || layout.arg_eval_variable_object_local.is_some()
@@ -890,6 +967,7 @@ pub(crate) fn validate_parameter_bytecode_layout(
                 {
                     return Err("variable-environment opcode has no authenticated local");
                 }
+                rest_pc = consume_class_constructor_guard(class_constructor_guard, rest_pc)?;
                 if !matches!(
                     code.get(rest_pc..rest_pc + 2),
                     Some([Instruction::Rest(start), Instruction::PutArg(target)])
@@ -1000,7 +1078,8 @@ pub(crate) fn validate_parameter_bytecode_layout(
             return Err("parameter environment has no exact TDZ entry initialization");
         }
     }
-    let parameter_body_pc = entry_pc + parameter_count;
+    let parameter_body_pc =
+        consume_class_constructor_guard(class_constructor_guard, entry_pc + parameter_count)?;
     let mut initializer_pcs = vec![None; parameter_count];
     for (pc, instruction) in code.iter().enumerate() {
         let Instruction::InitializeLocal(target) = instruction else {
@@ -1130,14 +1209,24 @@ pub(crate) fn validate_parameter_bytecode_layout(
                 }
                 Instruction::GetLocalCheck(target)
                 | Instruction::PutLocalCheck(target)
-                | Instruction::SetLocalCheck(target) => *target >= parameter_locals,
+                | Instruction::SetLocalCheck(target) => {
+                    *target >= parameter_locals
+                        && !parameter_initializer_locals
+                            .get(usize::from(*target))
+                            .copied()
+                            .unwrap_or(false)
+                }
                 Instruction::SetLocalUninitialized(_)
                 | Instruction::InitializeLocal(_)
-                | Instruction::CloseLocal(_) => {
-                    return Err(
-                        "default parameter initializer has an unauthenticated local lifecycle",
-                    );
-                }
+                | Instruction::CloseLocal(_) => match instruction {
+                    Instruction::SetLocalUninitialized(target)
+                    | Instruction::InitializeLocal(target)
+                    | Instruction::CloseLocal(target) => !parameter_initializer_locals
+                        .get(usize::from(*target))
+                        .copied()
+                        .unwrap_or(false),
+                    _ => unreachable!("matched parameter-initializer lifecycle opcode"),
+                },
                 _ => false,
             };
             if unauthenticated_local_access {
@@ -1243,6 +1332,7 @@ fn validate_explicit_parameter_environment_layout(
     metadata: &FunctionMetadata,
     code: &[Instruction],
     layout: &ParameterEnvironmentLayout,
+    class_constructor_guard: Option<usize>,
 ) -> Result<Option<usize>, &'static str> {
     let parameter_locals = metadata.parameter_environment_local_count;
     if parameter_locals > metadata.local_count {
@@ -1517,7 +1607,10 @@ fn validate_explicit_parameter_environment_layout(
             return Err("parameter environment has no exact TDZ entry initialization");
         }
     }
-    let initialization_pc = entry_pc + usize::from(parameter_locals);
+    let initialization_pc = consume_class_constructor_guard(
+        class_constructor_guard,
+        entry_pc + usize::from(parameter_locals),
+    )?;
     if initialization_pc > marker {
         return Err("parameter environment marker precedes its TDZ prologue");
     }
@@ -1845,6 +1938,7 @@ pub(crate) fn validate_pattern_parameter_bytecode_layout(
     code: &[Instruction],
     unnamed_arguments: &[bool],
     lexical_locals: &[bool],
+    parameter_initializer_locals: &[bool],
     parameter_environment: Option<&ParameterEnvironmentLayout>,
 ) -> Result<(), &'static str> {
     if unnamed_arguments.len() != usize::from(metadata.argument_count) {
@@ -1852,6 +1946,20 @@ pub(crate) fn validate_pattern_parameter_bytecode_layout(
     }
     if lexical_locals.len() != usize::from(metadata.local_count) {
         return Err("local definition count does not match bytecode metadata");
+    }
+    if parameter_initializer_locals.len() != usize::from(metadata.local_count) {
+        return Err("parameter-initializer local classification has the wrong length");
+    }
+    if parameter_initializer_locals
+        .iter()
+        .enumerate()
+        .any(|(index, initializer)| {
+            *initializer
+                && (index < usize::from(metadata.parameter_environment_local_count)
+                    || !lexical_locals[index])
+        })
+    {
+        return Err("parameter-initializer classification names a non-nested lexical local");
     }
 
     let has_pattern = metadata.pattern_argument_count != 0 || metadata.rest_pattern_start.is_some();
@@ -1973,6 +2081,10 @@ pub(crate) fn validate_pattern_parameter_bytecode_layout(
                         .get(usize::from(local))
                         .copied()
                         .unwrap_or(false)
+                    && !parameter_initializer_locals
+                        .get(usize::from(local))
+                        .copied()
+                        .unwrap_or(false)
             })
         {
             return Err("parameter BindingPattern bytecode accessed a body lexical local");
@@ -2065,11 +2177,307 @@ pub(crate) fn validate_pattern_parameter_bytecode_layout(
         {
             Ok(())
         }
+
         (None, Some(_)) => Err("rest BindingPattern has no exact entry initialization"),
         (None, None) if rest_operations.is_empty() => Ok(()),
         (None, None) => Err("rest opcode has no authenticated parameter metadata"),
         (Some(_), Some(_)) => Err("identifier rest and rest BindingPattern metadata overlap"),
     }
+}
+
+/// Authenticate lexical locals whose complete scope lifetime belongs to the
+/// formal-parameter initializer segment.  This is deliberately independent
+/// from the leading Parameter Environment cells: a nested class-name scope,
+/// for example, may be captured by a computed method key before the body
+/// boundary, but authored body bytecode must never access that local.
+pub(crate) fn validate_parameter_initializer_scope_layout(
+    metadata: &FunctionMetadata,
+    code: &[Instruction],
+    parameter_body_pc: Option<usize>,
+    lexical_locals: &[bool],
+    parameter_initializer_locals: &[bool],
+) -> Result<(), &'static str> {
+    let local_count = usize::from(metadata.local_count);
+    if lexical_locals.len() != local_count || parameter_initializer_locals.len() != local_count {
+        return Err("parameter-initializer local classification has the wrong length");
+    }
+    let any_initializer_local = parameter_initializer_locals.iter().any(|value| *value);
+    let Some(body_pc) = parameter_body_pc else {
+        return if any_initializer_local {
+            Err("parameter-initializer local has no parameter/body boundary")
+        } else {
+            Ok(())
+        };
+    };
+    if body_pc > code.len() {
+        return Err("parameter/body boundary is outside bytecode");
+    }
+
+    for (index, is_initializer) in parameter_initializer_locals.iter().copied().enumerate() {
+        if !is_initializer {
+            continue;
+        }
+        if index < usize::from(metadata.parameter_environment_local_count) || !lexical_locals[index]
+        {
+            return Err("parameter-initializer classification names a non-nested lexical local");
+        }
+        let index = u16::try_from(index)
+            .map_err(|_| "parameter-initializer local index is outside bytecode range")?;
+        let references = |instruction: &Instruction| {
+            matches!(
+                instruction,
+                Instruction::GetLocal(local)
+                    | Instruction::PutLocal(local)
+                    | Instruction::SetLocal(local)
+                    | Instruction::SetLocalUninitialized(local)
+                    | Instruction::GetLocalCheck(local)
+                    | Instruction::InitializeLocal(local)
+                    | Instruction::PutLocalCheck(local)
+                    | Instruction::SetLocalCheck(local)
+                    | Instruction::CloseLocal(local)
+                    if *local == index
+            )
+        };
+        if !code[..body_pc].iter().any(references) {
+            return Err("parameter-initializer local has no initializer-segment lifetime");
+        }
+        let reset_pc = code[..body_pc]
+            .iter()
+            .enumerate()
+            .filter_map(|(pc, instruction)| {
+                matches!(instruction, Instruction::SetLocalUninitialized(local) if *local == index)
+                    .then_some(pc)
+            })
+            .collect::<Vec<_>>();
+        let initialize_pc = code[..body_pc]
+            .iter()
+            .enumerate()
+            .filter_map(|(pc, instruction)| {
+                matches!(instruction, Instruction::InitializeLocal(local) if *local == index)
+                    .then_some(pc)
+            })
+            .collect::<Vec<_>>();
+        if !matches!((reset_pc.as_slice(), initialize_pc.as_slice()), ([reset], [initialize]) if reset < initialize)
+        {
+            return Err("parameter-initializer local has no exact pre-boundary TDZ lifecycle");
+        }
+        if code[body_pc..].iter().any(references) {
+            return Err("function body accesses a parameter-initializer local");
+        }
+    }
+    Ok(())
+}
+
+/// Build the exact local set which compiler-authored code may expose to a
+/// direct eval while an explicit Parameter Environment is active. This is the
+/// eval counterpart of the child-closure capture allowlist: leading parameter
+/// cells, nested initializer lexicals, and authenticated entry pseudo-bindings
+/// are visible, while authored body storage is not.
+pub(crate) fn parameter_initializer_visible_locals(
+    metadata: &FunctionMetadata,
+    code: &[Instruction],
+    parameter_body_pc: Option<usize>,
+    parameter_initializer_locals: &[bool],
+    parameter_environment: Option<&ParameterEnvironmentLayout>,
+) -> Result<Option<Vec<bool>>, &'static str> {
+    if parameter_initializer_locals.len() != usize::from(metadata.local_count) {
+        return Err("parameter-initializer local classification has the wrong length");
+    }
+    let Some(_) = parameter_body_pc else {
+        return Ok(None);
+    };
+    let layout = parameter_environment.ok_or("parameter boundary has no immutable layout")?;
+    let mut allowed = vec![false; usize::from(metadata.local_count)];
+    allowed
+        .get_mut(..usize::from(metadata.parameter_environment_local_count))
+        .ok_or("parameter environment exceeds function local slots")?
+        .fill(true);
+    for (allowed, is_initializer) in allowed.iter_mut().zip(parameter_initializer_locals) {
+        *allowed |= *is_initializer;
+    }
+    if let Some(local) = metadata.function_name_local {
+        *allowed
+            .get_mut(usize::from(local))
+            .ok_or("function-name local is outside bytecode local slots")? = true;
+    }
+    if let Some(local) = layout.arg_eval_variable_object_local {
+        *allowed
+            .get_mut(usize::from(local))
+            .ok_or("parameter eval variable-object local is outside bytecode local slots")? = true;
+    }
+
+    let mut entry_pc = 0_usize;
+    while let Some([source, Instruction::PutLocal(local)]) = code.get(entry_pc..entry_pc + 2) {
+        if !matches!(
+            source,
+            Instruction::PushHomeObject | Instruction::PushNewTarget | Instruction::PushThis
+        ) {
+            break;
+        }
+        *allowed
+            .get_mut(usize::from(*local))
+            .ok_or("parameter pseudo-binding local is out of bounds")? = true;
+        entry_pc += 2;
+    }
+    if let Some(synthetic) = layout.synthetic_arguments_local
+        && matches!(
+            code.get(entry_pc..entry_pc + 4),
+            Some([
+                Instruction::Arguments(_),
+                Instruction::Dup,
+                Instruction::InitializeLocal(target),
+                Instruction::PutLocal(_),
+            ]) if *target == synthetic
+        )
+    {
+        *allowed
+            .get_mut(usize::from(synthetic))
+            .ok_or("synthetic parameter arguments local is out of bounds")? = true;
+    } else if matches!(code.get(entry_pc), Some(Instruction::Arguments(_)))
+        && let Some(Instruction::PutLocal(local)) = code.get(entry_pc + 1)
+    {
+        *allowed
+            .get_mut(usize::from(*local))
+            .ok_or("parameter arguments local is out of bounds")? = true;
+    }
+    Ok(Some(allowed))
+}
+
+/// Bind every immutable direct-eval descriptor to the bytecode phase which
+/// references it. Descriptor topology and source metadata alone are
+/// insufficient: a forged body-side `Eval` could otherwise reuse a Parameter
+/// or BindingPattern initializer descriptor after its lexical scope ended.
+pub(crate) struct EvalEnvironmentPhaseContext<'a> {
+    pub(crate) metadata: &'a FunctionMetadata,
+    pub(crate) code: &'a [Instruction],
+    pub(crate) parameter_body_pc: Option<usize>,
+    pub(crate) pattern_body_pc: Option<usize>,
+    pub(crate) lexical_locals: &'a [bool],
+    pub(crate) parameter_initializer_locals: &'a [bool],
+    pub(crate) parameter_initializer_visible_locals: Option<&'a [bool]>,
+    pub(crate) parameter_environment: Option<&'a ParameterEnvironmentLayout>,
+}
+
+pub(crate) fn validate_eval_environment_phase_layout<Name>(
+    environments: &[EvalEnvironment<Name>],
+    context: EvalEnvironmentPhaseContext<'_>,
+) -> Result<(), &'static str> {
+    let EvalEnvironmentPhaseContext {
+        metadata,
+        code,
+        parameter_body_pc,
+        pattern_body_pc,
+        lexical_locals,
+        parameter_initializer_locals,
+        parameter_initializer_visible_locals,
+        parameter_environment,
+    } = context;
+    let local_count = usize::from(metadata.local_count);
+    if lexical_locals.len() != local_count
+        || parameter_initializer_locals.len() != local_count
+        || parameter_initializer_visible_locals.is_some_and(|visible| visible.len() != local_count)
+    {
+        return Err("eval parameter-phase local classification has the wrong length");
+    }
+    if parameter_body_pc.is_some() != parameter_initializer_visible_locals.is_some() {
+        return Err("eval parameter-phase allowlist disagrees with its boundary");
+    }
+
+    let mut environment_pcs = vec![Vec::new(); environments.len()];
+    for (pc, instruction) in code.iter().enumerate() {
+        let Some(environment) = instruction.eval_environment() else {
+            continue;
+        };
+        environment_pcs
+            .get_mut(usize::from(environment))
+            .ok_or("Eval bytecode environment operand is out of bounds")?
+            .push(pc);
+    }
+    if environment_pcs.iter().any(Vec::is_empty) {
+        return Err("eval environment descriptor is not referenced by bytecode");
+    }
+
+    let Some(body_pc) = parameter_body_pc.or(pattern_body_pc) else {
+        return Ok(());
+    };
+    let explicit_parameter_environment = parameter_body_pc.is_some();
+    let synthetic_arguments_local =
+        parameter_environment.and_then(|layout| layout.synthetic_arguments_local);
+
+    for (environment, pcs) in environments.iter().zip(environment_pcs) {
+        let referenced_in_initializer = pcs.iter().any(|pc| *pc < body_pc);
+        let referenced_in_body = pcs.iter().any(|pc| *pc >= body_pc);
+
+        if explicit_parameter_environment {
+            let current_anchor = environment
+                .scopes
+                .iter()
+                .find(|scope| {
+                    matches!(
+                        scope.kind,
+                        EvalScopeKind::FunctionRoot | EvalScopeKind::Parameter
+                    )
+                })
+                .map(|scope| scope.kind)
+                .ok_or("eval environment contains no current function anchor")?;
+            if referenced_in_initializer && current_anchor != EvalScopeKind::Parameter {
+                return Err("parameter initializer eval used a body environment descriptor");
+            }
+            if referenced_in_body && current_anchor != EvalScopeKind::FunctionRoot {
+                return Err("function body eval used a parameter environment descriptor");
+            }
+        }
+
+        for binding in environment
+            .scopes
+            .iter()
+            .flat_map(|scope| scope.bindings.iter())
+        {
+            match binding.source {
+                EvalBindingSource::Argument(_)
+                    if referenced_in_initializer && explicit_parameter_environment =>
+                {
+                    return Err("parameter initializer eval captured a raw argument slot");
+                }
+                EvalBindingSource::Local(index) => {
+                    let index_usize = usize::from(index);
+                    let is_lexical = *lexical_locals
+                        .get(index_usize)
+                        .ok_or("eval binding local source is out of bounds")?;
+                    let is_parameter_initializer =
+                        *parameter_initializer_locals
+                            .get(index_usize)
+                            .ok_or("eval binding local source is out of bounds")?;
+                    if referenced_in_initializer {
+                        if let Some(visible) = parameter_initializer_visible_locals {
+                            if !visible[index_usize] {
+                                return Err(
+                                    "parameter initializer eval captured a body-only local",
+                                );
+                            }
+                        } else if pattern_body_pc.is_some()
+                            && index >= metadata.parameter_environment_local_count
+                            && synthetic_arguments_local != Some(index)
+                            && is_lexical
+                            && !is_parameter_initializer
+                        {
+                            return Err("pattern initializer eval captured a body lexical local");
+                        }
+                    }
+                    // A body-side direct eval may legitimately retain the
+                    // function's parameter cells and `<arg_var>` chain: those
+                    // bindings remain part of name resolution after parameter
+                    // initialization. Only a nested lexical whose complete
+                    // lifetime ended at the boundary is forbidden here.
+                    if referenced_in_body && is_parameter_initializer {
+                        return Err("function body eval captured a parameter-initializer local");
+                    }
+                }
+                EvalBindingSource::Argument(_) | EvalBindingSource::Closure(_) => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 /// QuickJS eval type carried by one synthetic eval bytecode root.
@@ -2189,6 +2597,9 @@ pub struct VariableDefinition {
     pub name: Option<Atom>,
     pub is_lexical: bool,
     pub is_const: bool,
+    /// True only for a nested lexical scope whose lifetime is wholly inside
+    /// formal-parameter initialization.
+    pub is_parameter_initializer: bool,
     pub kind: ClosureVariableKind,
 }
 
@@ -5283,9 +5694,28 @@ impl Heap {
                 "bytecode local count exceeds QuickJS JS_MAX_LOCAL_VARS",
             ));
         }
-        validate_parameter_bytecode_layout(
+        if bytecode.code.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::DefineClass {
+                    has_heritage: true,
+                    ..
+                }
+            )
+        }) {
+            return Err(HeapError::Invariant(
+                "class heritage bytecode is not implemented",
+            ));
+        }
+        let parameter_initializer_locals = bytecode
+            .local_definitions
+            .iter()
+            .map(|definition| definition.is_parameter_initializer)
+            .collect::<Vec<_>>();
+        let parameter_body_pc = validate_parameter_bytecode_layout(
             &bytecode.metadata,
             &bytecode.code,
+            &parameter_initializer_locals,
             bytecode.parameter_environment.as_ref(),
         )
         .map_err(HeapError::Invariant)?;
@@ -5353,18 +5783,56 @@ impl Heap {
             .iter()
             .map(|definition| definition.is_lexical)
             .collect::<Vec<_>>();
+        let pattern_body_pc = bytecode
+            .metadata
+            .parameter_pattern_end
+            .and_then(|marker| usize::try_from(marker).ok())
+            .and_then(|marker| marker.checked_add(1));
+        validate_parameter_initializer_scope_layout(
+            &bytecode.metadata,
+            &bytecode.code,
+            parameter_body_pc.or(pattern_body_pc),
+            &lexical_locals,
+            &parameter_initializer_locals,
+        )
+        .map_err(HeapError::Invariant)?;
         validate_pattern_parameter_bytecode_layout(
             &bytecode.metadata,
             &bytecode.code,
             &unnamed_arguments,
             &lexical_locals,
+            &parameter_initializer_locals,
             bytecode.parameter_environment.as_ref(),
+        )
+        .map_err(HeapError::Invariant)?;
+        let parameter_initializer_capture_locals = parameter_initializer_visible_locals(
+            &bytecode.metadata,
+            &bytecode.code,
+            parameter_body_pc,
+            &parameter_initializer_locals,
+            bytecode.parameter_environment.as_ref(),
+        )
+        .map_err(HeapError::Invariant)?;
+        validate_eval_environment_phase_layout(
+            &bytecode.eval_environments,
+            EvalEnvironmentPhaseContext {
+                metadata: &bytecode.metadata,
+                code: &bytecode.code,
+                parameter_body_pc,
+                pattern_body_pc,
+                lexical_locals: &lexical_locals,
+                parameter_initializer_locals: &parameter_initializer_locals,
+                parameter_initializer_visible_locals: parameter_initializer_capture_locals
+                    .as_deref(),
+                parameter_environment: bytecode.parameter_environment.as_ref(),
+            },
         )
         .map_err(HeapError::Invariant)?;
         for definition in bytecode.argument_definitions.iter() {
             if definition.kind != ClosureVariableKind::Normal
                 || definition.is_lexical
                 || definition.is_const
+                || definition.is_parameter_initializer
             {
                 return Err(HeapError::Invariant(
                     "argument definition is not an ordinary mutable binding",
@@ -5383,6 +5851,7 @@ impl Heap {
                 if local.kind != ClosureVariableKind::Normal
                     || !local.is_lexical
                     || local.is_const
+                    || local.is_parameter_initializer
                     || local.name.is_none()
                     || parameter_definitions[..index]
                         .iter()
@@ -5420,6 +5889,8 @@ impl Heap {
                 if target.kind != ClosureVariableKind::Normal
                     || target.is_lexical
                     || target.is_const
+                    || source.is_parameter_initializer
+                    || target.is_parameter_initializer
                     || source.name != target.name
                 {
                     return Err(HeapError::Invariant(
@@ -5432,6 +5903,7 @@ impl Heap {
                 if definition.kind != ClosureVariableKind::Normal
                     || !definition.is_lexical
                     || definition.is_const
+                    || definition.is_parameter_initializer
                     || definition.name.is_none()
                 {
                     return Err(HeapError::Invariant(
@@ -11198,6 +11670,7 @@ mod tests {
             name: None,
             is_lexical: true,
             is_const: false,
+            is_parameter_initializer: false,
             kind: ClosureVariableKind::Normal,
         }]);
         assert_eq!(
@@ -11207,6 +11680,35 @@ mod tests {
             ))
         );
         assert_eq!(heap.counts().function_bytecode_nodes, 0);
+
+        heap.release_context(context).unwrap();
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn bytecode_allocation_rejects_class_heritage_before_publication() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let prototype = leaf(&mut heap, shape);
+        let context = heap
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+                prototype,
+            ))
+            .unwrap();
+        heap.release_object(prototype).unwrap();
+
+        let code: Rc<[Instruction]> = Rc::from([Instruction::DefineClass {
+            name: 0,
+            has_heritage: true,
+        }]);
+        assert_eq!(
+            heap.allocate_function_bytecode(bytecode(&code, context, Vec::new(), Vec::new())),
+            Err(HeapError::Invariant(
+                "class heritage bytecode is not implemented"
+            ))
+        );
 
         heap.release_context(context).unwrap();
         heap.release_shape(shape).unwrap();
@@ -11246,6 +11748,7 @@ mod tests {
             name: None,
             is_lexical: false,
             is_const: false,
+            is_parameter_initializer: false,
             kind: ClosureVariableKind::Normal,
         }]);
         malformed.local_definitions = Rc::from([
@@ -11253,12 +11756,14 @@ mod tests {
                 name: None,
                 is_lexical: false,
                 is_const: false,
+                is_parameter_initializer: false,
                 kind: ClosureVariableKind::Normal,
             },
             VariableDefinition {
                 name: None,
                 is_lexical: true,
                 is_const: false,
+                is_parameter_initializer: false,
                 kind: ClosureVariableKind::Normal,
             },
         ]);
@@ -11315,6 +11820,205 @@ mod tests {
     }
 
     #[test]
+    fn bytecode_allocation_rejects_eval_environments_across_parameter_phases() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let prototype = leaf(&mut heap, shape);
+        let context = heap
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+                prototype,
+            ))
+            .unwrap();
+        heap.release_object(prototype).unwrap();
+
+        let value_name = Atom::from_raw(61);
+        let scoped_name = Atom::from_raw(62);
+        let argument_definitions: Rc<[VariableDefinition]> = Rc::from([VariableDefinition {
+            name: Some(value_name),
+            is_lexical: false,
+            is_const: false,
+            is_parameter_initializer: false,
+            kind: ClosureVariableKind::Normal,
+        }]);
+        let parameter_layout = |initialization_end| ParameterEnvironmentLayout {
+            initialization_end,
+            argument_cells: vec![ParameterArgumentCell {
+                argument: 0,
+                parameter_local: 0,
+                body: ParameterBodyStorage::Argument(0),
+            }]
+            .into_boxed_slice(),
+            pattern_copies: Box::new([]),
+            default_sources: vec![ParameterDefaultSource::Argument(0)].into_boxed_slice(),
+            synthetic_arguments_local: None,
+            arg_eval_variable_object_local: None,
+        };
+        let binding = || EvalBinding {
+            name: scoped_name,
+            source: EvalBindingSource::Local(1),
+            is_lexical: true,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+            is_catch_parameter: false,
+        };
+
+        let body_eval_code: Rc<[Instruction]> = Rc::from([
+            Instruction::SetLocalUninitialized(0),
+            Instruction::GetArg(0),
+            Instruction::Dup,
+            Instruction::Undefined,
+            Instruction::StrictEq,
+            Instruction::IfFalse(14),
+            Instruction::Drop,
+            Instruction::SetLocalUninitialized(1),
+            Instruction::Undefined,
+            Instruction::InitializeLocal(1),
+            Instruction::CloseLocal(1),
+            Instruction::Undefined,
+            Instruction::Dup,
+            Instruction::PutArg(0),
+            Instruction::InitializeLocal(0),
+            Instruction::Nop,
+            Instruction::Undefined,
+            Instruction::Eval {
+                argument_count: 0,
+                environment: 0,
+            },
+            Instruction::Return,
+        ]);
+        let mut body_eval = bytecode(
+            &body_eval_code,
+            context,
+            Vec::new(),
+            vec![value_name, value_name, scoped_name, scoped_name],
+        );
+        body_eval.metadata = FunctionMetadata {
+            argument_count: 1,
+            defined_argument_count: 0,
+            parameter_environment_local_count: 1,
+            local_count: 2,
+            max_stack: 3,
+            strict: true,
+            ..FunctionMetadata::default()
+        };
+        body_eval.parameter_environment = Some(parameter_layout(15));
+        body_eval.argument_definitions = argument_definitions.clone();
+        body_eval.local_definitions = Rc::from([
+            VariableDefinition {
+                name: Some(value_name),
+                is_lexical: true,
+                is_const: false,
+                is_parameter_initializer: false,
+                kind: ClosureVariableKind::Normal,
+            },
+            VariableDefinition {
+                name: Some(scoped_name),
+                is_lexical: true,
+                is_const: false,
+                is_parameter_initializer: true,
+                kind: ClosureVariableKind::Normal,
+            },
+        ]);
+        body_eval.eval_environments = Rc::from([EvalEnvironment {
+            scopes: vec![
+                EvalScope {
+                    kind: EvalScopeKind::FunctionBody,
+                    bindings: vec![binding()].into_boxed_slice(),
+                },
+                EvalScope {
+                    kind: EvalScopeKind::FunctionRoot,
+                    bindings: Box::new([]),
+                },
+            ]
+            .into_boxed_slice(),
+            variable_environment: EvalVariableEnvironment::StrictLocal(1),
+            caller_strict: true,
+            super_call_allowed: false,
+            super_allowed: false,
+        }]);
+        assert_eq!(
+            heap.allocate_function_bytecode(body_eval),
+            Err(HeapError::Invariant(
+                "function body eval captured a parameter-initializer local"
+            ))
+        );
+
+        let initializer_eval_code: Rc<[Instruction]> = Rc::from([
+            Instruction::SetLocalUninitialized(0),
+            Instruction::GetArg(0),
+            Instruction::Dup,
+            Instruction::Undefined,
+            Instruction::StrictEq,
+            Instruction::IfFalse(12),
+            Instruction::Drop,
+            Instruction::Undefined,
+            Instruction::Undefined,
+            Instruction::ApplyEval { environment: 0 },
+            Instruction::Dup,
+            Instruction::PutArg(0),
+            Instruction::InitializeLocal(0),
+            Instruction::Nop,
+            Instruction::Undefined,
+            Instruction::Return,
+        ]);
+        let mut initializer_eval = bytecode(
+            &initializer_eval_code,
+            context,
+            Vec::new(),
+            vec![value_name, value_name, scoped_name, scoped_name],
+        );
+        initializer_eval.metadata = FunctionMetadata {
+            argument_count: 1,
+            defined_argument_count: 0,
+            parameter_environment_local_count: 1,
+            local_count: 2,
+            max_stack: 3,
+            strict: true,
+            ..FunctionMetadata::default()
+        };
+        initializer_eval.parameter_environment = Some(parameter_layout(13));
+        initializer_eval.argument_definitions = argument_definitions;
+        initializer_eval.local_definitions = Rc::from([
+            VariableDefinition {
+                name: Some(value_name),
+                is_lexical: true,
+                is_const: false,
+                is_parameter_initializer: false,
+                kind: ClosureVariableKind::Normal,
+            },
+            VariableDefinition {
+                name: Some(scoped_name),
+                is_lexical: true,
+                is_const: false,
+                is_parameter_initializer: false,
+                kind: ClosureVariableKind::Normal,
+            },
+        ]);
+        initializer_eval.eval_environments = Rc::from([EvalEnvironment {
+            scopes: vec![EvalScope {
+                kind: EvalScopeKind::Parameter,
+                bindings: vec![binding()].into_boxed_slice(),
+            }]
+            .into_boxed_slice(),
+            variable_environment: EvalVariableEnvironment::StrictLocal(0),
+            caller_strict: true,
+            super_call_allowed: false,
+            super_allowed: false,
+        }]);
+        assert_eq!(
+            heap.allocate_function_bytecode(initializer_eval),
+            Err(HeapError::Invariant(
+                "parameter initializer eval captured a body-only local"
+            ))
+        );
+
+        heap.release_context(context).unwrap();
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
     fn eval_variable_object_local_requires_exact_metadata_authentication() {
         let mut heap = Heap::new();
         let shape = empty_shape(&mut heap);
@@ -11337,6 +12041,7 @@ mod tests {
                 name: Some(name),
                 is_lexical: false,
                 is_const: false,
+                is_parameter_initializer: false,
                 kind: definition_kind,
             }]);
             bytecode
@@ -11385,7 +12090,14 @@ mod tests {
             .unwrap();
         heap.release_object(prototype).unwrap();
 
-        let code: Rc<[Instruction]> = Rc::from([]);
+        let code: Rc<[Instruction]> = Rc::from([
+            Instruction::Undefined,
+            Instruction::Eval {
+                argument_count: 0,
+                environment: 0,
+            },
+            Instruction::Return,
+        ]);
         let make_bytecode = |scopes: Vec<EvalScope<Atom>>, eval_kind, variable_environment| {
             let mut bytecode = bytecode(&code, context, Vec::new(), Vec::new());
             bytecode.metadata.strict = true;
@@ -11497,6 +12209,14 @@ mod tests {
         heap.release_object(prototype).unwrap();
 
         let code: Rc<[Instruction]> = Rc::from([]);
+        let eval_code: Rc<[Instruction]> = Rc::from([
+            Instruction::Undefined,
+            Instruction::Eval {
+                argument_count: 0,
+                environment: 0,
+            },
+            Instruction::Return,
+        ]);
         let name = Atom::from_raw(45);
         let mut local = bytecode(&code, context, Vec::new(), vec![name]);
         local.metadata.local_count = 1;
@@ -11504,6 +12224,7 @@ mod tests {
             name: Some(name),
             is_lexical: false,
             is_const: false,
+            is_parameter_initializer: false,
             kind: ClosureVariableKind::WithObject,
         }]);
         let published = heap.allocate_function_bytecode(local).unwrap();
@@ -11518,6 +12239,7 @@ mod tests {
             name: Some(name),
             is_lexical: true,
             is_const: false,
+            is_parameter_initializer: false,
             kind: ClosureVariableKind::WithObject,
         }]);
         assert_eq!(
@@ -11534,6 +12256,7 @@ mod tests {
             name: Some(name),
             is_lexical: false,
             is_const: false,
+            is_parameter_initializer: false,
             kind: ClosureVariableKind::WithObject,
         }]);
         assert_eq!(
@@ -11550,8 +12273,10 @@ mod tests {
             name: Some(name),
             is_lexical: false,
             is_const: false,
+            is_parameter_initializer: false,
             kind: ClosureVariableKind::Normal,
         }]);
+        argument_source.code = eval_code.clone();
         argument_source.eval_environments = Rc::from([EvalEnvironment {
             scopes: Box::new([
                 EvalScope {
@@ -11623,8 +12348,10 @@ mod tests {
             name: Some(name),
             is_lexical: false,
             is_const: false,
+            is_parameter_initializer: false,
             kind: ClosureVariableKind::WithObject,
         }]);
+        local_name_mismatch.code = eval_code.clone();
         local_name_mismatch.eval_environments = with_scope(EvalBindingSource::Local(0));
         assert_eq!(
             heap.allocate_function_bytecode(local_name_mismatch),
@@ -11643,6 +12370,7 @@ mod tests {
             is_const: false,
             kind: ClosureVariableKind::WithObject,
         }]);
+        closure_name_mismatch.code = eval_code;
         closure_name_mismatch.eval_environments = with_scope(EvalBindingSource::Closure(0));
         assert_eq!(
             heap.allocate_function_bytecode(closure_name_mismatch),
@@ -11780,7 +12508,14 @@ mod tests {
             .unwrap();
         heap.release_object(prototype).unwrap();
 
-        let code: Rc<[Instruction]> = Rc::from([]);
+        let code: Rc<[Instruction]> = Rc::from([
+            Instruction::Undefined,
+            Instruction::Eval {
+                argument_count: 0,
+                environment: 0,
+            },
+            Instruction::Return,
+        ]);
         let name = Atom::from_raw(53);
         let make_bytecode = |owned_names: Vec<Atom>| {
             let mut bytecode = bytecode(&code, context, Vec::new(), owned_names);
@@ -11789,6 +12524,7 @@ mod tests {
                 name: Some(name),
                 is_lexical: false,
                 is_const: false,
+                is_parameter_initializer: false,
                 kind: ClosureVariableKind::Normal,
             }]);
             bytecode.eval_environments = Rc::from([EvalEnvironment {

@@ -1,7 +1,7 @@
 # R1r refreshes the complete ordinary named-capture slice after admitting
 # regexp-match-indices. R2f methods raise the slice to 172 passes, R2g
-# accessors to 176, and R2p symbol protocols to 178. Duplicate-named-group-only
-# tests remain outside the gate.
+# accessors to 176, R2p symbol protocols to 178, and later binding/rest support
+# to 194. Duplicate-named-group-only tests remain outside the gate.
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
@@ -14,10 +14,10 @@ timeout_ms=30000
 paths=101
 variants=202
 runnable=200
-passes=178
+passes=194
 manifest_sha256=477c5acbfad09b7748e3c605209ec7e182f88d82d63511593fc5bc98a1bc8f5e
 keys_sha256=eb5eae11fd4e32468e525e7ac0c0663468809167fe0e3897b3841837a90dc4f4
-nonpass_sha256=b8b4a15b2d3b1f3f8f485fd6554522540288dea1326a6a1484d5f950b3e4c95e
-tsv_sha256=820fc902c3203bcca883b3fac532f856f4cf07b785cab3e2fa8c0b77d1be62cb
-jsonl_sha256=5e50a97194b8602281a9165217153bc5740f59b3bd4866992b7f3d0bc0919d3d
-summary=harness-error=4 pass=178 unsupported-feature=2 unsupported-parser=16 unsupported-runtime=2
+nonpass_sha256=71065980595ef7ad8db8d80e91696e8d6ef8bc7f057d6c2519f84afe1955977f
+tsv_sha256=6e328c52ee9a1424395104bb4becf3a7419830e475af79d18b20c34cd56147ae
+jsonl_sha256=e3877dffd7bbf1d35dd5786af78a723a6041f7f7823e7c2323b2b37028a9e77d
+summary=pass=194 unsupported-feature=2 unsupported-parser=4 unsupported-runtime=2

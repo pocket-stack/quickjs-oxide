@@ -12,9 +12,9 @@ baseline=tests/test262-full-baseline.txt
 report=target/test262-full.tsv
 json_report=target/test262-full.jsonl
 # The full corpus contains CPU-heavy staging cases whose 30-second wall-clock
-# classification becomes scheduler-dependent at eight concurrent workers.
-# Four is the canonical reproducibility setting; callers may still override it.
-workers=${TEST262_WORKERS:-4}
+# classification becomes scheduler-dependent under concurrent heavy workers.
+# Two is the canonical reproducibility setting; callers may still override it.
+workers=${TEST262_WORKERS:-2}
 
 read_value() {
     key=$1

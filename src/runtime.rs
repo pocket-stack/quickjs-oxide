@@ -6,6 +6,7 @@
 
 mod arguments;
 mod bytecode_publish;
+mod class;
 mod for_in;
 mod home_object;
 mod intrinsics;
@@ -65,8 +66,8 @@ use crate::property::{
 use crate::shape::{PropertyFlags, Shape, ShapeEntry, ShapeError};
 use crate::value::{CreateHtmlStringBuffer, JsString, JsStringBuilder, JsStringError, Value};
 use crate::vm::{
-    BytecodePc, Completion, ForInNextOutcome, ForInStartOutcome, ForOfNextOutcome,
-    ForOfStartOutcome, IteratorCloseOutcome, ToPrimitiveHint,
+    BytecodePc, Completion, DefineClassOutcome, ForInNextOutcome, ForInStartOutcome,
+    ForOfNextOutcome, ForOfStartOutcome, IteratorCloseOutcome, ToPrimitiveHint,
 };
 
 static NEXT_RUNTIME_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
@@ -4101,6 +4102,7 @@ impl Runtime {
                             name,
                             is_lexical: definition.is_lexical,
                             is_const: definition.is_const,
+                            is_parameter_initializer: definition.is_parameter_initializer,
                             kind: definition.kind,
                         });
                     }
@@ -4115,6 +4117,7 @@ impl Runtime {
                             name,
                             is_lexical: definition.is_lexical,
                             is_const: definition.is_const,
+                            is_parameter_initializer: definition.is_parameter_initializer,
                             kind: definition.kind,
                         });
                     }

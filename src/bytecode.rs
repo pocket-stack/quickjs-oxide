@@ -331,6 +331,13 @@ pub enum Instruction {
         kind: DefineMethodKind,
         enumerable: bool,
     },
+    /// QuickJS `OP_define_class`: replace `parent, constructor` with the
+    /// published class `constructor, prototype` pair. The heritage flag is
+    /// authenticated bytecode metadata rather than a JavaScript stack value.
+    DefineClass {
+        name: u32,
+        has_heritage: bool,
+    },
     /// QuickJS `OP_define_array_el`: define a computed C_W_E data property
     /// while preserving the Array and its dynamic index
     /// (`array index value -> array index`).
@@ -373,6 +380,8 @@ pub enum Instruction {
     /// QuickJS `OP_nip`: discard the value immediately below the stack top,
     /// preserving the top value (`a b -> b`).
     Nip,
+    /// QuickJS `OP_swap`: exchange the top two operands (`a b -> b a`).
+    Swap,
     Dup,
     /// QuickJS `OP_dup1`: duplicate the value immediately below the stack top
     /// in place (`a b -> a a b`).
@@ -467,6 +476,9 @@ pub enum Instruction {
     CallMethod(u16),
     /// QuickJS `OP_call_constructor`: `func new.target args -> result`.
     Construct(u16),
+    /// QuickJS `OP_check_ctor`: reject an ordinary call to a class
+    /// constructor by checking the current frame's `new.target`.
+    CheckCtor,
     /// QuickJS `OP_apply`: consume a compiler-created dense argument Array
     /// after all spread iterables have been evaluated.
     Apply(ApplyKind),
@@ -485,6 +497,7 @@ impl Instruction {
     pub const fn stack_effect(&self) -> (usize, usize) {
         match self {
             Self::Nop
+            | Self::CheckCtor
             | Self::Goto(_)
             | Self::Gosub(_)
             | Self::ThrowRedeclaration(_)
@@ -553,6 +566,7 @@ impl Instruction {
             Self::PutSuperValue => (4, 0),
             Self::DefineField(_) | Self::DefineMethod { .. } => (2, 1),
             Self::DefineMethodComputed { .. } => (3, 1),
+            Self::DefineClass { .. } => (2, 2),
             Self::DefineArrayEl | Self::Append => (3, 2),
             Self::SetNameComputed => (2, 2),
             Self::SetProto | Self::CopyDataProperties => (2, 1),
@@ -601,6 +615,7 @@ impl Instruction {
             Self::PutRefValue(_) => (2, 0),
             Self::ThrowDeleteSuper => (3, 1),
             Self::Nip => (2, 1),
+            Self::Swap => (2, 2),
             // The verifier replaces this nominal value-preserving effect with
             // the active handler's recorded entry depth.
             Self::NipCatch | Self::IteratorClosePreserve => (1, 1),
@@ -703,6 +718,7 @@ impl BytecodeFunction {
             | Instruction::PutField(index)
             | Instruction::DefineField(index)
             | Instruction::DefineMethod { key: index, .. }
+            | Instruction::DefineClass { name: index, .. }
             | Instruction::HasEvalVariable { name: index, .. }
             | Instruction::GetEvalVariable { name: index, .. }
             | Instruction::PutEvalVariable { name: index, .. }
@@ -807,6 +823,13 @@ pub(crate) fn verify_parts(
     // without letting malformed unreachable bytecode panic the runtime.
     for (pc, instruction) in code.iter().enumerate() {
         match instruction {
+            Instruction::DefineClass {
+                has_heritage: true, ..
+            } => {
+                return Err(Error::internal(
+                    "class heritage bytecode is not implemented",
+                ));
+            }
             Instruction::PushConst(index)
             | Instruction::FClosure(index)
             | Instruction::RegExp(index)
@@ -818,6 +841,7 @@ pub(crate) fn verify_parts(
             | Instruction::PutField(index)
             | Instruction::DefineField(index)
             | Instruction::DefineMethod { key: index, .. }
+            | Instruction::DefineClass { name: index, .. }
             | Instruction::HasEvalVariable { name: index, .. }
             | Instruction::GetEvalVariable { name: index, .. }
             | Instruction::PutEvalVariable { name: index, .. }
@@ -1326,6 +1350,75 @@ mod tests {
             max_stack: 1,
         };
         assert_eq!(function.verify().unwrap().max_stack, 1);
+    }
+
+    #[test]
+    fn verifier_models_typed_class_definition_operations() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::CheckCtor,
+                Instruction::Undefined,
+                Instruction::PushI32(7),
+                Instruction::Swap,
+                Instruction::Swap,
+                Instruction::DefineClass {
+                    name: 0,
+                    has_heritage: false,
+                },
+                Instruction::Nip,
+                Instruction::Return,
+            ],
+            constants: vec![Value::String(crate::JsString::from_static("C"))],
+            local_count: 0,
+            max_stack: 2,
+        };
+        assert_eq!(function.verify().unwrap().max_stack, 2);
+
+        let underflow = BytecodeFunction {
+            code: vec![
+                Instruction::Undefined,
+                Instruction::DefineClass {
+                    name: 0,
+                    has_heritage: false,
+                },
+                Instruction::Return,
+            ],
+            max_stack: 2,
+            ..function.clone()
+        };
+        assert_eq!(
+            underflow.verify().unwrap_err().message(),
+            "bytecode stack underflow"
+        );
+
+        let invalid_name = BytecodeFunction {
+            constants: vec![Value::Int(0)],
+            ..function
+        };
+        assert_eq!(
+            invalid_name.verify().unwrap_err().message(),
+            "string-key opcode referenced a non-string constant"
+        );
+
+        let unsupported_heritage = BytecodeFunction {
+            code: vec![
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::DefineClass {
+                    name: 0,
+                    has_heritage: true,
+                },
+            ],
+            constants: vec![Value::String(crate::JsString::from_static("Derived"))],
+            local_count: 0,
+            max_stack: 1,
+            name: None,
+        };
+        assert_eq!(
+            unsupported_heritage.verify().unwrap_err().message(),
+            "class heritage bytecode is not implemented"
+        );
     }
 
     #[test]

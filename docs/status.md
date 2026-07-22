@@ -15,16 +15,16 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 35,420 passes and 38,483 runnable variants: 34.71% raw, a 42.39% lower
-  bound after the 18,475 pinned QuickJS target exclusions, or 95.00% among the
-  37,286 variants with a non-unsupported observed outcome. It records 259
-  parse failures and 1,553 runtime failures; current full TSV/JSONL SHA-256
+  has 35,748 passes and 38,483 runnable variants: 35.03% raw, a 42.78% lower
+  bound after the 18,475 pinned QuickJS target exclusions, or 94.92% among the
+  37,662 variants with a non-unsupported observed outcome. It records 273
+  parse failures and 1,587 runtime failures; current full TSV/JSONL SHA-256
   values are
-  `8fe66b2478571da55c1061a56ca521fbc8f3926591eb6093d3ac537f4cdccf60`
+  `10e3fee1e93b3491b4c97041990cd17a7f1051dbcd2d0d13c6514961934200ae`
   and
-  `e6ae2522eb1790119f95537d946c90fb529222e9d649710ea8e1c07fd715a89b`.
+  `b863a62f5e7dbfcff8975fae28251731b80103f63b3c039d62f1f98271720ada`.
   The fixed smoke now
-  has 191 passes and two explicit parser-frontier results. See
+  passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
   parity claim. The first
   observable RegExp intrinsic slice added 669 full-vector passes and moved ten
@@ -444,8 +444,9 @@ claim full parity.
   assignments, updates, for-in/of targets, key-coercion/error ordering,
   strict-versus-sloppy rejected writes, and deletion errors are pinned against
   QuickJS 2026-06-04. The R2i and R2j follow-ups below resolve Arrow and
-  direct-eval inheritance; parameter initializers, classes/derived construction,
-  and async/generator methods remain separate frontiers.
+  direct-eval inheritance. At the R2h landing, parameter initializers,
+  classes/derived construction, and async/generator methods remained separate
+  frontiers; the later R3e slice now covers base classes.
 
   The frozen ObjectLiteral-super gate contains 26 paths and 48 variants; all 48
   are admitted and pass. Its manifest/key-set SHA-256 values are
@@ -512,7 +513,7 @@ claim full parity.
   storage and closure transport only. This admits direct and nested eval in
   methods/accessors, plus authored and eval-created Arrow relays, while ordinary
   function, global, and indirect-eval boundaries cut the capability off.
-  `super()` remains disabled pending classes and derived constructors.
+  `super()` remains disabled pending class heritage and derived constructors.
 
   The resident oracle freezes 16 cases with an always-on Rust expectation test
   plus pinned-QuickJS expectation and direct differential checks when
@@ -713,8 +714,9 @@ claim full parity.
   runner-bound scoped profile adds only the exact well-known-Symbol dependencies
   needed by that frozen surface and has SHA-256
   `6869e9d28fff1d5bd4e5b698dcdf6ee677b9134a91781ad7abe226200d669455`.
-  Class, generator/object-generator, rest-parameter, lexical-destructuring,
-  WeakSet, and `$262.createRealm` dependencies remain separate frontiers.
+  Derived/subclass forms, generator/object-generator, rest-parameter,
+  lexical-destructuring, WeakSet, and `$262.createRealm` dependencies remain
+  separate frontiers.
   Focused manifest/key-set/non-pass hashes are
   `44c6b6b599e7fe48324aaa693fa684649469c35209bc5c1edb34f0eebe2085b9`,
   `5b4959128a9fb34b72b83950fd329f8a98bbbb2b08f256d5ff8bc3f7bc73a0ac`,
@@ -761,9 +763,10 @@ claim full parity.
   At the R2p landing, all 806 Symbol-ready variants passed. The other 204
   exposed only independent class, rest/spread, Promise, buffer/TypedArray,
   Proxy, and weak-collection frontiers: 60 parse failures, 98 runtime failures,
-  18 harness failures, and 28 typed parser frontiers. After R3d, the current
-  gate passes 864 / 1,010 variants while retaining the remaining adjacent
-  frontiers. R2p-landing normalized-manifest/manifest-file/key-set/non-pass
+  18 harness failures, and 28 typed parser frontiers. After R3e, the current
+  gate passes 864 / 1,010 variants while refining the old generic class
+  diagnostics to explicit derived-constructor frontiers. R2p-landing
+  normalized-manifest/manifest-file/key-set/non-pass
   hashes were
   `eaf2a48408b6b1f5673389335cda73cb66bed062636a669c655460d9fef99a4b`,
   `6147636f7950b899f7c0eea25078e2f4c9c4c7fda2977181dd7c9671aa0bcde2`,
@@ -1061,8 +1064,9 @@ claim full parity.
   The dependency-audited R2w Test262 gate freezes 97 paths / 177 variants and
   passes all 177. It covers the implemented synchronous try-destructuring
   corpus, six audited parse-negative rest cases, Annex B catch-body early-error
-  integrations, and four untagged catch-scope paths. Class- and generator-valued
-  defaults remain separate frontiers. Its exact four-feature scoped profile has
+  integrations, and four untagged catch-scope paths. Generator-valued and
+  unsupported derived/class-element defaults remain separate frontiers. Its
+  exact four-feature scoped profile has
   SHA-256
   `a654327057a974e0feab6799f3c99a3104884a403cbc41bbc85f3fc226328718`.
   Normalized-manifest/manifest-file/key-set/empty-non-pass hashes are
@@ -1133,7 +1137,8 @@ claim full parity.
   `6a1971269b694b9c5e344884714f9f2234619a3200b6ff2e25a69e2b45e26fb9`.
   This is not complete rest or FormalParameters support: Parameter
   Environments and defaults land in R2y, while parameter destructuring, rest
-  BindingPatterns, and async/generator/class forms remain explicit frontiers.
+  BindingPatterns, and async/generator forms remained explicit frontiers at
+  that landing; R3e now covers synchronous base-class constructors.
 
   R2y adds synchronous `BindingIdentifier = Initializer` parameters to ordinary
   functions, object methods, arrows, and the `Function` constructor. Parsing
@@ -1171,9 +1176,9 @@ claim full parity.
   manifest-file, focused TSV, and focused JSONL SHA-256 values are
   `5c98d19ccb72c7e2c577ddc98ee4ac83d43a0ba7d49175a8ebe271866d0feab6`,
   `264bb2b25e7502eed86f8a5df1b3fe8c0ccdeecd43171af390764b5e053a6472`,
-  `822fd6c4606948e56c3e146886b3a2883eaaa4428cd6acd37b6625d051b3da1a`,
+  `f1775881f89d5b76f7a46f1a89391a60b213508becec9df244e2fb0d9a937bc7`,
   and
-  `7d617915770a4c5625d1167480524fc4f9f28f8a100ae75860d79b13f6d22fef`.
+  `dc1edd9121ce27142df0e499a8e4ccdca1e6ff43ca178a35ea40981d45538a23`.
 
   The exact R2x/R2y full join retains all 102,037 unique keys and every
   previous pass. It adds 60 passes: 35 `fail-parse -> pass` and 25
@@ -1226,7 +1231,8 @@ claim full parity.
   `2818623121c2991151fdb0c055090283fd5f131e5dcfdd135b97fcdb77df708c`.
   BindingPatterns whose FormalParameters contain a standalone `=` require the
   independent Parameter Environment and are the next R3a boundary; async,
-  generator, and class forms remain later callable milestones.
+  generator and class forms remained later callable milestones at that
+  landing; R3e now covers synchronous base-class callables.
 
   R3a completes synchronous parameter-expression BindingPatterns on that
   independent Parameter Environment. A standalone `=` anywhere in the whole
@@ -1273,8 +1279,8 @@ claim full parity.
   `a529e8bc7556be32188fa20dd9a2db121e7feba4cc0dede5d4a1882b4ba363ec`
   and
   `78839d051f03908350eded05b8ea99c6d9843f4668ec4aa3673b50ca60e710da`.
-  The canonical complete gate now uses four workers: its timeout is wall-clock,
-  and eight-way contention can make the pre-existing 15,000-property
+  The canonical complete gate now uses two workers: its timeout is wall-clock,
+  and higher contention can make the pre-existing 15,000-property
   `Proxy/ownkeys-linear.js` setup cross 30 seconds before reaching the missing
   `Proxy` frontier. Focused gates retain their existing parallel defaults.
   R3b implements sloppy direct eval in and below that non-simple Parameter
@@ -1394,10 +1400,49 @@ claim full parity.
   The refreshed Symbol protocol gate passes 864 / 1,010 variants, and all 42
   runnable Raw JSON variants pass.
 
-  Async, generator, and class callables remain explicit later milestones.
+  R3e ports the base-class path from QuickJS `js_parse_class`,
+  `js_op_define_class`, and `OP_define_class`. Declarations and expressions
+  now carry separate outer and immutable inner lexical bindings with TDZ;
+  explicit/default base constructors are construct-only and preserve
+  parameter/default/rest order, length, `new.target`, return validation, and
+  exact descriptor shapes. Instance/static synchronous methods and accessors
+  support fixed/computed names, inferred names, strict bodies,
+  non-constructability, and HomeObject-backed `super` property access.
 
-  Generator/async and destructuring eval declarations, classes/derived
-  constructors, and ill-formed UTF-16 source stay explicit frontiers.
+  The focused Test262 gate freezes 157 paths / 294 variants and passes all
+  294; pinned QuickJS passes all 157 paths, and all five Rust oracle/frontier
+  tests pass. The gate's scoped profile admits `class` only for the frozen
+  manifest; the global profile deliberately does not claim the whole feature.
+  Profile/manifest/key-set/TSV/JSONL SHA-256 values are
+  `df73a1ac299cce6ade0b0638f0a4c3322310aa2db8e15a28039f483328e69f00`,
+  `0894fc15cf840a8897ad1b9243324c6312f28fd90e78cdafa377170d15b79f5f`,
+  `bb0c150613a6e85b4699f612b1c4755f04cd55a60384e8e3ac5b21e543e8de8b`,
+  `6049119789bd02e1d7848ec661a693c4161b769592b6567e567b21a17122703c`,
+  and
+  `7a10a6964629fdb96ed239be78587d9d1ebfdb6fd856549fbe813e5d28352521`.
+
+  The exact R3d/R3e full join retains all 102,037 unique keys with no missing,
+  extra, duplicate, or previous-pass-regressed key. It records 324
+  `unsupported-parser -> pass`, four `unsupported-runtime -> pass`, 50
+  transitions to deeper honest failures/frontiers, and 719 same-outcome
+  diagnostic refinements: 1,097 complete rows change. Passes reach 35,748
+  among the same 38,483 runnable variants; fail-parse is 273 and fail-runtime
+  is 1,587. Full TSV/JSONL SHA-256 values are
+  `10e3fee1e93b3491b4c97041990cd17a7f1051dbcd2d0d13c6514961934200ae`
+  and
+  `b863a62f5e7dbfcff8975fae28251731b80103f63b3c039d62f1f98271720ada`.
+  The full corpus exposed and now locks a named class captured inside a
+  Parameter BindingPattern initializer; explicit initializer-scope provenance
+  is authenticated at both publication layers without weakening body-lexical
+  isolation.
+
+  Class heritage/derived constructors and `super()`, fields/private elements,
+  static blocks, and generator/async class methods remain explicit later
+  milestones.
+
+  Generator/async and destructuring eval declarations, class heritage/derived
+  constructors and unsupported class elements, and ill-formed UTF-16 source
+  stay explicit frontiers.
   QuickJS also allocates the callable and VarRef
   array before capturing caller cells, while this Rust slice materializes the
   roots first and then allocates the callable; only successful-compilation
@@ -1604,14 +1649,14 @@ claim full parity.
   and
   `853e1dcd3353307b0c6e2b71f4acfa3df3014f9c1dd516caad6d3f62a3f51629`.
   The independent 127-path/254-variant String split gate now admits and passes
-  248 variants; four retain adjacent feature requirements and two require the
-  IsHTMLDDA host hook. R1p resolves the two Annex B `\k` separator variants,
+  252 variants; two require the IsHTMLDDA host hook. R1p resolves the two Annex
+  B `\k` separator variants,
   R1x executes the two eval consumers, R2c resolves the Arrow consumers, and
   R2f resolves the six concise-method consumers. Its
   current TSV/JSONL SHA-256 values are
-  `4b13051099f6c20379c67e3177e9cf46829f569ace3fe6f0eb7c48655fdc0f54`
+  `13f8c26ce2c9cd93904ce420cc00010e06e60f1eedccd7e22cc2f1e98fdb1303`
   and
-  `565c51f190bd1f44de4754bb76c155aa88c72b84a229d54bbb388f3213d83683`.
+  `eb88da8a2773b80e436c9311ba39f0868c623555e6679aeff4761ef631e5f26d`.
 
   The exact R1d-to-R1e full join has only 90 `fail-runtime -> pass`
   transitions, moving the complete vector to 25,119 passes while leaving
@@ -1758,13 +1803,12 @@ claim full parity.
   The frozen replace manifest covers 191 paths and 376 variants. At R1h it
   admitted 332 and recorded 286 passes. R1i's direct standard-RegExp path
   preserved that outcome vector; at R1p it admitted 348 and recorded 300
-  passes. The current R2h vector admits 354 and records 350 passes: four fail to
-  parse, 16 retain independently undeclared features, two require create-realm,
-  and four require IsHTMLDDA. The current
-  focused TSV/JSONL SHA-256 values are
-  `5521571759251d3b2a70a343a0e1397b80fbd4ad989ddca05c19680466c982c0`
+  passes. The current vector admits and passes 362 variants; eight retain
+  independently undeclared features, two require create-realm, and four
+  require IsHTMLDDA. The current focused TSV/JSONL SHA-256 values are
+  `0dccee6d3228b5c665a9f2c42890e46345d865bb0905020224e04e1b35589a94`
   and
-  `2f425f6a24aa21bf42a3ada7d6f7fc456cfb3fcc99cdf750b043f28b62db9c12`.
+  `facaadcafe19ae3444b8aa0ae2b7467519037f9c4ee4dc0bfa6f1bd07e8c98a2`.
   Publishing `String.prototype.replaceAll` and `Symbol.replace` moves the
   capability profile to 21 feature tags with SHA-256
   `921df0ef452f4d1286162093ebdf81a74d0805eb7c04601c86abd6ec7347ed7f`.
@@ -1833,12 +1877,12 @@ claim full parity.
   R1l resolves its four
   linked lookahead variants and R1o resolves fourteen linked lookbehind
   variants. R1p admits the final six: two Annex B cases pass and four
-  match/reference cases reach the existing lexical-destructuring parser
-  frontier. The current gate therefore has 94 passes and four typed parser
-  frontiers. Its TSV/JSONL SHA-256 values are
-  `06ac527e434ebe7b7b7ed0e50193a716ebedc9d4b0fa028c5b1e3f87a0458268`
+  match/reference cases initially reached the lexical-destructuring parser
+  frontier. Later object binding support resolves those final four, so the
+  current gate passes all 98 variants. Its TSV/JSONL SHA-256 values are
+  `fc91f2bc073844d86dc5b4c4b739da40e41a21267fde6f61d8fc6792d2b6c9a4`
   and
-  `02b8672453b17e260ea13e28f74bb9aea04caaccd3f274232e525f2e5fb6bb33`.
+  `7ab11b9287f97ea7faf73331501b7fff2624a7892467b8f68879da2e155a1d8c`.
 
   The complete vector moves to 26,027 passes and 33,287 admitted jobs. Its
   exact R1j-to-R1k outcome delta is 62 `unsupported-parser -> pass`, two
@@ -1975,6 +2019,13 @@ claim full parity.
   `505845ba54ec78ae1a636f91f7285e447444d3ffca8b66a03592591573a15d26`
   and
   `5daec58cf49af34cdf2ad8e70d5a945513e6490180ab4c74e9e996f39d4fa234`.
+  Later object-binding and rest-parameter milestones move the current frozen
+  gate to 194 passes; two variants remain feature-gated, four stop at the typed
+  derived-class parser frontier, and two at an unrelated runtime frontier.
+  Current TSV/JSONL hashes are
+  `6e328c52ee9a1424395104bb4becf3a7419830e475af79d18b20c34cd56147ae`
+  and
+  `e3877dffd7bbf1d35dd5786af78a723a6041f7f7823e7c2323b2b37028a9e77d`.
 
   The exact R1o/R1p join matches all 102,037 keys. It records 158
   `unsupported-feature -> pass`, six `unsupported-feature -> fail-parse`, 20
@@ -2038,6 +2089,12 @@ claim full parity.
   `b626f453c4a22402c9bf35f0b6a95ad3cf54cb2095ff21c023a150ec6904a230`
   and
   `edc7cb06eb9d18596202ae4d6f9faa4e56c1e2c4a6a81b51a54a26b0b34cd31f`.
+  Later binding and rest-parameter milestones move the current gate to 58
+  passes; two variants remain feature-gated and two require
+  `$262.createRealm`. Current TSV/JSONL hashes are
+  `da103588eaf15c8864b2aff5966f5e7a60fe533ca85be14607956695cf193b1d`
+  and
+  `ec5f84df5135174cbe78b91218a13879a53e758d97c583120c32b7a8026b5f7a`.
 
   The exact R1q/R1r join matches all 102,037 keys. It records 38
   `unsupported-feature -> pass`, two `unsupported-feature -> fail-parse`, four
@@ -2638,9 +2695,11 @@ claim full parity.
   scoped lexical creation, Annex source writes, and argument/local hoist
   attachment)
   in QuickJS 2026-06-04. Async/generator eval declarations, `for-await`,
-  destructuring in parameters, single-statement lexical declarations, and
-  class scopes remain explicit boundaries rather than falling back to local or
-  ordinary global storage.
+  destructuring in parameters, single-statement lexical declarations, and the
+  remaining class heritage/private/static-block scopes remain explicit
+  boundaries rather than falling back to local or ordinary global storage.
+  R3e adds the distinct outer declaration and immutable inner-name scopes for
+  base classes, including TDZ and direct-eval visibility.
 
   The immutable function format and VM provide the lexical-frame substrate for
   this compiler slice. Published bytecode owns
@@ -2876,9 +2935,10 @@ claim full parity.
   authenticated closure slots. Synchronous direct eval inherits the exact
   `super_call_allowed`/`super_allowed` capability pair, including nested eval and
   authored or eval-created Arrow relays; ordinary functions, global code, and
-  indirect eval cut that capability off. Parameter initializers, classes/derived
-  construction, async/generator methods, and Proxy/exotic-source spread remain
-  explicit frontiers. The pinned anchors are
+  indirect eval cut that capability off. Base-class methods now reuse this
+  HomeObject/SuperProperty path; class heritage/derived construction,
+  async/generator methods, and Proxy/exotic-source spread remain explicit
+  frontiers. The pinned anchors are
   `quickjs.c` 24485-24621 and
   24850-24965 plus the matching object/define/name/proto/copy opcodes in
   `quickjs-opcode.h`; `oracle_object_literals` locks the data-property/spread
@@ -3535,8 +3595,9 @@ claim full parity.
   failures, eight adjacent feature outcomes, two IsHTMLDDA host outcomes and
   six typed parser frontiers. R1p resolves two Annex B `\k` variants, R1x
   executes the two eval consumers, R2c resolves the Arrow consumers, and R2f
-  resolves the six concise-method consumers. The current vector admits and
-  passes 248 variants with no parser frontier. Declaring
+  resolves the six concise-method consumers; R2p well-known Symbol admission
+  executes the final four feature-gated variants. The current vector admits
+  and passes 252 variants with no parser frontier. Declaring
   `Symbol.split` in the conservative
   capability profile originally meant only that the well-known symbol and
   generic/custom delegation were audited; R1e completes the currently
@@ -4235,9 +4296,10 @@ upstream's substantially deeper platform-dependent limits throughout.
 
 The language slice remains incomplete. Async/generator declarations,
 `for-await`, other general assignment targets, module resolution,
-async/generator methods and parameter forms, classes and derived constructors,
-non-simple ObjectLiteral accessor forms outside the covered synchronous setter
-slice, and callable Proxy classes are not yet implemented.
+async/generator methods and parameter forms, class heritage/derived
+constructors, fields/private elements, static blocks, generator/async class
+methods, non-simple ObjectLiteral accessor forms outside the covered
+synchronous setter slice, and callable Proxy classes are not yet implemented.
 Unsupported declaration contexts are rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` supports
 simple identifiers and recursive array/object/rest patterns in direct Program
@@ -4248,8 +4310,10 @@ cover fixed and computed properties, undefined-only defaults, NamedEvaluation,
 array terminal rest, object rest, and object/array recursion. These forms also
 work in scripts, and ordinary
 bodies including classic heads are available through the normal `%Function%`
-constructor. Single-statement lexical declarations and class lexical
-environments remain later compiler slices. Direct
+constructor. Single-statement lexical declarations and the remaining derived
+heritage/private-name class environments remain later compiler slices. Base
+class declaration/expression lexical environments and TDZ behavior land in
+R3e. Direct
 Program lexicals now use the production global VarRef path with two-phase
 instantiation; simple-name and recursive array/object/rest Program vars plus
 direct ordinary function declarations use ordered, kind-specific global
@@ -4262,9 +4326,11 @@ failure today; matching the allocation order safely requires a provisional
 two-phase bytecode-function reservation plus failure-injection coverage, rather
 than attempting to roll back migrated VarRefs after the fact.
 
-Derived/class/super construction, dynamic Generator/Async/AsyncGenerator
-Function constructors, other native builtin constructor families, and Proxy
-construct dispatch remain. Typed
+Class heritage/derived construction and `super()`, dynamic
+Generator/Async/AsyncGenerator Function constructors, other native builtin
+constructor families, and Proxy construct dispatch remain. Base class
+construction, construct-only guards, constructor return validation,
+`new.target`, and `Reflect.construct` are active. Typed
 target/cproto, data-bearing Error selector, realm, arity padding, production
 BoundFunction allocation and frame foundations exist. Generic setter and raw
 iterator-next cproto adapters are active; specialized F64 adapters and the
@@ -4395,8 +4461,9 @@ still pending. Uncatchable termination state is also pending. Other iterator
 classes and helpers, the remaining RegExp
 grammar/static surface and Unicode-backed String methods, non-simple
 ObjectLiteral setter forms outside the covered synchronous slice,
-async/generator methods, classes/derived constructors, exotic-source spread,
-and the rest of the builtin table build on those layers.
+async/generator class methods, class heritage/derived constructors,
+fields/private elements/static blocks, exotic-source spread, and the rest of
+the builtin table build on those layers.
 
 The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
@@ -4625,6 +4692,12 @@ when a coherent intrinsic boundary is available.
 R3d keeps `runtime.rs` unchanged at 9,592 lines. Argument-list construction and
 the QuickJS iterator/fast-Array behavior stay behind the existing VM-host and
 intrinsic owners rather than returning feature logic to the facade.
+R3e moves the class parser and constructor/prototype publication into the new
+400-line `compiler/class.rs` and 300-line `runtime/class.rs` owners.
+`runtime.rs` grows only from 9,592 to 9,595 lines: one module declaration and
+two parameter-initializer provenance relays used by dynamic eval publication.
+`compiler.rs` is 13,976 lines; the new class grammar does not return to that
+facade, while later compiler decomposition remains necessary.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -4855,6 +4928,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_aggregate_error -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_argument_spread -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_class_base -- --nocapture
 
 ./scripts/test-parity-slice.sh
 ./scripts/test-test262-smoke.sh
@@ -4913,6 +4988,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-parameter-direct-eval.sh
 ./scripts/test-test262-aggregate-error.sh
 ./scripts/test-test262-argument-spread.sh
+./scripts/test-test262-class-base.sh
 ./scripts/test-test262-full.sh
 ```
 

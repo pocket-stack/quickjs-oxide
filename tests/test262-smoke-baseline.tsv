@@ -181,8 +181,8 @@ test/language/statements/if/S12.5_A10_T1.js	sloppy			normal		pass	normal
 test/language/statements/if/S12.5_A10_T1.js	strict			normal		pass	normal		
 test/language/statements/if/S12.5_A8.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	unexpected token in expression: ')'
 test/language/statements/if/S12.5_A8.js	strict			parse	SyntaxError	pass	parse	SyntaxError	unexpected token in expression: ')'
-test/language/statements/if/if-cls-else-cls.js	sloppy			parse	SyntaxError	unsupported-parser	parse	Unsupported	class syntax is not implemented yet
-test/language/statements/if/if-cls-else-cls.js	strict			parse	SyntaxError	unsupported-parser	parse	Unsupported	class syntax is not implemented yet
+test/language/statements/if/if-cls-else-cls.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	class declarations can't appear in single-statement context
+test/language/statements/if/if-cls-else-cls.js	strict			parse	SyntaxError	pass	parse	SyntaxError	class declarations can't appear in single-statement context
 test/language/statements/labeled/continue.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	break/continue label not found
 test/language/statements/labeled/continue.js	strict			parse	SyntaxError	pass	parse	SyntaxError	break/continue label not found
 test/language/statements/labeled/let-identifier-with-newline.js	sloppy	noStrict		normal		pass	normal		
@@ -201,4 +201,4 @@ test/language/statements/variable/arguments-strict-list-middle-init.js	strict	on
 test/language/statements/variable/eval-strict-list-final-init.js	strict	onlyStrict		parse	SyntaxError	pass	parse	SyntaxError	invalid variable name in strict mode
 test/language/statements/while/decl-fun.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	function declarations can't appear in single-statement context
 test/language/statements/while/decl-fun.js	strict			parse	SyntaxError	pass	parse	SyntaxError	function declarations can't appear in single-statement context
-# summary pass=191 unsupported-parser=2
+# summary pass=193

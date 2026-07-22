@@ -7,8 +7,10 @@ use crate::bytecode::{
     DynamicEnvironmentSource, EvalVariableSource, MAX_LOCAL_SLOTS, WithObjectSource, verify_parts,
 };
 use crate::heap::{
-    EvalBinding, EvalCallerProfile, EvalCallerVariableTarget, EvalKind, EvalRootBinding, EvalScope,
-    validate_parameter_bytecode_layout, validate_pattern_parameter_bytecode_layout,
+    EvalBinding, EvalCallerProfile, EvalCallerVariableTarget, EvalEnvironmentPhaseContext,
+    EvalKind, EvalRootBinding, EvalScope, parameter_initializer_visible_locals,
+    validate_eval_environment_phase_layout, validate_parameter_bytecode_layout,
+    validate_parameter_initializer_scope_layout, validate_pattern_parameter_bytecode_layout,
 };
 
 /// Intern every semantically retained direct-eval binding name while keeping
@@ -1273,9 +1275,15 @@ fn verify_unlinked_tree_with_root(
                 "synthetic root contains formal-parameter metadata",
             )));
         }
+        let parameter_initializer_locals = function
+            .local_definitions()
+            .iter()
+            .map(|definition| definition.is_parameter_initializer)
+            .collect::<Vec<_>>();
         let parameter_body_pc = validate_parameter_bytecode_layout(
             function.metadata(),
             function.code(),
+            &parameter_initializer_locals,
             function.parameter_environment(),
         )
         .map_err(|message| RuntimeError::Engine(Error::internal(message)))?;
@@ -1293,64 +1301,14 @@ fn verify_unlinked_tree_with_root(
                     })
             })
             .transpose()?;
-        let parameter_initializer_capture_locals = parameter_body_pc.map(|_| {
-            let mut allowed = vec![false; usize::from(function.metadata().local_count)];
-            allowed[..usize::from(function.metadata().parameter_environment_local_count)]
-                .fill(true);
-            if let Some(local) = function.metadata().function_name_local
-                && let Some(allowed) = allowed.get_mut(usize::from(local))
-            {
-                *allowed = true;
-            }
-            if let Some(local) = arg_eval_variable_object_local
-                && let Some(allowed) = allowed.get_mut(usize::from(local))
-            {
-                *allowed = true;
-            }
-
-            let mut entry_pc = 0_usize;
-            while let Some([source, crate::bytecode::Instruction::PutLocal(local)]) =
-                function.code().get(entry_pc..entry_pc + 2)
-            {
-                if !matches!(
-                    source,
-                    crate::bytecode::Instruction::PushHomeObject
-                        | crate::bytecode::Instruction::PushNewTarget
-                        | crate::bytecode::Instruction::PushThis
-                ) {
-                    break;
-                }
-                if let Some(allowed) = allowed.get_mut(usize::from(*local)) {
-                    *allowed = true;
-                }
-                entry_pc += 2;
-            }
-            if let Some(layout) = function.parameter_environment()
-                && let Some(synthetic) = layout.synthetic_arguments_local
-                && matches!(
-                    function.code().get(entry_pc..entry_pc + 4),
-                    Some([
-                        crate::bytecode::Instruction::Arguments(_),
-                        crate::bytecode::Instruction::Dup,
-                        crate::bytecode::Instruction::InitializeLocal(target),
-                        crate::bytecode::Instruction::PutLocal(_),
-                    ]) if *target == synthetic
-                )
-            {
-                if let Some(allowed) = allowed.get_mut(usize::from(synthetic)) {
-                    *allowed = true;
-                }
-            } else if matches!(
-                function.code().get(entry_pc),
-                Some(crate::bytecode::Instruction::Arguments(_))
-            ) && let Some(crate::bytecode::Instruction::PutLocal(local)) =
-                function.code().get(entry_pc + 1)
-                && let Some(allowed) = allowed.get_mut(usize::from(*local))
-            {
-                *allowed = true;
-            }
-            allowed
-        });
+        let parameter_initializer_capture_locals = parameter_initializer_visible_locals(
+            function.metadata(),
+            function.code(),
+            parameter_body_pc,
+            &parameter_initializer_locals,
+            function.parameter_environment(),
+        )
+        .map_err(|message| RuntimeError::Engine(Error::internal(message)))?;
         if (function.metadata().rest_parameter.is_some()
             || function.metadata().rest_pattern_start.is_some()
             || function.parameter_environment().is_some()
@@ -1423,6 +1381,7 @@ fn verify_unlinked_tree_with_root(
             if definition.kind != ClosureVariableKind::Normal
                 || definition.is_lexical
                 || definition.is_const
+                || definition.is_parameter_initializer
                 || definition
                     .name
                     .as_ref()
@@ -1543,11 +1502,20 @@ fn verify_unlinked_tree_with_root(
             .iter()
             .map(|definition| definition.is_lexical)
             .collect::<Vec<_>>();
+        validate_parameter_initializer_scope_layout(
+            function.metadata(),
+            function.code(),
+            parameter_body_pc.or(pattern_body_pc),
+            &lexical_locals,
+            &parameter_initializer_locals,
+        )
+        .map_err(|message| RuntimeError::Engine(Error::internal(message)))?;
         validate_pattern_parameter_bytecode_layout(
             function.metadata(),
             function.code(),
             &unnamed_arguments,
             &lexical_locals,
+            &parameter_initializer_locals,
             function.parameter_environment(),
         )
         .map_err(|message| RuntimeError::Engine(Error::internal(message)))?;
@@ -1555,6 +1523,7 @@ fn verify_unlinked_tree_with_root(
             if definition.kind != ClosureVariableKind::Normal
                 || definition.is_lexical
                 || definition.is_const
+                || definition.is_parameter_initializer
             {
                 return Err(RuntimeError::Engine(Error::internal(
                     "argument definition is not an ordinary mutable binding",
@@ -1573,6 +1542,7 @@ fn verify_unlinked_tree_with_root(
                 if local.kind != ClosureVariableKind::Normal
                     || !local.is_lexical
                     || local.is_const
+                    || local.is_parameter_initializer
                     || local.name.is_none()
                     || parameter_definitions[..index]
                         .iter()
@@ -1610,6 +1580,8 @@ fn verify_unlinked_tree_with_root(
                 if target.kind != ClosureVariableKind::Normal
                     || target.is_lexical
                     || target.is_const
+                    || source.is_parameter_initializer
+                    || target.is_parameter_initializer
                     || source.name.as_ref() != target.name.as_ref()
                 {
                     return Err(RuntimeError::Engine(Error::internal(
@@ -1640,6 +1612,7 @@ fn verify_unlinked_tree_with_root(
                 if definition.kind != ClosureVariableKind::Normal
                     || definition.is_lexical
                     || definition.is_const
+                    || definition.is_parameter_initializer
                     || definition
                         .name
                         .as_ref()
@@ -2234,28 +2207,21 @@ fn verify_unlinked_tree_with_root(
             }
         }
 
-        let mut referenced_eval_environments = vec![false; function.eval_environments().len()];
-        for instruction in function.code() {
-            let Some(environment) = instruction.eval_environment() else {
-                continue;
-            };
-            let referenced = referenced_eval_environments
-                .get_mut(usize::from(environment))
-                .ok_or_else(|| {
-                    RuntimeError::Engine(Error::internal(
-                        "Eval bytecode environment operand is out of bounds",
-                    ))
-                })?;
-            *referenced = true;
-        }
-        if referenced_eval_environments
-            .iter()
-            .any(|referenced| !referenced)
-        {
-            return Err(RuntimeError::Engine(Error::internal(
-                "eval environment descriptor is not referenced by bytecode",
-            )));
-        }
+        validate_eval_environment_phase_layout(
+            function.eval_environments(),
+            EvalEnvironmentPhaseContext {
+                metadata: function.metadata(),
+                code: function.code(),
+                parameter_body_pc,
+                pattern_body_pc,
+                lexical_locals: &lexical_locals,
+                parameter_initializer_locals: &parameter_initializer_locals,
+                parameter_initializer_visible_locals: parameter_initializer_capture_locals
+                    .as_deref(),
+                parameter_environment: function.parameter_environment(),
+            },
+        )
+        .map_err(|message| RuntimeError::Engine(Error::internal(message)))?;
 
         let mut captured_locals = vec![false; usize::from(function.metadata().local_count)];
         for (constant_index, child) in function
@@ -2453,7 +2419,8 @@ fn verify_unlinked_tree_with_root(
                 | crate::bytecode::Instruction::GetField2(index)
                 | crate::bytecode::Instruction::PutField(index)
                 | crate::bytecode::Instruction::DefineField(index)
-                | crate::bytecode::Instruction::DefineMethod { key: index, .. } => {
+                | crate::bytecode::Instruction::DefineMethod { key: index, .. }
+                | crate::bytecode::Instruction::DefineClass { name: index, .. } => {
                     let index = usize::try_from(*index)
                         .map_err(|_| RuntimeError::Invariant("constant index did not fit usize"))?;
                     let constant = function.constants().get(index).ok_or_else(|| {
@@ -2777,10 +2744,16 @@ fn verify_unlinked_tree_with_root(
                                             |layout| {
                                                 layout.synthetic_arguments_local == Some(index)
                                             },
-                                        )) =>
+                                        )
+                                        || function
+                                            .local_definitions()
+                                            .get(usize::from(index))
+                                            .is_some_and(|definition| {
+                                                definition.is_parameter_initializer
+                                            })) =>
                             {
                                 return Err(RuntimeError::Engine(Error::internal(
-                                    "function body closure captured a parameter-environment cell",
+                                    "function body closure captured a parameter-initializer cell",
                                 )));
                             }
                             ClosureSource::ParentLocal(index)
@@ -2799,6 +2772,7 @@ fn verify_unlinked_tree_with_root(
                     }
                     if let Some(body_pc) = pattern_body_pc {
                         let instantiated_in_pattern = closure_pcs.iter().any(|pc| *pc < body_pc);
+                        let instantiated_in_body = closure_pcs.iter().any(|pc| *pc >= body_pc);
                         match descriptor.source {
                             ClosureSource::ParentArgument(index)
                                 if function
@@ -2822,10 +2796,26 @@ fn verify_unlinked_tree_with_root(
                                     && function
                                         .local_definitions()
                                         .get(usize::from(index))
-                                        .is_some_and(|definition| definition.is_lexical) =>
+                                        .is_some_and(|definition| {
+                                            definition.is_lexical
+                                                && !definition.is_parameter_initializer
+                                        }) =>
                             {
                                 return Err(RuntimeError::Engine(Error::internal(
                                     "pattern initializer closure captured a body lexical local",
+                                )));
+                            }
+                            ClosureSource::ParentLocal(index)
+                                if instantiated_in_body
+                                    && function
+                                        .local_definitions()
+                                        .get(usize::from(index))
+                                        .is_some_and(|definition| {
+                                            definition.is_parameter_initializer
+                                        }) =>
+                            {
+                                return Err(RuntimeError::Engine(Error::internal(
+                                    "function body closure captured a parameter-initializer local",
                                 )));
                             }
                             _ => {}
@@ -3421,12 +3411,14 @@ mod tests {
                     name: Some(JsString::from_static(definition_name)),
                     is_lexical: false,
                     is_const: false,
+                    is_parameter_initializer: false,
                     kind: ClosureVariableKind::WithObject,
                 },
                 UnlinkedVariableDefinition {
                     name: Some(JsString::from_static("<var>")),
                     is_lexical: false,
                     is_const: false,
+                    is_parameter_initializer: false,
                     kind: ClosureVariableKind::EvalVariableObject,
                 },
             ],
@@ -4799,11 +4791,13 @@ mod tests {
         };
         let unnamed_arguments = [true];
         let lexical_locals = [true, true, false, false];
+        let parameter_initializer_locals = [false; 4];
         validate_pattern_parameter_bytecode_layout(
             &synthetic_metadata,
             &synthetic_code(),
             &unnamed_arguments,
             &lexical_locals,
+            &parameter_initializer_locals,
             Some(&synthetic_layout),
         )
         .unwrap();
@@ -4814,6 +4808,7 @@ mod tests {
             &checked_read,
             &unnamed_arguments,
             &lexical_locals,
+            &parameter_initializer_locals,
             Some(&synthetic_layout),
         )
         .unwrap();
@@ -4830,6 +4825,7 @@ mod tests {
                     &code,
                     &unnamed_arguments,
                     &lexical_locals,
+                    &parameter_initializer_locals,
                     Some(&synthetic_layout),
                 )
                 .unwrap_err()
@@ -4982,6 +4978,85 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("accessed a body lexical local")
+        );
+
+        for (code, body_pc) in [
+            (
+                vec![
+                    Instruction::Undefined,
+                    Instruction::InitializeLocal(0),
+                    Instruction::Nop,
+                ],
+                3,
+            ),
+            (
+                vec![Instruction::SetLocalUninitialized(0), Instruction::Nop],
+                2,
+            ),
+        ] {
+            assert_eq!(
+                validate_parameter_initializer_scope_layout(
+                    &FunctionMetadata {
+                        local_count: 1,
+                        ..FunctionMetadata::default()
+                    },
+                    &code,
+                    Some(body_pc),
+                    &[true],
+                    &[true],
+                ),
+                Err("parameter-initializer local has no exact pre-boundary TDZ lifecycle")
+            );
+        }
+
+        let initializer_capture = UnlinkedFunction::new(
+            vec![
+                Instruction::GetArg(0),
+                Instruction::Drop,
+                Instruction::SetLocalUninitialized(1),
+                Instruction::Undefined,
+                Instruction::InitializeLocal(1),
+                Instruction::FClosure(0),
+                Instruction::Drop,
+                Instruction::CloseLocal(1),
+                Instruction::Nop,
+                Instruction::FClosure(0),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(capture_child(
+                ClosureSource::ParentLocal(1),
+                Some("initializer"),
+                true,
+            ))],
+            FunctionMetadata {
+                argument_count: 1,
+                defined_argument_count: 1,
+                pattern_argument_count: 1,
+                parameter_pattern_end: Some(8),
+                local_count: 2,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_variable_definitions(
+            vec![UnlinkedVariableDefinition::ordinary(None)],
+            vec![
+                UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("value"))),
+                UnlinkedVariableDefinition::lexical(
+                    Some(JsString::from_static("initializer")),
+                    false,
+                )
+                .with_parameter_initializer(true),
+            ],
+        );
+        let error = verify_unlinked_tree(&script_with_child(initializer_capture)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("function body closure captured a parameter-initializer local"),
+            "{error}"
         );
 
         let rest_pattern = UnlinkedFunction::new(
@@ -5737,7 +5812,7 @@ mod tests {
             )))
             .unwrap_err()
             .to_string()
-            .contains("body closure captured a parameter-environment cell")
+            .contains("body closure captured a parameter-initializer cell")
         );
 
         let mut body_parameter_cell = code();
@@ -6043,6 +6118,141 @@ mod tests {
             error
                 .to_string()
                 .contains("default has no exact argument selection"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn eval_environments_cannot_cross_a_binding_pattern_body_boundary() {
+        let initializer_name = JsString::from_static("initializer");
+        let initializer_binding = EvalBinding {
+            name: initializer_name.clone(),
+            source: EvalBindingSource::Local(1),
+            is_lexical: true,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+            is_catch_parameter: false,
+        };
+        let body_eval = UnlinkedFunction::new(
+            vec![
+                Instruction::GetArg(0),
+                Instruction::Drop,
+                Instruction::SetLocalUninitialized(1),
+                Instruction::Undefined,
+                Instruction::InitializeLocal(1),
+                Instruction::CloseLocal(1),
+                Instruction::Nop,
+                Instruction::Undefined,
+                Instruction::Eval {
+                    argument_count: 0,
+                    environment: 0,
+                },
+                Instruction::Return,
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                argument_count: 1,
+                defined_argument_count: 1,
+                pattern_argument_count: 1,
+                parameter_pattern_end: Some(6),
+                local_count: 2,
+                max_stack: 1,
+                strict: true,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_variable_definitions(
+            vec![UnlinkedVariableDefinition::ordinary(None)],
+            vec![
+                UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("value"))),
+                UnlinkedVariableDefinition::lexical(Some(initializer_name), false)
+                    .with_parameter_initializer(true),
+            ],
+        )
+        .with_eval_environments(vec![ordinary_environment(Some(initializer_binding))]);
+        let error = verify_unlinked_tree(&script_with_child(body_eval)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("function body eval captured a parameter-initializer local"),
+            "{error}"
+        );
+
+        let body_name = JsString::from_static("body");
+        let body_binding = EvalBinding {
+            name: body_name.clone(),
+            source: EvalBindingSource::Local(1),
+            is_lexical: true,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+            is_catch_parameter: false,
+        };
+        let initializer_apply_eval = UnlinkedFunction::new(
+            vec![
+                Instruction::GetArg(0),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::ApplyEval { environment: 0 },
+                Instruction::Drop,
+                Instruction::Nop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                argument_count: 1,
+                defined_argument_count: 1,
+                pattern_argument_count: 1,
+                parameter_pattern_end: Some(6),
+                local_count: 2,
+                max_stack: 2,
+                strict: true,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_variable_definitions(
+            vec![UnlinkedVariableDefinition::ordinary(None)],
+            vec![
+                UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("value"))),
+                UnlinkedVariableDefinition::lexical(Some(body_name), false),
+            ],
+        )
+        .with_eval_environments(vec![ordinary_environment(Some(body_binding))]);
+        let error = verify_unlinked_tree(&script_with_child(initializer_apply_eval)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("pattern initializer eval captured a body lexical local"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn argument_definition_cannot_claim_parameter_initializer_provenance() {
+        let function = UnlinkedFunction::new(
+            vec![Instruction::Undefined, Instruction::Return],
+            Vec::new(),
+            FunctionMetadata {
+                argument_count: 1,
+                defined_argument_count: 1,
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_variable_definitions(
+            vec![
+                UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("argument")))
+                    .with_parameter_initializer(true),
+            ],
+            Vec::new(),
+        );
+
+        let error = verify_unlinked_tree(&script_with_child(function)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("argument definition is not an ordinary mutable binding"),
             "{error}"
         );
     }
@@ -6775,6 +6985,7 @@ mod tests {
                 name: Some(variable_name.clone()),
                 is_lexical: false,
                 is_const: false,
+                is_parameter_initializer: false,
                 kind: ClosureVariableKind::EvalVariableObject,
             }],
         )
@@ -6802,6 +7013,7 @@ mod tests {
                 name: Some(variable_name),
                 is_lexical: false,
                 is_const: false,
+                is_parameter_initializer: false,
                 kind: ClosureVariableKind::EvalVariableObject,
             }],
         );
@@ -6891,6 +7103,7 @@ mod tests {
                 name: Some(body_name.clone()),
                 is_lexical: false,
                 is_const: false,
+                is_parameter_initializer: false,
                 kind: ClosureVariableKind::EvalVariableObject,
             }],
         )
@@ -6930,12 +7143,14 @@ mod tests {
                     name: Some(body_name),
                     is_lexical: false,
                     is_const: false,
+                    is_parameter_initializer: false,
                     kind: ClosureVariableKind::EvalVariableObject,
                 },
                 UnlinkedVariableDefinition {
                     name: Some(parameter_name),
                     is_lexical: false,
                     is_const: false,
+                    is_parameter_initializer: false,
                     kind: ClosureVariableKind::ArgEvalVariableObject,
                 },
             ],

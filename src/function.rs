@@ -385,6 +385,10 @@ pub(crate) struct UnlinkedVariableDefinition {
     pub(crate) name: Option<crate::value::JsString>,
     pub(crate) is_lexical: bool,
     pub(crate) is_const: bool,
+    /// The lexical binding belongs to a nested scope evaluated wholly before
+    /// the formal-parameter/body boundary.  Parameter-environment cells use
+    /// their dedicated layout and leave this flag clear.
+    pub(crate) is_parameter_initializer: bool,
     pub(crate) kind: ClosureVariableKind,
 }
 
@@ -396,6 +400,7 @@ impl UnlinkedVariableDefinition {
             name,
             is_lexical: false,
             is_const: false,
+            is_parameter_initializer: false,
             kind: ClosureVariableKind::Normal,
         }
     }
@@ -408,8 +413,17 @@ impl UnlinkedVariableDefinition {
             name,
             is_lexical: true,
             is_const,
+            is_parameter_initializer: false,
             kind: ClosureVariableKind::Normal,
         }
+    }
+
+    /// Retain compiler-authored parameter-initializer scope provenance across
+    /// the publication boundary.
+    #[must_use]
+    pub(crate) const fn with_parameter_initializer(mut self, value: bool) -> Self {
+        self.is_parameter_initializer = value;
+        self
     }
 
     fn function_name(name: Option<crate::value::JsString>, is_const: bool) -> Self {
@@ -417,6 +431,7 @@ impl UnlinkedVariableDefinition {
             name,
             is_lexical: false,
             is_const,
+            is_parameter_initializer: false,
             kind: ClosureVariableKind::FunctionName,
         }
     }
@@ -426,6 +441,7 @@ impl UnlinkedVariableDefinition {
             name: Some(crate::value::JsString::from_static("<var>")),
             is_lexical: false,
             is_const: false,
+            is_parameter_initializer: false,
             kind: ClosureVariableKind::EvalVariableObject,
         }
     }
@@ -435,6 +451,7 @@ impl UnlinkedVariableDefinition {
             name: Some(crate::value::JsString::from_static("<arg_var>")),
             is_lexical: false,
             is_const: false,
+            is_parameter_initializer: false,
             kind: ClosureVariableKind::ArgEvalVariableObject,
         }
     }
@@ -444,6 +461,7 @@ impl UnlinkedVariableDefinition {
             name: Some(crate::value::JsString::from_static("<with>")),
             is_lexical: false,
             is_const: false,
+            is_parameter_initializer: false,
             kind: ClosureVariableKind::WithObject,
         }
     }

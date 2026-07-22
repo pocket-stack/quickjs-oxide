@@ -93,7 +93,7 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_paths" != "101" \
     || "$expected_variants" != "202" \
     || "$expected_runnable" != "200" \
-    || "$expected_passes" != "178" ]]; then
+    || "$expected_passes" != "194" ]]; then
     echo "error: named-groups baseline metadata drifted" >&2
     exit 1
 fi

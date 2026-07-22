@@ -1,9 +1,10 @@
 use super::{
     Error, FunctionId, FunctionIr, FunctionIrOptions, FunctionKind, FunctionSourceInfo, Identifier,
     IdentifierContext, IrConstant, IrOp, ParentLink, Parser, Punctuator, SourceOffset, Span,
-    SuperCapabilities, TokenKind, source_offset, source_span, validate_identifier,
+    SpannedIrOp, SuperCapabilities, TokenKind, insert_hoist_fragment, source_offset, source_span,
+    validate_identifier,
 };
-use crate::bytecode::DefineMethodKind;
+use crate::bytecode::{DefineMethodKind, Instruction};
 
 pub(super) struct ParsedFunctionDefinition {
     pub(super) constant: u32,
@@ -20,6 +21,7 @@ pub(super) struct FunctionDefinitionHeader<'source> {
 struct FunctionDefinitionOptions {
     kind: FunctionKind,
     private_name_binding: bool,
+    class_constructor: bool,
     reject_duplicate_parameters: bool,
     allow_trailing_parameter_comma: bool,
     object_method_kind: Option<DefineMethodKind>,
@@ -31,6 +33,7 @@ impl FunctionDefinitionOptions {
         Self {
             kind: FunctionKind::Ordinary,
             private_name_binding,
+            class_constructor: false,
             reject_duplicate_parameters: false,
             allow_trailing_parameter_comma: true,
             object_method_kind: None,
@@ -42,6 +45,7 @@ impl FunctionDefinitionOptions {
         Self {
             kind: FunctionKind::Method,
             private_name_binding: false,
+            class_constructor: false,
             // QuickJS applies the ordinary-method UniqueFormalParameters early
             // error even when the surrounding source and body are sloppy.
             // Accessors first enforce their zero/one-parameter arity.
@@ -117,7 +121,7 @@ impl<'source> Parser<'source> {
         &mut self,
         function_span: Span,
         method_kind: DefineMethodKind,
-    ) -> Result<(), Error> {
+    ) -> Result<FunctionId, Error> {
         let parsed = self.parse_function_definition_tail_with_options(
             FunctionDefinitionHeader {
                 span: function_span,
@@ -127,7 +131,26 @@ impl<'source> Parser<'source> {
         )?;
         self.emit(IrOp::MakeClosure(parsed.constant))?;
         self.anonymous_function_definition = None;
-        Ok(())
+        Ok(parsed.child)
+    }
+
+    /// Parse a base class constructor using QuickJS's concise-method binding
+    /// model. The constructor remains a Method for `this`/`arguments`/
+    /// HomeObject resolution, while immutable compiler metadata publishes the
+    /// Base [[Construct]] protocol and `CheckCtor` enforces construct-only use.
+    pub(super) fn parse_base_class_constructor_definition(
+        &mut self,
+        function_span: Span,
+    ) -> Result<ParsedFunctionDefinition, Error> {
+        let mut options = FunctionDefinitionOptions::object_method(DefineMethodKind::Method);
+        options.class_constructor = true;
+        self.parse_function_definition_tail_with_options(
+            FunctionDefinitionHeader {
+                span: function_span,
+                name: None,
+            },
+            options,
+        )
     }
 
     fn parse_function_definition_tail_with_options(
@@ -172,6 +195,7 @@ impl<'source> Parser<'source> {
             FunctionIrOptions {
                 function_name,
                 private_name_binding: options.private_name_binding && function_name_token.is_some(),
+                class_constructor: options.class_constructor,
                 defined_argument_count: 0,
                 has_simple_parameter_list: true,
                 rest_parameter: None,
@@ -355,6 +379,35 @@ impl<'source> Parser<'source> {
             }
         }
         self.functions[child].strict = strict;
+        if options.class_constructor {
+            // Parameter parsing may replace the initial body scope with a
+            // parentless Parameter Environment or a FunctionRoot pattern
+            // segment. Install the guard only after that shape is final: it
+            // must follow the Parameter Environment's TDZ reset, but precede
+            // every default, destructuring, and rest initializer. Emitting it
+            // before parsing would both block BindingPattern activation and
+            // let the later rest-prologue pass move Rest ahead of the guard.
+            let guard_at = if let Some(parameter_scope) = self.functions[child].parameter_scope {
+                self.functions[child]
+                    .ops
+                    .iter()
+                    .position(|operation| {
+                        matches!(operation.op, IrOp::EnterScope(scope) if scope == parameter_scope)
+                    })
+                    .and_then(|entry| entry.checked_add(1))
+                    .ok_or_else(|| Error::internal("class constructor lost its parameter scope"))?
+            } else {
+                0
+            };
+            insert_hoist_fragment(
+                &mut self.functions[child],
+                guard_at,
+                vec![SpannedIrOp {
+                    op: IrOp::Bytecode(Instruction::CheckCtor),
+                    pc_site: None,
+                }],
+            )?;
+        }
         self.finish_identifier_parameter_environment()?;
         self.parse_function_body()?;
         let closing_brace = self.current().span;

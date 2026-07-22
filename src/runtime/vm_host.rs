@@ -2356,6 +2356,56 @@ impl VmHost for RuntimeVmHost {
         self.finish_property_define(result)
     }
 
+    fn define_class(
+        &mut self,
+        parent: Value,
+        constructor: Value,
+        name: u32,
+        has_heritage: bool,
+    ) -> Result<DefineClassOutcome, Error> {
+        let name = match usize::try_from(name)
+            .ok()
+            .and_then(|index| self.constants.get(index))
+        {
+            Some(BytecodeConstant::Value(RawValue::String(name))) => name.clone(),
+            Some(
+                BytecodeConstant::Value(_)
+                | BytecodeConstant::Function(_)
+                | BytecodeConstant::RegExp { .. },
+            ) => {
+                return Err(Error::internal(
+                    "class-name opcode referenced a non-string constant",
+                ));
+            }
+            None => {
+                return Err(Error::internal(
+                    "class-name constant index is out of bounds",
+                ));
+            }
+        };
+        match self.runtime.define_class_pair(
+            self.current_realm,
+            parent,
+            constructor,
+            &name,
+            has_heritage,
+        ) {
+            Ok(outcome) => Ok(outcome),
+            Err(RuntimeError::Engine(error))
+                if NativeErrorKind::from_javascript_error(error.kind()).is_some() =>
+            {
+                let kind = NativeErrorKind::from_javascript_error(error.kind())
+                    .expect("guard proved a JavaScript-visible class error");
+                let value = self
+                    .runtime
+                    .new_native_error_from_error(self.current_realm, kind, &error)
+                    .map_err(runtime_error_to_vm_error)?;
+                Ok(DefineClassOutcome::Throw(value))
+            }
+            Err(error) => Err(runtime_error_to_vm_error(error)),
+        }
+    }
+
     fn define_array_element(
         &mut self,
         base: Value,
@@ -3316,6 +3366,7 @@ mod tests {
             name: None,
             is_lexical: false,
             is_const: false,
+            is_parameter_initializer: false,
             kind,
         }]);
         host.eval_variable_object_local = authenticated_local;
@@ -3494,6 +3545,7 @@ mod tests {
             name: Some(Atom::from_raw(71)),
             is_lexical: false,
             is_const: false,
+            is_parameter_initializer: false,
             kind: ClosureVariableKind::WithObject,
         }]);
         host.locals = vec![FrameBinding::Captured(root.clone())];
@@ -3526,6 +3578,7 @@ mod tests {
             name: None,
             is_lexical: false,
             is_const: false,
+            is_parameter_initializer: false,
             kind: ClosureVariableKind::Normal,
         }]);
         assert_eq!(

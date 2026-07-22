@@ -32,6 +32,7 @@ impl<'source> Parser<'source> {
             FunctionIrOptions {
                 function_name: None,
                 private_name_binding: false,
+                class_constructor: false,
                 defined_argument_count: 0,
                 has_simple_parameter_list: true,
                 rest_parameter: None,

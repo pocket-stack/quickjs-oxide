@@ -1,0 +1,27 @@
+# R3e scoped base-class contract. The global Test262 capability profile keeps
+# `class` disabled; this frozen manifest temporarily admits only audited base
+# declarations/expressions, constructors, prototype descriptors, methods,
+# accessors, computed names, lexical bindings, strictness, and inferred names.
+quickjs=2026-06-04
+test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
+test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
+test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
+oxide_profile_sha256=df73a1ac299cce6ade0b0638f0a4c3322310aa2db8e15a28039f483328e69f00
+schema=test262-canonical-classified-v2
+mode=both
+timeout_ms=30000
+paths=157
+variants=294
+runnable=294
+passes=294
+failures=0
+unsupported=0
+skipped=0
+manifest_sha256=0894fc15cf840a8897ad1b9243324c6312f28fd90e78cdafa377170d15b79f5f
+manifest_file_sha256=0894fc15cf840a8897ad1b9243324c6312f28fd90e78cdafa377170d15b79f5f
+keys_sha256=bb0c150613a6e85b4699f612b1c4755f04cd55a60384e8e3ac5b21e543e8de8b
+nonpass_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+tsv_sha256=6049119789bd02e1d7848ec661a693c4161b769592b6567e567b21a17122703c
+jsonl_sha256=7a10a6964629fdb96ed239be78587d9d1ebfdb6fd856549fbe813e5d28352521
+summary=pass=294

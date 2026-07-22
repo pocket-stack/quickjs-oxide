@@ -42,6 +42,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 mod arrow;
+mod class;
 mod destructuring;
 mod function;
 mod object_literal;
@@ -372,6 +373,11 @@ struct SyntheticLocal {
 struct IrScope {
     parent: Option<ScopeId>,
     kind: ScopeKind,
+    /// This nested lexical scope is entered and left while formal-parameter
+    /// initialization is still running.  It is distinct from the Parameter
+    /// scope itself: its bindings may be captured by closures created in an
+    /// initializer, but must never be mistaken for authored body lexicals.
+    is_parameter_initializer: bool,
     bindings: Vec<BindingId>,
 }
 
@@ -828,6 +834,11 @@ struct FunctionIr {
     /// invariant-preserving typed link.
     parent: Option<ParentLink>,
     kind: FunctionKind,
+    /// Base/derived class constructors share the compiler's concise-method
+    /// binding model but publish constructor bytecode without an ordinary
+    /// function's eagerly visible `.prototype` shape. `DefineClass` owns that
+    /// descriptor, while `CheckCtor` enforces construct-only invocation.
+    class_constructor: bool,
     /// QuickJS parser authority copied independently from HomeObject storage.
     super_call_allowed: bool,
     super_allowed: bool,
@@ -1013,6 +1024,7 @@ impl SuperCapabilities {
 struct FunctionIrOptions {
     function_name: Option<String>,
     private_name_binding: bool,
+    class_constructor: bool,
     parameters: Vec<Option<String>>,
     defined_argument_count: usize,
     has_simple_parameter_list: bool,
@@ -1066,6 +1078,7 @@ impl FunctionIr {
             IrScope {
                 parent: None,
                 kind: ScopeKind::FunctionRoot,
+                is_parameter_initializer: false,
                 bindings: Vec::new(),
             },
             IrScope {
@@ -1075,6 +1088,7 @@ impl FunctionIr {
                 } else {
                     ScopeKind::FunctionBody
                 },
+                is_parameter_initializer: false,
                 bindings: Vec::new(),
             },
         ];
@@ -1097,6 +1111,7 @@ impl FunctionIr {
         let mut function = Self {
             parent,
             kind,
+            class_constructor: options.class_constructor,
             super_call_allowed: super_capabilities.super_call_allowed,
             super_allowed: super_capabilities.super_allowed,
             source,
@@ -1571,6 +1586,7 @@ impl<'source> Parser<'source> {
                 FunctionIrOptions {
                     function_name: Some("<eval>".to_owned()),
                     private_name_binding: false,
+                    class_constructor: false,
                     parameters: Vec::new(),
                     defined_argument_count: 0,
                     has_simple_parameter_list: true,
@@ -1710,6 +1726,14 @@ impl<'source> Parser<'source> {
                     Err(self.syntax_here(
                         "function declarations can't appear in single-statement context",
                     ))
+                }
+            }
+            TokenKind::Keyword(Keyword::Class) => {
+                if position.allows_other_declaration() {
+                    self.parse_class_declaration()
+                } else {
+                    Err(self
+                        .syntax_here("class declarations can't appear in single-statement context"))
                 }
             }
             TokenKind::Keyword(Keyword::Var) => self.parse_var_statement(),
@@ -5502,6 +5526,9 @@ impl<'source> Parser<'source> {
             TokenKind::Keyword(Keyword::Function) => {
                 self.parse_function_expression()?;
             }
+            TokenKind::Keyword(Keyword::Class) => {
+                self.parse_class_expression()?;
+            }
             TokenKind::Keyword(Keyword::New) => {
                 self.parse_new_expression()?;
             }
@@ -6890,12 +6917,15 @@ impl<'source> Parser<'source> {
 
     fn relex_current_with_strict(&mut self, strict: bool) -> Result<(), Error> {
         let position = self.current().span.start;
+        let line_terminator_before = self.current().line_terminator_before;
         self.tokens.truncate(self.cursor);
         self.lexer.seek(position);
         let mut context = self.lexer.context();
         context.strict = strict;
         self.lexer.set_context(context);
-        self.ensure_token(self.cursor)
+        self.ensure_token(self.cursor)?;
+        self.tokens[self.cursor].line_terminator_before = line_terminator_before;
+        Ok(())
     }
 
     fn directive_prologue_has_use_strict(
@@ -7181,6 +7211,7 @@ impl<'source> Parser<'source> {
         function.scopes.push(IrScope {
             parent: None,
             kind: ScopeKind::Parameter,
+            is_parameter_initializer: true,
             bindings: Vec::new(),
         });
         function.parameter_scope = Some(parameter_scope);
@@ -7227,6 +7258,7 @@ impl<'source> Parser<'source> {
             function.scopes.push(IrScope {
                 parent: None,
                 kind: ScopeKind::Parameter,
+                is_parameter_initializer: true,
                 bindings: Vec::new(),
             });
             function.parameter_scope = Some(parameter_scope);
@@ -7468,10 +7500,13 @@ impl<'source> Parser<'source> {
     fn push_scope(&mut self, kind: ScopeKind) -> ScopeId {
         let function = self.current_ir_mut();
         let parent = function.current_scope;
+        let is_parameter_initializer = function.scopes[parent.0].is_parameter_initializer
+            || (function.pattern_parameter_initialization && parent == function.var_scope);
         let scope = ScopeId(function.scopes.len());
         function.scopes.push(IrScope {
             parent: Some(parent),
             kind,
+            is_parameter_initializer,
             bindings: Vec::new(),
         });
         function.ops.push(SpannedIrOp {
@@ -7706,8 +7741,10 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             || function.current_scope != function.body_scope
             || function.scopes[0].parent.is_some()
             || function.scopes[0].kind != ScopeKind::FunctionRoot
+            || function.scopes[0].is_parameter_initializer
             || function.body_scope.0 >= function.scopes.len()
             || function.body_scope == function.var_scope
+            || function.scopes[function.body_scope.0].is_parameter_initializer
         {
             return Err(Error::internal("function scope roots are malformed"));
         }
@@ -7725,7 +7762,9 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 if scope != function.var_scope
                     && scope != function.body_scope
                     && function.scopes.get(scope.0).is_some_and(|scope| {
-                        scope.kind == ScopeKind::Parameter && scope.parent.is_none()
+                        scope.kind == ScopeKind::Parameter
+                            && scope.parent.is_none()
+                            && scope.is_parameter_initializer
                     })
                     && matches!(
                         function.kind,
@@ -7740,6 +7779,33 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         }
         let has_parameter_environment = function.parameter_scope.is_some();
         let has_pattern_parameters = function.pattern_parameter_initialization;
+        for (scope_index, scope) in function.scopes.iter().enumerate() {
+            if scope_index == function.var_scope.0 || scope_index == function.body_scope.0 {
+                continue;
+            }
+            if function.parameter_scope == Some(ScopeId(scope_index)) {
+                if !scope.is_parameter_initializer {
+                    return Err(Error::internal(
+                        "parameter scope lost its initializer classification",
+                    ));
+                }
+                continue;
+            }
+            let parent = scope
+                .parent
+                .ok_or_else(|| Error::internal("nested scope has no parent"))?;
+            let parent_scope = function
+                .scopes
+                .get(parent.0)
+                .ok_or_else(|| Error::internal("lexical scope parent is malformed"))?;
+            let expected_initializer = parent_scope.is_parameter_initializer
+                || (has_pattern_parameters && parent == function.var_scope);
+            if scope.is_parameter_initializer != expected_initializer {
+                return Err(Error::internal(
+                    "nested scope parameter-initializer classification is malformed",
+                ));
+            }
+        }
         if function.defined_argument_count
             > function
                 .parameters
@@ -7967,6 +8033,23 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         {
             return Err(Error::internal(
                 "private function-name capability is malformed",
+            ));
+        }
+        let check_ctor_count = function
+            .ops
+            .iter()
+            .filter(|operation| matches!(operation.op, IrOp::Bytecode(Instruction::CheckCtor)))
+            .count();
+        if function.class_constructor {
+            if !matches!(function.kind, FunctionKind::Method)
+                || !function.strict
+                || check_ctor_count != 1
+            {
+                return Err(Error::internal("class constructor metadata is malformed"));
+            }
+        } else if check_ctor_count != 0 {
+            return Err(Error::internal(
+                "non-class function retained a constructor-call guard",
             ));
         }
         if matches!(function.kind, FunctionKind::Script)
@@ -8438,6 +8521,20 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             if let Some(rest) = function.rest_parameter.filter(|_| {
                 function.parameter_scope.is_none() && !function.pattern_parameter_initialization
             }) {
+                if function.class_constructor {
+                    if !matches!(
+                        function.ops.get(hoist_start),
+                        Some(SpannedIrOp {
+                            op: IrOp::Bytecode(Instruction::CheckCtor),
+                            pc_site: None,
+                        })
+                    ) {
+                        return Err(Error::internal(
+                            "class rest constructor guard escaped its entry prologue",
+                        ));
+                    }
+                    hoist_start += 1;
+                }
                 if !matches!(
                     function.ops.get(hoist_start),
                     Some(SpannedIrOp {
@@ -10526,6 +10623,11 @@ fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
             tree.functions[function_id].synthetic_parameter_arguments_local;
         let has_parameter_environment = tree.functions[function_id].parameter_scope.is_some();
         let has_pattern_parameters = tree.functions[function_id].pattern_parameter_initialization;
+        let class_constructor = tree.functions[function_id].class_constructor;
+        let simple_rest = tree.functions[function_id]
+            .rest_parameter
+            .filter(|_| !has_parameter_environment && !has_pattern_parameters);
+        let guarded_rest = simple_rest.filter(|_| class_constructor);
         let mut prefix = Vec::with_capacity(
             usize::from(arguments_local.is_some()) * 2
                 + usize::from(synthetic_arguments_local.is_some()) * 2
@@ -10577,10 +10679,7 @@ fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
                 pc_site: None,
             });
         }
-        if let Some(rest) = tree.functions[function_id]
-            .rest_parameter
-            .filter(|_| !has_parameter_environment && !has_pattern_parameters)
-        {
+        if let Some(rest) = simple_rest.filter(|_| !class_constructor) {
             prefix.push(SpannedIrOp {
                 op: IrOp::Bytecode(Instruction::Rest(rest)),
                 pc_site: None,
@@ -10630,6 +10729,29 @@ fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
             body_hoists,
         )?;
         prepend_hoist_prefix(&mut tree.functions[function_id], prefix)?;
+        if let Some(rest) = guarded_rest {
+            let guard = tree.functions[function_id]
+                .ops
+                .iter()
+                .position(|operation| {
+                    matches!(operation.op, IrOp::Bytecode(Instruction::CheckCtor))
+                })
+                .ok_or_else(|| Error::internal("class rest constructor lost its call guard"))?;
+            insert_hoist_fragment(
+                &mut tree.functions[function_id],
+                guard + 1,
+                vec![
+                    SpannedIrOp {
+                        op: IrOp::Bytecode(Instruction::Rest(rest)),
+                        pc_site: None,
+                    },
+                    SpannedIrOp {
+                        op: IrOp::Bytecode(Instruction::PutArg(rest)),
+                        pc_site: None,
+                    },
+                ],
+            )?;
+        }
         tree.functions[function_id].function_hoists_installed = true;
     }
     Ok(())
@@ -12639,6 +12761,12 @@ fn lower_unlinked_tree(
             let definition = local_definitions
                 .get_mut(usize::from(index))
                 .ok_or_else(|| Error::internal("local binding definition is out of bounds"))?;
+            let storage_scope = function
+                .scopes
+                .get(binding.storage_scope.0)
+                .ok_or_else(|| Error::internal("local binding scope is out of bounds"))?;
+            let is_parameter_initializer = storage_scope.is_parameter_initializer
+                && storage_scope.kind != ScopeKind::Parameter;
             let name = if debug_info == DebugInfoMode::StripDebug
                 && !retain_eval_names
                 && matches!(binding.kind, BindingKind::Lexical { .. })
@@ -12659,16 +12787,19 @@ fn lower_unlinked_tree(
                     name: Some(JsString::from_static(EVAL_VARIABLE_OBJECT_LOCAL_NAME)),
                     is_lexical: false,
                     is_const: false,
+                    is_parameter_initializer: false,
                     kind: ClosureVariableKind::EvalVariableObject,
                 },
                 BindingKind::ArgEvalVariableObject => UnlinkedVariableDefinition {
                     name: Some(JsString::from_static(ARG_EVAL_VARIABLE_OBJECT_LOCAL_NAME)),
                     is_lexical: false,
                     is_const: false,
+                    is_parameter_initializer: false,
                     kind: ClosureVariableKind::ArgEvalVariableObject,
                 },
                 BindingKind::WithObject => UnlinkedVariableDefinition::with_object(),
-            };
+            }
+            .with_parameter_initializer(is_parameter_initializer);
         }
         let scope_lifecycles = build_scope_lifecycles(
             &function,
@@ -12814,7 +12945,9 @@ fn lower_unlinked_tree(
             },
             function_kind: BytecodeFunctionKind::Normal,
             has_prototype: matches!(function.kind, FunctionKind::Ordinary),
-            constructor_kind: if matches!(function.kind, FunctionKind::Ordinary) {
+            constructor_kind: if matches!(function.kind, FunctionKind::Ordinary)
+                || function.class_constructor
+            {
                 ConstructorKind::Base
             } else {
                 ConstructorKind::None

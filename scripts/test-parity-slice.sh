@@ -110,6 +110,7 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/test-test262-parameter-direct-eval.sh
 ./scripts/test-test262-aggregate-error.sh
 ./scripts/test-test262-argument-spread.sh
+./scripts/test-test262-class-base.sh
 ./scripts/test-test262-full.sh
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ./scripts/check-rust-only.sh

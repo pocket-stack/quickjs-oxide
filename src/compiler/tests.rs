@@ -295,6 +295,7 @@ fn closure_slots_deduplicate_by_storage_identity_and_reject_metadata_conflicts()
         FunctionIrOptions {
             function_name: None,
             private_name_binding: false,
+            class_constructor: false,
             parameters: Vec::new(),
             defined_argument_count: 0,
             has_simple_parameter_list: true,
@@ -410,6 +411,7 @@ fn scope_graph_validation_rejects_invalid_definition_and_binding_identity() {
     malformed_scope.functions[0].scopes.push(super::IrScope {
         parent: Some(super::ScopeId(0)),
         kind: ScopeKind::ProgramBody,
+        is_parameter_initializer: false,
         bindings: Vec::new(),
     });
     malformed_scope.functions[0].body_scope = super::ScopeId(2);
@@ -607,6 +609,7 @@ fn captured_with_object_has_close_lifetime_without_lexical_tdz() {
             FunctionIrOptions {
                 function_name: None,
                 private_name_binding: false,
+                class_constructor: false,
                 parameters: Vec::new(),
                 defined_argument_count: 0,
                 has_simple_parameter_list: true,
@@ -620,6 +623,7 @@ fn captured_with_object_has_close_lifetime_without_lexical_tdz() {
         function.scopes.push(IrScope {
             parent: Some(function.body_scope),
             kind: ScopeKind::With,
+            is_parameter_initializer: false,
             bindings: Vec::new(),
         });
         function.locals.push(WITH_OBJECT_LOCAL_NAME.to_owned());
@@ -3619,6 +3623,127 @@ fn runtime_compiler_executes_anonymous_iife_parameters_and_direct_call() {
 }
 
 #[test]
+fn class_constructor_guard_precedes_observable_parameter_initialization() {
+    for source in [
+        "class C { constructor(a, b = 1, c) {} }",
+        "class C { constructor(a, b, c, d = 1, e) {} }",
+        "class C { constructor(a, b, ...rest) {} }",
+        "class C { constructor([a]) {} }",
+    ] {
+        let script = compile_unlinked_script(source).unwrap();
+        let constructor = script
+            .constants()
+            .iter()
+            .filter_map(|constant| constant.as_child())
+            .find(|function| {
+                function.metadata().constructor_kind == ConstructorKind::Base
+                    && !function.metadata().has_prototype
+            })
+            .expect("class constructor child");
+        validate_parameter_bytecode_layout(
+            constructor.metadata(),
+            constructor.code(),
+            &vec![false; usize::from(constructor.metadata().local_count)],
+            constructor.parameter_environment(),
+        )
+        .unwrap_or_else(|error| panic!("invalid constructor ABI for {source}: {error}"));
+        let guard = constructor
+            .code()
+            .iter()
+            .position(|instruction| matches!(instruction, Instruction::CheckCtor))
+            .expect("class constructor guard");
+        let first_parameter_operation = constructor
+            .code()
+            .iter()
+            .position(|instruction| {
+                matches!(instruction, Instruction::GetArg(_) | Instruction::Rest(_))
+            })
+            .expect("class constructor parameter operation");
+        assert!(
+            guard < first_parameter_operation,
+            "class guard followed parameter initialization for {source}"
+        );
+    }
+
+    let rest = compile_unlinked_script("class C { constructor(a, b, ...rest) {} }").unwrap();
+    let rest = rest
+        .constants()
+        .iter()
+        .filter_map(|constant| constant.as_child())
+        .find(|function| !function.metadata().has_prototype)
+        .expect("rest class constructor child");
+    assert!(rest.code().windows(3).any(|window| matches!(
+        window,
+        [
+            Instruction::CheckCtor,
+            Instruction::Rest(2),
+            Instruction::PutArg(2),
+        ]
+    )));
+
+    assert_eq!(
+        evaluate_in_context(
+            r#"(function(){
+                var effects=0;
+                class Defaulted { constructor(a,b,c=(effects+=1),d){} }
+                class Pattern { constructor([a=(effects+=10)]=[]){} }
+                class Rest {
+                    constructor(a,b,...rest){this.value=a+b+rest[0]+rest[1]}
+                }
+                var errors=[];
+                try { Defaulted(1,2); } catch (error) { errors.push(error.name); }
+                try { Pattern(); } catch (error) { errors.push(error.name); }
+                try { Rest(1,2,3,4); } catch (error) { errors.push(error.name); }
+                return errors.join(',')+'|'+effects+'|'+new Rest(10,10,20,2).value;
+            })()"#,
+        ),
+        Value::String(JsString::from_static("TypeError,TypeError,TypeError|0|42"))
+    );
+}
+
+#[test]
+fn class_name_scopes_in_parameter_initializers_are_not_body_lexicals() {
+    let original = "(function({ k = class i { [_ => i]() {} } } = {}) { var j=0; })()";
+    assert_eq!(evaluate_in_context(original), Value::Undefined);
+    assert_eq!(
+        evaluate_in_context(&format!("'use strict';{original}")),
+        Value::Undefined
+    );
+
+    assert_eq!(
+        evaluate_in_context(
+            "(function({k=class Inner { method(){return Inner} }}){return new k().method()===k})({})",
+        ),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        evaluate_in_context(
+            "(function(k=class Inner { method(){return Inner} }){return new k().method()===k})()",
+        ),
+        Value::Bool(true)
+    );
+
+    let script = compile_unlinked_script(
+        "(function({k=class Inner { method(){return Inner} }}){return k})({})",
+    )
+    .unwrap();
+    let function = script.constants()[0]
+        .as_child()
+        .expect("parameter function child");
+    assert!(function.local_definitions().iter().any(|definition| {
+        definition.is_lexical && definition.is_const && definition.is_parameter_initializer
+    }));
+}
+
+#[test]
+fn body_eval_after_default_parameters_keeps_parameter_bindings_visible() {
+    assert_eq!(
+        evaluate_in_context("(function(first, second = 1) { return eval('first + second'); })(41)",),
+        Value::Int(42)
+    );
+}
+
+#[test]
 fn compiler_marks_only_syntactic_eval_identifier_calls() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -4489,7 +4614,13 @@ fn parameter_environment_descendant_arguments_capture_keeps_a_body_only_prologue
         .parameter_environment()
         .expect("outer function has a parameter environment");
     assert_eq!(layout.synthetic_arguments_local, None);
-    validate_parameter_bytecode_layout(function.metadata(), function.code(), Some(layout)).unwrap();
+    validate_parameter_bytecode_layout(
+        function.metadata(),
+        function.code(),
+        &vec![false; usize::from(function.metadata().local_count)],
+        Some(layout),
+    )
+    .unwrap();
     let arguments_local = function
         .code()
         .windows(2)
@@ -7361,6 +7492,7 @@ fn parameter_assignment_prescan_retains_quickjs_bits_at_the_depth_bound() {
                 FunctionIrOptions {
                     function_name: Some("<scan-test>".to_owned()),
                     private_name_binding: false,
+                    class_constructor: false,
                     parameters: Vec::new(),
                     defined_argument_count: 0,
                     has_simple_parameter_list: true,
@@ -8115,6 +8247,7 @@ fn quickjs_closure_slot_limit_is_65534_and_uses_internal_error() {
         FunctionIrOptions {
             function_name: None,
             private_name_binding: false,
+            class_constructor: false,
             parameters: Vec::new(),
             defined_argument_count: 0,
             has_simple_parameter_list: true,

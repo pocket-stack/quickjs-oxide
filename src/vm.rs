@@ -31,6 +31,20 @@ pub(crate) enum Completion {
     Throw(Value),
 }
 
+/// Result of QuickJS `OP_define_class` at the VM/runtime boundary.
+///
+/// A successful definition replaces the two input operands with two freshly
+/// published outputs. JavaScript-visible failures stay typed as thrown values
+/// so an enclosing bytecode catch region can handle them normally.
+#[derive(Debug, PartialEq)]
+pub(crate) enum DefineClassOutcome {
+    Defined {
+        constructor: Value,
+        prototype: Value,
+    },
+    Throw(Value),
+}
+
 /// Caller state attached to one original direct-eval invocation.
 ///
 /// The VM constructs this only after the realm-local original-eval identity
@@ -368,6 +382,15 @@ pub(crate) trait VmHost {
         kind: DefineMethodKind,
         enumerable: bool,
     ) -> Result<Completion, Error>;
+    /// QuickJS `OP_define_class`: publish a constructor/prototype pair from a
+    /// compiler-created constructor closure and its evaluated parent value.
+    fn define_class(
+        &mut self,
+        parent: Value,
+        constructor: Value,
+        name: u32,
+        has_heritage: bool,
+    ) -> Result<DefineClassOutcome, Error>;
     /// QuickJS `OP_define_array_el`: define one own C_W_E data property using
     /// the dynamic internal Array-literal index. The VM preserves both base
     /// and index on success.
@@ -567,6 +590,10 @@ struct DetachedHost<'a> {
     #[cfg(test)]
     defined_computed_methods: Vec<(Value, Value, Value, DefineMethodKind, bool)>,
     #[cfg(test)]
+    define_class_results: VecDeque<DefineClassOutcome>,
+    #[cfg(test)]
+    define_class_inputs: Vec<(Value, Value, u32, bool)>,
+    #[cfg(test)]
     define_array_element_results: VecDeque<Completion>,
     #[cfg(test)]
     defined_array_elements: Vec<(Value, Value, Value)>,
@@ -649,6 +676,10 @@ impl<'a> DetachedHost<'a> {
             define_method_computed_results: VecDeque::new(),
             #[cfg(test)]
             defined_computed_methods: Vec::new(),
+            #[cfg(test)]
+            define_class_results: VecDeque::new(),
+            #[cfg(test)]
+            define_class_inputs: Vec::new(),
             #[cfg(test)]
             define_array_element_results: VecDeque::new(),
             #[cfg(test)]
@@ -1257,6 +1288,28 @@ impl VmHost for DetachedHost<'_> {
         let _ = (base, key, function, kind, enumerable);
         Err(Error::internal(
             "detached VM cannot define runtime-owned computed methods",
+        ))
+    }
+
+    fn define_class(
+        &mut self,
+        parent: Value,
+        constructor: Value,
+        name: u32,
+        has_heritage: bool,
+    ) -> Result<DefineClassOutcome, Error> {
+        #[cfg(test)]
+        {
+            self.define_class_inputs
+                .push((parent, constructor, name, has_heritage));
+            if let Some(outcome) = self.define_class_results.pop_front() {
+                return Ok(outcome);
+            }
+        }
+        #[cfg(not(test))]
+        let _ = (parent, constructor, name, has_heritage);
+        Err(Error::internal(
+            "detached VM cannot define runtime-owned classes",
         ))
     }
 
@@ -1914,6 +1967,21 @@ impl CallFrame {
                     Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
                 }
             }
+            Instruction::DefineClass { name, has_heritage } => {
+                let (parent, constructor) = self.pop_pair()?;
+                match host.define_class(parent, constructor, *name, *has_heritage)? {
+                    DefineClassOutcome::Defined {
+                        constructor,
+                        prototype,
+                    } => {
+                        self.stack.push(constructor);
+                        self.stack.push(prototype);
+                    }
+                    DefineClassOutcome::Throw(value) => {
+                        return Ok(Some(Completion::Throw(value)));
+                    }
+                }
+            }
             Instruction::SetProto => {
                 let (object, prototype) = self.pop_pair()?;
                 let retained_object = object.clone();
@@ -2331,6 +2399,7 @@ impl CallFrame {
                     | Instruction::SetNameComputed
                     | Instruction::DefineMethod { .. }
                     | Instruction::DefineMethodComputed { .. }
+                    | Instruction::DefineClass { .. }
                     | Instruction::SetProto
                     | Instruction::CopyDataProperties
                     | Instruction::CopyDataPropertiesExcluded { .. }
@@ -2472,8 +2541,18 @@ impl CallFrame {
             Instruction::SetNameComputed => {
                 unreachable!("computed-name literal dispatch was bypassed")
             }
-            Instruction::DefineMethod { .. } | Instruction::DefineMethodComputed { .. } => {
+            Instruction::DefineMethod { .. }
+            | Instruction::DefineMethodComputed { .. }
+            | Instruction::DefineClass { .. } => {
                 unreachable!("object method dispatch was bypassed")
+            }
+            Instruction::CheckCtor => {
+                if matches!(self.new_target, Value::Undefined) {
+                    return Err(Error::new(
+                        ErrorKind::Type,
+                        "class constructors must be invoked with 'new'",
+                    ));
+                }
             }
             Instruction::ThrowReadOnly(index) => {
                 self.pop()?;
@@ -2855,6 +2934,11 @@ impl CallFrame {
             Instruction::Nip => {
                 let (_, value) = self.pop_pair()?;
                 self.stack.push(value);
+            }
+            Instruction::Swap => {
+                let (left, right) = self.pop_pair()?;
+                self.stack.push(right);
+                self.stack.push(left);
             }
             Instruction::Dup => {
                 let value = self
@@ -3777,8 +3861,9 @@ mod tests {
     use crate::value::{JsString, Value};
 
     use super::{
-        CallFrame, Completion, DetachedDynamicEnvironmentOperation, DetachedEvalVariableOperation,
-        DetachedHost, DirectEvalInvocation, Vm, VmHost, number_to_int32, number_to_uint32,
+        CallFrame, Completion, DefineClassOutcome, DetachedDynamicEnvironmentOperation,
+        DetachedEvalVariableOperation, DetachedHost, DirectEvalInvocation, Vm, VmHost,
+        number_to_int32, number_to_uint32,
     };
 
     #[test]
@@ -3797,6 +3882,104 @@ mod tests {
         };
 
         assert_eq!(Vm::new().execute(&function).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn class_definition_opcodes_preserve_quickjs_stack_order() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Undefined,
+                Instruction::PushI32(7),
+                Instruction::DefineClass {
+                    name: 0,
+                    has_heritage: false,
+                },
+                Instruction::Nip,
+                Instruction::Return,
+            ],
+            constants: vec![Value::String(JsString::from_static("C"))],
+            local_count: 0,
+            max_stack: 2,
+        };
+        function.verify().unwrap();
+        let mut host = DetachedHost::new(&function);
+        host.define_class_results
+            .push_back(DefineClassOutcome::Defined {
+                constructor: Value::Int(11),
+                prototype: Value::Int(42),
+            });
+        assert_eq!(
+            CallFrame::new(2)
+                .execute(&function.code, &mut host)
+                .unwrap(),
+            Completion::Return(Value::Int(42))
+        );
+        assert_eq!(
+            host.define_class_inputs,
+            [(Value::Undefined, Value::Int(7), 0, false)]
+        );
+
+        let thrown = Value::String(JsString::from_static("class throw"));
+        let mut host = DetachedHost::new(&function);
+        host.define_class_results
+            .push_back(DefineClassOutcome::Throw(thrown.clone()));
+        assert_eq!(
+            CallFrame::new(2)
+                .execute(&function.code, &mut host)
+                .unwrap(),
+            Completion::Throw(thrown)
+        );
+    }
+
+    #[test]
+    fn check_ctor_rejects_calls_and_accepts_construction_frames() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::CheckCtor,
+                Instruction::PushI32(42),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        let mut host = DetachedHost::new(&function);
+        let error = CallFrame::new(1)
+            .execute(&function.code, &mut host)
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Type);
+        assert_eq!(
+            error.message(),
+            "class constructors must be invoked with 'new'"
+        );
+
+        let mut frame = CallFrame::new(1);
+        frame.new_target = Value::Int(1);
+        let mut host = DetachedHost::new(&function);
+        assert_eq!(
+            frame.execute(&function.code, &mut host).unwrap(),
+            Completion::Return(Value::Int(42))
+        );
+    }
+
+    #[test]
+    fn swap_exchanges_only_the_top_two_values() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(20),
+                Instruction::PushI32(22),
+                Instruction::Swap,
+                Instruction::Sub,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        assert_eq!(Vm::new().execute(&function).unwrap(), Value::Int(2));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # R1s refreshes the complete RegExp match-indices slice after regexp-dotall.
-# R2f methods raise it to 48 passes and R2g accessors to 52; independent
-# v-mode, host, parser, and harness requirements remain gated.
+# R2f methods raise it to 48 passes, R2g accessors to 52, and later binding and
+# rest-parameter support to 58; independent v-mode and host requirements remain.
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
@@ -13,10 +13,10 @@ timeout_ms=30000
 paths=31
 variants=62
 runnable=58
-passes=52
+passes=58
 manifest_sha256=42718ed958cfbd5fe5a70876274f369fc84bd066910fea474f345fdc96d3aa33
 keys_sha256=fd36b6d7b2f0d62b61a6a7b292716295c5317947e4213e493c397625b4494460
-nonpass_sha256=439e786d417d501333930e5985b6b18606284868817f265929bbf41364b1c29c
-tsv_sha256=074704be837f38bc862b209d1c1c3293be05c01ccedd46e95db2007d3f974434
-jsonl_sha256=87342126b18fa730a4ffc5d864d5e242ce81081b24695f369c7befff4df7660a
-summary=harness-error=4 pass=52 unsupported-feature=2 unsupported-host-create-realm=2 unsupported-parser=2
+nonpass_sha256=5d33dc0cb6f266c73e6585dfbd1dc66acbfd4ef1f964bf0376d949d98b50f8f1
+tsv_sha256=da103588eaf15c8864b2aff5966f5e7a60fe533ca85be14607956695cf193b1d
+jsonl_sha256=ec5f84df5135174cbe78b91218a13879a53e758d97c583120c32b7a8026b5f7a
+summary=pass=58 unsupported-feature=2 unsupported-host-create-realm=2

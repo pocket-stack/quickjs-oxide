@@ -93,7 +93,7 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_paths" != "31" \
     || "$expected_variants" != "62" \
     || "$expected_runnable" != "58" \
-    || "$expected_passes" != "52" ]]; then
+    || "$expected_passes" != "58" ]]; then
     echo "error: match-indices baseline metadata drifted" >&2
     exit 1
 fi

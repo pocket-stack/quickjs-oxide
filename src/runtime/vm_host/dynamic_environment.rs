@@ -437,6 +437,7 @@ mod tests {
             name: Some(Atom::from_raw(71)),
             is_lexical: false,
             is_const: false,
+            is_parameter_initializer: false,
             kind,
         }]);
         host.locals = vec![FrameBinding::Direct(Value::Object(object))];

@@ -1,0 +1,400 @@
+//! Base class parsing and lowering.
+//!
+//! This is the first vertical slice of QuickJS `js_parse_class`: class name
+//! scopes, base constructors, and synchronous methods/accessors. Heritage,
+//! fields, private elements, static blocks, and generator/async methods remain
+//! explicit typed frontiers rather than being accepted with partial semantics.
+
+use super::function::ParsedFunctionDefinition;
+use super::*;
+use crate::bytecode::DefineMethodKind;
+
+#[derive(Clone, Debug)]
+enum ClassPropertyKey {
+    Fixed { value: JsString },
+    Computed,
+}
+
+impl<'source> Parser<'source> {
+    pub(super) fn parse_class_declaration(&mut self) -> Result<(), Error> {
+        self.parse_class(false)
+    }
+
+    pub(super) fn parse_class_expression(&mut self) -> Result<(), Error> {
+        self.parse_class(true)
+    }
+
+    /// Parse one base ClassDefinition while retaining QuickJS's constructor
+    /// constant patching model. `DefineClass` must execute before computed
+    /// method keys, so a placeholder closure operand is emitted first and
+    /// patched after the body reveals an explicit or default constructor.
+    fn parse_class(&mut self, expression: bool) -> Result<(), Error> {
+        let class_token = self.current().clone();
+        let class_start = source_offset(class_token.span)?;
+        let outer_strict = self.current_ir().strict;
+
+        // QuickJS temporarily parses the class under JS_MODE_STRICT, which
+        // controls reserved words and class-method compilation. Its later
+        // outer-function variable-resolution pass runs after restoring the
+        // surrounding mode, so evaluated computed keys retain that outer
+        // function's runtime strictness. Do not synthesize a frame-mode toggle
+        // here; the pinned oracle observably permits sloppy assignment/eval in
+        // a computed key inside a sloppy function.
+        self.current_ir_mut().strict = true;
+        self.relex_current_with_strict(true)?;
+        self.advance()?;
+
+        let name = if let TokenKind::Identifier(identifier) = self.current().kind.clone() {
+            let span = self.current().span;
+            // Pinned QuickJS checks only reserved-identifier status for a
+            // ClassBinding, even though it parses the surrounding definition
+            // in strict mode. In particular, `eval` and `arguments` remain
+            // accepted class names.
+            validate_identifier_reservation(&identifier, span, true, IdentifierContext::Variable)?;
+            self.advance()?;
+            Some((identifier.value, span))
+        } else {
+            None
+        };
+        if !expression && name.is_none() {
+            return Err(self.syntax_here("class statement requires a name"));
+        }
+
+        // The declaration binding is distinct from the immutable inner class
+        // name binding. It is registered in the surrounding scope before the
+        // class evaluation scope is entered, just like QuickJS JS_VAR_DEF_LET.
+        if !expression {
+            let (name, span) = name
+                .as_ref()
+                .ok_or_else(|| Error::internal("class declaration lost its name"))?;
+            self.register_lexical_binding(name, *span, self.current().span, false, false)?;
+        }
+
+        let class_scope = self.push_scope(ScopeKind::Block);
+        if let Some((name, span)) = &name {
+            // This scope already covers a future heritage expression, so a
+            // same-name `extends C` observes the inner TDZ rather than the
+            // declaration outside the class.
+            self.register_lexical_binding(name, *span, self.current().span, true, false)?;
+        }
+
+        if matches!(self.current().kind, TokenKind::Keyword(Keyword::Extends)) {
+            return Err(self.unsupported_here(
+                "class heritage and derived constructors are not implemented yet",
+            ));
+        }
+        self.expect_punctuator(Punctuator::LeftBrace)?;
+
+        self.emit_instruction(Instruction::Undefined)?;
+        let constructor_placeholder = self.emit(IrOp::MakeClosure(u32::MAX))?;
+        let class_name = name.as_ref().map_or_else(
+            || Ok(JsString::from_static("")),
+            |(name, _)| JsString::try_from_utf8(name),
+        )?;
+        let class_name_constant =
+            self.add_constant(IrConstant::Primitive(Value::String(class_name)))?;
+        self.emit_instruction(Instruction::DefineClass {
+            name: class_name_constant,
+            has_heritage: false,
+        })?;
+
+        let mut constructor = None;
+        while !self.is_punctuator(Punctuator::RightBrace) {
+            if self.at_eof() {
+                return Err(self.syntax_here("unterminated class body"));
+            }
+            if self.consume_punctuator(Punctuator::Semicolon)? {
+                continue;
+            }
+            self.parse_class_element(&mut constructor)?;
+        }
+        let closing_brace = self.current().span;
+        self.advance()?;
+
+        let (constructor_constant, constructor_child) = match constructor {
+            Some(parsed) => (parsed.constant, parsed.child),
+            None => self.synthesize_base_class_constructor(class_token.span)?,
+        };
+        let class_end = SourceOffset::try_from_usize(closing_brace.end.byte_offset)
+            .map_err(|error| Error::internal(error.to_string()))?;
+        {
+            let constructor = self
+                .functions
+                .get_mut(constructor_child)
+                .ok_or_else(|| Error::internal("class constructor child disappeared"))?;
+            constructor.class_constructor = true;
+            constructor.function_name = Some(
+                name.as_ref()
+                    .map_or_else(String::new, |(name, _)| name.clone()),
+            );
+            constructor.source.span = class_token.span;
+            constructor.source.definition = class_start;
+            constructor.source.range = Some(class_start..class_end);
+        }
+        let placeholder = self
+            .current_ir_mut()
+            .ops
+            .get_mut(constructor_placeholder)
+            .ok_or_else(|| Error::internal("class constructor placeholder disappeared"))?;
+        let IrOp::MakeClosure(index) = &mut placeholder.op else {
+            return Err(Error::internal(
+                "class constructor placeholder changed instruction kind",
+            ));
+        };
+        *index = constructor_constant;
+
+        // QuickJS keeps `ctor, proto` throughout method publication, then
+        // initializes the private class-name binding only after dropping the
+        // prototype. Computed names therefore correctly observe its TDZ.
+        self.emit_instruction(Instruction::Drop)?;
+        if let Some((name, span)) = &name {
+            self.emit_instruction(Instruction::Dup)?;
+            self.emit_identifier(name.clone(), *span, IdentifierAccess::Initialize)?;
+        }
+        self.pop_scope(class_scope)?;
+
+        self.current_ir_mut().strict = outer_strict;
+        self.relex_current_with_strict(outer_strict)?;
+        if expression {
+            self.anonymous_function_definition = name.is_none().then_some(constructor_child);
+        } else {
+            let (name, span) =
+                name.ok_or_else(|| Error::internal("class declaration lost its outer binding"))?;
+            self.emit_identifier(name, span, IdentifierAccess::Initialize)?;
+            self.anonymous_function_definition = None;
+        }
+        Ok(())
+    }
+
+    fn parse_class_element(
+        &mut self,
+        constructor: &mut Option<ParsedFunctionDefinition>,
+    ) -> Result<(), Error> {
+        let mut is_static = false;
+        if matches!(self.current().kind, TokenKind::Keyword(Keyword::Static)) {
+            let next = self.class_token_after_current()?;
+            if !matches!(
+                next.kind,
+                TokenKind::Punctuator(
+                    Punctuator::LeftParen
+                        | Punctuator::Semicolon
+                        | Punctuator::Equal
+                        | Punctuator::RightBrace
+                )
+            ) {
+                is_static = true;
+                self.advance()?;
+                if self.is_punctuator(Punctuator::LeftBrace) {
+                    return Err(
+                        self.unsupported_here("class static blocks are not implemented yet")
+                    );
+                }
+            }
+        }
+
+        let function_span = self.current().span;
+        if self.is_punctuator(Punctuator::Multiply) {
+            return Err(self.unsupported_here("class generator methods are not implemented yet"));
+        }
+        if self.contextual_class_async_method_ahead()? {
+            return Err(self.unsupported_here("async class methods are not implemented yet"));
+        }
+
+        let mut method_kind = DefineMethodKind::Method;
+        if let TokenKind::Identifier(identifier) = &self.current().kind
+            && !identifier.has_escape
+            && matches!(identifier.value.as_str(), "get" | "set")
+        {
+            let next = self.class_token_after_current()?;
+            if !next.line_terminator_before && Self::class_property_name_starts(&next.kind) {
+                method_kind = if identifier.value == "get" {
+                    DefineMethodKind::Getter
+                } else {
+                    DefineMethodKind::Setter
+                };
+                self.advance()?;
+            }
+        }
+
+        if is_static {
+            self.emit_instruction(Instruction::Swap)?;
+        }
+        let key = self.parse_class_property_key()?;
+        if !self.is_punctuator(Punctuator::LeftParen) {
+            return Err(self.unsupported_here("class fields are not implemented yet"));
+        }
+
+        let fixed = match &key {
+            ClassPropertyKey::Fixed { value } => Some(value),
+            ClassPropertyKey::Computed => None,
+        };
+        let is_constructor_name =
+            fixed.is_some_and(|name| *name == JsString::from_static("constructor"));
+        if !is_static && is_constructor_name && method_kind != DefineMethodKind::Method {
+            return Err(Error::syntax(
+                "invalid method name",
+                source_span(function_span),
+            ));
+        }
+        if is_static && fixed.is_some_and(|name| *name == JsString::from_static("prototype")) {
+            return Err(Error::syntax(
+                "invalid method name",
+                source_span(function_span),
+            ));
+        }
+
+        if !is_static && method_kind == DefineMethodKind::Method && is_constructor_name {
+            if constructor.is_some() {
+                return Err(Error::syntax(
+                    "property constructor appears more than once",
+                    source_span(function_span),
+                ));
+            }
+            *constructor = Some(self.parse_base_class_constructor_definition(function_span)?);
+            self.anonymous_function_definition = None;
+        } else {
+            self.parse_object_method_definition(function_span, method_kind)?;
+            match key {
+                ClassPropertyKey::Fixed { value } => {
+                    let key = self.add_constant(IrConstant::Primitive(Value::String(value)))?;
+                    self.emit_instruction(Instruction::DefineMethod {
+                        key,
+                        kind: method_kind,
+                        enumerable: false,
+                    })?;
+                }
+                ClassPropertyKey::Computed => {
+                    self.emit_instruction(Instruction::DefineMethodComputed {
+                        kind: method_kind,
+                        enumerable: false,
+                    })?;
+                }
+            }
+        }
+        if is_static {
+            self.emit_instruction(Instruction::Swap)?;
+        }
+        Ok(())
+    }
+
+    fn parse_class_property_key(&mut self) -> Result<ClassPropertyKey, Error> {
+        let token = self.current().clone();
+        let value = match token.kind {
+            TokenKind::Identifier(identifier) => {
+                self.advance()?;
+                JsString::try_from_utf8(&identifier.value)?
+            }
+            TokenKind::Keyword(keyword) => {
+                self.advance()?;
+                JsString::from_static(keyword.as_str())
+            }
+            TokenKind::String(string) => {
+                if string.has_legacy_octal_escape {
+                    return Err(Error::syntax(
+                        "legacy octal escapes are forbidden in strict mode",
+                        source_span(token.span),
+                    ));
+                }
+                self.advance()?;
+                JsString::try_from_utf16(string.value.utf16)?
+            }
+            TokenKind::Number(number) => {
+                if matches!(
+                    number.kind,
+                    NumberKind::LegacyOctal | NumberKind::LegacyDecimal
+                ) {
+                    return Err(Error::syntax(
+                        "legacy leading-zero numeric literals are forbidden in strict mode",
+                        source_span(token.span),
+                    ));
+                }
+                self.advance()?;
+                parse_number(&number)
+                    .map_err(|message| Error::syntax(message, source_span(token.span)))?
+                    .to_js_string()?
+            }
+            TokenKind::Punctuator(Punctuator::LeftBracket) => {
+                self.advance_expression_start()?;
+                self.parse_assignment_allow_in()?;
+                self.emit_instruction(Instruction::ToPropKey)?;
+                self.expect_punctuator(Punctuator::RightBracket)?;
+                return Ok(ClassPropertyKey::Computed);
+            }
+            TokenKind::PrivateIdentifier(_) => {
+                return Err(self.unsupported_here("private class elements are not implemented yet"));
+            }
+            _ => return Err(self.syntax_here("invalid property name")),
+        };
+        Ok(ClassPropertyKey::Fixed { value })
+    }
+
+    fn contextual_class_async_method_ahead(&self) -> Result<bool, Error> {
+        let TokenKind::Identifier(identifier) = &self.current().kind else {
+            return Ok(false);
+        };
+        if identifier.value != "async" || identifier.has_escape {
+            return Ok(false);
+        }
+        let next = self.class_token_after_current()?;
+        Ok(!next.line_terminator_before
+            && (Self::class_property_name_starts(&next.kind)
+                || matches!(next.kind, TokenKind::Punctuator(Punctuator::Multiply))))
+    }
+
+    fn class_property_name_starts(kind: &TokenKind<'_>) -> bool {
+        matches!(
+            kind,
+            TokenKind::Identifier(_)
+                | TokenKind::Keyword(_)
+                | TokenKind::String(_)
+                | TokenKind::Number(_)
+                | TokenKind::PrivateIdentifier(_)
+                | TokenKind::Punctuator(Punctuator::LeftBracket)
+        )
+    }
+
+    fn class_token_after_current(&self) -> Result<Token<'source>, Error> {
+        let mut lexer = self.lexer.clone();
+        lexer.seek(self.current().span.end);
+        lexer.next_token().map_err(lex_error)
+    }
+
+    fn synthesize_base_class_constructor(
+        &mut self,
+        class_span: Span,
+    ) -> Result<(u32, FunctionId), Error> {
+        let parent = self.current_function;
+        let child = self.functions.len();
+        let definition_scope = self.current_ir().current_scope;
+        self.functions.push(FunctionIr::new(
+            Some(ParentLink {
+                function: parent,
+                definition_scope,
+            }),
+            FunctionKind::Method,
+            FunctionSourceInfo {
+                span: class_span,
+                definition: source_offset(class_span)?,
+                range: None,
+            },
+            FunctionIrOptions {
+                function_name: None,
+                private_name_binding: false,
+                class_constructor: true,
+                parameters: Vec::new(),
+                defined_argument_count: 0,
+                has_simple_parameter_list: true,
+                rest_parameter: None,
+                strict: true,
+                super_capabilities: SuperCapabilities::PROPERTY,
+            },
+        )?);
+        self.current_function = child;
+        self.emit_instruction(Instruction::CheckCtor)?;
+        self.emit_instruction(Instruction::Undefined)?;
+        self.emit_instruction(Instruction::Return)?;
+        self.current_function = parent;
+        let constant = self.add_constant(IrConstant::Child(child))?;
+        Ok((constant, child))
+    }
+}
