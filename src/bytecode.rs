@@ -283,6 +283,12 @@ pub enum Instruction {
     /// HomeObject edge, initialize the authenticated private-method lexical
     /// cell, and retain only the HomeObject on the operand stack.
     InitializePrivateMethod(u16),
+    /// QuickJS private-accessor declaration bootstrap. Consume the class-side
+    /// HomeObject and freshly instantiated getter or setter closure, install
+    /// the hidden HomeObject edge, initialize the authenticated accessor cell,
+    /// and retain only the HomeObject. Unlike a private method, an accessor's
+    /// public function name remains the empty string.
+    InitializePrivateAccessor(u16),
     /// QuickJS `OP_get_private_field`: own-only private field read.
     GetPrivateField(PrivateNameSource),
     /// Call/compound counterpart which retains the original receiver.
@@ -627,7 +633,7 @@ impl Instruction {
             | Self::GetVarUndef(_)
             | Self::DeleteVar(_) => (0, 1),
             Self::InitializePrivateName(_) => (0, 0),
-            Self::InitializePrivateMethod(_) => (2, 1),
+            Self::InitializePrivateMethod(_) | Self::InitializePrivateAccessor(_) => (2, 1),
             Self::SetName(_) | Self::ToObject => (1, 1),
             Self::MarkSuperCall => (2, 2),
             Self::GetRefValue(_) | Self::GetRefValueUndef(_) => (1, 2),
@@ -816,6 +822,7 @@ impl BytecodeFunction {
                 instruction,
                 Instruction::InitializePrivateName(_)
                     | Instruction::InitializePrivateMethod(_)
+                    | Instruction::InitializePrivateAccessor(_)
                     | Instruction::GetPrivateField(_)
                     | Instruction::GetPrivateField2(_)
                     | Instruction::PutPrivateField(_)

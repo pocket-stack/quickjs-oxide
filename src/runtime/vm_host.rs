@@ -50,6 +50,16 @@ enum FrameBinding {
     Captured(VarRefRoot),
 }
 
+const fn is_private_callable_kind(kind: ClosureVariableKind) -> bool {
+    matches!(
+        kind,
+        ClosureVariableKind::PrivateMethod
+            | ClosureVariableKind::PrivateGetter
+            | ClosureVariableKind::PrivateSetter
+            | ClosureVariableKind::PrivateGetterSetter
+    )
+}
+
 /// QuickJS keeps access flags on each closure descriptor rather than on the
 /// shared VarRef. Its ordinary direct-eval prepass may therefore expose one
 /// FunctionName cell through a mutable Normal descriptor. Publication
@@ -142,16 +152,16 @@ fn capture_frame_binding(
             Ok(root)
         }
         FrameBinding::PrivateCallable(callable) => {
-            if descriptor.kind != ClosureVariableKind::PrivateMethod
+            if !is_private_callable_kind(descriptor.kind)
                 || !descriptor.is_lexical
                 || !descriptor.is_const
             {
                 return Err(Error::internal(
-                    "private-method frame cell used an incompatible closure descriptor",
+                    "private-callable frame cell used an incompatible closure descriptor",
                 ));
             }
             let root = runtime
-                .new_private_method_var_ref(callable)
+                .new_private_callable_var_ref(callable, descriptor.kind)
                 .map_err(|error| Error::internal(error.to_string()))?;
             *binding = FrameBinding::Captured(root.clone());
             Ok(root)
@@ -194,13 +204,11 @@ fn close_frame_binding(
                 .private_name_from_raw_var_ref(root)
                 .map_err(runtime_error_to_vm_error)?,
         ),
-        RawValue::Object(_) if kind == ClosureVariableKind::PrivateMethod => {
-            FrameBinding::PrivateCallable(
-                runtime
-                    .private_method_from_raw_var_ref(root)
-                    .map_err(runtime_error_to_vm_error)?,
-            )
-        }
+        RawValue::Object(_) if is_private_callable_kind(kind) => FrameBinding::PrivateCallable(
+            runtime
+                .private_callable_from_raw_var_ref(root, kind)
+                .map_err(runtime_error_to_vm_error)?,
+        ),
         _ if kind.is_private() => {
             return Err(Error::internal(
                 "captured private-element cell contains an incompatible value",
@@ -2926,6 +2934,15 @@ impl VmHost for RuntimeVmHost {
         method: Value,
     ) -> Result<(), Error> {
         self.initialize_private_method_binding(index, home_object, method)
+    }
+
+    fn initialize_private_accessor(
+        &mut self,
+        index: u16,
+        home_object: Value,
+        accessor: Value,
+    ) -> Result<(), Error> {
+        self.initialize_private_accessor_binding(index, home_object, accessor)
     }
 
     fn get_private_field(

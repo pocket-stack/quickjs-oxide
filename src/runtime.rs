@@ -52,10 +52,10 @@ use crate::heap::{
     NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData, ObjectExtensibilityKind,
     ObjectId, ObjectIntegrityKind, ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind,
     ObjectPayload, ParameterEnvironmentLayout, PrimitiveKind, PrimitiveObjectData, PropertySlot,
-    RawValue, ReflectKind, RegExpNativeKind, ShapeId, StringCaseKind, StringCharAtKind,
-    StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind, StringReplaceKind,
-    StringStaticKind, StringSubrangeKind, StringTrimKind, StringWellFormedKind, SymbolRegistryKind,
-    VarRefData, VarRefId, VariableDefinition,
+    PublishedPrivateBindings, RawValue, ReflectKind, RegExpNativeKind, ShapeId, StringCaseKind,
+    StringCharAtKind, StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind,
+    StringReplaceKind, StringStaticKind, StringSubrangeKind, StringTrimKind, StringWellFormedKind,
+    SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -2825,7 +2825,10 @@ impl Runtime {
                     | ClosureVariableKind::ArgEvalVariableObject
                     | ClosureVariableKind::WithObject
                     | ClosureVariableKind::PrivateField
-                    | ClosureVariableKind::PrivateMethod => {
+                    | ClosureVariableKind::PrivateMethod
+                    | ClosureVariableKind::PrivateGetter
+                    | ClosureVariableKind::PrivateSetter
+                    | ClosureVariableKind::PrivateGetterSetter => {
                         return Err(RuntimeError::Invariant(
                             "global declaration has non-global binding metadata",
                         ));
@@ -2879,7 +2882,10 @@ impl Runtime {
                         | ClosureVariableKind::ArgEvalVariableObject
                         | ClosureVariableKind::WithObject
                         | ClosureVariableKind::PrivateField
-                        | ClosureVariableKind::PrivateMethod => {
+                        | ClosureVariableKind::PrivateMethod
+                        | ClosureVariableKind::PrivateGetter
+                        | ClosureVariableKind::PrivateSetter
+                        | ClosureVariableKind::PrivateGetterSetter => {
                             return Err(RuntimeError::Invariant(
                                 "global declaration has non-global binding metadata",
                             ));
@@ -4062,9 +4068,16 @@ impl Runtime {
             let eval_environments = function.eval_environments;
             let argument_definitions = function.argument_definitions;
             let local_definitions = function.local_definitions;
+            let private_binding_publication =
+                bytecode_publish::prepare_private_binding_publication(
+                    &local_definitions,
+                    &closure_variables,
+                    &linked_constants,
+                )?;
             let mut linked_argument_definitions = Vec::with_capacity(argument_definitions.len());
             let mut linked_local_definitions = Vec::with_capacity(local_definitions.len());
             let mut linked_eval_environments = Vec::with_capacity(eval_environments.len());
+            let mut linked_private_bindings = PublishedPrivateBindings::none();
             let mut unlinked_debug = function.debug;
             let mut linked_debug = None;
             let mut auxiliary_atoms = Vec::new();
@@ -4154,6 +4167,8 @@ impl Runtime {
                             kind: definition.kind,
                         });
                     }
+                    linked_private_bindings = private_binding_publication
+                        .authenticate(&linked_local_definitions, &closure_variables)?;
                     linked_eval_environments = bytecode_publish::link_eval_environments(
                         &mut state,
                         eval_environments,
@@ -4177,6 +4192,7 @@ impl Runtime {
                     argument_definitions: linked_argument_definitions.into(),
                     local_definitions: linked_local_definitions.into(),
                     closure_variables: closure_variables.into(),
+                    private_bindings: linked_private_bindings,
                     eval_environments: linked_eval_environments.into(),
                     debug: linked_debug,
                     auxiliary_atoms: auxiliary_atoms.into_boxed_slice(),

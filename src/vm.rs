@@ -499,6 +499,20 @@ pub(crate) trait VmHost {
             "VM host cannot initialize a private method",
         ))
     }
+    /// Initialize one authenticated private getter/setter cell from a fresh
+    /// callable while retaining its class-side HomeObject in the VM. The host
+    /// must not infer a public function name: pinned QuickJS leaves private
+    /// accessor names empty.
+    fn initialize_private_accessor(
+        &mut self,
+        _index: u16,
+        _home_object: Value,
+        _accessor: Value,
+    ) -> Result<(), Error> {
+        Err(Error::internal(
+            "VM host cannot initialize a private accessor",
+        ))
+    }
     fn get_private_field(
         &mut self,
         _source: PrivateNameSource,
@@ -2959,6 +2973,11 @@ impl CallFrame {
             Instruction::InitializePrivateMethod(index) => {
                 let (home_object, method) = self.pop_pair()?;
                 host.initialize_private_method(*index, home_object.clone(), method)?;
+                self.stack.push(home_object);
+            }
+            Instruction::InitializePrivateAccessor(index) => {
+                let (home_object, accessor) = self.pop_pair()?;
+                host.initialize_private_accessor(*index, home_object.clone(), accessor)?;
                 self.stack.push(home_object);
             }
             Instruction::GetPrivateField(source) | Instruction::GetPrivateField2(source) => {

@@ -14,6 +14,13 @@ pub(super) fn private_binding_name(name: &str) -> String {
     binding
 }
 
+pub(super) fn private_setter_binding_name(name: &str) -> String {
+    let mut binding = String::with_capacity(name.len().saturating_add(5));
+    binding.push_str(name);
+    binding.push_str("<set>");
+    binding
+}
+
 impl<'source> Parser<'source> {
     pub(super) fn emit_private_field_get(
         &mut self,
@@ -96,14 +103,18 @@ impl<'source> Parser<'source> {
     }
 }
 
-pub(super) fn resolve_private_field_operation(
+#[derive(Clone, Copy, Debug)]
+struct PrivateBindingResolution {
+    kind: BindingKind,
+    source: PrivateNameSource,
+}
+
+fn resolve_private_binding(
     tree: &mut FunctionTree,
     consuming_function: FunctionId,
     use_scope: ScopeId,
     name: &str,
-    span: Span,
-    access: PrivateFieldAccess,
-) -> Result<IrOp, Error> {
+) -> Result<Option<PrivateBindingResolution>, Error> {
     let mut owner = consuming_function;
     let mut scope = use_scope;
 
@@ -131,7 +142,11 @@ pub(super) fn resolve_private_field_operation(
             if let Some(binding) = exact {
                 if !matches!(
                     binding.kind,
-                    BindingKind::PrivateField { .. } | BindingKind::PrivateMethod { .. }
+                    BindingKind::PrivateField { .. }
+                        | BindingKind::PrivateMethod { .. }
+                        | BindingKind::PrivateGetter { .. }
+                        | BindingKind::PrivateSetter { .. }
+                        | BindingKind::PrivateGetterSetter { .. }
                 ) {
                     return Err(Error::internal(
                         "private spelling resolved to a non-private binding",
@@ -164,47 +179,10 @@ pub(super) fn resolve_private_field_operation(
                     }
                     PrivateNameSource::Closure(index)
                 };
-                let instruction = match (binding.kind, access) {
-                    (_, PrivateFieldAccess::Get) => Instruction::GetPrivateField(source),
-                    (_, PrivateFieldAccess::GetKeepReceiver) => {
-                        Instruction::GetPrivateField2(source)
-                    }
-                    (BindingKind::PrivateField { .. }, PrivateFieldAccess::Put) => {
-                        Instruction::PutPrivateField(source)
-                    }
-                    (BindingKind::PrivateField { .. }, PrivateFieldAccess::Define) => {
-                        Instruction::DefinePrivateField(source)
-                    }
-                    (_, PrivateFieldAccess::In) => Instruction::PrivateIn(source),
-                    (BindingKind::PrivateMethod { .. }, PrivateFieldAccess::Put) => {
-                        let name = ensure_string_constant(
-                            tree.functions.get_mut(consuming_function).ok_or_else(|| {
-                                Error::internal("private-name consumer is out of bounds")
-                            })?,
-                            name,
-                        )?;
-                        Instruction::ThrowReadOnly(name)
-                    }
-                    (BindingKind::PrivateMethod { .. }, PrivateFieldAccess::Define) => {
-                        return Err(Error::internal(
-                            "private method reached data-field definition lowering",
-                        ));
-                    }
-                    (
-                        BindingKind::Normal
-                        | BindingKind::Lexical { .. }
-                        | BindingKind::FunctionName { .. }
-                        | BindingKind::EvalVariableObject
-                        | BindingKind::ArgEvalVariableObject
-                        | BindingKind::WithObject,
-                        _,
-                    ) => {
-                        return Err(Error::internal(
-                            "private spelling resolved to a non-private binding",
-                        ));
-                    }
-                };
-                return Ok(IrOp::Bytecode(instruction));
+                return Ok(Some(PrivateBindingResolution {
+                    kind: binding.kind,
+                    source,
+                }));
             }
 
             let Some(parent) = parent else {
@@ -220,12 +198,118 @@ pub(super) fn resolve_private_field_operation(
         scope = parent.definition_scope;
     }
 
-    Err(syntax_atom_error(
-        "undefined private field '",
+    Ok(None)
+}
+
+fn private_readonly_instruction(
+    tree: &mut FunctionTree,
+    consuming_function: FunctionId,
+    name: &str,
+) -> Result<Instruction, Error> {
+    let name = ensure_string_constant(
+        tree.functions
+            .get_mut(consuming_function)
+            .ok_or_else(|| Error::internal("private-name consumer is out of bounds"))?,
         name,
-        "'",
-        span,
-    )?)
+    )?;
+    Ok(Instruction::ThrowReadOnly(name))
+}
+
+pub(super) fn resolve_private_field_operation(
+    tree: &mut FunctionTree,
+    consuming_function: FunctionId,
+    use_scope: ScopeId,
+    name: &str,
+    span: Span,
+    access: PrivateFieldAccess,
+) -> Result<IrOp, Error> {
+    let Some(primary) = resolve_private_binding(tree, consuming_function, use_scope, name)? else {
+        return Err(syntax_atom_error(
+            "undefined private field '",
+            name,
+            "'",
+            span,
+        )?);
+    };
+
+    let instruction = match (primary.kind, access) {
+        (
+            BindingKind::PrivateField { .. }
+            | BindingKind::PrivateMethod { .. }
+            | BindingKind::PrivateGetter { .. }
+            | BindingKind::PrivateGetterSetter { .. },
+            PrivateFieldAccess::Get,
+        ) => Instruction::GetPrivateField(primary.source),
+        (
+            BindingKind::PrivateField { .. }
+            | BindingKind::PrivateMethod { .. }
+            | BindingKind::PrivateGetter { .. }
+            | BindingKind::PrivateGetterSetter { .. },
+            PrivateFieldAccess::GetKeepReceiver,
+        ) => Instruction::GetPrivateField2(primary.source),
+        (
+            BindingKind::PrivateSetter { .. },
+            PrivateFieldAccess::Get | PrivateFieldAccess::GetKeepReceiver,
+        ) => private_readonly_instruction(tree, consuming_function, name)?,
+        (BindingKind::PrivateField { .. }, PrivateFieldAccess::Put) => {
+            Instruction::PutPrivateField(primary.source)
+        }
+        (
+            BindingKind::PrivateSetter { .. } | BindingKind::PrivateGetterSetter { .. },
+            PrivateFieldAccess::Put,
+        ) => {
+            let setter_name = private_setter_binding_name(name);
+            let setter =
+                resolve_private_binding(tree, consuming_function, use_scope, &setter_name)?
+                    .ok_or_else(|| Error::internal("private setter binding is missing"))?;
+            if !matches!(setter.kind, BindingKind::PrivateSetter { .. }) {
+                return Err(Error::internal(
+                    "private setter binding has the wrong capability kind",
+                ));
+            }
+            Instruction::PutPrivateField(setter.source)
+        }
+        (
+            BindingKind::PrivateMethod { .. } | BindingKind::PrivateGetter { .. },
+            PrivateFieldAccess::Put,
+        ) => private_readonly_instruction(tree, consuming_function, name)?,
+        (BindingKind::PrivateField { .. }, PrivateFieldAccess::Define) => {
+            Instruction::DefinePrivateField(primary.source)
+        }
+        (
+            BindingKind::PrivateMethod { .. }
+            | BindingKind::PrivateGetter { .. }
+            | BindingKind::PrivateSetter { .. }
+            | BindingKind::PrivateGetterSetter { .. },
+            PrivateFieldAccess::Define,
+        ) => {
+            return Err(Error::internal(
+                "private callable reached data-field definition lowering",
+            ));
+        }
+        (
+            BindingKind::PrivateField { .. }
+            | BindingKind::PrivateMethod { .. }
+            | BindingKind::PrivateGetter { .. }
+            | BindingKind::PrivateSetter { .. }
+            | BindingKind::PrivateGetterSetter { .. },
+            PrivateFieldAccess::In,
+        ) => Instruction::PrivateIn(primary.source),
+        (
+            BindingKind::Normal
+            | BindingKind::Lexical { .. }
+            | BindingKind::FunctionName { .. }
+            | BindingKind::EvalVariableObject
+            | BindingKind::ArgEvalVariableObject
+            | BindingKind::WithObject,
+            _,
+        ) => {
+            return Err(Error::internal(
+                "private spelling resolved to a non-private binding",
+            ));
+        }
+    };
+    Ok(IrOp::Bytecode(instruction))
 }
 
 #[cfg(test)]
@@ -550,6 +634,215 @@ mod tests {
     }
 
     #[test]
+    fn private_accessors_pair_primary_and_synthetic_setter_bindings() {
+        let tree = Parser::parse(
+            r#"
+                class C {
+                    set #only(value) {}
+                    get #pair() { return 1 }
+                    set #pair(value) {}
+                    static set #reverse(value) {}
+                    static get #reverse() { return 2 }
+                }
+            "#,
+            JsString::from_static("<private-accessor-scope-test>"),
+        )
+        .unwrap();
+        let root = &tree.functions[0];
+        let scope = root
+            .scopes
+            .iter()
+            .find(|scope| scope.kind == ScopeKind::ClassPrivate)
+            .expect("class-private scope");
+        let bindings = scope
+            .bindings
+            .iter()
+            .map(|binding| &root.bindings[binding.0])
+            .collect::<Vec<_>>();
+
+        let find = |name: &str| {
+            bindings
+                .iter()
+                .copied()
+                .find(|binding| binding.name == name)
+                .unwrap_or_else(|| panic!("missing private binding {name}"))
+        };
+        assert_eq!(
+            find("#only").kind,
+            BindingKind::PrivateSetter { is_static: false }
+        );
+        assert_eq!(
+            find("#only<set>").kind,
+            BindingKind::PrivateSetter { is_static: false }
+        );
+        assert_eq!(
+            find("#pair").kind,
+            BindingKind::PrivateGetterSetter { is_static: false }
+        );
+        assert_eq!(
+            find("#pair<set>").kind,
+            BindingKind::PrivateSetter { is_static: false }
+        );
+        assert_eq!(
+            find("#reverse").kind,
+            BindingKind::PrivateGetterSetter { is_static: true }
+        );
+        assert_eq!(
+            find("#reverse<set>").kind,
+            BindingKind::PrivateSetter { is_static: true }
+        );
+
+        let initialized = root
+            .ops
+            .iter()
+            .filter_map(|operation| match &operation.op {
+                IrOp::Bytecode(Instruction::InitializePrivateAccessor(local)) => Some(*local),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(initialized.len(), 5);
+        let only_primary = match find("#only").storage {
+            BindingStorage::Local(local) => local,
+            _ => panic!("private setter primary did not use local storage"),
+        };
+        assert!(!initialized.contains(&only_primary));
+        assert!(initialized.iter().all(|local| {
+            root.bindings.iter().any(|binding| {
+                binding.storage == BindingStorage::Local(*local)
+                    && matches!(
+                        binding.kind,
+                        BindingKind::PrivateSetter { .. } | BindingKind::PrivateGetterSetter { .. }
+                    )
+            })
+        }));
+        let accessor_functions = tree
+            .functions
+            .iter()
+            .filter(|function| {
+                function.parent.is_some()
+                    && function.class_initializer_kind.is_none()
+                    && function.function_name.is_none()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(accessor_functions.len(), 5);
+        assert!(
+            accessor_functions
+                .iter()
+                .all(|function| function.needs_home_object)
+        );
+        assert_eq!(
+            tree.functions
+                .iter()
+                .filter(|function| function.class_private_brand)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn private_accessor_reads_writes_in_and_eval_keep_typed_capabilities() {
+        let root = compile_unlinked_script(
+            r#"
+                class C {
+                    get #getter() { return 1 }
+                    set #setter(value) {}
+                    get #pair() { return 2 }
+                    set #pair(value) {}
+                    readGetter(value) { return value.#getter }
+                    writeGetter(value) { value.#getter = 1 }
+                    readSetter(value) { return value.#setter }
+                    writeSetter(value) { value.#setter = 1 }
+                    readPair(value) { return (() => value.#pair)() }
+                    writePair(value) { value.#pair = 1 }
+                    hasSetter(value) { return #setter in value }
+                    evalPair(value) { return eval('value.#pair') }
+                }
+            "#,
+        )
+        .unwrap();
+
+        let definitions = root.local_definitions();
+        assert_eq!(
+            definitions
+                .iter()
+                .filter(|definition| definition.kind == ClosureVariableKind::PrivateGetter)
+                .count(),
+            1
+        );
+        assert_eq!(
+            definitions
+                .iter()
+                .filter(|definition| definition.kind == ClosureVariableKind::PrivateGetterSetter)
+                .count(),
+            1
+        );
+        assert_eq!(
+            definitions
+                .iter()
+                .filter(|definition| definition.kind == ClosureVariableKind::PrivateSetter)
+                .count(),
+            3
+        );
+        let setter_primary = definitions
+            .iter()
+            .enumerate()
+            .find(|(_, definition)| {
+                definition.kind == ClosureVariableKind::PrivateSetter
+                    && definition
+                        .name
+                        .as_ref()
+                        .is_some_and(|name| name.to_utf8_lossy() == "#setter")
+            })
+            .expect("setter-only primary");
+        assert!(!root.code().iter().any(|instruction| matches!(
+            instruction,
+            Instruction::InitializePrivateAccessor(index)
+                if usize::from(*index) == setter_primary.0
+        )));
+
+        let mut functions = Vec::new();
+        collect_functions(&root, &mut functions);
+        assert!(functions.iter().any(|function| {
+            function
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::GetPrivateField(_)))
+        }));
+        assert!(functions.iter().any(|function| {
+            function
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::PutPrivateField(_)))
+        }));
+        assert!(functions.iter().any(|function| {
+            function
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::PrivateIn(_)))
+        }));
+        assert!(functions.iter().any(|function| {
+            function
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::ThrowReadOnly(_)))
+        }));
+        assert!(functions.iter().any(|function| {
+            function
+                .closure_variables()
+                .iter()
+                .any(|descriptor| descriptor.kind == ClosureVariableKind::PrivateSetter)
+        }));
+        assert!(functions.iter().any(|function| {
+            function
+                .eval_environments()
+                .iter()
+                .flat_map(|environment| environment.scopes.iter())
+                .flat_map(|scope| scope.bindings.iter())
+                .any(|binding| binding.kind == ClosureVariableKind::PrivateGetterSetter)
+        }));
+    }
+
+    #[test]
     fn private_data_field_early_errors_remain_fail_closed() {
         for source in [
             "({}).#missing",
@@ -566,11 +859,15 @@ mod tests {
         }
 
         for source in [
-            "class C { get #value() {} }",
-            "class C { set #value(value) {} }",
+            "class C { get #value() {} get #value() {} }",
+            "class C { set #value(value) {} set #value(value) {} }",
+            "class C { get #value() {} static set #value(value) {} }",
+            "class C { #value; get #value() {} }",
+            "class C { #value() {} set #value(value) {} }",
         ] {
             let error = compile_unlinked_script(source).unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::Unsupported, "source: {source}");
+            assert_eq!(error.kind(), ErrorKind::Syntax, "source: {source}");
+            assert_eq!(error.message(), "private class field is already defined");
         }
 
         assert_eq!(
@@ -608,5 +905,19 @@ mod tests {
                 .message(),
             "private class field is already defined"
         );
+        for source in [
+            "class C { get #x() {} get #x(value) {} }",
+            "class C { #x; get #x(value) {} }",
+            "class C { set #x(value) {} set #x(...rest) {} }",
+            "class C { get #x() {} get #x() { let value; let value; } }",
+        ] {
+            let error = compile_unlinked_script(source).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Syntax, "source: {source}");
+            assert_eq!(
+                error.message(),
+                "private class field is already defined",
+                "source: {source}"
+            );
+        }
     }
 }

@@ -3080,6 +3080,14 @@ pub enum ClosureVariableKind {
     /// private-name cell, it is an immutable lexical capability which may
     /// only be consumed through authenticated private-element bytecode.
     PrivateMethod,
+    /// Primary callable cell for a private getter.
+    PrivateGetter,
+    /// Private setter capability. Both the uninitialized source-visible
+    /// primary cell of a setter-only declaration and the initialized synthetic
+    /// `<set>` callable cell carry this exact QuickJS kind.
+    PrivateSetter,
+    /// Primary getter cell for a paired private getter/setter declaration.
+    PrivateGetterSetter,
 }
 
 impl ClosureVariableKind {
@@ -3090,7 +3098,14 @@ impl ClosureVariableKind {
 
     #[must_use]
     pub const fn is_private(self) -> bool {
-        matches!(self, Self::PrivateField | Self::PrivateMethod)
+        matches!(
+            self,
+            Self::PrivateField
+                | Self::PrivateMethod
+                | Self::PrivateGetter
+                | Self::PrivateSetter
+                | Self::PrivateGetterSetter
+        )
     }
 }
 
@@ -3118,6 +3133,97 @@ pub struct VariableDefinition {
     /// formal-parameter initialization.
     pub is_parameter_initializer: bool,
     pub kind: ClosureVariableKind,
+}
+
+/// Publication-authenticated role of one class-private lexical capability.
+///
+/// Setter primary and synthetic `<set>` cells deliberately share
+/// [`ClosureVariableKind::PrivateSetter`]. The runtime publisher is the only
+/// layer which still owns both the exact source spelling and its interned
+/// [`Atom`], so it seals that distinction here before handing linked bytecode
+/// to the atom-table-independent heap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum PublishedPrivateBindingRole {
+    Primary,
+    SetterStorage,
+}
+
+/// One non-owning identity authenticated by the runtime publisher. `name`
+/// must equal the atom already owned by the corresponding variable definition
+/// or closure descriptor. Local setter halves also carry reciprocal `pair`
+/// indices; closure captures may legitimately retain only one half and leave
+/// it absent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct PublishedPrivateBinding {
+    name: Atom,
+    role: PublishedPrivateBindingRole,
+    pair: Option<u16>,
+}
+
+impl PublishedPrivateBinding {
+    #[must_use]
+    pub(crate) const fn primary(name: Atom, pair: Option<u16>) -> Self {
+        Self {
+            name,
+            role: PublishedPrivateBindingRole::Primary,
+            pair,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn setter_storage(name: Atom, pair: Option<u16>) -> Self {
+        Self {
+            name,
+            role: PublishedPrivateBindingRole::SetterStorage,
+            pair,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AuthenticatedPrivateBindings {
+    locals: Box<[Option<PublishedPrivateBinding>]>,
+    closures: Box<[Option<PublishedPrivateBinding>]>,
+}
+
+/// Sealed bridge between name-aware bytecode publication and the heap.
+///
+/// Public linked-bytecode callers can construct only [`Self::none`]. Any
+/// private definition or closure descriptor requires the crate-internal
+/// authenticated constructor, preventing a forged `FunctionBytecodeData`
+/// from choosing whether a `PrivateSetter` cell is a primary name or its
+/// synthetic write capability.
+#[derive(Debug)]
+pub struct PublishedPrivateBindings {
+    authenticated: Option<AuthenticatedPrivateBindings>,
+}
+
+impl PublishedPrivateBindings {
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            authenticated: None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn authenticated(
+        locals: Vec<Option<PublishedPrivateBinding>>,
+        closures: Vec<Option<PublishedPrivateBinding>>,
+    ) -> Self {
+        Self {
+            authenticated: Some(AuthenticatedPrivateBindings {
+                locals: locals.into_boxed_slice(),
+                closures: closures.into_boxed_slice(),
+            }),
+        }
+    }
+}
+
+impl Default for PublishedPrivateBindings {
+    fn default() -> Self {
+        Self::none()
+    }
 }
 
 /// Storage occupied by a binding visible to one syntactic direct-eval site.
@@ -3270,6 +3376,10 @@ pub struct FunctionBytecodeData {
     pub argument_definitions: Rc<[VariableDefinition]>,
     pub local_definitions: Rc<[VariableDefinition]>,
     pub closure_variables: Rc<[ClosureVariable]>,
+    /// Name-bound private capability roles sealed by the runtime publisher.
+    /// This metadata owns no atoms; identities alias definition/descriptor
+    /// atoms whose references remain in `auxiliary_atoms`.
+    pub private_bindings: PublishedPrivateBindings,
     pub eval_environments: Rc<[EvalEnvironment<Atom>]>,
     pub debug: Option<FunctionDebugInfo>,
     /// Atom references owned by bytecode metadata/opcode operands.
@@ -3354,44 +3464,397 @@ fn private_binding_flags_are_valid(
     kind.is_private() && is_lexical && is_const
 }
 
-fn validate_published_private_source(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PublishedPrivateBindingInfo {
+    kind: ClosureVariableKind,
+    role: PublishedPrivateBindingRole,
+}
+
+fn validate_published_private_binding_metadata(
     bytecode: &FunctionBytecodeData,
-    source: PrivateNameSource,
-) -> Result<ClosureVariableKind, HeapError> {
-    let kind = match source {
-        PrivateNameSource::Local(index) => bytecode
-            .local_definitions
-            .get(usize::from(index))
-            .filter(|definition| {
-                private_binding_flags_are_valid(
+) -> Result<Option<&AuthenticatedPrivateBindings>, HeapError> {
+    let has_private_bindings = bytecode
+        .local_definitions
+        .iter()
+        .any(|definition| definition.kind.is_private())
+        || bytecode
+            .closure_variables
+            .iter()
+            .any(|descriptor| descriptor.kind.is_private());
+    let Some(authenticated) = bytecode.private_bindings.authenticated.as_ref() else {
+        return if has_private_bindings {
+            Err(HeapError::Invariant(
+                "published private bindings are missing sealed role metadata",
+            ))
+        } else {
+            Ok(None)
+        };
+    };
+    if authenticated.locals.len() != bytecode.local_definitions.len()
+        || authenticated.closures.len() != bytecode.closure_variables.len()
+    {
+        return Err(HeapError::Invariant(
+            "published private binding role table has the wrong shape",
+        ));
+    }
+
+    for (definition, binding) in bytecode
+        .local_definitions
+        .iter()
+        .zip(authenticated.locals.iter())
+    {
+        match (definition.kind.is_private(), binding) {
+            (false, None) => continue,
+            (false, Some(_)) => {
+                return Err(HeapError::Invariant(
+                    "ordinary local carries a sealed private binding role",
+                ));
+            }
+            (true, None) => {
+                return Err(HeapError::Invariant(
+                    "published private local is missing its sealed binding role",
+                ));
+            }
+            (true, Some(binding)) => {
+                if !private_binding_flags_are_valid(
                     definition.kind,
                     definition.is_lexical,
                     definition.is_const,
-                ) && !definition.is_parameter_initializer
-                    && definition.name.is_some()
-            })
-            .map(|definition| definition.kind),
-        PrivateNameSource::Closure(index) => bytecode
-            .closure_variables
-            .get(usize::from(index))
-            .filter(|descriptor| {
-                private_binding_flags_are_valid(
+                ) || definition.is_parameter_initializer
+                    || definition.name != Some(binding.name)
+                    || (binding.role == PublishedPrivateBindingRole::SetterStorage
+                        && definition.kind != ClosureVariableKind::PrivateSetter)
+                {
+                    return Err(HeapError::Invariant(
+                        "published private-name local has invalid sealed metadata",
+                    ));
+                }
+            }
+        }
+    }
+    for (descriptor, binding) in bytecode
+        .closure_variables
+        .iter()
+        .zip(authenticated.closures.iter())
+    {
+        match (descriptor.kind.is_private(), binding) {
+            (false, None) => continue,
+            (false, Some(_)) => {
+                return Err(HeapError::Invariant(
+                    "ordinary closure carries a sealed private binding role",
+                ));
+            }
+            (true, None) => {
+                return Err(HeapError::Invariant(
+                    "published private closure is missing its sealed binding role",
+                ));
+            }
+            (true, Some(binding)) => {
+                if !private_binding_flags_are_valid(
                     descriptor.kind,
                     descriptor.is_lexical,
                     descriptor.is_const,
-                ) && matches!(descriptor.name, ClosureVariableName::Atom(_))
-                    && matches!(
+                ) || descriptor.name != ClosureVariableName::Atom(binding.name)
+                    || !matches!(
                         descriptor.source,
                         ClosureSource::ParentLocal(_)
                             | ClosureSource::ParentClosure(_)
                             | ClosureSource::EvalEnvironment(_)
                     )
-            })
-            .map(|descriptor| descriptor.kind),
+                    || binding.pair.is_some()
+                    || (binding.role == PublishedPrivateBindingRole::SetterStorage
+                        && descriptor.kind != ClosureVariableKind::PrivateSetter)
+                {
+                    return Err(HeapError::Invariant(
+                        "published private-name closure has invalid sealed metadata",
+                    ));
+                }
+            }
+        }
+    }
+
+    for (index, (definition, binding)) in bytecode
+        .local_definitions
+        .iter()
+        .zip(authenticated.locals.iter())
+        .enumerate()
+    {
+        let Some(binding) = binding else {
+            continue;
+        };
+        let pair_required = binding.role == PublishedPrivateBindingRole::SetterStorage
+            || (binding.role == PublishedPrivateBindingRole::Primary
+                && matches!(
+                    definition.kind,
+                    ClosureVariableKind::PrivateSetter | ClosureVariableKind::PrivateGetterSetter
+                ));
+        if pair_required != binding.pair.is_some() {
+            return Err(HeapError::Invariant(
+                "published private setter has malformed pair metadata",
+            ));
+        }
+        let Some(pair) = binding.pair else {
+            continue;
+        };
+        let pair_index = usize::from(pair);
+        let Some(Some(other)) = authenticated.locals.get(pair_index) else {
+            return Err(HeapError::Invariant(
+                "published private setter pair is out of bounds",
+            ));
+        };
+        let Some(other_definition) = bytecode.local_definitions.get(pair_index) else {
+            return Err(HeapError::Invariant(
+                "published private setter pair is out of bounds",
+            ));
+        };
+        if pair_index == index
+            || other.pair != u16::try_from(index).ok()
+            || other.role == binding.role
+            || binding.name == other.name
+            || match binding.role {
+                PublishedPrivateBindingRole::Primary => {
+                    !matches!(
+                        definition.kind,
+                        ClosureVariableKind::PrivateSetter
+                            | ClosureVariableKind::PrivateGetterSetter
+                    ) || other_definition.kind != ClosureVariableKind::PrivateSetter
+                }
+                PublishedPrivateBindingRole::SetterStorage => {
+                    definition.kind != ClosureVariableKind::PrivateSetter
+                        || !matches!(
+                            other_definition.kind,
+                            ClosureVariableKind::PrivateSetter
+                                | ClosureVariableKind::PrivateGetterSetter
+                        )
+                }
+            }
+        {
+            return Err(HeapError::Invariant(
+                "published private setter pair is not reciprocal",
+            ));
+        }
+    }
+    Ok(Some(authenticated))
+}
+
+fn validate_published_private_source(
+    bytecode: &FunctionBytecodeData,
+    source: PrivateNameSource,
+) -> Result<PublishedPrivateBindingInfo, HeapError> {
+    let authenticated =
+        bytecode
+            .private_bindings
+            .authenticated
+            .as_ref()
+            .ok_or(HeapError::Invariant(
+                "private bytecode source has no sealed binding role",
+            ))?;
+    let info = match source {
+        PrivateNameSource::Local(index) => bytecode
+            .local_definitions
+            .get(usize::from(index))
+            .zip(authenticated.locals.get(usize::from(index)))
+            .and_then(|(definition, binding)| {
+                binding.map(|binding| PublishedPrivateBindingInfo {
+                    kind: definition.kind,
+                    role: binding.role,
+                })
+            }),
+        PrivateNameSource::Closure(index) => bytecode
+            .closure_variables
+            .get(usize::from(index))
+            .zip(authenticated.closures.get(usize::from(index)))
+            .and_then(|(descriptor, binding)| {
+                binding.map(|binding| PublishedPrivateBindingInfo {
+                    kind: descriptor.kind,
+                    role: binding.role,
+                })
+            }),
     };
-    kind.ok_or(HeapError::Invariant(
+    info.ok_or(HeapError::Invariant(
         "private bytecode source is not an authenticated lexical binding",
     ))
+}
+
+fn explicit_private_control_flow_target(instruction: &Instruction) -> Option<usize> {
+    let target = match instruction {
+        Instruction::Goto(target)
+        | Instruction::IfFalse(target)
+        | Instruction::IfTrue(target)
+        | Instruction::Catch(target)
+        | Instruction::Gosub(target) => *target,
+        _ => return None,
+    };
+    usize::try_from(target).ok()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PrivateCallableInitializerKind {
+    Method,
+    Accessor,
+}
+
+fn validate_published_private_callable_initializer(
+    heap: &Heap,
+    bytecode: &FunctionBytecodeData,
+    pc: usize,
+    binding_index: u16,
+    accessor_role: Option<PublishedPrivateBindingRole>,
+    explicit_control_flow_targets: &HashSet<usize>,
+    kind: PrivateCallableInitializerKind,
+) -> Result<(), HeapError> {
+    let adjacent_error = match kind {
+        PrivateCallableInitializerKind::Method => {
+            "private-method initializer did not consume an adjacent closure"
+        }
+        PrivateCallableInitializerKind::Accessor => {
+            "private-accessor initializer did not consume an adjacent closure"
+        }
+    };
+    let closure_pc = pc
+        .checked_sub(1)
+        .ok_or(HeapError::Invariant(adjacent_error))?;
+    if explicit_control_flow_targets.contains(&closure_pc)
+        || explicit_control_flow_targets.contains(&pc)
+    {
+        return Err(HeapError::Invariant(match kind {
+            PrivateCallableInitializerKind::Method => {
+                "private-method closure/initializer pair has a non-fallthrough entry"
+            }
+            PrivateCallableInitializerKind::Accessor => {
+                "private-accessor closure/initializer pair has a non-fallthrough entry"
+            }
+        }));
+    }
+    let Some(Instruction::FClosure(constant)) = bytecode.code.get(closure_pc) else {
+        return Err(HeapError::Invariant(adjacent_error));
+    };
+    let child_id = usize::try_from(*constant)
+        .ok()
+        .and_then(|constant| bytecode.constants.get(constant))
+        .and_then(|constant| match constant {
+            BytecodeConstant::Function(child) => Some(*child),
+            BytecodeConstant::Value(_) | BytecodeConstant::RegExp { .. } => None,
+        })
+        .ok_or(HeapError::Invariant(match kind {
+            PrivateCallableInitializerKind::Method => {
+                "private-method initializer did not reference child bytecode"
+            }
+            PrivateCallableInitializerKind::Accessor => {
+                "private-accessor initializer did not reference child bytecode"
+            }
+        }))?;
+    let child = heap.function_bytecode(child_id).map_err(|_| {
+        HeapError::Invariant(match kind {
+            PrivateCallableInitializerKind::Method => {
+                "private-method initializer did not reference live child bytecode"
+            }
+            PrivateCallableInitializerKind::Accessor => {
+                "private-accessor initializer did not reference live child bytecode"
+            }
+        })
+    })?;
+    if !child.metadata.needs_home_object
+        || !child.metadata.strict
+        || child.metadata.eval_kind != EvalKind::None
+        || child.metadata.function_kind != FunctionKind::Normal
+        || child.metadata.has_prototype
+        || child.metadata.constructor_kind != ConstructorKind::None
+        || child.metadata.class_initializer_kind.is_some()
+    {
+        return Err(HeapError::Invariant(match kind {
+            PrivateCallableInitializerKind::Method => {
+                "private-method child has invalid HomeObject metadata"
+            }
+            PrivateCallableInitializerKind::Accessor => {
+                "private-accessor child has invalid HomeObject metadata"
+            }
+        }));
+    }
+    if bytecode
+        .code
+        .iter()
+        .filter(|instruction| {
+            matches!(instruction, Instruction::FClosure(candidate) if candidate == constant)
+        })
+        .count()
+        != 1
+    {
+        return Err(HeapError::Invariant(match kind {
+            PrivateCallableInitializerKind::Method => {
+                "private-method child did not have one unique closure site"
+            }
+            PrivateCallableInitializerKind::Accessor => {
+                "private-accessor child did not have one unique closure site"
+            }
+        }));
+    }
+
+    if let Some(role) = accessor_role {
+        let expected_arguments = match role {
+            PublishedPrivateBindingRole::Primary => 0,
+            PublishedPrivateBindingRole::SetterStorage => 1,
+        };
+        if child.metadata.argument_count != expected_arguments {
+            return Err(HeapError::Invariant(
+                "private-accessor child has invalid authored arity",
+            ));
+        }
+        if child
+            .func_name
+            .as_ref()
+            .is_some_and(|name| !name.is_empty())
+        {
+            return Err(HeapError::Invariant(
+                "private-accessor child retained a non-empty intrinsic name",
+            ));
+        }
+    }
+
+    let mut scope_entries = bytecode
+        .code
+        .iter()
+        .enumerate()
+        .filter_map(|(entry_pc, instruction)| {
+            matches!(instruction, Instruction::SetLocalUninitialized(index) if *index == binding_index)
+                .then_some(entry_pc)
+        });
+    let scope_entry_pc = scope_entries
+        .next()
+        .ok_or(HeapError::Invariant(match kind {
+            PrivateCallableInitializerKind::Method => {
+                "private-method initializer has no lexical scope entry"
+            }
+            PrivateCallableInitializerKind::Accessor => {
+                "private-accessor initializer has no lexical scope entry"
+            }
+        }))?;
+    if scope_entries.next().is_some() || scope_entry_pc >= closure_pc {
+        return Err(HeapError::Invariant(match kind {
+            PrivateCallableInitializerKind::Method => {
+                "private-method initializer has an invalid lexical scope entry"
+            }
+            PrivateCallableInitializerKind::Accessor => {
+                "private-accessor initializer has an invalid lexical scope entry"
+            }
+        }));
+    }
+    for (source_pc, instruction) in bytecode.code.iter().enumerate().skip(pc) {
+        let Some(target_pc) = explicit_private_control_flow_target(instruction) else {
+            continue;
+        };
+        if target_pc > scope_entry_pc && target_pc <= pc && source_pc >= pc {
+            return Err(HeapError::Invariant(match kind {
+                PrivateCallableInitializerKind::Method => {
+                    "private-method initializer is reachable by a repeated-lifetime backedge"
+                }
+                PrivateCallableInitializerKind::Accessor => {
+                    "private-accessor initializer is reachable by a repeated-lifetime backedge"
+                }
+            }));
+        }
+    }
+    Ok(())
 }
 
 fn ordinary_private_local_operand(instruction: &Instruction) -> Option<u16> {
@@ -3427,45 +3890,20 @@ fn ordinary_private_closure_operand(instruction: &Instruction) -> Option<u16> {
     }
 }
 
-fn validate_published_private_elements(bytecode: &FunctionBytecodeData) -> Result<(), HeapError> {
+fn validate_published_private_elements(
+    heap: &Heap,
+    bytecode: &FunctionBytecodeData,
+) -> Result<(), HeapError> {
     let mut initialization_counts = vec![0_u8; bytecode.local_definitions.len()];
     let mut scope_entry_counts = vec![0_u8; bytecode.local_definitions.len()];
+    let _ = validate_published_private_binding_metadata(bytecode)?;
+    let explicit_control_flow_targets = bytecode
+        .code
+        .iter()
+        .filter_map(explicit_private_control_flow_target)
+        .collect::<HashSet<_>>();
 
-    for definition in bytecode.local_definitions.iter() {
-        if definition.kind.is_private()
-            && (!private_binding_flags_are_valid(
-                definition.kind,
-                definition.is_lexical,
-                definition.is_const,
-            ) || definition.is_parameter_initializer
-                || definition.name.is_none())
-        {
-            return Err(HeapError::Invariant(
-                "published private-name local has invalid binding metadata",
-            ));
-        }
-    }
-    for descriptor in bytecode.closure_variables.iter() {
-        if descriptor.kind.is_private()
-            && (!private_binding_flags_are_valid(
-                descriptor.kind,
-                descriptor.is_lexical,
-                descriptor.is_const,
-            ) || !matches!(descriptor.name, ClosureVariableName::Atom(_))
-                || !matches!(
-                    descriptor.source,
-                    ClosureSource::ParentLocal(_)
-                        | ClosureSource::ParentClosure(_)
-                        | ClosureSource::EvalEnvironment(_)
-                ))
-        {
-            return Err(HeapError::Invariant(
-                "published private-name closure has invalid binding metadata",
-            ));
-        }
-    }
-
-    for instruction in bytecode.code.iter() {
+    for (pc, instruction) in bytecode.code.iter().enumerate() {
         if let Some(index) = ordinary_private_local_operand(instruction)
             && bytecode
                 .local_definitions
@@ -3506,7 +3944,10 @@ fn validate_published_private_elements(bytecode: &FunctionBytecodeData) -> Resul
             }
             Instruction::InitializePrivateName(index) => {
                 if validate_published_private_source(bytecode, PrivateNameSource::Local(index))?
-                    != ClosureVariableKind::PrivateField
+                    != (PublishedPrivateBindingInfo {
+                        kind: ClosureVariableKind::PrivateField,
+                        role: PublishedPrivateBindingRole::Primary,
+                    })
                 {
                     return Err(HeapError::Invariant(
                         "private-name initializer referenced a non-field binding",
@@ -3521,12 +3962,24 @@ fn validate_published_private_elements(bytecode: &FunctionBytecodeData) -> Resul
             }
             Instruction::InitializePrivateMethod(index) => {
                 if validate_published_private_source(bytecode, PrivateNameSource::Local(index))?
-                    != ClosureVariableKind::PrivateMethod
+                    != (PublishedPrivateBindingInfo {
+                        kind: ClosureVariableKind::PrivateMethod,
+                        role: PublishedPrivateBindingRole::Primary,
+                    })
                 {
                     return Err(HeapError::Invariant(
                         "private-method initializer referenced a non-method binding",
                     ));
                 }
+                validate_published_private_callable_initializer(
+                    heap,
+                    bytecode,
+                    pc,
+                    index,
+                    None,
+                    &explicit_control_flow_targets,
+                    PrivateCallableInitializerKind::Method,
+                )?;
                 let count = initialization_counts.get_mut(usize::from(index)).ok_or(
                     HeapError::Invariant("private-method initializer local is out of bounds"),
                 )?;
@@ -3534,15 +3987,88 @@ fn validate_published_private_elements(bytecode: &FunctionBytecodeData) -> Resul
                     "private-method initializer count overflowed",
                 ))?;
             }
-            Instruction::GetPrivateField(source)
-            | Instruction::GetPrivateField2(source)
-            | Instruction::PutPrivateField(source)
-            | Instruction::PrivateIn(source) => {
-                validate_published_private_source(bytecode, source)?;
+            Instruction::InitializePrivateAccessor(index) => {
+                let binding =
+                    validate_published_private_source(bytecode, PrivateNameSource::Local(index))?;
+                if !matches!(
+                    binding,
+                    PublishedPrivateBindingInfo {
+                        kind: ClosureVariableKind::PrivateGetter
+                            | ClosureVariableKind::PrivateGetterSetter,
+                        role: PublishedPrivateBindingRole::Primary,
+                    } | PublishedPrivateBindingInfo {
+                        kind: ClosureVariableKind::PrivateSetter,
+                        role: PublishedPrivateBindingRole::SetterStorage,
+                    }
+                ) {
+                    return Err(HeapError::Invariant(
+                        "private-accessor initializer referenced an incompatible binding",
+                    ));
+                }
+                validate_published_private_callable_initializer(
+                    heap,
+                    bytecode,
+                    pc,
+                    index,
+                    Some(binding.role),
+                    &explicit_control_flow_targets,
+                    PrivateCallableInitializerKind::Accessor,
+                )?;
+                let count = initialization_counts.get_mut(usize::from(index)).ok_or(
+                    HeapError::Invariant("private-accessor initializer local is out of bounds"),
+                )?;
+                *count = count.checked_add(1).ok_or(HeapError::Invariant(
+                    "private-accessor initializer count overflowed",
+                ))?;
+            }
+            Instruction::GetPrivateField(source) | Instruction::GetPrivateField2(source) => {
+                let binding = validate_published_private_source(bytecode, source)?;
+                if binding.role != PublishedPrivateBindingRole::Primary
+                    || !matches!(
+                        binding.kind,
+                        ClosureVariableKind::PrivateField
+                            | ClosureVariableKind::PrivateMethod
+                            | ClosureVariableKind::PrivateGetter
+                            | ClosureVariableKind::PrivateGetterSetter
+                    )
+                {
+                    return Err(HeapError::Invariant(
+                        "private get referenced an incompatible binding",
+                    ));
+                }
+            }
+            Instruction::PutPrivateField(source) => {
+                let binding = validate_published_private_source(bytecode, source)?;
+                if !matches!(
+                    binding,
+                    PublishedPrivateBindingInfo {
+                        kind: ClosureVariableKind::PrivateField,
+                        role: PublishedPrivateBindingRole::Primary,
+                    } | PublishedPrivateBindingInfo {
+                        kind: ClosureVariableKind::PrivateSetter,
+                        role: PublishedPrivateBindingRole::SetterStorage,
+                    }
+                ) {
+                    return Err(HeapError::Invariant(
+                        "private put referenced an incompatible binding",
+                    ));
+                }
+            }
+            Instruction::PrivateIn(source) => {
+                if validate_published_private_source(bytecode, source)?.role
+                    != PublishedPrivateBindingRole::Primary
+                {
+                    return Err(HeapError::Invariant(
+                        "private-in referenced a synthetic setter binding",
+                    ));
+                }
             }
             Instruction::DefinePrivateField(source) => {
                 if validate_published_private_source(bytecode, source)?
-                    != ClosureVariableKind::PrivateField
+                    != (PublishedPrivateBindingInfo {
+                        kind: ClosureVariableKind::PrivateField,
+                        role: PublishedPrivateBindingRole::Primary,
+                    })
                 {
                     return Err(HeapError::Invariant(
                         "private-field definition referenced a non-field binding",
@@ -3563,27 +4089,81 @@ fn validate_published_private_elements(bytecode: &FunctionBytecodeData) -> Resul
         }
     }
 
-    if bytecode
-        .local_definitions
-        .iter()
-        .enumerate()
-        .any(|(index, definition)| {
-            definition.kind.is_private() && initialization_counts[index] != 1
-        })
-    {
-        return Err(HeapError::Invariant(
-            "private-name local does not have exactly one lexical initializer",
-        ));
+    let authenticated = bytecode.private_bindings.authenticated.as_ref();
+    for (index, definition) in bytecode.local_definitions.iter().enumerate() {
+        if !definition.kind.is_private() {
+            continue;
+        }
+        let binding = authenticated
+            .and_then(|authenticated| authenticated.locals.get(index))
+            .and_then(Option::as_ref)
+            .ok_or(HeapError::Invariant(
+                "published private local lost its sealed binding role",
+            ))?;
+        let expected_initializers = usize::from(
+            !(definition.kind == ClosureVariableKind::PrivateSetter
+                && binding.role == PublishedPrivateBindingRole::Primary),
+        );
+        if usize::from(initialization_counts[index]) != expected_initializers {
+            return Err(HeapError::Invariant(
+                match (definition.kind, binding.role) {
+                    (ClosureVariableKind::PrivateField, PublishedPrivateBindingRole::Primary) => {
+                        "private-name local does not have exactly one lexical initializer"
+                    }
+                    (ClosureVariableKind::PrivateSetter, PublishedPrivateBindingRole::Primary) => {
+                        "private-setter primary local must remain uninitialized"
+                    }
+                    (
+                        ClosureVariableKind::PrivateGetter
+                        | ClosureVariableKind::PrivateSetter
+                        | ClosureVariableKind::PrivateGetterSetter,
+                        _,
+                    ) => "private-accessor local does not have its required typed initializer",
+                    _ => "private-method local does not have exactly one typed initializer",
+                },
+            ));
+        }
+        if scope_entry_counts[index] != 1 {
+            return Err(HeapError::Invariant(
+                if definition.kind == ClosureVariableKind::PrivateField {
+                    "private-name local does not have exactly one lexical scope entry"
+                } else {
+                    "private-method local does not have exactly one lexical scope entry"
+                },
+            ));
+        }
     }
-    if bytecode
-        .local_definitions
+
+    let has_private_method_initializer = bytecode
+        .code
         .iter()
-        .enumerate()
-        .any(|(index, definition)| definition.kind.is_private() && scope_entry_counts[index] != 1)
+        .any(|instruction| matches!(instruction, Instruction::InitializePrivateMethod(_)));
+    let has_private_accessor_initializer = bytecode
+        .code
+        .iter()
+        .any(|instruction| matches!(instruction, Instruction::InitializePrivateAccessor(_)));
+    let mut has_private_brand_child = false;
+    for constant in bytecode.constants.iter() {
+        let BytecodeConstant::Function(child) = constant else {
+            continue;
+        };
+        let child = heap.function_bytecode(*child).map_err(|_| {
+            HeapError::Invariant("private declaration referenced non-live child bytecode")
+        })?;
+        has_private_brand_child |= child.metadata.class_private_brand
+            && matches!(
+                child.metadata.class_initializer_kind,
+                Some(ClassInitializerKind::InstanceFields | ClassInitializerKind::StaticElements)
+            );
+    }
+    if (has_private_method_initializer || has_private_accessor_initializer)
+        != has_private_brand_child
     {
-        return Err(HeapError::Invariant(
-            "private-name local does not have exactly one lexical scope entry",
-        ));
+        return Err(HeapError::Invariant(if has_private_accessor_initializer {
+            "private-callable declarations disagree with class brand initializer metadata"
+        } else {
+            "private-method declarations disagree with class brand initializer metadata"
+        }));
     }
     Ok(())
 }
@@ -6608,7 +7188,7 @@ impl Heap {
                 "local definition count does not match bytecode metadata",
             ));
         }
-        validate_published_private_elements(&bytecode)?;
+        validate_published_private_elements(self, &bytecode)?;
         let unnamed_arguments = bytecode
             .argument_definitions
             .iter()
@@ -10004,6 +10584,9 @@ fn validate_var_ref_value(
             ));
         }
         ClosureVariableKind::PrivateMethod
+        | ClosureVariableKind::PrivateGetter
+        | ClosureVariableKind::PrivateSetter
+        | ClosureVariableKind::PrivateGetterSetter
             if !matches!(value, RawValue::Object(_) | RawValue::Uninitialized) =>
         {
             return Err(HeapError::Invariant(
@@ -12784,6 +13367,7 @@ mod tests {
             argument_definitions: Rc::from([]),
             local_definitions: Rc::from([]),
             closure_variables: Rc::from([]),
+            private_bindings: PublishedPrivateBindings::none(),
             eval_environments: Rc::from([]),
             debug: None,
             auxiliary_atoms: auxiliary_atoms.into_boxed_slice(),
@@ -12808,6 +13392,438 @@ mod tests {
             .collect::<Vec<_>>()
             .into();
         bytecode
+    }
+
+    fn bytecode_test_realm(heap: &mut Heap) -> ContextId {
+        let shape = empty_shape(heap);
+        let prototype = heap
+            .allocate_object(ObjectData::ordinary(shape, Vec::new()))
+            .unwrap();
+        heap.allocate_context(ContextData::new(
+            prototype, prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+        ))
+        .unwrap()
+    }
+
+    fn allocate_private_accessor_child(
+        heap: &mut Heap,
+        realm: ContextId,
+        argument_count: u16,
+        valid_home_object_metadata: bool,
+        func_name: Option<JsString>,
+    ) -> FunctionBytecodeId {
+        let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
+        let mut child = bytecode(&code, realm, Vec::new(), Vec::new());
+        child.metadata.argument_count = argument_count;
+        child.metadata.defined_argument_count = argument_count;
+        child.metadata.strict = true;
+        child.metadata.needs_home_object = valid_home_object_metadata;
+        child.func_name = func_name;
+        child.argument_definitions = (0..argument_count)
+            .map(|_| VariableDefinition {
+                name: None,
+                is_lexical: false,
+                is_const: false,
+                is_parameter_initializer: false,
+                kind: ClosureVariableKind::Normal,
+            })
+            .collect::<Vec<_>>()
+            .into();
+        heap.allocate_function_bytecode(child).unwrap()
+    }
+
+    fn allocate_private_brand_child(heap: &mut Heap, realm: ContextId) -> FunctionBytecodeId {
+        let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
+        let mut child = bytecode(&code, realm, Vec::new(), Vec::new());
+        child.metadata.strict = true;
+        child.metadata.super_allowed = true;
+        child.metadata.arguments_forbidden = true;
+        child.metadata.needs_home_object = true;
+        child.metadata.class_initializer_kind = Some(ClassInitializerKind::InstanceFields);
+        child.metadata.class_private_brand = true;
+        heap.allocate_function_bytecode(child).unwrap()
+    }
+
+    #[derive(Clone, Copy)]
+    enum LinkedPrivateAccessorShape {
+        Getter,
+        Setter,
+        Pair,
+    }
+
+    fn linked_private_accessor_bytecode(
+        heap: &mut Heap,
+        realm: ContextId,
+        shape: LinkedPrivateAccessorShape,
+    ) -> FunctionBytecodeData {
+        let primary_name = Atom::from_raw(601);
+        let setter_name = Atom::from_raw(602);
+        let callable_arguments: &[u16] = match shape {
+            LinkedPrivateAccessorShape::Getter => &[0],
+            LinkedPrivateAccessorShape::Setter => &[1],
+            LinkedPrivateAccessorShape::Pair => &[0, 1],
+        };
+        let mut constants = callable_arguments
+            .iter()
+            .map(|argument_count| {
+                BytecodeConstant::Function(allocate_private_accessor_child(
+                    heap,
+                    realm,
+                    *argument_count,
+                    true,
+                    None,
+                ))
+            })
+            .collect::<Vec<_>>();
+        constants.push(BytecodeConstant::Function(allocate_private_brand_child(
+            heap, realm,
+        )));
+
+        let (definitions, roles, code, names) = match shape {
+            LinkedPrivateAccessorShape::Getter => (
+                vec![VariableDefinition {
+                    name: Some(primary_name),
+                    is_lexical: true,
+                    is_const: true,
+                    is_parameter_initializer: false,
+                    kind: ClosureVariableKind::PrivateGetter,
+                }],
+                vec![Some(PublishedPrivateBinding::primary(primary_name, None))],
+                vec![
+                    Instruction::SetLocalUninitialized(0),
+                    Instruction::Undefined,
+                    Instruction::FClosure(0),
+                    Instruction::InitializePrivateAccessor(0),
+                    Instruction::Drop,
+                    Instruction::CloseLocal(0),
+                    Instruction::Undefined,
+                    Instruction::Return,
+                ],
+                vec![primary_name],
+            ),
+            LinkedPrivateAccessorShape::Setter => (
+                vec![
+                    VariableDefinition {
+                        name: Some(primary_name),
+                        is_lexical: true,
+                        is_const: true,
+                        is_parameter_initializer: false,
+                        kind: ClosureVariableKind::PrivateSetter,
+                    },
+                    VariableDefinition {
+                        name: Some(setter_name),
+                        is_lexical: true,
+                        is_const: true,
+                        is_parameter_initializer: false,
+                        kind: ClosureVariableKind::PrivateSetter,
+                    },
+                ],
+                vec![
+                    Some(PublishedPrivateBinding::primary(primary_name, Some(1))),
+                    Some(PublishedPrivateBinding::setter_storage(
+                        setter_name,
+                        Some(0),
+                    )),
+                ],
+                vec![
+                    Instruction::SetLocalUninitialized(0),
+                    Instruction::SetLocalUninitialized(1),
+                    Instruction::Undefined,
+                    Instruction::FClosure(0),
+                    Instruction::InitializePrivateAccessor(1),
+                    Instruction::Drop,
+                    Instruction::CloseLocal(1),
+                    Instruction::CloseLocal(0),
+                    Instruction::Undefined,
+                    Instruction::Return,
+                ],
+                vec![primary_name, setter_name],
+            ),
+            LinkedPrivateAccessorShape::Pair => (
+                vec![
+                    VariableDefinition {
+                        name: Some(primary_name),
+                        is_lexical: true,
+                        is_const: true,
+                        is_parameter_initializer: false,
+                        kind: ClosureVariableKind::PrivateGetterSetter,
+                    },
+                    VariableDefinition {
+                        name: Some(setter_name),
+                        is_lexical: true,
+                        is_const: true,
+                        is_parameter_initializer: false,
+                        kind: ClosureVariableKind::PrivateSetter,
+                    },
+                ],
+                vec![
+                    Some(PublishedPrivateBinding::primary(primary_name, Some(1))),
+                    Some(PublishedPrivateBinding::setter_storage(
+                        setter_name,
+                        Some(0),
+                    )),
+                ],
+                vec![
+                    Instruction::SetLocalUninitialized(0),
+                    Instruction::SetLocalUninitialized(1),
+                    Instruction::Undefined,
+                    Instruction::FClosure(0),
+                    Instruction::InitializePrivateAccessor(0),
+                    Instruction::Drop,
+                    Instruction::Undefined,
+                    Instruction::FClosure(1),
+                    Instruction::InitializePrivateAccessor(1),
+                    Instruction::Drop,
+                    Instruction::CloseLocal(1),
+                    Instruction::CloseLocal(0),
+                    Instruction::Undefined,
+                    Instruction::Return,
+                ],
+                vec![primary_name, setter_name],
+            ),
+        };
+        let mut parent = bytecode(&Rc::from(code), realm, constants, names);
+        parent.metadata.local_count = u16::try_from(definitions.len()).unwrap();
+        parent.metadata.max_stack = 2;
+        parent.local_definitions = definitions.into();
+        parent.private_bindings = PublishedPrivateBindings::authenticated(roles, Vec::new());
+        parent
+    }
+
+    #[test]
+    fn linked_private_accessors_accept_only_sealed_legal_lifecycles() {
+        let mut heap = Heap::new();
+        let realm = bytecode_test_realm(&mut heap);
+
+        for shape in [
+            LinkedPrivateAccessorShape::Getter,
+            LinkedPrivateAccessorShape::Setter,
+            LinkedPrivateAccessorShape::Pair,
+        ] {
+            let candidate = linked_private_accessor_bytecode(&mut heap, realm, shape);
+            assert!(heap.allocate_function_bytecode(candidate).is_ok());
+        }
+
+        let mut unsealed =
+            linked_private_accessor_bytecode(&mut heap, realm, LinkedPrivateAccessorShape::Getter);
+        unsealed.private_bindings = PublishedPrivateBindings::none();
+        assert_eq!(
+            heap.allocate_function_bytecode(unsealed),
+            Err(HeapError::Invariant(
+                "published private bindings are missing sealed role metadata"
+            ))
+        );
+    }
+
+    #[test]
+    fn linked_private_accessors_reject_forged_setter_capability_uses() {
+        let mut heap = Heap::new();
+        let realm = bytecode_test_realm(&mut heap);
+
+        let mut initialized_primary =
+            linked_private_accessor_bytecode(&mut heap, realm, LinkedPrivateAccessorShape::Setter);
+        initialized_primary.code = initialized_primary
+            .code
+            .iter()
+            .map(|instruction| match instruction {
+                Instruction::InitializePrivateAccessor(1) => {
+                    Instruction::InitializePrivateAccessor(0)
+                }
+                instruction => instruction.clone(),
+            })
+            .collect::<Vec<_>>()
+            .into();
+        assert_eq!(
+            heap.allocate_function_bytecode(initialized_primary),
+            Err(HeapError::Invariant(
+                "private-accessor initializer referenced an incompatible binding"
+            ))
+        );
+
+        let mut primary_put =
+            linked_private_accessor_bytecode(&mut heap, realm, LinkedPrivateAccessorShape::Setter);
+        let mut code = primary_put.code.to_vec();
+        code.insert(
+            code.len() - 2,
+            Instruction::PutPrivateField(PrivateNameSource::Local(0)),
+        );
+        primary_put.code = code.into();
+        assert_eq!(
+            heap.allocate_function_bytecode(primary_put),
+            Err(HeapError::Invariant(
+                "private put referenced an incompatible binding"
+            ))
+        );
+
+        let mut synthetic_in =
+            linked_private_accessor_bytecode(&mut heap, realm, LinkedPrivateAccessorShape::Setter);
+        let mut code = synthetic_in.code.to_vec();
+        code.insert(
+            code.len() - 2,
+            Instruction::PrivateIn(PrivateNameSource::Local(1)),
+        );
+        synthetic_in.code = code.into();
+        assert_eq!(
+            heap.allocate_function_bytecode(synthetic_in),
+            Err(HeapError::Invariant(
+                "private-in referenced a synthetic setter binding"
+            ))
+        );
+
+        let primary_name = Atom::from_raw(603);
+        let code: Rc<[Instruction]> = Rc::from([
+            Instruction::SetLocalUninitialized(0),
+            Instruction::CloseLocal(0),
+            Instruction::Undefined,
+            Instruction::Return,
+        ]);
+        let mut unpaired = bytecode(&code, realm, Vec::new(), vec![primary_name]);
+        unpaired.metadata.local_count = 1;
+        unpaired.local_definitions = Rc::from([VariableDefinition {
+            name: Some(primary_name),
+            is_lexical: true,
+            is_const: true,
+            is_parameter_initializer: false,
+            kind: ClosureVariableKind::PrivateSetter,
+        }]);
+        unpaired.private_bindings = PublishedPrivateBindings::authenticated(
+            vec![Some(PublishedPrivateBinding::primary(primary_name, None))],
+            Vec::new(),
+        );
+        assert_eq!(
+            heap.allocate_function_bytecode(unpaired),
+            Err(HeapError::Invariant(
+                "published private setter has malformed pair metadata"
+            ))
+        );
+    }
+
+    #[test]
+    fn linked_private_accessor_initializer_authenticates_its_unique_child_edge() {
+        let mut heap = Heap::new();
+        let realm = bytecode_test_realm(&mut heap);
+
+        let mut missing_closure =
+            linked_private_accessor_bytecode(&mut heap, realm, LinkedPrivateAccessorShape::Getter);
+        missing_closure.code = missing_closure
+            .code
+            .iter()
+            .map(|instruction| match instruction {
+                Instruction::FClosure(0) => Instruction::Undefined,
+                instruction => instruction.clone(),
+            })
+            .collect::<Vec<_>>()
+            .into();
+        assert_eq!(
+            heap.allocate_function_bytecode(missing_closure),
+            Err(HeapError::Invariant(
+                "private-accessor initializer did not consume an adjacent closure"
+            ))
+        );
+
+        let mut invalid_child =
+            linked_private_accessor_bytecode(&mut heap, realm, LinkedPrivateAccessorShape::Getter);
+        let invalid = allocate_private_accessor_child(&mut heap, realm, 0, false, None);
+        invalid_child.constants = Rc::from([
+            BytecodeConstant::Function(invalid),
+            invalid_child.constants[1].clone(),
+        ]);
+        assert_eq!(
+            heap.allocate_function_bytecode(invalid_child),
+            Err(HeapError::Invariant(
+                "private-accessor child has invalid HomeObject metadata"
+            ))
+        );
+
+        let mut duplicate_site =
+            linked_private_accessor_bytecode(&mut heap, realm, LinkedPrivateAccessorShape::Getter);
+        let mut code = duplicate_site.code.to_vec();
+        code.splice(1..1, [Instruction::FClosure(0), Instruction::Drop]);
+        duplicate_site.code = code.into();
+        assert_eq!(
+            heap.allocate_function_bytecode(duplicate_site),
+            Err(HeapError::Invariant(
+                "private-accessor child did not have one unique closure site"
+            ))
+        );
+
+        let mut non_fallthrough =
+            linked_private_accessor_bytecode(&mut heap, realm, LinkedPrivateAccessorShape::Getter);
+        let mut code = non_fallthrough.code.to_vec();
+        code.insert(1, Instruction::Goto(3));
+        non_fallthrough.code = code.into();
+        assert_eq!(
+            heap.allocate_function_bytecode(non_fallthrough),
+            Err(HeapError::Invariant(
+                "private-accessor closure/initializer pair has a non-fallthrough entry"
+            ))
+        );
+
+        let mut repeated_lifetime =
+            linked_private_accessor_bytecode(&mut heap, realm, LinkedPrivateAccessorShape::Getter);
+        let mut code = repeated_lifetime.code.to_vec();
+        code.insert(code.len() - 2, Instruction::Goto(1));
+        repeated_lifetime.code = code.into();
+        assert_eq!(
+            heap.allocate_function_bytecode(repeated_lifetime),
+            Err(HeapError::Invariant(
+                "private-accessor initializer is reachable by a repeated-lifetime backedge"
+            ))
+        );
+    }
+
+    #[test]
+    fn linked_private_accessor_initializer_authenticates_role_arity_and_empty_name() {
+        let mut heap = Heap::new();
+        let realm = bytecode_test_realm(&mut heap);
+
+        let mut zero_argument_setter =
+            linked_private_accessor_bytecode(&mut heap, realm, LinkedPrivateAccessorShape::Setter);
+        let forged_setter = allocate_private_accessor_child(&mut heap, realm, 0, true, None);
+        zero_argument_setter.constants = Rc::from([
+            BytecodeConstant::Function(forged_setter),
+            zero_argument_setter.constants[1].clone(),
+        ]);
+        assert_eq!(
+            heap.allocate_function_bytecode(zero_argument_setter),
+            Err(HeapError::Invariant(
+                "private-accessor child has invalid authored arity"
+            ))
+        );
+
+        let mut one_argument_getter =
+            linked_private_accessor_bytecode(&mut heap, realm, LinkedPrivateAccessorShape::Getter);
+        let forged_getter = allocate_private_accessor_child(&mut heap, realm, 1, true, None);
+        one_argument_getter.constants = Rc::from([
+            BytecodeConstant::Function(forged_getter),
+            one_argument_getter.constants[1].clone(),
+        ]);
+        assert_eq!(
+            heap.allocate_function_bytecode(one_argument_getter),
+            Err(HeapError::Invariant(
+                "private-accessor child has invalid authored arity"
+            ))
+        );
+
+        let mut named_getter =
+            linked_private_accessor_bytecode(&mut heap, realm, LinkedPrivateAccessorShape::Getter);
+        let forged_name = allocate_private_accessor_child(
+            &mut heap,
+            realm,
+            0,
+            true,
+            Some(JsString::from_static("#value")),
+        );
+        named_getter.constants = Rc::from([
+            BytecodeConstant::Function(forged_name),
+            named_getter.constants[1].clone(),
+        ]);
+        assert_eq!(
+            heap.allocate_function_bytecode(named_getter),
+            Err(HeapError::Invariant(
+                "private-accessor child retained a non-empty intrinsic name"
+            ))
+        );
     }
 
     #[test]

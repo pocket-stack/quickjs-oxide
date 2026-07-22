@@ -6,7 +6,8 @@ use quickjs_oxide::{ErrorKind, Runtime, Value};
 // Pins the base-class portion of QuickJS 2026-06-04 `js_parse_class` and
 // `OP_define_class`. Heritage is covered by the derived-class oracle and gate;
 // field initialization and static blocks have their own later oracles. Private
-// methods/accessors and generator/async methods remain later feature slices.
+// Private elements have dedicated later oracles; generator/async methods remain
+// later feature slices.
 const PROBE: &str = r#"
 (function () {
     var out = [];
@@ -194,13 +195,8 @@ fn base_class_observation_matches_pinned_quickjs() {
 }
 
 #[test]
-fn unsupported_class_families_remain_typed_frontiers() {
+fn remaining_unsupported_class_families_stay_typed_frontiers() {
     for (source, expected) in [
-        ("class C { get #value() {} }", "private class accessors"),
-        (
-            "class C { set #value(value) {} }",
-            "private class accessors",
-        ),
         ("class C { *method() {} }", "class generator methods"),
         ("class C { async method() {} }", "async class methods"),
     ] {

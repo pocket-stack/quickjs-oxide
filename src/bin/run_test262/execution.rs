@@ -751,7 +751,7 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
 
     #[test]
     fn unsupported_parser_provenance_is_opt_in_at_the_context_boundary() {
-        const UNSUPPORTED_SOURCE: &str = "class C { get #value() {} }";
+        const UNSUPPORTED_SOURCE: &str = "class C { *method() {} }";
 
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
@@ -773,7 +773,7 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
         assert_eq!(error.kind(), ErrorKind::Unsupported);
         assert_eq!(
             error.message(),
-            "private class accessors are not implemented yet"
+            "class generator methods are not implemented yet"
         );
         assert!(context.take_exception().unwrap().is_none());
     }

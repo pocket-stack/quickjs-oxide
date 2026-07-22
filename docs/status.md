@@ -1596,6 +1596,43 @@ claim full parity.
   Admission remains manifest-scoped; private accessors and async/generator
   class forms stay fail-closed.
 
+  R3j ports synchronous private instance/static getters and setters,
+  paired-accessor bindings, and
+  their shared class-side brands. The dependency audit partitions the same
+  572-path minimum synchronous private-element inventory into the admitted
+  267-path R3i method slice and a disjoint 305-path accessor slice. The latter
+  expands to 610 sloppy/strict variants: 229 positive paths and 76 audited
+  parse-negative `SyntaxError` paths. Oxide passes all 610 variants and pinned
+  QuickJS 2026-06-04 passes all 305 paths, with zero failure, unsupported,
+  skip, timeout, crash, or runner fault.
+
+  The R3j path-stream, manifest-file, profile, positive-stream, and
+  negative-stream SHA-256 values are
+  `ca77913172666cbe4e74a6476f7f4d87383e801260b2c5b80932dc15e8e98cd6`,
+  `f8d7b7cb065cf15bae4066ec0790d1c7f0da513b83c8166aef20b3ad7e024cf4`,
+  `1040d156877d88f6aae651f90b8fae472a8a4054d21f49bbbf2162d280afd884`,
+  `8ef30d5843d48aaee66a55834c79d710ed8f8d0afa89ea368dee89fef75d897c`,
+  and
+  `9d0e56fa4e6fd1ac21a075733fdd327d41f3107500506fbff5987960be1a5901`.
+  The TSV, JSONL, variant-key-stream, and empty non-pass SHA-256 values are
+  `aa54c8da45ac9a32aaeb9202ee5aae375a1b42dca0ac59928d78fd11042a02f0`,
+  `655a02032e50f63b281dce8cc5364d3c6aeff210a1bd3f69adae27c4c053c491`,
+  `6c72f931034ee9e2e4b13910c5d88f4d06b527ff49cf6fa6211c751ad28b40a1`,
+  and
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+  The source filter excludes 18 accessor paths / 28 variants before this
+  partition: 14 eval paths and four Function-constructor paths. The dedicated
+  QuickJS transcript freezes getter/setter partial initialization, the pinned
+  setter-only `#name in value` internal-tag behavior, brand/error ordering,
+  initializer and `super()` timing, HomeObject `super`, nested/direct-eval
+  capture, fresh evaluation, duplicate brands, abrupt class-scope reentry, and
+  duplicate-name parser rules. Its JavaScript and transcript hashes are
+  `0ee124bbd77f45ae9cd81bc6203cedd03e03b5e78640460abc9670ca77ffca12`
+  and
+  `c2656658102e7bfd9ee8da51848e18519afccb9a9ec02cc094d27cb6646d834a`.
+  Admission remains manifest-scoped; async/generator class forms and the
+  other explicitly excluded source frontiers stay fail-closed.
+
   Generator/async and destructuring eval declarations, unsupported class
   elements, and ill-formed UTF-16 source stay explicit frontiers.
   QuickJS also allocates the callable and VarRef
@@ -4455,8 +4492,7 @@ upstream's substantially deeper platform-dependent limits throughout.
 
 The language slice remains incomplete. Async/generator declarations,
 `for-await`, other general assignment targets, module resolution,
-async/generator methods and parameter forms, private accessors and their
-getter/setter pairing semantics,
+async/generator methods and parameter forms,
 generator/async class methods, non-simple ObjectLiteral
 accessor forms outside the covered
 synchronous setter slice, and callable Proxy classes are not yet implemented.
@@ -4470,8 +4506,8 @@ cover fixed and computed properties, undefined-only defaults, NamedEvaluation,
 array terminal rest, object rest, and object/array recursion. These forms also
 work in scripts, and ordinary
 bodies including classic heads are available through the normal `%Function%`
-constructor. Single-statement lexical declarations and the remaining private
-method/accessor brand environments remain later compiler slices. Base
+constructor. Single-statement lexical declarations remain a later compiler
+slice. Base
 class declaration/expression lexical environments and TDZ behavior land in
 R3e; heritage, derived construction, and `super()` land in R3f. Direct
 Program lexicals now use the production global VarRef path with two-phase
@@ -4620,7 +4656,7 @@ still pending. Uncatchable termination state is also pending. Other iterator
 classes and helpers, the remaining RegExp
 grammar/static surface and Unicode-backed String methods, non-simple
 ObjectLiteral setter forms outside the covered synchronous slice,
-async/generator class methods, private accessors,
+async/generator class methods,
 exotic-source spread, and the rest of the builtin table build on those layers.
 
 The remaining parity surface also includes the full grammar/opcode set, the
@@ -4878,7 +4914,9 @@ per-class-side brands, with publication checks isolated in
 `runtime/bytecode_publish/private_elements.rs`. `runtime.rs` remains a facade
 at 9,658 lines; the method and brand implementation lives in the dedicated
 private-element/compiler/VM-host modules rather than returning to the
-monolith. Private accessors remain the next follow-up boundary.
+monolith. R3j extends those same typed private-element cells and publication/
+VM-host seams for getter/setter pairs; `runtime.rs` remains the 9,674-line
+facade rather than absorbing the accessor implementation.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage

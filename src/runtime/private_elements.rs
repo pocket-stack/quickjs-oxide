@@ -323,18 +323,34 @@ impl Runtime {
         PrivateNameRef::from_borrowed_atom(self.clone(), atom).map_err(Into::into)
     }
 
-    /// Capture one class-private method closure in its dedicated immutable
-    /// lexical cell. The method's HomeObject must already be installed: it is
-    /// the authority from which QuickJS derives the class-side brand.
-    pub(in crate::runtime) fn new_private_method_var_ref(
+    const fn is_private_callable_kind(kind: ClosureVariableKind) -> bool {
+        matches!(
+            kind,
+            ClosureVariableKind::PrivateMethod
+                | ClosureVariableKind::PrivateGetter
+                | ClosureVariableKind::PrivateSetter
+                | ClosureVariableKind::PrivateGetterSetter
+        )
+    }
+
+    /// Capture one class-private callable in its dedicated immutable lexical
+    /// cell. Its HomeObject must already be installed: it is the authority
+    /// from which QuickJS derives the class-side brand.
+    pub(in crate::runtime) fn new_private_callable_var_ref(
         &self,
-        method: &CallableRef,
+        callable: &CallableRef,
+        kind: ClosureVariableKind,
     ) -> Result<VarRefRoot, RuntimeError> {
         let _operation = self.operation();
-        let (method_id, home_object) = self.private_method_callable_parts(method)?;
+        if !Self::is_private_callable_kind(kind) {
+            return Err(RuntimeError::Invariant(
+                "private-callable VarRef received a non-callable binding kind",
+            ));
+        }
+        let (callable_id, home_object) = self.private_callable_parts(callable)?;
         if home_object.is_none() {
             return Err(RuntimeError::Invariant(
-                "private-method callable has no HomeObject",
+                "private callable has no HomeObject",
             ));
         }
         let id = self
@@ -343,103 +359,134 @@ impl Runtime {
             .borrow_mut()
             .heap
             .allocate_var_ref(VarRefData::captured(
-                RawValue::Object(method_id),
+                RawValue::Object(callable_id),
                 true,
                 true,
-                ClosureVariableKind::PrivateMethod,
+                kind,
             ))?;
         Ok(VarRefRoot::from_owned_handle(self.clone(), id))
     }
 
-    /// Initialize an uninitialized captured private-method cell exactly once.
+    /// Initialize an uninitialized captured private-callable cell exactly once.
     /// This bypasses the ordinary VarRef write path so the callable capability
     /// can never escape as a mutable source-visible lexical value.
-    pub(in crate::runtime) fn initialize_private_method_var_ref(
+    pub(in crate::runtime) fn initialize_private_callable_var_ref(
         &self,
         root: &VarRefRoot,
-        method: &CallableRef,
+        callable: &CallableRef,
+        kind: ClosureVariableKind,
     ) -> Result<(), RuntimeError> {
         let _operation = self.operation();
         if !root.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime(
-                "private-method closure variable",
+                "private-callable closure variable",
             ));
         }
-        let (method_id, home_object) = self.private_method_callable_parts(method)?;
+        if !Self::is_private_callable_kind(kind) {
+            return Err(RuntimeError::Invariant(
+                "private-callable initialization received a non-callable binding kind",
+            ));
+        }
+        let (callable_id, home_object) = self.private_callable_parts(callable)?;
         if home_object.is_none() {
             return Err(RuntimeError::Invariant(
-                "private-method callable has no HomeObject",
+                "private callable has no HomeObject",
             ));
         }
         let mut state = self.0.state.borrow_mut();
         {
             let var_ref = state.heap.var_ref(root.id())?;
-            if var_ref.kind != ClosureVariableKind::PrivateMethod
-                || !var_ref.is_lexical
-                || !var_ref.is_const
-            {
+            if var_ref.kind != kind || !var_ref.is_lexical || !var_ref.is_const {
                 return Err(RuntimeError::Invariant(
-                    "private-method initialization reached an ordinary VarRef",
+                    "private-callable initialization reached an incompatible VarRef",
                 ));
             }
             if !matches!(var_ref.value, RawValue::Uninitialized) {
                 return Err(RuntimeError::Invariant(
-                    "private-method VarRef was initialized more than once",
+                    "private-callable VarRef was initialized more than once",
                 ));
             }
         }
         let cleanup = state
             .heap
-            .replace_var_ref_value(root.id(), RawValue::Object(method_id))?;
+            .replace_var_ref_value(root.id(), RawValue::Object(callable_id))?;
         state.apply_cleanup(cleanup)
     }
 
-    /// Root the callable held by an authenticated captured private-method
+    /// Root the callable held by an authenticated captured private-callable
     /// cell. Generic VarRef reads deliberately reject this representation.
-    pub(in crate::runtime) fn private_method_from_raw_var_ref(
+    pub(in crate::runtime) fn private_callable_from_raw_var_ref(
         &self,
         root: &VarRefRoot,
+        kind: ClosureVariableKind,
     ) -> Result<CallableRef, RuntimeError> {
         let _operation = self.operation();
         if !root.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime(
-                "private-method closure variable",
+                "private-callable closure variable",
+            ));
+        }
+        if !Self::is_private_callable_kind(kind) {
+            return Err(RuntimeError::Invariant(
+                "private-callable read received a non-callable binding kind",
             ));
         }
         let method_id = {
             let state = self.0.state.borrow();
             let var_ref = state.heap.var_ref(root.id())?;
-            if var_ref.kind != ClosureVariableKind::PrivateMethod
-                || !var_ref.is_lexical
-                || !var_ref.is_const
-            {
+            if var_ref.kind != kind || !var_ref.is_lexical || !var_ref.is_const {
                 return Err(RuntimeError::Invariant(
-                    "private-method read reached an ordinary VarRef",
+                    "private-callable read reached an incompatible VarRef",
                 ));
             }
             match var_ref.value {
                 RawValue::Object(method) => method,
                 RawValue::Uninitialized => {
                     return Err(RuntimeError::Invariant(
-                        "private-method VarRef was read before initialization",
+                        "private-callable VarRef was read before initialization",
                     ));
                 }
                 _ => {
                     return Err(RuntimeError::Invariant(
-                        "private-method VarRef contains an ordinary value",
+                        "private-callable VarRef contains an ordinary value",
                     ));
                 }
             }
         };
         let object = ObjectRef::from_borrowed_handle(self.clone(), method_id)?;
         let method = CallableRef::from_validated_object(object);
-        let (_, home_object) = self.private_method_callable_parts(&method)?;
+        let (_, home_object) = self.private_callable_parts(&method)?;
         if home_object.is_none() {
             return Err(RuntimeError::Invariant(
-                "private-method callable lost its HomeObject",
+                "private callable lost its HomeObject",
             ));
         }
         Ok(method)
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime) fn new_private_method_var_ref(
+        &self,
+        method: &CallableRef,
+    ) -> Result<VarRefRoot, RuntimeError> {
+        self.new_private_callable_var_ref(method, ClosureVariableKind::PrivateMethod)
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime) fn initialize_private_method_var_ref(
+        &self,
+        root: &VarRefRoot,
+        method: &CallableRef,
+    ) -> Result<(), RuntimeError> {
+        self.initialize_private_callable_var_ref(root, method, ClosureVariableKind::PrivateMethod)
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime) fn private_method_from_raw_var_ref(
+        &self,
+        root: &VarRefRoot,
+    ) -> Result<CallableRef, RuntimeError> {
+        self.private_callable_from_raw_var_ref(root, ClosureVariableKind::PrivateMethod)
     }
 
     /// Create the one hidden private brand owned by a class prototype or
@@ -562,7 +609,7 @@ impl Runtime {
     }
 
     fn private_method_brand_atom(&self, method: &CallableRef) -> Result<Atom, RuntimeError> {
-        let (_, home_object) = self.private_method_callable_parts(method)?;
+        let (_, home_object) = self.private_callable_parts(method)?;
         let Some(home_object) = home_object else {
             return Err(Self::missing_private_brand_error());
         };
@@ -570,12 +617,12 @@ impl Runtime {
         self.private_brand_atom(&home_object)
     }
 
-    fn private_method_callable_parts(
+    fn private_callable_parts(
         &self,
         method: &CallableRef,
     ) -> Result<(ObjectId, Option<ObjectId>), RuntimeError> {
         if !method.belongs_to(self) {
-            return Err(RuntimeError::WrongRuntime("private-method callable"));
+            return Err(RuntimeError::WrongRuntime("private callable"));
         }
         let method_id = method.as_object().object_id();
         let state = self.0.state.borrow();
@@ -587,7 +634,7 @@ impl Runtime {
         } = &object.payload
         else {
             return Err(RuntimeError::Invariant(
-                "private-method cell contains a non-bytecode callable",
+                "private-callable cell contains a non-bytecode callable",
             ));
         };
         let metadata = state.heap.function_bytecode(*bytecode)?.metadata;
@@ -601,7 +648,7 @@ impl Runtime {
             || !metadata.needs_home_object
         {
             return Err(RuntimeError::Invariant(
-                "private-method callable has invalid bytecode metadata",
+                "private-callable cell has invalid bytecode metadata",
             ));
         }
         Ok((method_id, *home_object))
@@ -936,7 +983,7 @@ mod tests {
         assert!(matches!(
             runtime.initialize_private_method_var_ref(&uninitialized, &method),
             Err(RuntimeError::Invariant(
-                "private-method VarRef was initialized more than once"
+                "private-callable VarRef was initialized more than once"
             ))
         ));
         assert!(matches!(
@@ -944,6 +991,55 @@ mod tests {
             Err(RuntimeError::Invariant(
                 "private-name read reached an ordinary VarRef"
             ))
+        ));
+    }
+
+    #[test]
+    fn private_accessor_var_refs_reuse_typed_callable_storage() {
+        let runtime = Runtime::new();
+        let (accessor, _) = private_method_callable(&runtime);
+
+        for kind in [
+            ClosureVariableKind::PrivateGetter,
+            ClosureVariableKind::PrivateSetter,
+            ClosureVariableKind::PrivateGetterSetter,
+        ] {
+            let captured = runtime
+                .new_private_callable_var_ref(&accessor, kind)
+                .unwrap();
+            assert_eq!(
+                runtime
+                    .private_callable_from_raw_var_ref(&captured, kind)
+                    .unwrap(),
+                accessor
+            );
+            assert!(matches!(
+                runtime.read_var_ref(&captured),
+                Err(RuntimeError::Invariant(
+                    "ordinary VarRef read reached a private-element binding"
+                ))
+            ));
+
+            let uninitialized = runtime
+                .new_uninitialized_captured_var_ref(true, true, kind)
+                .unwrap();
+            runtime
+                .initialize_private_callable_var_ref(&uninitialized, &accessor, kind)
+                .unwrap();
+            assert_eq!(
+                runtime
+                    .private_callable_from_raw_var_ref(&uninitialized, kind)
+                    .unwrap(),
+                accessor
+            );
+        }
+
+        let setter_primary = runtime
+            .new_uninitialized_captured_var_ref(true, true, ClosureVariableKind::PrivateSetter)
+            .unwrap();
+        assert!(matches!(
+            runtime.raw_var_ref_value(&setter_primary).unwrap(),
+            RawValue::Uninitialized
         ));
     }
 
@@ -1251,5 +1347,48 @@ mod tests {
             .unwrap();
 
         assert_eq!(result, Value::String(JsString::from_static("true,true")));
+    }
+
+    #[test]
+    fn private_accessor_cells_survive_direct_eval_and_closure_capture() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let result = context
+            .eval(
+                r##"
+                    class Pair {
+                        #slot = 0;
+                        get #value() { return this.#slot + 2; }
+                        set #value(value) { this.#slot = value; }
+                        read() { return eval("this.#value"); }
+                        write(value) {
+                            eval("this.#value = value");
+                            return this.#slot;
+                        }
+                        capture() {
+                            return value => [#value in value, value.#value].join(":");
+                        }
+                    }
+                    class SetterOnly {
+                        set #value(value) {}
+                        static has(value) { return eval("#value in value"); }
+                    }
+                    var pair = new Pair();
+                    var check = pair.capture();
+                    [
+                        pair.write(40),
+                        pair.read(),
+                        check(pair),
+                        SetterOnly.has(new SetterOnly()),
+                        SetterOnly.has({"[unsupported type]": 1})
+                    ].join("|");
+                "##,
+            )
+            .unwrap();
+
+        assert_eq!(
+            result,
+            Value::String(JsString::from_static("40|42|true:42|false|true"))
+        );
     }
 }

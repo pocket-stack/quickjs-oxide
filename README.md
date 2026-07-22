@@ -3,13 +3,12 @@
 An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
-The `unsafe`-free Rust engine and CLI are runnable but incomplete. Its
-synchronous class path includes public/private instance and static data fields,
-static blocks, private-`in`, and ordinary private instance/static methods with
-per-class-side brands. The focused R3g/R3h/R3i cohorts pass 767/767,
-1,260/1,260, and 534/534 Test262 variants respectively. That is not a full-suite
-parity claim: modules, async/generators, private accessors, async/generator class
-forms, and broad built-in coverage remain incomplete. Unsupported paths fail
+The `unsafe`-free engine is runnable but incomplete; synchronous classes cover
+public/private fields, static blocks, private-`in`, and ordinary private
+methods/accessors with per-class-side brands. R3g/R3h/R3i/R3j pass 767/767,
+1,260/1,260, 534/534, and 610/610 focused Test262 variants. That is not
+full-suite parity: modules, async/generators, async/generator class forms, and
+broad built-in coverage remain incomplete. Unsupported paths fail
 explicitly, and pinned QuickJS is used only as a test oracle.
 
 ## Try it
@@ -37,7 +36,7 @@ cargo run --quiet --bin qjs -- --print-result -e \
 cargo test --locked --workspace --all-targets
 ./scripts/test-test262-class-public-init.sh
 ./scripts/test-test262-class-private-fields.sh
-./scripts/test-test262-class-private-methods.sh
+./scripts/test-test262-class-private-{methods,accessors}.sh
 ```
 
 ## License

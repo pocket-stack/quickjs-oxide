@@ -434,6 +434,24 @@ enum BindingKind {
     PrivateMethod {
         is_static: bool,
     },
+    /// Primary binding for a private getter. The cell contains the getter
+    /// callable; a matching setter upgrades this binding to
+    /// `PrivateGetterSetter` while retaining the same local identity.
+    PrivateGetter {
+        is_static: bool,
+    },
+    /// Private setter capability. The source-visible primary `#name` binding
+    /// deliberately remains uninitialized for a setter-only declaration;
+    /// the callable itself lives in the synthetic `#name<set>` binding with
+    /// this same kind, matching pinned QuickJS.
+    PrivateSetter {
+        is_static: bool,
+    },
+    /// Primary binding for a paired private getter/setter. The getter lives in
+    /// this cell and the setter lives in the sibling synthetic `<set>` cell.
+    PrivateGetterSetter {
+        is_static: bool,
+    },
 }
 
 fn binding_kinds_compatible(left: BindingKind, right: BindingKind) -> bool {
@@ -446,6 +464,15 @@ fn binding_kinds_compatible(left: BindingKind, right: BindingKind) -> bool {
             ) | (
                 BindingKind::PrivateMethod { .. },
                 BindingKind::PrivateMethod { .. }
+            ) | (
+                BindingKind::PrivateGetter { .. },
+                BindingKind::PrivateGetter { .. }
+            ) | (
+                BindingKind::PrivateSetter { .. },
+                BindingKind::PrivateSetter { .. }
+            ) | (
+                BindingKind::PrivateGetterSetter { .. },
+                BindingKind::PrivateGetterSetter { .. }
             )
         )
 }
@@ -479,6 +506,15 @@ const fn binding_kind_from_closure_flags(
             // Staticness is likewise declaration-only for method identities.
             Some(BindingKind::PrivateMethod { is_static: false })
         }
+        ClosureVariableKind::PrivateGetter if is_lexical && is_const => {
+            Some(BindingKind::PrivateGetter { is_static: false })
+        }
+        ClosureVariableKind::PrivateSetter if is_lexical && is_const => {
+            Some(BindingKind::PrivateSetter { is_static: false })
+        }
+        ClosureVariableKind::PrivateGetterSetter if is_lexical && is_const => {
+            Some(BindingKind::PrivateGetterSetter { is_static: false })
+        }
         ClosureVariableKind::Normal
         | ClosureVariableKind::FunctionName
         | ClosureVariableKind::GlobalFunction
@@ -486,7 +522,10 @@ const fn binding_kind_from_closure_flags(
         | ClosureVariableKind::ArgEvalVariableObject
         | ClosureVariableKind::WithObject
         | ClosureVariableKind::PrivateField
-        | ClosureVariableKind::PrivateMethod => None,
+        | ClosureVariableKind::PrivateMethod
+        | ClosureVariableKind::PrivateGetter
+        | ClosureVariableKind::PrivateSetter
+        | ClosureVariableKind::PrivateGetterSetter => None,
     }
 }
 
@@ -4133,7 +4172,11 @@ impl<'source> Parser<'source> {
                 }
                 (
                     BindingStorage::Local(_),
-                    BindingKind::PrivateField { .. } | BindingKind::PrivateMethod { .. },
+                    BindingKind::PrivateField { .. }
+                    | BindingKind::PrivateMethod { .. }
+                    | BindingKind::PrivateGetter { .. }
+                    | BindingKind::PrivateSetter { .. }
+                    | BindingKind::PrivateGetterSetter { .. },
                 ) => {
                     return Err(Error::internal(
                         "private binding leaked into the function var scope",
@@ -9659,7 +9702,10 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 | ClosureVariableKind::FunctionName
                 | ClosureVariableKind::GlobalFunction
                 | ClosureVariableKind::PrivateField
-                | ClosureVariableKind::PrivateMethod => continue,
+                | ClosureVariableKind::PrivateMethod
+                | ClosureVariableKind::PrivateGetter
+                | ClosureVariableKind::PrivateSetter
+                | ClosureVariableKind::PrivateGetterSetter => continue,
             };
             let descriptor = function
                 .closure_variables
@@ -9783,7 +9829,11 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         }
                         if matches!(
                             binding.kind,
-                            BindingKind::PrivateField { .. } | BindingKind::PrivateMethod { .. }
+                            BindingKind::PrivateField { .. }
+                                | BindingKind::PrivateMethod { .. }
+                                | BindingKind::PrivateGetter { .. }
+                                | BindingKind::PrivateSetter { .. }
+                                | BindingKind::PrivateGetterSetter { .. }
                         ) && (!binding.name.starts_with('#')
                             || binding.name.len() == 1
                             || binding.storage_scope != binding.declaration_scope
@@ -10723,7 +10773,10 @@ fn link_eval_environment(
                         | BindingKind::Lexical { .. }
                         | BindingKind::WithObject
                         | BindingKind::PrivateField { .. }
-                        | BindingKind::PrivateMethod { .. } => 0,
+                        | BindingKind::PrivateMethod { .. }
+                        | BindingKind::PrivateGetter { .. }
+                        | BindingKind::PrivateSetter { .. }
+                        | BindingKind::PrivateGetterSetter { .. } => 0,
                     }
                 });
             }
@@ -10866,6 +10919,9 @@ fn link_eval_environment(
                     BindingKind::Lexical { .. }
                         | BindingKind::PrivateField { .. }
                         | BindingKind::PrivateMethod { .. }
+                        | BindingKind::PrivateGetter { .. }
+                        | BindingKind::PrivateSetter { .. }
+                        | BindingKind::PrivateGetterSetter { .. }
                 ),
                 is_const: matches!(
                     resolved_kind,
@@ -10873,6 +10929,9 @@ fn link_eval_environment(
                         | BindingKind::FunctionName { is_const: true }
                         | BindingKind::PrivateField { .. }
                         | BindingKind::PrivateMethod { .. }
+                        | BindingKind::PrivateGetter { .. }
+                        | BindingKind::PrivateSetter { .. }
+                        | BindingKind::PrivateGetterSetter { .. }
                 ),
                 kind: closure_kind(resolved_kind),
                 is_catch_parameter,
@@ -11303,7 +11362,11 @@ fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
                 (BindingStorage::Argument(index), _) => Instruction::PutArg(index),
                 (
                     BindingStorage::Local(_),
-                    BindingKind::PrivateField { .. } | BindingKind::PrivateMethod { .. },
+                    BindingKind::PrivateField { .. }
+                    | BindingKind::PrivateMethod { .. }
+                    | BindingKind::PrivateGetter { .. }
+                    | BindingKind::PrivateSetter { .. }
+                    | BindingKind::PrivateGetterSetter { .. },
                 ) => {
                     return Err(Error::internal(
                         "private binding reached function hoist lowering",
@@ -12161,6 +12224,9 @@ const fn binding_is_readonly(kind: BindingKind) -> bool {
             | BindingKind::FunctionName { is_const: true }
             | BindingKind::PrivateField { .. }
             | BindingKind::PrivateMethod { .. }
+            | BindingKind::PrivateGetter { .. }
+            | BindingKind::PrivateSetter { .. }
+            | BindingKind::PrivateGetterSetter { .. }
     )
 }
 
@@ -12303,7 +12369,10 @@ fn push_dynamic_environment_source(
             | BindingKind::Lexical { .. }
             | BindingKind::FunctionName { .. }
             | BindingKind::PrivateField { .. }
-            | BindingKind::PrivateMethod { .. },
+            | BindingKind::PrivateMethod { .. }
+            | BindingKind::PrivateGetter { .. }
+            | BindingKind::PrivateSetter { .. }
+            | BindingKind::PrivateGetterSetter { .. },
             _,
         )
         | (_, BindingStorage::Argument(_) | BindingStorage::Global) => {
@@ -12428,7 +12497,11 @@ fn global_declaration_operation(
                 "with object reached global declaration resolution",
             ));
         }
-        BindingKind::PrivateField { .. } | BindingKind::PrivateMethod { .. } => {
+        BindingKind::PrivateField { .. }
+        | BindingKind::PrivateMethod { .. }
+        | BindingKind::PrivateGetter { .. }
+        | BindingKind::PrivateSetter { .. }
+        | BindingKind::PrivateGetterSetter { .. } => {
             return Err(Error::internal(
                 "private binding reached global declaration resolution",
             ));
@@ -12752,9 +12825,17 @@ fn binding_instruction(
         (BindingStorage::External(_), _, _) => Err(Error::internal(
             "eval external binding reached local instruction selection",
         )),
-        (_, BindingKind::PrivateField { .. } | BindingKind::PrivateMethod { .. }, _) => Err(
-            Error::internal("private binding reached ordinary identifier instruction selection"),
-        ),
+        (
+            _,
+            BindingKind::PrivateField { .. }
+            | BindingKind::PrivateMethod { .. }
+            | BindingKind::PrivateGetter { .. }
+            | BindingKind::PrivateSetter { .. }
+            | BindingKind::PrivateGetterSetter { .. },
+            _,
+        ) => Err(Error::internal(
+            "private binding reached ordinary identifier instruction selection",
+        )),
         (
             BindingStorage::Local(_),
             BindingKind::EvalVariableObject
@@ -12872,9 +12953,16 @@ fn closure_binding_operation(
         ) => Err(Error::internal(
             "hidden object binding reached source closure operation selection",
         )),
-        (BindingKind::PrivateField { .. } | BindingKind::PrivateMethod { .. }, _) => Err(
-            Error::internal("private binding reached ordinary identifier closure selection"),
-        ),
+        (
+            BindingKind::PrivateField { .. }
+            | BindingKind::PrivateMethod { .. }
+            | BindingKind::PrivateGetter { .. }
+            | BindingKind::PrivateSetter { .. }
+            | BindingKind::PrivateGetterSetter { .. },
+            _,
+        ) => Err(Error::internal(
+            "private binding reached ordinary identifier closure selection",
+        )),
         (
             BindingKind::Normal | BindingKind::FunctionName { .. },
             IdentifierAccess::Get | IdentifierAccess::GetOrUndefined,
@@ -12955,6 +13043,9 @@ const fn closure_kind(kind: BindingKind) -> ClosureVariableKind {
         BindingKind::WithObject => ClosureVariableKind::WithObject,
         BindingKind::PrivateField { .. } => ClosureVariableKind::PrivateField,
         BindingKind::PrivateMethod { .. } => ClosureVariableKind::PrivateMethod,
+        BindingKind::PrivateGetter { .. } => ClosureVariableKind::PrivateGetter,
+        BindingKind::PrivateSetter { .. } => ClosureVariableKind::PrivateSetter,
+        BindingKind::PrivateGetterSetter { .. } => ClosureVariableKind::PrivateGetterSetter,
     }
 }
 
@@ -13021,6 +13112,9 @@ fn capture_binding_path(
                     | BindingKind::WithObject
                     | BindingKind::PrivateField { .. }
                     | BindingKind::PrivateMethod { .. }
+                    | BindingKind::PrivateGetter { .. }
+                    | BindingKind::PrivateSetter { .. }
+                    | BindingKind::PrivateGetterSetter { .. }
             ) {
             ClosureVariableName::Constant(ensure_string_constant(function, name)?)
         } else {
@@ -13034,6 +13128,9 @@ fn capture_binding_path(
                 BindingKind::Lexical { .. }
                     | BindingKind::PrivateField { .. }
                     | BindingKind::PrivateMethod { .. }
+                    | BindingKind::PrivateGetter { .. }
+                    | BindingKind::PrivateSetter { .. }
+                    | BindingKind::PrivateGetterSetter { .. }
             ),
             is_const: matches!(
                 requested_kind,
@@ -13041,6 +13138,9 @@ fn capture_binding_path(
                     | BindingKind::FunctionName { is_const: true }
                     | BindingKind::PrivateField { .. }
                     | BindingKind::PrivateMethod { .. }
+                    | BindingKind::PrivateGetter { .. }
+                    | BindingKind::PrivateSetter { .. }
+                    | BindingKind::PrivateGetterSetter { .. }
             ),
             kind: closure_kind(requested_kind),
         };
@@ -13256,6 +13356,9 @@ fn build_scope_lifecycles(
                     BindingKind::Lexical { .. }
                         | BindingKind::PrivateField { .. }
                         | BindingKind::PrivateMethod { .. }
+                        | BindingKind::PrivateGetter { .. }
+                        | BindingKind::PrivateSetter { .. }
+                        | BindingKind::PrivateGetterSetter { .. }
                 );
                 let is_with_object = binding.kind == BindingKind::WithObject;
                 if !is_lexical && !is_with_object {
@@ -13477,6 +13580,27 @@ fn lower_unlinked_tree(
                     is_const: true,
                     is_parameter_initializer: false,
                     kind: ClosureVariableKind::PrivateMethod,
+                },
+                BindingKind::PrivateGetter { .. } => UnlinkedVariableDefinition {
+                    name,
+                    is_lexical: true,
+                    is_const: true,
+                    is_parameter_initializer: false,
+                    kind: ClosureVariableKind::PrivateGetter,
+                },
+                BindingKind::PrivateSetter { .. } => UnlinkedVariableDefinition {
+                    name,
+                    is_lexical: true,
+                    is_const: true,
+                    is_parameter_initializer: false,
+                    kind: ClosureVariableKind::PrivateSetter,
+                },
+                BindingKind::PrivateGetterSetter { .. } => UnlinkedVariableDefinition {
+                    name,
+                    is_lexical: true,
+                    is_const: true,
+                    is_parameter_initializer: false,
+                    kind: ClosureVariableKind::PrivateGetterSetter,
                 },
             }
             .with_parameter_initializer(is_parameter_initializer);

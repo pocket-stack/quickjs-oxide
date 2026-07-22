@@ -34,10 +34,10 @@ intended early `SyntaxError`, rather than because class parsing is absent.
 This 193/193 result is a runner smoke baseline, not a project-wide 100%
 estimate. The sample was selected from already implemented synchronous
 surfaces. Module, async/jobs, most `$262` host hooks, advanced RegExp pattern
-grammar, private accessors, async/generator class forms, generators,
+grammar, async/generator class forms, generators,
 TypedArrays and many other broad layers remain absent. Public fields and static
-blocks, private data fields, and ordinary synchronous private methods are
-measured separately by the scoped R3g/R3h/R3i gates below.
+blocks, private data fields, and ordinary synchronous private methods/accessors
+are measured separately by the scoped R3g/R3h/R3i/R3j gates below.
 
 Nineteen additional provenance variants guard the result: four audited negative
 variants pass for the intended parse error, while 15 unsupported grammar
@@ -2947,6 +2947,65 @@ cargo build --bin qjs
 
 Use `--check` on either script to authenticate only the frozen inputs.
 
+## R3j synchronous private accessors
+
+R3j implements the synchronous private getter/setter admission target
+separately from R3i. Starting from the 651-path
+metadata-minimal private-method inventory, the shared source audit removes 79
+adjacent paths and leaves 572 minimum synchronous paths. The accessor selector
+then partitions those paths exactly into 305 private-accessor paths and the 267
+ordinary-private-method paths already admitted by R3i.
+
+All 305 accessor paths have both sloppy and strict variants, producing 610
+variants: 229 positive paths and 76 parse-negative `SyntaxError` paths. Oxide
+passes 610/610 and pinned QuickJS 2026-06-04 passes 305/305. The non-pass
+vector is empty. This remains a focused manifest-scoped result, not a
+whole-feature or full-Test262 percentage.
+
+The accessor manifest includes only the same audited class/private-field
+dependency tags as R3i. It excludes module/raw/async flags, other feature tags,
+and the shared eval, Function-constructor, Proxy, await/yield, async,
+generator, static-block, and optional-chaining source frontiers. Within the
+pre-filter accessor inventory, 18 paths / 28 variants are excluded: 14 eval
+paths and four Function-constructor paths; the other source categories have no
+accessor overlap.
+
+The profile, manifest file, manifest path stream, positive stream, and negative
+stream SHA-256 values are
+`1040d156877d88f6aae651f90b8fae472a8a4054d21f49bbbf2162d280afd884`,
+`f8d7b7cb065cf15bae4066ec0790d1c7f0da513b83c8166aef20b3ad7e024cf4`,
+`ca77913172666cbe4e74a6476f7f4d87383e801260b2c5b80932dc15e8e98cd6`,
+`8ef30d5843d48aaee66a55834c79d710ed8f8d0afa89ea368dee89fef75d897c`,
+and
+`9d0e56fa4e6fd1ac21a075733fdd327d41f3107500506fbff5987960be1a5901`.
+The variant-key stream, TSV, JSONL, and empty non-pass SHA-256 values are
+`6c72f931034ee9e2e4b13910c5d88f4d06b527ff49cf6fa6211c751ad28b40a1`,
+`aa54c8da45ac9a32aaeb9202ee5aae375a1b42dca0ac59928d78fd11042a02f0`,
+`655a02032e50f63b281dce8cc5364d3c6aeff210a1bd3f69adae27c4c053c491`,
+and
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+
+The pinned differential covers getter/setter pairs and one-sided accessors,
+including QuickJS's setter-only `#name in value` internal-tag quirk; partial
+getter/setter initialization; instance/static brands and diagnostics;
+initializer and `super()` ordering; HomeObject `super`; nested function,
+arrow, class, and direct-eval capture; fresh class reevaluation; duplicate
+brand insertion; abrupt computed-key VarRef reentry; and duplicate-name parser
+rules. Its JavaScript and expected transcript SHA-256 values are
+`0ee124bbd77f45ae9cd81bc6203cedd03e03b5e78640460abc9670ca77ffca12`
+and
+`c2656658102e7bfd9ee8da51848e18519afccb9a9ec02cc094d27cb6646d834a`.
+
+Reproduce the authenticated gate and differential with:
+
+```sh
+./scripts/test-test262-class-private-accessors.sh
+cargo build --bin qjs
+./scripts/test-r3j-class-private-accessors-oracle.sh --oxide ./target/debug/qjs
+```
+
+Use `--check` on either script to authenticate only the frozen inputs.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -3205,9 +3264,10 @@ hash-authenticated 630-path/1,260-variant focused gate passes 1,260/1,260;
 pinned QuickJS passes 630/630.
 R3i adds ordinary synchronous private instance/static methods with independent
 class-side brands. Its hash-authenticated 267-path/534-variant focused gate
-passes 534/534; pinned QuickJS passes 267/267. Private accessors and
-async/generator class forms remain the next class-element frontiers, and the
-global profile stays closed.
+passes 534/534; pinned QuickJS passes 267/267. R3j adds the disjoint
+305-path/610-variant synchronous private-accessor target: Oxide passes 610/610
+and pinned QuickJS passes 305/305. Async/generator class forms remain later
+frontiers, and the global profile stays closed.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

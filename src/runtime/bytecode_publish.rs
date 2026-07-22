@@ -2,6 +2,8 @@
 
 mod private_elements;
 
+pub(super) use private_elements::prepare_private_binding_publication;
+
 use super::*;
 use std::collections::HashSet;
 
@@ -91,7 +93,10 @@ const fn eval_variable_object_sentinel(kind: ClosureVariableKind) -> Option<&'st
         | ClosureVariableKind::GlobalFunction
         | ClosureVariableKind::WithObject
         | ClosureVariableKind::PrivateField
-        | ClosureVariableKind::PrivateMethod => None,
+        | ClosureVariableKind::PrivateMethod
+        | ClosureVariableKind::PrivateGetter
+        | ClosureVariableKind::PrivateSetter
+        | ClosureVariableKind::PrivateGetterSetter => None,
     }
 }
 
@@ -2406,6 +2411,9 @@ fn verify_unlinked_tree_with_root(
                     | ClosureVariableKind::WithObject
                     | ClosureVariableKind::PrivateField
                     | ClosureVariableKind::PrivateMethod
+                    | ClosureVariableKind::PrivateGetter
+                    | ClosureVariableKind::PrivateSetter
+                    | ClosureVariableKind::PrivateGetterSetter
             ) || matches!(
                 descriptor.source,
                 ClosureSource::GlobalDeclaration
