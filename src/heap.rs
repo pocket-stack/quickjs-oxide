@@ -674,6 +674,11 @@ pub struct FunctionMetadata {
     /// bytecode. This is parser authority, distinct from `needs_home_object`,
     /// which only controls whether closure publication retains an object edge.
     pub super_allowed: bool,
+    /// QuickJS parser capability inherited by class field/static-block arrows
+    /// and direct eval. When set, an implicit `arguments` binding is a syntax
+    /// error rather than a lookup which can fall through to an outer/global
+    /// environment.
+    pub arguments_forbidden: bool,
     /// Whether closure publication must accept a method HomeObject. QuickJS
     /// derives this from `home_object_var_idx`/`need_home_object`; ordinary
     /// functions leave the flag clear and therefore retain no object edge.
@@ -691,6 +696,11 @@ pub struct FunctionMetadata {
     pub has_prototype: bool,
     /// Base/derived constructor protocol carried by QuickJS bytecode.
     pub constructor_kind: ConstructorKind,
+    /// Synthetic class-element program emitted by `js_parse_class`-equivalent
+    /// lowering.  Keeping this role orthogonal to ordinary/generator/async
+    /// function kind lets publication and the VM reject forged initializer
+    /// calls without exposing a JavaScript-visible marker.
+    pub class_initializer_kind: Option<ClassInitializerKind>,
 }
 
 /// Compiler-authored frame pseudo bindings have one canonical QuickJS entry
@@ -798,13 +808,35 @@ fn validate_class_constructor_guard(
 }
 
 fn consume_class_constructor_guard(
+    metadata: &FunctionMetadata,
+    code: &[Instruction],
     guard_pc: Option<usize>,
     expected_pc: usize,
 ) -> Result<usize, &'static str> {
     match guard_pc {
-        Some(actual) if actual == expected_pc => expected_pc
-            .checked_add(1)
-            .ok_or("class constructor guard position overflowed bytecode"),
+        Some(actual) if actual == expected_pc => {
+            let after_guard = expected_pc
+                .checked_add(1)
+                .ok_or("class constructor guard position overflowed bytecode")?;
+            if metadata.constructor_kind == ConstructorKind::Base {
+                if !matches!(
+                    code.get(after_guard..after_guard + 4),
+                    Some([
+                        Instruction::PushThis,
+                        Instruction::PushActiveFunction,
+                        Instruction::CallClassInstanceInitializer,
+                        Instruction::Drop,
+                    ])
+                ) {
+                    return Err("base class constructor has no exact field initializer hook");
+                }
+                after_guard
+                    .checked_add(4)
+                    .ok_or("class field initializer position overflowed bytecode")
+            } else {
+                Ok(after_guard)
+            }
+        }
         Some(_) => Err("class constructor guard is not at parameter entry"),
         None => Ok(expected_pc),
     }
@@ -892,6 +924,35 @@ pub(crate) fn validate_derived_constructor_bytecode_layout(
             _ => None,
         })
         .collect::<HashSet<_>>();
+    let base_initializer_hook = if metadata.constructor_kind == ConstructorKind::Base
+        && metadata.strict
+        && !metadata.has_prototype
+    {
+        let Some(guard_pc) = validate_class_constructor_guard(metadata, code)? else {
+            return Err("base class constructor has no constructor-call guard");
+        };
+        let call_pc = guard_pc
+            .checked_add(3)
+            .ok_or("class field initializer position overflowed bytecode")?;
+        if !matches!(
+            code.get(guard_pc..guard_pc + 5),
+            Some([
+                Instruction::CheckCtor,
+                Instruction::PushThis,
+                Instruction::PushActiveFunction,
+                Instruction::CallClassInstanceInitializer,
+                Instruction::Drop,
+            ])
+        ) {
+            return Err("base class constructor has no exact field initializer hook");
+        }
+        if (guard_pc..=guard_pc + 4).any(|pc| explicit_targets.contains(&pc)) {
+            return Err("base class initializer protocol has a non-fallthrough entry");
+        }
+        Some(call_pc)
+    } else {
+        None
+    };
     for (pc, instruction) in code.iter().enumerate() {
         match instruction {
             Instruction::MarkSuperCall
@@ -902,6 +963,10 @@ pub(crate) fn validate_derived_constructor_bytecode_layout(
                 return Err("typed super-call opcode has no inherited super authority");
             }
             Instruction::PushActiveFunction => {
+                let base_field_hook = base_initializer_hook == pc.checked_add(1);
+                if base_field_hook {
+                    continue;
+                }
                 let Some(active) = active_local else {
                     return Err("active-function opcode escaped a derived constructor");
                 };
@@ -958,6 +1023,43 @@ pub(crate) fn validate_derived_constructor_bytecode_layout(
                     return Err(
                         "captured derived initializer protocol has a non-fallthrough entry",
                     );
+                }
+            }
+            Instruction::CallClassInstanceInitializer => {
+                let valid_base = base_initializer_hook == Some(pc);
+                let valid_derived_local = derived
+                    && pc >= 2
+                    && matches!(
+                        code.get(pc - 2),
+                        Some(Instruction::InitializeDerivedLocal(local)) if Some(*local) == this_local
+                    )
+                    && matches!(
+                        code.get(pc - 1),
+                        Some(Instruction::GetLocal(local)) if Some(*local) == active_local
+                    );
+                let valid_relay = !derived
+                    && metadata.super_call_allowed
+                    && metadata.super_allowed
+                    && pc >= 2
+                    && matches!(
+                        (code.get(pc - 2), code.get(pc - 1)),
+                        (
+                            Some(Instruction::InitializeDerivedVarRef(initialized)),
+                            Some(Instruction::GetVarRef(read)),
+                        ) if initialized != read
+                            && closure_variables.get(usize::from(*read)).is_some_and(
+                                |descriptor| descriptor.kind == ClosureVariableKind::Normal
+                                    && !descriptor.is_lexical
+                                    && !descriptor.is_const
+                            )
+                    );
+                if !valid_base && !valid_derived_local && !valid_relay {
+                    return Err("class instance initializer call has no authenticated receiver");
+                }
+                if explicit_targets.contains(&pc)
+                    || explicit_targets.contains(&(pc.saturating_sub(1)))
+                {
+                    return Err("class instance initializer hook has a non-fallthrough entry");
                 }
             }
             Instruction::ReturnDerived(local) => {
@@ -1043,12 +1145,73 @@ pub(crate) fn validate_derived_constructor_bytecode_layout(
                 Instruction::InitDerivedConstructor,
                 Instruction::Dup,
                 Instruction::InitializeDerivedLocal(this_target),
+                Instruction::GetLocal(active_read),
+                Instruction::CallClassInstanceInitializer,
                 Instruction::ReturnDerived(return_target),
-            ] if *active_target == active && *this_target == this && *return_target == this
+            ] if *active_target == active
+                && *this_target == this
+                && *active_read == active
+                && *return_target == this
         );
         if !exact_metadata || !exact_code {
             return Err("default-derived constructor has no exact synthesized shape");
         }
+    }
+    Ok(())
+}
+
+/// Authenticate the non-visible function roles used by class element
+/// initialization.  These functions execute as ordinary synchronous frames,
+/// but they are never ordinary authored callables: no constructor/parameter or
+/// eval ABI may leak into them, `super` property access is permitted, and
+/// `super()` is not.
+pub(crate) fn validate_class_initializer_bytecode_layout(
+    metadata: &FunctionMetadata,
+    code: &[Instruction],
+) -> Result<(), &'static str> {
+    let Some(_) = metadata.class_initializer_kind else {
+        return Ok(());
+    };
+    if metadata.argument_count != 0
+        || metadata.defined_argument_count != 0
+        || metadata.rest_parameter.is_some()
+        || metadata.rest_pattern_start.is_some()
+        || metadata.parameter_environment_local_count != 0
+        || metadata.pattern_argument_count != 0
+        || metadata.parameter_pattern_end.is_some()
+        || metadata.constructor_kind != ConstructorKind::None
+        || metadata.has_prototype
+        || !metadata.strict
+        || metadata.super_call_allowed
+        || !metadata.super_allowed
+        || metadata.eval_kind != EvalKind::None
+        || metadata.function_kind != FunctionKind::Normal
+        || !metadata.arguments_forbidden
+        || !metadata.needs_home_object
+    {
+        return Err("class initializer function metadata is malformed");
+    }
+    if code.iter().any(|instruction| {
+        matches!(
+            instruction,
+            Instruction::CheckCtor
+                | Instruction::InitDerivedConstructor
+                | Instruction::MarkSuperCall
+                | Instruction::ConstructSuper(_)
+                | Instruction::ApplySuper
+                | Instruction::InitializeDerivedLocal(_)
+                | Instruction::InitializeDerivedVarRef(_)
+                | Instruction::ReturnDerived(_)
+        )
+    }) {
+        return Err("constructor-only bytecode escaped into a class initializer");
+    }
+    if metadata.arguments_forbidden
+        && code
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::Arguments(_)))
+    {
+        return Err("arguments object escaped into an arguments-forbidden function");
     }
     Ok(())
 }
@@ -1235,7 +1398,12 @@ pub(crate) fn validate_parameter_bytecode_layout(
                 {
                     return Err("variable-environment opcode has no authenticated local");
                 }
-                rest_pc = consume_class_constructor_guard(class_constructor_guard, rest_pc)?;
+                rest_pc = consume_class_constructor_guard(
+                    metadata,
+                    code,
+                    class_constructor_guard,
+                    rest_pc,
+                )?;
                 if !matches!(
                     code.get(rest_pc..rest_pc + 2),
                     Some([Instruction::Rest(start), Instruction::PutArg(target)])
@@ -1343,8 +1511,12 @@ pub(crate) fn validate_parameter_bytecode_layout(
             return Err("parameter environment has no exact TDZ entry initialization");
         }
     }
-    let parameter_body_pc =
-        consume_class_constructor_guard(class_constructor_guard, entry_pc + parameter_count)?;
+    let parameter_body_pc = consume_class_constructor_guard(
+        metadata,
+        code,
+        class_constructor_guard,
+        entry_pc + parameter_count,
+    )?;
     let mut initializer_pcs = vec![None; parameter_count];
     for (pc, instruction) in code.iter().enumerate() {
         let Instruction::InitializeLocal(target) = instruction else {
@@ -1890,6 +2062,8 @@ fn validate_explicit_parameter_environment_layout(
         }
     }
     let initialization_pc = consume_class_constructor_guard(
+        metadata,
+        code,
         class_constructor_guard,
         entry_pc + usize::from(parameter_locals),
     )?;
@@ -2810,6 +2984,20 @@ pub enum ConstructorKind {
     Derived,
 }
 
+/// Authenticated role of one synthetic class-element bytecode function.
+///
+/// QuickJS compiles public instance fields and the ordered static element
+/// sequence into hidden functions, with every static block represented by a
+/// nested hidden child.  Oxide preserves those three distinct authorities in
+/// typed metadata even though all three execute as ordinary synchronous
+/// bytecode call frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ClassInitializerKind {
+    InstanceFields,
+    StaticElements,
+    StaticBlock,
+}
+
 /// Where one child function obtains a closure slot when `FClosure` runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ClosureSource {
@@ -3297,6 +3485,14 @@ pub enum ObjectPayload {
     BytecodeFunction {
         bytecode: FunctionBytecodeId,
         home_object: Option<ObjectId>,
+        /// Hidden instance-field initializer owned by a class constructor.
+        /// The edge is deliberately internal: authored code cannot forge or
+        /// overwrite QuickJS's `<class_fields_init>` binding.
+        class_instance_initializer: Option<ObjectId>,
+        /// One-shot guard for the aggregate static-elements program. Authored
+        /// loops create a fresh constructor and therefore a fresh guard; forged
+        /// bytecode cannot replay static initialization on the same class.
+        class_static_initializer_started: bool,
         /// One owned reference per bytecode closure slot, matching QuickJS's
         /// `JSObject.u.func.var_refs[]` ownership.
         closure_slots: Vec<VarRefId>,
@@ -5185,6 +5381,8 @@ impl ObjectData {
             payload: ObjectPayload::BytecodeFunction {
                 bytecode,
                 home_object,
+                class_instance_initializer: None,
+                class_static_initializer_started: false,
                 closure_slots: Vec::new(),
             },
         }
@@ -5212,6 +5410,8 @@ impl ObjectData {
             payload: ObjectPayload::BytecodeFunction {
                 bytecode,
                 home_object,
+                class_instance_initializer: None,
+                class_static_initializer_started: false,
                 closure_slots,
             },
         }
@@ -5983,7 +6183,9 @@ impl Heap {
 
     /// Allocate and publish immutable function bytecode, retaining its realm
     /// and every GC edge in its constant pool. `auxiliary_atoms` and symbol
-    /// constants transfer to the node on success.
+    /// constants transfer to the node on success. No arena slot is reserved
+    /// until both metadata authentication and shared bytecode verification
+    /// succeed.
     pub fn allocate_function_bytecode(
         &mut self,
         bytecode: FunctionBytecodeData,
@@ -6112,6 +6314,8 @@ impl Heap {
             &bytecode.closure_variables,
         )
         .map_err(HeapError::Invariant)?;
+        validate_class_initializer_bytecode_layout(&bytecode.metadata, &bytecode.code)
+            .map_err(HeapError::Invariant)?;
         let pattern_body_pc = bytecode
             .metadata
             .parameter_pattern_end
@@ -6826,6 +7030,12 @@ impl Heap {
                 }
             }
         }
+        crate::bytecode::verify_parts(
+            &bytecode.code,
+            bytecode.constants.len(),
+            bytecode.metadata.max_stack,
+        )
+        .map_err(|_| HeapError::Invariant("function bytecode failed generic verification"))?;
         let (index, generation) = self.reserve(HeapNodeKind::FunctionBytecode)?;
         let id = FunctionBytecodeId { index, generation };
         let edges = function_bytecode_edges(&bytecode);
@@ -6936,6 +7146,24 @@ impl Heap {
             ));
         };
         Ok(*home_object)
+    }
+
+    /// Read the hidden public-instance-field initializer attached to one class
+    /// constructor bytecode function.
+    pub fn bytecode_class_instance_initializer(
+        &self,
+        id: ObjectId,
+    ) -> Result<Option<ObjectId>, HeapError> {
+        let ObjectPayload::BytecodeFunction {
+            class_instance_initializer,
+            ..
+        } = &self.object(id)?.payload
+        else {
+            return Err(HeapError::Invariant(
+                "class initializer lookup reached a non-bytecode function",
+            ));
+        };
+        Ok(*class_instance_initializer)
     }
 
     /// Read one live shape record.
@@ -7982,6 +8210,144 @@ impl Heap {
         self.drain_zero_queue()
     }
 
+    /// Atomically attach a fresh instance-field initializer to one class.
+    ///
+    /// The constructor-to-initializer and initializer-to-prototype edges are a
+    /// single publication transaction.  Neither edge can be replaced: these
+    /// are compiler-owned capabilities, not mutable JavaScript state.
+    pub fn attach_bytecode_class_instance_initializer(
+        &mut self,
+        constructor: ObjectId,
+        prototype: ObjectId,
+        initializer: ObjectId,
+    ) -> Result<(), HeapError> {
+        if constructor == prototype || constructor == initializer || prototype == initializer {
+            return Err(HeapError::Invariant(
+                "class initializer publication reused an object identity",
+            ));
+        }
+        self.object(prototype)?;
+        let constructor_object = self.object(constructor)?;
+        let ObjectPayload::BytecodeFunction {
+            bytecode: constructor_bytecode,
+            class_instance_initializer: existing_initializer,
+            ..
+        } = &constructor_object.payload
+        else {
+            return Err(HeapError::Invariant(
+                "class initializer owner is not a bytecode function",
+            ));
+        };
+        let constructor_metadata = self.function_bytecode(*constructor_bytecode)?;
+        if !constructor_object.is_constructor
+            || constructor_metadata.metadata.constructor_kind == ConstructorKind::None
+            || constructor_metadata.metadata.has_prototype
+            || !constructor_metadata.metadata.strict
+            || constructor_metadata
+                .metadata
+                .class_initializer_kind
+                .is_some()
+            || existing_initializer.is_some()
+        {
+            return Err(HeapError::Invariant(
+                "class initializer owner is not a fresh class constructor",
+            ));
+        }
+        let constructor_realm = constructor_metadata.realm;
+
+        let initializer_object = self.object(initializer)?;
+        let ObjectPayload::BytecodeFunction {
+            bytecode: initializer_bytecode,
+            home_object,
+            class_instance_initializer,
+            ..
+        } = &initializer_object.payload
+        else {
+            return Err(HeapError::Invariant(
+                "class instance initializer is not a bytecode function",
+            ));
+        };
+        let initializer_bytecode = self.function_bytecode(*initializer_bytecode)?;
+        if initializer_object.is_constructor
+            || home_object.is_some()
+            || class_instance_initializer.is_some()
+            || initializer_bytecode.realm != constructor_realm
+            || initializer_bytecode.metadata.class_initializer_kind
+                != Some(ClassInitializerKind::InstanceFields)
+            || !initializer_bytecode.metadata.needs_home_object
+        {
+            return Err(HeapError::Invariant(
+                "class instance initializer is not fresh or has the wrong owner realm",
+            ));
+        }
+
+        self.retain_edges_transactionally(&[RawId::Object(prototype), RawId::Object(initializer)])?;
+        let ObjectPayload::BytecodeFunction { home_object, .. } =
+            &mut self.object_mut(initializer)?.payload
+        else {
+            unreachable!("initializer payload was authenticated before edge publication")
+        };
+        *home_object = Some(prototype);
+        let ObjectPayload::BytecodeFunction {
+            class_instance_initializer,
+            ..
+        } = &mut self.object_mut(constructor)?.payload
+        else {
+            unreachable!("constructor payload was authenticated before edge publication")
+        };
+        *class_instance_initializer = Some(initializer);
+        Ok(())
+    }
+
+    /// Claim the one permitted aggregate static-initializer execution for a
+    /// class constructor. The claim is deliberately not rolled back after an
+    /// abrupt initializer: a leaked constructor must never replay fields or
+    /// static blocks through forged privileged bytecode.
+    pub fn begin_bytecode_class_static_initializer(
+        &mut self,
+        constructor: ObjectId,
+    ) -> Result<(), HeapError> {
+        {
+            let constructor_object = self.object(constructor)?;
+            let ObjectPayload::BytecodeFunction {
+                bytecode,
+                class_static_initializer_started,
+                ..
+            } = &constructor_object.payload
+            else {
+                return Err(HeapError::Invariant(
+                    "class static initializer owner is not a bytecode function",
+                ));
+            };
+            let metadata = self.function_bytecode(*bytecode)?.metadata;
+            if !constructor_object.is_constructor
+                || metadata.constructor_kind == ConstructorKind::None
+                || metadata.has_prototype
+                || !metadata.strict
+                || metadata.class_initializer_kind.is_some()
+            {
+                return Err(HeapError::Invariant(
+                    "class static initializer owner is not a class constructor",
+                ));
+            }
+            if *class_static_initializer_started {
+                return Err(HeapError::Invariant(
+                    "class static initializer was already started",
+                ));
+            }
+        }
+
+        let ObjectPayload::BytecodeFunction {
+            class_static_initializer_started,
+            ..
+        } = &mut self.object_mut(constructor)?.payload
+        else {
+            unreachable!("static initializer owner was authenticated before its one-shot claim")
+        };
+        *class_static_initializer_started = true;
+        Ok(())
+    }
+
     /// Transactionally replace an object's complete shape/slot layout.
     ///
     /// This is the low-level primitive used by immutable shape transitions.
@@ -8362,15 +8728,61 @@ impl Heap {
         }
         if let ObjectPayload::BytecodeFunction {
             bytecode,
+            class_instance_initializer,
+            class_static_initializer_started,
             closure_slots,
             ..
         } = &object.payload
         {
-            let expected = usize::from(self.function_bytecode(*bytecode)?.metadata.closure_count);
+            let owner_bytecode = self.function_bytecode(*bytecode)?;
+            let expected = usize::from(owner_bytecode.metadata.closure_count);
             if closure_slots.len() != expected {
                 return Err(HeapError::Invariant(
                     "function closure slot count does not match its bytecode metadata",
                 ));
+            }
+            if *class_static_initializer_started
+                && (!object.is_constructor
+                    || owner_bytecode.metadata.constructor_kind == ConstructorKind::None
+                    || owner_bytecode.metadata.has_prototype
+                    || !owner_bytecode.metadata.strict
+                    || owner_bytecode.metadata.class_initializer_kind.is_some())
+            {
+                return Err(HeapError::Invariant(
+                    "class static initializer guard has malformed ownership metadata",
+                ));
+            }
+            if let Some(initializer) = class_instance_initializer {
+                let initializer_object = self.object(*initializer)?;
+                let ObjectPayload::BytecodeFunction {
+                    bytecode: initializer_bytecode,
+                    home_object,
+                    class_instance_initializer: nested_initializer,
+                    ..
+                } = &initializer_object.payload
+                else {
+                    return Err(HeapError::Invariant(
+                        "class instance initializer is not a bytecode function",
+                    ));
+                };
+                let initializer_bytecode = self.function_bytecode(*initializer_bytecode)?;
+                if !object.is_constructor
+                    || owner_bytecode.metadata.constructor_kind == ConstructorKind::None
+                    || owner_bytecode.metadata.has_prototype
+                    || !owner_bytecode.metadata.strict
+                    || owner_bytecode.metadata.class_initializer_kind.is_some()
+                    || initializer_object.is_constructor
+                    || home_object.is_none()
+                    || nested_initializer.is_some()
+                    || initializer_bytecode.realm != owner_bytecode.realm
+                    || initializer_bytecode.metadata.class_initializer_kind
+                        != Some(ClassInitializerKind::InstanceFields)
+                    || !initializer_bytecode.metadata.needs_home_object
+                {
+                    return Err(HeapError::Invariant(
+                        "class instance initializer edge has malformed ownership metadata",
+                    ));
+                }
             }
         }
         if let ObjectPayload::BoundFunction {
@@ -8953,10 +9365,15 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         ObjectPayload::BytecodeFunction {
             bytecode,
             home_object,
+            class_instance_initializer,
             closure_slots,
+            ..
         } => {
             if let Some(home_object) = home_object {
                 edges.push(RawId::Object(*home_object));
+            }
+            if let Some(initializer) = class_instance_initializer {
+                edges.push(RawId::Object(*initializer));
             }
             edges.push(RawId::FunctionBytecode(*bytecode));
             edges.extend(closure_slots.iter().copied().map(RawId::VarRef));
@@ -11912,7 +12329,10 @@ mod tests {
             code: code.clone(),
             constants: constants.into(),
             realm,
-            metadata: FunctionMetadata::default(),
+            metadata: FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
             parameter_environment: None,
             func_name: None,
             argument_definitions: Rc::from([]),
@@ -12000,7 +12420,7 @@ mod tests {
             .unwrap();
         heap.release_object(prototype).unwrap();
 
-        let code: Rc<[Instruction]> = Rc::from([]);
+        let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
         let mut too_many_locals = bytecode(&code, context, Vec::new(), Vec::new());
         too_many_locals.metadata.local_count = u16::MAX;
         assert_eq!(
@@ -12334,6 +12754,8 @@ mod tests {
             Instruction::InitDerivedConstructor,
             Instruction::Dup,
             Instruction::InitializeDerivedLocal(0),
+            Instruction::GetLocal(1),
+            Instruction::CallClassInstanceInitializer,
             Instruction::ReturnDerived(0),
         ];
         assert_eq!(
@@ -12379,6 +12801,163 @@ mod tests {
             ),
             Err("derived local initializer has no constructor result"),
         );
+    }
+
+    #[test]
+    fn base_class_initializer_hook_is_unique_and_entry_only() {
+        let metadata = FunctionMetadata {
+            constructor_kind: ConstructorKind::Base,
+            strict: true,
+            ..FunctionMetadata::default()
+        };
+        let canonical = [
+            Instruction::CheckCtor,
+            Instruction::PushThis,
+            Instruction::PushActiveFunction,
+            Instruction::CallClassInstanceInitializer,
+            Instruction::Drop,
+            Instruction::Undefined,
+            Instruction::Return,
+        ];
+        assert_eq!(
+            validate_derived_constructor_bytecode_layout(&metadata, &canonical, &[], &[], &[]),
+            Ok(()),
+        );
+
+        let mut duplicate = canonical.to_vec();
+        duplicate.splice(
+            5..5,
+            [
+                Instruction::PushThis,
+                Instruction::PushActiveFunction,
+                Instruction::CallClassInstanceInitializer,
+                Instruction::Drop,
+            ],
+        );
+        assert_eq!(
+            validate_derived_constructor_bytecode_layout(&metadata, &duplicate, &[], &[], &[]),
+            Err("active-function opcode escaped a derived constructor"),
+        );
+
+        let mut backedge = canonical.to_vec();
+        backedge.splice(5..5, [Instruction::Goto(0)]);
+        assert_eq!(
+            validate_derived_constructor_bytecode_layout(&metadata, &backedge, &[], &[], &[]),
+            Err("base class initializer protocol has a non-fallthrough entry"),
+        );
+    }
+
+    #[test]
+    fn class_initializers_require_a_home_object_slot() {
+        let mut metadata = FunctionMetadata {
+            class_initializer_kind: Some(ClassInitializerKind::InstanceFields),
+            strict: true,
+            super_allowed: true,
+            arguments_forbidden: true,
+            ..FunctionMetadata::default()
+        };
+        let code = [Instruction::Undefined, Instruction::Return];
+        assert_eq!(
+            validate_class_initializer_bytecode_layout(&metadata, &code),
+            Err("class initializer function metadata is malformed"),
+        );
+        metadata.needs_home_object = true;
+        assert_eq!(
+            validate_class_initializer_bytecode_layout(&metadata, &code),
+            Ok(()),
+        );
+    }
+
+    #[test]
+    fn bytecode_allocation_rejects_stack_underflow_in_privileged_class_initializer() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let prototype = leaf(&mut heap, shape);
+        let context = heap
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+                prototype,
+            ))
+            .unwrap();
+        heap.release_object(prototype).unwrap();
+
+        let code: Rc<[Instruction]> = Rc::from([
+            Instruction::Drop,
+            Instruction::Undefined,
+            Instruction::Return,
+        ]);
+        let mut initializer = bytecode(&code, context, Vec::new(), Vec::new());
+        initializer.metadata.class_initializer_kind = Some(ClassInitializerKind::InstanceFields);
+        initializer.metadata.strict = true;
+        initializer.metadata.super_allowed = true;
+        initializer.metadata.arguments_forbidden = true;
+        initializer.metadata.needs_home_object = true;
+        assert_eq!(
+            heap.allocate_function_bytecode(initializer),
+            Err(HeapError::Invariant(
+                "function bytecode failed generic verification"
+            ))
+        );
+        assert_eq!(heap.counts().function_bytecode_nodes, 0);
+
+        heap.release_context(context).unwrap();
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn class_static_initializer_claim_is_one_shot_per_constructor() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let prototype = leaf(&mut heap, shape);
+        let context = heap
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+                prototype,
+            ))
+            .unwrap();
+        heap.release_object(prototype).unwrap();
+
+        let code: Rc<[Instruction]> = Rc::from([
+            Instruction::CheckCtor,
+            Instruction::PushThis,
+            Instruction::PushActiveFunction,
+            Instruction::CallClassInstanceInitializer,
+            Instruction::Drop,
+            Instruction::Undefined,
+            Instruction::Return,
+        ]);
+        let mut owner = bytecode(&code, context, Vec::new(), Vec::new());
+        owner.metadata.constructor_kind = ConstructorKind::Base;
+        owner.metadata.strict = true;
+        owner.metadata.max_stack = 2;
+        let owner = heap.allocate_function_bytecode(owner).unwrap();
+        let constructor = heap
+            .allocate_object(ObjectData::bytecode_function(
+                shape,
+                Vec::new(),
+                owner,
+                None,
+                true,
+            ))
+            .unwrap();
+
+        assert_eq!(
+            heap.begin_bytecode_class_static_initializer(constructor),
+            Ok(())
+        );
+        assert_eq!(
+            heap.begin_bytecode_class_static_initializer(constructor),
+            Err(HeapError::Invariant(
+                "class static initializer was already started"
+            ))
+        );
+
+        heap.release_object(constructor).unwrap();
+        heap.release_function_bytecode(owner).unwrap();
+        heap.release_context(context).unwrap();
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
     }
 
     #[test]
@@ -12737,7 +13316,7 @@ mod tests {
             .unwrap();
         heap.release_object(prototype).unwrap();
 
-        let code: Rc<[Instruction]> = Rc::from([]);
+        let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
         let name = Atom::from_raw(43);
         let make_bytecode = |metadata_slot, definition_kind| {
             let mut bytecode = bytecode(&code, context, Vec::new(), vec![name]);
@@ -12914,7 +13493,7 @@ mod tests {
             .unwrap();
         heap.release_object(prototype).unwrap();
 
-        let code: Rc<[Instruction]> = Rc::from([]);
+        let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
         let eval_code: Rc<[Instruction]> = Rc::from([
             Instruction::Undefined,
             Instruction::Eval {
@@ -13101,7 +13680,7 @@ mod tests {
             ))
             .unwrap();
         heap.release_object(prototype).unwrap();
-        let code: Rc<[Instruction]> = Rc::from([]);
+        let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
         let name = Atom::from_raw(47);
 
         let descriptor = |name| ClosureVariable {
@@ -13166,7 +13745,7 @@ mod tests {
             .unwrap();
         heap.release_object(prototype).unwrap();
 
-        let code: Rc<[Instruction]> = Rc::from([]);
+        let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
         let name = Atom::from_raw(59);
         let make_bytecode = |kind| {
             let mut bytecode = bytecode(&code, context, Vec::new(), vec![name]);
@@ -13291,7 +13870,7 @@ mod tests {
             .unwrap();
         heap.release_object(prototype).unwrap();
 
-        let code: Rc<[Instruction]> = Rc::from([]);
+        let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
         let bytecode = heap
             .allocate_function_bytecode(closure_bytecode(&code, context, 1))
             .unwrap();
@@ -13365,7 +13944,7 @@ mod tests {
             .unwrap();
         heap.release_object(realm_root).unwrap();
 
-        let code: Rc<[Instruction]> = Rc::from([]);
+        let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
         let bytecode = heap
             .allocate_function_bytecode(bytecode(&code, context, Vec::new(), Vec::new()))
             .unwrap();
@@ -13457,7 +14036,7 @@ mod tests {
             .unwrap();
         heap.release_object(realm_root).unwrap();
 
-        let code: Rc<[Instruction]> = Rc::from([]);
+        let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
         let bytecode = heap
             .allocate_function_bytecode(bytecode(&code, context, Vec::new(), Vec::new()))
             .unwrap();
@@ -13548,7 +14127,7 @@ mod tests {
                 prototype,
             ))
             .unwrap();
-        let code: Rc<[Instruction]> = Rc::from([]);
+        let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
         let bytecode = heap
             .allocate_function_bytecode(closure_bytecode(&code, context, 1))
             .unwrap();
@@ -13608,7 +14187,7 @@ mod tests {
             ))
             .unwrap();
         heap.release_object(prototype).unwrap();
-        let code: Rc<[Instruction]> = Rc::from([]);
+        let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
         let bytecode = heap
             .allocate_function_bytecode(closure_bytecode(&code, context, 1))
             .unwrap();
@@ -13668,7 +14247,7 @@ mod tests {
                 prototype,
             ))
             .unwrap();
-        let code: Rc<[Instruction]> = Rc::from([]);
+        let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
         let function_bytecode = heap
             .allocate_function_bytecode(bytecode(&code, context, Vec::new(), Vec::new()))
             .unwrap();
@@ -13714,7 +14293,7 @@ mod tests {
         heap.release_object(prototype).unwrap();
         heap.release_shape(shape).unwrap();
 
-        let code: Rc<[Instruction]> = Rc::from([]);
+        let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
         let child_atom = Atom::from_raw(41);
         let parent_atom = Atom::from_raw(42);
         let symbol_atom = Atom::from_raw(43);
@@ -13808,7 +14387,7 @@ mod tests {
         heap.release_object(prototype).unwrap();
         heap.release_shape(shape).unwrap();
 
-        let code: Rc<[Instruction]> = Rc::from([]);
+        let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
         let mut head = heap
             .allocate_function_bytecode(bytecode(&code, context, Vec::new(), Vec::new()))
             .unwrap();

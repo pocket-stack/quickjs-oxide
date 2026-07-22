@@ -10,6 +10,11 @@ use super::function::ParsedFunctionDefinition;
 use super::*;
 use crate::bytecode::DefineMethodKind;
 
+mod fields;
+mod static_block;
+
+use fields::ClassElementState;
+
 #[derive(Clone, Debug)]
 enum ClassPropertyKey {
     Fixed { value: JsString },
@@ -106,6 +111,7 @@ impl<'source> Parser<'source> {
         })?;
 
         let mut constructor = None;
+        let mut elements = ClassElementState::default();
         while !self.is_punctuator(Punctuator::RightBrace) {
             if self.at_eof() {
                 return Err(self.syntax_here("unterminated class body"));
@@ -113,7 +119,7 @@ impl<'source> Parser<'source> {
             if self.consume_punctuator(Punctuator::Semicolon)? {
                 continue;
             }
-            self.parse_class_element(&mut constructor, has_heritage)?;
+            self.parse_class_element(&mut constructor, &mut elements, has_heritage)?;
         }
         let closing_brace = self.current().span;
         self.advance()?;
@@ -152,6 +158,8 @@ impl<'source> Parser<'source> {
         };
         *index = constructor_constant;
 
+        self.finish_class_instance_initializer(&mut elements)?;
+
         // QuickJS keeps `ctor, proto` throughout method publication, then
         // initializes the private class-name binding only after dropping the
         // prototype. Computed names therefore correctly observe its TDZ.
@@ -160,12 +168,18 @@ impl<'source> Parser<'source> {
             self.emit_instruction(Instruction::Dup)?;
             self.emit_identifier(name.clone(), *span, IdentifierAccess::Initialize)?;
         }
+        let static_initializer_start = self.finish_class_static_initializer(&mut elements)?;
         self.pop_scope(class_scope)?;
 
         self.current_ir_mut().strict = outer_strict;
         self.relex_current_with_strict(outer_strict)?;
         if expression {
-            self.anonymous_function_definition = name.is_none().then_some(constructor_child);
+            self.anonymous_function_definition =
+                name.is_none()
+                    .then_some(AnonymousFunctionDefinition::Class {
+                        owner: self.current_function,
+                        static_initializer_start,
+                    });
         } else {
             let (name, span) =
                 name.ok_or_else(|| Error::internal("class declaration lost its outer binding"))?;
@@ -178,8 +192,10 @@ impl<'source> Parser<'source> {
     fn parse_class_element(
         &mut self,
         constructor: &mut Option<ParsedFunctionDefinition>,
+        elements: &mut ClassElementState,
         has_heritage: bool,
     ) -> Result<(), Error> {
+        let element_span = self.current().span;
         let mut is_static = false;
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Static)) {
             let next = self.class_token_after_current()?;
@@ -195,9 +211,8 @@ impl<'source> Parser<'source> {
                 is_static = true;
                 self.advance()?;
                 if self.is_punctuator(Punctuator::LeftBrace) {
-                    return Err(
-                        self.unsupported_here("class static blocks are not implemented yet")
-                    );
+                    self.parse_class_static_block(elements, element_span)?;
+                    return Ok(());
                 }
             }
         }
@@ -231,7 +246,14 @@ impl<'source> Parser<'source> {
         }
         let key = self.parse_class_property_key()?;
         if !self.is_punctuator(Punctuator::LeftParen) {
-            return Err(self.unsupported_here("class fields are not implemented yet"));
+            if method_kind != DefineMethodKind::Method {
+                return Err(self.syntax_here("invalid class field"));
+            }
+            self.parse_public_class_field(elements, is_static, key, function_span)?;
+            if is_static {
+                self.emit_instruction(Instruction::Swap)?;
+            }
+            return Ok(());
         }
 
         let fixed = match &key {
@@ -403,6 +425,10 @@ impl<'source> Parser<'source> {
         )?);
         self.current_function = child;
         self.emit_instruction(Instruction::CheckCtor)?;
+        self.emit_instruction(Instruction::PushThis)?;
+        self.emit_instruction(Instruction::PushActiveFunction)?;
+        self.emit_instruction(Instruction::CallClassInstanceInitializer)?;
+        self.emit_instruction(Instruction::Drop)?;
         self.emit_instruction(Instruction::Undefined)?;
         self.emit_instruction(Instruction::Return)?;
         self.current_function = parent;
@@ -455,6 +481,12 @@ impl<'source> Parser<'source> {
         self.emit_instruction(Instruction::InitDerivedConstructor)?;
         self.emit_instruction(Instruction::Dup)?;
         self.emit_instruction(Instruction::InitializeDerivedLocal(this))?;
+        let active = self
+            .current_ir()
+            .active_function_local
+            .ok_or_else(|| Error::internal("derived constructor has no active function"))?;
+        self.emit_instruction(Instruction::GetLocal(active))?;
+        self.emit_instruction(Instruction::CallClassInstanceInitializer)?;
         self.emit_instruction(Instruction::ReturnDerived(this))?;
         self.current_function = parent;
         let constant = self.add_constant(IrConstant::Child(child))?;

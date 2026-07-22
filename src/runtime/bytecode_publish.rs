@@ -9,9 +9,9 @@ use crate::bytecode::{
 use crate::heap::{
     EvalBinding, EvalCallerProfile, EvalCallerVariableTarget, EvalEnvironmentPhaseContext,
     EvalKind, EvalRootBinding, EvalScope, parameter_initializer_visible_locals,
-    validate_derived_constructor_bytecode_layout, validate_eval_environment_phase_layout,
-    validate_parameter_bytecode_layout, validate_parameter_initializer_scope_layout,
-    validate_pattern_parameter_bytecode_layout,
+    validate_class_initializer_bytecode_layout, validate_derived_constructor_bytecode_layout,
+    validate_eval_environment_phase_layout, validate_parameter_bytecode_layout,
+    validate_parameter_initializer_scope_layout, validate_pattern_parameter_bytecode_layout,
 };
 
 /// Intern every semantically retained direct-eval binding name while keeping
@@ -123,6 +123,146 @@ fn eval_root_binding_is_super_pseudo(
         && binding.kind == ClosureVariableKind::Normal
         && !binding.is_catch_parameter
         && binding.name.utf16_units().eq(expected_name.encode_utf16())
+}
+
+fn class_initializer_bridge_kind(
+    instruction: &crate::bytecode::Instruction,
+) -> Option<ClassInitializerKind> {
+    match instruction {
+        crate::bytecode::Instruction::InstallClassInstanceInitializer => {
+            Some(ClassInitializerKind::InstanceFields)
+        }
+        crate::bytecode::Instruction::RunClassStaticInitializer => {
+            Some(ClassInitializerKind::StaticElements)
+        }
+        crate::bytecode::Instruction::CallClassStaticBlock => {
+            Some(ClassInitializerKind::StaticBlock)
+        }
+        _ => None,
+    }
+}
+
+fn explicit_control_flow_target(instruction: &crate::bytecode::Instruction) -> Option<usize> {
+    let target = match instruction {
+        crate::bytecode::Instruction::Goto(target)
+        | crate::bytecode::Instruction::IfFalse(target)
+        | crate::bytecode::Instruction::IfTrue(target)
+        | crate::bytecode::Instruction::Catch(target)
+        | crate::bytecode::Instruction::Gosub(target) => *target,
+        _ => return None,
+    };
+    usize::try_from(target).ok()
+}
+
+fn validate_class_initializer_publication_edges(
+    function: &UnlinkedFunction,
+    child_closure_pcs: &[Vec<usize>],
+    explicit_control_flow_targets: &HashSet<usize>,
+) -> Result<(), RuntimeError> {
+    // Every privileged bridge must consume the closure created by the
+    // immediately preceding FClosure. Stack verification alone cannot prove
+    // that the operand is the compiler-authored hidden child rather than an
+    // unrelated callable supplied by forged bytecode.
+    for (bridge_pc, instruction) in function.code().iter().enumerate() {
+        let Some(expected_kind) = class_initializer_bridge_kind(instruction) else {
+            continue;
+        };
+        // Install/Run may occur in any authored or initializer function because
+        // a nested class expression is legal in all of those contexts. Their
+        // authority therefore comes from the adjacent typed child. A static
+        // block call is different: it is emitted only inside its aggregate.
+        if expected_kind == ClassInitializerKind::StaticBlock
+            && function.metadata().class_initializer_kind
+                != Some(ClassInitializerKind::StaticElements)
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "class static block call escaped its static-elements parent",
+            )));
+        }
+        let closure_pc = bridge_pc.checked_sub(1).ok_or_else(|| {
+            RuntimeError::Engine(Error::internal(
+                "class initializer bridge did not consume an adjacent child closure",
+            ))
+        })?;
+        if explicit_control_flow_targets.contains(&closure_pc)
+            || explicit_control_flow_targets.contains(&bridge_pc)
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "class initializer closure/bridge pair has a non-fallthrough entry",
+            )));
+        }
+        if expected_kind == ClassInitializerKind::StaticBlock
+            && function
+                .code()
+                .iter()
+                .enumerate()
+                .any(|(source_pc, instruction)| {
+                    source_pc > bridge_pc
+                        && explicit_control_flow_target(instruction)
+                            .is_some_and(|target_pc| target_pc <= closure_pc)
+                })
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "class static block closure/bridge pair is reentrant",
+            )));
+        }
+        let Some(crate::bytecode::Instruction::FClosure(constant)) =
+            function.code().get(closure_pc)
+        else {
+            return Err(RuntimeError::Engine(Error::internal(
+                "class initializer bridge did not consume an adjacent child closure",
+            )));
+        };
+        let child = usize::try_from(*constant)
+            .ok()
+            .and_then(|constant| function.constants().get(constant))
+            .and_then(UnlinkedConstant::as_child)
+            .ok_or_else(|| {
+                RuntimeError::Engine(Error::internal(
+                    "class initializer bridge did not reference child bytecode",
+                ))
+            })?;
+        if child.metadata().class_initializer_kind != Some(expected_kind) {
+            return Err(RuntimeError::Engine(Error::internal(
+                "class initializer bridge consumed a child with the wrong role",
+            )));
+        }
+    }
+
+    // Conversely, a hidden initializer child is valid only at one creation
+    // site and that site must immediately enter its matching bridge. This
+    // prevents FClosure/Return, FClosure/Drop, and repeated FClosure sites from
+    // exposing or reusing the internal callable.
+    for (constant_index, constant) in function.constants().iter().enumerate() {
+        let Some(child) = constant.as_child() else {
+            continue;
+        };
+        let Some(expected_kind) = child.metadata().class_initializer_kind else {
+            continue;
+        };
+        let [closure_pc] = child_closure_pcs[constant_index].as_slice() else {
+            return Err(RuntimeError::Engine(Error::internal(
+                "class initializer child did not have one unique closure site",
+            )));
+        };
+        if expected_kind == ClassInitializerKind::StaticBlock
+            && function.metadata().class_initializer_kind
+                != Some(ClassInitializerKind::StaticElements)
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "class static block child escaped its static-elements parent",
+            )));
+        }
+        let bridge = closure_pc
+            .checked_add(1)
+            .and_then(|bridge_pc| function.code().get(bridge_pc));
+        if bridge.and_then(class_initializer_bridge_kind) != Some(expected_kind) {
+            return Err(RuntimeError::Engine(Error::internal(
+                "class initializer child escaped its matching bridge",
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -1018,9 +1158,15 @@ enum RootPublication<'a> {
         caller_strict: bool,
         expected_bindings: &'a [EvalRootBinding<JsString>],
         expected_profile: &'a EvalCallerProfile,
-        expected_super_call_allowed: bool,
-        expected_super_allowed: bool,
+        expected_capabilities: EvalPublicationCapabilities,
     },
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::runtime) struct EvalPublicationCapabilities {
+    pub super_call_allowed: bool,
+    pub super_allowed: bool,
+    pub arguments_forbidden: bool,
 }
 
 pub(super) fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError> {
@@ -1097,6 +1243,7 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree(
     )
 }
 
+#[cfg(test)]
 pub(in crate::runtime) fn verify_unlinked_eval_tree_with_profile(
     function: &UnlinkedFunction,
     kind: EvalKind,
@@ -1105,6 +1252,28 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree_with_profile(
     expected_profile: &EvalCallerProfile,
     expected_super_call_allowed: bool,
     expected_super_allowed: bool,
+) -> Result<(), RuntimeError> {
+    verify_unlinked_eval_tree_with_profile_and_arguments(
+        function,
+        kind,
+        caller_strict,
+        expected_bindings,
+        expected_profile,
+        EvalPublicationCapabilities {
+            super_call_allowed: expected_super_call_allowed,
+            super_allowed: expected_super_allowed,
+            arguments_forbidden: false,
+        },
+    )
+}
+
+pub(in crate::runtime) fn verify_unlinked_eval_tree_with_profile_and_arguments(
+    function: &UnlinkedFunction,
+    kind: EvalKind,
+    caller_strict: bool,
+    expected_bindings: &[EvalRootBinding<JsString>],
+    expected_profile: &EvalCallerProfile,
+    expected_capabilities: EvalPublicationCapabilities,
 ) -> Result<(), RuntimeError> {
     if kind == EvalKind::None {
         return Err(RuntimeError::Engine(Error::internal(
@@ -1121,12 +1290,14 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree_with_profile(
             "indirect eval publication received caller strictness",
         )));
     }
-    if expected_super_call_allowed && !expected_super_allowed {
+    if expected_capabilities.super_call_allowed && !expected_capabilities.super_allowed {
         return Err(RuntimeError::Engine(Error::internal(
             "eval publication permits super() without SuperProperty",
         )));
     }
-    if kind == EvalKind::Indirect && (expected_super_call_allowed || expected_super_allowed) {
+    if kind == EvalKind::Indirect
+        && (expected_capabilities.super_call_allowed || expected_capabilities.super_allowed)
+    {
         return Err(RuntimeError::Engine(Error::internal(
             "indirect eval publication received a super capability",
         )));
@@ -1260,8 +1431,7 @@ pub(in crate::runtime) fn verify_unlinked_eval_tree_with_profile(
             caller_strict,
             expected_bindings,
             expected_profile,
-            expected_super_call_allowed,
-            expected_super_allowed,
+            expected_capabilities,
         },
     )
 }
@@ -1295,9 +1465,9 @@ fn verify_unlinked_tree_with_root(
             RootPublication::Eval {
                 kind: EvalKind::Direct,
                 expected_bindings,
-                expected_super_call_allowed: true,
+                expected_capabilities,
                 ..
-            } => (
+            } if expected_capabilities.super_call_allowed => (
                 expected_bindings
                     .iter()
                     .position(eval_root_binding_is_derived_this),
@@ -1369,6 +1539,11 @@ fn verify_unlinked_tree_with_root(
     )) = pending.pop()
     {
         let is_root = function_depth == 0;
+        if is_root && function.metadata().class_initializer_kind.is_some() {
+            return Err(RuntimeError::Engine(Error::internal(
+                "class initializer bytecode escaped the class publication tree",
+            )));
+        }
         let arg_eval_variable_object_local = function
             .parameter_environment()
             .and_then(|layout| layout.arg_eval_variable_object_local);
@@ -1403,15 +1578,16 @@ fn verify_unlinked_tree_with_root(
                 }
                 RootPublication::Eval {
                     kind,
-                    expected_super_call_allowed,
-                    expected_super_allowed,
+                    expected_capabilities,
                     ..
                 } => {
                     if (
                         function.metadata().super_call_allowed,
                         function.metadata().super_allowed,
-                    ) != (expected_super_call_allowed, expected_super_allowed)
-                    {
+                    ) != (
+                        expected_capabilities.super_call_allowed,
+                        expected_capabilities.super_allowed,
+                    ) {
                         return Err(RuntimeError::Engine(Error::internal(
                             "eval root super capability disagrees with its caller",
                         )));
@@ -1422,6 +1598,18 @@ fn verify_unlinked_tree_with_root(
                     {
                         return Err(RuntimeError::Engine(Error::internal(
                             "indirect eval root retained a super capability",
+                        )));
+                    }
+                    if function.metadata().arguments_forbidden
+                        != expected_capabilities.arguments_forbidden
+                    {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "eval root arguments capability disagrees with its caller",
+                        )));
+                    }
+                    if kind == EvalKind::Indirect && function.metadata().arguments_forbidden {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "indirect eval root retained an arguments restriction",
                         )));
                     }
                 }
@@ -1750,6 +1938,8 @@ fn verify_unlinked_tree_with_root(
             function.closure_variables(),
         )
         .map_err(|message| RuntimeError::Engine(Error::internal(message)))?;
+        validate_class_initializer_bytecode_layout(function.metadata(), function.code())
+            .map_err(|message| RuntimeError::Engine(Error::internal(message)))?;
         validate_parameter_initializer_scope_layout(
             function.metadata(),
             function.code(),
@@ -2450,16 +2640,24 @@ fn verify_unlinked_tree_with_root(
         let explicit_control_flow_targets = function
             .code()
             .iter()
-            .filter_map(|instruction| match instruction {
-                crate::bytecode::Instruction::Goto(target)
-                | crate::bytecode::Instruction::IfFalse(target)
-                | crate::bytecode::Instruction::IfTrue(target)
-                | crate::bytecode::Instruction::Catch(target)
-                | crate::bytecode::Instruction::Gosub(target) => usize::try_from(*target).ok(),
-                _ => None,
-            })
+            .filter_map(explicit_control_flow_target)
             .collect::<HashSet<_>>();
         for (pc, instruction) in function.code().iter().enumerate() {
+            if matches!(
+                instruction,
+                crate::bytecode::Instruction::CallClassInstanceInitializer
+            ) && let Some(crate::bytecode::Instruction::GetVarRef(index)) = pc
+                .checked_sub(1)
+                .and_then(|read_pc| function.code().get(read_pc))
+                && !active_function_origins
+                    .get(usize::from(*index))
+                    .copied()
+                    .unwrap_or(false)
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "class instance initializer relay did not read the authenticated active function",
+                )));
+            }
             if !matches!(instruction, crate::bytecode::Instruction::MarkSuperCall) {
                 continue;
             }
@@ -2604,6 +2802,11 @@ fn verify_unlinked_tree_with_root(
                 child_closure_pcs[index].push(pc);
             }
         }
+        validate_class_initializer_publication_edges(
+            function,
+            &child_closure_pcs,
+            &explicit_control_flow_targets,
+        )?;
 
         validate_eval_environment_phase_layout(
             function.eval_environments(),
@@ -3936,6 +4139,382 @@ mod tests {
         )
     }
 
+    fn empty_class_initializer(kind: ClassInitializerKind) -> UnlinkedFunction {
+        UnlinkedFunction::new(
+            vec![Instruction::Undefined, Instruction::Return],
+            Vec::new(),
+            FunctionMetadata {
+                max_stack: 1,
+                strict: true,
+                super_allowed: true,
+                arguments_forbidden: true,
+                needs_home_object: true,
+                class_initializer_kind: Some(kind),
+                ..FunctionMetadata::default()
+            },
+        )
+    }
+
+    fn script_installing_instance_initializer(child: UnlinkedFunction) -> UnlinkedFunction {
+        UnlinkedFunction::new(
+            vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::FClosure(0),
+                Instruction::InstallClassInstanceInitializer,
+                Instruction::Drop,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(child)],
+            FunctionMetadata {
+                max_stack: 3,
+                ..FunctionMetadata::default()
+            },
+        )
+    }
+
+    fn script_running_static_initializer(child: UnlinkedFunction) -> UnlinkedFunction {
+        UnlinkedFunction::new(
+            vec![
+                Instruction::Undefined,
+                Instruction::FClosure(0),
+                Instruction::RunClassStaticInitializer,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(child)],
+            FunctionMetadata {
+                max_stack: 2,
+                ..FunctionMetadata::default()
+            },
+        )
+    }
+
+    #[test]
+    fn class_initializer_children_require_unique_matching_bridge_consumption() {
+        verify_unlinked_tree(&script_installing_instance_initializer(
+            empty_class_initializer(ClassInitializerKind::InstanceFields),
+        ))
+        .unwrap();
+
+        let static_elements = UnlinkedFunction::new(
+            vec![
+                Instruction::FClosure(0),
+                Instruction::CallClassStaticBlock,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(empty_class_initializer(
+                ClassInitializerKind::StaticBlock,
+            ))],
+            FunctionMetadata {
+                max_stack: 1,
+                strict: true,
+                super_allowed: true,
+                arguments_forbidden: true,
+                needs_home_object: true,
+                class_initializer_kind: Some(ClassInitializerKind::StaticElements),
+                ..FunctionMetadata::default()
+            },
+        );
+        verify_unlinked_tree(&script_running_static_initializer(static_elements)).unwrap();
+
+        let escaped = UnlinkedFunction::new(
+            vec![Instruction::FClosure(0), Instruction::Return],
+            vec![UnlinkedConstant::child(empty_class_initializer(
+                ClassInitializerKind::InstanceFields,
+            ))],
+            FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        let error = verify_unlinked_tree(&escaped).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("class initializer child escaped its matching bridge"),
+            "{error}"
+        );
+
+        let repeated = UnlinkedFunction::new(
+            vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::FClosure(0),
+                Instruction::InstallClassInstanceInitializer,
+                Instruction::Drop,
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::FClosure(0),
+                Instruction::InstallClassInstanceInitializer,
+                Instruction::Drop,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(empty_class_initializer(
+                ClassInitializerKind::InstanceFields,
+            ))],
+            FunctionMetadata {
+                max_stack: 3,
+                ..FunctionMetadata::default()
+            },
+        );
+        let error = verify_unlinked_tree(&repeated).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("class initializer child did not have one unique closure site"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn class_initializer_bridges_reject_forged_roles_and_parents() {
+        let wrong_role = UnlinkedFunction::new(
+            vec![
+                Instruction::Undefined,
+                Instruction::FClosure(0),
+                Instruction::RunClassStaticInitializer,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(empty_class_initializer(
+                ClassInitializerKind::InstanceFields,
+            ))],
+            FunctionMetadata {
+                max_stack: 2,
+                ..FunctionMetadata::default()
+            },
+        );
+        let error = verify_unlinked_tree(&wrong_role).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("class initializer bridge consumed a child with the wrong role"),
+            "{error}"
+        );
+
+        let missing_child = UnlinkedFunction::new(
+            vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::InstallClassInstanceInitializer,
+                Instruction::Drop,
+                Instruction::Return,
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                max_stack: 3,
+                ..FunctionMetadata::default()
+            },
+        );
+        let error = verify_unlinked_tree(&missing_child).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("class initializer bridge did not consume an adjacent child closure"),
+            "{error}"
+        );
+
+        let injected_bridge_operand = UnlinkedFunction::new(
+            vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::PushTrue,
+                Instruction::Dup,
+                Instruction::IfFalse(7),
+                Instruction::Drop,
+                Instruction::FClosure(0),
+                Instruction::InstallClassInstanceInitializer,
+                Instruction::Drop,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(empty_class_initializer(
+                ClassInitializerKind::InstanceFields,
+            ))],
+            FunctionMetadata {
+                max_stack: 4,
+                ..FunctionMetadata::default()
+            },
+        );
+        let error = verify_unlinked_tree(&injected_bridge_operand).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("class initializer closure/bridge pair has a non-fallthrough entry"),
+            "{error}"
+        );
+
+        let wrong_static_parent = UnlinkedFunction::new(
+            vec![
+                Instruction::FClosure(0),
+                Instruction::CallClassStaticBlock,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(empty_class_initializer(
+                ClassInitializerKind::StaticBlock,
+            ))],
+            FunctionMetadata {
+                max_stack: 1,
+                ..FunctionMetadata::default()
+            },
+        );
+        let error = verify_unlinked_tree(&wrong_static_parent).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("class static block call escaped its static-elements parent"),
+            "{error}"
+        );
+
+        let root_initializer = empty_class_initializer(ClassInitializerKind::InstanceFields);
+        let error = verify_unlinked_tree(&root_initializer).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("class initializer bytecode escaped the class publication tree"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn class_initializer_pairs_reject_direct_control_flow_entry() {
+        let instance = UnlinkedFunction::new(
+            vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::Goto(3),
+                Instruction::FClosure(0),
+                Instruction::InstallClassInstanceInitializer,
+                Instruction::Drop,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(empty_class_initializer(
+                ClassInitializerKind::InstanceFields,
+            ))],
+            FunctionMetadata {
+                max_stack: 3,
+                ..FunctionMetadata::default()
+            },
+        );
+        let error = verify_unlinked_tree(&instance).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("class initializer closure/bridge pair has a non-fallthrough entry"),
+            "{error}"
+        );
+
+        let static_initializer = UnlinkedFunction::new(
+            vec![
+                Instruction::Undefined,
+                Instruction::Goto(2),
+                Instruction::FClosure(0),
+                Instruction::RunClassStaticInitializer,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(empty_class_initializer(
+                ClassInitializerKind::StaticElements,
+            ))],
+            FunctionMetadata {
+                max_stack: 2,
+                ..FunctionMetadata::default()
+            },
+        );
+        let error = verify_unlinked_tree(&static_initializer).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("class initializer closure/bridge pair has a non-fallthrough entry"),
+            "{error}"
+        );
+
+        let static_elements = UnlinkedFunction::new(
+            vec![
+                Instruction::Goto(1),
+                Instruction::FClosure(0),
+                Instruction::CallClassStaticBlock,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(empty_class_initializer(
+                ClassInitializerKind::StaticBlock,
+            ))],
+            FunctionMetadata {
+                max_stack: 1,
+                strict: true,
+                super_allowed: true,
+                arguments_forbidden: true,
+                needs_home_object: true,
+                class_initializer_kind: Some(ClassInitializerKind::StaticElements),
+                ..FunctionMetadata::default()
+            },
+        );
+        let error =
+            verify_unlinked_tree(&script_running_static_initializer(static_elements)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("class initializer closure/bridge pair has a non-fallthrough entry"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn static_block_pair_rejects_a_crossing_backedge() {
+        let static_elements = UnlinkedFunction::new(
+            vec![
+                Instruction::Nop,
+                Instruction::FClosure(0),
+                Instruction::CallClassStaticBlock,
+                Instruction::PushFalse,
+                Instruction::IfFalse(0),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![UnlinkedConstant::child(empty_class_initializer(
+                ClassInitializerKind::StaticBlock,
+            ))],
+            FunctionMetadata {
+                max_stack: 1,
+                strict: true,
+                super_allowed: true,
+                arguments_forbidden: true,
+                needs_home_object: true,
+                class_initializer_kind: Some(ClassInitializerKind::StaticElements),
+                ..FunctionMetadata::default()
+            },
+        );
+        let error =
+            verify_unlinked_tree(&script_running_static_initializer(static_elements)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("class static block closure/bridge pair is reentrant"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn authored_class_initializers_inside_a_loop_remain_publishable() {
+        let function = crate::compiler::compile_unlinked_script(
+            "while (again) { class C { field = 1; static value = 2; static {} } }",
+        )
+        .unwrap();
+        assert!(
+            function
+                .code()
+                .iter()
+                .enumerate()
+                .any(|(source_pc, instruction)| {
+                    explicit_control_flow_target(instruction)
+                        .is_some_and(|target_pc| source_pc > target_pc)
+                })
+        );
+        verify_unlinked_tree(&function).unwrap();
+    }
+
     fn derived_this_initializer(
         this_source: ClosureSource,
         active_function_source: ClosureSource,
@@ -4315,6 +4894,88 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("did not originate from derived this")
+        );
+    }
+
+    #[test]
+    fn class_instance_initializer_relay_requires_active_function_provenance() {
+        let relay = |active_read| {
+            UnlinkedFunction::new_with_closure_variables(
+                vec![
+                    Instruction::GetVarRef(1),
+                    Instruction::GetSuper,
+                    Instruction::GetVarRef(2),
+                    Instruction::MarkSuperCall,
+                    Instruction::ConstructSuper(0),
+                    Instruction::Dup,
+                    Instruction::InitializeDerivedVarRef(0),
+                    Instruction::GetVarRef(active_read),
+                    Instruction::CallClassInstanceInitializer,
+                    Instruction::Return,
+                ],
+                vec![
+                    UnlinkedConstant::primitive(Value::String(JsString::from_static("<this>")))
+                        .unwrap(),
+                    UnlinkedConstant::primitive(Value::String(JsString::from_static(
+                        "<this_active_func>",
+                    )))
+                    .unwrap(),
+                    UnlinkedConstant::primitive(Value::String(JsString::from_static(
+                        "<new.target>",
+                    )))
+                    .unwrap(),
+                ],
+                FunctionMetadata {
+                    closure_count: 4,
+                    max_stack: 2,
+                    strict: true,
+                    super_call_allowed: true,
+                    super_allowed: true,
+                    ..FunctionMetadata::default()
+                },
+                vec![
+                    ClosureVariable {
+                        source: ClosureSource::ParentLocal(0),
+                        name: ClosureVariableName::Constant(0),
+                        is_lexical: true,
+                        is_const: false,
+                        kind: ClosureVariableKind::Normal,
+                    },
+                    ClosureVariable {
+                        source: ClosureSource::ParentLocal(1),
+                        name: ClosureVariableName::Constant(1),
+                        is_lexical: false,
+                        is_const: false,
+                        kind: ClosureVariableKind::Normal,
+                    },
+                    ClosureVariable {
+                        source: ClosureSource::ParentLocal(2),
+                        name: ClosureVariableName::Constant(2),
+                        is_lexical: false,
+                        is_const: false,
+                        kind: ClosureVariableKind::Normal,
+                    },
+                    // This slot deliberately copies the sentinel spelling but
+                    // originates from an unauthenticated ordinary parent local.
+                    ClosureVariable {
+                        source: ClosureSource::ParentLocal(4),
+                        name: ClosureVariableName::Constant(1),
+                        is_lexical: false,
+                        is_const: false,
+                        kind: ClosureVariableKind::Normal,
+                    },
+                ],
+            )
+        };
+
+        verify_unlinked_tree(&script_with_child(derived_parent(relay(1)))).unwrap();
+
+        let error = verify_unlinked_tree(&script_with_child(derived_parent(relay(3)))).unwrap_err();
+        assert!(
+            error.to_string().contains(
+                "class instance initializer relay did not read the authenticated active function"
+            ),
+            "{error}"
         );
     }
 

@@ -3,27 +3,27 @@
 An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
-The engine is runnable but incomplete. It is not yet a drop-in replacement or
-a production sandbox. Product code is Rust-only and forbids `unsafe`; the
-pinned QuickJS binary is used only as a differential-test oracle.
+The `unsafe`-free Rust engine and CLI are runnable but incomplete. Its
+synchronous class path includes public instance/static fields and static
+blocks; the focused R3g cohort passes 767/767 Test262 variants. That is not a
+full-suite parity claim:
+modules, async/generators, private class elements, and broad built-in coverage
+remain incomplete. Unsupported paths fail explicitly, and pinned QuickJS is
+used only as a test oracle.
 
-## Quick start
+## Try it
 
 Rust 1.85 or newer is required.
 
 ```sh
 git clone https://github.com/pocket-stack/quickjs-oxide.git
 cd quickjs-oxide
-./scripts/demo-42.sh  # prints 42
-cargo run --bin qjs -- -e '(function (a) { return a + 1; })(41)'
-cargo run --bin qjs -- path/to/script.js
+./scripts/demo-42.sh  # 42
+cargo run --quiet --bin qjs -- --print-result -e \
+  '(function (a) { return a + 1; })(41)'  # 42
 ```
 
-## Project status
-
-Semantic parity is the goal; unsupported paths fail explicitly instead of
-falling back to another engine. Detailed progress and maintenance records live
-outside this overview:
+## Status
 
 - [Implementation status and milestone ledger](docs/status.md)
 - [Pinned Test262 progress baseline](docs/test262.md)
@@ -34,9 +34,7 @@ outside this overview:
 
 ```sh
 cargo test --locked --workspace --all-targets
-./scripts/test-parity-slice.sh
-./scripts/test-test262-smoke.sh
-./scripts/test-test262-full.sh
+./scripts/test-test262-class-public-init.sh
 ```
 
 ## License

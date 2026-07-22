@@ -54,6 +54,7 @@ trap - EXIT HUP INT TERM
 
 cargo fmt --all -- --check
 QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
+./scripts/test-r3g-class-public-init-oracle.sh --oxide ./target/debug/qjs
 ./scripts/test-test262-smoke.sh
 ./scripts/test-test262-provenance.sh
 ./scripts/run-test262-arrow.sh
@@ -112,6 +113,7 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/test-test262-argument-spread.sh
 ./scripts/test-test262-class-base.sh
 ./scripts/test-test262-class-derived.sh
+./scripts/test-test262-class-public-init.sh
 ./scripts/test-test262-full.sh
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ./scripts/check-rust-only.sh

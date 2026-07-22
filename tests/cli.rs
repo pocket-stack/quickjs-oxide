@@ -16,6 +16,21 @@ fn eval_executes_the_rust_compiler_and_vm() {
 }
 
 #[test]
+fn print_result_exposes_the_completion_value_without_changing_eval_default() {
+    let output = qjs()
+        .args([
+            "--print-result",
+            "-e",
+            "(function(a) { return a + 1; })(41)",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"42\n");
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
 fn eval_executes_source_level_functions_and_formats_native_errors() {
     let function = qjs()
         .args(["-e", "(function(a, b) { return a + b; })(20, 22)"])

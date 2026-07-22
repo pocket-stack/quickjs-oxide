@@ -14,14 +14,17 @@ impl Runtime {
         function: UnlinkedFunction,
         expected: &EvalCompileContext,
     ) -> Result<FunctionBytecodeRef, RuntimeError> {
-        bytecode_publish::verify_unlinked_eval_tree_with_profile(
+        bytecode_publish::verify_unlinked_eval_tree_with_profile_and_arguments(
             &function,
             expected.kind,
             expected.caller_strict,
             &expected.bindings,
             &expected.caller_profile,
-            expected.super_call_allowed,
-            expected.super_allowed,
+            bytecode_publish::EvalPublicationCapabilities {
+                super_call_allowed: expected.super_call_allowed,
+                super_allowed: expected.super_allowed,
+                arguments_forbidden: expected.arguments_forbidden,
+            },
         )?;
         self.publish_verified_unlinked_function(realm, function)
     }
@@ -141,16 +144,21 @@ impl Runtime {
             _ => unreachable!("String direct eval was checked above"),
         })?;
         let (bindings, caller_profile) = self.direct_eval_root_bindings(realm, &environment)?;
+        let arguments_forbidden = self
+            .snapshot_function_bytecode(&environment.caller_bytecode)?
+            .metadata
+            .arguments_forbidden;
         let function = match self.compile_eval_in_realm(
             realm,
             &source,
             DEFAULT_EVAL_FILENAME,
-            EvalCompileContext::direct_with_profile(
+            EvalCompileContext::direct_with_profile_and_arguments(
                 caller_strict,
                 bindings.clone(),
                 caller_profile,
                 environment.descriptor.super_call_allowed,
                 environment.descriptor.super_allowed,
+                arguments_forbidden,
             ),
         )? {
             Compilation::Published(function) => function,

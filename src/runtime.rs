@@ -7,6 +7,7 @@
 mod arguments;
 mod bytecode_publish;
 mod class;
+mod class_fields;
 mod for_in;
 mod home_object;
 mod intrinsics;
@@ -39,21 +40,21 @@ use crate::function::{
 use crate::heap::{
     ArrayFindKind, ArrayFlattenKind, ArrayIterationKind, ArrayIteratorKind, ArrayJoinKind,
     ArrayPopKind, ArrayPushKind, ArrayReduceKind, ArraySearchKind, ArraySliceKind,
-    AutoInitProperty, BigIntAsNKind, BytecodeConstant, ClosureSource, ClosureVariable,
-    ClosureVariableKind, ClosureVariableName, ConstructorKind, ContextData, ContextId,
-    DateGetFieldKind, DateNativeKind, DateSetFieldKind, DateStringMethod, DynamicFunctionKind,
-    ErrorConstructorKind, EvalEnvironment, ForInCandidate, ForInIteratorData, ForInProperty,
-    FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo, FunctionDebugPosition,
-    FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap,
-    HeapCleanup, HeapCounts, HeapError, JsonNativeKind, MathBinaryKind, MathMinMaxKind,
-    MathUnaryKind, NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind,
-    NumberPredicateKind, ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId,
-    ObjectIntegrityKind, ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload,
-    ParameterEnvironmentLayout, PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue,
-    ReflectKind, RegExpNativeKind, ShapeId, StringCaseKind, StringCharAtKind, StringCreateHtmlKind,
-    StringIncludesKind, StringIndexOfKind, StringPadKind, StringReplaceKind, StringStaticKind,
-    StringSubrangeKind, StringTrimKind, StringWellFormedKind, SymbolRegistryKind, VarRefData,
-    VarRefId, VariableDefinition,
+    AutoInitProperty, BigIntAsNKind, BytecodeConstant, ClassInitializerKind, ClosureSource,
+    ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind, ContextData,
+    ContextId, DateGetFieldKind, DateNativeKind, DateSetFieldKind, DateStringMethod,
+    DynamicFunctionKind, ErrorConstructorKind, EvalEnvironment, ForInCandidate, ForInIteratorData,
+    ForInProperty, FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo,
+    FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind,
+    GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError, JsonNativeKind, MathBinaryKind,
+    MathMinMaxKind, MathUnaryKind, NativeCProto, NativeFunctionId, NumberFormatKind,
+    NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData, ObjectExtensibilityKind,
+    ObjectId, ObjectIntegrityKind, ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind,
+    ObjectPayload, ParameterEnvironmentLayout, PrimitiveKind, PrimitiveObjectData, PropertySlot,
+    RawValue, ReflectKind, RegExpNativeKind, ShapeId, StringCaseKind, StringCharAtKind,
+    StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind, StringReplaceKind,
+    StringStaticKind, StringSubrangeKind, StringTrimKind, StringWellFormedKind, SymbolRegistryKind,
+    VarRefData, VarRefId, VariableDefinition,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,

@@ -1006,7 +1006,7 @@ impl RuntimeVmHost {
             | Value::Float(_)
             | Value::BigInt(_)
             | Value::Object(_) => Err(Error::internal(
-                "computed method key was not canonicalized by ToPropKey",
+                "computed property key was not canonicalized by ToPropKey",
             )),
         }
     }
@@ -2309,18 +2309,28 @@ impl VmHost for RuntimeVmHost {
             return Err(Error::new(ErrorKind::Type, "not an object"));
         };
         let key = self.constant_property_key(key_index)?;
-        let result = self.runtime.define_own_property_in_realm(
-            Some(self.current_realm),
-            &object,
-            &key,
-            &OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(value),
-                writable: DescriptorField::Present(true),
-                enumerable: DescriptorField::Present(true),
-                configurable: DescriptorField::Present(true),
-                ..OrdinaryPropertyDescriptor::new()
-            },
-        );
+        let result =
+            self.runtime
+                .define_public_class_field(self.current_realm, &object, &key, value);
+        self.finish_property_define(result)
+    }
+
+    fn define_field_computed(
+        &mut self,
+        base: Value,
+        key: Value,
+        value: Value,
+    ) -> Result<Completion, Error> {
+        let Value::Object(object) = base else {
+            return Err(Error::new(ErrorKind::Type, "not an object"));
+        };
+        // `ToPropKey` already performed the only observable conversion. This
+        // helper accepts just its canonical VM representations and never calls
+        // `property_key_from_value`.
+        let key = self.canonical_property_key_from_value(&key)?;
+        let result =
+            self.runtime
+                .define_public_class_field(self.current_realm, &object, &key, value);
         self.finish_property_define(result)
     }
 
@@ -2422,6 +2432,54 @@ impl VmHost for RuntimeVmHost {
             }
             Err(error) => Err(runtime_error_to_vm_error(error)),
         }
+    }
+
+    fn install_class_instance_initializer(
+        &mut self,
+        constructor: Value,
+        prototype: Value,
+        initializer: Value,
+    ) -> Result<Completion, Error> {
+        self.runtime
+            .install_class_instance_initializer(
+                self.current_realm,
+                constructor,
+                prototype,
+                initializer,
+            )
+            .map(|()| Completion::Return(Value::Undefined))
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn call_class_instance_initializer(
+        &mut self,
+        active_constructor: Value,
+        receiver: Value,
+    ) -> Result<Completion, Error> {
+        self.runtime
+            .call_class_instance_initializer(self.current_realm, active_constructor, receiver)
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn run_class_static_initializer(
+        &mut self,
+        constructor: Value,
+        initializer: Value,
+    ) -> Result<Completion, Error> {
+        self.runtime
+            .run_class_static_initializer(self.current_realm, constructor, initializer)
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn call_class_static_block(
+        &mut self,
+        static_initializer: ObjectRef,
+        this_value: Value,
+        block: Value,
+    ) -> Result<Completion, Error> {
+        self.runtime
+            .call_class_static_block(self.current_realm, &static_initializer, this_value, block)
+            .map_err(runtime_error_to_vm_error)
     }
 
     fn define_array_element(

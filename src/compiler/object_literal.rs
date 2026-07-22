@@ -61,8 +61,8 @@ impl<'source> Parser<'source> {
                     }
                     self.advance_expression_start()?;
                     self.parse_assignment_allow_in()?;
-                    if self.anonymous_function_definition.take().is_some() {
-                        self.emit_instruction(Instruction::SetNameComputed)?;
+                    if let Some(definition) = self.take_anonymous_function_definition() {
+                        self.emit_anonymous_set_name(definition, Instruction::SetNameComputed)?;
                     }
                     self.emit_instruction(Instruction::DefineArrayEl)?;
                     self.emit_instruction(Instruction::Drop)?;
@@ -197,12 +197,24 @@ impl<'source> Parser<'source> {
                     } else {
                         let key_constant =
                             self.add_constant(IrConstant::Primitive(Value::String(key)))?;
-                        if self.anonymous_function_definition.take().is_some() {
-                            self.emit_instruction(Instruction::SetName(key_constant))?;
+                        if let Some(definition) = self.take_anonymous_function_definition() {
+                            self.emit_anonymous_set_name(
+                                definition,
+                                Instruction::SetName(key_constant),
+                            )?;
                         }
                         self.emit_instruction(Instruction::DefineField(key_constant))?;
                     }
                 } else if let Some(identifier) = shorthand {
+                    // Pinned QuickJS enforces the static-block await error
+                    // here, but its class-initializer `arguments` check misses
+                    // object shorthand and can capture an enclosing binding.
+                    if identifier.value == "await" && self.current_ir().await_forbidden {
+                        return Err(Error::syntax(
+                            "'await' is not allowed in a class static block",
+                            source_span(token.span),
+                        ));
+                    }
                     validate_identifier(
                         &identifier,
                         token.span,

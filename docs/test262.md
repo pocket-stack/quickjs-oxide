@@ -34,8 +34,9 @@ intended early `SyntaxError`, rather than because class parsing is absent.
 This 193/193 result is a runner smoke baseline, not a project-wide 100%
 estimate. The sample was selected from already implemented synchronous
 surfaces. Module, async/jobs, most `$262` host hooks, advanced RegExp pattern
-grammar, class fields/private elements/static blocks, async/generator class
-forms, generators, TypedArrays and many other broad layers remain absent.
+grammar, private class elements, async/generator class forms, generators,
+TypedArrays and many other broad layers remain absent. Public fields and static
+blocks are measured separately by the scoped R3g gate below.
 
 Nineteen additional provenance variants guard the result: four audited negative
 variants pass for the intended parse error, while 15 unsupported grammar
@@ -2818,6 +2819,41 @@ Global `class` remains disabled; host realms, Proxy, fields/private
 initialization, static blocks, and async/generator methods remain separate
 probes.
 
+## R3g public fields and static blocks
+
+R3g freezes public instance fields, public static fields, and static blocks as
+a separate dependency-audited cohort. It contains 386 paths / 767 variants;
+the matching R3f path and variant counts are coincidental, not a reused
+manifest. Its overlapping inventory includes 305 public-instance-field paths,
+51 public-static-field paths, 54 static-block paths, and 119 parse-negative
+paths. Ten source-audited adjacent cases are excluded because they require
+Proxy or generator/async grammar not declared reliably by their metadata.
+
+Before implementation, all 767 variants failed closed under the global
+profile. With the manifest-scoped admission profile, Oxide now passes all 767
+variants with no failure, unsupported result, skip, timeout, crash, or runner
+fault; pinned QuickJS 2026-06-04 passes all 386 paths. This is a focused
+scoreboard, not a full-Test262 percentage or a whole-feature `class` claim.
+The global profile remains closed while private elements, async/generator class
+forms, host hooks, Proxy, and other adjacent dependencies are incomplete.
+
+The cohort checks computed-key and initialization order, base-versus-derived
+constructor timing, public-field descriptor creation, inferred names,
+HomeObject-backed `super`, direct eval, static-block scope, and abrupt
+completion. A pinned transcript separately compares representative combined
+observations byte-for-byte with QuickJS.
+
+Reproduce the focused gate and differential with:
+
+```sh
+./scripts/test-test262-class-public-init.sh
+cargo build --bin qjs
+./scripts/test-r3g-class-public-init-oracle.sh --oxide ./target/debug/qjs
+```
+
+Use `--check` on either script to authenticate its frozen inputs without
+claiming a new full-vector baseline.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -3066,6 +3102,11 @@ completely; the exact full join adds 545 passes with no previous-pass
 regression, reaching 36,293 among the same 38,483 runnable variants. The global
 profile still keeps whole-feature `class` disabled until fields/private
 elements, static blocks, and generator/async class methods land.
+R3g adds public instance/static fields and static blocks. Its distinct
+386-path/767-variant focused gate passes completely against a pinned-QuickJS
+oracle. The result remains manifest-scoped; no new whole-suite percentage or
+global `class` admission is claimed until the full join and the remaining
+private/async/generator class surfaces are complete.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

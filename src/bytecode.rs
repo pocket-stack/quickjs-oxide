@@ -329,6 +329,12 @@ pub enum Instruction {
     /// preserving the object below it (`object value -> object`). Array
     /// literals use this after their initial dense prefix.
     DefineField(u32),
+    /// Computed-key class-field form of QuickJS `OP_define_array_el`. The key
+    /// is the authenticated output of `ToPropKey`, so execution must not run
+    /// observable property-key conversion again. Defines one C_W_E own data
+    /// property while preserving only the object
+    /// (`object canonical-key value -> object`).
+    DefineFieldComputed,
     /// QuickJS `OP_define_method`: name and publish an object-literal method
     /// under one verified String constant while preserving the fresh literal
     /// (`object closure -> object`).
@@ -351,6 +357,21 @@ pub enum Instruction {
         name: u32,
         has_heritage: bool,
     },
+    /// Attach one authenticated hidden instance-fields program to a freshly
+    /// defined class constructor while installing the class prototype as its
+    /// HomeObject (`constructor prototype initializer -> constructor prototype`).
+    InstallClassInstanceInitializer,
+    /// Run the hidden instance-fields program attached to the active class
+    /// constructor with the retained receiver as `this`
+    /// (`receiver active-constructor -> receiver`).
+    /// Absence of an initializer is the ordinary no-fields fast path.
+    CallClassInstanceInitializer,
+    /// Install the constructor as HomeObject and immediately execute the
+    /// aggregate static-elements program (`constructor initializer -> constructor`).
+    RunClassStaticInitializer,
+    /// Execute a non-escaping static-block child with the aggregate static
+    /// initializer's receiver and HomeObject (`block ->`).
+    CallClassStaticBlock,
     /// QuickJS `OP_define_array_el`: define a computed C_W_E data property
     /// while preserving the Array and its dynamic index
     /// (`array index value -> array index`).
@@ -601,8 +622,12 @@ impl Instruction {
             Self::PutArrayEl => (3, 0),
             Self::PutSuperValue => (4, 0),
             Self::DefineField(_) | Self::DefineMethod { .. } => (2, 1),
-            Self::DefineMethodComputed { .. } => (3, 1),
+            Self::DefineFieldComputed | Self::DefineMethodComputed { .. } => (3, 1),
             Self::DefineClass { .. } => (2, 2),
+            Self::InstallClassInstanceInitializer => (3, 2),
+            Self::CallClassInstanceInitializer => (2, 1),
+            Self::RunClassStaticInitializer => (2, 1),
+            Self::CallClassStaticBlock => (1, 0),
             Self::DefineArrayEl | Self::Append => (3, 2),
             Self::SetNameComputed => (2, 2),
             Self::SetProto | Self::CopyDataProperties => (2, 1),

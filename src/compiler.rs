@@ -23,9 +23,9 @@ use crate::function::{
     UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug, UnlinkedVariableDefinition,
 };
 use crate::heap::{
-    ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
-    EvalBinding, EvalBindingSource, EvalCallerProfile, EvalCallerVariableTarget, EvalEnvironment,
-    EvalKind, EvalRootBinding, EvalScope, EvalScopeKind, EvalVariableEnvironment,
+    ClassInitializerKind, ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName,
+    ConstructorKind, EvalBinding, EvalBindingSource, EvalCallerProfile, EvalCallerVariableTarget,
+    EvalEnvironment, EvalKind, EvalRootBinding, EvalScope, EvalScopeKind, EvalVariableEnvironment,
     FunctionKind as BytecodeFunctionKind, FunctionMetadata, ParameterArgumentCell,
     ParameterBodyStorage, ParameterDefaultSource, ParameterEnvironmentLayout, ParameterPatternCopy,
     quickjs_copies_defined_argument_count,
@@ -93,6 +93,7 @@ pub(crate) struct EvalCompileContext {
     pub caller_profile: EvalCallerProfile,
     pub super_call_allowed: bool,
     pub super_allowed: bool,
+    pub arguments_forbidden: bool,
 }
 
 impl EvalCompileContext {
@@ -166,7 +167,27 @@ impl EvalCompileContext {
             caller_profile,
             super_call_allowed,
             super_allowed,
+            arguments_forbidden: false,
         }
+    }
+
+    pub(crate) fn direct_with_profile_and_arguments(
+        caller_strict: bool,
+        bindings: Vec<EvalRootBinding<JsString>>,
+        caller_profile: EvalCallerProfile,
+        super_call_allowed: bool,
+        super_allowed: bool,
+        arguments_forbidden: bool,
+    ) -> Self {
+        let mut context = Self::direct_with_profile(
+            caller_strict,
+            bindings,
+            caller_profile,
+            super_call_allowed,
+            super_allowed,
+        );
+        context.arguments_forbidden = arguments_forbidden;
+        context
     }
 
     pub(crate) fn indirect() -> Self {
@@ -180,6 +201,7 @@ impl EvalCompileContext {
             },
             super_call_allowed: false,
             super_allowed: false,
+            arguments_forbidden: false,
         }
     }
 }
@@ -853,9 +875,23 @@ struct FunctionIr {
     /// arrows and direct eval inherit `super()` authority without pretending
     /// to be constructors themselves.
     derived_class_constructor: bool,
+    /// Synthetic QuickJS class-element program role. This is assigned only by
+    /// class lowering after the ordinary method-shaped FunctionIr is created.
+    class_initializer_kind: Option<ClassInitializerKind>,
     /// QuickJS parser authority copied independently from HomeObject storage.
     super_call_allowed: bool,
     super_allowed: bool,
+    arguments_forbidden: bool,
+    /// ClassStaticBlock's grammar forbids direct `await` bindings,
+    /// references, and labels without making nested function syntax async.
+    /// Unlike `arguments_forbidden`, arrows establish a boundary for this
+    /// early-error capability and therefore do not inherit it.
+    await_forbidden: bool,
+    /// BindingIdentifier/LabelIdentifier restriction of ClassStaticBlock.
+    /// This does not cross an arrow/function/class-expression boundary even
+    /// though parameter initializer expressions can still carry
+    /// `await_forbidden`.
+    await_binding_forbidden: bool,
     source: FunctionSourceInfo,
     /// Intrinsic function name, independent of contextual `SetName` inference
     /// for anonymous definitions.
@@ -1146,8 +1182,12 @@ impl FunctionIr {
             kind,
             class_constructor: options.class_constructor,
             derived_class_constructor: options.derived_class_constructor,
+            class_initializer_kind: None,
             super_call_allowed: super_capabilities.super_call_allowed,
             super_allowed: super_capabilities.super_allowed,
+            arguments_forbidden: false,
+            await_forbidden: false,
+            await_binding_forbidden: false,
             source,
             function_name: options.function_name,
             private_name_binding: options.private_name_binding,
@@ -1560,6 +1600,18 @@ struct PreparedScopedFunction {
     create_annex_binding: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum AnonymousFunctionDefinition {
+    Function,
+    Class {
+        owner: FunctionId,
+        /// IR insertion point immediately before the static initializer
+        /// closure. NamedEvaluation is moved here so static elements observe
+        /// the inferred class name.
+        static_initializer_start: Option<usize>,
+    },
+}
+
 struct Parser<'source> {
     lexer: Lexer<'source>,
     tokens: Vec<Token<'source>>,
@@ -1570,7 +1622,7 @@ struct Parser<'source> {
     /// Function expression eligible for QuickJS's assignment-name inference.
     /// Operators which make the surrounding expression cease to be an
     /// AnonymousFunctionDefinition clear this marker.
-    anonymous_function_definition: Option<FunctionId>,
+    anonymous_function_definition: Option<AnonymousFunctionDefinition>,
 }
 
 enum RootCompileContext {
@@ -1602,53 +1654,62 @@ impl<'source> Parser<'source> {
                 "source is too large for QuickJS debug metadata",
             ));
         }
-        let (root_kind, inherited_strict, external_bindings, caller_profile, super_capabilities) =
-            match context {
-                RootCompileContext::Script => (
-                    FunctionKind::Script,
-                    false,
-                    Vec::<EvalRootBinding<JsString>>::new().into_boxed_slice(),
-                    EvalCallerProfile {
-                        scope_kinds: Box::new([]),
-                        variable_target: EvalCallerVariableTarget::Global,
-                    },
-                    SuperCapabilities::NONE,
-                ),
-                RootCompileContext::Eval(context) => {
-                    if !matches!(context.kind, EvalKind::Direct | EvalKind::Indirect) {
-                        return Err(Error::internal(
-                            "eval compiler received a non-eval root kind",
-                        ));
-                    }
-                    if context.kind == EvalKind::Indirect
-                        && (!context.bindings.is_empty()
-                            || !context.caller_profile.scope_kinds.is_empty()
-                            || context.caller_profile.variable_target
-                                != EvalCallerVariableTarget::Global
-                            || context.super_call_allowed
-                            || context.super_allowed)
-                    {
-                        return Err(Error::internal(
-                            "indirect eval compiler received a caller environment",
-                        ));
-                    }
-                    let super_capabilities = SuperCapabilities {
-                        super_call_allowed: context.super_call_allowed,
-                        super_allowed: context.super_allowed,
-                    }
-                    .validated()
-                    .map_err(|_| {
-                        Error::internal("eval compiler permits super() without SuperProperty")
-                    })?;
-                    (
-                        FunctionKind::Eval(context.kind),
-                        context.kind == EvalKind::Direct && context.caller_strict,
-                        context.bindings,
-                        context.caller_profile,
-                        super_capabilities,
-                    )
+        let (
+            root_kind,
+            inherited_strict,
+            external_bindings,
+            caller_profile,
+            super_capabilities,
+            arguments_forbidden,
+        ) = match context {
+            RootCompileContext::Script => (
+                FunctionKind::Script,
+                false,
+                Vec::<EvalRootBinding<JsString>>::new().into_boxed_slice(),
+                EvalCallerProfile {
+                    scope_kinds: Box::new([]),
+                    variable_target: EvalCallerVariableTarget::Global,
+                },
+                SuperCapabilities::NONE,
+                false,
+            ),
+            RootCompileContext::Eval(context) => {
+                if !matches!(context.kind, EvalKind::Direct | EvalKind::Indirect) {
+                    return Err(Error::internal(
+                        "eval compiler received a non-eval root kind",
+                    ));
                 }
-            };
+                if context.kind == EvalKind::Indirect
+                    && (!context.bindings.is_empty()
+                        || !context.caller_profile.scope_kinds.is_empty()
+                        || context.caller_profile.variable_target
+                            != EvalCallerVariableTarget::Global
+                        || context.super_call_allowed
+                        || context.super_allowed
+                        || context.arguments_forbidden)
+                {
+                    return Err(Error::internal(
+                        "indirect eval compiler received a caller environment",
+                    ));
+                }
+                let super_capabilities = SuperCapabilities {
+                    super_call_allowed: context.super_call_allowed,
+                    super_allowed: context.super_allowed,
+                }
+                .validated()
+                .map_err(|_| {
+                    Error::internal("eval compiler permits super() without SuperProperty")
+                })?;
+                (
+                    FunctionKind::Eval(context.kind),
+                    context.kind == EvalKind::Direct && context.caller_strict,
+                    context.bindings,
+                    context.caller_profile,
+                    super_capabilities,
+                    context.arguments_forbidden,
+                )
+            }
+        };
         let mut lexer = Lexer::new(source);
         let first_token = lexer.next_token().map_err(lex_error)?;
         let source_span = first_token.span;
@@ -1694,6 +1755,7 @@ impl<'source> Parser<'source> {
             inherited_strict || parser.directive_prologue_has_use_strict(0, inherited_strict)?;
         parser.relex_current_with_strict(strict)?;
         parser.functions[0].strict = strict;
+        parser.functions[0].arguments_forbidden = arguments_forbidden;
         parser.parse_script_body()?;
         Ok(FunctionTree {
             functions: parser.functions,
@@ -1852,6 +1914,12 @@ impl<'source> Parser<'source> {
         label_name: String,
         position: StatementPosition,
     ) -> Result<(), Error> {
+        if label_name == "await" && self.current_ir().await_binding_forbidden {
+            return Err(Error::syntax(
+                "'await' is not allowed in a class static block",
+                source_span(self.current().span),
+            ));
+        }
         if self
             .current_ir()
             .break_controls
@@ -2957,6 +3025,12 @@ impl<'source> Parser<'source> {
         } else {
             None
         };
+        if label_name.as_deref() == Some("await") && self.current_ir().await_binding_forbidden {
+            return Err(Error::syntax(
+                "'await' is not allowed in a class static block",
+                source_span(self.current().span),
+            ));
+        }
         let target = self
             .current_ir()
             .break_controls
@@ -3224,6 +3298,9 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_return_statement(&mut self) -> Result<(), Error> {
+        if self.current_ir().class_initializer_kind == Some(ClassInitializerKind::StaticBlock) {
+            return Err(self.syntax_here("return not in a function"));
+        }
         let statement_depth = self.current_ir().stack_depth;
         let return_span = self.current().span;
         self.advance()?;
@@ -3386,11 +3463,14 @@ impl<'source> Parser<'source> {
                 let initializer_site = if self.consume_punctuator(Punctuator::Equal)? {
                     let site = source_offset(self.tokens[self.cursor - 1].span)?;
                     self.parse_assignment()?;
-                    if self.anonymous_function_definition.take().is_some() {
+                    if let Some(definition) = self.take_anonymous_function_definition() {
                         let name_constant = self.add_constant(IrConstant::Primitive(
                             Value::String(JsString::try_from_utf8(&name)?),
                         ))?;
-                        self.emit_instruction(Instruction::SetName(name_constant))?;
+                        self.emit_anonymous_set_name(
+                            definition,
+                            Instruction::SetName(name_constant),
+                        )?;
                     }
                     site
                 } else {
@@ -3473,7 +3553,7 @@ impl<'source> Parser<'source> {
                         )?;
                     }
                     self.parse_assignment()?;
-                    if self.anonymous_function_definition.take().is_some() {
+                    if let Some(definition) = self.take_anonymous_function_definition() {
                         // QuickJS emits a dummy OP_set_name after an anonymous
                         // closure and rewrites its atom when NamedEvaluation
                         // applies to this initializer. Keep that contextual name
@@ -3481,7 +3561,10 @@ impl<'source> Parser<'source> {
                         let name_constant = self.add_constant(IrConstant::Primitive(
                             Value::String(JsString::try_from_utf8(&name)?),
                         ))?;
-                        self.emit_instruction(Instruction::SetName(name_constant))?;
+                        self.emit_anonymous_set_name(
+                            definition,
+                            Instruction::SetName(name_constant),
+                        )?;
                     }
                     if object_environment {
                         self.emit_at(
@@ -3518,6 +3601,12 @@ impl<'source> Parser<'source> {
         declaration_span: Span,
         conflict_span: Span,
     ) -> Result<(), Error> {
+        if name == "await" && self.current_ir().await_binding_forbidden {
+            return Err(Error::syntax(
+                "'await' is not allowed in a class static block",
+                source_span(declaration_span),
+            ));
+        }
         if matches!(self.current_ir().kind, FunctionKind::Eval(_)) {
             return self.register_eval_var_binding(name, declaration_span, conflict_span);
         }
@@ -3838,6 +3927,12 @@ impl<'source> Parser<'source> {
         is_const: bool,
         allow_body_parameter_shadow: bool,
     ) -> Result<(), Error> {
+        if name == "await" && self.current_ir().await_binding_forbidden {
+            return Err(Error::syntax(
+                "'await' is not allowed in a class static block",
+                source_span(declaration_span),
+            ));
+        }
         let function = &mut self.functions[self.current_function];
         let scope = function.current_scope;
         let scope_kind = function.scopes[scope.0].kind;
@@ -4180,12 +4275,14 @@ impl<'source> Parser<'source> {
             let rhs_start = self.current_ir().ops.len();
             self.parse_assignment()?;
             self.inherit_source_marker_at(rhs_start, source_offset(target.span)?)?;
-            let anonymous_rhs = self.anonymous_function_definition.take().is_some();
-            if direct_identifier_name.as_deref() == Some(target.name.as_str()) && anonymous_rhs {
+            let anonymous_rhs = self.take_anonymous_function_definition();
+            if direct_identifier_name.as_deref() == Some(target.name.as_str())
+                && let Some(definition) = anonymous_rhs
+            {
                 let name_constant = self.add_constant(IrConstant::Primitive(Value::String(
                     JsString::try_from_utf8(&target.name)?,
                 )))?;
-                self.emit_instruction(Instruction::SetName(name_constant))?;
+                self.emit_anonymous_set_name(definition, Instruction::SetName(name_constant))?;
             }
             // QuickJS emits no source position for ordinary `=`. The Set
             // inherits the LHS marker for an unmarked RHS or the last marker
@@ -4252,12 +4349,12 @@ impl<'source> Parser<'source> {
 
         self.emit_instruction(Instruction::Drop)?;
         self.parse_assignment()?;
-        let anonymous_rhs = self.anonymous_function_definition.take().is_some();
-        if infer_name && anonymous_rhs {
+        let anonymous_rhs = self.take_anonymous_function_definition();
+        if infer_name && let Some(definition) = anonymous_rhs {
             let name_constant = self.add_constant(IrConstant::Primitive(Value::String(
                 JsString::try_from_utf8(&target.name)?,
             )))?;
-            self.emit_instruction(Instruction::SetName(name_constant))?;
+            self.emit_anonymous_set_name(definition, Instruction::SetName(name_constant))?;
         }
         if target.object_environment {
             self.emit_identifier_reference_inherited(
@@ -5506,6 +5603,12 @@ impl<'source> Parser<'source> {
                 super_span,
                 IdentifierAccess::InitializeDerivedThis,
             )?;
+            self.emit_identifier(
+                ACTIVE_FUNCTION_LOCAL_NAME.to_owned(),
+                super_span,
+                IdentifierAccess::Get,
+            )?;
+            self.emit_instruction(Instruction::CallClassInstanceInitializer)?;
             self.anonymous_function_definition = None;
             return Ok(());
         }
@@ -5651,6 +5754,7 @@ impl<'source> Parser<'source> {
                 self.parse_template_literal()?;
             }
             TokenKind::Identifier(identifier) => {
+                self.reject_forbidden_identifier_reference(&identifier.value, token.span)?;
                 validate_identifier(
                     &identifier,
                     token.span,
@@ -5744,6 +5848,22 @@ impl<'source> Parser<'source> {
             TokenKind::Eof => {
                 return Err(self.syntax_here("unexpected token in expression: ''"));
             }
+        }
+        Ok(())
+    }
+
+    fn reject_forbidden_identifier_reference(&self, name: &str, span: Span) -> Result<(), Error> {
+        if name == "arguments" && self.current_ir().arguments_forbidden {
+            return Err(Error::syntax(
+                "'arguments' is not allowed in class field initializer or static block",
+                source_span(span),
+            ));
+        }
+        if name == "await" && self.current_ir().await_forbidden {
+            return Err(Error::syntax(
+                "'await' is not allowed in a class static block",
+                source_span(span),
+            ));
         }
         Ok(())
     }
@@ -6495,6 +6615,51 @@ impl<'source> Parser<'source> {
         self.emit(IrOp::Bytecode(instruction))
     }
 
+    fn take_anonymous_function_definition(&mut self) -> Option<AnonymousFunctionDefinition> {
+        self.anonymous_function_definition.take()
+    }
+
+    fn emit_anonymous_set_name(
+        &mut self,
+        definition: AnonymousFunctionDefinition,
+        instruction: Instruction,
+    ) -> Result<usize, Error> {
+        if !matches!(
+            instruction,
+            Instruction::SetName(_) | Instruction::SetNameComputed
+        ) {
+            return Err(Error::internal(
+                "anonymous definition received a non-naming instruction",
+            ));
+        }
+        match definition {
+            AnonymousFunctionDefinition::Function => self.emit_instruction(instruction),
+            AnonymousFunctionDefinition::Class {
+                owner,
+                static_initializer_start: Some(at),
+            } => {
+                if owner != self.current_function {
+                    return Err(Error::internal(
+                        "anonymous class static initializer changed defining function",
+                    ));
+                }
+                insert_hoist_fragment(
+                    self.current_ir_mut(),
+                    at,
+                    vec![SpannedIrOp {
+                        op: IrOp::Bytecode(instruction),
+                        pc_site: None,
+                    }],
+                )?;
+                Ok(at)
+            }
+            AnonymousFunctionDefinition::Class {
+                static_initializer_start: None,
+                ..
+            } => self.emit_instruction(instruction),
+        }
+    }
+
     fn emit_instruction_at(
         &mut self,
         instruction: Instruction,
@@ -7134,6 +7299,12 @@ impl<'source> Parser<'source> {
     /// independent parameter environment while retaining these slots as the
     /// call-frame input ABI.
     fn append_identifier_parameter(&mut self, name: String, span: Span) -> Result<u16, Error> {
+        if name == "await" && self.current_ir().await_binding_forbidden {
+            return Err(Error::syntax(
+                "'await' is not allowed in a class static block",
+                source_span(span),
+            ));
+        }
         let function = self.current_ir_mut();
         if function.parameter_scope.is_some()
             && function
@@ -7228,6 +7399,12 @@ impl<'source> Parser<'source> {
         declaration_span: Span,
         conflict_span: Span,
     ) -> Result<(), Error> {
+        if name == "await" && self.current_ir().await_binding_forbidden {
+            return Err(Error::syntax(
+                "'await' is not allowed in a class static block",
+                source_span(declaration_span),
+            ));
+        }
         let expected_scope = self
             .current_ir()
             .parameter_scope
@@ -7464,11 +7641,11 @@ impl<'source> Parser<'source> {
         self.emit_instruction(Instruction::Drop)?;
         self.anonymous_function_definition = None;
         self.parse_assignment_allow_in()?;
-        if self.anonymous_function_definition.take().is_some() {
+        if let Some(definition) = self.take_anonymous_function_definition() {
             let name = self.add_constant(IrConstant::Primitive(Value::String(
                 JsString::try_from_utf8(&name)?,
             )))?;
-            self.emit_instruction(Instruction::SetName(name))?;
+            self.emit_anonymous_set_name(definition, Instruction::SetName(name))?;
         }
         self.emit_instruction(Instruction::Dup)?;
         self.emit_instruction(Instruction::PutArg(argument))?;
@@ -8724,6 +8901,34 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         ));
                     }
                     hoist_start += 1;
+                    if !function.derived_class_constructor {
+                        if !matches!(
+                            function.ops.get(hoist_start..hoist_start + 4),
+                            Some([
+                                SpannedIrOp {
+                                    op: IrOp::Bytecode(Instruction::PushThis),
+                                    pc_site: None,
+                                },
+                                SpannedIrOp {
+                                    op: IrOp::Bytecode(Instruction::PushActiveFunction),
+                                    pc_site: None,
+                                },
+                                SpannedIrOp {
+                                    op: IrOp::Bytecode(Instruction::CallClassInstanceInitializer,),
+                                    pc_site: None,
+                                },
+                                SpannedIrOp {
+                                    op: IrOp::Bytecode(Instruction::Drop),
+                                    pc_site: None,
+                                },
+                            ])
+                        ) {
+                            return Err(Error::internal(
+                                "base class rest constructor lost its field initializer hook",
+                            ));
+                        }
+                        hoist_start += 4;
+                    }
                 }
                 if !matches!(
                     function.ops.get(hoist_start),
@@ -10821,6 +11026,7 @@ fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
         let has_parameter_environment = tree.functions[function_id].parameter_scope.is_some();
         let has_pattern_parameters = tree.functions[function_id].pattern_parameter_initialization;
         let class_constructor = tree.functions[function_id].class_constructor;
+        let derived_class_constructor = tree.functions[function_id].derived_class_constructor;
         let simple_rest = tree.functions[function_id]
             .rest_parameter
             .filter(|_| !has_parameter_environment && !has_pattern_parameters);
@@ -10934,9 +11140,14 @@ fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
                     matches!(operation.op, IrOp::Bytecode(Instruction::CheckCtor))
                 })
                 .ok_or_else(|| Error::internal("class rest constructor lost its call guard"))?;
+            let after_guard = if derived_class_constructor {
+                guard + 1
+            } else {
+                guard + 5
+            };
             insert_hoist_fragment(
                 &mut tree.functions[function_id],
-                guard + 1,
+                after_guard,
                 vec![
                     SpannedIrOp {
                         op: IrOp::Bytecode(Instruction::Rest(rest)),
@@ -11019,7 +11230,10 @@ fn insert_hoist_fragment(
             ) => target,
             _ => continue,
         };
-        if usize::try_from(*target).is_ok_and(|target| target >= at) {
+        // Forward edges use u32::MAX until their enclosing control construct
+        // is complete. NamedEvaluation can insert a zero-effect SetName while
+        // such an edge is still open; leave the sentinel for patch_jump.
+        if *target != u32::MAX && usize::try_from(*target).is_ok_and(|target| target >= at) {
             *target = target
                 .checked_add(shift)
                 .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
@@ -11513,6 +11727,18 @@ fn resolve_identifier_path(
     span: Span,
     access: IdentifierAccess,
 ) -> Result<ResolvedIdentifierPath, Error> {
+    let authored_reference = !matches!(
+        access,
+        IdentifierAccess::Initialize
+            | IdentifierAccess::InitializeDerivedThis
+            | IdentifierAccess::AnnexBPut
+    );
+    if authored_reference && name == "await" && tree.functions[consuming_function].await_forbidden {
+        return Err(Error::syntax(
+            "'await' is not allowed in a class static block",
+            source_span(span),
+        ));
+    }
     let mut sources = Vec::new();
     let pseudo = PseudoBinding::from_name(name);
     if pseudo.is_some()
@@ -12268,6 +12494,12 @@ fn find_or_create_own_binding(
     }
     if let Some(binding) = function.binding_from_scope(start_scope, name) {
         return Ok(Some(binding));
+    }
+    if name == "arguments" && function.arguments_forbidden {
+        // QuickJS's parser rejects true IdentifierReferences earlier, but its
+        // object-shorthand path deliberately falls through this synthetic
+        // initializer frame and may capture an enclosing arguments binding.
+        return Ok(None);
     }
     if name == "arguments" && matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method)
     {
@@ -13180,6 +13412,7 @@ fn lower_unlinked_tree(
             strict: function.strict,
             super_call_allowed: function.super_call_allowed,
             super_allowed: function.super_allowed,
+            arguments_forbidden: function.arguments_forbidden,
             eval_kind: match function.kind {
                 FunctionKind::Eval(kind) => kind,
                 FunctionKind::Script
@@ -13197,6 +13430,7 @@ fn lower_unlinked_tree(
             } else {
                 ConstructorKind::None
             },
+            class_initializer_kind: function.class_initializer_kind,
         };
         let func_name = function
             .function_name

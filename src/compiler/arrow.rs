@@ -42,6 +42,13 @@ impl<'source> Parser<'source> {
                 super_capabilities,
             },
         )?);
+        self.functions[child].arguments_forbidden = self.functions[parent].arguments_forbidden;
+        // ClassStaticBlock ContainsAwait includes immediate arrow parameter
+        // initializer expressions, but the arrow's BindingIdentifiers and
+        // ConciseBody establish their own non-async function boundary.
+        self.functions[child].await_forbidden = self.functions[parent].await_forbidden;
+        self.functions[child].await_binding_forbidden =
+            self.functions[parent].await_binding_forbidden;
         self.current_function = child;
 
         match head {
@@ -151,6 +158,8 @@ impl<'source> Parser<'source> {
             return Err(self.syntax_here("expecting '=>'"));
         }
         self.advance_expression_start()?;
+        self.functions[child].await_forbidden = false;
+        self.functions[child].await_binding_forbidden = false;
         let block_body = self.is_punctuator(Punctuator::LeftBrace);
         if block_body {
             self.advance()?;
@@ -214,7 +223,7 @@ impl<'source> Parser<'source> {
         self.current_function = parent;
         let constant = self.add_constant(IrConstant::Child(child))?;
         self.emit(IrOp::MakeClosure(constant))?;
-        self.anonymous_function_definition = Some(child);
+        self.anonymous_function_definition = Some(AnonymousFunctionDefinition::Function);
         Ok(())
     }
 

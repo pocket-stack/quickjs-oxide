@@ -3675,10 +3675,14 @@ fn class_constructor_guard_precedes_observable_parameter_initialization() {
         .filter_map(|constant| constant.as_child())
         .find(|function| !function.metadata().has_prototype)
         .expect("rest class constructor child");
-    assert!(rest.code().windows(3).any(|window| matches!(
+    assert!(rest.code().windows(7).any(|window| matches!(
         window,
         [
             Instruction::CheckCtor,
+            Instruction::PushThis,
+            Instruction::PushActiveFunction,
+            Instruction::CallClassInstanceInitializer,
+            Instruction::Drop,
             Instruction::Rest(2),
             Instruction::PutArg(2),
         ]
@@ -4226,7 +4230,7 @@ fn nested_eval_in_derived_constructor_reaches_inner_unsupported_syntax() {
             class C extends Object {
                 constructor() {
                     eval(\`a => b => {
-                        class Q { f = 1; }
+                        class Q { #f = 1; }
                         super();
                     }\`);
                 }
@@ -4240,7 +4244,10 @@ fn nested_eval_in_derived_constructor_reaches_inner_unsupported_syntax() {
         panic!("nested eval did not preserve its unsupported parser diagnostic");
     };
     assert_eq!(error.kind(), ErrorKind::Unsupported);
-    assert_eq!(error.message(), "class fields are not implemented yet");
+    assert_eq!(
+        error.message(),
+        "private class elements are not implemented yet"
+    );
 }
 
 #[test]

@@ -196,12 +196,12 @@ fn base_class_observation_matches_pinned_quickjs() {
 #[test]
 fn unsupported_class_families_remain_typed_frontiers() {
     for (source, expected) in [
-        ("class C { field = 1; }", "class fields"),
         ("class C { #field; }", "private class elements"),
-        ("class C { static {} }", "class static blocks"),
+        ("class C { static #field = 1; }", "private class elements"),
+        ("class C { #method() {} }", "private class elements"),
+        ("class C { get #value() {} }", "private class elements"),
         ("class C { *method() {} }", "class generator methods"),
         ("class C { async method() {} }", "async class methods"),
-        ("class C { get\nmethod() {} }", "class fields"),
     ] {
         let error = quickjs_oxide::compiler::compile_script(source).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Unsupported, "{source}");

@@ -1,8 +1,8 @@
 use super::{
-    Error, FunctionId, FunctionIr, FunctionIrOptions, FunctionKind, FunctionSourceInfo, Identifier,
-    IdentifierContext, IrConstant, IrOp, ParentLink, Parser, Punctuator, SourceOffset, Span,
-    SpannedIrOp, SuperCapabilities, TokenKind, insert_hoist_fragment, source_offset, source_span,
-    validate_identifier,
+    AnonymousFunctionDefinition, Error, FunctionId, FunctionIr, FunctionIrOptions, FunctionKind,
+    FunctionSourceInfo, Identifier, IdentifierContext, IrConstant, IrOp, ParentLink, Parser,
+    Punctuator, SourceOffset, Span, SpannedIrOp, SuperCapabilities, TokenKind,
+    insert_hoist_fragment, source_offset, source_span, validate_identifier,
 };
 use crate::bytecode::{DefineMethodKind, Instruction};
 
@@ -68,7 +68,10 @@ impl<'source> Parser<'source> {
     pub(super) fn parse_function_expression(&mut self) -> Result<(), Error> {
         let parsed = self.parse_function_definition(false, true)?;
         self.emit(IrOp::MakeClosure(parsed.constant))?;
-        self.anonymous_function_definition = parsed.name.is_none().then_some(parsed.child);
+        self.anonymous_function_definition = parsed
+            .name
+            .is_none()
+            .then_some(AnonymousFunctionDefinition::Function);
         Ok(())
     }
 
@@ -411,14 +414,31 @@ impl<'source> Parser<'source> {
             } else {
                 0
             };
-            insert_hoist_fragment(
-                &mut self.functions[child],
-                guard_at,
-                vec![SpannedIrOp {
-                    op: IrOp::Bytecode(Instruction::CheckCtor),
-                    pc_site: None,
-                }],
-            )?;
+            let mut guard = vec![SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::CheckCtor),
+                pc_site: None,
+            }];
+            if !options.derived_class_constructor {
+                guard.extend([
+                    SpannedIrOp {
+                        op: IrOp::Bytecode(Instruction::PushThis),
+                        pc_site: None,
+                    },
+                    SpannedIrOp {
+                        op: IrOp::Bytecode(Instruction::PushActiveFunction),
+                        pc_site: None,
+                    },
+                    SpannedIrOp {
+                        op: IrOp::Bytecode(Instruction::CallClassInstanceInitializer),
+                        pc_site: None,
+                    },
+                    SpannedIrOp {
+                        op: IrOp::Bytecode(Instruction::Drop),
+                        pc_site: None,
+                    },
+                ]);
+            }
+            insert_hoist_fragment(&mut self.functions[child], guard_at, guard)?;
         }
         self.finish_identifier_parameter_environment()?;
         self.parse_function_body()?;

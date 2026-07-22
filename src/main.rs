@@ -13,6 +13,7 @@ fn main() -> ExitCode {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let mut debug_info = DebugInfoMode::Full;
     let mut expression = None;
+    let mut print_result = false;
     let mut quit = false;
     let mut index = 0;
     while index < args.len() && args[index].starts_with('-') && args[index] != "-" {
@@ -21,6 +22,7 @@ fn main() -> ExitCode {
         match option.as_str() {
             "--" => break,
             "--strip-source" => debug_info = DebugInfoMode::StripSource,
+            "--print-result" => print_result = true,
             "--version" => {
                 println!(
                     "quickjs-oxide {} (QuickJS {} compatibility target)",
@@ -34,6 +36,7 @@ fn main() -> ExitCode {
                 println!("  -e, --eval EXPR   evaluate EXPR");
                 println!("  -s                strip all debug information");
                 println!("      --strip-source strip only function source text");
+                println!("      --print-result print the script completion value");
                 println!("  -v, --version     show version and compatibility target");
                 return ExitCode::SUCCESS;
             }
@@ -102,7 +105,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if let Some(source) = expression {
-        return evaluate(&source, "<cmdline>", debug_info);
+        return evaluate(&source, "<cmdline>", debug_info, print_result);
     }
     let Some(file) = args.get(index) else {
         println!("usage: qjs [options] [file [args]]");
@@ -111,7 +114,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     };
     match std::fs::read_to_string(file) {
-        Ok(source) => evaluate(&source, file, debug_info),
+        Ok(source) => evaluate(&source, file, debug_info, print_result),
         Err(error) => {
             eprintln!("qjs: could not read '{file}': {error}");
             ExitCode::from(1)
@@ -119,12 +122,22 @@ fn main() -> ExitCode {
     }
 }
 
-fn evaluate(source: &str, filename: &str, debug_info: DebugInfoMode) -> ExitCode {
+fn evaluate(
+    source: &str,
+    filename: &str,
+    debug_info: DebugInfoMode,
+    print_result: bool,
+) -> ExitCode {
     let runtime = Runtime::new();
     runtime.set_debug_info_mode(debug_info);
     let mut context = runtime.new_context();
     match context.eval_with_filename(source, filename) {
-        Ok(_) => ExitCode::SUCCESS,
+        Ok(value) => {
+            if print_result {
+                println!("{}", completion_text(value));
+            }
+            ExitCode::SUCCESS
+        }
         Err(RuntimeError::Exception) => {
             match format_pending_exception(&runtime, &mut context) {
                 Some(exception) => eprintln!("{exception}"),
@@ -136,6 +149,20 @@ fn evaluate(source: &str, filename: &str, debug_info: DebugInfoMode) -> ExitCode
             eprintln!("{error}");
             ExitCode::from(1)
         }
+    }
+}
+
+fn completion_text(value: Value) -> String {
+    match value {
+        Value::Undefined => "undefined".to_owned(),
+        Value::Null => "null".to_owned(),
+        Value::Bool(value) => value.to_string(),
+        Value::Int(value) => value.to_string(),
+        Value::Float(value) => number_to_string(value),
+        Value::BigInt(value) => value.to_string(),
+        Value::String(value) => value.to_utf8_lossy(),
+        Value::Object(_) => "[object Object]".to_owned(),
+        Value::Symbol(_) => "Symbol()".to_owned(),
     }
 }
 

@@ -92,6 +92,11 @@ pub(super) fn ensure_eval_visible_pseudo_bindings(
     while let Some(function_id) = arguments_owner {
         let function = &tree.functions[function_id];
         if matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method) {
+            if function.arguments_forbidden {
+                definition_scope = function.parent.map(|parent| parent.definition_scope);
+                arguments_owner = function.parent.map(|parent| parent.function);
+                continue;
+            }
             // A child created while a non-simple parameter list is executing
             // cannot see that function's body-owned implicit `arguments`
             // binding.  QuickJS stops at this nearest arguments owner instead

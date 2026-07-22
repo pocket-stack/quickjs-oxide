@@ -362,6 +362,16 @@ pub(crate) trait VmHost {
         key_index: u32,
         value: Value,
     ) -> Result<Completion, Error>;
+    /// Computed-key form of [`VmHost::define_field`]. `key` is already the
+    /// canonical output of `ToPropKey`; hosts must reject malformed values
+    /// rather than invoking observable conversion again. The VM preserves
+    /// `base` on success.
+    fn define_field_computed(
+        &mut self,
+        base: Value,
+        key: Value,
+        value: Value,
+    ) -> Result<Completion, Error>;
     /// QuickJS `OP_define_method`: set the closure's inferred name and define
     /// the corresponding data or accessor property. The VM preserves `base`.
     fn define_method(
@@ -391,6 +401,50 @@ pub(crate) trait VmHost {
         name: u32,
         has_heritage: bool,
     ) -> Result<DefineClassOutcome, Error>;
+    /// Install the hidden instance-fields closure on a freshly created class.
+    /// The host authenticates all three bytecode-function roles and owns the
+    /// retain-first HomeObject/internal-slot mutations.
+    fn install_class_instance_initializer(
+        &mut self,
+        _constructor: Value,
+        _prototype: Value,
+        _initializer: Value,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "VM host cannot install a class instance initializer",
+        ))
+    }
+    /// Invoke the active constructor's hidden instance-fields closure with the
+    /// supplied initialized receiver. A class without fields returns normally.
+    fn call_class_instance_initializer(
+        &mut self,
+        _active_constructor: Value,
+        _receiver: Value,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "VM host cannot call a class instance initializer",
+        ))
+    }
+    /// Install HomeObject and run the aggregate static-elements closure.
+    fn run_class_static_initializer(
+        &mut self,
+        _constructor: Value,
+        _initializer: Value,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "VM host cannot run a class static initializer",
+        ))
+    }
+    /// Invoke one non-escaping static-block child inside its aggregate static
+    /// initializer frame.
+    fn call_class_static_block(
+        &mut self,
+        _static_initializer: ObjectRef,
+        _this_value: Value,
+        _block: Value,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal("VM host cannot call a class static block"))
+    }
     /// QuickJS `OP_define_array_el`: define one own C_W_E data property using
     /// the dynamic internal Array-literal index. The VM preserves both base
     /// and index on success.
@@ -597,6 +651,10 @@ struct DetachedHost<'a> {
     #[cfg(test)]
     defined_fields: Vec<(Value, u32, Value)>,
     #[cfg(test)]
+    define_field_computed_results: VecDeque<Completion>,
+    #[cfg(test)]
+    defined_computed_fields: Vec<(Value, Value, Value)>,
+    #[cfg(test)]
     define_method_results: VecDeque<Completion>,
     #[cfg(test)]
     defined_methods: Vec<(Value, u32, Value, DefineMethodKind, bool)>,
@@ -683,6 +741,10 @@ impl<'a> DetachedHost<'a> {
             define_field_results: VecDeque::new(),
             #[cfg(test)]
             defined_fields: Vec::new(),
+            #[cfg(test)]
+            define_field_computed_results: VecDeque::new(),
+            #[cfg(test)]
+            defined_computed_fields: Vec::new(),
             #[cfg(test)]
             define_method_results: VecDeque::new(),
             #[cfg(test)]
@@ -1263,6 +1325,23 @@ impl VmHost for DetachedHost<'_> {
         let _ = (base, key_index, value);
         Err(Error::internal(
             "detached VM cannot define runtime-owned properties",
+        ))
+    }
+
+    fn define_field_computed(
+        &mut self,
+        base: Value,
+        key: Value,
+        value: Value,
+    ) -> Result<Completion, Error> {
+        #[cfg(test)]
+        if let Some(outcome) = self.define_field_computed_results.pop_front() {
+            self.defined_computed_fields.push((base, key, value));
+            return Ok(outcome);
+        }
+        let _ = (base, key, value);
+        Err(Error::internal(
+            "detached VM cannot define runtime-owned computed properties",
         ))
     }
 
@@ -2629,6 +2708,55 @@ impl CallFrame {
             | Instruction::DefineClass { .. } => {
                 unreachable!("object method dispatch was bypassed")
             }
+            Instruction::InstallClassInstanceInitializer => {
+                let initializer = self.pop()?;
+                let prototype = self.pop()?;
+                let constructor = self.pop()?;
+                let retained_constructor = constructor.clone();
+                let retained_prototype = prototype.clone();
+                match host.install_class_instance_initializer(
+                    constructor,
+                    prototype,
+                    initializer,
+                )? {
+                    Completion::Return(_) => {
+                        self.stack.push(retained_constructor);
+                        self.stack.push(retained_prototype);
+                    }
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::CallClassInstanceInitializer => {
+                let active_constructor = self.pop()?;
+                let receiver = self.pop()?;
+                let retained_receiver = receiver.clone();
+                match host.call_class_instance_initializer(active_constructor, receiver)? {
+                    Completion::Return(_) => self.stack.push(retained_receiver),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::RunClassStaticInitializer => {
+                let initializer = self.pop()?;
+                let constructor = self.pop()?;
+                let retained_constructor = constructor.clone();
+                match host.run_class_static_initializer(constructor, initializer)? {
+                    Completion::Return(_) => self.stack.push(retained_constructor),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::CallClassStaticBlock => {
+                let block = self.pop()?;
+                let static_initializer = self.current_function.clone().ok_or_else(|| {
+                    Error::internal("static block call has no active initializer")
+                })?;
+                if let Completion::Throw(value) = host.call_class_static_block(
+                    static_initializer,
+                    self.this_value.clone(),
+                    block,
+                )? {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
             Instruction::CheckCtor => {
                 if matches!(self.new_target, Value::Undefined) {
                     return Err(Error::new(
@@ -2980,6 +3108,16 @@ impl CallFrame {
                 let (base, value) = self.pop_pair()?;
                 let retained_base = base.clone();
                 match host.define_field(base, *index, value)? {
+                    Completion::Return(_) => self.stack.push(retained_base),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::DefineFieldComputed => {
+                let value = self.pop()?;
+                let key = self.pop()?;
+                let base = self.pop()?;
+                let retained_base = base.clone();
+                match host.define_field_computed(base, key, value)? {
                     Completion::Return(_) => self.stack.push(retained_base),
                     Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
                 }

@@ -792,12 +792,12 @@ impl<'source> Parser<'source> {
                 let has_value = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
                 self.emit_instruction(Instruction::Drop)?;
                 self.parse_assignment_allow_in()?;
-                let anonymous_default = self.anonymous_function_definition.take().is_some();
-                if anonymous_default && let Some(name) = inferred_name {
+                let anonymous_default = self.take_anonymous_function_definition();
+                if let (Some(definition), Some(name)) = (anonymous_default, inferred_name) {
                     let name_constant = self.add_constant(IrConstant::Primitive(Value::String(
                         JsString::try_from_utf8(&name)?,
                     )))?;
-                    self.emit_instruction(Instruction::SetName(name_constant))?;
+                    self.emit_anonymous_set_name(definition, Instruction::SetName(name_constant))?;
                 }
                 let has_value_target = self.current_ir().ops.len();
                 self.patch_jump(has_value, has_value_target)?;
@@ -1041,12 +1041,12 @@ impl<'source> Parser<'source> {
             let has_value = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
             self.emit_instruction(Instruction::Drop)?;
             self.parse_assignment_allow_in()?;
-            let anonymous_default = self.anonymous_function_definition.take().is_some();
-            if anonymous_default && let Some(name) = inferred_name {
+            let anonymous_default = self.take_anonymous_function_definition();
+            if let (Some(definition), Some(name)) = (anonymous_default, inferred_name) {
                 let name_constant = self.add_constant(IrConstant::Primitive(Value::String(
                     JsString::try_from_utf8(&name)?,
                 )))?;
-                self.emit_instruction(Instruction::SetName(name_constant))?;
+                self.emit_anonymous_set_name(definition, Instruction::SetName(name_constant))?;
             }
             let has_value_target = self.current_ir().ops.len();
             self.patch_jump(has_value, has_value_target)?;
@@ -1373,11 +1373,14 @@ impl<'source> Parser<'source> {
                     // PF_IN_ACCEPTED even when the enclosing classic-for
                     // initializer is using the NoIn grammar.
                     self.parse_assignment_allow_in()?;
-                    if self.anonymous_function_definition.take().is_some() {
+                    if let Some(definition) = self.take_anonymous_function_definition() {
                         let name_constant = self.add_constant(IrConstant::Primitive(
                             Value::String(JsString::try_from_utf8(&name)?),
                         ))?;
-                        self.emit_instruction(Instruction::SetName(name_constant))?;
+                        self.emit_anonymous_set_name(
+                            definition,
+                            Instruction::SetName(name_constant),
+                        )?;
                     }
                     let has_value_target = self.current_ir().ops.len();
                     self.patch_jump(has_value, has_value_target)?;
@@ -1802,11 +1805,11 @@ impl<'source> Parser<'source> {
             let has_value = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
             self.emit_instruction(Instruction::Drop)?;
             self.parse_assignment_allow_in()?;
-            if self.anonymous_function_definition.take().is_some() {
+            if let Some(definition) = self.take_anonymous_function_definition() {
                 let name_constant = self.add_constant(IrConstant::Primitive(Value::String(
                     JsString::try_from_utf8(&name)?,
                 )))?;
-                self.emit_instruction(Instruction::SetName(name_constant))?;
+                self.emit_anonymous_set_name(definition, Instruction::SetName(name_constant))?;
             }
             let has_value_target = self.current_ir().ops.len();
             self.patch_jump(has_value, has_value_target)?;

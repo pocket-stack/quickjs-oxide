@@ -1,0 +1,13 @@
+computed-order=key:i1,key:s1,key:i2,key:s2,static:s1,block:1,static:s2,block:2,instance:i1,instance:i2,body,instance:i1,instance:i2,body
+computed-counts=1,1,1,1
+base-order=field,parameter,body
+derived-replacement=before,super,field,after|replacement|42
+second-super=2|1|ReferenceError
+define-field=0|41,true,true,true|42,true,true,true
+inferred-names=fn|klass|[field-symbol]|sfn|sklass|[field-symbol]
+home-object=42|42|43
+contexts=true|undefined|true|undefined|true|undefined|2|SyntaxError|SyntaxError|SyntaxError
+static-scope=var:let|undefined:undefined
+abrupt=key-throw|field,block|first,second
+prototype-field-quirk=SyntaxError
+r3g-class-public-init-oracle=ok

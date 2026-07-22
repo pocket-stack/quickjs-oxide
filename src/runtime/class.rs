@@ -258,12 +258,16 @@ mod tests {
                 UnlinkedFunction::new(
                     vec![
                         Instruction::CheckCtor,
+                        Instruction::PushThis,
+                        Instruction::PushActiveFunction,
+                        Instruction::CallClassInstanceInitializer,
+                        Instruction::Drop,
                         Instruction::Undefined,
                         Instruction::Return,
                     ],
                     Vec::new(),
                     FunctionMetadata {
-                        max_stack: 1,
+                        max_stack: 2,
                         strict: true,
                         needs_home_object,
                         has_prototype: false,

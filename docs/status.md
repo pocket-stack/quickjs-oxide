@@ -1493,13 +1493,38 @@ claim full parity.
   `018c55de6e745b35eae7bb8f7d1c3b7680579a58d8bbb241641d860c723a0e34`
   and
   `995cce2dc58694f8728e1ad12602b2ec5c65169f650cff5047e45d84bc4b407a`.
-  Global `class` remains disabled: fields/private elements, static blocks,
-  async/generator methods, unsupported intrinsics, and host hooks stay explicit
-  later frontiers.
+  At the R3f checkpoint, global `class` remains disabled: fields/private
+  elements, static blocks, async/generator methods, unsupported intrinsics, and
+  host hooks stay explicit later frontiers.
 
-  Instance-field lowering must later extend the authenticated default-derived
-  constructor shape and run field initialization after every successful
-  `super()`; it must not weaken the current exact-shape validator.
+  R3g ports QuickJS's public class-initialization path: public instance fields,
+  public static fields, and static blocks. Computed keys are evaluated exactly
+  once during class definition; static fields and blocks execute in source
+  order, while instance fields become own writable/enumerable/configurable data
+  properties. Base constructors initialize fields before parameter
+  initialization and the body, and derived constructors initialize them after
+  each successful one-shot `super()` result establishes `this`. Anonymous
+  function/class names, HomeObject-backed `super`, direct eval, abrupt
+  completion, static-block lexical isolation, and the pinned `arguments` /
+  `await` / `yield` early-error boundaries follow the QuickJS 2026-06-04
+  behavior.
+
+  Hidden typed bytecode children separate instance fields, aggregate static
+  elements, and individual static blocks. Dedicated VM bridges are responsible
+  for installing or invoking those children, keeping constructor authority and
+  GC ownership explicit rather than treating initializer functions as ordinary
+  source-visible callables.
+
+  The R3g dependency-audited gate is a distinct cohort that also contains 386
+  paths / 767 sloppy-or-strict variants. Oxide passes all 767 variants with no
+  failure, unsupported result, timeout, or infrastructure fault; pinned
+  QuickJS passes all 386 paths. Its admission profile is scoped to the frozen
+  manifest, so this result does not claim all of Test262 or enable whole-feature
+  `class` globally. Private elements, async/generator class forms, Proxy and
+  other excluded adjacent dependencies remain fail-closed. The dedicated
+  QuickJS transcript additionally freezes computed/static/instance order,
+  inferred names, descriptors, HomeObject, lexical scope, and abrupt
+  completion.
 
   Generator/async and destructuring eval declarations, unsupported class
   elements, and ill-formed UTF-16 source stay explicit frontiers.
@@ -4360,8 +4385,8 @@ upstream's substantially deeper platform-dependent limits throughout.
 
 The language slice remains incomplete. Async/generator declarations,
 `for-await`, other general assignment targets, module resolution,
-async/generator methods and parameter forms, class fields/private elements,
-static blocks, generator/async class methods, non-simple ObjectLiteral
+async/generator methods and parameter forms, private class elements,
+generator/async class methods, non-simple ObjectLiteral
 accessor forms outside the covered
 synchronous setter slice, and callable Proxy classes are not yet implemented.
 Unsupported declaration contexts are rejected instead of being
@@ -4524,7 +4549,7 @@ still pending. Uncatchable termination state is also pending. Other iterator
 classes and helpers, the remaining RegExp
 grammar/static surface and Unicode-backed String methods, non-simple
 ObjectLiteral setter forms outside the covered synchronous slice,
-async/generator class methods, fields/private elements/static blocks,
+async/generator class methods, private class elements,
 exotic-source spread, and the rest of the builtin table build on those layers.
 
 The remaining parity surface also includes the full grammar/opcode set, the
@@ -4768,6 +4793,11 @@ raise `compiler.rs`, `heap.rs`, `runtime/bytecode_publish.rs`, and
 Those are explicit extraction debt: the next class-element work must split the
 derived-construction verifier/executor seams instead of adding field logic to
 `runtime.rs` or enlarging the same trust-boundary blocks inline.
+R3g follows that boundary: `runtime.rs` is 9,611 lines at the milestone
+checkpoint, while public-field and static-block lowering/runtime behavior live
+under `compiler/class/` and `runtime/class_fields.rs`. The facade gains only
+the module seam; initializer execution and validation do not return to the
+monolith.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -5060,6 +5090,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-argument-spread.sh
 ./scripts/test-test262-class-base.sh
 ./scripts/test-test262-class-derived.sh
+./scripts/test-test262-class-public-init.sh
 ./scripts/test-test262-full.sh
 ```
 

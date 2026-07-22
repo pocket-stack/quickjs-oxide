@@ -751,7 +751,7 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
 
     #[test]
     fn unsupported_parser_provenance_is_opt_in_at_the_context_boundary() {
-        const UNSUPPORTED_SOURCE: &str = "class C { field = 1; }";
+        const UNSUPPORTED_SOURCE: &str = "class C { #field = 1; }";
 
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
@@ -771,7 +771,10 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
             panic!("diagnostic compile did not retain its engine error");
         };
         assert_eq!(error.kind(), ErrorKind::Unsupported);
-        assert_eq!(error.message(), "class fields are not implemented yet");
+        assert_eq!(
+            error.message(),
+            "private class elements are not implemented yet"
+        );
         assert!(context.take_exception().unwrap().is_none());
     }
 }
