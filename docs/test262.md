@@ -10,7 +10,7 @@ differentials still decide exact behavior inside each implemented slice.
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
 - quickjs-oxide capability profile SHA-256:
-  `a1a347d2d74c946a50f1e26fca6c1756c0e9948f087de3aed2339b3a4c7d6677`
+  `1860224ce1e828406f4869b66b3f1964f96fad85e4eab6ba7fecb256b4b6c2f2`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -50,28 +50,28 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 35,244 pass;
+- 35,296 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 46,334 are classified as unsupported because of a feature, mode, host
+- 46,276 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 391 fail to parse, 1,539 fail at runtime, 48 fail in the harness, and six
+- 391 fail to parse, 1,545 fail at runtime, 48 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 38,421 variants to execution. That count includes variants
+The runner admitted 38,483 variants to execution. That count includes variants
 which then report a typed parser or harness frontier rather than an observed
 non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 34.54% (`35,244 / 102,037`);
-- conservative target-scope lower bound: 42.18%
-  (`35,244 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 94.67%
-  (`35,244 / 37,228`).
+- raw suite pass rate: 34.59% (`35,296 / 102,037`);
+- conservative target-scope lower bound: 42.24%
+  (`35,296 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 94.66%
+  (`35,296 / 37,286`).
 
-The 42.18% figure is the useful whole-project progress floor, not a claim that
-the engine is 42.18% conformant. The 94.67% conditional rate measures quality
+The 42.24% figure is the useful whole-project progress floor, not a claim that
+the engine is 42.24% conformant. The 94.66% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -95,7 +95,7 @@ from direct eval in non-simple Parameter Environments; one untagged staging
 variant reaches its known implicit-`this` runtime mismatch and two reach the
 generator-method typed runtime frontier, while the runnable count remains
 fixed. The capability
-profile currently admits 69 reviewed Test262
+profile currently admits 71 reviewed Test262
 feature tags and 423 reviewed negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
 lands can only make the measurement more representative. Focused QuickJS
@@ -114,9 +114,9 @@ parallel defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`41ef0f16cbae0aa05cdc0bfb13e38130b9b87b1ac958fe6e807541140cda918a`
+`8579dc70c2b02843b3b0e7680be35d48807bf24f17e3a6b3b2d7daabe6cfb71e`
 and
-`ecd12b154863534e80f5ac0f40ee6615f1a8743856e9e4f9ca98b44e00a793a0`.
+`72296c8615ac07f1de8305445ff7fd9b170eb00b37e616e35679051a90536525`.
 
 ## Milestone policy
 
@@ -2508,6 +2508,68 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 
 Async, generator, and class callables remain later callable milestones.
 
+## R3c AggregateError and Error cause
+
+R3c publishes `%AggregateError%` on the existing NativeError substrate and
+moves the Error intrinsic family into `runtime/intrinsics/error.rs`. The
+constructor follows pinned QuickJS order: resolve `newTarget` and allocate the
+branded object, convert `message`, perform the completion-aware `cause`
+HasProperty/Get sequence, consume `errors`, define the own `errors` Array, and
+only then snapshot `stack`. The iterable path caches `next`, allocates the
+Array in the constructor's defining realm, closes after abrupt step/done/value
+or indexed definition, and preserves the original throw when IteratorClose is
+itself abrupt. Primitive `newTarget.prototype` falls back to the AggregateError
+prototype belonging to the newTarget realm.
+
+The QuickJS oracle freezes 19 vectors covering the intrinsic graph and
+descriptors, call/construct behavior, custom and fallback newTarget prototypes,
+message/cause/iterator ordering, genuine Array materialization, normal and
+abrupt iterator completion, stack capture, and Error branding. Its expected,
+pinned-QuickJS self-check, and Oxide/QuickJS differential tests all pass.
+
+The complete focused feature cohort contains 28 paths / 56 variants. Fifty
+pass. Six variants stop at the independent missing-Proxy frontier: the
+sloppy/strict modes of
+`AggregateError/newtarget-proto-custom.js`,
+`AggregateError/newtarget-proto-fallback.js`, and `Error/cause_abrupt.js` use
+`Proxy` in their bodies without declaring that dependency in Test262 metadata.
+The gate pins those exact `ReferenceError: 'Proxy' is not defined` results so
+they cannot masquerade as AggregateError failures or passes. Pinned QuickJS
+passes all 28 source paths.
+
+Profile, manifest, path/variant key-set, focused TSV, and focused JSONL SHA-256
+values are
+`ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a`,
+`f54979cc3881fd7d361dda7ffbbe75a5bf846e233512c7428711c1091b8474c5`,
+`81e86c6e47fcc63ab2063814e34125de57fbc2ed14a8802186db5caa1be6bf5d`,
+`40ee7c2976c4319b09457e311ed103bd3851a5a82ae11587794aa3dbc457b537`,
+and
+`019abe8aedfd1c82ee283aeb976a2364b1e124f91cb401c67407bb17556bd01b`.
+
+The exact R3b/R3c full join matches all 102,037 unique keys with no missing,
+extra, duplicate, or previous-pass-regressed rows. It records 62 outcome
+changes: 52 `unsupported-feature -> pass`, six `unsupported-feature ->
+fail-runtime` at the undeclared Proxy dependency, and four
+`unsupported-feature -> unsupported-parser` at the existing class frontier.
+The 52 passes include both modes of
+`Object/seal/seal-aggregateerror.js`, which correctly consume the new feature
+outside the focused intrinsic directory. Passes reach 35,296 among 38,483
+runnable variants. Full TSV/JSONL SHA-256 values are
+`8579dc70c2b02843b3b0e7680be35d48807bf24f17e3a6b3b2d7daabe6cfb71e`
+and
+`72296c8615ac07f1de8305445ff7fd9b170eb00b37e616e35679051a90536525`.
+
+Reproduce the focused gates with:
+
+```sh
+./scripts/test-test262-aggregate-error.sh
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_aggregate_error -- --nocapture
+```
+
+The six Proxy-dependent variants, cross-realm host fixture, class subclasses,
+and Promise consumers remain assigned to their independent milestones.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -2727,6 +2789,12 @@ differential passes all four integration tests. The full join adds 66 passes
 with zero previous-pass regression, reaching 35,244 passes among 38,421
 runnable variants. Async, generator, and class forms remain later callable
 milestones.
+R3c adds AggregateError and globally audits Error cause. Its 19-case QuickJS
+oracle passes all three integration tests; the complete 56-variant feature
+cohort has 50 passes and six exact missing-Proxy dependency results. The full
+join adds 52 passes with zero previous-pass regression, reaching 35,296 passes
+among 38,483 runnable variants. Proxy, cross-realm host fixtures, class
+subclasses, and Promise consumers remain independent milestones.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

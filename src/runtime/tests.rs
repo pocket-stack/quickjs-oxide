@@ -7687,8 +7687,10 @@ fn error_intrinsic_graph_and_lazy_methods_match_quickjs_descriptors() {
     let mut context = runtime.new_context();
     let error = global_callable(&runtime, &mut context, "Error");
     let type_error = global_callable(&runtime, &mut context, "TypeError");
+    let aggregate_error = global_callable(&runtime, &mut context, "AggregateError");
     let prototype_key = runtime.intern_property_key("prototype").unwrap();
     let constructor_key = runtime.intern_property_key("constructor").unwrap();
+    let length_key = runtime.intern_property_key("length").unwrap();
     let is_error_key = runtime.intern_property_key("isError").unwrap();
     let to_string_key = runtime.intern_property_key("toString").unwrap();
     let name_key = runtime.intern_property_key("name").unwrap();
@@ -7718,6 +7720,18 @@ fn error_intrinsic_graph_and_lazy_methods_match_quickjs_descriptors() {
     else {
         panic!("TypeError.prototype descriptor did not match QuickJS");
     };
+    let CompleteOrdinaryPropertyDescriptor::Data {
+        value: Value::Object(aggregate_error_prototype),
+        writable: false,
+        enumerable: false,
+        configurable: false,
+    } = runtime
+        .get_own_property(aggregate_error.as_object(), &prototype_key)
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("AggregateError.prototype descriptor did not match QuickJS");
+    };
 
     let object_count = runtime.heap_counts().object_nodes;
     let realm_strong_count = runtime
@@ -7734,6 +7748,14 @@ fn error_intrinsic_graph_and_lazy_methods_match_quickjs_descriptors() {
     assert_eq!(
         own_key_names(&runtime, &error_prototype),
         ["toString", "name", "message", "constructor"]
+    );
+    assert_eq!(
+        own_key_names(&runtime, aggregate_error.as_object()),
+        ["length", "name", "prototype"]
+    );
+    assert_eq!(
+        own_key_names(&runtime, &aggregate_error_prototype),
+        ["name", "message", "constructor"]
     );
     assert!(
         runtime
@@ -7829,6 +7851,18 @@ fn error_intrinsic_graph_and_lazy_methods_match_quickjs_descriptors() {
         runtime.get_prototype_of(&type_error_prototype).unwrap(),
         Some(error_prototype.clone())
     );
+    assert_eq!(
+        runtime
+            .get_prototype_of(aggregate_error.as_object())
+            .unwrap(),
+        Some(error.as_object().clone())
+    );
+    assert_eq!(
+        runtime
+            .get_prototype_of(&aggregate_error_prototype)
+            .unwrap(),
+        Some(error_prototype.clone())
+    );
     assert!(matches!(
         runtime
             .get_own_property(&error_prototype, &constructor_key)
@@ -7851,13 +7885,36 @@ fn error_intrinsic_graph_and_lazy_methods_match_quickjs_descriptors() {
             configurable: true,
         }) if value == *type_error.as_object()
     ));
+    assert!(matches!(
+        runtime
+            .get_own_property(&aggregate_error_prototype, &constructor_key)
+            .unwrap(),
+        Some(CompleteOrdinaryPropertyDescriptor::Data {
+            value: Value::Object(value),
+            writable: true,
+            enumerable: false,
+            configurable: true,
+        }) if value == *aggregate_error.as_object()
+    ));
+    assert!(matches!(
+        runtime
+            .get_own_property(aggregate_error.as_object(), &length_key)
+            .unwrap(),
+        Some(CompleteOrdinaryPropertyDescriptor::Data {
+            value: Value::Int(2),
+            writable: false,
+            enumerable: false,
+            configurable: true,
+        })
+    ));
     assert!(!runtime.is_error_object(&error_prototype).unwrap());
     assert!(!runtime.is_error_object(&type_error_prototype).unwrap());
+    assert!(!runtime.is_error_object(&aggregate_error_prototype).unwrap());
     assert_eq!(
         context
             .get_property(&context.global_object().unwrap(), &aggregate_key)
             .unwrap(),
-        Value::Undefined
+        Value::Object(aggregate_error.as_object().clone())
     );
 }
 
@@ -8603,6 +8660,10 @@ fn error_constructor_fallback_uses_explicit_new_target_realm() {
     let mut target_context = runtime.new_context();
     let type_error = global_callable(&runtime, &mut constructor_context, "TypeError");
     let target_type_error = global_callable(&runtime, &mut target_context, "TypeError");
+    let aggregate_error = global_callable(&runtime, &mut constructor_context, "AggregateError");
+    let target_aggregate_error = global_callable(&runtime, &mut target_context, "AggregateError");
+    let constructor_array = global_callable(&runtime, &mut constructor_context, "Array");
+    let target_array = global_callable(&runtime, &mut target_context, "Array");
     let prototype_key = runtime.intern_property_key("prototype").unwrap();
     let CompleteOrdinaryPropertyDescriptor::Data {
         value: Value::Object(target_type_error_prototype),
@@ -8641,6 +8702,48 @@ fn error_constructor_fallback_uses_explicit_new_target_realm() {
         Some(target_type_error_prototype)
     );
     assert!(runtime.is_error_object(&instance).unwrap());
+
+    let CompleteOrdinaryPropertyDescriptor::Data {
+        value: Value::Object(target_aggregate_error_prototype),
+        ..
+    } = runtime
+        .get_own_property(target_aggregate_error.as_object(), &prototype_key)
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("target-realm AggregateError prototype was not an object");
+    };
+    let errors = constructor_context.eval("[1, 2]").unwrap();
+    let Value::Object(instance) = constructor_context
+        .construct_with_new_target(&aggregate_error, &new_target, &[errors])
+        .unwrap()
+    else {
+        panic!("cross-realm AggregateError construction did not return an object");
+    };
+    assert_eq!(
+        runtime.get_prototype_of(&instance).unwrap(),
+        Some(target_aggregate_error_prototype)
+    );
+    assert!(runtime.is_error_object(&instance).unwrap());
+    let Value::Object(errors) = own_data_value(&runtime, &instance, "errors") else {
+        panic!("cross-realm AggregateError errors was not an object");
+    };
+    assert!(runtime.is_array_object(&errors).unwrap());
+    let Value::Object(constructor_array_prototype) =
+        own_data_value(&runtime, constructor_array.as_object(), "prototype")
+    else {
+        panic!("constructor-realm Array prototype was not an object");
+    };
+    let Value::Object(target_array_prototype) =
+        own_data_value(&runtime, target_array.as_object(), "prototype")
+    else {
+        panic!("target-realm Array prototype was not an object");
+    };
+    assert_ne!(constructor_array_prototype, target_array_prototype);
+    assert_eq!(
+        runtime.get_prototype_of(&errors).unwrap(),
+        Some(constructor_array_prototype)
+    );
 }
 
 #[test]

@@ -10,14 +10,14 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 69 reviewed feature tags and 423 exact audited
+  capability profile now admits 71 reviewed feature tags and 423 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 35,244 passes and 38,421 runnable variants: 34.54% raw, a 42.18% lower
-  bound after the 18,475 pinned QuickJS target exclusions, or 94.67% among the
-  37,228 variants with a non-unsupported observed outcome. The fixed smoke now
+  has 35,296 passes and 38,483 runnable variants: 34.59% raw, a 42.24% lower
+  bound after the 18,475 pinned QuickJS target exclusions, or 94.66% among the
+  37,286 variants with a non-unsupported observed outcome. The fixed smoke now
   has 191 passes and two explicit parser-frontier results. See
   `docs/test262.md` for the denominators and why none of these figures is a
   parity claim. The first
@@ -1317,6 +1317,41 @@ claim full parity.
   `41ef0f16cbae0aa05cdc0bfb13e38130b9b87b1ac958fe6e807541140cda918a`
   and
   `ecd12b154863534e80f5ac0f40ee6615f1a8743856e9e4f9ca98b44e00a793a0`.
+
+  R3c publishes QuickJS-shaped `AggregateError` and audits the already-shared
+  Error `cause` path. Construction now follows the pinned order: resolve
+  `newTarget` and allocate the branded Error object, convert `message`, install
+  `cause`, consume `errors`, define the own `errors` Array, then capture the
+  stack. Iterator acquisition, cached `next`, abrupt `done`/`value`,
+  IteratorClose, and original-throw priority are covered by 19 QuickJS oracle
+  vectors; all three oracle integration tests pass. Rust cross-realm tests
+  additionally pin defining-realm Array allocation and newTarget-realm
+  prototype fallback.
+
+  The complete 28-path focused feature cohort expands to 56 variants. Fifty
+  pass. The remaining six are the sloppy/strict modes of three upstream tests
+  whose metadata omits their actual `Proxy` dependency; they are pinned as
+  `ReferenceError: 'Proxy' is not defined`, not counted as AggregateError
+  semantic failures. Profile, manifest, key-set, focused TSV, and JSONL hashes
+  are
+  `ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a`,
+  `f54979cc3881fd7d361dda7ffbbe75a5bf846e233512c7428711c1091b8474c5`,
+  `81e86c6e47fcc63ab2063814e34125de57fbc2ed14a8802186db5caa1be6bf5d`,
+  `40ee7c2976c4319b09457e311ed103bd3851a5a82ae11587794aa3dbc457b537`,
+  and
+  `019abe8aedfd1c82ee283aeb976a2364b1e124f91cb401c67407bb17556bd01b`.
+
+  The exact R3b/R3c full join retains all 102,037 unique keys and every prior
+  pass. It records 52 `unsupported-feature -> pass`, including the two modes
+  of `Object/seal/seal-aggregateerror.js` outside the focused manifest; six
+  `unsupported-feature -> fail-runtime` transitions at the undeclared Proxy
+  dependency; and four `unsupported-feature -> unsupported-parser`
+  transitions at the existing class frontier. There are no missing, extra,
+  duplicate, or previous-pass-regressed keys. Passes reach 35,296 among 38,483
+  runnable variants. Full TSV/JSONL SHA-256 values are
+  `8579dc70c2b02843b3b0e7680be35d48807bf24f17e3a6b3b2d7daabe6cfb71e`
+  and
+  `72296c8615ac07f1de8305445ff7fd9b170eb00b37e616e35679051a90536525`.
 
   Async, generator, and class callables remain explicit later milestones.
 
@@ -3948,8 +3983,8 @@ claim full parity.
   primitive receiver. String lookup exposes the implemented 48-key prototype
   surface described above together with user-defined prototype properties;
   the remaining five standard entries are absent.
-- The Error intrinsic graph now includes `Error` plus the seven non-Aggregate
-  native Error constructors, their constructor/prototype/global relationships,
+- The Error intrinsic graph now includes `Error` plus all eight native Error
+  constructors, their constructor/prototype/global relationships,
   lazy function-list properties, call-versus-construct active-function rule,
   observable newTarget prototype lookup and cross-realm fallback. Primitive and
   ordinary-object message conversion, inherited/undefined `cause`,
@@ -4187,8 +4222,8 @@ two-phase bytecode-function reservation plus failure-injection coverage, rather
 than attempting to roll back migrated VarRefs after the fact.
 
 Derived/class/super construction, dynamic Generator/Async/AsyncGenerator
-Function constructors, `AggregateError`, other native builtin constructor
-families, and Proxy construct dispatch remain. Typed
+Function constructors, other native builtin constructor families, and Proxy
+construct dispatch remain. Typed
 target/cproto, data-bearing Error selector, realm, arity padding, production
 BoundFunction allocation and frame foundations exist. Generic setter and raw
 iterator-next cproto adapters are active; specialized F64 adapters and the
@@ -4315,8 +4350,8 @@ synchronous script/function and Parameter-Environment surfaces;
 `with`-introduced dynamic object environments, the remaining two entries of
 String's 53-key prototype surface, `RegExp.escape`, advanced RegExp grammar,
 Proxy/exotic internal methods, and the full `function_accessors.js` fixture are
-still pending. AggregateError and uncatchable termination state are also
-pending. Other iterator classes and helpers, the remaining RegExp
+still pending. Uncatchable termination state is also pending. Other iterator
+classes and helpers, the remaining RegExp
 grammar/static surface and Unicode-backed String methods, non-simple
 ObjectLiteral setter forms outside the covered synchronous slice,
 async/generator methods, classes/derived constructors, exotic-source spread,
@@ -4538,6 +4573,14 @@ authentication and its adversarial tests raise `heap.rs` from 11,874 to 12,397,
 nine-line delta is intentional; the compiler, heap, and publisher totals are
 explicit phase-split debt, not a precedent for continuing to grow those
 owners.
+R3c removes the complete Error intrinsic family from the runtime facade:
+`runtime.rs` falls by 243 lines, from 9,835 to 9,592, while the new
+`runtime/intrinsics/error.rs` owner is 385 lines including AggregateError's
+iterator-to-Array kernel. The combined owner surface grows by 142 lines for the
+new behavior, but dispatch, construction, Error formatting, branding, and
+IteratorClose logic no longer add to the monolith. This is the intended answer
+to the earlier runtime-size warning: feature work must leave the facade smaller
+when a coherent intrinsic boundary is available.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -4764,6 +4807,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_map -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_set -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_aggregate_error -- --nocapture
 
 ./scripts/test-parity-slice.sh
 ./scripts/test-test262-smoke.sh
@@ -4820,6 +4865,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-parameter-binding-patterns.sh
 ./scripts/test-test262-parameter-expression-binding-patterns.sh
 ./scripts/test-test262-parameter-direct-eval.sh
+./scripts/test-test262-aggregate-error.sh
 ./scripts/test-test262-full.sh
 ```
 

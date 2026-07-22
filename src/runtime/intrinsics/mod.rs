@@ -2,6 +2,7 @@ use super::*;
 
 mod array;
 pub(super) mod date;
+mod error;
 mod eval;
 mod json;
 mod map;

@@ -208,7 +208,8 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 69] = [
+    const EXPECTED_FEATURES: [&str; 71] = [
+        "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
         "BigInt",
@@ -255,6 +256,7 @@ mod tests {
         "change-array-by-copy",
         "coalesce-expression",
         "const",
+        "error-cause",
         "exponentiation",
         "for-in-order",
         "hashbang",

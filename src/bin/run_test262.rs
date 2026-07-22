@@ -45,7 +45,11 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "a1a347d2d74c946a50f1e26fca6c1756c0e9948f087de3aed2339b3a4c7d6677";
+    "1860224ce1e828406f4869b66b3f1964f96fad85e4eab6ba7fecb256b4b6c2f2";
+const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
+    "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
+const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
+    "f54979cc3881fd7d361dda7ffbbe75a5bf846e233512c7428711c1091b8474c5";
 const TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256: &str =
     "8232e2c11e908f7cbf5a9e0f34fbd5223a9551b49ae64647f2a72b2314bcaf84";
 const TEST262_ARRAY_BINDING_FLAT_MANIFEST_SHA256: &str =
@@ -610,6 +614,7 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OxideProfileKind {
     Global,
+    AggregateError,
     ArrayBindingFlat,
     ArrayBindingNested,
     ArrayAssignmentFlat,
@@ -641,6 +646,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("compat/test262-oxide.conf"),
             OxideProfileKind::Global,
+        ),
+        (
+            root.join("tests/test262-aggregate-error.conf"),
+            OxideProfileKind::AggregateError,
         ),
         (
             root.join("tests/test262-array-binding-flat.conf"),
@@ -717,7 +726,7 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         }
     }
     Err(format!(
-        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-direct-eval.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-parameter-expression-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-aggregate-error.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-direct-eval.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-parameter-expression-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
         path.display()
     ))
 }
@@ -820,6 +829,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             )?;
             Ok(TEST262_OXIDE_PROFILE_SHA256)
         }
+        OxideProfileKind::AggregateError => verify_scoped_pinned_profile(
+            options,
+            "AggregateError",
+            TEST262_AGGREGATE_ERROR_PROFILE_SHA256,
+            "tests/test262-aggregate-error.txt",
+            TEST262_AGGREGATE_ERROR_MANIFEST_SHA256,
+        ),
         OxideProfileKind::ArrayBindingFlat => {
             verify_sha256(
                 &options.oxide_profile,
@@ -1533,11 +1549,11 @@ mod cli_tests {
     use std::path::Path;
 
     use super::{
-        Invocation, OxideProfileKind, TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256,
-        TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256, TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256,
-        TEST262_CATCH_BINDING_PROFILE_SHA256, TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256,
-        TEST262_IDENTIFIER_REST_PROFILE_SHA256, TEST262_MAP_PROFILE_SHA256,
-        TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
+        Invocation, OxideProfileKind, TEST262_AGGREGATE_ERROR_PROFILE_SHA256,
+        TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256, TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256,
+        TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256, TEST262_CATCH_BINDING_PROFILE_SHA256,
+        TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256, TEST262_IDENTIFIER_REST_PROFILE_SHA256,
+        TEST262_MAP_PROFILE_SHA256, TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_NESTED_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_REST_PROFILE_SHA256, TEST262_OBJECT_BINDING_PROFILE_SHA256,
         TEST262_OBJECT_REST_BINDING_PROFILE_SHA256,
@@ -1637,6 +1653,10 @@ mod cli_tests {
             OxideProfileKind::Global
         );
         assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-aggregate-error.conf")).unwrap(),
+            OxideProfileKind::AggregateError
+        );
+        assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-array-binding-flat.conf")).unwrap(),
             OxideProfileKind::ArrayBindingFlat
         );
@@ -1712,6 +1732,50 @@ mod cli_tests {
 
         let error = identify_oxide_profile(Path::new("Cargo.toml")).unwrap_err();
         assert!(error.contains("unsupported Test262 capability profile"));
+    }
+
+    #[test]
+    fn scoped_aggregate_error_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-aggregate-error.conf",
+            "--manifest",
+            "tests/test262-aggregate-error.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_AGGREGATE_ERROR_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            ["--test", "test/built-ins/AggregateError/length.js"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-aggregate-error.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
     }
 
     #[test]
