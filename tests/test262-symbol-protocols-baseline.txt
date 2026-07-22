@@ -1,7 +1,7 @@
-# R2p freezes the dependency-audited well-known Symbol protocol admission.
-# All 806 protocol-ready variants pass. The remaining 204 outcomes expose
-# independent class, parameter/spread, Promise, buffer/TypedArray, Proxy, and
-# weak-collection frontiers; none is a Symbol protocol semantic mismatch.
+# R2p froze the dependency-audited well-known Symbol protocol admission. The
+# current R3d vector has 864 passes; the remaining 146 outcomes expose class,
+# async, Promise, buffer/TypedArray, Proxy, and weak-collection frontiers rather
+# than a Symbol protocol semantic mismatch.
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
@@ -14,14 +14,14 @@ timeout_ms=30000
 paths=517
 variants=1010
 runnable=1010
-passes=806
-failures=176
+passes=864
+failures=118
 unsupported=28
 skipped=0
 manifest_sha256=eaf2a48408b6b1f5673389335cda73cb66bed062636a669c655460d9fef99a4b
 manifest_file_sha256=6147636f7950b899f7c0eea25078e2f4c9c4c7fda2977181dd7c9671aa0bcde2
 keys_sha256=e87d58ad7a8be3e60b5545129a70a1abd70ee350654092a4aa066d17dc69e450
-nonpass_sha256=4783b1a8bb909a6e4706138265c477cfa3979bb6821f09f590e4c8c66a0dd5d2
-tsv_sha256=ed0363676e7efdfc6bb24ee396739cf67d49a4ce685c3bd37d98569a60a96267
-jsonl_sha256=75c40ff9adf28f0b9120c23af44268b4660189ff815e3f4c2ba0b74786ede048
-summary=fail-parse=60 fail-runtime=98 harness-error=18 pass=806 unsupported-parser=28
+nonpass_sha256=7c9f07287fecb60a923187d6956316fe30b2f661749d60942bcb3236e4f2aca4
+tsv_sha256=31ccb550de70140a1c8834f8400f6eb0c5c48287d4248123f0f9ac87c2b30d9f
+jsonl_sha256=ada0c5bf37fd4d3d9b63b2067689e2206ba53bd46ab6a9fd3ab91ffa9f89070e
+summary=fail-parse=2 fail-runtime=98 harness-error=18 pass=864 unsupported-parser=28

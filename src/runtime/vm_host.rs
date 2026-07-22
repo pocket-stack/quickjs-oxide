@@ -5,10 +5,12 @@
 
 use super::*;
 use crate::bytecode::{
-    ArgumentsKind, DefineMethodKind, DynamicEnvironmentSource, EvalVariableSource,
+    ApplyKind, ArgumentsKind, DefineMethodKind, DynamicEnvironmentSource, EvalVariableSource,
 };
 use crate::heap::{EvalBinding, EvalBindingSource, EvalVariableEnvironment};
-use crate::vm::{CallInput, DirectEvalInvocation, Vm, VmHost};
+use crate::vm::{
+    AppendStartOutcome, ArgumentListOutcome, CallInput, DirectEvalInvocation, Vm, VmHost,
+};
 
 mod dynamic_environment;
 mod super_property;
@@ -1282,6 +1284,82 @@ impl RuntimeVmHost {
             .map_err(runtime_error_to_vm_error)
     }
 
+    fn is_direct_native_target(
+        &self,
+        value: &Value,
+        expected: NativeFunctionId,
+    ) -> Result<bool, Error> {
+        let Value::Object(object) = value else {
+            return Ok(false);
+        };
+        if !object.belongs_to(&self.runtime) {
+            return Err(Error::internal(
+                "append iterator method belongs to another runtime",
+            ));
+        }
+        let state = self.runtime.0.state.borrow();
+        let object = state
+            .heap
+            .object(object.object_id())
+            .map_err(|error| Error::internal(error.to_string()))?;
+        Ok(matches!(
+            &object.payload,
+            ObjectPayload::NativeFunction { data } if data.target == expected
+        ))
+    }
+
+    /// Snapshot the exact values used by QuickJS's `js_append_enumerate`
+    /// fast branch. Named properties may be interleaved in our shape, so the
+    /// shared fast Array/Arguments storage reader reconstructs numeric order
+    /// rather than slicing physical slots.
+    fn append_fast_array_values(
+        &self,
+        source: &Value,
+        next_method: &Value,
+        builtin_values_probe: bool,
+    ) -> Result<Option<Vec<Value>>, Error> {
+        if !builtin_values_probe
+            || !self.is_direct_native_target(next_method, NativeFunctionId::ArrayIteratorNext)?
+        {
+            return Ok(None);
+        }
+        let Value::Object(source) = source else {
+            return Ok(None);
+        };
+        let is_array = {
+            let state = self.runtime.0.state.borrow();
+            matches!(
+                &state
+                    .heap
+                    .object(source.object_id())
+                    .map_err(|error| Error::internal(error.to_string()))?
+                    .payload,
+                ObjectPayload::Array { .. }
+            )
+        };
+        if !is_array {
+            return Ok(None);
+        }
+        let fast_len = self
+            .runtime
+            .array_fast_len(source)
+            .map_err(runtime_error_to_vm_error)?;
+        let Some(fast_len) = fast_len else {
+            return Ok(None);
+        };
+        let (length, _) = self
+            .runtime
+            .array_length_state(source)
+            .map_err(runtime_error_to_vm_error)?;
+        if length != fast_len {
+            return Ok(None);
+        }
+
+        self.runtime
+            .fast_array_like_values(source, fast_len)
+            .map_err(runtime_error_to_vm_error)
+    }
+
     fn call_iterator_method(
         &self,
         callable: &CallableRef,
@@ -1518,6 +1596,43 @@ impl VmHost for RuntimeVmHost {
         Ok(ForOfStartOutcome::Record {
             iterator,
             next_method,
+        })
+    }
+
+    fn append_start(&mut self, iterable: Value) -> Result<AppendStartOutcome, Error> {
+        // QuickJS first performs an otherwise redundant Get for its native
+        // Array-values fast-path classification. The value is released before
+        // the ordinary GetIterator performs its own observable Get.
+        let iterator_key =
+            PropertyKey::from(self.runtime.well_known_symbol(WellKnownSymbol::Iterator));
+        let probe = match self.get_property_with_key(iterable.clone(), &iterator_key, false) {
+            Ok(Completion::Return(value)) => value,
+            Ok(Completion::Throw(value)) => return Ok(AppendStartOutcome::Throw(value)),
+            Err(error) => {
+                return Ok(AppendStartOutcome::Throw(
+                    self.materialize_iterator_error(error)?,
+                ));
+            }
+        };
+        let builtin_values_probe = self.is_direct_native_target(
+            &probe,
+            NativeFunctionId::ArrayPrototypeIterator(ArrayIteratorKind::Value),
+        )?;
+        drop(probe);
+
+        let (iterator, next_method) = match self.for_of_start(iterable.clone())? {
+            ForOfStartOutcome::Record {
+                iterator,
+                next_method,
+            } => (iterator, next_method),
+            ForOfStartOutcome::Throw(value) => return Ok(AppendStartOutcome::Throw(value)),
+        };
+        let fast_values =
+            self.append_fast_array_values(&iterable, &next_method, builtin_values_probe)?;
+        Ok(AppendStartOutcome::Record {
+            iterator,
+            next_method,
+            fast_values,
         })
     }
 
@@ -2746,6 +2861,57 @@ impl VmHost for RuntimeVmHost {
         self.runtime
             .call_internal(self.current_realm, &callable, this_value, &arguments)
             .map_err(runtime_error_to_vm_error)
+    }
+
+    fn apply(
+        &mut self,
+        function: Value,
+        this_or_new_target: Value,
+        argument_array: Value,
+        kind: ApplyKind,
+    ) -> Result<Completion, Error> {
+        // Pinned QuickJS's js_function_apply checks callability before
+        // build_arg_list for both magic values. Constructor capability and
+        // newTarget validation deliberately remain after list construction.
+        let callable = self
+            .runtime
+            .callable_from_value(function.clone())
+            .map_err(runtime_error_to_vm_error)?;
+        let arguments = match self.build_argument_list(argument_array)? {
+            ArgumentListOutcome::Values(arguments) => arguments,
+            ArgumentListOutcome::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        match kind {
+            ApplyKind::Call => self
+                .runtime
+                .call_internal(
+                    self.current_realm,
+                    &callable,
+                    this_or_new_target,
+                    &arguments,
+                )
+                .map_err(runtime_error_to_vm_error),
+            ApplyKind::Construct => self
+                .runtime
+                .construct_value_internal(
+                    self.current_realm,
+                    function,
+                    this_or_new_target,
+                    &arguments,
+                )
+                .map_err(runtime_error_to_vm_error),
+        }
+    }
+
+    fn build_argument_list(&mut self, argument_array: Value) -> Result<ArgumentListOutcome, Error> {
+        match self
+            .runtime
+            .build_array_like_argument_list(self.current_realm, &argument_array)
+            .map_err(runtime_error_to_vm_error)?
+        {
+            NativeConversion::Value(arguments) => Ok(ArgumentListOutcome::Values(arguments)),
+            NativeConversion::Throw(value) => Ok(ArgumentListOutcome::Throw(value)),
+        }
     }
 
     fn is_original_eval(&mut self, function: &Value) -> Result<bool, Error> {

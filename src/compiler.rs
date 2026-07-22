@@ -14,8 +14,8 @@
 use crate::atom::AtomTable;
 use crate::bigint::JsBigInt;
 use crate::bytecode::{
-    ArgumentsKind, BytecodeFunction, DynamicEnvironmentSource, EvalVariableSource, Instruction,
-    MAX_LOCAL_SLOTS, WithObjectSource, verify_parts,
+    ApplyKind, ArgumentsKind, BytecodeFunction, DynamicEnvironmentSource, EvalVariableSource,
+    Instruction, MAX_LOCAL_SLOTS, WithObjectSource, verify_parts,
 };
 use crate::debug::{DebugInfoMode, Pc2LineEntry, Pc2LineTable, QuickJsSourceLocator, SourceOffset};
 use crate::error::{Error, ErrorKind, NativeErrorMessage, SourceLocation, SourceSpan};
@@ -623,6 +623,12 @@ struct ForAssignmentTargetInfo {
     is_destructuring: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CallArguments {
+    Fixed(u16),
+    Spread,
+}
+
 #[derive(Debug)]
 enum IrOp {
     Bytecode(Instruction),
@@ -652,9 +658,9 @@ enum IrOp {
     /// Parser/linker form of QuickJS `OP_eval`. Retain the syntactic call
     /// site's scope identity until bytecode publication so String-source eval
     /// can later lower it into a verified environment descriptor. R1v's
-    /// non-String shell intentionally publishes only the argument count.
+    /// non-String shell intentionally publishes only the argument shape.
     EvalCall {
-        argument_count: u16,
+        arguments: CallArguments,
         scope: ScopeId,
         environment: Option<u16>,
     },
@@ -767,7 +773,10 @@ impl IrOp {
                 argument_count,
                 method,
             } => (argument_count + usize::from(*method) + 1, 1),
-            Self::EvalCall { argument_count, .. } => (usize::from(*argument_count) + 1, 1),
+            Self::EvalCall { arguments, .. } => match arguments {
+                CallArguments::Fixed(argument_count) => (usize::from(*argument_count) + 1, 1),
+                CallArguments::Spread => (2, 1),
+            },
             Self::PushConstant(_) | Self::MakeClosure(_) => (0, 1),
             Self::GlobalSet(_) | Self::CapturedLexicalSet(_) => (1, 1),
             Self::DynamicIdentifier { access, .. } => match access {
@@ -4658,23 +4667,42 @@ impl<'source> Parser<'source> {
                         .is_some_and(|reference| reference.object_environment)
                 };
                 self.advance()?;
-                let argument_count = self.parse_call_arguments()?;
+                let arguments = self.parse_call_arguments()?;
                 if let Some(scope) = direct_eval_scope {
                     self.emit_at(
                         IrOp::EvalCall {
-                            argument_count,
+                            arguments,
                             scope,
                             environment: None,
                         },
                         source_offset(call_span)?,
                     )?;
                 } else {
-                    let instruction = if member_method || identifier_method {
-                        Instruction::CallMethod(argument_count)
-                    } else {
-                        Instruction::Call(argument_count)
-                    };
-                    self.emit_instruction_at(instruction, source_offset(call_span)?)?;
+                    match arguments {
+                        CallArguments::Fixed(argument_count) => {
+                            let instruction = if member_method || identifier_method {
+                                Instruction::CallMethod(argument_count)
+                            } else {
+                                Instruction::Call(argument_count)
+                            };
+                            self.emit_instruction_at(instruction, source_offset(call_span)?)?;
+                        }
+                        CallArguments::Spread => {
+                            if member_method || identifier_method {
+                                // QuickJS `obj func array -> func obj array`.
+                                self.emit_instruction(Instruction::Perm3)?;
+                            } else {
+                                // QuickJS `func array -> func undefined array`.
+                                self.emit_instruction(Instruction::Undefined)?;
+                                self.emit_instruction(Instruction::Insert2)?;
+                                self.emit_instruction(Instruction::Drop)?;
+                            }
+                            self.emit_instruction_at(
+                                Instruction::Apply(ApplyKind::Call),
+                                source_offset(call_span)?,
+                            )?;
+                        }
+                    }
                 }
                 self.anonymous_function_definition = None;
                 continue;
@@ -5154,33 +5182,71 @@ impl<'source> Parser<'source> {
     }
 
     /// Parse the contents of an already-consumed call/construct `(`.
-    fn parse_call_arguments(&mut self) -> Result<u16, Error> {
+    ///
+    /// This mirrors QuickJS's two-phase lowering. Fixed arguments remain
+    /// directly on the operand stack. The first spread converts the fixed
+    /// prefix into a fresh dense Array plus a dynamic index; subsequent
+    /// values use `DefineArrayEl` and subsequent spreads use `Append`.
+    fn parse_call_arguments(&mut self) -> Result<CallArguments, Error> {
         let mut argument_count = 0_usize;
-        if !self.consume_punctuator(Punctuator::RightParen)? {
-            loop {
-                // QuickJS accepts 65,535 encoded arguments and only rejects
-                // the next one in `js_parse_postfix_expr`. The accepted
-                // boundary is subsequently rejected as a JavaScript-visible
-                // stack overflow when bytecode stack size is computed.
-                if argument_count >= MAX_CALL_ARGUMENTS {
-                    return Err(self.syntax_here("Too many call arguments"));
-                }
-                // Call arguments use AssignmentExpression with `in` enabled,
-                // even when the surrounding expression is a classic-for NoIn
-                // initializer.
-                self.parse_assignment_allow_in()?;
-                argument_count += 1;
-                if !self.consume_punctuator(Punctuator::Comma)? {
-                    self.expect_punctuator(Punctuator::RightParen)?;
-                    break;
-                }
-                if self.consume_punctuator(Punctuator::RightParen)? {
-                    break;
-                }
+        while !self.is_punctuator(Punctuator::RightParen) {
+            // QuickJS accepts 65,535 encoded fixed arguments and only rejects
+            // the next parser iteration. If that next token is `...`, the
+            // guard still wins before spread lowering begins.
+            if argument_count >= MAX_CALL_ARGUMENTS {
+                return Err(self.syntax_here("Too many call arguments"));
             }
+            if self.is_punctuator(Punctuator::Ellipsis) {
+                break;
+            }
+            // Call arguments use AssignmentExpression with `in` enabled,
+            // even when the surrounding expression is a classic-for NoIn
+            // initializer.
+            self.parse_assignment_allow_in()?;
+            argument_count += 1;
+            if self.is_punctuator(Punctuator::RightParen) {
+                break;
+            }
+            // A trailing comma advances directly to `)` and ends the loop.
+            self.expect_punctuator(Punctuator::Comma)?;
         }
-        u16::try_from(argument_count)
-            .map_err(|_| Error::internal("call argument count escaped the parser limit"))
+
+        if !self.is_punctuator(Punctuator::Ellipsis) {
+            self.expect_punctuator(Punctuator::RightParen)?;
+            return u16::try_from(argument_count)
+                .map(CallArguments::Fixed)
+                .map_err(|_| Error::internal("call argument count escaped the parser limit"));
+        }
+
+        let prefix = u16::try_from(argument_count)
+            .map_err(|_| Error::internal("spread argument prefix escaped the parser limit"))?;
+        self.emit_instruction(Instruction::ArrayFrom(prefix))?;
+        self.emit_instruction(Instruction::PushI32(
+            i32::try_from(argument_count)
+                .map_err(|_| Error::internal("spread argument index does not fit i32"))?,
+        ))?;
+
+        // Once spread lowering begins, QuickJS no longer applies the encoded
+        // fixed-call u16 count guard: the runtime Array length guard is the
+        // authoritative 65,534-argument boundary.
+        while !self.is_punctuator(Punctuator::RightParen) {
+            if self.is_punctuator(Punctuator::Ellipsis) {
+                self.advance_expression_start()?;
+                self.parse_assignment_allow_in()?;
+                self.emit_instruction(Instruction::Append)?;
+            } else {
+                self.parse_assignment_allow_in()?;
+                self.emit_instruction(Instruction::DefineArrayEl)?;
+                self.emit_instruction(Instruction::Inc)?;
+            }
+            if self.is_punctuator(Punctuator::RightParen) {
+                break;
+            }
+            self.expect_punctuator(Punctuator::Comma)?;
+        }
+        self.expect_punctuator(Punctuator::RightParen)?;
+        self.emit_instruction(Instruction::Drop)?;
+        Ok(CallArguments::Spread)
     }
 
     fn parse_new_expression(&mut self) -> Result<(), Error> {
@@ -5235,17 +5301,31 @@ impl<'source> Parser<'source> {
         }
         self.emit_instruction(Instruction::Dup)?;
         let no_arguments_span = self.current().span;
-        let (argument_count, construct_span) = if self.is_punctuator(Punctuator::LeftParen) {
+        let (arguments, construct_span) = if self.is_punctuator(Punctuator::LeftParen) {
             let call_span = self.current().span;
             self.advance()?;
             (self.parse_call_arguments()?, call_span)
         } else {
-            (0, no_arguments_span)
+            (CallArguments::Fixed(0), no_arguments_span)
         };
-        self.emit_instruction_at(
-            Instruction::Construct(argument_count),
-            source_offset(construct_span)?,
-        )?;
+        match arguments {
+            CallArguments::Fixed(argument_count) => {
+                self.emit_instruction_at(
+                    Instruction::Construct(argument_count),
+                    source_offset(construct_span)?,
+                )?;
+            }
+            CallArguments::Spread => {
+                // QuickJS emits this permutation for the shared
+                // `object, function, array` apply ABI. For ordinary `new`,
+                // object and function are the same value produced by `Dup`.
+                self.emit_instruction(Instruction::Perm3)?;
+                self.emit_instruction_at(
+                    Instruction::Apply(ApplyKind::Construct),
+                    source_offset(construct_span)?,
+                )?;
+            }
+        }
         self.anonymous_function_definition = None;
         Ok(())
     }
@@ -13416,7 +13496,7 @@ fn lower_ops(operations: Vec<SpannedIrOp>, scopes: &[ScopeLifecycle]) -> Result<
                 pc_sites.push(pc_site);
             }
             IrOp::EvalCall {
-                argument_count,
+                arguments,
                 scope,
                 environment,
             } => {
@@ -13427,9 +13507,12 @@ fn lower_ops(operations: Vec<SpannedIrOp>, scopes: &[ScopeLifecycle]) -> Result<
                     .ok_or_else(|| Error::internal("eval call scope is out of bounds"))?;
                 let environment = environment
                     .ok_or_else(|| Error::internal("eval call has no linked environment"))?;
-                code.push(Instruction::Eval {
-                    argument_count,
-                    environment,
+                code.push(match arguments {
+                    CallArguments::Fixed(argument_count) => Instruction::Eval {
+                        argument_count,
+                        environment,
+                    },
+                    CallArguments::Spread => Instruction::ApplyEval { environment },
                 });
                 pc_sites.push(pc_site);
             }

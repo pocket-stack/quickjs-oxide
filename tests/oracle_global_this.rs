@@ -16,6 +16,7 @@ const IMPLEMENTED_GLOBALS: &[&str] = &[
     "TypeError",
     "URIError",
     "InternalError",
+    "AggregateError",
     "Array",
     "Object",
     "Function",
@@ -60,7 +61,7 @@ var reader = (function() { return globalThis; });
 var strictWriter = (function(value) { "use strict"; globalThis = value; });
 var implemented = [
     "Error", "EvalError", "RangeError", "ReferenceError", "SyntaxError",
-    "TypeError", "URIError", "InternalError", "Array", "Object", "Function", "parseInt",
+    "TypeError", "URIError", "InternalError", "AggregateError", "Array", "Object", "Function", "parseInt",
     "parseFloat", "isNaN", "isFinite", "decodeURI", "decodeURIComponent",
     "encodeURI", "encodeURIComponent", "escape", "unescape", "Infinity",
     "NaN", "undefined", "eval", "Number", "Boolean", "String", "Math", "Reflect", "Symbol", "globalThis", "BigInt", "Date", "RegExp", "JSON", "Map", "Set"
@@ -172,7 +173,7 @@ print("reconnect=" + [
 
 const EXPECTED_OBSERVATIONS: &[&str] = &[
     "initial=true|101|true|true",
-    "keys=Error,EvalError,RangeError,ReferenceError,SyntaxError,TypeError,URIError,InternalError,Array,Object,Function,parseInt,parseFloat,isNaN,isFinite,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,unescape,Infinity,NaN,undefined,eval,Number,Boolean,String,Math,Reflect,Symbol,globalThis,BigInt,Date,RegExp,JSON,Map,Set|true|true",
+    "keys=Error,EvalError,RangeError,ReferenceError,SyntaxError,TypeError,URIError,InternalError,AggregateError,Array,Object,Function,parseInt,parseFloat,isNaN,isFinite,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,unescape,Infinity,NaN,undefined,eval,Number,Boolean,String,Math,Reflect,Symbol,globalThis,BigInt,Date,RegExp,JSON,Map,Set|true|true",
     "assignment=17|101",
     "delete=true|true|undefined",
     "strict-missing=ReferenceError:'globalThis' is not defined:true|true",

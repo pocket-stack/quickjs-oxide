@@ -1,6 +1,6 @@
-# R2m freezes RawJSON, isRawJSON, stringify splicing, and parse-source context.
-# Six runnable variants retain unrelated rest/spread/destructuring parser
-# frontiers; the pinned staging path remains config-excluded in both modes.
+# R2m froze RawJSON, isRawJSON, stringify splicing, and parse-source context.
+# The current R3d vector passes all 42 runnable variants; the pinned staging
+# path remains config-excluded in both modes.
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
@@ -13,13 +13,13 @@ timeout_ms=30000
 paths=22
 variants=44
 runnable=42
-passes=36
-failures=4
-unsupported=2
+passes=42
+failures=0
+unsupported=0
 skipped=2
 manifest_sha256=8e4d1fa6f59eae77cf1a35668ea02002de4d4f4cae146bb9ea6bde1c849b1df4
 keys_sha256=c5be0b3a9dd6c106d9e1c19cd15726b7a6756ac5ee464d4279fd835d520ddee7
-nonpass_sha256=2c8fb7640ded74e86d6e5b8990dcaf8650ec0eccbc855cb2dcbef808e8caae8a
-tsv_sha256=c031156864ad7d895ea840f69de7cde845bd54d638fb8750f0f352453eeae60d
-jsonl_sha256=a5dc8cbe4e097bc8a3774660044a12fee68f8f4bad538ce0bcbf4ae530762be4
-summary=fail-parse=4 pass=36 skipped-config-exclude=2 unsupported-parser=2
+nonpass_sha256=adb3fbc59b68d145d9f4cbcfe87242c348ac13d983df5ea553a2dae6724c526a
+tsv_sha256=967f47fc2c9ffce5cd00dfdf3ea3229322b56e6f56a0b2842d9373fa07cea42d
+jsonl_sha256=da7ef2bfb5c49648922cb8a62ddeeb9178804825962d5ef4f1b56a2252b8217a
+summary=pass=42 skipped-config-exclude=2

@@ -14,6 +14,86 @@ mod tests;
 const MAX_APPLY_ARGUMENTS: u64 = 65_534;
 
 impl Runtime {
+    /// Snapshot QuickJS's fast Array/Arguments storage in numeric-index order.
+    ///
+    /// Oxide keeps dense values in ordinary shape slots, where named
+    /// properties may be interleaved. Walk the shape once and reconstruct the
+    /// numeric prefix instead of performing one observable-style property
+    /// lookup per index. The owning object stays rooted while raw values are
+    /// promoted to public roots.
+    pub(in crate::runtime) fn fast_array_like_values(
+        &self,
+        object: &ObjectRef,
+        expected_len: u32,
+    ) -> Result<Option<Vec<Value>>, RuntimeError> {
+        let raw_values = {
+            let state = self.0.state.borrow();
+            let object_data = state.heap.object(object.object_id())?;
+            let (mapped, fast_len) = match &object_data.payload {
+                ObjectPayload::Array { fast_len } => (false, *fast_len),
+                ObjectPayload::Arguments { mapped, fast_len } => (*mapped, *fast_len),
+                _ => return Ok(None),
+            };
+            if fast_len != Some(expected_len) {
+                return Ok(None);
+            }
+            let shape = state.heap.shape(object_data.shape)?;
+            let capacity = usize::try_from(expected_len)
+                .map_err(|_| RuntimeError::Invariant("fast argument length does not fit usize"))?;
+            let mut ordered = vec![None; capacity];
+            for (entry, slot) in shape.entries().iter().zip(&object_data.slots) {
+                let Some(index) = state.atoms.array_index(entry.atom)? else {
+                    continue;
+                };
+                if index >= expected_len {
+                    continue;
+                }
+                if !entry.flags.writable || !entry.flags.enumerable || !entry.flags.configurable {
+                    return Err(RuntimeError::Invariant(
+                        "fast argument index is not a C/W/E property",
+                    ));
+                }
+                let value = match slot {
+                    PropertySlot::Data(value) if !mapped => value.clone(),
+                    PropertySlot::VarRef(var_ref) if mapped => {
+                        state.heap.var_ref(*var_ref)?.value.clone()
+                    }
+                    _ => {
+                        return Err(RuntimeError::Invariant(
+                            "fast argument index has the wrong storage kind",
+                        ));
+                    }
+                };
+                let destination = ordered
+                    .get_mut(usize::try_from(index).map_err(|_| {
+                        RuntimeError::Invariant("fast argument index does not fit usize")
+                    })?)
+                    .ok_or(RuntimeError::Invariant(
+                        "fast argument index escaped its dense prefix",
+                    ))?;
+                if destination.replace(value).is_some() {
+                    return Err(RuntimeError::Invariant(
+                        "fast argument prefix contains a duplicate index",
+                    ));
+                }
+            }
+            ordered
+                .into_iter()
+                .map(|value| {
+                    value.ok_or(RuntimeError::Invariant(
+                        "fast argument prefix is missing an indexed value",
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+
+        raw_values
+            .iter()
+            .map(|value| self.root_raw_value(value))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+    }
+
     /// Install the global `Reflect` `JS_OBJECT_DEF` equivalent. The object is
     /// realm-owned and remains lazy until the global slot is first read.
     pub(in crate::runtime) fn initialize_reflect_intrinsic(
@@ -122,6 +202,11 @@ impl Runtime {
 
         let length = usize::try_from(length)
             .map_err(|_| RuntimeError::Invariant("argument-list length does not fit usize"))?;
+        let fast_len = u32::try_from(length)
+            .map_err(|_| RuntimeError::Invariant("argument-list length does not fit u32"))?;
+        if let Some(values) = self.fast_array_like_values(array_like, fast_len)? {
+            return Ok(NativeConversion::Value(values));
+        }
         let mut forwarded = Vec::with_capacity(length);
         for index in 0..length {
             let key = self.intern_property_key(&index.to_string())?;

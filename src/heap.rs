@@ -763,7 +763,7 @@ pub(crate) fn validate_parameter_bytecode_layout(
             || layout.arg_eval_variable_object_local.is_some()
             || code
                 .iter()
-                .any(|instruction| matches!(instruction, Instruction::Eval { .. }));
+                .any(|instruction| instruction.eval_environment().is_some());
         if has_pattern_parameters || parameter_locals == 0 || has_extended_parameter_entry {
             return Ok(explicit_body_pc);
         }
@@ -931,7 +931,7 @@ pub(crate) fn validate_parameter_bytecode_layout(
     if metadata.eval_variable_object_local.is_some()
         || code
             .iter()
-            .any(|instruction| matches!(instruction, Instruction::Eval { .. }))
+            .any(|instruction| instruction.eval_environment().is_some())
     {
         return Err("direct eval is not supported in a parameter environment");
     }

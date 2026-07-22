@@ -1,6 +1,6 @@
 use crate::bigint::{BigIntError, JsBigInt};
 use crate::bytecode::{
-    ArgumentsKind, BytecodeFunction, DefineMethodKind, DynamicEnvironmentSource,
+    ApplyKind, ArgumentsKind, BytecodeFunction, DefineMethodKind, DynamicEnvironmentSource,
     EvalVariableSource, Instruction,
 };
 use crate::error::{Error, ErrorKind, NativeErrorKind};
@@ -68,6 +68,18 @@ pub(crate) enum ForOfStartOutcome {
     Throw(Value),
 }
 
+/// Append-specific iterator start. Pinned QuickJS performs one additional
+/// `@@iterator` Get and may snapshot a genuine fast Array after creating the
+/// second iterator record; ordinary for-of must not inherit those quirks.
+pub(crate) enum AppendStartOutcome {
+    Record {
+        iterator: Value,
+        next_method: Value,
+        fast_values: Option<Vec<Value>>,
+    },
+    Throw(Value),
+}
+
 /// Result of calling an iterator record's cached `next` method and reading its
 /// `done`/`value` properties.
 pub(crate) enum ForOfNextOutcome {
@@ -91,6 +103,16 @@ pub(crate) enum ForInNextOutcome {
 /// throws are explicit so the VM can apply completion precedence itself.
 pub(crate) enum IteratorCloseOutcome {
     Closed,
+    Throw(Value),
+}
+
+/// Result of QuickJS `build_arg_list` at the VM/runtime boundary.
+///
+/// The compiler-created spread Array is still a JavaScript value, so length
+/// and indexed reads may throw. Keep those throws explicit so `ApplyEval` can
+/// preserve upstream's ordering before the original-eval identity check.
+pub(crate) enum ArgumentListOutcome {
+    Values(Vec<Value>),
     Throw(Value),
 }
 
@@ -144,6 +166,19 @@ pub(crate) trait VmHost {
     /// detached execution has no captured cells.
     fn prepare_captured_local_reuse(&mut self) -> Result<(), Error>;
     fn for_of_start(&mut self, iterable: Value) -> Result<ForOfStartOutcome, Error>;
+    fn append_start(&mut self, iterable: Value) -> Result<AppendStartOutcome, Error> {
+        Ok(match self.for_of_start(iterable)? {
+            ForOfStartOutcome::Record {
+                iterator,
+                next_method,
+            } => AppendStartOutcome::Record {
+                iterator,
+                next_method,
+                fast_values: None,
+            },
+            ForOfStartOutcome::Throw(value) => AppendStartOutcome::Throw(value),
+        })
+    }
     fn for_of_next(
         &mut self,
         iterator: Value,
@@ -434,6 +469,18 @@ pub(crate) trait VmHost {
         this_value: Value,
         arguments: Vec<Value>,
     ) -> Result<Completion, Error>;
+    /// QuickJS `OP_apply`. The host owns callable/constructor validation
+    /// ordering around argument-list construction.
+    fn apply(
+        &mut self,
+        function: Value,
+        this_or_new_target: Value,
+        argument_array: Value,
+        kind: ApplyKind,
+    ) -> Result<Completion, Error>;
+    /// QuickJS `build_arg_list`, used directly by `OP_apply_eval` before its
+    /// callee identity decision.
+    fn build_argument_list(&mut self, argument_array: Value) -> Result<ArgumentListOutcome, Error>;
     /// Test the callee identity for QuickJS `OP_eval` against the executing
     /// realm's cached original eval, never its mutable global property.
     fn is_original_eval(&mut self, function: &Value) -> Result<bool, Error>;
@@ -1391,6 +1438,27 @@ impl VmHost for DetachedHost<'_> {
         ))
     }
 
+    fn apply(
+        &mut self,
+        _function: Value,
+        _this_or_new_target: Value,
+        _argument_array: Value,
+        _kind: ApplyKind,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "detached VM cannot apply runtime-owned function objects",
+        ))
+    }
+
+    fn build_argument_list(
+        &mut self,
+        _argument_array: Value,
+    ) -> Result<ArgumentListOutcome, Error> {
+        Err(Error::internal(
+            "detached VM cannot build runtime-owned argument lists",
+        ))
+    }
+
     fn is_original_eval(&mut self, _function: &Value) -> Result<bool, Error> {
         #[cfg(test)]
         {
@@ -1930,27 +1998,7 @@ impl CallFrame {
             } => {
                 let arguments = self.take_call_arguments(*argument_count, 1)?;
                 let function = self.pop()?;
-                if host.is_original_eval(&function)? {
-                    let input = arguments.first().cloned().unwrap_or(Value::Undefined);
-                    // QuickJS only enters the compiler for primitive String
-                    // input. Preserve that lazy boundary for sloppy `this`:
-                    // non-String eval must return its input without allocating
-                    // a primitive wrapper or touching caller bindings.
-                    let this_value = if matches!(input, Value::String(_)) {
-                        self.normalized_this(host)?
-                    } else {
-                        self.this_value.clone()
-                    };
-                    host.direct_eval(DirectEvalInvocation {
-                        input,
-                        environment: *environment,
-                        this_value,
-                        new_target: self.new_target.clone(),
-                        caller_strict: self.strict,
-                    })?
-                } else {
-                    host.call(function, Value::Undefined, arguments)?
-                }
+                self.execute_eval_call(function, arguments, *environment, host)?
             }
             Instruction::CallMethod(argument_count) => {
                 let arguments = self.take_call_arguments(*argument_count, 2)?;
@@ -1964,6 +2012,23 @@ impl CallFrame {
                 let function = self.pop()?;
                 host.construct(function, new_target, arguments)?
             }
+            Instruction::Apply(kind) => {
+                let argument_array = self.pop()?;
+                let this_or_new_target = self.pop()?;
+                let function = self.pop()?;
+                host.apply(function, this_or_new_target, argument_array, *kind)?
+            }
+            Instruction::ApplyEval { environment } => {
+                let argument_array = self.pop()?;
+                let function = self.pop()?;
+                let arguments = match host.build_argument_list(argument_array)? {
+                    ArgumentListOutcome::Values(arguments) => arguments,
+                    ArgumentListOutcome::Throw(value) => {
+                        return Ok(Some(Completion::Throw(value)));
+                    }
+                };
+                self.execute_eval_call(function, arguments, *environment, host)?
+            }
             _ => {
                 return Err(Error::internal(
                     "non-call instruction reached VM call dispatch",
@@ -1976,6 +2041,39 @@ impl CallFrame {
                 Ok(None)
             }
             Completion::Throw(value) => Ok(Some(Completion::Throw(value))),
+        }
+    }
+
+    fn execute_eval_call(
+        &mut self,
+        function: Value,
+        arguments: Vec<Value>,
+        environment: u16,
+        host: &mut impl VmHost,
+    ) -> Result<Completion, Error> {
+        if host.is_original_eval(&function)? {
+            let input = arguments.first().cloned().unwrap_or(Value::Undefined);
+            // QuickJS only enters the compiler for primitive String input.
+            // Preserve that lazy boundary for sloppy `this`: non-String eval
+            // returns its input without allocating a primitive wrapper or
+            // touching caller bindings. Retain the complete arguments Vec
+            // until direct eval returns so all spread values remain rooted.
+            let this_value = if matches!(input, Value::String(_)) {
+                self.normalized_this(host)?
+            } else {
+                self.this_value.clone()
+            };
+            let completion = host.direct_eval(DirectEvalInvocation {
+                input,
+                environment,
+                this_value,
+                new_target: self.new_target.clone(),
+                caller_strict: self.strict,
+            })?;
+            drop(arguments);
+            Ok(completion)
+        } else {
+            host.call(function, Value::Undefined, arguments)
         }
     }
 
@@ -2251,6 +2349,8 @@ impl CallFrame {
                     | Instruction::Eval { .. }
                     | Instruction::CallMethod(_)
                     | Instruction::Construct(_)
+                    | Instruction::Apply(_)
+                    | Instruction::ApplyEval { .. }
             ) {
                 if let Some(completion) = self.execute_call_instruction(instruction, host)? {
                     return Ok(completion);
@@ -3007,7 +3107,9 @@ impl CallFrame {
             Instruction::Call(_)
             | Instruction::Eval { .. }
             | Instruction::CallMethod(_)
-            | Instruction::Construct(_) => {
+            | Instruction::Construct(_)
+            | Instruction::Apply(_)
+            | Instruction::ApplyEval { .. } => {
                 unreachable!("call dispatch was bypassed")
             }
             Instruction::Return => {
@@ -3028,21 +3130,57 @@ impl CallFrame {
     fn append_iterable(
         host: &mut impl VmHost,
         array: Value,
-        mut index: Value,
+        index: Value,
         iterable: Value,
     ) -> Result<OperationOutcome<(Value, Value)>, Error> {
-        let (iterator, next_method) = match host.for_of_start(iterable)? {
-            ForOfStartOutcome::Record {
+        // `js_append_enumerate` authenticates the private dynamic index before
+        // touching the spread source. It then treats the signed Int payload as
+        // Uint32 and writes the wrapping result back with JS_NewInt32.
+        let Value::Int(raw_index) = index else {
+            return Ok(OperationOutcome::Throw(
+                host.materialize_error(Error::internal("invalid index for append"))?,
+            ));
+        };
+        let mut position = raw_index as u32;
+
+        // QuickJS keeps the original `sp[-1]` spread source live until the
+        // append operation finishes, even when a custom iterator record does
+        // not retain it. Preserve that root independently of the iterator.
+        let (iterator, next_method, fast_values) = match host.append_start(iterable.clone())? {
+            AppendStartOutcome::Record {
                 iterator,
                 next_method,
-            } => (iterator, next_method),
-            ForOfStartOutcome::Throw(value) => return Ok(OperationOutcome::Throw(value)),
+                fast_values,
+            } => (iterator, next_method, fast_values),
+            AppendStartOutcome::Throw(value) => return Ok(OperationOutcome::Throw(value)),
         };
+
+        if let Some(values) = fast_values {
+            for value in values {
+                let index = Value::number(f64::from(position));
+                if let Completion::Throw(value) =
+                    host.define_array_element(array.clone(), index, value)?
+                {
+                    match host.iterator_close(iterator, true)? {
+                        IteratorCloseOutcome::Closed | IteratorCloseOutcome::Throw(_) => {}
+                    }
+                    return Ok(OperationOutcome::Throw(value));
+                }
+                position = position.wrapping_add(1);
+            }
+            return Ok(OperationOutcome::Value((
+                array,
+                Value::Int(position as i32),
+            )));
+        }
 
         loop {
             let value = match host.for_of_next(iterator.clone(), next_method.clone())? {
                 ForOfNextOutcome::Result { done: true, .. } => {
-                    return Ok(OperationOutcome::Value((array, index)));
+                    return Ok(OperationOutcome::Value((
+                        array,
+                        Value::Int(position as i32),
+                    )));
                 }
                 ForOfNextOutcome::Result { value, done: false } => value,
                 ForOfNextOutcome::Throw(value) => {
@@ -3053,15 +3191,8 @@ impl CallFrame {
                 }
             };
 
-            if let Err(error) = validate_array_literal_index(&index) {
-                let pending = host.materialize_error(error)?;
-                match host.iterator_close(iterator, true)? {
-                    IteratorCloseOutcome::Closed | IteratorCloseOutcome::Throw(_) => {}
-                }
-                return Ok(OperationOutcome::Throw(pending));
-            }
-
-            match host.define_array_element(array.clone(), index.clone(), value)? {
+            let index = Value::number(f64::from(position));
+            match host.define_array_element(array.clone(), index, value)? {
                 Completion::Return(_) => {}
                 Completion::Throw(value) => {
                     match host.iterator_close(iterator, true)? {
@@ -3070,7 +3201,7 @@ impl CallFrame {
                     return Ok(OperationOutcome::Throw(value));
                 }
             }
-            index = increment_array_literal_index(index)?;
+            position = position.wrapping_add(1);
         }
     }
 
@@ -3495,41 +3626,6 @@ fn checked_target(target: u32, code_len: usize) -> Result<usize, Error> {
         return Err(Error::internal("jump target is out of bounds"));
     }
     Ok(target)
-}
-
-fn validate_array_literal_index(index: &Value) -> Result<(), Error> {
-    let value = match index {
-        Value::Int(value) if *value >= 0 => {
-            u32::try_from(*value).expect("non-negative i32 always fits u32")
-        }
-        Value::Float(value)
-            if value.is_finite()
-                && *value >= 0.0
-                && *value <= f64::from(u32::MAX)
-                && value.fract() == 0.0 =>
-        {
-            number_to_uint32(*value)
-        }
-        _ => {
-            return Err(Error::internal(
-                "Array literal dynamic index is not a non-negative uint32",
-            ));
-        }
-    };
-    if value == u32::MAX {
-        return Err(Error::new(ErrorKind::Range, "invalid array length"));
-    }
-    Ok(())
-}
-
-fn increment_array_literal_index(index: Value) -> Result<Value, Error> {
-    validate_array_literal_index(&index)?;
-    let value = match index {
-        Value::Int(value) => u32::try_from(value).expect("validated non-negative i32 fits u32"),
-        Value::Float(value) => number_to_uint32(value),
-        _ => unreachable!("validated Array literal index is numeric"),
-    };
-    Ok(Value::number(f64::from(value + 1)))
 }
 
 fn abstract_equal(
@@ -4776,6 +4872,39 @@ mod tests {
             Completion::Throw(Value::Int(66))
         );
         assert_eq!(define_throw.iterator_close_pending, [true]);
+
+        let invalid_index = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushConst(0),
+                Instruction::PushConst(1),
+                Instruction::PushConst(2),
+                Instruction::Append,
+                Instruction::Drop,
+                Instruction::Return,
+            ],
+            constants: vec![
+                Value::String(JsString::from_static("array")),
+                Value::Float(0.0),
+                Value::String(JsString::from_static("iterable")),
+            ],
+            local_count: 0,
+            max_stack: 3,
+        };
+        invalid_index.verify().unwrap();
+        let mut invalid = DetachedHost::new(&invalid_index);
+        invalid.iterator_start_record = Some((Value::Int(10), Value::Int(11)));
+        assert_eq!(
+            CallFrame::new(3)
+                .execute(&invalid_index.code, &mut invalid)
+                .unwrap_err()
+                .message(),
+            "invalid index for append"
+        );
+        assert_eq!(
+            invalid.iterator_start_record,
+            Some((Value::Int(10), Value::Int(11)))
+        );
     }
 
     #[test]

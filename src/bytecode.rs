@@ -72,6 +72,17 @@ pub enum DefineMethodKind {
     Setter,
 }
 
+/// Typed form of QuickJS's `OP_apply` magic operand.
+///
+/// Both forms consume `function, this-or-new-target, argument-array`; the
+/// distinction is authenticated bytecode metadata rather than a
+/// JavaScript-visible stack value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ApplyKind {
+    Call,
+    Construct,
+}
+
 /// Stack-machine operations deliberately use the names and stack behavior of
 /// their `QuickJS` counterparts. This typed form is the current compiler IR and
 /// verified execution format; a future compact encoder must share this opcode
@@ -456,6 +467,15 @@ pub enum Instruction {
     CallMethod(u16),
     /// QuickJS `OP_call_constructor`: `func new.target args -> result`.
     Construct(u16),
+    /// QuickJS `OP_apply`: consume a compiler-created dense argument Array
+    /// after all spread iterables have been evaluated.
+    Apply(ApplyKind),
+    /// QuickJS `OP_apply_eval`: the spread-argument counterpart of `Eval`.
+    /// The original-eval identity check happens only after the dense argument
+    /// Array has passed through QuickJS-compatible `build_arg_list` semantics.
+    ApplyEval {
+        environment: u16,
+    },
     Return,
     Throw,
 }
@@ -557,6 +577,8 @@ impl Instruction {
             }
             Self::CallMethod(argument_count) => (*argument_count as usize + 2, 1),
             Self::Construct(argument_count) => (*argument_count as usize + 2, 1),
+            Self::Apply(_) => (3, 1),
+            Self::ApplyEval { .. } => (2, 1),
             Self::Drop
             | Self::PutEvalVariable { .. }
             | Self::DefineEvalVariable { .. }
@@ -620,6 +642,16 @@ impl Instruction {
             | Self::In
             | Self::InstanceOf => (2, 1),
             Self::Ret => (1, 0),
+        }
+    }
+
+    /// Return the linked direct-eval environment carried by either fixed- or
+    /// spread-argument eval bytecode.
+    #[must_use]
+    pub const fn eval_environment(&self) -> Option<u16> {
+        match self {
+            Self::Eval { environment, .. } | Self::ApplyEval { environment } => Some(*environment),
+            _ => None,
         }
     }
 }
@@ -1272,7 +1304,7 @@ fn enqueue_fallthrough(
 #[cfg(test)]
 mod tests {
     use super::{
-        ArgumentsKind, BytecodeFunction, DefineMethodKind, DynamicEnvironmentSource,
+        ApplyKind, ArgumentsKind, BytecodeFunction, DefineMethodKind, DynamicEnvironmentSource,
         EvalVariableSource, Instruction, MAX_LOCAL_SLOTS, WithObjectSource,
     };
     use crate::{JsString, Value};
@@ -1438,6 +1470,68 @@ mod tests {
             undersized.verify().unwrap_err().message(),
             "declared maximum stack is smaller than required"
         );
+    }
+
+    #[test]
+    fn verifier_models_apply_and_apply_eval_stack_shapes() {
+        for (code, maximum) in [
+            (
+                vec![
+                    Instruction::Undefined,
+                    Instruction::Undefined,
+                    Instruction::Undefined,
+                    Instruction::Apply(ApplyKind::Call),
+                    Instruction::Return,
+                ],
+                3,
+            ),
+            (
+                vec![
+                    Instruction::Undefined,
+                    Instruction::Undefined,
+                    Instruction::Undefined,
+                    Instruction::Apply(ApplyKind::Construct),
+                    Instruction::Return,
+                ],
+                3,
+            ),
+            (
+                vec![
+                    Instruction::Undefined,
+                    Instruction::Undefined,
+                    Instruction::ApplyEval { environment: 7 },
+                    Instruction::Return,
+                ],
+                2,
+            ),
+        ] {
+            let function = BytecodeFunction {
+                name: None,
+                code,
+                constants: vec![],
+                local_count: 0,
+                max_stack: maximum,
+            };
+            assert_eq!(function.verify().unwrap().max_stack, maximum);
+        }
+
+        for instruction in [
+            Instruction::Apply(ApplyKind::Call),
+            Instruction::Apply(ApplyKind::Construct),
+            Instruction::ApplyEval { environment: 0 },
+        ] {
+            let function = BytecodeFunction {
+                name: None,
+                code: vec![Instruction::Undefined, instruction, Instruction::Return],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 1,
+            };
+            assert_eq!(
+                function.verify().unwrap_err().message(),
+                "bytecode stack underflow"
+            );
+        }
     }
 
     #[test]

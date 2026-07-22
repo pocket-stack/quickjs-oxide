@@ -2236,11 +2236,11 @@ fn verify_unlinked_tree_with_root(
 
         let mut referenced_eval_environments = vec![false; function.eval_environments().len()];
         for instruction in function.code() {
-            let crate::bytecode::Instruction::Eval { environment, .. } = instruction else {
+            let Some(environment) = instruction.eval_environment() else {
                 continue;
             };
             let referenced = referenced_eval_environments
-                .get_mut(usize::from(*environment))
+                .get_mut(usize::from(environment))
                 .ok_or_else(|| {
                     RuntimeError::Engine(Error::internal(
                         "Eval bytecode environment operand is out of bounds",
@@ -6370,6 +6370,28 @@ mod tests {
         .with_eval_environments(vec![ordinary_environment(None)]);
 
         let error = verify_unlinked_tree(&script_with_child(function)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("environment operand is out of bounds")
+        );
+
+        let spread = UnlinkedFunction::new(
+            vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::ApplyEval { environment: 1 },
+                Instruction::Return,
+            ],
+            Vec::new(),
+            FunctionMetadata {
+                max_stack: 2,
+                strict: true,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_eval_environments(vec![ordinary_environment(None)]);
+        let error = verify_unlinked_tree(&script_with_child(spread)).unwrap_err();
         assert!(
             error
                 .to_string()
