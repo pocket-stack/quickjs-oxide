@@ -117,6 +117,11 @@ pub enum Instruction {
     PushFalse,
     PushTrue,
     PushThis,
+    /// Push the exact function object of the active bytecode frame. Derived
+    /// constructors use its live [[Prototype]] as the target of `super()`, so
+    /// this must not be reconstructed from HomeObject or the original heritage
+    /// expression.
+    PushActiveFunction,
     /// QuickJS's authenticated `<home_object>` pseudo binding. Only bytecode
     /// whose immutable metadata declares `needs_home_object` may execute this
     /// operation; the runtime reads it from the active function object rather
@@ -218,6 +223,10 @@ pub enum Instruction {
     /// ordinary `put_loc` overwrite semantics rather than conflating this with
     /// derived-`this`'s upstream `put_loc_check_init` opcode.
     InitializeLocal(u16),
+    /// QuickJS `OP_put_loc_check_init`: consume the result of `super()` and
+    /// initialize the authenticated derived-constructor `this` local exactly
+    /// once. A second execution throws after the super constructor has run.
+    InitializeDerivedLocal(u16),
     /// QuickJS `OP_put_loc_check`: consume and assign a mutable lexical local.
     PutLocalCheck(u16),
     /// QuickJS `OP_set_loc_check`: assign a mutable lexical local while
@@ -235,6 +244,10 @@ pub enum Instruction {
     /// QuickJS `OP_put_var_ref_check`: consume and assign a captured mutable
     /// lexical binding. Value-preserving writes use `Dup; PutVarRefCheck`.
     PutVarRefCheck(u16),
+    /// Captured-binding counterpart of [`Instruction::InitializeDerivedLocal`].
+    /// Arrow functions and direct eval use this to initialize their enclosing
+    /// derived constructor's single `this` cell.
+    InitializeDerivedVarRef(u16),
     /// QuickJS `OP_close_loc`: detach a captured local when its lexical scope
     /// exits so a later scope entry receives a fresh cell.
     CloseLocal(u16),
@@ -476,12 +489,27 @@ pub enum Instruction {
     CallMethod(u16),
     /// QuickJS `OP_call_constructor`: `func new.target args -> result`.
     Construct(u16),
+    /// Authenticate the two stack operands prepared for a derived-constructor
+    /// `super()` call. Runtime execution is a no-op; the bytecode verifier
+    /// protects the marked `super_constructor, new.target` pair until exactly
+    /// one matching typed construction consumes it.
+    MarkSuperCall,
+    /// Derived-constructor counterpart of [`Instruction::Construct`]. The
+    /// verifier accepts it only when it exactly consumes the most recent
+    /// protected super-call pair together with `argument_count` values.
+    ConstructSuper(u16),
     /// QuickJS `OP_check_ctor`: reject an ordinary call to a class
     /// constructor by checking the current frame's `new.target`.
     CheckCtor,
+    /// QuickJS `OP_init_ctor`: run the implicit derived constructor by reading
+    /// the active function object's live [[Prototype]], forwarding the frame's
+    /// raw actual arguments, and preserving the original `new.target`.
+    InitDerivedConstructor,
     /// QuickJS `OP_apply`: consume a compiler-created dense argument Array
     /// after all spread iterables have been evaluated.
     Apply(ApplyKind),
+    /// Spread-argument counterpart of [`Instruction::ConstructSuper`].
+    ApplySuper,
     /// QuickJS `OP_apply_eval`: the spread-argument counterpart of `Eval`.
     /// The original-eval identity check happens only after the dense argument
     /// Array has passed through QuickJS-compatible `build_arg_list` semantics.
@@ -489,6 +517,11 @@ pub enum Instruction {
         environment: u16,
     },
     Return,
+    /// Complete a derived constructor. Object results are returned directly;
+    /// `undefined` resolves the authenticated derived-`this` local; every other
+    /// primitive throws a TypeError. Return-protocol errors belong to the
+    /// caller realm rather than the constructor's defining realm.
+    ReturnDerived(u16),
     Throw,
 }
 
@@ -519,8 +552,10 @@ impl Instruction {
             | Self::PushFalse
             | Self::PushTrue
             | Self::PushThis
+            | Self::PushActiveFunction
             | Self::PushHomeObject
             | Self::PushNewTarget
+            | Self::InitDerivedConstructor
             | Self::Arguments(_)
             | Self::Rest(_)
             | Self::VariableEnvironment
@@ -541,6 +576,7 @@ impl Instruction {
             | Self::GetVarUndef(_)
             | Self::DeleteVar(_) => (0, 1),
             Self::SetName(_) | Self::ToObject => (1, 1),
+            Self::MarkSuperCall => (2, 2),
             Self::GetRefValue(_) | Self::GetRefValueUndef(_) => (1, 2),
             Self::GetField(_) => (1, 1),
             Self::GetField2(_) => (1, 2),
@@ -590,8 +626,10 @@ impl Instruction {
                 (*argument_count as usize + 1, 1)
             }
             Self::CallMethod(argument_count) => (*argument_count as usize + 2, 1),
-            Self::Construct(argument_count) => (*argument_count as usize + 2, 1),
-            Self::Apply(_) => (3, 1),
+            Self::Construct(argument_count) | Self::ConstructSuper(argument_count) => {
+                (*argument_count as usize + 2, 1)
+            }
+            Self::Apply(_) | Self::ApplySuper => (3, 1),
             Self::ApplyEval { .. } => (2, 1),
             Self::Drop
             | Self::PutEvalVariable { .. }
@@ -599,10 +637,12 @@ impl Instruction {
             | Self::PutDynamicBinding { .. }
             | Self::PutLocal(_)
             | Self::InitializeLocal(_)
+            | Self::InitializeDerivedLocal(_)
             | Self::PutLocalCheck(_)
             | Self::PutArg(_)
             | Self::PutVarRef(_)
             | Self::PutVarRefCheck(_)
+            | Self::InitializeDerivedVarRef(_)
             | Self::PutVar(_)
             | Self::PutVarInit(_)
             | Self::ThrowReadOnly(_)
@@ -611,6 +651,7 @@ impl Instruction {
             | Self::IfFalse(_)
             | Self::IfTrue(_)
             | Self::Return
+            | Self::ReturnDerived(_)
             | Self::Throw => (1, 0),
             Self::PutRefValue(_) => (2, 0),
             Self::ThrowDeleteSuper => (3, 1),
@@ -743,9 +784,11 @@ impl BytecodeFunction {
             | Instruction::SetLocalUninitialized(index)
             | Instruction::GetLocalCheck(index)
             | Instruction::InitializeLocal(index)
+            | Instruction::InitializeDerivedLocal(index)
             | Instruction::PutLocalCheck(index)
             | Instruction::SetLocalCheck(index)
-            | Instruction::CloseLocal(index) = instruction
+            | Instruction::CloseLocal(index)
+            | Instruction::ReturnDerived(index) = instruction
                 && *index >= self.local_count
             {
                 return Err(Error::internal("local bytecode operand is out of bounds"));
@@ -823,13 +866,6 @@ pub(crate) fn verify_parts(
     // without letting malformed unreachable bytecode panic the runtime.
     for (pc, instruction) in code.iter().enumerate() {
         match instruction {
-            Instruction::DefineClass {
-                has_heritage: true, ..
-            } => {
-                return Err(Error::internal(
-                    "class heritage bytecode is not implemented",
-                ));
-            }
             Instruction::PushConst(index)
             | Instruction::FClosure(index)
             | Instruction::RegExp(index)
@@ -886,6 +922,7 @@ pub(crate) fn verify_parts(
             depth: 0,
             regions: Vec::new(),
             return_addresses: Vec::new(),
+            super_call_bases: Vec::new(),
         },
     )]);
     let mut maximum = 0_usize;
@@ -901,8 +938,10 @@ pub(crate) fn verify_parts(
                     "control flow joins with inconsistent stack depth"
                 } else if previous.regions != state.regions {
                     "control flow joins with inconsistent unwind regions"
-                } else {
+                } else if previous.return_addresses != state.return_addresses {
                     "control flow joins with inconsistent gosub return addresses"
+                } else {
+                    "control flow joins with inconsistent super-call markers"
                 };
                 return Err(Error::internal(message));
             }
@@ -921,8 +960,29 @@ pub(crate) fn verify_parts(
             .ok_or_else(|| Error::internal("bytecode stack depth overflow"))?;
         let mut next_regions = state.regions.clone();
         let mut next_return_addresses = state.return_addresses.clone();
+        let mut next_super_call_bases = state.super_call_bases.clone();
+
+        if !matches!(
+            instruction,
+            Instruction::ConstructSuper(_) | Instruction::ApplySuper | Instruction::ForOfNext(_)
+        ) {
+            verify_super_call_pair_untouched(&state, remaining_depth, popped)?;
+        }
 
         match instruction {
+            Instruction::MarkSuperCall => {
+                verify_ordinary_consumption(&state, remaining_depth, popped)?;
+                next_super_call_bases.push(remaining_depth);
+            }
+            Instruction::ConstructSuper(_) | Instruction::ApplySuper => {
+                if next_super_call_bases.last().copied() != Some(remaining_depth) {
+                    return Err(Error::internal(
+                        "typed super construction did not consume its protected pair",
+                    ));
+                }
+                verify_ordinary_consumption(&state, remaining_depth, popped)?;
+                next_super_call_bases.pop();
+            }
             Instruction::DropCatch => {
                 let region = next_regions
                     .pop()
@@ -993,6 +1053,18 @@ pub(crate) fn verify_parts(
                 if state.depth != expected_depth {
                     return Err(Error::internal(
                         "ForOfNext offset does not reach its iterator record",
+                    ));
+                }
+                let record_base = marker_depth.checked_sub(3).ok_or_else(|| {
+                    Error::internal("ForOfNext iterator marker has invalid depth")
+                })?;
+                if state
+                    .super_call_bases
+                    .iter()
+                    .any(|base| *base < *marker_depth && base.saturating_add(2) > record_base)
+                {
+                    return Err(Error::internal(
+                        "ForOfNext touched a protected super-call pair",
                     ));
                 }
             }
@@ -1090,11 +1162,22 @@ pub(crate) fn verify_parts(
             }
         }
 
-        if matches!(instruction, Instruction::Return)
-            && state
-                .regions
-                .iter()
-                .any(|region| matches!(region, UnwindRegionState::Iterator { .. }))
+        if next_super_call_bases
+            .last()
+            .is_some_and(|base| next_depth < base.saturating_add(2))
+        {
+            return Err(Error::internal(
+                "bytecode stack crossed a protected super-call pair",
+            ));
+        }
+
+        if matches!(
+            instruction,
+            Instruction::Return | Instruction::ReturnDerived(_)
+        ) && state
+            .regions
+            .iter()
+            .any(|region| matches!(region, UnwindRegionState::Iterator { .. }))
         {
             return Err(Error::internal("Return bypassed an active iterator close"));
         }
@@ -1108,7 +1191,10 @@ pub(crate) fn verify_parts(
             // value and abandon the rest of the frame stack. In particular,
             // `return` and `throw` inside a switch leave its discriminant
             // below that value rather than emitting synthetic cleanup.
-            Instruction::Return | Instruction::Throw | Instruction::Ret => {}
+            Instruction::Return
+            | Instruction::ReturnDerived(_)
+            | Instruction::Throw
+            | Instruction::Ret => {}
             // QuickJS `OP_throw_error` is terminal and abandons the complete
             // frame stack. A postfix update can legitimately retain its old
             // value below the attempted write when immutable-binding
@@ -1124,6 +1210,7 @@ pub(crate) fn verify_parts(
                         depth: next_depth,
                         regions: next_regions,
                         return_addresses: next_return_addresses,
+                        super_call_bases: next_super_call_bases,
                     },
                     code.len(),
                 )?;
@@ -1133,6 +1220,7 @@ pub(crate) fn verify_parts(
                     depth: next_depth,
                     regions: next_regions,
                     return_addresses: next_return_addresses,
+                    super_call_bases: next_super_call_bases,
                 };
                 enqueue_target(&mut worklist, *target, next.clone(), code.len())?;
                 enqueue_fallthrough(&mut worklist, pc, next, code.len())?;
@@ -1147,6 +1235,7 @@ pub(crate) fn verify_parts(
                         depth: exceptional_depth,
                         regions: state.regions.clone(),
                         return_addresses: state.return_addresses.clone(),
+                        super_call_bases: state.super_call_bases.clone(),
                     },
                     code.len(),
                 )?;
@@ -1161,6 +1250,7 @@ pub(crate) fn verify_parts(
                         depth: next_depth,
                         regions: next_regions,
                         return_addresses: next_return_addresses,
+                        super_call_bases: next_super_call_bases,
                     },
                     code.len(),
                 )?;
@@ -1182,6 +1272,7 @@ pub(crate) fn verify_parts(
                             addresses.push(state.depth);
                             addresses
                         },
+                        super_call_bases: state.super_call_bases.clone(),
                     },
                     code.len(),
                 )?;
@@ -1192,6 +1283,7 @@ pub(crate) fn verify_parts(
                         depth: next_depth,
                         regions: next_regions,
                         return_addresses: next_return_addresses,
+                        super_call_bases: next_super_call_bases,
                     },
                     code.len(),
                 )?;
@@ -1203,6 +1295,7 @@ pub(crate) fn verify_parts(
                     depth: next_depth,
                     regions: next_regions,
                     return_addresses: next_return_addresses,
+                    super_call_bases: next_super_call_bases,
                 },
                 code.len(),
             )?,
@@ -1242,6 +1335,27 @@ struct VerificationState {
     /// introduced by reachable `Gosub` edges. Ordinary opcodes may neither
     /// forge nor consume these typed slots.
     return_addresses: Vec<usize>,
+    /// Operand-stack bases of authenticated `super_constructor, new.target`
+    /// pairs. Nested `super()` argument expressions form a strict LIFO stack.
+    super_call_bases: Vec<usize>,
+}
+
+fn verify_super_call_pair_untouched(
+    state: &VerificationState,
+    remaining_depth: usize,
+    popped: usize,
+) -> Result<(), Error> {
+    if popped > 0
+        && state
+            .super_call_bases
+            .last()
+            .is_some_and(|base| remaining_depth < base.saturating_add(2))
+    {
+        return Err(Error::internal(
+            "ordinary bytecode touched a protected super-call pair",
+        ));
+    }
+    Ok(())
 }
 
 fn verify_ordinary_consumption(
@@ -1401,24 +1515,23 @@ mod tests {
             "string-key opcode referenced a non-string constant"
         );
 
-        let unsupported_heritage = BytecodeFunction {
+        let heritage = BytecodeFunction {
             code: vec![
                 Instruction::Undefined,
-                Instruction::Return,
+                Instruction::PushI32(7),
                 Instruction::DefineClass {
                     name: 0,
                     has_heritage: true,
                 },
+                Instruction::Drop,
+                Instruction::Return,
             ],
             constants: vec![Value::String(crate::JsString::from_static("Derived"))],
             local_count: 0,
-            max_stack: 1,
+            max_stack: 2,
             name: None,
         };
-        assert_eq!(
-            unsupported_heritage.verify().unwrap_err().message(),
-            "class heritage bytecode is not implemented"
-        );
+        assert_eq!(heritage.verify().unwrap().max_stack, 2);
     }
 
     #[test]
@@ -2751,9 +2864,11 @@ mod tests {
 
         for instruction in [
             Instruction::InitializeLocal(0),
+            Instruction::InitializeDerivedLocal(0),
             Instruction::PutLocalCheck(0),
             Instruction::SetLocalCheck(0),
             Instruction::PutVarRefCheck(0),
+            Instruction::InitializeDerivedVarRef(0),
         ] {
             let underflow = BytecodeFunction {
                 name: None,
@@ -2772,9 +2887,11 @@ mod tests {
             Instruction::SetLocalUninitialized(0),
             Instruction::GetLocalCheck(0),
             Instruction::InitializeLocal(0),
+            Instruction::InitializeDerivedLocal(0),
             Instruction::PutLocalCheck(0),
             Instruction::SetLocalCheck(0),
             Instruction::CloseLocal(0),
+            Instruction::ReturnDerived(0),
         ] {
             let function = BytecodeFunction {
                 name: None,
@@ -2788,6 +2905,209 @@ mod tests {
                 "local bytecode operand is out of bounds"
             );
         }
+    }
+
+    #[test]
+    fn verifier_models_typed_derived_constructor_operations() {
+        let default_derived = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushActiveFunction,
+                Instruction::PutLocal(1),
+                Instruction::InitDerivedConstructor,
+                Instruction::Dup,
+                Instruction::InitializeDerivedLocal(0),
+                Instruction::ReturnDerived(0),
+            ],
+            constants: vec![],
+            local_count: 2,
+            max_stack: 2,
+        };
+        assert_eq!(default_derived.verify().unwrap().max_stack, 2);
+
+        let captured_initializer = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::InitializeDerivedVarRef(0),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        assert_eq!(captured_initializer.verify().unwrap().max_stack, 1);
+
+        let return_underflow = BytecodeFunction {
+            code: vec![Instruction::ReturnDerived(0)],
+            local_count: 1,
+            max_stack: 0,
+            ..BytecodeFunction::default()
+        };
+        assert_eq!(
+            return_underflow.verify().unwrap_err().message(),
+            "bytecode stack underflow"
+        );
+
+        // ReturnDerived is a terminal completion and must not make its
+        // unreachable successor part of the control-flow graph.
+        let terminal = BytecodeFunction {
+            code: vec![
+                Instruction::Undefined,
+                Instruction::ReturnDerived(0),
+                Instruction::PushI32(1),
+            ],
+            local_count: 1,
+            max_stack: 1,
+            ..BytecodeFunction::default()
+        };
+        assert_eq!(terminal.verify().unwrap().max_stack, 1);
+    }
+
+    #[test]
+    fn verifier_protects_typed_super_call_pairs_across_control_flow() {
+        let conditional_argument = BytecodeFunction {
+            code: vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::MarkSuperCall,
+                Instruction::PushTrue,
+                Instruction::IfFalse(7),
+                Instruction::PushI32(1),
+                Instruction::Goto(8),
+                Instruction::PushI32(2),
+                Instruction::ConstructSuper(1),
+                Instruction::Return,
+            ],
+            max_stack: 3,
+            ..BytecodeFunction::default()
+        };
+        assert_eq!(conditional_argument.verify().unwrap().max_stack, 3);
+
+        let nested = BytecodeFunction {
+            code: vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::MarkSuperCall,
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::MarkSuperCall,
+                Instruction::ConstructSuper(0),
+                Instruction::ConstructSuper(1),
+                Instruction::Return,
+            ],
+            max_stack: 4,
+            ..BytecodeFunction::default()
+        };
+        assert_eq!(nested.verify().unwrap().max_stack, 4);
+
+        let spread = BytecodeFunction {
+            code: vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::MarkSuperCall,
+                Instruction::ArrayFrom(0),
+                Instruction::ApplySuper,
+                Instruction::Return,
+            ],
+            max_stack: 3,
+            ..BytecodeFunction::default()
+        };
+        assert_eq!(spread.verify().unwrap().max_stack, 3);
+
+        let unmarked = BytecodeFunction {
+            code: vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::ConstructSuper(0),
+                Instruction::Return,
+            ],
+            max_stack: 2,
+            ..BytecodeFunction::default()
+        };
+        assert_eq!(
+            unmarked.verify().unwrap_err().message(),
+            "typed super construction did not consume its protected pair"
+        );
+
+        let wrong_arity = BytecodeFunction {
+            code: vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::MarkSuperCall,
+                Instruction::Undefined,
+                Instruction::ConstructSuper(0),
+                Instruction::Return,
+            ],
+            max_stack: 3,
+            ..BytecodeFunction::default()
+        };
+        assert_eq!(
+            wrong_arity.verify().unwrap_err().message(),
+            "typed super construction did not consume its protected pair"
+        );
+
+        let generic_apply = BytecodeFunction {
+            code: vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::MarkSuperCall,
+                Instruction::ArrayFrom(0),
+                Instruction::Apply(ApplyKind::Construct),
+                Instruction::Return,
+            ],
+            max_stack: 3,
+            ..BytecodeFunction::default()
+        };
+        assert_eq!(
+            generic_apply.verify().unwrap_err().message(),
+            "ordinary bytecode touched a protected super-call pair"
+        );
+
+        for touching in [
+            Instruction::Swap,
+            Instruction::Drop,
+            Instruction::Construct(0),
+        ] {
+            let malformed = BytecodeFunction {
+                code: vec![
+                    Instruction::Undefined,
+                    Instruction::Undefined,
+                    Instruction::MarkSuperCall,
+                    touching,
+                    Instruction::Undefined,
+                    Instruction::Return,
+                ],
+                max_stack: 2,
+                ..BytecodeFunction::default()
+            };
+            assert_eq!(
+                malformed.verify().unwrap_err().message(),
+                "ordinary bytecode touched a protected super-call pair"
+            );
+        }
+
+        let inconsistent_join = BytecodeFunction {
+            code: vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::PushTrue,
+                Instruction::IfFalse(6),
+                Instruction::MarkSuperCall,
+                Instruction::Goto(7),
+                Instruction::Nop,
+                Instruction::Nop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            max_stack: 3,
+            ..BytecodeFunction::default()
+        };
+        assert_eq!(
+            inconsistent_join.verify().unwrap_err().message(),
+            "control flow joins with inconsistent super-call markers"
+        );
     }
 
     #[test]

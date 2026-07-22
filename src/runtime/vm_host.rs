@@ -161,6 +161,10 @@ pub(super) struct RuntimeVmHost {
     runtime: Runtime,
     active_frame_token: ActiveFrameToken,
     current_realm: ContextId,
+    /// Realm of the invocation which entered this bytecode frame. Derived
+    /// constructor return-protocol errors are allocated here, unlike ordinary
+    /// bytecode errors which belong to `current_realm`.
+    caller_realm: ContextId,
     current_bytecode: Option<FunctionBytecodeRef>,
     /// Current callee retained for sloppy mapped `arguments.callee`.
     /// Detached host-only tests do not execute the arguments opcode.
@@ -201,6 +205,7 @@ impl RuntimeVmHost {
             runtime,
             active_frame_token: ActiveFrameToken(0),
             current_realm,
+            caller_realm: current_realm,
             current_bytecode: None,
             current_function: None,
             actual_argument_count: 0,
@@ -257,6 +262,7 @@ impl RuntimeVmHost {
             runtime,
             active_frame_token: ActiveFrameToken(0),
             current_realm,
+            caller_realm: current_realm,
             current_bytecode: Some(root),
             current_function: None,
             actual_argument_count: arguments.len(),
@@ -774,6 +780,17 @@ impl RuntimeVmHost {
                 "lexical variable is not initialized",
             ));
         };
+        // Compiler-only pseudo names must not leak into observable diagnostics.
+        // QuickJS stores this identity as JS_ATOM_this and therefore reports
+        // `this`, while this typed compiler uses the unspellable `<this>` name
+        // to keep it distinct from authored bindings.
+        let hidden_this = self
+            .runtime
+            .intern_property_key("<this>")
+            .map_err(|error| Error::internal(error.to_string()))?;
+        if hidden_this.atom() == name {
+            return Ok(Error::new(ErrorKind::Reference, "this is not initialized"));
+        }
         let key = PropertyKey::from_borrowed_atom(self.runtime.clone(), name)
             .map_err(|error| Error::internal(error.to_string()))?;
         self.runtime
@@ -1444,6 +1461,7 @@ impl Runtime {
             runtime: self.clone(),
             active_frame_token: active_frame.token(),
             current_realm: realm,
+            caller_realm,
             current_bytecode: Some(root),
             current_function: Some(callable.as_object().clone()),
             actual_argument_count: arguments.len(),
@@ -2998,6 +3016,50 @@ impl VmHost for RuntimeVmHost {
             .map_err(runtime_error_to_vm_error)
     }
 
+    fn init_derived_constructor(
+        &mut self,
+        active_function: ObjectRef,
+        new_target: Value,
+    ) -> Result<Completion, Error> {
+        if matches!(new_target, Value::Undefined) {
+            return Err(Error::new(
+                ErrorKind::Type,
+                "class constructors must be invoked with 'new'",
+            ));
+        }
+        if self.current_function.as_ref() != Some(&active_function) {
+            return Err(Error::internal(
+                "derived constructor initializer received a non-active function",
+            ));
+        }
+        if self.actual_argument_count > self.arguments.len() {
+            return Err(Error::internal(
+                "derived constructor actual argument count exceeds its frame",
+            ));
+        }
+
+        // `super()` is deliberately resolved from the function object's live
+        // [[Prototype]]. Object.setPrototypeOf on the derived constructor is
+        // therefore observable, matching QuickJS and ECMAScript GetSuperConstructor.
+        let super_constructor = self
+            .runtime
+            .get_prototype_of(&active_function)
+            .map_err(runtime_error_to_vm_error)?
+            .map_or(Value::Null, Value::Object);
+        let arguments = self.arguments[..self.actual_argument_count]
+            .iter()
+            .map(|binding| read_frame_binding(&self.runtime, binding))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.runtime
+            .construct_value_internal(
+                self.current_realm,
+                super_constructor,
+                new_target,
+                &arguments,
+            )
+            .map_err(runtime_error_to_vm_error)
+    }
+
     fn closure_count(&self) -> usize {
         self.closure_slots.len()
     }
@@ -3151,6 +3213,60 @@ impl VmHost for RuntimeVmHost {
                 .write_var_ref(root, value)
                 .map_err(runtime_error_to_vm_error),
         }
+    }
+
+    fn initialize_derived_local(&mut self, index: u16, value: Value) -> Result<(), Error> {
+        let definition = self.local_definition(index)?;
+        if !definition.is_lexical
+            || definition.is_const
+            || definition.kind != ClosureVariableKind::Normal
+        {
+            return Err(Error::internal(
+                "derived this initialization referenced a non-mutable lexical local",
+            ));
+        }
+        if !matches!(value, Value::Object(_)) {
+            return Err(Error::internal(
+                "derived this initialization did not receive an Object",
+            ));
+        }
+
+        let captured = match self
+            .locals
+            .get(usize::from(index))
+            .ok_or_else(|| Error::internal("local index is out of bounds"))?
+        {
+            FrameBinding::Uninitialized => None,
+            FrameBinding::Captured(root) => Some(root.clone()),
+            FrameBinding::Direct(_) => {
+                return Err(Error::new(
+                    ErrorKind::Reference,
+                    "'this' can be initialized only once",
+                ));
+            }
+        };
+        if let Some(root) = captured {
+            let raw = self
+                .runtime
+                .raw_var_ref_value(&root)
+                .map_err(runtime_error_to_vm_error)?;
+            if !matches!(raw, RawValue::Uninitialized) {
+                return Err(Error::new(
+                    ErrorKind::Reference,
+                    "'this' can be initialized only once",
+                ));
+            }
+            return self
+                .runtime
+                .write_var_ref(&root, value)
+                .map_err(runtime_error_to_vm_error);
+        }
+        let binding = self
+            .locals
+            .get_mut(usize::from(index))
+            .ok_or_else(|| Error::internal("local index is out of bounds"))?;
+        *binding = FrameBinding::Direct(value);
+        Ok(())
     }
 
     fn put_local_checked(&mut self, index: u16, value: Value) -> Result<(), Error> {
@@ -3329,6 +3445,116 @@ impl VmHost for RuntimeVmHost {
             .write_var_ref(root, value)
             .map_err(runtime_error_to_vm_error)
     }
+
+    fn initialize_derived_var_ref(&mut self, index: u16, value: Value) -> Result<(), Error> {
+        let descriptor = self
+            .closure_variables
+            .get(usize::from(index))
+            .copied()
+            .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?;
+        if !descriptor.is_lexical
+            || descriptor.is_const
+            || descriptor.kind != ClosureVariableKind::Normal
+        {
+            return Err(Error::internal(
+                "derived this initialization referenced a non-mutable lexical closure",
+            ));
+        }
+        if !matches!(value, Value::Object(_)) {
+            return Err(Error::internal(
+                "derived this initialization did not receive an Object",
+            ));
+        }
+        let root = self
+            .closure_slots
+            .get(usize::from(index))
+            .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?
+            .clone();
+        let raw = self
+            .runtime
+            .raw_var_ref_value(&root)
+            .map_err(runtime_error_to_vm_error)?;
+        if !matches!(raw, RawValue::Uninitialized) {
+            // Pinned QuickJS's captured form (`put_var_ref_check_init`) uses
+            // the ordinary uninitialized-binding diagnostic here. This
+            // intentionally differs from the owning-local opcode's explicit
+            // "initialized only once" message.
+            return Err(Error::new(ErrorKind::Reference, "this is not initialized"));
+        }
+        self.runtime
+            .write_var_ref(&root, value)
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn return_derived(&mut self, index: u16, value: Value) -> Result<Completion, Error> {
+        let definition = self.local_definition(index)?;
+        if !definition.is_lexical
+            || definition.is_const
+            || definition.kind != ClosureVariableKind::Normal
+        {
+            return Err(Error::internal(
+                "derived return referenced a non-mutable lexical this local",
+            ));
+        }
+        match value {
+            value @ Value::Object(_) => Ok(Completion::Return(value)),
+            Value::Undefined => {
+                let binding = self
+                    .locals
+                    .get(usize::from(index))
+                    .ok_or_else(|| Error::internal("local index is out of bounds"))?;
+                let this_value = match binding {
+                    FrameBinding::Direct(value) => value.clone(),
+                    FrameBinding::Uninitialized => {
+                        return self
+                            .runtime
+                            .new_native_error(
+                                self.caller_realm,
+                                NativeErrorKind::Reference,
+                                "this is not initialized",
+                            )
+                            .map(Completion::Throw)
+                            .map_err(runtime_error_to_vm_error);
+                    }
+                    FrameBinding::Captured(root) => {
+                        let raw = self
+                            .runtime
+                            .raw_var_ref_value(root)
+                            .map_err(runtime_error_to_vm_error)?;
+                        if matches!(raw, RawValue::Uninitialized) {
+                            return self
+                                .runtime
+                                .new_native_error(
+                                    self.caller_realm,
+                                    NativeErrorKind::Reference,
+                                    "this is not initialized",
+                                )
+                                .map(Completion::Throw)
+                                .map_err(runtime_error_to_vm_error);
+                        }
+                        self.runtime
+                            .root_raw_value(&raw)
+                            .map_err(runtime_error_to_vm_error)?
+                    }
+                };
+                if !matches!(this_value, Value::Object(_)) {
+                    return Err(Error::internal(
+                        "initialized derived this binding did not contain an Object",
+                    ));
+                }
+                Ok(Completion::Return(this_value))
+            }
+            _ => self
+                .runtime
+                .new_native_error(
+                    self.caller_realm,
+                    NativeErrorKind::Type,
+                    "derived class constructor must return an object or undefined",
+                )
+                .map(Completion::Throw)
+                .map_err(runtime_error_to_vm_error),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3373,6 +3599,160 @@ mod tests {
         host.locals = vec![FrameBinding::Direct(Value::Object(object.clone()))];
         host.reusable_captured_locals = vec![false];
         (host, object)
+    }
+
+    fn derived_this_definition() -> VariableDefinition {
+        VariableDefinition {
+            name: None,
+            is_lexical: true,
+            is_const: false,
+            is_parameter_initializer: false,
+            kind: ClosureVariableKind::Normal,
+        }
+    }
+
+    #[test]
+    fn derived_this_initializers_are_one_shot_for_locals_and_var_refs() {
+        let runtime = Runtime::new();
+        let context = runtime.new_context();
+        let first = runtime.new_object(None).unwrap();
+        let second = runtime.new_object(None).unwrap();
+
+        let mut local_host = RuntimeVmHost::empty_for_test(runtime.clone(), context.realm);
+        local_host.local_definitions = Rc::from([derived_this_definition()]);
+        local_host.locals = vec![FrameBinding::Uninitialized];
+        local_host.reusable_captured_locals = vec![false];
+        local_host
+            .initialize_derived_local(0, Value::Object(first.clone()))
+            .unwrap();
+        assert_eq!(
+            local_host.get_local_checked(0).unwrap(),
+            Value::Object(first)
+        );
+        let error = local_host
+            .initialize_derived_local(0, Value::Object(second.clone()))
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Reference);
+        assert_eq!(error.message(), "'this' can be initialized only once");
+
+        let this_key = runtime.intern_property_key("<this>").unwrap();
+        let root = runtime
+            .new_uninitialized_captured_var_ref(true, false, ClosureVariableKind::Normal)
+            .unwrap();
+        let mut closure_host = RuntimeVmHost::empty_for_test(runtime.clone(), context.realm);
+        closure_host.closure_variables = Rc::from([ClosureVariable {
+            source: ClosureSource::ParentLocal(0),
+            name: ClosureVariableName::Atom(this_key.atom()),
+            is_lexical: true,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+        }]);
+        closure_host.closure_slots = vec![root.clone()];
+        closure_host
+            .initialize_derived_var_ref(0, Value::Object(second.clone()))
+            .unwrap();
+        assert_eq!(runtime.read_var_ref(&root).unwrap(), Value::Object(second));
+        let replacement = runtime.new_object(None).unwrap();
+        let error = closure_host
+            .initialize_derived_var_ref(0, Value::Object(replacement))
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Reference);
+        assert_eq!(error.message(), "this is not initialized");
+    }
+
+    #[test]
+    fn derived_return_errors_are_created_in_the_caller_realm() {
+        let runtime = Runtime::new();
+        let mut defining = runtime.new_context();
+        let mut caller = runtime.new_context();
+        let defining_reference = eval_object(&mut defining, "ReferenceError.prototype");
+        let caller_reference = eval_object(&mut caller, "ReferenceError.prototype");
+        let caller_type = eval_object(&mut caller, "TypeError.prototype");
+        assert_ne!(defining_reference, caller_reference);
+
+        let mut host = RuntimeVmHost::empty_for_test(runtime.clone(), defining.realm);
+        host.caller_realm = caller.realm;
+        host.local_definitions = Rc::from([derived_this_definition()]);
+        host.locals = vec![FrameBinding::Uninitialized];
+        host.reusable_captured_locals = vec![false];
+
+        let Completion::Throw(Value::Object(missing_this)) =
+            host.return_derived(0, Value::Undefined).unwrap()
+        else {
+            panic!("missing derived this did not throw an Object")
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&missing_this).unwrap(),
+            Some(caller_reference)
+        );
+
+        let Completion::Throw(Value::Object(primitive_return)) =
+            host.return_derived(0, Value::Int(1)).unwrap()
+        else {
+            panic!("primitive derived return did not throw an Object")
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&primitive_return).unwrap(),
+            Some(caller_type)
+        );
+
+        // An explicit Object return succeeds without observing the still-TDZ
+        // `this` binding.
+        let explicit = runtime.new_object(None).unwrap();
+        assert_eq!(
+            host.return_derived(0, Value::Object(explicit.clone()))
+                .unwrap(),
+            Completion::Return(Value::Object(explicit))
+        );
+    }
+
+    #[test]
+    fn default_derived_initialization_uses_live_super_raw_args_and_new_target() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let base = eval_object(
+            &mut context,
+            "(function Base(a, b) { this.sum = a + b; this.count = arguments.length; })",
+        );
+        let active = eval_object(&mut context, "(function Derived() {})");
+        assert!(runtime.set_prototype_of(&active, Some(&base)).unwrap());
+
+        let mut host = RuntimeVmHost::empty_for_test(runtime.clone(), context.realm);
+        host.current_function = Some(active.clone());
+        host.actual_argument_count = 2;
+        host.arguments = vec![
+            FrameBinding::Direct(Value::Int(20)),
+            FrameBinding::Direct(Value::Int(22)),
+            // Frame padding or later slots must not become forwarded actuals.
+            FrameBinding::Direct(Value::Int(999)),
+        ];
+        let Completion::Return(Value::Object(instance)) = host
+            .init_derived_constructor(active.clone(), Value::Object(active.clone()))
+            .unwrap()
+        else {
+            panic!("default derived initialization did not construct an Object")
+        };
+
+        let sum = runtime.intern_property_key("sum").unwrap();
+        let count = runtime.intern_property_key("count").unwrap();
+        assert_eq!(
+            context.get_property(&instance, &sum).unwrap(),
+            Value::Int(42)
+        );
+        assert_eq!(
+            context.get_property(&instance, &count).unwrap(),
+            Value::Int(2)
+        );
+
+        let prototype = runtime.intern_property_key("prototype").unwrap();
+        let Value::Object(active_prototype) = context.get_property(&active, &prototype).unwrap()
+        else {
+            panic!("new.target did not expose an Object prototype")
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&instance).unwrap(),
+            Some(active_prototype)
+        );
     }
 
     #[test]

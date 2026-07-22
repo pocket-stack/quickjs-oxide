@@ -5031,9 +5031,24 @@ impl Runtime {
                             ));
                         }
                         ConstructorKind::Derived => {
-                            return Err(RuntimeError::Engine(Error::internal(
-                                "derived constructor execution is not implemented yet",
-                            )));
+                            let completion = self.execute_bytecode_callable(
+                                caller_realm,
+                                &constructor,
+                                Value::Undefined,
+                                Value::Object(new_target.as_object().clone()),
+                                &arguments,
+                                bytecode,
+                                closure_slots,
+                            )?;
+                            return match completion {
+                                Completion::Return(value @ Value::Object(_)) => {
+                                    Ok(Completion::Return(value))
+                                }
+                                Completion::Throw(value) => Ok(Completion::Throw(value)),
+                                Completion::Return(_) => Err(RuntimeError::Invariant(
+                                    "derived constructor bytecode returned an unvalidated primitive",
+                                )),
+                            };
                         }
                         ConstructorKind::Base => {}
                     }

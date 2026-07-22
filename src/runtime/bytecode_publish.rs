@@ -9,8 +9,9 @@ use crate::bytecode::{
 use crate::heap::{
     EvalBinding, EvalCallerProfile, EvalCallerVariableTarget, EvalEnvironmentPhaseContext,
     EvalKind, EvalRootBinding, EvalScope, parameter_initializer_visible_locals,
-    validate_eval_environment_phase_layout, validate_parameter_bytecode_layout,
-    validate_parameter_initializer_scope_layout, validate_pattern_parameter_bytecode_layout,
+    validate_derived_constructor_bytecode_layout, validate_eval_environment_phase_layout,
+    validate_parameter_bytecode_layout, validate_parameter_initializer_scope_layout,
+    validate_pattern_parameter_bytecode_layout,
 };
 
 /// Intern every semantically retained direct-eval binding name while keeping
@@ -88,6 +89,149 @@ const fn eval_variable_object_sentinel(kind: ClosureVariableKind) -> Option<&'st
         | ClosureVariableKind::GlobalFunction
         | ClosureVariableKind::WithObject => None,
     }
+}
+
+/// Canonical compiler-authored pseudo-binding entry order. The unlinked
+/// publisher repeats the heap boundary's structural check while additionally
+/// authenticating the source-only sentinel names.
+const fn pseudo_binding_entry(
+    instruction: &crate::bytecode::Instruction,
+) -> Option<(u8, &'static str)> {
+    match instruction {
+        crate::bytecode::Instruction::PushHomeObject => Some((1, "<home_object>")),
+        crate::bytecode::Instruction::PushActiveFunction => Some((2, "<this_active_func>")),
+        crate::bytecode::Instruction::PushNewTarget => Some((3, "<new.target>")),
+        crate::bytecode::Instruction::PushThis => Some((4, "<this>")),
+        _ => None,
+    }
+}
+
+fn eval_root_binding_is_derived_this(binding: &EvalRootBinding<JsString>) -> bool {
+    binding.is_lexical
+        && !binding.is_const
+        && binding.kind == ClosureVariableKind::Normal
+        && !binding.is_catch_parameter
+        && binding.name.utf16_units().eq("<this>".encode_utf16())
+}
+
+fn eval_root_binding_is_super_pseudo(
+    binding: &EvalRootBinding<JsString>,
+    expected_name: &'static str,
+) -> bool {
+    !binding.is_lexical
+        && !binding.is_const
+        && binding.kind == ClosureVariableKind::Normal
+        && !binding.is_catch_parameter
+        && binding.name.utf16_units().eq(expected_name.encode_utf16())
+}
+
+#[derive(Clone, Copy)]
+enum SuperPseudoRole {
+    DerivedThis,
+    ActiveFunction,
+    NewTarget,
+}
+
+fn verify_eval_super_pseudo_bindings(
+    environment: &EvalEnvironment<JsString>,
+    derived_this_local: Option<u16>,
+    active_function_local: Option<u16>,
+    new_target_local: Option<u16>,
+    derived_this_origins: &[bool],
+    active_function_origins: &[bool],
+    new_target_origins: &[bool],
+) -> Result<(), RuntimeError> {
+    // Eval scopes are ordered from innermost to outermost. Only the first
+    // binding for each private role can be resolved by the eval; same-named
+    // entries in later ancestor function segments are shadowed and therefore
+    // cannot grant authority.
+    let mut seen_roles = [false; 3];
+    for binding in environment
+        .scopes
+        .iter()
+        .flat_map(|scope| scope.bindings.iter())
+    {
+        let role = if binding.is_lexical
+            && !binding.is_const
+            && binding.kind == ClosureVariableKind::Normal
+            && !binding.is_catch_parameter
+            && binding.name.utf16_units().eq("<this>".encode_utf16())
+        {
+            Some(SuperPseudoRole::DerivedThis)
+        } else if !binding.is_lexical
+            && !binding.is_const
+            && binding.kind == ClosureVariableKind::Normal
+            && !binding.is_catch_parameter
+            && binding
+                .name
+                .utf16_units()
+                .eq("<this_active_func>".encode_utf16())
+        {
+            Some(SuperPseudoRole::ActiveFunction)
+        } else if !binding.is_lexical
+            && !binding.is_const
+            && binding.kind == ClosureVariableKind::Normal
+            && !binding.is_catch_parameter
+            && binding.name.utf16_units().eq("<new.target>".encode_utf16())
+        {
+            Some(SuperPseudoRole::NewTarget)
+        } else {
+            None
+        };
+        let Some(role) = role else {
+            continue;
+        };
+        let role_index = match role {
+            SuperPseudoRole::DerivedThis => 0,
+            SuperPseudoRole::ActiveFunction => 1,
+            SuperPseudoRole::NewTarget => 2,
+        };
+        if seen_roles[role_index] {
+            continue;
+        }
+        seen_roles[role_index] = true;
+        let authenticated = match (role, binding.source) {
+            (SuperPseudoRole::DerivedThis, crate::heap::EvalBindingSource::Local(index)) => {
+                derived_this_local == Some(index)
+            }
+            (SuperPseudoRole::ActiveFunction, crate::heap::EvalBindingSource::Local(index)) => {
+                active_function_local == Some(index)
+            }
+            (SuperPseudoRole::NewTarget, crate::heap::EvalBindingSource::Local(index)) => {
+                new_target_local == Some(index)
+            }
+            (SuperPseudoRole::DerivedThis, crate::heap::EvalBindingSource::Closure(index)) => {
+                derived_this_origins
+                    .get(usize::from(index))
+                    .copied()
+                    .unwrap_or(false)
+            }
+            (SuperPseudoRole::ActiveFunction, crate::heap::EvalBindingSource::Closure(index)) => {
+                active_function_origins
+                    .get(usize::from(index))
+                    .copied()
+                    .unwrap_or(false)
+            }
+            (SuperPseudoRole::NewTarget, crate::heap::EvalBindingSource::Closure(index)) => {
+                new_target_origins
+                    .get(usize::from(index))
+                    .copied()
+                    .unwrap_or(false)
+            }
+            (_, crate::heap::EvalBindingSource::Argument(_)) => false,
+        };
+        if !authenticated {
+            return Err(RuntimeError::Engine(Error::internal(
+                "eval super pseudo binding did not originate from its authenticated source",
+            )));
+        }
+    }
+    if seen_roles != [true; 3] {
+        return Err(RuntimeError::Engine(Error::internal(
+            "eval super capability is missing an authenticated pseudo binding",
+        )));
+    }
+    Ok(())
 }
 
 fn eval_variable_object_local_kind(
@@ -1143,6 +1287,59 @@ fn verify_unlinked_tree_with_root(
             _ => None,
         })
         .collect::<Vec<_>>();
+    // `expected_bindings` preserves the caller's inner-to-outer resolution
+    // order. A same-shaped pseudo binding in an outer function segment is
+    // shadowed and must not gain capability merely by matching the sentinel.
+    let (root_derived_this_origin, root_active_function_origin, root_new_target_origin) =
+        match root_publication {
+            RootPublication::Eval {
+                kind: EvalKind::Direct,
+                expected_bindings,
+                expected_super_call_allowed: true,
+                ..
+            } => (
+                expected_bindings
+                    .iter()
+                    .position(eval_root_binding_is_derived_this),
+                expected_bindings.iter().position(|binding| {
+                    eval_root_binding_is_super_pseudo(binding, "<this_active_func>")
+                }),
+                expected_bindings
+                    .iter()
+                    .position(|binding| eval_root_binding_is_super_pseudo(binding, "<new.target>")),
+            ),
+            _ => (None, None, None),
+        };
+    let root_derived_this_origins = function
+        .closure_variables()
+        .iter()
+        .map(|descriptor| match descriptor.source {
+            ClosureSource::EvalEnvironment(index) => {
+                root_derived_this_origin == Some(usize::from(index))
+            }
+            _ => false,
+        })
+        .collect::<Vec<_>>();
+    let root_active_function_origins = function
+        .closure_variables()
+        .iter()
+        .map(|descriptor| match descriptor.source {
+            ClosureSource::EvalEnvironment(index) => {
+                root_active_function_origin == Some(usize::from(index))
+            }
+            _ => false,
+        })
+        .collect::<Vec<_>>();
+    let root_new_target_origins = function
+        .closure_variables()
+        .iter()
+        .map(|descriptor| match descriptor.source {
+            ClosureSource::EvalEnvironment(index) => {
+                root_new_target_origin == Some(usize::from(index))
+            }
+            _ => false,
+        })
+        .collect::<Vec<_>>();
     // Synthetic Eval roots authenticate imported descriptors directly and do
     // not expose the ordinary-function `add_eval_variables` metadata quirk.
     let root_function_name_origins = vec![None; function.closure_variables().len()];
@@ -1155,6 +1352,9 @@ fn verify_unlinked_tree_with_root(
         0_usize,
         root_origins,
         root_function_name_origins,
+        root_derived_this_origins,
+        root_active_function_origins,
+        root_new_target_origins,
         0_usize,
     )];
     while let Some((
@@ -1162,6 +1362,9 @@ fn verify_unlinked_tree_with_root(
         function_depth,
         closure_origins,
         function_name_origins,
+        derived_this_origins,
+        active_function_origins,
+        new_target_origins,
         function_id,
     )) = pending.pop()
     {
@@ -1401,6 +1604,20 @@ fn verify_unlinked_tree_with_root(
                 "function-name local is outside bytecode local slots",
             )));
         }
+        for (local, message) in [
+            (
+                function.metadata().derived_this_local,
+                "derived this local is outside bytecode local slots",
+            ),
+            (
+                function.metadata().active_function_local,
+                "active-function local is outside bytecode local slots",
+            ),
+        ] {
+            if local.is_some_and(|index| index >= function.metadata().local_count) {
+                return Err(RuntimeError::Engine(Error::internal(message)));
+            }
+        }
         if function
             .metadata()
             .eval_variable_object_local
@@ -1432,6 +1649,24 @@ fn verify_unlinked_tree_with_root(
             return Err(RuntimeError::Engine(Error::internal(
                 "parameter eval variable-object local overlaps another hidden local",
             )));
+        }
+        let private_locals = [
+            function.metadata().function_name_local,
+            function.metadata().eval_variable_object_local,
+            arg_eval_variable_object_local,
+            function.metadata().derived_this_local,
+            function.metadata().active_function_local,
+        ];
+        for (index, local) in private_locals.iter().enumerate() {
+            if local.is_some()
+                && private_locals[..index]
+                    .iter()
+                    .any(|earlier| earlier == local)
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "authenticated private locals overlap",
+                )));
+            }
         }
         // GetSuper is also used by derived-constructor `super()`, while the
         // get/put-value operations consume only ordinary stack values. The
@@ -1502,6 +1737,19 @@ fn verify_unlinked_tree_with_root(
             .iter()
             .map(|definition| definition.is_lexical)
             .collect::<Vec<_>>();
+        let const_locals = function
+            .local_definitions()
+            .iter()
+            .map(|definition| definition.is_const)
+            .collect::<Vec<_>>();
+        validate_derived_constructor_bytecode_layout(
+            function.metadata(),
+            function.code(),
+            &lexical_locals,
+            &const_locals,
+            function.closure_variables(),
+        )
+        .map_err(|message| RuntimeError::Engine(Error::internal(message)))?;
         validate_parameter_initializer_scope_layout(
             function.metadata(),
             function.code(),
@@ -1592,15 +1840,19 @@ fn verify_unlinked_tree_with_root(
         }
         if function.parameter_environment().is_some() {
             let mut entry_pc = 0_usize;
+            let mut pseudo_rank = 0_u8;
+            let mut pseudo_targets = Vec::with_capacity(4);
             while let Some([source, crate::bytecode::Instruction::PutLocal(local)]) =
                 function.code().get(entry_pc..entry_pc + 2)
             {
-                let expected_name = match source {
-                    crate::bytecode::Instruction::PushHomeObject => "<home_object>",
-                    crate::bytecode::Instruction::PushNewTarget => "<new.target>",
-                    crate::bytecode::Instruction::PushThis => "<this>",
-                    _ => break,
+                let Some((rank, expected_name)) = pseudo_binding_entry(source) else {
+                    break;
                 };
+                if rank <= pseudo_rank || pseudo_targets.contains(local) {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "parameter pseudo-binding prologue is malformed",
+                    )));
+                }
                 let definition = function
                     .local_definitions()
                     .get(usize::from(*local))
@@ -1622,12 +1874,18 @@ fn verify_unlinked_tree_with_root(
                         "parameter pseudo-binding definition is not authenticated",
                     )));
                 }
+                pseudo_rank = rank;
+                pseudo_targets.push(*local);
                 entry_pc += 2;
             }
         }
         for (index, definition) in function.local_definitions().iter().enumerate() {
             let is_function_name =
                 function.metadata().function_name_local == u16::try_from(index).ok();
+            let is_derived_this =
+                function.metadata().derived_this_local == u16::try_from(index).ok();
+            let is_active_function =
+                function.metadata().active_function_local == u16::try_from(index).ok();
             let is_eval_variable_object =
                 function.metadata().eval_variable_object_local == u16::try_from(index).ok();
             let is_arg_eval_variable_object =
@@ -1640,6 +1898,33 @@ fn verify_unlinked_tree_with_root(
                 {
                     return Err(RuntimeError::Engine(Error::internal(
                         "function-name definition disagrees with bytecode metadata",
+                    )));
+                }
+            } else if is_derived_this {
+                if definition.kind != ClosureVariableKind::Normal
+                    || !definition.is_lexical
+                    || definition.is_const
+                    || definition.is_parameter_initializer
+                    || definition
+                        .name
+                        .as_ref()
+                        .is_none_or(|name| name.utf16_units().ne("<this>".encode_utf16()))
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "derived this definition disagrees with bytecode metadata",
+                    )));
+                }
+            } else if is_active_function {
+                if definition.kind != ClosureVariableKind::Normal
+                    || definition.is_lexical
+                    || definition.is_const
+                    || definition.is_parameter_initializer
+                    || definition.name.as_ref().is_none_or(|name| {
+                        name.utf16_units().ne("<this_active_func>".encode_utf16())
+                    })
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "active-function definition disagrees with bytecode metadata",
                     )));
                 }
             } else if is_eval_variable_object {
@@ -1693,17 +1978,14 @@ fn verify_unlinked_tree_with_root(
         }
         if function.parameter_environment().is_none() {
             let mut variable_environment_pc = 0_usize;
-            while matches!(
-                function
-                    .code()
-                    .get(variable_environment_pc..variable_environment_pc + 2),
-                Some([
-                    crate::bytecode::Instruction::PushHomeObject
-                        | crate::bytecode::Instruction::PushNewTarget
-                        | crate::bytecode::Instruction::PushThis,
-                    crate::bytecode::Instruction::PutLocal(_),
-                ])
-            ) {
+            while function
+                .code()
+                .get(variable_environment_pc..variable_environment_pc + 2)
+                .is_some_and(|pair| {
+                    matches!(pair, [source, crate::bytecode::Instruction::PutLocal(_)]
+                        if pseudo_binding_entry(source).is_some())
+                })
+            {
                 variable_environment_pc += 2;
             }
             if matches!(
@@ -1755,6 +2037,46 @@ fn verify_unlinked_tree_with_root(
             return Err(RuntimeError::Engine(Error::internal(
                 "function closure descriptor count does not match bytecode metadata",
             )));
+        }
+        if derived_this_origins.len() != function.closure_variables().len() {
+            return Err(RuntimeError::Invariant(
+                "derived-this provenance count disagrees with closure descriptors",
+            ));
+        }
+        if active_function_origins.len() != function.closure_variables().len()
+            || new_target_origins.len() != function.closure_variables().len()
+        {
+            return Err(RuntimeError::Invariant(
+                "super-call provenance count disagrees with closure descriptors",
+            ));
+        }
+        for instruction in function.code() {
+            let crate::bytecode::Instruction::InitializeDerivedVarRef(index) = instruction else {
+                continue;
+            };
+            let descriptor = function
+                .closure_variables()
+                .get(usize::from(*index))
+                .ok_or_else(|| {
+                    RuntimeError::Engine(Error::internal(
+                        "captured derived initializer is outside closure slots",
+                    ))
+                })?;
+            let name = unlinked_closure_name(function, descriptor)?;
+            if name.is_none_or(|name| name.utf16_units().ne("<this>".encode_utf16())) {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "captured derived initializer lost its this-binding provenance",
+                )));
+            }
+            if !derived_this_origins
+                .get(usize::from(*index))
+                .copied()
+                .unwrap_or(false)
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "captured derived initializer did not originate from derived this",
+                )));
+            }
         }
         verify_unlinked_debug(function)?;
         if function.closure_variables().iter().any(|descriptor| {
@@ -2084,16 +2406,15 @@ fn verify_unlinked_tree_with_root(
         let mut global_function_initializer_pcs = HashMap::new();
         let mut global_function_prologue_offset = 0_usize;
         let mut pseudo_rank = 0_u8;
-        let mut pseudo_targets = Vec::with_capacity(3);
+        let mut pseudo_targets = Vec::with_capacity(4);
+        let mut authenticated_active_function_local = None;
+        let mut authenticated_new_target_local = None;
         while let Some([source, crate::bytecode::Instruction::PutLocal(local)]) = function
             .code()
             .get(global_function_prologue_offset..global_function_prologue_offset + 2)
         {
-            let (rank, expected_name) = match source {
-                crate::bytecode::Instruction::PushHomeObject => (1, "<home_object>"),
-                crate::bytecode::Instruction::PushNewTarget => (2, "<new.target>"),
-                crate::bytecode::Instruction::PushThis => (3, "<this>"),
-                _ => break,
+            let Some((rank, expected_name)) = pseudo_binding_entry(source) else {
+                break;
             };
             let Some(definition) = function.local_definitions().get(usize::from(*local)) else {
                 break;
@@ -2115,7 +2436,84 @@ fn verify_unlinked_tree_with_root(
             }
             pseudo_rank = rank;
             pseudo_targets.push(*local);
+            match source {
+                crate::bytecode::Instruction::PushActiveFunction => {
+                    authenticated_active_function_local = Some(*local);
+                }
+                crate::bytecode::Instruction::PushNewTarget => {
+                    authenticated_new_target_local = Some(*local);
+                }
+                _ => {}
+            }
             global_function_prologue_offset += 2;
+        }
+        let explicit_control_flow_targets = function
+            .code()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                crate::bytecode::Instruction::Goto(target)
+                | crate::bytecode::Instruction::IfFalse(target)
+                | crate::bytecode::Instruction::IfTrue(target)
+                | crate::bytecode::Instruction::Catch(target)
+                | crate::bytecode::Instruction::Gosub(target) => usize::try_from(*target).ok(),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        for (pc, instruction) in function.code().iter().enumerate() {
+            if !matches!(instruction, crate::bytecode::Instruction::MarkSuperCall) {
+                continue;
+            }
+            let Some(active_pc) = pc.checked_sub(3) else {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "super-call marker has no authenticated operand reads",
+                )));
+            };
+            if explicit_control_flow_targets.contains(&(pc - 2))
+                || explicit_control_flow_targets.contains(&(pc - 1))
+                || explicit_control_flow_targets.contains(&pc)
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "super-call operand protocol has a non-fallthrough entry",
+                )));
+            }
+            if !matches!(
+                function.code().get(pc - 2),
+                Some(crate::bytecode::Instruction::GetSuper)
+            ) {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "super-call marker is not preceded by GetSuper",
+                )));
+            }
+            let active_read_is_authenticated = match function.code().get(active_pc) {
+                Some(crate::bytecode::Instruction::GetLocal(index)) => {
+                    authenticated_active_function_local == Some(*index)
+                }
+                Some(crate::bytecode::Instruction::GetVarRef(index)) => active_function_origins
+                    .get(usize::from(*index))
+                    .copied()
+                    .unwrap_or(false),
+                _ => false,
+            };
+            if !active_read_is_authenticated {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "super-call marker did not read the authenticated active function",
+                )));
+            }
+            let new_target_read_is_authenticated = match function.code().get(pc - 1) {
+                Some(crate::bytecode::Instruction::GetLocal(index)) => {
+                    authenticated_new_target_local == Some(*index)
+                }
+                Some(crate::bytecode::Instruction::GetVarRef(index)) => new_target_origins
+                    .get(usize::from(*index))
+                    .copied()
+                    .unwrap_or(false),
+                _ => false,
+            };
+            if !new_target_read_is_authenticated {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "super-call marker did not read the authenticated new.target",
+                )));
+            }
         }
         global_function_prologue_offset += usize::from(matches!(
             function.code().get(global_function_prologue_offset),
@@ -2250,6 +2648,26 @@ fn verify_unlinked_tree_with_root(
             tree_expected_bindings,
             tree_expected_profile,
         )?;
+        for environment in function
+            .eval_environments()
+            .iter()
+            // Ordinary direct eval also carries compiler-private `<this>` and
+            // `new.target` spellings. They become derived-constructor
+            // capabilities only when this exact call site inherited super()
+            // authority; super-property-only object methods must not be
+            // mistaken for derived constructors.
+            .filter(|environment| environment.super_call_allowed)
+        {
+            verify_eval_super_pseudo_bindings(
+                environment,
+                function.metadata().derived_this_local,
+                authenticated_active_function_local,
+                authenticated_new_target_local,
+                &derived_this_origins,
+                &active_function_origins,
+                &new_target_origins,
+            )?;
+        }
         for binding in function
             .eval_environments()
             .iter()
@@ -2720,6 +3138,12 @@ fn verify_unlinked_tree_with_root(
                 })?;
                 let mut child_function_name_origins =
                     Vec::with_capacity(child.closure_variables().len());
+                let mut child_derived_this_origins =
+                    Vec::with_capacity(child.closure_variables().len());
+                let mut child_active_function_origins =
+                    Vec::with_capacity(child.closure_variables().len());
+                let mut child_new_target_origins =
+                    Vec::with_capacity(child.closure_variables().len());
                 let mut child_physical_sources = HashSet::new();
                 for (descriptor_index, descriptor) in child.closure_variables().iter().enumerate() {
                     if let (Some(body_pc), Some(initializer_capture_locals)) =
@@ -2835,6 +3259,9 @@ fn verify_unlinked_tree_with_root(
                     }
                     let flags = (descriptor.is_lexical, descriptor.is_const, descriptor.kind);
                     let mut function_name_origin = None;
+                    let mut derived_this_origin = false;
+                    let mut active_function_origin = false;
+                    let mut new_target_origin = false;
                     match descriptor.source {
                         ClosureSource::ParentLocal(index) => {
                             let slot =
@@ -2885,6 +3312,11 @@ fn verify_unlinked_tree_with_root(
                             // authenticated parent definition, not that
                             // observable child-local representation quirk.
                             verify_capture_flags(slot, definition_flags)?;
+                            derived_this_origin =
+                                function.metadata().derived_this_local == Some(index);
+                            active_function_origin =
+                                authenticated_active_function_local == Some(index);
+                            new_target_origin = authenticated_new_target_local == Some(index);
                         }
                         ClosureSource::ParentArgument(index) => {
                             let slot =
@@ -2966,6 +3398,18 @@ fn verify_unlinked_tree_with_root(
                                     "transitive closure relay changed its lexical binding name",
                                 )));
                             }
+                            derived_this_origin = derived_this_origins
+                                .get(usize::from(index))
+                                .copied()
+                                .unwrap_or(false);
+                            active_function_origin = active_function_origins
+                                .get(usize::from(index))
+                                .copied()
+                                .unwrap_or(false);
+                            new_target_origin = new_target_origins
+                                .get(usize::from(index))
+                                .copied()
+                                .unwrap_or(false);
                         }
                         ClosureSource::GlobalDeclaration => {
                             if !matches!(
@@ -3042,6 +3486,17 @@ fn verify_unlinked_tree_with_root(
                         }
                     }
                     child_function_name_origins.push(function_name_origin);
+                    child_derived_this_origins.push(derived_this_origin);
+                    child_active_function_origins.push(active_function_origin);
+                    child_new_target_origins.push(new_target_origin);
+                }
+                if child.metadata().super_call_allowed
+                    && child.metadata().constructor_kind != ConstructorKind::Derived
+                    && (!function.metadata().super_call_allowed || child.metadata().has_prototype)
+                {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "inherited super call has no parent authority",
+                    )));
                 }
                 let child_depth = function_depth.checked_add(1).ok_or_else(|| {
                     RuntimeError::Engine(Error::internal(
@@ -3063,6 +3518,9 @@ fn verify_unlinked_tree_with_root(
                     child_depth,
                     child_origins,
                     child_function_name_origins,
+                    child_derived_this_origins,
+                    child_active_function_origins,
+                    child_new_target_origins,
                     child_id,
                 ));
             } else if constant.as_primitive().is_none()
@@ -3476,6 +3934,502 @@ mod tests {
                 ..FunctionMetadata::default()
             },
         )
+    }
+
+    fn derived_this_initializer(
+        this_source: ClosureSource,
+        active_function_source: ClosureSource,
+        new_target_source: ClosureSource,
+    ) -> UnlinkedFunction {
+        derived_this_initializer_with_code(
+            this_source,
+            active_function_source,
+            new_target_source,
+            vec![
+                Instruction::GetVarRef(1),
+                Instruction::GetSuper,
+                Instruction::GetVarRef(2),
+                Instruction::MarkSuperCall,
+                Instruction::ConstructSuper(0),
+                Instruction::Dup,
+                Instruction::InitializeDerivedVarRef(0),
+                Instruction::Return,
+            ],
+            2,
+        )
+    }
+
+    fn derived_this_initializer_with_code(
+        this_source: ClosureSource,
+        active_function_source: ClosureSource,
+        new_target_source: ClosureSource,
+        code: Vec<Instruction>,
+        max_stack: u16,
+    ) -> UnlinkedFunction {
+        UnlinkedFunction::new_with_closure_variables(
+            code,
+            vec![
+                UnlinkedConstant::primitive(Value::String(JsString::from_static("<this>")))
+                    .unwrap(),
+                UnlinkedConstant::primitive(Value::String(JsString::from_static(
+                    "<this_active_func>",
+                )))
+                .unwrap(),
+                UnlinkedConstant::primitive(Value::String(JsString::from_static("<new.target>")))
+                    .unwrap(),
+            ],
+            FunctionMetadata {
+                closure_count: 3,
+                max_stack,
+                strict: true,
+                super_call_allowed: true,
+                super_allowed: true,
+                ..FunctionMetadata::default()
+            },
+            vec![
+                ClosureVariable {
+                    source: this_source,
+                    name: ClosureVariableName::Constant(0),
+                    is_lexical: true,
+                    is_const: false,
+                    kind: ClosureVariableKind::Normal,
+                },
+                ClosureVariable {
+                    source: active_function_source,
+                    name: ClosureVariableName::Constant(1),
+                    is_lexical: false,
+                    is_const: false,
+                    kind: ClosureVariableKind::Normal,
+                },
+                ClosureVariable {
+                    source: new_target_source,
+                    name: ClosureVariableName::Constant(2),
+                    is_lexical: false,
+                    is_const: false,
+                    kind: ClosureVariableKind::Normal,
+                },
+            ],
+        )
+    }
+
+    fn derived_parent(child: UnlinkedFunction) -> UnlinkedFunction {
+        UnlinkedFunction::new(
+            vec![
+                Instruction::PushActiveFunction,
+                Instruction::PutLocal(1),
+                Instruction::PushNewTarget,
+                Instruction::PutLocal(2),
+                Instruction::CheckCtor,
+                Instruction::FClosure(0),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::ReturnDerived(0),
+            ],
+            vec![UnlinkedConstant::child(child)],
+            FunctionMetadata {
+                local_count: 6,
+                derived_this_local: Some(0),
+                active_function_local: Some(1),
+                max_stack: 1,
+                strict: true,
+                super_call_allowed: true,
+                super_allowed: true,
+                constructor_kind: ConstructorKind::Derived,
+                ..FunctionMetadata::default()
+            },
+        )
+        .with_variable_definitions(
+            Vec::new(),
+            vec![
+                UnlinkedVariableDefinition::lexical(Some(JsString::from_static("<this>")), false),
+                UnlinkedVariableDefinition::ordinary(Some(JsString::from_static(
+                    "<this_active_func>",
+                ))),
+                UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("<new.target>"))),
+                // A hand-authored unlinked tree can copy the sentinel spelling
+                // onto an unrelated lexical; provenance must not follow it.
+                UnlinkedVariableDefinition::lexical(Some(JsString::from_static("<this>")), false),
+                UnlinkedVariableDefinition::ordinary(Some(JsString::from_static(
+                    "<this_active_func>",
+                ))),
+                UnlinkedVariableDefinition::ordinary(Some(JsString::from_static("<new.target>"))),
+            ],
+        )
+    }
+
+    #[test]
+    fn derived_this_initializer_requires_authenticated_parent_lineage() {
+        let no_capture_arrow = UnlinkedFunction::new(
+            vec![Instruction::Undefined, Instruction::Return],
+            Vec::new(),
+            FunctionMetadata {
+                max_stack: 1,
+                strict: true,
+                super_call_allowed: true,
+                super_allowed: true,
+                ..FunctionMetadata::default()
+            },
+        );
+        verify_unlinked_tree(&script_with_child(derived_parent(no_capture_arrow))).unwrap();
+
+        verify_unlinked_tree(&script_with_child(derived_parent(
+            derived_this_initializer(
+                ClosureSource::ParentLocal(0),
+                ClosureSource::ParentLocal(1),
+                ClosureSource::ParentLocal(2),
+            ),
+        )))
+        .unwrap();
+
+        let injected_pair = derived_this_initializer_with_code(
+            ClosureSource::ParentLocal(0),
+            ClosureSource::ParentLocal(1),
+            ClosureSource::ParentLocal(2),
+            vec![
+                Instruction::PushTrue,
+                Instruction::IfFalse(10),
+                Instruction::GetVarRef(1),
+                Instruction::GetSuper,
+                Instruction::GetVarRef(2),
+                Instruction::MarkSuperCall,
+                Instruction::ConstructSuper(0),
+                Instruction::Dup,
+                Instruction::InitializeDerivedVarRef(0),
+                Instruction::Return,
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::Goto(5),
+            ],
+            2,
+        );
+        assert!(
+            verify_unlinked_tree(&script_with_child(derived_parent(injected_pair)))
+                .unwrap_err()
+                .to_string()
+                .contains("super-call operand protocol has a non-fallthrough entry")
+        );
+
+        let forged = script_with_child(derived_parent(derived_this_initializer(
+            ClosureSource::ParentLocal(3),
+            ClosureSource::ParentLocal(1),
+            ClosureSource::ParentLocal(2),
+        )));
+        assert!(
+            verify_unlinked_tree(&forged)
+                .unwrap_err()
+                .to_string()
+                .contains("did not originate from derived this")
+        );
+
+        let forged_active = script_with_child(derived_parent(derived_this_initializer(
+            ClosureSource::ParentLocal(0),
+            ClosureSource::ParentLocal(4),
+            ClosureSource::ParentLocal(2),
+        )));
+        assert!(
+            verify_unlinked_tree(&forged_active)
+                .unwrap_err()
+                .to_string()
+                .contains("did not read the authenticated active function")
+        );
+
+        let forged_new_target = script_with_child(derived_parent(derived_this_initializer(
+            ClosureSource::ParentLocal(0),
+            ClosureSource::ParentLocal(1),
+            ClosureSource::ParentLocal(5),
+        )));
+        assert!(
+            verify_unlinked_tree(&forged_new_target)
+                .unwrap_err()
+                .to_string()
+                .contains("did not read the authenticated new.target")
+        );
+
+        let relay = UnlinkedFunction::new_with_closure_variables(
+            vec![
+                Instruction::FClosure(3),
+                Instruction::Drop,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![
+                UnlinkedConstant::primitive(Value::String(JsString::from_static("<this>")))
+                    .unwrap(),
+                UnlinkedConstant::primitive(Value::String(JsString::from_static(
+                    "<this_active_func>",
+                )))
+                .unwrap(),
+                UnlinkedConstant::primitive(Value::String(JsString::from_static("<new.target>")))
+                    .unwrap(),
+                UnlinkedConstant::child(derived_this_initializer(
+                    ClosureSource::ParentClosure(0),
+                    ClosureSource::ParentClosure(1),
+                    ClosureSource::ParentClosure(2),
+                )),
+            ],
+            FunctionMetadata {
+                closure_count: 3,
+                max_stack: 1,
+                strict: true,
+                super_call_allowed: true,
+                super_allowed: true,
+                ..FunctionMetadata::default()
+            },
+            vec![
+                ClosureVariable {
+                    source: ClosureSource::ParentLocal(0),
+                    name: ClosureVariableName::Constant(0),
+                    is_lexical: true,
+                    is_const: false,
+                    kind: ClosureVariableKind::Normal,
+                },
+                ClosureVariable {
+                    source: ClosureSource::ParentLocal(1),
+                    name: ClosureVariableName::Constant(1),
+                    is_lexical: false,
+                    is_const: false,
+                    kind: ClosureVariableKind::Normal,
+                },
+                ClosureVariable {
+                    source: ClosureSource::ParentLocal(2),
+                    name: ClosureVariableName::Constant(2),
+                    is_lexical: false,
+                    is_const: false,
+                    kind: ClosureVariableKind::Normal,
+                },
+            ],
+        );
+        verify_unlinked_tree(&script_with_child(derived_parent(relay))).unwrap();
+
+        let eval_root = UnlinkedFunction::new_with_closure_variables(
+            vec![
+                Instruction::GetVarRef(1),
+                Instruction::GetSuper,
+                Instruction::GetVarRef(2),
+                Instruction::MarkSuperCall,
+                Instruction::ConstructSuper(0),
+                Instruction::Dup,
+                Instruction::InitializeDerivedVarRef(0),
+                Instruction::Return,
+            ],
+            vec![
+                UnlinkedConstant::primitive(Value::String(JsString::from_static("<this>")))
+                    .unwrap(),
+                UnlinkedConstant::primitive(Value::String(JsString::from_static(
+                    "<this_active_func>",
+                )))
+                .unwrap(),
+                UnlinkedConstant::primitive(Value::String(JsString::from_static("<new.target>")))
+                    .unwrap(),
+            ],
+            FunctionMetadata {
+                closure_count: 3,
+                max_stack: 2,
+                strict: true,
+                super_call_allowed: true,
+                super_allowed: true,
+                eval_kind: EvalKind::Direct,
+                ..FunctionMetadata::default()
+            },
+            vec![
+                ClosureVariable {
+                    source: ClosureSource::EvalEnvironment(0),
+                    name: ClosureVariableName::Constant(0),
+                    is_lexical: true,
+                    is_const: false,
+                    kind: ClosureVariableKind::Normal,
+                },
+                ClosureVariable {
+                    source: ClosureSource::EvalEnvironment(1),
+                    name: ClosureVariableName::Constant(1),
+                    is_lexical: false,
+                    is_const: false,
+                    kind: ClosureVariableKind::Normal,
+                },
+                ClosureVariable {
+                    source: ClosureSource::EvalEnvironment(2),
+                    name: ClosureVariableName::Constant(2),
+                    is_lexical: false,
+                    is_const: false,
+                    kind: ClosureVariableKind::Normal,
+                },
+            ],
+        );
+        let derived_binding = EvalRootBinding {
+            name: JsString::from_static("<this>"),
+            scope: 0,
+            is_lexical: true,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+            is_catch_parameter: false,
+        };
+        let active_function_binding = EvalRootBinding {
+            name: JsString::from_static("<this_active_func>"),
+            scope: 0,
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+            is_catch_parameter: false,
+        };
+        let new_target_binding = EvalRootBinding {
+            name: JsString::from_static("<new.target>"),
+            scope: 0,
+            is_lexical: false,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+            is_catch_parameter: false,
+        };
+        let eval_bindings = [
+            derived_binding.clone(),
+            active_function_binding.clone(),
+            new_target_binding.clone(),
+        ];
+        verify_unlinked_eval_tree(
+            &eval_root,
+            EvalKind::Direct,
+            true,
+            &eval_bindings,
+            true,
+            true,
+        )
+        .unwrap();
+
+        let ordinary_binding = EvalRootBinding {
+            is_lexical: false,
+            ..derived_binding
+        };
+        let ordinary_bindings = [
+            ordinary_binding,
+            active_function_binding,
+            new_target_binding,
+        ];
+        assert!(
+            verify_unlinked_eval_tree(
+                &eval_root,
+                EvalKind::Direct,
+                true,
+                &ordinary_bindings,
+                true,
+                true,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("did not originate from derived this")
+        );
+    }
+
+    #[test]
+    fn eval_root_rejects_shadowed_super_pseudo_binding_origins() {
+        let root = |derived_this: u16, active_function: u16, new_target: u16| {
+            let names = [
+                ("<this>", true),
+                ("<this_active_func>", false),
+                ("<new.target>", false),
+                ("<this>", true),
+                ("<this_active_func>", false),
+                ("<new.target>", false),
+            ];
+            let constants = names
+                .iter()
+                .map(|(name, _)| {
+                    UnlinkedConstant::primitive(Value::String(JsString::from_static(name))).unwrap()
+                })
+                .collect::<Vec<_>>();
+            let closure_variables = names
+                .iter()
+                .enumerate()
+                .map(|(index, (_, is_lexical))| ClosureVariable {
+                    source: ClosureSource::EvalEnvironment(
+                        u16::try_from(index).expect("test closure index fits u16"),
+                    ),
+                    name: ClosureVariableName::Constant(
+                        u32::try_from(index).expect("test constant index fits u32"),
+                    ),
+                    is_lexical: *is_lexical,
+                    is_const: false,
+                    kind: ClosureVariableKind::Normal,
+                })
+                .collect::<Vec<_>>();
+            UnlinkedFunction::new_with_closure_variables(
+                vec![
+                    Instruction::GetVarRef(active_function),
+                    Instruction::GetSuper,
+                    Instruction::GetVarRef(new_target),
+                    Instruction::MarkSuperCall,
+                    Instruction::ConstructSuper(0),
+                    Instruction::Dup,
+                    Instruction::InitializeDerivedVarRef(derived_this),
+                    Instruction::Return,
+                ],
+                constants,
+                FunctionMetadata {
+                    closure_count: 6,
+                    max_stack: 2,
+                    strict: true,
+                    super_call_allowed: true,
+                    super_allowed: true,
+                    eval_kind: EvalKind::Direct,
+                    ..FunctionMetadata::default()
+                },
+                closure_variables,
+            )
+        };
+        let expected_bindings = [
+            eval_root_binding("<this>", 0, true, false, ClosureVariableKind::Normal),
+            eval_root_binding(
+                "<this_active_func>",
+                0,
+                false,
+                false,
+                ClosureVariableKind::Normal,
+            ),
+            eval_root_binding("<new.target>", 0, false, false, ClosureVariableKind::Normal),
+            eval_root_binding("<this>", 1, true, false, ClosureVariableKind::Normal),
+            eval_root_binding(
+                "<this_active_func>",
+                1,
+                false,
+                false,
+                ClosureVariableKind::Normal,
+            ),
+            eval_root_binding("<new.target>", 1, false, false, ClosureVariableKind::Normal),
+        ];
+
+        verify_unlinked_eval_tree(
+            &root(0, 1, 2),
+            EvalKind::Direct,
+            true,
+            &expected_bindings,
+            true,
+            true,
+        )
+        .unwrap();
+
+        for ((derived_this, active_function, new_target), expected_error) in [
+            (
+                (3, 1, 2),
+                "captured derived initializer did not originate from derived this",
+            ),
+            (
+                (0, 4, 2),
+                "super-call marker did not read the authenticated active function",
+            ),
+            (
+                (0, 1, 5),
+                "super-call marker did not read the authenticated new.target",
+            ),
+        ] {
+            let error = verify_unlinked_eval_tree(
+                &root(derived_this, active_function, new_target),
+                EvalKind::Direct,
+                true,
+                &expected_bindings,
+                true,
+                true,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(expected_error), "{error}");
+        }
     }
 
     fn eval_root_binding(

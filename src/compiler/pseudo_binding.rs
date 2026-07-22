@@ -16,10 +16,12 @@ use crate::lexer::Span;
 pub(super) const THIS_LOCAL_NAME: &str = "<this>";
 pub(super) const NEW_TARGET_LOCAL_NAME: &str = "<new.target>";
 pub(super) const HOME_OBJECT_LOCAL_NAME: &str = "<home_object>";
+pub(super) const ACTIVE_FUNCTION_LOCAL_NAME: &str = "<this_active_func>";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PseudoBinding {
     HomeObject,
+    ActiveFunction,
     This,
     NewTarget,
 }
@@ -28,6 +30,7 @@ impl PseudoBinding {
     pub(super) const fn name(self) -> &'static str {
         match self {
             Self::HomeObject => HOME_OBJECT_LOCAL_NAME,
+            Self::ActiveFunction => ACTIVE_FUNCTION_LOCAL_NAME,
             Self::This => THIS_LOCAL_NAME,
             Self::NewTarget => NEW_TARGET_LOCAL_NAME,
         }
@@ -36,6 +39,7 @@ impl PseudoBinding {
     pub(super) fn from_name(name: &str) -> Option<Self> {
         match name {
             HOME_OBJECT_LOCAL_NAME => Some(Self::HomeObject),
+            ACTIVE_FUNCTION_LOCAL_NAME => Some(Self::ActiveFunction),
             THIS_LOCAL_NAME => Some(Self::This),
             NEW_TARGET_LOCAL_NAME => Some(Self::NewTarget),
             _ => None,
@@ -65,6 +69,18 @@ pub(super) fn ensure_eval_visible_pseudo_bindings(
     {
         return Err(Error::internal(
             "direct eval environment lost its HomeObject capability",
+        ));
+    }
+    if tree.functions[consuming_function].super_call_allowed
+        && !ensure_pseudo_binding_path(
+            tree,
+            consuming_function,
+            PseudoBinding::ActiveFunction,
+            span,
+        )?
+    {
+        return Err(Error::internal(
+            "direct eval environment lost its active constructor binding",
         ));
     }
 
@@ -166,19 +182,37 @@ fn ensure_pseudo_binding_path(
     }
 }
 
-/// Initialize QuickJS's lazily selected `home_object`, `new.target`, and
-/// `this` pseudo locals before authored body code can publish or invoke
-/// descendant closures. The order mirrors QuickJS `resolve_labels`.
+/// Initialize QuickJS's lazily selected HomeObject, active function,
+/// `new.target`, and ordinary `this` pseudo locals before authored body code
+/// can publish or invoke descendant closures. Derived `this` deliberately
+/// remains in its frame-initial Uninitialized state until `super()` succeeds.
 pub(super) fn install_pseudo_binding_prologues(tree: &mut FunctionTree) -> Result<(), Error> {
     for function in &mut tree.functions {
+        if function.pseudo_binding_prologues_installed {
+            return Err(Error::internal(
+                "pseudo-binding prologues were installed more than once",
+            ));
+        }
         let mut prefix = Vec::with_capacity(
             usize::from(function.home_object_local.is_some()) * 2
+                + usize::from(function.active_function_local.is_some()) * 2
                 + usize::from(function.new_target_local.is_some()) * 2
-                + usize::from(function.this_local.is_some()) * 2,
+                + usize::from(function.this_local.is_some() && !function.derived_class_constructor)
+                    * 2,
         );
         if let Some(local) = function.home_object_local {
             prefix.push(SpannedIrOp {
                 op: IrOp::Bytecode(Instruction::PushHomeObject),
+                pc_site: None,
+            });
+            prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::PutLocal(local)),
+                pc_site: None,
+            });
+        }
+        if let Some(local) = function.active_function_local {
+            prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::PushActiveFunction),
                 pc_site: None,
             });
             prefix.push(SpannedIrOp {
@@ -196,7 +230,10 @@ pub(super) fn install_pseudo_binding_prologues(tree: &mut FunctionTree) -> Resul
                 pc_site: None,
             });
         }
-        if let Some(local) = function.this_local {
+        if let Some(local) = function
+            .this_local
+            .filter(|_| !function.derived_class_constructor)
+        {
             prefix.push(SpannedIrOp {
                 op: IrOp::Bytecode(Instruction::PushThis),
                 pc_site: None,
@@ -209,6 +246,7 @@ pub(super) fn install_pseudo_binding_prologues(tree: &mut FunctionTree) -> Resul
         if !prefix.is_empty() {
             prepend_hoist_prefix(function, prefix)?;
         }
+        function.pseudo_binding_prologues_installed = true;
     }
     Ok(())
 }
@@ -217,33 +255,20 @@ pub(super) const fn function_owns_pseudo_binding(
     kind: FunctionKind,
     pseudo: PseudoBinding,
 ) -> bool {
-    match (kind, pseudo) {
-        (FunctionKind::Method, PseudoBinding::HomeObject) => true,
-        (
+    match pseudo {
+        PseudoBinding::HomeObject | PseudoBinding::ActiveFunction => {
+            matches!(kind, FunctionKind::Method)
+        }
+        PseudoBinding::This => matches!(
+            kind,
             FunctionKind::Script
-            | FunctionKind::Ordinary
-            | FunctionKind::Method
-            | FunctionKind::Eval(EvalKind::Indirect),
-            PseudoBinding::This,
-        ) => true,
-        (FunctionKind::Ordinary | FunctionKind::Method, PseudoBinding::NewTarget) => true,
-        (
-            FunctionKind::Script
-            | FunctionKind::Ordinary
-            | FunctionKind::Arrow
-            | FunctionKind::Eval(_),
-            PseudoBinding::HomeObject,
-        ) => false,
-        (
-            FunctionKind::Arrow
-            | FunctionKind::Eval(EvalKind::Direct)
-            | FunctionKind::Eval(EvalKind::None),
-            _,
-        )
-        | (
-            FunctionKind::Script | FunctionKind::Eval(EvalKind::Indirect),
-            PseudoBinding::NewTarget,
-        ) => false,
+                | FunctionKind::Ordinary
+                | FunctionKind::Method
+                | FunctionKind::Eval(EvalKind::Indirect)
+        ),
+        PseudoBinding::NewTarget => {
+            matches!(kind, FunctionKind::Ordinary | FunctionKind::Method)
+        }
     }
 }
 
@@ -262,7 +287,10 @@ pub(super) fn find_or_create_own_pseudo_binding(
         .get(function_id)
         .ok_or_else(|| Error::internal("pseudo-binding owner is out of bounds"))?;
     if let Some(binding) = function.binding_from_scope(function.var_scope, name) {
-        if binding.kind != BindingKind::Normal {
+        let derived_this = pseudo == PseudoBinding::This
+            && function.super_call_allowed
+            && binding.kind == (BindingKind::Lexical { is_const: false });
+        if binding.kind != BindingKind::Normal && !derived_this {
             return Err(Error::internal(
                 "pseudo binding has non-ordinary binding metadata",
             ));
@@ -287,6 +315,7 @@ pub(super) fn find_or_create_own_pseudo_binding(
             function.needs_home_object = true;
             &mut function.home_object_local
         }
+        PseudoBinding::ActiveFunction => &mut function.active_function_local,
         PseudoBinding::This => &mut function.this_local,
         PseudoBinding::NewTarget => &mut function.new_target_local,
     };
@@ -296,16 +325,21 @@ pub(super) fn find_or_create_own_pseudo_binding(
         ));
     }
     function.locals.push(name.to_owned());
+    let kind = if pseudo == PseudoBinding::This && function.derived_class_constructor {
+        BindingKind::Lexical { is_const: false }
+    } else {
+        BindingKind::Normal
+    };
     function.add_binding(
         function.var_scope,
         function.var_scope,
         name.to_owned(),
         BindingStorage::Local(index),
-        BindingKind::Normal,
+        kind,
         None,
     );
     Ok(Some(ResolvedBinding {
         storage: BindingStorage::Local(index),
-        kind: BindingKind::Normal,
+        kind,
     }))
 }

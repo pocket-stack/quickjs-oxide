@@ -50,8 +50,8 @@ mod pseudo_binding;
 mod template;
 
 use pseudo_binding::{
-    HOME_OBJECT_LOCAL_NAME, NEW_TARGET_LOCAL_NAME, PseudoBinding, THIS_LOCAL_NAME,
-    ensure_eval_visible_pseudo_bindings, find_or_create_own_pseudo_binding,
+    ACTIVE_FUNCTION_LOCAL_NAME, HOME_OBJECT_LOCAL_NAME, NEW_TARGET_LOCAL_NAME, PseudoBinding,
+    THIS_LOCAL_NAME, ensure_eval_visible_pseudo_bindings, find_or_create_own_pseudo_binding,
     function_owns_pseudo_binding, install_pseudo_binding_prologues,
 };
 
@@ -521,6 +521,11 @@ enum IdentifierAccess {
     GetOrUndefined,
     Delete,
     Initialize,
+    /// QuickJS `put_loc_check_init` / `put_var_ref_check_init` for the
+    /// derived-constructor `this` binding. Unlike an ordinary lexical
+    /// declaration initializer this access may cross an arrow/direct-eval
+    /// closure boundary, but it still succeeds exactly once.
+    InitializeDerivedThis,
     Put,
     /// Sloppy Annex B writes past the block lexical binding to the function
     /// root. Global code must still resolve the name dynamically so a later
@@ -790,6 +795,7 @@ impl IrOp {
                 | IdentifierAccess::GetOrUndefined
                 | IdentifierAccess::Delete => (0, 1),
                 IdentifierAccess::Initialize
+                | IdentifierAccess::InitializeDerivedThis
                 | IdentifierAccess::Put
                 | IdentifierAccess::AnnexBPut => (1, 0),
                 IdentifierAccess::Set => (1, 1),
@@ -808,7 +814,10 @@ impl IrOp {
             } => (0, 1),
             Self::Identifier {
                 access:
-                    IdentifierAccess::Initialize | IdentifierAccess::Put | IdentifierAccess::AnnexBPut,
+                    IdentifierAccess::Initialize
+                    | IdentifierAccess::InitializeDerivedThis
+                    | IdentifierAccess::Put
+                    | IdentifierAccess::AnnexBPut,
                 ..
             } => (1, 0),
             Self::Identifier {
@@ -839,6 +848,11 @@ struct FunctionIr {
     /// function's eagerly visible `.prototype` shape. `DefineClass` owns that
     /// descriptor, while `CheckCtor` enforces construct-only invocation.
     class_constructor: bool,
+    /// Whether this class constructor uses the derived [[Construct]]
+    /// protocol. Keeping this separate from ordinary constructability lets
+    /// arrows and direct eval inherit `super()` authority without pretending
+    /// to be constructors themselves.
+    derived_class_constructor: bool,
     /// QuickJS parser authority copied independently from HomeObject storage.
     super_call_allowed: bool,
     super_allowed: bool,
@@ -864,6 +878,9 @@ struct FunctionIr {
     /// arrows or exposed to direct eval. Arrow frames never own these locals;
     /// only concise methods can own the HomeObject cell.
     home_object_local: Option<u16>,
+    /// QuickJS's hidden `this_active_func`, captured by arrows/direct eval so
+    /// `super()` dynamically reads the active constructor's [[Prototype]].
+    active_function_local: Option<u16>,
     this_local: Option<u16>,
     new_target_local: Option<u16>,
     /// Hidden null-prototype variable object for sloppy authored function code
@@ -943,6 +960,10 @@ struct FunctionIr {
     /// before this typed SyntaxError is thrown at bytecode entry.
     eval_redeclaration: Option<String>,
     function_hoists_installed: bool,
+    /// Phase marker for the final hidden-frame entry prefix. Unlike ordinary
+    /// body hoists this also applies to scripts and eval roots, so it cannot
+    /// be inferred from `function_hoists_installed`.
+    pseudo_binding_prologues_installed: bool,
     /// Scoped lexical function slots, including one slot per sloppy same-scope
     /// duplicate as in QuickJS `JS_VAR_FUNCTION_DECL`.
     scoped_functions: Vec<IrScopedFunction>,
@@ -1009,6 +1030,10 @@ impl SuperCapabilities {
         super_call_allowed: false,
         super_allowed: true,
     };
+    const CALL_AND_PROPERTY: Self = Self {
+        super_call_allowed: true,
+        super_allowed: true,
+    };
 
     fn validated(self) -> Result<Self, Error> {
         if self.super_call_allowed && !self.super_allowed {
@@ -1025,6 +1050,7 @@ struct FunctionIrOptions {
     function_name: Option<String>,
     private_name_binding: bool,
     class_constructor: bool,
+    derived_class_constructor: bool,
     parameters: Vec<Option<String>>,
     defined_argument_count: usize,
     has_simple_parameter_list: bool,
@@ -1041,6 +1067,13 @@ impl FunctionIr {
         options: FunctionIrOptions,
     ) -> Result<Self, Error> {
         let super_capabilities = options.super_capabilities.validated()?;
+        if options.derived_class_constructor
+            && (!options.class_constructor
+                || kind != FunctionKind::Method
+                || super_capabilities != SuperCapabilities::CALL_AND_PROPERTY)
+        {
+            return Err(Error::internal("derived constructor metadata is malformed"));
+        }
         let parameter_count = options.parameters.len();
         if options.defined_argument_count > options.parameters.len()
             || (options.has_simple_parameter_list
@@ -1112,6 +1145,7 @@ impl FunctionIr {
             parent,
             kind,
             class_constructor: options.class_constructor,
+            derived_class_constructor: options.derived_class_constructor,
             super_call_allowed: super_capabilities.super_call_allowed,
             super_allowed: super_capabilities.super_allowed,
             source,
@@ -1120,6 +1154,7 @@ impl FunctionIr {
             function_name_local: None,
             arguments_local: None,
             home_object_local: None,
+            active_function_local: None,
             this_local: None,
             new_target_local: None,
             eval_variable_object_local: None,
@@ -1147,6 +1182,7 @@ impl FunctionIr {
             eval_declarations_installed: false,
             eval_redeclaration: None,
             function_hoists_installed: false,
+            pseudo_binding_prologues_installed: false,
             scoped_functions: Vec::new(),
             program_annex_functions: Vec::new(),
             current_scope,
@@ -1186,6 +1222,55 @@ impl FunctionIr {
             );
         }
         Ok(function)
+    }
+
+    /// Allocate the derived constructor's hidden cells after formal parsing.
+    /// Parameter-environment cells must remain the leading locals, but
+    /// unresolved `super()`/`this` operations in parameter initializers do not
+    /// need physical operands until the later identifier-linking pass.
+    fn allocate_derived_constructor_pseudo_bindings(&mut self) -> Result<(), Error> {
+        if !self.derived_class_constructor
+            || !self.class_constructor
+            || self.kind != FunctionKind::Method
+            || self.active_function_local.is_some()
+            || self.this_local.is_some()
+        {
+            return Err(Error::internal(
+                "derived constructor pseudo bindings were allocated in an invalid phase",
+            ));
+        }
+        if self.locals.len().saturating_add(2) > MAX_LOCAL_VARIABLES {
+            return Err(Error::new(
+                ErrorKind::JsInternal,
+                "too many local variables",
+            ));
+        }
+        let active_function = u16::try_from(self.locals.len())
+            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+        self.locals.push(ACTIVE_FUNCTION_LOCAL_NAME.to_owned());
+        self.active_function_local = Some(active_function);
+        self.add_binding(
+            self.var_scope,
+            self.var_scope,
+            ACTIVE_FUNCTION_LOCAL_NAME.to_owned(),
+            BindingStorage::Local(active_function),
+            BindingKind::Normal,
+            None,
+        );
+
+        let this = u16::try_from(self.locals.len())
+            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+        self.locals.push(THIS_LOCAL_NAME.to_owned());
+        self.this_local = Some(this);
+        self.add_binding(
+            self.var_scope,
+            self.var_scope,
+            THIS_LOCAL_NAME.to_owned(),
+            BindingStorage::Local(this),
+            BindingKind::Lexical { is_const: false },
+            None,
+        );
+        Ok(())
     }
 
     fn add_binding(
@@ -1587,6 +1672,7 @@ impl<'source> Parser<'source> {
                     function_name: Some("<eval>".to_owned()),
                     private_name_binding: false,
                     class_constructor: false,
+                    derived_class_constructor: false,
                     parameters: Vec::new(),
                     defined_argument_count: 0,
                     has_simple_parameter_list: true,
@@ -1644,7 +1730,15 @@ impl<'source> Parser<'source> {
         // be unreachable after an explicit return, but keeps fallthrough
         // behavior structural and gives every function a terminal opcode.
         self.emit_instruction(Instruction::Undefined)?;
-        self.emit_instruction(Instruction::Return)?;
+        if self.current_ir().derived_class_constructor {
+            let this = self
+                .current_ir()
+                .this_local
+                .ok_or_else(|| Error::internal("derived constructor has no this binding"))?;
+            self.emit_instruction(Instruction::ReturnDerived(this))?;
+        } else {
+            self.emit_instruction(Instruction::Return)?;
+        }
         Ok(())
     }
 
@@ -3206,7 +3300,16 @@ impl<'source> Parser<'source> {
                 _ => unreachable!("return unwind list contains an ordinary control"),
             }
         }
-        self.emit_instruction_at(Instruction::Return, source_offset(return_span)?)?;
+        let instruction = if self.current_ir().derived_class_constructor {
+            Instruction::ReturnDerived(
+                self.current_ir()
+                    .this_local
+                    .ok_or_else(|| Error::internal("derived constructor has no this binding"))?,
+            )
+        } else {
+            Instruction::Return
+        };
+        self.emit_instruction_at(instruction, source_offset(return_span)?)?;
         self.consume_statement_terminator()?;
         // Parsing continues through unreachable source. Retain the enclosing
         // statement's marker/discriminant shape just as break/continue do.
@@ -5367,10 +5470,44 @@ impl<'source> Parser<'source> {
                     source_span(super_span),
                 ));
             }
-            return Err(Error::unsupported(
-                "derived constructor super() is not implemented yet",
-                source_span(super_span),
-            ));
+            let call_span = self.current().span;
+            // Match QuickJS's `this_active_func; get_super; new.target`
+            // sequence before argument evaluation. A parameter expression may
+            // mutate the derived constructor's [[Prototype]], but that mutation
+            // affects only a later super() call.
+            self.emit_identifier(
+                ACTIVE_FUNCTION_LOCAL_NAME.to_owned(),
+                super_span,
+                IdentifierAccess::Get,
+            )?;
+            self.emit_instruction(Instruction::GetSuper)?;
+            self.emit_identifier(
+                NEW_TARGET_LOCAL_NAME.to_owned(),
+                super_span,
+                IdentifierAccess::Get,
+            )?;
+            self.emit_instruction(Instruction::MarkSuperCall)?;
+            self.advance()?;
+            let arguments = self.parse_call_arguments()?;
+            match arguments {
+                CallArguments::Fixed(argument_count) => {
+                    self.emit_instruction_at(
+                        Instruction::ConstructSuper(argument_count),
+                        source_offset(call_span)?,
+                    )?;
+                }
+                CallArguments::Spread => {
+                    self.emit_instruction_at(Instruction::ApplySuper, source_offset(call_span)?)?;
+                }
+            }
+            self.emit_instruction(Instruction::Dup)?;
+            self.emit_identifier(
+                THIS_LOCAL_NAME.to_owned(),
+                super_span,
+                IdentifierAccess::InitializeDerivedThis,
+            )?;
+            self.anonymous_function_definition = None;
+            return Ok(());
         }
         if !matches!(
             self.current().kind,
@@ -5457,10 +5594,12 @@ impl<'source> Parser<'source> {
             }
             TokenKind::Keyword(Keyword::This) => {
                 self.advance()?;
-                if matches!(
-                    self.current_ir().kind,
-                    FunctionKind::Arrow | FunctionKind::Eval(EvalKind::Direct)
-                ) {
+                if self.current_ir().derived_class_constructor
+                    || matches!(
+                        self.current_ir().kind,
+                        FunctionKind::Arrow | FunctionKind::Eval(EvalKind::Direct)
+                    )
+                {
                     self.emit_identifier(
                         THIS_LOCAL_NAME.to_owned(),
                         token.span,
@@ -7996,7 +8135,9 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             ));
         }
         match function.kind {
-            FunctionKind::Method if !function.super_call_allowed && function.super_allowed => {}
+            FunctionKind::Method
+                if function.super_allowed
+                    && function.super_call_allowed == function.derived_class_constructor => {}
             FunctionKind::Arrow => {
                 let parent = function
                     .parent
@@ -8044,10 +8185,13 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             if !matches!(function.kind, FunctionKind::Method)
                 || !function.strict
                 || check_ctor_count != 1
+                || function.derived_class_constructor != function.super_call_allowed
+                || function.derived_class_constructor != function.active_function_local.is_some()
+                || (function.derived_class_constructor && function.this_local.is_none())
             {
                 return Err(Error::internal("class constructor metadata is malformed"));
             }
-        } else if check_ctor_count != 0 {
+        } else if check_ctor_count != 0 || function.derived_class_constructor {
             return Err(Error::internal(
                 "non-class function retained a constructor-call guard",
             ));
@@ -8175,6 +8319,10 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         }
         for (pseudo, local) in [
             (PseudoBinding::HomeObject, function.home_object_local),
+            (
+                PseudoBinding::ActiveFunction,
+                function.active_function_local,
+            ),
             (PseudoBinding::This, function.this_local),
             (PseudoBinding::NewTarget, function.new_target_local),
         ] {
@@ -8192,7 +8340,14 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         && usize::from(index) < function.locals.len()
                         && function.locals[usize::from(index)] == pseudo.name()
                         && binding.storage == BindingStorage::Local(index)
-                        && binding.kind == BindingKind::Normal
+                        && binding.kind
+                            == if pseudo == PseudoBinding::This
+                                && function.derived_class_constructor
+                            {
+                                BindingKind::Lexical { is_const: false }
+                            } else {
+                                BindingKind::Normal
+                            }
                         && binding.storage_scope == function.var_scope
                         && binding.declaration_scope == function.var_scope
                         && binding.declaration_span.is_none() =>
@@ -8211,6 +8366,13 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                             ) || matches!(
                                 (&window[0].op, &window[1].op, pseudo),
                                 (
+                                    IrOp::Bytecode(Instruction::PushActiveFunction),
+                                    IrOp::Bytecode(Instruction::PutLocal(target)),
+                                    PseudoBinding::ActiveFunction,
+                                ) if *target == index
+                            ) || matches!(
+                                (&window[0].op, &window[1].op, pseudo),
+                                (
                                     IrOp::Bytecode(Instruction::PushThis),
                                     IrOp::Bytecode(Instruction::PutLocal(target)),
                                     PseudoBinding::This,
@@ -8225,10 +8387,22 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                             )
                         })
                         .count();
-                    if initialized != 1 {
-                        return Err(Error::internal(
-                            "pseudo local entry initialization is malformed",
-                        ));
+                    // The scope graph is validated once before identifier
+                    // linking/entry-prologue installation and again after
+                    // all hoists are fixed. Derived constructors eagerly own
+                    // their active-function and TDZ `this` cells, so the
+                    // pre-link pass must require zero entry writes while the
+                    // final pass requires every ordinary pseudo initializer.
+                    let expected = usize::from(
+                        function.pseudo_binding_prologues_installed
+                            && !(pseudo == PseudoBinding::This
+                                && function.derived_class_constructor),
+                    );
+                    if initialized != expected {
+                        return Err(Error::internal(format!(
+                            "{} pseudo local entry initialization is malformed: expected {expected}, found {initialized}",
+                            pseudo.name(),
+                        )));
                     }
                 }
                 (None, []) => {}
@@ -8397,8 +8571,17 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             let mut hoist_start = 0_usize;
             for (local, pseudo) in [
                 (function.home_object_local, PseudoBinding::HomeObject),
+                (
+                    function.active_function_local,
+                    PseudoBinding::ActiveFunction,
+                ),
                 (function.new_target_local, PseudoBinding::NewTarget),
-                (function.this_local, PseudoBinding::This),
+                (
+                    function
+                        .this_local
+                        .filter(|_| !function.derived_class_constructor),
+                    PseudoBinding::This,
+                ),
             ] {
                 let Some(local) = local else {
                     continue;
@@ -8408,6 +8591,13 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         function.ops.get(hoist_start),
                         Some(SpannedIrOp {
                             op: IrOp::Bytecode(Instruction::PushHomeObject),
+                            pc_site: None,
+                        })
+                    ),
+                    PseudoBinding::ActiveFunction => matches!(
+                        function.ops.get(hoist_start),
+                        Some(SpannedIrOp {
+                            op: IrOp::Bytecode(Instruction::PushActiveFunction),
                             pc_site: None,
                         })
                     ),
@@ -9213,6 +9403,12 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                                 || (scope_kind == ScopeKind::ProgramBody
                                     && matches!(function.kind, FunctionKind::Eval(_))
                                     && binding.storage_scope == function.body_scope);
+                            let supported_scope = supported_scope
+                                || (scope_kind == ScopeKind::FunctionRoot
+                                    && function.derived_class_constructor
+                                    && binding.name == THIS_LOCAL_NAME
+                                    && binding.kind == (BindingKind::Lexical { is_const: false })
+                                    && binding.storage_scope == function.var_scope);
                             if binding.storage_scope != binding.declaration_scope
                                 || !supported_scope
                             {
@@ -10138,6 +10334,7 @@ fn link_eval_environment(
                             || matches!(binding.kind, BindingKind::FunctionName { .. })
                             || matches!(binding.storage, BindingStorage::Local(index)
                                 if function.home_object_local == Some(index)
+                                    || function.active_function_local == Some(index)
                                     || function.new_target_local == Some(index)
                                     || function.this_local == Some(index))
                     })
@@ -11323,6 +11520,8 @@ fn resolve_identifier_path(
             access,
             IdentifierAccess::Get | IdentifierAccess::GetOrUndefined
         )
+        && !(pseudo == Some(PseudoBinding::This)
+            && access == IdentifierAccess::InitializeDerivedThis)
     {
         return Err(Error::internal(
             "pseudo binding received a non-read operation",
@@ -11499,6 +11698,11 @@ fn resolve_identifier_path(
         IdentifierAccess::Initialize => {
             return Err(Error::internal(
                 "lexical initializer did not resolve to its owning local",
+            ));
+        }
+        IdentifierAccess::InitializeDerivedThis => {
+            return Err(Error::internal(
+                "derived this initializer escaped its authenticated binding",
             ));
         }
         IdentifierAccess::Put => IrOp::Bytecode(Instruction::PutVar(closure_index)),
@@ -11757,7 +11961,9 @@ fn wrap_dynamic_identifier(
     }
     if matches!(
         access,
-        IdentifierAccess::Initialize | IdentifierAccess::AnnexBPut
+        IdentifierAccess::Initialize
+            | IdentifierAccess::InitializeDerivedThis
+            | IdentifierAccess::AnnexBPut
     ) {
         return Err(Error::internal(
             "declaration-only identifier access crossed a dynamic environment",
@@ -11820,6 +12026,11 @@ fn global_declaration_operation(
         IdentifierAccess::Initialize => {
             return Err(Error::internal(
                 "ordinary global declaration used lexical initialization",
+            ));
+        }
+        IdentifierAccess::InitializeDerivedThis => {
+            return Err(Error::internal(
+                "derived this initializer resolved to a global binding",
             ));
         }
         IdentifierAccess::Put => IrOp::Bytecode(Instruction::PutVar(closure_index)),
@@ -12122,7 +12333,11 @@ fn binding_instruction(
         (BindingStorage::Argument(_) | BindingStorage::Local(_), _, IdentifierAccess::Delete) => {
             Ok(Instruction::PushFalse)
         }
-        (BindingStorage::Argument(_), _, IdentifierAccess::Initialize) => Err(Error::internal(
+        (
+            BindingStorage::Argument(_),
+            _,
+            IdentifierAccess::Initialize | IdentifierAccess::InitializeDerivedThis,
+        ) => Err(Error::internal(
             "lexical initializer resolved to an argument binding",
         )),
         (BindingStorage::Argument(index), _, IdentifierAccess::Put) => {
@@ -12146,6 +12361,20 @@ fn binding_instruction(
             BindingKind::Lexical { .. },
             IdentifierAccess::Initialize,
         ) => Ok(Instruction::InitializeLocal(index)),
+        (
+            BindingStorage::Local(index),
+            BindingKind::Lexical { is_const: false },
+            IdentifierAccess::InitializeDerivedThis,
+        ) => Ok(Instruction::InitializeDerivedLocal(index)),
+        (
+            BindingStorage::Local(_),
+            BindingKind::Normal
+            | BindingKind::FunctionName { .. }
+            | BindingKind::Lexical { is_const: true },
+            IdentifierAccess::InitializeDerivedThis,
+        ) => Err(Error::internal(
+            "derived this initializer resolved to a non-mutable lexical local",
+        )),
         (
             BindingStorage::Local(_),
             BindingKind::Normal | BindingKind::FunctionName { .. },
@@ -12215,6 +12444,12 @@ fn closure_binding_operation(
         (_, IdentifierAccess::Initialize) => Err(Error::internal(
             "lexical initializer crossed a function boundary",
         )),
+        (BindingKind::Lexical { is_const: false }, IdentifierAccess::InitializeDerivedThis) => {
+            Ok(IrOp::Bytecode(Instruction::InitializeDerivedVarRef(index)))
+        }
+        (_, IdentifierAccess::InitializeDerivedThis) => Err(Error::internal(
+            "derived this initializer crossed a non-mutable lexical binding",
+        )),
         (BindingKind::Normal, IdentifierAccess::Put) => {
             Ok(IrOp::Bytecode(Instruction::PutVarRef(index)))
         }
@@ -12260,6 +12495,7 @@ fn function_name_write_instruction(
         | IdentifierAccess::GetOrUndefined
         | IdentifierAccess::Delete
         | IdentifierAccess::Initialize
+        | IdentifierAccess::InitializeDerivedThis
         | IdentifierAccess::AnnexBPut => {
             return Err(Error::internal(
                 "function-name write received a read access",
@@ -12928,6 +13164,14 @@ fn lower_unlinked_tree(
             local_count: u16::try_from(function.locals.len())
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?,
             function_name_local: function.function_name_local,
+            derived_this_local: function
+                .derived_class_constructor
+                .then_some(function.this_local)
+                .flatten(),
+            active_function_local: function
+                .derived_class_constructor
+                .then_some(function.active_function_local)
+                .flatten(),
             eval_variable_object_local: function.eval_variable_object_local,
             needs_home_object: function.needs_home_object,
             closure_count: u16::try_from(function.closure_variables.len())
@@ -12945,8 +13189,9 @@ fn lower_unlinked_tree(
             },
             function_kind: BytecodeFunctionKind::Normal,
             has_prototype: matches!(function.kind, FunctionKind::Ordinary),
-            constructor_kind: if matches!(function.kind, FunctionKind::Ordinary)
-                || function.class_constructor
+            constructor_kind: if function.derived_class_constructor {
+                ConstructorKind::Derived
+            } else if matches!(function.kind, FunctionKind::Ordinary) || function.class_constructor
             {
                 ConstructorKind::Base
             } else {
@@ -13041,7 +13286,9 @@ fn dynamic_identifier_len(
         | IdentifierAccess::Put
         | IdentifierAccess::Delete => 1_usize,
         IdentifierAccess::Set => 2,
-        IdentifierAccess::Initialize | IdentifierAccess::AnnexBPut => {
+        IdentifierAccess::Initialize
+        | IdentifierAccess::InitializeDerivedThis
+        | IdentifierAccess::AnnexBPut => {
             return Err(Error::internal(
                 "declaration-only access reached dynamic identifier lowering",
             ));
@@ -13226,7 +13473,9 @@ fn emit_dynamic_identifier_operation(
                 code.push(Instruction::DeleteDynamicBinding { source, name });
                 pc_sites.push(None);
             }
-            IdentifierAccess::Initialize | IdentifierAccess::AnnexBPut => {
+            IdentifierAccess::Initialize
+            | IdentifierAccess::InitializeDerivedThis
+            | IdentifierAccess::AnnexBPut => {
                 return Err(Error::internal(
                     "declaration-only access reached dynamic identifier lowering",
                 ));

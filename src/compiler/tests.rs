@@ -21,13 +21,14 @@ use crate::value::{JsString, Value};
 use crate::vm::Vm;
 
 use super::{
-    BindingKind, BindingStorage, EVAL_VARIABLE_OBJECT_LOCAL_NAME, EvalCompileContext, FunctionIr,
-    FunctionIrOptions, FunctionKind, FunctionSourceInfo, FunctionTree, HOME_OBJECT_LOCAL_NAME,
-    InMode, IrScope, MAX_BYTECODE_STACK, MAX_CALL_ARGUMENTS, MAX_LOCAL_VARIABLES, Parser, ScopeId,
-    ScopeKind, SourceOffset, SuperCapabilities, THIS_LOCAL_NAME, WITH_OBJECT_LOCAL_NAME,
-    build_scope_lifecycles, compile_script, compile_unlinked_eval_with_filename,
-    compile_unlinked_script, compile_unlinked_script_with_filename, ensure_closure_variable,
-    lex_error, resolve_identifiers, validate_scope_graph,
+    ACTIVE_FUNCTION_LOCAL_NAME, BindingKind, BindingStorage, EVAL_VARIABLE_OBJECT_LOCAL_NAME,
+    EvalCompileContext, FunctionIr, FunctionIrOptions, FunctionKind, FunctionSourceInfo,
+    FunctionTree, HOME_OBJECT_LOCAL_NAME, InMode, IrScope, MAX_BYTECODE_STACK, MAX_CALL_ARGUMENTS,
+    MAX_LOCAL_VARIABLES, NEW_TARGET_LOCAL_NAME, Parser, ScopeId, ScopeKind, SourceOffset,
+    SuperCapabilities, THIS_LOCAL_NAME, WITH_OBJECT_LOCAL_NAME, build_scope_lifecycles,
+    compile_script, compile_unlinked_eval_with_filename, compile_unlinked_script,
+    compile_unlinked_script_with_filename, ensure_closure_variable, lex_error, resolve_identifiers,
+    validate_scope_graph,
 };
 
 #[test]
@@ -296,6 +297,7 @@ fn closure_slots_deduplicate_by_storage_identity_and_reject_metadata_conflicts()
             function_name: None,
             private_name_binding: false,
             class_constructor: false,
+            derived_class_constructor: false,
             parameters: Vec::new(),
             defined_argument_count: 0,
             has_simple_parameter_list: true,
@@ -610,6 +612,7 @@ fn captured_with_object_has_close_lifetime_without_lexical_tdz() {
                 function_name: None,
                 private_name_binding: false,
                 class_constructor: false,
+                derived_class_constructor: false,
                 parameters: Vec::new(),
                 defined_argument_count: 0,
                 has_simple_parameter_list: true,
@@ -4162,23 +4165,82 @@ fn direct_eval_super_capability_is_explicit_and_independent_from_imports() {
         "super() is only valid in a derived class constructor"
     );
 
+    let mut derived_this = pseudo(THIS_LOCAL_NAME, 0);
+    derived_this.is_lexical = true;
     let enabled_super_call = compile_unlinked_eval_with_filename(
         "super()",
         "<eval>",
         DebugInfoMode::StripDebug,
         direct(
-            method_bindings(),
+            vec![
+                derived_this,
+                pseudo(HOME_OBJECT_LOCAL_NAME, 0),
+                pseudo(ACTIVE_FUNCTION_LOCAL_NAME, 0),
+                pseudo(NEW_TARGET_LOCAL_NAME, 0),
+            ],
             vec![EvalScopeKind::FunctionRoot],
             true,
             true,
         ),
     )
-    .expect_err("the typed capability reaches the unimplemented SuperCall frontier");
-    assert_eq!(enabled_super_call.kind(), ErrorKind::Unsupported);
-    assert_eq!(
-        enabled_super_call.message(),
-        "derived constructor super() is not implemented yet"
+    .expect("an authenticated derived caller enables direct-eval SuperCall");
+    assert!(enabled_super_call.metadata().super_call_allowed);
+    assert!(enabled_super_call.metadata().super_allowed);
+    assert!(
+        enabled_super_call
+            .code()
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::GetSuper))
     );
+    assert!(
+        enabled_super_call
+            .code()
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::InitializeDerivedVarRef(_)))
+    );
+    assert!(enabled_super_call.code().windows(4).any(|window| {
+        matches!(
+            window,
+            [
+                Instruction::GetVarRef(_),
+                Instruction::GetSuper,
+                Instruction::GetVarRef(_),
+                Instruction::MarkSuperCall,
+            ]
+        )
+    }));
+    assert!(
+        enabled_super_call
+            .code()
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::ConstructSuper(0)))
+    );
+}
+
+#[test]
+fn nested_eval_in_derived_constructor_reaches_inner_unsupported_syntax() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let source = r#"
+        var testStr = `
+            class C extends Object {
+                constructor() {
+                    eval(\`a => b => {
+                        class Q { f = 1; }
+                        super();
+                    }\`);
+                }
+            }
+            new C;
+        `;
+        (function () { eval(testStr); })();
+    "#;
+
+    let RuntimeError::Engine(error) = context.eval(source).unwrap_err() else {
+        panic!("nested eval did not preserve its unsupported parser diagnostic");
+    };
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert_eq!(error.message(), "class fields are not implemented yet");
 }
 
 #[test]
@@ -7493,6 +7555,7 @@ fn parameter_assignment_prescan_retains_quickjs_bits_at_the_depth_bound() {
                     function_name: Some("<scan-test>".to_owned()),
                     private_name_binding: false,
                     class_constructor: false,
+                    derived_class_constructor: false,
                     parameters: Vec::new(),
                     defined_argument_count: 0,
                     has_simple_parameter_list: true,
@@ -8248,6 +8311,7 @@ fn quickjs_closure_slot_limit_is_65534_and_uses_internal_error() {
             function_name: None,
             private_name_binding: false,
             class_constructor: false,
+            derived_class_constructor: false,
             parameters: Vec::new(),
             defined_argument_count: 0,
             has_simple_parameter_list: true,

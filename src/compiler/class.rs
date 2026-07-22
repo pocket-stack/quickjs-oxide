@@ -1,9 +1,10 @@
-//! Base class parsing and lowering.
+//! Class parsing and lowering.
 //!
 //! This is the first vertical slice of QuickJS `js_parse_class`: class name
-//! scopes, base constructors, and synchronous methods/accessors. Heritage,
-//! fields, private elements, static blocks, and generator/async methods remain
-//! explicit typed frontiers rather than being accepted with partial semantics.
+//! scopes, heritage, base/derived constructors, `super()` and synchronous
+//! methods/accessors. Fields, private elements, static blocks, and
+//! generator/async methods remain explicit typed frontiers rather than being
+//! accepted with partial semantics.
 
 use super::function::ParsedFunctionDefinition;
 use super::*;
@@ -24,7 +25,7 @@ impl<'source> Parser<'source> {
         self.parse_class(true)
     }
 
-    /// Parse one base ClassDefinition while retaining QuickJS's constructor
+    /// Parse one ClassDefinition while retaining QuickJS's constructor
     /// constant patching model. `DefineClass` must execute before computed
     /// method keys, so a placeholder closure operand is emitted first and
     /// patched after the body reveals an explicit or default constructor.
@@ -78,14 +79,20 @@ impl<'source> Parser<'source> {
             self.register_lexical_binding(name, *span, self.current().span, true, false)?;
         }
 
-        if matches!(self.current().kind, TokenKind::Keyword(Keyword::Extends)) {
-            return Err(self.unsupported_here(
-                "class heritage and derived constructors are not implemented yet",
-            ));
-        }
+        let has_heritage = if matches!(self.current().kind, TokenKind::Keyword(Keyword::Extends)) {
+            self.advance_expression_start()?;
+            // QuickJS accepts precisely LeftHandSideExpression here. The
+            // constructor check is deliberately deferred until after the
+            // entire heritage value has been evaluated.
+            self.parse_left_hand_side_expression()?;
+            self.anonymous_function_definition = None;
+            true
+        } else {
+            self.emit_instruction(Instruction::Undefined)?;
+            false
+        };
         self.expect_punctuator(Punctuator::LeftBrace)?;
 
-        self.emit_instruction(Instruction::Undefined)?;
         let constructor_placeholder = self.emit(IrOp::MakeClosure(u32::MAX))?;
         let class_name = name.as_ref().map_or_else(
             || Ok(JsString::from_static("")),
@@ -95,7 +102,7 @@ impl<'source> Parser<'source> {
             self.add_constant(IrConstant::Primitive(Value::String(class_name)))?;
         self.emit_instruction(Instruction::DefineClass {
             name: class_name_constant,
-            has_heritage: false,
+            has_heritage,
         })?;
 
         let mut constructor = None;
@@ -106,13 +113,14 @@ impl<'source> Parser<'source> {
             if self.consume_punctuator(Punctuator::Semicolon)? {
                 continue;
             }
-            self.parse_class_element(&mut constructor)?;
+            self.parse_class_element(&mut constructor, has_heritage)?;
         }
         let closing_brace = self.current().span;
         self.advance()?;
 
         let (constructor_constant, constructor_child) = match constructor {
             Some(parsed) => (parsed.constant, parsed.child),
+            None if has_heritage => self.synthesize_derived_class_constructor(class_token.span)?,
             None => self.synthesize_base_class_constructor(class_token.span)?,
         };
         let class_end = SourceOffset::try_from_usize(closing_brace.end.byte_offset)
@@ -123,6 +131,7 @@ impl<'source> Parser<'source> {
                 .get_mut(constructor_child)
                 .ok_or_else(|| Error::internal("class constructor child disappeared"))?;
             constructor.class_constructor = true;
+            constructor.derived_class_constructor = has_heritage;
             constructor.function_name = Some(
                 name.as_ref()
                     .map_or_else(String::new, |(name, _)| name.clone()),
@@ -169,6 +178,7 @@ impl<'source> Parser<'source> {
     fn parse_class_element(
         &mut self,
         constructor: &mut Option<ParsedFunctionDefinition>,
+        has_heritage: bool,
     ) -> Result<(), Error> {
         let mut is_static = false;
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Static)) {
@@ -250,7 +260,8 @@ impl<'source> Parser<'source> {
                     source_span(function_span),
                 ));
             }
-            *constructor = Some(self.parse_base_class_constructor_definition(function_span)?);
+            *constructor =
+                Some(self.parse_class_constructor_definition(function_span, has_heritage)?);
             self.anonymous_function_definition = None;
         } else {
             self.parse_object_method_definition(function_span, method_kind)?;
@@ -381,6 +392,7 @@ impl<'source> Parser<'source> {
                 function_name: None,
                 private_name_binding: false,
                 class_constructor: true,
+                derived_class_constructor: false,
                 parameters: Vec::new(),
                 defined_argument_count: 0,
                 has_simple_parameter_list: true,
@@ -393,6 +405,57 @@ impl<'source> Parser<'source> {
         self.emit_instruction(Instruction::CheckCtor)?;
         self.emit_instruction(Instruction::Undefined)?;
         self.emit_instruction(Instruction::Return)?;
+        self.current_function = parent;
+        let constant = self.add_constant(IrConstant::Child(child))?;
+        Ok((constant, child))
+    }
+
+    /// QuickJS's default derived constructor forwards the frame's raw
+    /// argc/argv through `OP_init_ctor`; it does not materialize a rest Array
+    /// whose iterator could be monkey-patched. `InitDerivedConstructor` keeps
+    /// that same non-observable forwarding boundary in the typed VM.
+    fn synthesize_derived_class_constructor(
+        &mut self,
+        class_span: Span,
+    ) -> Result<(u32, FunctionId), Error> {
+        let parent = self.current_function;
+        let child = self.functions.len();
+        let definition_scope = self.current_ir().current_scope;
+        self.functions.push(FunctionIr::new(
+            Some(ParentLink {
+                function: parent,
+                definition_scope,
+            }),
+            FunctionKind::Method,
+            FunctionSourceInfo {
+                span: class_span,
+                definition: source_offset(class_span)?,
+                range: None,
+            },
+            FunctionIrOptions {
+                function_name: None,
+                private_name_binding: false,
+                class_constructor: true,
+                derived_class_constructor: true,
+                parameters: Vec::new(),
+                defined_argument_count: 0,
+                has_simple_parameter_list: true,
+                rest_parameter: None,
+                strict: true,
+                super_capabilities: SuperCapabilities::CALL_AND_PROPERTY,
+            },
+        )?);
+        self.functions[child].allocate_derived_constructor_pseudo_bindings()?;
+        self.current_function = child;
+        let this = self
+            .current_ir()
+            .this_local
+            .ok_or_else(|| Error::internal("derived constructor has no this binding"))?;
+        self.emit_instruction(Instruction::CheckCtor)?;
+        self.emit_instruction(Instruction::InitDerivedConstructor)?;
+        self.emit_instruction(Instruction::Dup)?;
+        self.emit_instruction(Instruction::InitializeDerivedLocal(this))?;
+        self.emit_instruction(Instruction::ReturnDerived(this))?;
         self.current_function = parent;
         let constant = self.add_constant(IrConstant::Child(child))?;
         Ok((constant, child))

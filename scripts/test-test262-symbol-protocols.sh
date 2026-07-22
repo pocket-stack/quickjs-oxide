@@ -85,9 +85,9 @@ if [[ "$expected_quickjs" != "2026-06-04" \
     || "$expected_paths" != "517" \
     || "$expected_variants" != "1010" \
     || "$expected_runnable" != "1010" \
-    || "$expected_passes" != "864" \
+    || "$expected_passes" != "892" \
     || "$expected_failures" != "118" \
-    || "$expected_unsupported" != "28" \
+    || "$expected_unsupported" != "0" \
     || "$expected_skipped" != "0" ]]; then
     echo "error: well-known Symbol protocol baseline metadata drifted" >&2
     exit 1

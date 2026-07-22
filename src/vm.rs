@@ -516,12 +516,22 @@ pub(crate) trait VmHost {
         new_target: Value,
         arguments: Vec<Value>,
     ) -> Result<Completion, Error>;
+    /// Execute the implicit body of a default derived constructor. The host
+    /// owns the frame's raw actual arguments; the VM supplies the exact active
+    /// function and original `new.target` so neither can be reconstructed from
+    /// JavaScript-visible state.
+    fn init_derived_constructor(
+        &mut self,
+        active_function: ObjectRef,
+        new_target: Value,
+    ) -> Result<Completion, Error>;
     fn closure_count(&self) -> usize;
     fn get_local(&mut self, index: u16) -> Result<Value, Error>;
     fn put_local(&mut self, index: u16, value: Value) -> Result<(), Error>;
     fn set_local_uninitialized(&mut self, index: u16) -> Result<(), Error>;
     fn get_local_checked(&mut self, index: u16) -> Result<Value, Error>;
     fn initialize_local(&mut self, index: u16, value: Value) -> Result<(), Error>;
+    fn initialize_derived_local(&mut self, index: u16, value: Value) -> Result<(), Error>;
     fn put_local_checked(&mut self, index: u16, value: Value) -> Result<(), Error>;
     fn close_local(&mut self, index: u16) -> Result<(), Error>;
     fn get_argument(&mut self, index: u16) -> Result<Value, Error>;
@@ -530,6 +540,11 @@ pub(crate) trait VmHost {
     fn put_var_ref(&mut self, index: u16, value: Value) -> Result<(), Error>;
     fn get_var_ref_checked(&mut self, index: u16) -> Result<Value, Error>;
     fn put_var_ref_checked(&mut self, index: u16, value: Value) -> Result<(), Error>;
+    fn initialize_derived_var_ref(&mut self, index: u16, value: Value) -> Result<(), Error>;
+    /// Apply the derived-constructor return protocol. Unlike ordinary VM
+    /// errors, protocol TypeError/ReferenceError objects are allocated in the
+    /// outer caller realm by the runtime host.
+    fn return_derived(&mut self, index: u16, value: Value) -> Result<Completion, Error>;
 }
 
 enum DetachedLocal {
@@ -1549,6 +1564,16 @@ impl VmHost for DetachedHost<'_> {
         ))
     }
 
+    fn init_derived_constructor(
+        &mut self,
+        _active_function: ObjectRef,
+        _new_target: Value,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "detached VM cannot initialize a runtime-owned derived constructor",
+        ))
+    }
+
     fn closure_count(&self) -> usize {
         0
     }
@@ -1590,6 +1615,18 @@ impl VmHost for DetachedHost<'_> {
 
     fn initialize_local(&mut self, index: u16, value: Value) -> Result<(), Error> {
         *self.local_mut(index)? = DetachedLocal::Initialized(value);
+        Ok(())
+    }
+
+    fn initialize_derived_local(&mut self, index: u16, value: Value) -> Result<(), Error> {
+        let local = self.local_mut(index)?;
+        if !matches!(local, DetachedLocal::Uninitialized) {
+            return Err(Error::new(
+                ErrorKind::Reference,
+                "'this' can be initialized only once",
+            ));
+        }
+        *local = DetachedLocal::Initialized(value);
         Ok(())
     }
 
@@ -1640,6 +1677,34 @@ impl VmHost for DetachedHost<'_> {
         Err(Error::internal(
             "detached VM has no closure-variable environment",
         ))
+    }
+
+    fn initialize_derived_var_ref(&mut self, _index: u16, _value: Value) -> Result<(), Error> {
+        Err(Error::internal(
+            "detached VM has no closure-variable environment",
+        ))
+    }
+
+    fn return_derived(&mut self, index: u16, value: Value) -> Result<Completion, Error> {
+        // Validate the typed local operand even when an explicit Object return
+        // does not observe the binding's value.
+        self.local(index)?;
+        match value {
+            value @ Value::Object(_) => Ok(Completion::Return(value)),
+            Value::Undefined => {
+                let this_value = self.get_local_checked(index)?;
+                if !matches!(this_value, Value::Object(_)) {
+                    return Err(Error::internal(
+                        "initialized derived this binding did not contain an Object",
+                    ));
+                }
+                Ok(Completion::Return(this_value))
+            }
+            _ => Err(Error::new(
+                ErrorKind::Type,
+                "derived class constructor must return an object or undefined",
+            )),
+        }
     }
 }
 
@@ -1731,7 +1796,7 @@ struct CallFrame {
     _caller_realm: Option<ContextId>,
     /// The realm captured by the executing bytecode.
     _callee_realm: Option<ContextId>,
-    _current_function: Option<ObjectRef>,
+    current_function: Option<ObjectRef>,
     this_value: Value,
     normalized_this: Option<Value>,
     new_target: Value,
@@ -1747,7 +1812,7 @@ impl CallFrame {
             pc: 0,
             _caller_realm: None,
             _callee_realm: None,
-            _current_function: None,
+            current_function: None,
             this_value: Value::Undefined,
             normalized_this: None,
             new_target: Value::Undefined,
@@ -1771,7 +1836,7 @@ impl CallFrame {
             pc: 0,
             _caller_realm: Some(caller_realm),
             _callee_realm: Some(callee_realm),
-            _current_function: Some(current_function),
+            current_function: Some(current_function),
             this_value,
             normalized_this: None,
             new_target,
@@ -2074,17 +2139,32 @@ impl CallFrame {
                 let receiver = self.pop()?;
                 host.call(function, receiver, arguments)?
             }
-            Instruction::Construct(argument_count) => {
+            Instruction::Construct(argument_count)
+            | Instruction::ConstructSuper(argument_count) => {
                 let arguments = self.take_call_arguments(*argument_count, 2)?;
                 let new_target = self.pop()?;
                 let function = self.pop()?;
                 host.construct(function, new_target, arguments)?
+            }
+            Instruction::InitDerivedConstructor => {
+                let active_function = self.current_function.clone().ok_or_else(|| {
+                    Error::internal(
+                        "derived constructor initialization has no active function object",
+                    )
+                })?;
+                host.init_derived_constructor(active_function, self.new_target.clone())?
             }
             Instruction::Apply(kind) => {
                 let argument_array = self.pop()?;
                 let this_or_new_target = self.pop()?;
                 let function = self.pop()?;
                 host.apply(function, this_or_new_target, argument_array, *kind)?
+            }
+            Instruction::ApplySuper => {
+                let argument_array = self.pop()?;
+                let new_target = self.pop()?;
+                let function = self.pop()?;
+                host.apply(function, new_target, argument_array, ApplyKind::Construct)?
             }
             Instruction::ApplyEval { environment } => {
                 let argument_array = self.pop()?;
@@ -2418,7 +2498,10 @@ impl CallFrame {
                     | Instruction::Eval { .. }
                     | Instruction::CallMethod(_)
                     | Instruction::Construct(_)
+                    | Instruction::ConstructSuper(_)
+                    | Instruction::InitDerivedConstructor
                     | Instruction::Apply(_)
+                    | Instruction::ApplySuper
                     | Instruction::ApplyEval { .. }
             ) {
                 if let Some(completion) = self.execute_call_instruction(instruction, host)? {
@@ -2554,6 +2637,7 @@ impl CallFrame {
                     ));
                 }
             }
+            Instruction::MarkSuperCall => {}
             Instruction::ThrowReadOnly(index) => {
                 self.pop()?;
                 return Err(host.read_only_error(*index)?);
@@ -2577,6 +2661,12 @@ impl CallFrame {
             Instruction::PushThis => {
                 let value = self.normalized_this(host)?;
                 self.stack.push(value);
+            }
+            Instruction::PushActiveFunction => {
+                let function = self.current_function.clone().ok_or_else(|| {
+                    Error::internal("active function opcode has no active function object")
+                })?;
+                self.stack.push(Value::Object(function));
             }
             Instruction::PushHomeObject => {
                 self.stack.push(host.home_object()?);
@@ -2606,6 +2696,10 @@ impl CallFrame {
             Instruction::InitializeLocal(index) => {
                 let value = self.pop()?;
                 host.initialize_local(*index, value)?;
+            }
+            Instruction::InitializeDerivedLocal(index) => {
+                let value = self.pop()?;
+                host.initialize_derived_local(*index, value)?;
             }
             Instruction::PutLocalCheck(index) => {
                 let value = self.pop()?;
@@ -2655,6 +2749,10 @@ impl CallFrame {
             Instruction::PutVarRefCheck(index) => {
                 let value = self.pop()?;
                 host.put_var_ref_checked(*index, value)?;
+            }
+            Instruction::InitializeDerivedVarRef(index) => {
+                let value = self.pop()?;
+                host.initialize_derived_var_ref(*index, value)?;
             }
             Instruction::CloseLocal(index) => {
                 host.close_local(*index)?;
@@ -3192,12 +3290,19 @@ impl CallFrame {
             | Instruction::Eval { .. }
             | Instruction::CallMethod(_)
             | Instruction::Construct(_)
+            | Instruction::ConstructSuper(_)
+            | Instruction::InitDerivedConstructor
             | Instruction::Apply(_)
+            | Instruction::ApplySuper
             | Instruction::ApplyEval { .. } => {
                 unreachable!("call dispatch was bypassed")
             }
             Instruction::Return => {
                 return self.pop().map(|value| Some(Completion::Return(value)));
+            }
+            Instruction::ReturnDerived(index) => {
+                let value = self.pop()?;
+                return host.return_derived(*index, value).map(Some);
             }
             Instruction::Throw => {
                 return self.pop().map(|value| Some(Completion::Throw(value)));
@@ -5380,6 +5485,58 @@ mod tests {
             max_stack: 1,
         };
         assert_eq!(Vm::new().execute(&consuming_write).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn detached_vm_enforces_derived_this_one_shot_and_return_shape() {
+        let duplicate_super = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::SetLocalUninitialized(0),
+                Instruction::PushI32(1),
+                Instruction::InitializeDerivedLocal(0),
+                Instruction::PushI32(2),
+                Instruction::InitializeDerivedLocal(0),
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 1,
+            max_stack: 1,
+        };
+        let error = Vm::new().execute(&duplicate_super).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Reference);
+        assert_eq!(error.message(), "'this' can be initialized only once");
+
+        let primitive_return = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::SetLocalUninitialized(0),
+                Instruction::PushI32(1),
+                Instruction::ReturnDerived(0),
+            ],
+            constants: vec![],
+            local_count: 1,
+            max_stack: 1,
+        };
+        let error = Vm::new().execute(&primitive_return).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Type);
+        assert_eq!(
+            error.message(),
+            "derived class constructor must return an object or undefined"
+        );
+
+        let missing_super = BytecodeFunction {
+            code: vec![
+                Instruction::SetLocalUninitialized(0),
+                Instruction::Undefined,
+                Instruction::ReturnDerived(0),
+            ],
+            ..primitive_return
+        };
+        let error = Vm::new().execute(&missing_super).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Reference);
+        assert_eq!(error.message(), "lexical variable is not initialized");
     }
 
     #[test]

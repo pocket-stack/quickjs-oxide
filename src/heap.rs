@@ -651,6 +651,14 @@ pub struct FunctionMetadata {
     /// function expression. This is the typed equivalent of QuickJS's
     /// `func_var_idx` entry prologue.
     pub function_name_local: Option<u16>,
+    /// Authenticated one-shot lexical `this` cell for a derived class
+    /// constructor. Arrows/direct eval may capture this slot, but only the
+    /// derived initialization opcodes may transition it out of TDZ.
+    pub derived_this_local: Option<u16>,
+    /// Authenticated QuickJS `this_active_func` pseudo local. It is initialized
+    /// from the executing function object before parameters run and captured
+    /// by arrows/direct eval which contain `super()`.
+    pub active_function_local: Option<u16>,
     /// Synthetic local which owns QuickJS's hidden `<var>` object for one
     /// sloppy ordinary-function activation containing syntactic direct eval.
     /// Dynamic eval-name opcodes may name only this authenticated slot.
@@ -685,14 +693,36 @@ pub struct FunctionMetadata {
     pub constructor_kind: ConstructorKind,
 }
 
+/// Compiler-authored frame pseudo bindings have one canonical QuickJS entry
+/// order.  Keeping the rank in the heap layer lets every publication shape
+/// (plain/default/rest/pattern parameters) authenticate the same ABI.
+const fn pseudo_binding_entry_rank(instruction: &Instruction) -> Option<u8> {
+    match instruction {
+        Instruction::PushHomeObject => Some(1),
+        Instruction::PushActiveFunction => Some(2),
+        Instruction::PushNewTarget => Some(3),
+        Instruction::PushThis => Some(4),
+        _ => None,
+    }
+}
+
+const fn is_derived_initialization_source(instruction: &Instruction) -> bool {
+    matches!(
+        instruction,
+        Instruction::ConstructSuper(_)
+            | Instruction::ApplySuper
+            | Instruction::InitDerivedConstructor
+    )
+}
+
 /// Whether pinned QuickJS copies `defined_arg_count` out of its parser record.
 ///
 /// QuickJS gates that copy on `arg_count + var_count > 0`. Most Rust locals
 /// correspond directly to QuickJS variables, but owning-function HomeObject,
-/// `this`, and `new.target` reads use dedicated bytecode here while QuickJS
-/// resolves each to a hidden variable. This predicate keeps the observable
-/// empty terminal rest-BindingPattern `length` quirk shared by lowering and
-/// both publication boundaries.
+/// active-function, `new.target`, and ordinary `this` reads use dedicated
+/// bytecode here while QuickJS resolves each to a hidden variable. This
+/// predicate keeps the observable empty terminal rest-BindingPattern `length`
+/// quirk shared by lowering and both publication boundaries.
 pub(crate) fn quickjs_copies_defined_argument_count(
     argument_count: usize,
     local_count: usize,
@@ -700,12 +730,9 @@ pub(crate) fn quickjs_copies_defined_argument_count(
 ) -> bool {
     argument_count != 0
         || local_count != 0
-        || code.iter().any(|instruction| {
-            matches!(
-                instruction,
-                Instruction::PushHomeObject | Instruction::PushThis | Instruction::PushNewTarget
-            )
-        })
+        || code
+            .iter()
+            .any(|instruction| pseudo_binding_entry_rank(instruction).is_some())
 }
 
 /// Authenticate the call-frame ABI encoded by formal-parameter bytecode.
@@ -724,13 +751,13 @@ fn validate_class_constructor_guard(
         .enumerate()
         .filter_map(|(pc, instruction)| matches!(instruction, Instruction::CheckCtor).then_some(pc))
         .collect::<Vec<_>>();
-    let is_base_class_constructor = metadata.constructor_kind == ConstructorKind::Base
+    let is_class_constructor = metadata.constructor_kind != ConstructorKind::None
         && metadata.strict
         && !metadata.has_prototype;
-    let guard_pc = match (is_base_class_constructor, guard_pcs.as_slice()) {
+    let guard_pc = match (is_class_constructor, guard_pcs.as_slice()) {
         (true, [pc]) => *pc,
-        (true, []) => return Err("base class constructor has no constructor-call guard"),
-        (true, _) => return Err("base class constructor guard is not unique"),
+        (true, []) => return Err("class constructor has no constructor-call guard"),
+        (true, _) => return Err("class constructor guard is not unique"),
         (false, []) => return Ok(None),
         (false, _) => return Err("non-class function contains a constructor-call guard"),
     };
@@ -744,6 +771,7 @@ fn validate_class_constructor_guard(
         if !matches!(
             instruction,
             Instruction::PushHomeObject
+                | Instruction::PushActiveFunction
                 | Instruction::PushNewTarget
                 | Instruction::PushThis
                 | Instruction::FClosure(_)
@@ -780,6 +808,249 @@ fn consume_class_constructor_guard(
         Some(_) => Err("class constructor guard is not at parameter entry"),
         None => Ok(expected_pc),
     }
+}
+
+/// Authenticate the frame layout and opcode authority used by derived class
+/// constructors and by arrows/direct eval which relay their one-shot `this`
+/// binding. This validation runs again at final heap allocation so dead code
+/// and hand-authored unlinked bytecode cannot smuggle constructor-only state
+/// transitions into an ordinary function.
+pub(crate) fn validate_derived_constructor_bytecode_layout(
+    metadata: &FunctionMetadata,
+    code: &[Instruction],
+    lexical_locals: &[bool],
+    const_locals: &[bool],
+    closure_variables: &[ClosureVariable],
+) -> Result<(), &'static str> {
+    if lexical_locals.len() != usize::from(metadata.local_count)
+        || const_locals.len() != usize::from(metadata.local_count)
+    {
+        return Err("derived constructor local classification has the wrong length");
+    }
+
+    let derived = metadata.constructor_kind == ConstructorKind::Derived;
+    let (this_local, active_local) = match (
+        derived,
+        metadata.derived_this_local,
+        metadata.active_function_local,
+    ) {
+        (true, Some(this), Some(active))
+            if this < metadata.local_count
+                && active < metadata.local_count
+                && this != active
+                && metadata.strict
+                && !metadata.has_prototype
+                && metadata.super_call_allowed
+                && metadata.super_allowed
+                && lexical_locals[usize::from(this)]
+                && !const_locals[usize::from(this)]
+                && !lexical_locals[usize::from(active)]
+                && !const_locals[usize::from(active)] =>
+        {
+            (Some(this), Some(active))
+        }
+        (true, _, _) => return Err("derived constructor metadata is malformed"),
+        (false, None, None) => (None, None),
+        (false, _, _) => return Err("derived constructor locals escaped their constructor"),
+    };
+
+    let mut entry_pc = 0_usize;
+    let mut pseudo_rank = 0_u8;
+    let mut pseudo_targets = Vec::with_capacity(4);
+    let mut active_initialized_at_entry = false;
+    while let Some([source, Instruction::PutLocal(local)]) = code.get(entry_pc..entry_pc + 2) {
+        let Some(rank) = pseudo_binding_entry_rank(source) else {
+            break;
+        };
+        if rank <= pseudo_rank || *local >= metadata.local_count || pseudo_targets.contains(local) {
+            return Err("pseudo-binding entry prologue is malformed");
+        }
+        if derived && matches!(source, Instruction::PushThis) {
+            return Err("derived constructor contains an ordinary this prologue");
+        }
+        if matches!(source, Instruction::PushActiveFunction) {
+            if active_local != Some(*local) {
+                return Err("active-function opcode targets another entry local");
+            }
+            active_initialized_at_entry = true;
+        }
+        pseudo_rank = rank;
+        pseudo_targets.push(*local);
+        entry_pc += 2;
+    }
+
+    let mut active_initializations = 0_usize;
+    let mut default_initializers = 0_usize;
+    let explicit_targets = code
+        .iter()
+        .filter_map(|instruction| match instruction {
+            Instruction::Goto(target)
+            | Instruction::IfFalse(target)
+            | Instruction::IfTrue(target)
+            | Instruction::Catch(target)
+            | Instruction::Gosub(target) => usize::try_from(*target).ok(),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    for (pc, instruction) in code.iter().enumerate() {
+        match instruction {
+            Instruction::MarkSuperCall
+            | Instruction::ConstructSuper(_)
+            | Instruction::ApplySuper
+                if !metadata.super_call_allowed || !metadata.super_allowed =>
+            {
+                return Err("typed super-call opcode has no inherited super authority");
+            }
+            Instruction::PushActiveFunction => {
+                let Some(active) = active_local else {
+                    return Err("active-function opcode escaped a derived constructor");
+                };
+                if !matches!(code.get(pc + 1), Some(Instruction::PutLocal(local)) if *local == active)
+                {
+                    return Err("active-function opcode has no authenticated local store");
+                }
+                active_initializations += 1;
+            }
+            Instruction::InitDerivedConstructor => {
+                if !derived {
+                    return Err("default-derived initializer escaped a derived constructor");
+                }
+                default_initializers += 1;
+            }
+            Instruction::InitializeDerivedLocal(local) => {
+                if Some(*local) != this_local {
+                    return Err("derived local initializer targets another local");
+                }
+                if pc < 2
+                    || !matches!(code.get(pc - 1), Some(Instruction::Dup))
+                    || code
+                        .get(pc - 2)
+                        .is_none_or(|source| !is_derived_initialization_source(source))
+                {
+                    return Err("derived local initializer has no constructor result");
+                }
+                if explicit_targets.contains(&(pc - 1)) || explicit_targets.contains(&pc) {
+                    return Err("derived local initializer protocol has a non-fallthrough entry");
+                }
+            }
+            Instruction::InitializeDerivedVarRef(index) => {
+                if derived || !metadata.super_call_allowed || !metadata.super_allowed {
+                    return Err("captured derived initializer has no inherited super authority");
+                }
+                let Some(descriptor) = closure_variables.get(usize::from(*index)) else {
+                    return Err("captured derived initializer is outside closure slots");
+                };
+                if descriptor.kind != ClosureVariableKind::Normal
+                    || !descriptor.is_lexical
+                    || descriptor.is_const
+                {
+                    return Err("captured derived initializer targets a non-mutable lexical cell");
+                }
+                if pc < 2
+                    || !matches!(code.get(pc - 1), Some(Instruction::Dup))
+                    || code
+                        .get(pc - 2)
+                        .is_none_or(|source| !is_derived_initialization_source(source))
+                {
+                    return Err("captured derived initializer has no constructor result");
+                }
+                if explicit_targets.contains(&(pc - 1)) || explicit_targets.contains(&pc) {
+                    return Err(
+                        "captured derived initializer protocol has a non-fallthrough entry",
+                    );
+                }
+            }
+            Instruction::ReturnDerived(local) => {
+                if Some(*local) != this_local {
+                    return Err("derived return targets another local");
+                }
+            }
+            Instruction::Return if derived => {
+                return Err("derived constructor contains an ordinary return");
+            }
+            _ => {}
+        }
+
+        let local = match instruction {
+            Instruction::GetLocal(local)
+            | Instruction::PutLocal(local)
+            | Instruction::SetLocal(local)
+            | Instruction::SetLocalUninitialized(local)
+            | Instruction::GetLocalCheck(local)
+            | Instruction::InitializeLocal(local)
+            | Instruction::InitializeDerivedLocal(local)
+            | Instruction::PutLocalCheck(local)
+            | Instruction::SetLocalCheck(local)
+            | Instruction::CloseLocal(local)
+            | Instruction::ReturnDerived(local) => Some(*local),
+            _ => None,
+        };
+        if active_local.is_some() && local == active_local {
+            let authenticated_store = matches!(instruction, Instruction::PutLocal(local)
+                if pc > 0
+                    && Some(*local) == active_local
+                    && matches!(code.get(pc - 1), Some(Instruction::PushActiveFunction)));
+            if !authenticated_store && !matches!(instruction, Instruction::GetLocal(_)) {
+                return Err("active-function local has an unauthenticated access");
+            }
+        }
+        if this_local.is_some()
+            && local == this_local
+            && !matches!(
+                instruction,
+                Instruction::GetLocalCheck(_)
+                    | Instruction::InitializeDerivedLocal(_)
+                    | Instruction::ReturnDerived(_)
+            )
+        {
+            return Err("derived this local has an unauthenticated access");
+        }
+    }
+
+    if derived && active_initializations != 1 {
+        return Err("derived constructor active-function initialization is not unique");
+    }
+    if derived && !active_initialized_at_entry {
+        return Err("derived constructor active-function initialization is not at entry");
+    }
+    if default_initializers > 1 {
+        return Err("derived constructor has more than one default initializer");
+    }
+    if default_initializers == 1 {
+        let (Some(this), Some(active)) = (this_local, active_local) else {
+            return Err("default-derived constructor lost its authenticated locals");
+        };
+        let exact_metadata = metadata.argument_count == 0
+            && metadata.defined_argument_count == 0
+            && metadata.rest_parameter.is_none()
+            && metadata.rest_pattern_start.is_none()
+            && metadata.parameter_environment_local_count == 0
+            && metadata.pattern_argument_count == 0
+            && metadata.parameter_pattern_end.is_none()
+            && metadata.local_count == 2
+            && metadata.function_name_local.is_none()
+            && metadata.eval_variable_object_local.is_none()
+            && metadata.closure_count == 0
+            && !metadata.needs_home_object
+            && metadata.eval_kind == EvalKind::None
+            && metadata.function_kind == FunctionKind::Normal;
+        let exact_code = matches!(
+            code,
+            [
+                Instruction::PushActiveFunction,
+                Instruction::PutLocal(active_target),
+                Instruction::CheckCtor,
+                Instruction::InitDerivedConstructor,
+                Instruction::Dup,
+                Instruction::InitializeDerivedLocal(this_target),
+                Instruction::ReturnDerived(return_target),
+            ] if *active_target == active && *this_target == this && *return_target == this
+        );
+        if !exact_metadata || !exact_code {
+            return Err("default-derived constructor has no exact synthesized shape");
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_parameter_bytecode_layout(
@@ -891,15 +1162,12 @@ pub(crate) fn validate_parameter_bytecode_layout(
             {
                 let mut rest_pc = 0_usize;
                 let mut pseudo_rank = 0_u8;
-                let mut entry_targets = Vec::with_capacity(5);
+                let mut entry_targets = Vec::with_capacity(6);
                 while let Some([source, Instruction::PutLocal(local)]) =
                     code.get(rest_pc..rest_pc + 2)
                 {
-                    let rank = match source {
-                        Instruction::PushHomeObject => 1,
-                        Instruction::PushNewTarget => 2,
-                        Instruction::PushThis => 3,
-                        _ => break,
+                    let Some(rank) = pseudo_binding_entry_rank(source) else {
+                        break;
                     };
                     if rank <= pseudo_rank
                         || *local >= metadata.local_count
@@ -1015,19 +1283,16 @@ pub(crate) fn validate_parameter_bytecode_layout(
     }
 
     let mut entry_pc = 0_usize;
-    // QuickJS materializes an owned HomeObject/NewTarget/this cell before
-    // entering the argument scope when parameter code needs one. The compiler
-    // emits the same fixed-order pairs before the arguments object and the
-    // parameter TDZ reset; every target must remain outside the leading
-    // parameter-local range.
+    // QuickJS materializes owned HomeObject/active-function/new.target/this
+    // cells before entering the argument scope when parameter code needs one.
+    // The compiler emits the same fixed-order pairs before the arguments
+    // object and the parameter TDZ reset; every target must remain outside the
+    // leading parameter-local range.
     let mut pseudo_rank = 0_u8;
-    let mut pseudo_targets = Vec::with_capacity(3);
+    let mut pseudo_targets = Vec::with_capacity(4);
     while let Some([source, Instruction::PutLocal(local)]) = code.get(entry_pc..entry_pc + 2) {
-        let rank = match source {
-            Instruction::PushHomeObject => 1,
-            Instruction::PushNewTarget => 2,
-            Instruction::PushThis => 3,
-            _ => break,
+        let Some(rank) = pseudo_binding_entry_rank(source) else {
+            break;
         };
         if rank <= pseudo_rank
             || *local < parameter_locals
@@ -1207,15 +1472,27 @@ pub(crate) fn validate_parameter_bytecode_layout(
                 Instruction::PutLocal(target) | Instruction::SetLocal(target) => {
                     arguments_local != Some(*target)
                 }
-                Instruction::GetLocalCheck(target)
-                | Instruction::PutLocalCheck(target)
-                | Instruction::SetLocalCheck(target) => {
+                Instruction::GetLocalCheck(target) => {
+                    *target >= parameter_locals
+                        && metadata.derived_this_local != Some(*target)
+                        && !parameter_initializer_locals
+                            .get(usize::from(*target))
+                            .copied()
+                            .unwrap_or(false)
+                }
+                Instruction::PutLocalCheck(target) | Instruction::SetLocalCheck(target) => {
                     *target >= parameter_locals
                         && !parameter_initializer_locals
                             .get(usize::from(*target))
                             .copied()
                             .unwrap_or(false)
                 }
+                Instruction::InitializeDerivedLocal(target) => {
+                    metadata.derived_this_local != Some(*target)
+                }
+                // Closure provenance and inherited super authority are
+                // authenticated by `validate_derived_constructor_bytecode_layout`.
+                Instruction::InitializeDerivedVarRef(_) => false,
                 Instruction::SetLocalUninitialized(_)
                 | Instruction::InitializeLocal(_)
                 | Instruction::CloseLocal(_) => match instruction {
@@ -1342,6 +1619,14 @@ fn validate_explicit_parameter_environment_layout(
         .map_err(|_| "parameter environment marker is outside bytecode")?;
     if !matches!(code.get(marker), Some(Instruction::Nop)) {
         return Err("parameter environment marker is outside bytecode");
+    }
+    if code[..marker].iter().any(|instruction| {
+        matches!(
+            instruction,
+            Instruction::InitDerivedConstructor | Instruction::ReturnDerived(_)
+        )
+    }) {
+        return Err("constructor completion protocol escaped into parameter initialization");
     }
     let has_pattern = metadata.pattern_argument_count != 0 || metadata.rest_pattern_start.is_some();
     match (has_pattern, metadata.parameter_pattern_end) {
@@ -1487,13 +1772,10 @@ fn validate_explicit_parameter_environment_layout(
 
     let mut entry_pc = 0_usize;
     let mut pseudo_rank = 0_u8;
-    let mut pseudo_targets = Vec::with_capacity(3);
+    let mut pseudo_targets = Vec::with_capacity(4);
     while let Some([source, Instruction::PutLocal(local)]) = code.get(entry_pc..entry_pc + 2) {
-        let rank = match source {
-            Instruction::PushHomeObject => 1,
-            Instruction::PushNewTarget => 2,
-            Instruction::PushThis => 3,
-            _ => break,
+        let Some(rank) = pseudo_binding_entry_rank(source) else {
+            break;
         };
         if rank <= pseudo_rank
             || *local < parameter_locals
@@ -1983,6 +2265,14 @@ pub(crate) fn validate_pattern_parameter_bytecode_layout(
     if !matches!(code.get(marker), Some(Instruction::Nop)) {
         return Err("parameter BindingPattern marker is outside bytecode");
     }
+    if code[..marker].iter().any(|instruction| {
+        matches!(
+            instruction,
+            Instruction::InitDerivedConstructor | Instruction::ReturnDerived(_)
+        )
+    }) {
+        return Err("constructor completion protocol escaped into parameter initialization");
+    }
 
     if let Some(rest) = metadata.rest_parameter {
         if unnamed_arguments
@@ -2004,17 +2294,22 @@ pub(crate) fn validate_pattern_parameter_bytecode_layout(
                 Instruction::Arguments(kind) => Some((pc, *kind)),
                 _ => None,
             });
-    if let Some((pc, kind)) = arguments_pcs.next() {
-        let mut expected_pc = 0_usize;
-        while matches!(
-            code.get(expected_pc..expected_pc + 2),
-            Some([
-                Instruction::PushHomeObject | Instruction::PushNewTarget | Instruction::PushThis,
-                Instruction::PutLocal(_),
-            ])
-        ) {
-            expected_pc += 2;
+    let mut expected_pc = 0_usize;
+    let mut pseudo_rank = 0_u8;
+    let mut pseudo_targets = Vec::with_capacity(4);
+    while let Some([source, Instruction::PutLocal(local)]) = code.get(expected_pc..expected_pc + 2)
+    {
+        let Some(rank) = pseudo_binding_entry_rank(source) else {
+            break;
+        };
+        if rank <= pseudo_rank || *local >= metadata.local_count || pseudo_targets.contains(local) {
+            return Err("parameter BindingPattern contains a malformed pseudo-binding prologue");
         }
+        pseudo_rank = rank;
+        pseudo_targets.push(*local);
+        expected_pc += 2;
+    }
+    if let Some((pc, kind)) = arguments_pcs.next() {
         let arguments_shape_matches = match synthetic_arguments_local {
             Some(synthetic) => matches!(
                 code.get(pc..pc + 4),
@@ -2058,6 +2353,7 @@ pub(crate) fn validate_pattern_parameter_bytecode_layout(
             | Instruction::SetLocalUninitialized(local)
             | Instruction::GetLocalCheck(local)
             | Instruction::InitializeLocal(local)
+            | Instruction::InitializeDerivedLocal(local)
             | Instruction::PutLocalCheck(local)
             | Instruction::SetLocalCheck(local)
             | Instruction::CloseLocal(local) => Some(*local),
@@ -2077,6 +2373,7 @@ pub(crate) fn validate_pattern_parameter_bytecode_layout(
             && !is_synthetic_arguments_access
             && local.is_some_and(|local| {
                 local >= metadata.parameter_environment_local_count
+                    && metadata.derived_this_local != Some(local)
                     && lexical_locals
                         .get(usize::from(local))
                         .copied()
@@ -2305,13 +2602,15 @@ pub(crate) fn parameter_initializer_visible_locals(
             .get_mut(usize::from(local))
             .ok_or("parameter eval variable-object local is outside bytecode local slots")? = true;
     }
+    if let Some(local) = metadata.derived_this_local {
+        *allowed
+            .get_mut(usize::from(local))
+            .ok_or("derived this local is outside bytecode local slots")? = true;
+    }
 
     let mut entry_pc = 0_usize;
     while let Some([source, Instruction::PutLocal(local)]) = code.get(entry_pc..entry_pc + 2) {
-        if !matches!(
-            source,
-            Instruction::PushHomeObject | Instruction::PushNewTarget | Instruction::PushThis
-        ) {
+        if pseudo_binding_entry_rank(source).is_none() {
             break;
         }
         *allowed
@@ -5694,19 +5993,6 @@ impl Heap {
                 "bytecode local count exceeds QuickJS JS_MAX_LOCAL_VARS",
             ));
         }
-        if bytecode.code.iter().any(|instruction| {
-            matches!(
-                instruction,
-                Instruction::DefineClass {
-                    has_heritage: true,
-                    ..
-                }
-            )
-        }) {
-            return Err(HeapError::Invariant(
-                "class heritage bytecode is not implemented",
-            ));
-        }
         let parameter_initializer_locals = bytecode
             .local_definitions
             .iter()
@@ -5727,6 +6013,20 @@ impl Heap {
             return Err(HeapError::Invariant(
                 "function-name local is outside bytecode local slots",
             ));
+        }
+        for (local, message) in [
+            (
+                bytecode.metadata.derived_this_local,
+                "derived this local is outside bytecode local slots",
+            ),
+            (
+                bytecode.metadata.active_function_local,
+                "active-function local is outside bytecode local slots",
+            ),
+        ] {
+            if local.is_some_and(|index| index >= bytecode.metadata.local_count) {
+                return Err(HeapError::Invariant(message));
+            }
         }
         if bytecode
             .metadata
@@ -5763,6 +6063,22 @@ impl Heap {
                 "parameter eval variable-object local overlaps another private local",
             ));
         }
+        let private_locals = [
+            bytecode.metadata.function_name_local,
+            bytecode.metadata.eval_variable_object_local,
+            arg_eval_variable_object_local,
+            bytecode.metadata.derived_this_local,
+            bytecode.metadata.active_function_local,
+        ];
+        for (index, local) in private_locals.iter().enumerate() {
+            if local.is_some()
+                && private_locals[..index]
+                    .iter()
+                    .any(|earlier| earlier == local)
+            {
+                return Err(HeapError::Invariant("authenticated private locals overlap"));
+            }
+        }
         if bytecode.argument_definitions.len() != usize::from(bytecode.metadata.argument_count) {
             return Err(HeapError::Invariant(
                 "argument definition count does not match bytecode metadata",
@@ -5783,6 +6099,19 @@ impl Heap {
             .iter()
             .map(|definition| definition.is_lexical)
             .collect::<Vec<_>>();
+        let const_locals = bytecode
+            .local_definitions
+            .iter()
+            .map(|definition| definition.is_const)
+            .collect::<Vec<_>>();
+        validate_derived_constructor_bytecode_layout(
+            &bytecode.metadata,
+            &bytecode.code,
+            &lexical_locals,
+            &const_locals,
+            &bytecode.closure_variables,
+        )
+        .map_err(HeapError::Invariant)?;
         let pattern_body_pc = bytecode
             .metadata
             .parameter_pattern_end
@@ -5915,6 +6244,9 @@ impl Heap {
         for (index, definition) in bytecode.local_definitions.iter().enumerate() {
             let is_function_name =
                 bytecode.metadata.function_name_local == u16::try_from(index).ok();
+            let is_derived_this = bytecode.metadata.derived_this_local == u16::try_from(index).ok();
+            let is_active_function =
+                bytecode.metadata.active_function_local == u16::try_from(index).ok();
             let is_eval_variable_object =
                 bytecode.metadata.eval_variable_object_local == u16::try_from(index).ok();
             let is_arg_eval_variable_object =
@@ -5927,6 +6259,28 @@ impl Heap {
                 {
                     return Err(HeapError::Invariant(
                         "function-name definition disagrees with bytecode metadata",
+                    ));
+                }
+            } else if is_derived_this {
+                if definition.kind != ClosureVariableKind::Normal
+                    || !definition.is_lexical
+                    || definition.is_const
+                    || definition.is_parameter_initializer
+                    || definition.name.is_none()
+                {
+                    return Err(HeapError::Invariant(
+                        "derived this definition disagrees with bytecode metadata",
+                    ));
+                }
+            } else if is_active_function {
+                if definition.kind != ClosureVariableKind::Normal
+                    || definition.is_lexical
+                    || definition.is_const
+                    || definition.is_parameter_initializer
+                    || definition.name.is_none()
+                {
+                    return Err(HeapError::Invariant(
+                        "active-function definition disagrees with bytecode metadata",
                     ));
                 }
             } else if is_eval_variable_object {
@@ -11687,7 +12041,348 @@ mod tests {
     }
 
     #[test]
-    fn bytecode_allocation_rejects_class_heritage_before_publication() {
+    fn active_function_counts_as_a_quickjs_hidden_variable() {
+        assert!(!quickjs_copies_defined_argument_count(0, 0, &[]));
+        assert!(quickjs_copies_defined_argument_count(
+            0,
+            0,
+            &[Instruction::PushActiveFunction],
+        ));
+    }
+
+    #[test]
+    fn parameter_pseudo_prologue_accepts_active_function_in_fixed_order() {
+        let metadata = FunctionMetadata {
+            argument_count: 1,
+            defined_argument_count: 0,
+            rest_parameter: Some(0),
+            local_count: 4,
+            ..FunctionMetadata::default()
+        };
+        let ordered = vec![
+            Instruction::PushHomeObject,
+            Instruction::PutLocal(0),
+            Instruction::PushActiveFunction,
+            Instruction::PutLocal(1),
+            Instruction::PushNewTarget,
+            Instruction::PutLocal(2),
+            Instruction::PushThis,
+            Instruction::PutLocal(3),
+            Instruction::Rest(0),
+            Instruction::PutArg(0),
+            Instruction::Undefined,
+            Instruction::Return,
+        ];
+        assert_eq!(
+            validate_parameter_bytecode_layout(&metadata, &ordered, &[false; 4], None),
+            Ok(None),
+        );
+
+        let mut out_of_order = ordered;
+        out_of_order.swap(2, 4);
+        out_of_order.swap(3, 5);
+        assert_eq!(
+            validate_parameter_bytecode_layout(&metadata, &out_of_order, &[false; 4], None),
+            Err("rest parameter contains a malformed pseudo-binding prologue"),
+        );
+    }
+
+    #[test]
+    fn parameter_initializers_preserve_derived_this_authority() {
+        let metadata = FunctionMetadata {
+            argument_count: 1,
+            defined_argument_count: 1,
+            pattern_argument_count: 1,
+            parameter_pattern_end: Some(6),
+            local_count: 2,
+            derived_this_local: Some(0),
+            active_function_local: Some(1),
+            constructor_kind: ConstructorKind::Derived,
+            strict: true,
+            super_call_allowed: true,
+            super_allowed: true,
+            ..FunctionMetadata::default()
+        };
+        let code = [
+            Instruction::GetArg(0),
+            Instruction::Drop,
+            Instruction::Undefined,
+            Instruction::InitializeDerivedLocal(0),
+            Instruction::GetLocalCheck(0),
+            Instruction::Drop,
+            Instruction::Nop,
+            Instruction::Undefined,
+            Instruction::Return,
+        ];
+        assert_eq!(
+            validate_pattern_parameter_bytecode_layout(
+                &metadata,
+                &code,
+                &[true],
+                &[true, false],
+                &[false, false],
+                None,
+            ),
+            Ok(()),
+        );
+        let mut escaped_protocol = code.clone();
+        escaped_protocol[2] = Instruction::InitDerivedConstructor;
+        assert_eq!(
+            validate_pattern_parameter_bytecode_layout(
+                &metadata,
+                &escaped_protocol,
+                &[true],
+                &[true, false],
+                &[false, false],
+                None,
+            ),
+            Err("constructor completion protocol escaped into parameter initialization"),
+        );
+
+        let ordinary = FunctionMetadata {
+            derived_this_local: None,
+            active_function_local: None,
+            constructor_kind: ConstructorKind::None,
+            super_call_allowed: false,
+            super_allowed: false,
+            ..metadata
+        };
+        assert_eq!(
+            validate_pattern_parameter_bytecode_layout(
+                &ordinary,
+                &code,
+                &[true],
+                &[true, false],
+                &[false, false],
+                None,
+            ),
+            Err("parameter BindingPattern bytecode accessed a body lexical local"),
+        );
+
+        let visibility_code = [
+            Instruction::PushActiveFunction,
+            Instruction::PutLocal(1),
+            Instruction::Nop,
+        ];
+        let visibility_layout = ParameterEnvironmentLayout {
+            initialization_end: 2,
+            argument_cells: Box::new([]),
+            pattern_copies: Box::new([]),
+            default_sources: Box::new([]),
+            synthetic_arguments_local: None,
+            arg_eval_variable_object_local: None,
+        };
+        assert_eq!(
+            parameter_initializer_visible_locals(
+                &metadata,
+                &visibility_code,
+                Some(2),
+                &[false, false],
+                Some(&visibility_layout),
+            ),
+            Ok(Some(vec![true, true])),
+        );
+
+        let relay_metadata = FunctionMetadata {
+            closure_count: 1,
+            super_call_allowed: true,
+            super_allowed: true,
+            ..FunctionMetadata::default()
+        };
+        let relay = [
+            Instruction::ConstructSuper(0),
+            Instruction::Dup,
+            Instruction::InitializeDerivedVarRef(0),
+            Instruction::Undefined,
+            Instruction::Return,
+        ];
+        let descriptor = ClosureVariable {
+            source: ClosureSource::ParentLocal(0),
+            name: ClosureVariableName::None,
+            is_lexical: true,
+            is_const: false,
+            kind: ClosureVariableKind::Normal,
+        };
+        assert_eq!(
+            validate_derived_constructor_bytecode_layout(
+                &relay_metadata,
+                &relay,
+                &[],
+                &[],
+                &[descriptor],
+            ),
+            Ok(()),
+        );
+
+        let mut generic_relay = relay;
+        generic_relay[0] = Instruction::Construct(0);
+        assert_eq!(
+            validate_derived_constructor_bytecode_layout(
+                &relay_metadata,
+                &generic_relay,
+                &[],
+                &[],
+                &[descriptor],
+            ),
+            Err("captured derived initializer has no constructor result"),
+        );
+        let generic_apply_relay = [
+            Instruction::Apply(crate::bytecode::ApplyKind::Construct),
+            Instruction::Dup,
+            Instruction::InitializeDerivedVarRef(0),
+            Instruction::Undefined,
+            Instruction::Return,
+        ];
+        assert_eq!(
+            validate_derived_constructor_bytecode_layout(
+                &relay_metadata,
+                &generic_apply_relay,
+                &[],
+                &[],
+                &[descriptor],
+            ),
+            Err("captured derived initializer has no constructor result"),
+        );
+        let injected_result = [
+            Instruction::PushTrue,
+            Instruction::IfFalse(6),
+            Instruction::ConstructSuper(0),
+            Instruction::Dup,
+            Instruction::InitializeDerivedVarRef(0),
+            Instruction::Return,
+            Instruction::Object,
+            Instruction::Goto(3),
+        ];
+        assert_eq!(
+            validate_derived_constructor_bytecode_layout(
+                &relay_metadata,
+                &injected_result,
+                &[],
+                &[],
+                &[descriptor],
+            ),
+            Err("captured derived initializer protocol has a non-fallthrough entry"),
+        );
+
+        let ordinary_relay = FunctionMetadata {
+            super_call_allowed: false,
+            super_allowed: false,
+            ..relay_metadata
+        };
+        assert_eq!(
+            validate_derived_constructor_bytecode_layout(
+                &ordinary_relay,
+                &[Instruction::MarkSuperCall],
+                &[],
+                &[],
+                &[],
+            ),
+            Err("typed super-call opcode has no inherited super authority"),
+        );
+    }
+
+    #[test]
+    fn derived_active_function_initialization_is_an_entry_capability() {
+        let metadata = FunctionMetadata {
+            local_count: 2,
+            derived_this_local: Some(0),
+            active_function_local: Some(1),
+            constructor_kind: ConstructorKind::Derived,
+            strict: true,
+            super_call_allowed: true,
+            super_allowed: true,
+            ..FunctionMetadata::default()
+        };
+        let entry = [
+            Instruction::PushActiveFunction,
+            Instruction::PutLocal(1),
+            Instruction::Undefined,
+            Instruction::ReturnDerived(0),
+        ];
+        assert_eq!(
+            validate_derived_constructor_bytecode_layout(
+                &metadata,
+                &entry,
+                &[true, false],
+                &[false, false],
+                &[],
+            ),
+            Ok(()),
+        );
+
+        let dead = [
+            Instruction::Undefined,
+            Instruction::ReturnDerived(0),
+            Instruction::PushActiveFunction,
+            Instruction::PutLocal(1),
+        ];
+        assert_eq!(
+            validate_derived_constructor_bytecode_layout(
+                &metadata,
+                &dead,
+                &[true, false],
+                &[false, false],
+                &[],
+            ),
+            Err("derived constructor active-function initialization is not at entry"),
+        );
+
+        let default = [
+            Instruction::PushActiveFunction,
+            Instruction::PutLocal(1),
+            Instruction::CheckCtor,
+            Instruction::InitDerivedConstructor,
+            Instruction::Dup,
+            Instruction::InitializeDerivedLocal(0),
+            Instruction::ReturnDerived(0),
+        ];
+        assert_eq!(
+            validate_derived_constructor_bytecode_layout(
+                &metadata,
+                &default,
+                &[true, false],
+                &[false, false],
+                &[],
+            ),
+            Ok(()),
+        );
+
+        let mut forged_default = default.to_vec();
+        forged_default.insert(3, Instruction::Nop);
+        assert_eq!(
+            validate_derived_constructor_bytecode_layout(
+                &metadata,
+                &forged_default,
+                &[true, false],
+                &[false, false],
+                &[],
+            ),
+            Err("default-derived constructor has no exact synthesized shape"),
+        );
+
+        let arbitrary_this = [
+            Instruction::PushActiveFunction,
+            Instruction::PutLocal(1),
+            Instruction::PushI32(1),
+            Instruction::Dup,
+            Instruction::InitializeDerivedLocal(0),
+            Instruction::Undefined,
+            Instruction::ReturnDerived(0),
+        ];
+        assert_eq!(
+            validate_derived_constructor_bytecode_layout(
+                &metadata,
+                &arbitrary_this,
+                &[true, false],
+                &[false, false],
+                &[],
+            ),
+            Err("derived local initializer has no constructor result"),
+        );
+    }
+
+    #[test]
+    fn bytecode_allocation_accepts_typed_class_heritage() {
         let mut heap = Heap::new();
         let shape = empty_shape(&mut heap);
         let prototype = leaf(&mut heap, shape);
@@ -11699,16 +12394,27 @@ mod tests {
             .unwrap();
         heap.release_object(prototype).unwrap();
 
-        let code: Rc<[Instruction]> = Rc::from([Instruction::DefineClass {
-            name: 0,
-            has_heritage: true,
-        }]);
-        assert_eq!(
-            heap.allocate_function_bytecode(bytecode(&code, context, Vec::new(), Vec::new())),
-            Err(HeapError::Invariant(
-                "class heritage bytecode is not implemented"
-            ))
+        let code: Rc<[Instruction]> = Rc::from([
+            Instruction::Undefined,
+            Instruction::PushI32(7),
+            Instruction::DefineClass {
+                name: 0,
+                has_heritage: true,
+            },
+            Instruction::Drop,
+            Instruction::Return,
+        ]);
+        let mut candidate = bytecode(
+            &code,
+            context,
+            vec![BytecodeConstant::Value(RawValue::String(
+                JsString::from_static("Derived"),
+            ))],
+            Vec::new(),
         );
+        candidate.metadata.max_stack = 2;
+        let function = heap.allocate_function_bytecode(candidate).unwrap();
+        heap.release_function_bytecode(function).unwrap();
 
         heap.release_context(context).unwrap();
         heap.release_shape(shape).unwrap();

@@ -22,6 +22,7 @@ struct FunctionDefinitionOptions {
     kind: FunctionKind,
     private_name_binding: bool,
     class_constructor: bool,
+    derived_class_constructor: bool,
     reject_duplicate_parameters: bool,
     allow_trailing_parameter_comma: bool,
     object_method_kind: Option<DefineMethodKind>,
@@ -34,6 +35,7 @@ impl FunctionDefinitionOptions {
             kind: FunctionKind::Ordinary,
             private_name_binding,
             class_constructor: false,
+            derived_class_constructor: false,
             reject_duplicate_parameters: false,
             allow_trailing_parameter_comma: true,
             object_method_kind: None,
@@ -46,6 +48,7 @@ impl FunctionDefinitionOptions {
             kind: FunctionKind::Method,
             private_name_binding: false,
             class_constructor: false,
+            derived_class_constructor: false,
             // QuickJS applies the ordinary-method UniqueFormalParameters early
             // error even when the surrounding source and body are sloppy.
             // Accessors first enforce their zero/one-parameter arity.
@@ -134,16 +137,18 @@ impl<'source> Parser<'source> {
         Ok(parsed.child)
     }
 
-    /// Parse a base class constructor using QuickJS's concise-method binding
-    /// model. The constructor remains a Method for `this`/`arguments`/
-    /// HomeObject resolution, while immutable compiler metadata publishes the
-    /// Base [[Construct]] protocol and `CheckCtor` enforces construct-only use.
-    pub(super) fn parse_base_class_constructor_definition(
+    /// Parse a base or derived class constructor using QuickJS's
+    /// concise-method binding model. A derived constructor additionally owns
+    /// the one-shot lexical `this` binding and allows `super()` through arrows
+    /// and direct eval.
+    pub(super) fn parse_class_constructor_definition(
         &mut self,
         function_span: Span,
+        derived: bool,
     ) -> Result<ParsedFunctionDefinition, Error> {
         let mut options = FunctionDefinitionOptions::object_method(DefineMethodKind::Method);
         options.class_constructor = true;
+        options.derived_class_constructor = derived;
         self.parse_function_definition_tail_with_options(
             FunctionDefinitionHeader {
                 span: function_span,
@@ -170,6 +175,9 @@ impl<'source> Parser<'source> {
         let child = self.functions.len();
         let parent_scope = self.functions[parent].current_scope;
         let super_capabilities = match options.kind {
+            FunctionKind::Method if options.derived_class_constructor => {
+                SuperCapabilities::CALL_AND_PROPERTY
+            }
             FunctionKind::Method => SuperCapabilities::PROPERTY,
             FunctionKind::Ordinary => SuperCapabilities::NONE,
             _ => {
@@ -196,6 +204,7 @@ impl<'source> Parser<'source> {
                 function_name,
                 private_name_binding: options.private_name_binding && function_name_token.is_some(),
                 class_constructor: options.class_constructor,
+                derived_class_constructor: options.derived_class_constructor,
                 defined_argument_count: 0,
                 has_simple_parameter_list: true,
                 rest_parameter: None,
@@ -379,6 +388,9 @@ impl<'source> Parser<'source> {
             }
         }
         self.functions[child].strict = strict;
+        if options.derived_class_constructor {
+            self.functions[child].allocate_derived_constructor_pseudo_bindings()?;
+        }
         if options.class_constructor {
             // Parameter parsing may replace the initial body scope with a
             // parentless Parameter Environment or a FunctionRoot pattern

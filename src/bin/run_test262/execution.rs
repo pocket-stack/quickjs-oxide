@@ -751,10 +751,12 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
 
     #[test]
     fn unsupported_parser_provenance_is_opt_in_at_the_context_boundary() {
+        const UNSUPPORTED_SOURCE: &str = "class C { field = 1; }";
+
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
         assert_eq!(
-            context.compile("class C extends Object {}").unwrap_err(),
+            context.compile(UNSUPPORTED_SOURCE).unwrap_err(),
             RuntimeError::Exception
         );
         assert!(context.take_exception().unwrap().is_some());
@@ -763,19 +765,13 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
         let mut context = runtime.new_context();
         let options = CompileOptions::new("unsupported.js");
         let RuntimeError::Engine(error) = context
-            .compile_with_options_preserving_unsupported_diagnostics(
-                "class C extends Object {}",
-                &options,
-            )
+            .compile_with_options_preserving_unsupported_diagnostics(UNSUPPORTED_SOURCE, &options)
             .unwrap_err()
         else {
             panic!("diagnostic compile did not retain its engine error");
         };
         assert_eq!(error.kind(), ErrorKind::Unsupported);
-        assert_eq!(
-            error.message(),
-            "class heritage and derived constructors are not implemented yet"
-        );
+        assert_eq!(error.message(), "class fields are not implemented yet");
         assert!(context.take_exception().unwrap().is_none());
     }
 }

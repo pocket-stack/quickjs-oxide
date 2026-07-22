@@ -15,14 +15,14 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 35,748 passes and 38,483 runnable variants: 35.03% raw, a 42.78% lower
-  bound after the 18,475 pinned QuickJS target exclusions, or 94.92% among the
-  37,662 variants with a non-unsupported observed outcome. It records 273
-  parse failures and 1,587 runtime failures; current full TSV/JSONL SHA-256
+  has 36,293 passes and 38,483 runnable variants: 35.57% raw, a 43.43% lower
+  bound after the 18,475 pinned QuickJS target exclusions, or 94.77% among the
+  38,295 variants with a non-unsupported observed outcome. It records 275
+  parse failures and 1,624 runtime failures; current full TSV/JSONL SHA-256
   values are
-  `10e3fee1e93b3491b4c97041990cd17a7f1051dbcd2d0d13c6514961934200ae`
+  `018c55de6e745b35eae7bb8f7d1c3b7680579a58d8bbb241641d860c723a0e34`
   and
-  `b863a62f5e7dbfcff8975fae28251731b80103f63b3c039d62f1f98271720ada`.
+  `995cce2dc58694f8728e1ad12602b2ec5c65169f650cff5047e45d84bc4b407a`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -513,7 +513,8 @@ claim full parity.
   storage and closure transport only. This admits direct and nested eval in
   methods/accessors, plus authored and eval-created Arrow relays, while ordinary
   function, global, and indirect-eval boundaries cut the capability off.
-  `super()` remains disabled pending class heritage and derived constructors.
+  At the R2j landing, `super()` remained disabled pending class heritage and
+  derived constructors; R3f later closes that boundary.
 
   The resident oracle freezes 16 cases with an always-on Rust expectation test
   plus pinned-QuickJS expectation and direct differential checks when
@@ -763,9 +764,11 @@ claim full parity.
   At the R2p landing, all 806 Symbol-ready variants passed. The other 204
   exposed only independent class, rest/spread, Promise, buffer/TypedArray,
   Proxy, and weak-collection frontiers: 60 parse failures, 98 runtime failures,
-  18 harness failures, and 28 typed parser frontiers. After R3e, the current
-  gate passes 864 / 1,010 variants while refining the old generic class
-  diagnostics to explicit derived-constructor frontiers. R2p-landing
+  18 harness failures, and 28 typed parser frontiers. R3e brought the gate to
+  864 passes while refining the old generic class diagnostics; R3f resolves
+  all 28 derived-class parser frontiers, so the current gate passes 892 / 1,010
+  variants. Its other 118 outcomes are the independent two parse, 98 runtime,
+  and 18 harness failures. R2p-landing
   normalized-manifest/manifest-file/key-set/non-pass
   hashes were
   `eaf2a48408b6b1f5673389335cda73cb66bed062636a669c655460d9fef99a4b`,
@@ -777,6 +780,11 @@ claim full parity.
   `ed0363676e7efdfc6bb24ee396739cf67d49a4ce685c3bd37d98569a60a96267`
   and
   `75c40ff9adf28f0b9120c23af44268b4660189ff815e3f4c2ba0b74786ede048`.
+  Current non-pass/TSV/JSONL SHA-256 values are
+  `831fea4c50b0ffcf14e073a75fa75a4c6855bbadc5c7ed58fbc988c8b33cdf73`,
+  `310560aa182de2df22b3a261157e92e6f94810a51adda918bea6e9f45fba5209`,
+  and
+  `d2fc654e57792e6670d21383e2cbc2c71d7638684ede17db28813dc126e9a409`.
 
   The global profile reaches 69 reviewed tags and 423 audited negative paths,
   with SHA-256
@@ -1436,13 +1444,65 @@ claim full parity.
   is authenticated at both publication layers without weakening body-lexical
   isolation.
 
-  Class heritage/derived constructors and `super()`, fields/private elements,
-  static blocks, and generator/async class methods remain explicit later
-  milestones.
+  R3f ports class heritage, derived constructors, and `super()` from the pinned
+  QuickJS parser/runtime path. Heritage is evaluated as a
+  LeftHandSideExpression before the class body; publication preserves
+  IsConstructor-before-`prototype` ordering, `extends null`, constructor and
+  instance-prototype reparenting, and abrupt-completion ordering. Derived
+  constructors keep `this` in TDZ until a successful `super()`, forward raw
+  actual arguments in the synthesized default constructor without iterator
+  lookup, snapshot the active constructor's live `[[Prototype]]` before
+  explicit arguments, preserve `new.target`, and apply the distinct
+  object/undefined/primitive return protocol. The same authenticated cells are
+  relayed through arrows, parameter initializers, and nested direct eval.
 
-  Generator/async and destructuring eval declarations, class heritage/derived
-  constructors and unsupported class elements, and ill-formed UTF-16 source
-  stay explicit frontiers.
+  Constructor authority is typed rather than inferred from ordinary stack
+  values. `MarkSuperCall`, `ConstructSuper`, and `ApplySuper` protect the
+  authenticated active-function/new-target pair through argument control flow;
+  publication traces active function, new target, and derived `this` through
+  ParentLocal, ParentClosure, and EvalEnvironment origins. Generic construction
+  cannot initialize derived `this`, repeated initialization remains one-shot,
+  and the heap boundary pins the synthesized default constructor to its exact
+  shape.
+
+  The final synchronous dependency closure is 386 paths / 767 variants. Oxide
+  passes all 767 variants with no failure, unsupported result, engine fault, or
+  runner fault; pinned QuickJS passes all 386 paths. The focused
+  profile/manifest/key-set/TSV/JSONL SHA-256 values are
+  `1aa167fef279273185060224bd8a65765283d95fe1e08986c5c4ea197657e160`,
+  `c9c477104d7f538c4b3fa58a108171be866273bedf19825bedf682afc9d00366`,
+  `366f33fe39e2980a2a7e6c94e4e20896cd415b8e93b0118f69bc33c39c07e1e5`,
+  `69467d4d2f8c76ec299e97ce9c88bf74cee35e5cdae42e029377761aa25e4b8a`,
+  and
+  `abbe6c64c2fe250f477cf95085c9201a9b9654a2ef01deaa826dff1fea9b1193`.
+  The dedicated Rust/QuickJS oracle also passes both fixed and differential
+  observations.
+
+  Two overlapping existing scoreboards independently record the same class
+  progress: the named-groups gate moves four derived-RegExp variants to pass
+  and reaches 198/202, while the Symbol-protocol gate moves 28 derived-class
+  and spread-`super()` variants to pass and reaches 892/1,010. Neither loses a
+  prior pass.
+
+  The exact R3e/R3f full join retains all 102,037 unique keys and every prior
+  pass. It records 545 `unsupported-parser -> pass`, 37
+  `unsupported-parser -> fail-runtime`, two `unsupported-parser -> fail-parse`,
+  and 49 `unsupported-harness-parser -> harness-error` transitions, plus six
+  detail-only refinements: 639 complete rows change. Passes reach 36,293 among
+  the same 38,483 runnable variants; full TSV/JSONL SHA-256 values are
+  `018c55de6e745b35eae7bb8f7d1c3b7680579a58d8bbb241641d860c723a0e34`
+  and
+  `995cce2dc58694f8728e1ad12602b2ec5c65169f650cff5047e45d84bc4b407a`.
+  Global `class` remains disabled: fields/private elements, static blocks,
+  async/generator methods, unsupported intrinsics, and host hooks stay explicit
+  later frontiers.
+
+  Instance-field lowering must later extend the authenticated default-derived
+  constructor shape and run field initialization after every successful
+  `super()`; it must not weaken the current exact-shape validator.
+
+  Generator/async and destructuring eval declarations, unsupported class
+  elements, and ill-formed UTF-16 source stay explicit frontiers.
   QuickJS also allocates the callable and VarRef
   array before capturing caller cells, while this Rust slice materializes the
   roots first and then allocates the callable; only successful-compilation
@@ -2019,13 +2079,14 @@ claim full parity.
   `505845ba54ec78ae1a636f91f7285e447444d3ffca8b66a03592591573a15d26`
   and
   `5daec58cf49af34cdf2ad8e70d5a945513e6490180ab4c74e9e996f39d4fa234`.
-  Later object-binding and rest-parameter milestones move the current frozen
-  gate to 194 passes; two variants remain feature-gated, four stop at the typed
-  derived-class parser frontier, and two at an unrelated runtime frontier.
+  Later object-binding and rest-parameter milestones move the frozen gate to
+  194 passes; R3f derived construction resolves its remaining four class
+  frontiers, so the current gate has 198 passes, two feature-gated variants,
+  and two at an unrelated runtime frontier.
   Current TSV/JSONL hashes are
-  `6e328c52ee9a1424395104bb4becf3a7419830e475af79d18b20c34cd56147ae`
+  `37d54ae152bd48b0fc35625d4776e082c3baa2b4024382bd274f0633ea2323e3`
   and
-  `e3877dffd7bbf1d35dd5786af78a723a6041f7f7823e7c2323b2b37028a9e77d`.
+  `b96318614cf6bd6a9d0d8b1c360cccd0a2f12131f59988baba24002201aff846`.
 
   The exact R1o/R1p join matches all 102,037 keys. It records 158
   `unsupported-feature -> pass`, six `unsupported-feature -> fail-parse`, 20
@@ -2695,11 +2756,13 @@ claim full parity.
   scoped lexical creation, Annex source writes, and argument/local hoist
   attachment)
   in QuickJS 2026-06-04. Async/generator eval declarations, `for-await`,
-  destructuring in parameters, single-statement lexical declarations, and the
-  remaining class heritage/private/static-block scopes remain explicit
-  boundaries rather than falling back to local or ordinary global storage.
+  single-statement lexical declarations, and the remaining
+  private/static-block/class-element scopes remain explicit boundaries rather
+  than falling back to local or ordinary global storage.
   R3e adds the distinct outer declaration and immutable inner-name scopes for
-  base classes, including TDZ and direct-eval visibility.
+  base classes, including TDZ and direct-eval visibility; R3f extends those
+  authenticated environments through heritage, derived construction, and
+  `super()`.
 
   The immutable function format and VM provide the lexical-frame substrate for
   this compiler slice. Published bytecode owns
@@ -2936,9 +2999,10 @@ claim full parity.
   `super_call_allowed`/`super_allowed` capability pair, including nested eval and
   authored or eval-created Arrow relays; ordinary functions, global code, and
   indirect eval cut that capability off. Base-class methods now reuse this
-  HomeObject/SuperProperty path; class heritage/derived construction,
-  async/generator methods, and Proxy/exotic-source spread remain explicit
-  frontiers. The pinned anchors are
+  HomeObject/SuperProperty path, and R3f extends the authenticated capability
+  through heritage, derived construction, and `super()`; async/generator
+  methods and Proxy/exotic-source spread remain explicit frontiers. The pinned
+  anchors are
   `quickjs.c` 24485-24621 and
   24850-24965 plus the matching object/define/name/proto/copy opcodes in
   `quickjs-opcode.h`; `oracle_object_literals` locks the data-property/spread
@@ -4296,9 +4360,9 @@ upstream's substantially deeper platform-dependent limits throughout.
 
 The language slice remains incomplete. Async/generator declarations,
 `for-await`, other general assignment targets, module resolution,
-async/generator methods and parameter forms, class heritage/derived
-constructors, fields/private elements, static blocks, generator/async class
-methods, non-simple ObjectLiteral accessor forms outside the covered
+async/generator methods and parameter forms, class fields/private elements,
+static blocks, generator/async class methods, non-simple ObjectLiteral
+accessor forms outside the covered
 synchronous setter slice, and callable Proxy classes are not yet implemented.
 Unsupported declaration contexts are rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` supports
@@ -4310,10 +4374,10 @@ cover fixed and computed properties, undefined-only defaults, NamedEvaluation,
 array terminal rest, object rest, and object/array recursion. These forms also
 work in scripts, and ordinary
 bodies including classic heads are available through the normal `%Function%`
-constructor. Single-statement lexical declarations and the remaining derived
-heritage/private-name class environments remain later compiler slices. Base
+constructor. Single-statement lexical declarations and the remaining
+private-name/class-element environments remain later compiler slices. Base
 class declaration/expression lexical environments and TDZ behavior land in
-R3e. Direct
+R3e; heritage, derived construction, and `super()` land in R3f. Direct
 Program lexicals now use the production global VarRef path with two-phase
 instantiation; simple-name and recursive array/object/rest Program vars plus
 direct ordinary function declarations use ordered, kind-specific global
@@ -4326,11 +4390,10 @@ failure today; matching the allocation order safely requires a provisional
 two-phase bytecode-function reservation plus failure-injection coverage, rather
 than attempting to roll back migrated VarRefs after the fact.
 
-Class heritage/derived construction and `super()`, dynamic
-Generator/Async/AsyncGenerator Function constructors, other native builtin
-constructor families, and Proxy construct dispatch remain. Base class
-construction, construct-only guards, constructor return validation,
-`new.target`, and `Reflect.construct` are active. Typed
+Dynamic Generator/Async/AsyncGenerator Function constructors, other native
+builtin constructor families, and Proxy construct dispatch remain. Base and
+derived class construction, construct-only guards, constructor return
+validation, `super()`, `new.target`, and `Reflect.construct` are active. Typed
 target/cproto, data-bearing Error selector, realm, arity padding, production
 BoundFunction allocation and frame foundations exist. Generic setter and raw
 iterator-next cproto adapters are active; specialized F64 adapters and the
@@ -4461,9 +4524,8 @@ still pending. Uncatchable termination state is also pending. Other iterator
 classes and helpers, the remaining RegExp
 grammar/static surface and Unicode-backed String methods, non-simple
 ObjectLiteral setter forms outside the covered synchronous slice,
-async/generator class methods, class heritage/derived constructors,
-fields/private elements/static blocks, exotic-source spread, and the rest of
-the builtin table build on those layers.
+async/generator class methods, fields/private elements/static blocks,
+exotic-source spread, and the rest of the builtin table build on those layers.
 
 The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
@@ -4698,6 +4760,14 @@ R3e moves the class parser and constructor/prototype publication into the new
 two parameter-initializer provenance relays used by dynamic eval publication.
 `compiler.rs` is 13,976 lines; the new class grammar does not return to that
 facade, while later compiler decomposition remains necessary.
+R3f keeps the runtime facade at 9,610 lines; class-definition parsing and
+publication remain in the 463-line `compiler/class.rs` and 575-line
+`runtime/class.rs` owners. The authenticated derived-constructor boundary does
+raise `compiler.rs`, `heap.rs`, `runtime/bytecode_publish.rs`, and
+`runtime/vm_host.rs` to 14,225 / 13,839 / 8,928 / 4,296 lines respectively.
+Those are explicit extraction debt: the next class-element work must split the
+derived-construction verifier/executor seams instead of adding field logic to
+`runtime.rs` or enlarging the same trust-boundary blocks inline.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -4989,6 +5059,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-aggregate-error.sh
 ./scripts/test-test262-argument-spread.sh
 ./scripts/test-test262-class-base.sh
+./scripts/test-test262-class-derived.sh
 ./scripts/test-test262-full.sh
 ```
 
