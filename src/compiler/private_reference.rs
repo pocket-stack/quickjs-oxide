@@ -129,7 +129,10 @@ pub(super) fn resolve_private_field_operation(
             };
 
             if let Some(binding) = exact {
-                if !matches!(binding.kind, BindingKind::PrivateField { .. }) {
+                if !matches!(
+                    binding.kind,
+                    BindingKind::PrivateField { .. } | BindingKind::PrivateMethod { .. }
+                ) {
                     return Err(Error::internal(
                         "private spelling resolved to a non-private binding",
                     ));
@@ -154,19 +157,52 @@ pub(super) fn resolve_private_field_operation(
                         true,
                         false,
                     )?;
-                    if !matches!(kind, BindingKind::PrivateField { .. }) {
+                    if !binding_kinds_compatible(kind, binding.kind) {
                         return Err(Error::internal(
                             "private-name closure relay changed binding kind",
                         ));
                     }
                     PrivateNameSource::Closure(index)
                 };
-                let instruction = match access {
-                    PrivateFieldAccess::Get => Instruction::GetPrivateField(source),
-                    PrivateFieldAccess::GetKeepReceiver => Instruction::GetPrivateField2(source),
-                    PrivateFieldAccess::Put => Instruction::PutPrivateField(source),
-                    PrivateFieldAccess::Define => Instruction::DefinePrivateField(source),
-                    PrivateFieldAccess::In => Instruction::PrivateIn(source),
+                let instruction = match (binding.kind, access) {
+                    (_, PrivateFieldAccess::Get) => Instruction::GetPrivateField(source),
+                    (_, PrivateFieldAccess::GetKeepReceiver) => {
+                        Instruction::GetPrivateField2(source)
+                    }
+                    (BindingKind::PrivateField { .. }, PrivateFieldAccess::Put) => {
+                        Instruction::PutPrivateField(source)
+                    }
+                    (BindingKind::PrivateField { .. }, PrivateFieldAccess::Define) => {
+                        Instruction::DefinePrivateField(source)
+                    }
+                    (_, PrivateFieldAccess::In) => Instruction::PrivateIn(source),
+                    (BindingKind::PrivateMethod { .. }, PrivateFieldAccess::Put) => {
+                        let name = ensure_string_constant(
+                            tree.functions.get_mut(consuming_function).ok_or_else(|| {
+                                Error::internal("private-name consumer is out of bounds")
+                            })?,
+                            name,
+                        )?;
+                        Instruction::ThrowReadOnly(name)
+                    }
+                    (BindingKind::PrivateMethod { .. }, PrivateFieldAccess::Define) => {
+                        return Err(Error::internal(
+                            "private method reached data-field definition lowering",
+                        ));
+                    }
+                    (
+                        BindingKind::Normal
+                        | BindingKind::Lexical { .. }
+                        | BindingKind::FunctionName { .. }
+                        | BindingKind::EvalVariableObject
+                        | BindingKind::ArgEvalVariableObject
+                        | BindingKind::WithObject,
+                        _,
+                    ) => {
+                        return Err(Error::internal(
+                            "private spelling resolved to a non-private binding",
+                        ));
+                    }
                 };
                 return Ok(IrOp::Bytecode(instruction));
             }
@@ -375,6 +411,145 @@ mod tests {
     }
 
     #[test]
+    fn private_methods_lower_to_typed_cells_home_objects_and_side_brands() {
+        let tree = Parser::parse(
+            r#"
+                class C {
+                    call(value) { return value.#later() }
+                    #later() { return 1 }
+                    static read(value) { return #staticMethod in value }
+                    static #staticMethod() { return 2 }
+                }
+            "#,
+            JsString::from_static("<private-method-scope-test>"),
+        )
+        .unwrap();
+        let root = &tree.functions[0];
+        let scope = root
+            .scopes
+            .iter()
+            .find(|scope| scope.kind == ScopeKind::ClassPrivate)
+            .expect("class-private scope");
+        let bindings = scope
+            .bindings
+            .iter()
+            .map(|binding| &root.bindings[binding.0])
+            .collect::<Vec<_>>();
+        assert!(bindings.iter().any(|binding| {
+            binding.name == "#later"
+                && binding.kind == BindingKind::PrivateMethod { is_static: false }
+        }));
+        assert!(bindings.iter().any(|binding| {
+            binding.name == "#staticMethod"
+                && binding.kind == BindingKind::PrivateMethod { is_static: true }
+        }));
+
+        let initialized = root
+            .ops
+            .iter()
+            .filter_map(|operation| match &operation.op {
+                IrOp::Bytecode(Instruction::InitializePrivateMethod(local)) => Some(*local),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(initialized.len(), 2);
+        assert!(initialized.iter().all(|local| {
+            root.bindings.iter().any(|binding| {
+                binding.storage == BindingStorage::Local(*local)
+                    && matches!(binding.kind, BindingKind::PrivateMethod { .. })
+            })
+        }));
+
+        let private_methods = tree
+            .functions
+            .iter()
+            .filter(|function| {
+                function.parent.is_some()
+                    && function.class_initializer_kind.is_none()
+                    && function.function_name.is_none()
+                    && function.needs_home_object
+            })
+            .collect::<Vec<_>>();
+        assert!(private_methods.len() >= 2);
+        let branded_initializers = tree
+            .functions
+            .iter()
+            .filter(|function| function.class_private_brand)
+            .collect::<Vec<_>>();
+        assert_eq!(branded_initializers.len(), 2);
+        assert!(branded_initializers.iter().any(|function| {
+            function.class_initializer_kind == Some(ClassInitializerKind::InstanceFields)
+        }));
+        assert!(branded_initializers.iter().any(|function| {
+            function.class_initializer_kind == Some(ClassInitializerKind::StaticElements)
+        }));
+    }
+
+    #[test]
+    fn private_method_closure_and_eval_descriptors_keep_callable_kind() {
+        let root = compile_unlinked_script(
+            r#"
+                class C {
+                    use(value) {
+                        const nested = () => value.#method;
+                        eval('value.#method');
+                        return nested();
+                    }
+                    assign(value) { this.#method = value }
+                    #method() { return 42 }
+                }
+            "#,
+        )
+        .unwrap();
+        let method_local = root
+            .local_definitions()
+            .iter()
+            .enumerate()
+            .find(|(_, definition)| definition.kind == ClosureVariableKind::PrivateMethod)
+            .expect("private method local");
+        assert!(method_local.1.is_lexical);
+        assert!(method_local.1.is_const);
+        assert!(
+            method_local
+                .1
+                .name
+                .as_ref()
+                .is_some_and(|name| name.to_utf8_lossy() == "#method")
+        );
+        assert!(root.code().iter().any(|instruction| matches!(
+            instruction,
+            Instruction::InitializePrivateMethod(index)
+                if usize::from(*index) == method_local.0
+        )));
+
+        let mut functions = Vec::new();
+        collect_functions(&root, &mut functions);
+        assert!(functions.iter().any(|function| {
+            function
+                .closure_variables()
+                .iter()
+                .any(|descriptor| descriptor.kind == ClosureVariableKind::PrivateMethod)
+        }));
+        assert!(functions.iter().any(|function| {
+            function
+                .eval_environments()
+                .iter()
+                .flat_map(|environment| environment.scopes.iter())
+                .flat_map(|scope| scope.bindings.iter())
+                .any(|binding| {
+                    binding.kind == ClosureVariableKind::PrivateMethod
+                        && binding.name.to_utf8_lossy() == "#method"
+                })
+        }));
+        assert!(functions.iter().any(|function| {
+            function
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::ThrowReadOnly(_)))
+        }));
+    }
+
+    #[test]
     fn private_data_field_early_errors_remain_fail_closed() {
         for source in [
             "({}).#missing",
@@ -391,7 +566,6 @@ mod tests {
         }
 
         for source in [
-            "class C { #method() {} }",
             "class C { get #value() {} }",
             "class C { set #value(value) {} }",
         ] {
@@ -407,6 +581,29 @@ mod tests {
         );
         assert_eq!(
             compile_unlinked_script("class C { #x; static #x; }")
+                .unwrap_err()
+                .message(),
+            "private class field is already defined"
+        );
+        assert_eq!(
+            compile_unlinked_script("class C { #constructor() {} }")
+                .unwrap_err()
+                .message(),
+            "invalid method name"
+        );
+        for source in [
+            "class C { #x; #x() {} }",
+            "class C { #x() {} #x; }",
+            "class C { #x() {} static #x() {} }",
+        ] {
+            assert_eq!(
+                compile_unlinked_script(source).unwrap_err().message(),
+                "private class field is already defined",
+                "source: {source}"
+            );
+        }
+        assert_ne!(
+            compile_unlinked_script("class C { #x; #x(value =) {} }")
                 .unwrap_err()
                 .message(),
             "private class field is already defined"

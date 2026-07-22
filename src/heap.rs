@@ -705,6 +705,10 @@ pub struct FunctionMetadata {
     /// function kind lets publication and the VM reject forged initializer
     /// calls without exposing a JavaScript-visible marker.
     pub class_initializer_kind: Option<ClassInitializerKind>,
+    /// Whether an aggregate instance/static class initializer owns the
+    /// hidden brand lifecycle for private methods on that class side.
+    /// Static blocks and ordinary authored functions may never carry it.
+    pub class_private_brand: bool,
 }
 
 /// Compiler-authored frame pseudo bindings have one canonical QuickJS entry
@@ -1173,6 +1177,14 @@ pub(crate) fn validate_class_initializer_bytecode_layout(
     metadata: &FunctionMetadata,
     code: &[Instruction],
 ) -> Result<(), &'static str> {
+    if metadata.class_private_brand
+        && !matches!(
+            metadata.class_initializer_kind,
+            Some(ClassInitializerKind::InstanceFields | ClassInitializerKind::StaticElements)
+        )
+    {
+        return Err("private brand metadata escaped a class initializer");
+    }
     let Some(_) = metadata.class_initializer_kind else {
         return Ok(());
     };
@@ -3063,6 +3075,11 @@ pub enum ClosureVariableKind {
     /// atom for each class evaluation and may only be consumed through typed
     /// private-element bytecode; ordinary local/VarRef reads must reject it.
     PrivateField,
+    /// A class-private method closure. Its cell contains the single callable
+    /// shared by every branded receiver for one evaluated class side. Like a
+    /// private-name cell, it is an immutable lexical capability which may
+    /// only be consumed through authenticated private-element bytecode.
+    PrivateMethod,
 }
 
 impl ClosureVariableKind {
@@ -3073,7 +3090,7 @@ impl ClosureVariableKind {
 
     #[must_use]
     pub const fn is_private(self) -> bool {
-        matches!(self, Self::PrivateField)
+        matches!(self, Self::PrivateField | Self::PrivateMethod)
     }
 }
 
@@ -3334,29 +3351,30 @@ fn private_binding_flags_are_valid(
     is_lexical: bool,
     is_const: bool,
 ) -> bool {
-    kind == ClosureVariableKind::PrivateField && is_lexical && is_const
+    kind.is_private() && is_lexical && is_const
 }
 
 fn validate_published_private_source(
     bytecode: &FunctionBytecodeData,
     source: PrivateNameSource,
-) -> Result<(), HeapError> {
-    let valid = match source {
+) -> Result<ClosureVariableKind, HeapError> {
+    let kind = match source {
         PrivateNameSource::Local(index) => bytecode
             .local_definitions
             .get(usize::from(index))
-            .is_some_and(|definition| {
+            .filter(|definition| {
                 private_binding_flags_are_valid(
                     definition.kind,
                     definition.is_lexical,
                     definition.is_const,
                 ) && !definition.is_parameter_initializer
                     && definition.name.is_some()
-            }),
+            })
+            .map(|definition| definition.kind),
         PrivateNameSource::Closure(index) => bytecode
             .closure_variables
             .get(usize::from(index))
-            .is_some_and(|descriptor| {
+            .filter(|descriptor| {
                 private_binding_flags_are_valid(
                     descriptor.kind,
                     descriptor.is_lexical,
@@ -3368,14 +3386,12 @@ fn validate_published_private_source(
                             | ClosureSource::ParentClosure(_)
                             | ClosureSource::EvalEnvironment(_)
                     )
-            }),
+            })
+            .map(|descriptor| descriptor.kind),
     };
-    if !valid {
-        return Err(HeapError::Invariant(
-            "private bytecode source is not an authenticated lexical binding",
-        ));
-    }
-    Ok(())
+    kind.ok_or(HeapError::Invariant(
+        "private bytecode source is not an authenticated lexical binding",
+    ))
 }
 
 fn ordinary_private_local_operand(instruction: &Instruction) -> Option<u16> {
@@ -3416,7 +3432,7 @@ fn validate_published_private_elements(bytecode: &FunctionBytecodeData) -> Resul
     let mut scope_entry_counts = vec![0_u8; bytecode.local_definitions.len()];
 
     for definition in bytecode.local_definitions.iter() {
-        if definition.kind == ClosureVariableKind::PrivateField
+        if definition.kind.is_private()
             && (!private_binding_flags_are_valid(
                 definition.kind,
                 definition.is_lexical,
@@ -3430,7 +3446,7 @@ fn validate_published_private_elements(bytecode: &FunctionBytecodeData) -> Resul
         }
     }
     for descriptor in bytecode.closure_variables.iter() {
-        if descriptor.kind == ClosureVariableKind::PrivateField
+        if descriptor.kind.is_private()
             && (!private_binding_flags_are_valid(
                 descriptor.kind,
                 descriptor.is_lexical,
@@ -3489,12 +3505,33 @@ fn validate_published_private_elements(bytecode: &FunctionBytecodeData) -> Resul
                 ))?;
             }
             Instruction::InitializePrivateName(index) => {
-                validate_published_private_source(bytecode, PrivateNameSource::Local(index))?;
+                if validate_published_private_source(bytecode, PrivateNameSource::Local(index))?
+                    != ClosureVariableKind::PrivateField
+                {
+                    return Err(HeapError::Invariant(
+                        "private-name initializer referenced a non-field binding",
+                    ));
+                }
                 let count = initialization_counts.get_mut(usize::from(index)).ok_or(
                     HeapError::Invariant("private-name initializer local is out of bounds"),
                 )?;
                 *count = count.checked_add(1).ok_or(HeapError::Invariant(
                     "private-name initializer count overflowed",
+                ))?;
+            }
+            Instruction::InitializePrivateMethod(index) => {
+                if validate_published_private_source(bytecode, PrivateNameSource::Local(index))?
+                    != ClosureVariableKind::PrivateMethod
+                {
+                    return Err(HeapError::Invariant(
+                        "private-method initializer referenced a non-method binding",
+                    ));
+                }
+                let count = initialization_counts.get_mut(usize::from(index)).ok_or(
+                    HeapError::Invariant("private-method initializer local is out of bounds"),
+                )?;
+                *count = count.checked_add(1).ok_or(HeapError::Invariant(
+                    "private-method initializer count overflowed",
                 ))?;
             }
             Instruction::GetPrivateField(source)
@@ -3504,7 +3541,13 @@ fn validate_published_private_elements(bytecode: &FunctionBytecodeData) -> Resul
                 validate_published_private_source(bytecode, source)?;
             }
             Instruction::DefinePrivateField(source) => {
-                validate_published_private_source(bytecode, source)?;
+                if validate_published_private_source(bytecode, source)?
+                    != ClosureVariableKind::PrivateField
+                {
+                    return Err(HeapError::Invariant(
+                        "private-field definition referenced a non-field binding",
+                    ));
+                }
                 if !matches!(
                     bytecode.metadata.class_initializer_kind,
                     Some(
@@ -3525,8 +3568,7 @@ fn validate_published_private_elements(bytecode: &FunctionBytecodeData) -> Resul
         .iter()
         .enumerate()
         .any(|(index, definition)| {
-            definition.kind == ClosureVariableKind::PrivateField
-                && initialization_counts[index] != 1
+            definition.kind.is_private() && initialization_counts[index] != 1
         })
     {
         return Err(HeapError::Invariant(
@@ -3537,9 +3579,7 @@ fn validate_published_private_elements(bytecode: &FunctionBytecodeData) -> Resul
         .local_definitions
         .iter()
         .enumerate()
-        .any(|(index, definition)| {
-            definition.kind == ClosureVariableKind::PrivateField && scope_entry_counts[index] != 1
-        })
+        .any(|(index, definition)| definition.kind.is_private() && scope_entry_counts[index] != 1)
     {
         return Err(HeapError::Invariant(
             "private-name local does not have exactly one lexical scope entry",
@@ -5161,6 +5201,10 @@ pub struct NativeFunctionData {
 pub struct ObjectData {
     pub shape: ShapeId,
     pub slots: Vec<PropertySlot>,
+    /// QuickJS's hidden `JS_CLASS_PRIVATE` brand stored on a private method's
+    /// HomeObject. The object owns one atom reference independently from any
+    /// receiver marker using the same private atom in its shape.
+    pub private_brand_home: Option<Atom>,
     pub extensible: bool,
     pub immutable_prototype: bool,
     pub is_constructor: bool,
@@ -5175,6 +5219,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5189,6 +5234,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5204,6 +5250,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5225,6 +5272,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5247,6 +5295,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5269,6 +5318,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5288,6 +5338,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5304,6 +5355,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5320,6 +5372,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5339,6 +5392,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5362,6 +5416,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5384,6 +5439,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5406,6 +5462,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5426,6 +5483,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5448,6 +5506,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5471,6 +5530,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5487,6 +5547,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5505,6 +5566,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,
@@ -5527,6 +5589,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: target.descriptor().cproto.default_is_constructor(),
@@ -5553,6 +5616,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: target.descriptor().cproto.default_is_constructor(),
@@ -5582,6 +5646,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor,
@@ -5606,6 +5671,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor,
@@ -5635,6 +5701,7 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor,
@@ -6769,7 +6836,7 @@ impl Heap {
                     ));
                 }
             } else if definition.kind != ClosureVariableKind::Normal
-                && definition.kind != ClosureVariableKind::PrivateField
+                && !definition.kind.is_private()
             {
                 return Err(HeapError::Invariant(
                     "ordinary local definition uses a non-local binding kind",
@@ -6954,8 +7021,7 @@ impl Heap {
                     | ClosureVariableKind::EvalVariableObject
                     | ClosureVariableKind::ArgEvalVariableObject
                     | ClosureVariableKind::WithObject
-                    | ClosureVariableKind::PrivateField
-            );
+            ) || descriptor.kind.is_private();
             let allows_name = requires_name
                 || descriptor.is_lexical
                 || matches!(
@@ -7385,6 +7451,33 @@ impl Heap {
                 "typed object lookup reached another node payload",
             )),
         }
+    }
+
+    /// Read the private-method brand owned by an object's HomeObject slot.
+    ///
+    /// The atom is an internal identity rather than an ECMAScript property.
+    /// Its ownership remains with the object until finalization.
+    pub fn object_private_brand_home(&self, id: ObjectId) -> Result<Option<Atom>, HeapError> {
+        Ok(self.object(id)?.private_brand_home)
+    }
+
+    /// Attach the freshly allocated private-method brand for one class side.
+    ///
+    /// The caller transfers one owned atom reference on success. A HomeObject
+    /// has exactly one brand even when the class declares several methods.
+    pub fn attach_object_private_brand_home(
+        &mut self,
+        id: ObjectId,
+        brand: Atom,
+    ) -> Result<(), HeapError> {
+        let object = self.object_mut(id)?;
+        if object.private_brand_home.is_some() {
+            return Err(HeapError::Invariant(
+                "private-method HomeObject already has a brand",
+            ));
+        }
+        object.private_brand_home = Some(brand);
+        Ok(())
     }
 
     /// Read the optional HomeObject edge of one bytecode function.
@@ -8622,9 +8715,10 @@ impl Heap {
         shape: ShapeId,
         slots: Vec<PropertySlot>,
     ) -> Result<HeapCleanup, HeapError> {
-        let (extensible, immutable_prototype, is_constructor, kind, payload) = {
+        let (private_brand_home, extensible, immutable_prototype, is_constructor, kind, payload) = {
             let object = self.object(id)?;
             (
+                object.private_brand_home,
                 object.extensible,
                 object.immutable_prototype,
                 object.is_constructor,
@@ -8635,6 +8729,7 @@ impl Heap {
         let replacement = ObjectData {
             shape,
             slots,
+            private_brand_home,
             extensible,
             immutable_prototype,
             is_constructor,
@@ -8651,9 +8746,9 @@ impl Heap {
         };
 
         let mut cleanup = HeapCleanup::default();
-        // The class payload is cloned unchanged into `replacement`, so its
-        // non-GC atom ownership transfers in place. Only detached property
-        // slots relinquish atom references here.
+        // The class payload and private HomeObject brand are cloned unchanged
+        // into `replacement`, so their non-GC atom ownership transfers in
+        // place. Only detached property slots relinquish atom references here.
         cleanup.atoms.extend(object_slot_atoms(&previous));
         for edge in object_edges(&previous) {
             self.release_raw_no_drain(edge)?;
@@ -9852,7 +9947,9 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
         | ObjectPayload::NativeFunction { .. }
         | ObjectPayload::BytecodeFunction { .. } => Vec::new(),
     };
-    object_slot_atoms(object).chain(payload)
+    object_slot_atoms(object)
+        .chain(payload)
+        .chain(object.private_brand_home)
 }
 
 fn raw_value_atom(value: &RawValue) -> Option<Atom> {
@@ -9893,18 +9990,29 @@ fn validate_var_ref_value(
     is_const: bool,
     value: &RawValue,
 ) -> Result<(), HeapError> {
-    if kind.is_private() {
-        if !is_lexical || !is_const {
-            return Err(HeapError::Invariant(
-                "private-name VarRef is not an immutable lexical binding",
-            ));
-        }
-        if !matches!(value, RawValue::Private(_) | RawValue::Uninitialized) {
+    if kind.is_private() && (!is_lexical || !is_const) {
+        return Err(HeapError::Invariant(
+            "private-element VarRef is not an immutable lexical binding",
+        ));
+    }
+    match kind {
+        ClosureVariableKind::PrivateField
+            if !matches!(value, RawValue::Private(_) | RawValue::Uninitialized) =>
+        {
             return Err(HeapError::Invariant(
                 "private-name VarRef contains an ordinary ECMAScript value",
             ));
         }
-    } else if matches!(value, RawValue::Private(_)) {
+        ClosureVariableKind::PrivateMethod
+            if !matches!(value, RawValue::Object(_) | RawValue::Uninitialized) =>
+        {
+            return Err(HeapError::Invariant(
+                "private-method VarRef contains a non-callable representation",
+            ));
+        }
+        _ => {}
+    }
+    if !kind.is_private() && matches!(value, RawValue::Private(_)) {
         return Err(HeapError::Invariant(
             "private-name identity escaped into an ordinary VarRef",
         ));
@@ -11020,6 +11128,7 @@ mod tests {
         let malformed = ObjectData {
             shape,
             slots: Vec::new(),
+            private_brand_home: None,
             extensible: true,
             immutable_prototype: false,
             is_constructor: false,

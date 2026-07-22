@@ -1545,8 +1545,56 @@ claim full parity.
   and
   `8ae21223239ac757bad085913f11f0d86f0b371d66131843932824eb69744f78`.
   Admission remains manifest-scoped. Private methods, private accessors, and
-  their QuickJS brand path (`quickjs.c` 8462-8550) are the next explicit
-  frontier rather than part of this field-only milestone.
+  their QuickJS brand path (`quickjs.c` 8462-8550) were the next explicit
+  frontier at this field-only checkpoint.
+
+  R3i ports ordinary synchronous private instance and static methods plus the
+  QuickJS brand path. Each class evaluation creates independent instance-side
+  and static-side brands, publishes one non-constructible method callable per
+  declaration, and installs hidden own brand markers without exposing them to
+  reflection or ordinary extensibility checks. Methods are shared by branded
+  receivers, retain `#name`, `length`, no `prototype`, and the correct
+  HomeObject for `super`; extracted calls work, while wrong-side or foreign
+  receivers, primitive operands, duplicate initialization, and assignment to a
+  private method retain QuickJS's exact error ordering and read-only behavior.
+  In particular, an initialized method whose class-side brand has not yet been
+  published reports `expecting <brand> private field` before a primitive
+  receiver can report `not an object`, matching QuickJS's `JS_CheckBrand`
+  ordering. A forward `#name in object` also preserves QuickJS's internal-tag
+  quirk: before either a field or method cell is initialized, the hidden value
+  becomes the own-property atom `[unsupported type]` instead of being
+  normalized to unconditional `false`.
+  `#method in value`, nested functions/arrows/direct eval, nested classes,
+  forward private-name references, computed-key timing, public/private field
+  initializer ordering, inheritance, non-extensible replacement receivers,
+  and fresh class reevaluation all run through the same typed private-name and
+  brand cells.
+
+  The differential also freezes QuickJS's abrupt computed-key reentry detail:
+  when a computed key throws before the class scope closes, an escaped closure
+  keeps the captured private VarRef and the next reentry reuses and resets that
+  same cell. Normal scope closure still freshens the VarRef on the next class
+  evaluation. This is implemented deliberately rather than normalized into a
+  more intuitive fresh-cell rule.
+
+  The dependency-audited R3i cohort at Test262 commit
+  `5c8206929d81b2d3d727ca6aac56c18358c8d790` contains 267 paths / 534
+  variants: 219 positive paths and 48 parse-negative paths. Oxide passes all
+  534 variants and pinned QuickJS passes all 267 paths. Profile, manifest-file,
+  manifest-path-stream, TSV, JSONL, and empty non-pass SHA-256 values are
+  `76b0fcc5610e2ceee386469344fd727a8c359abe884befccec1ab435fed93315`,
+  `af3047bf66c6477f34d4229b03493a2c4247cc3f6f2b5dc4bf26e40c3ed4c7b6`,
+  `7ea0bbef5d3b5b27aa5e661574fbb0f53cc65fa785874bd1baabb1d83339b375`,
+  `89dacb36c99d9266e65dd7b0614d93d593007bac3cf0398b1ed0cb1a2258b357`,
+  `a7a32da2995f30bb21646817d21a2389da92e5b2b17e0c3922179d4e52dd637a`,
+  and
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+  The QuickJS differential source and expected-transcript SHA-256 values are
+  `23053aea3d41c9ee72a61007c713a17d7082dd418c9b06433a03800173b77567`
+  and
+  `7e87481d5b8a4202554d7c50264bb8063547512468f8c2df22bf05d06965e452`.
+  Admission remains manifest-scoped; private accessors and async/generator
+  class forms stay fail-closed.
 
   Generator/async and destructuring eval declarations, unsupported class
   elements, and ill-formed UTF-16 source stay explicit frontiers.
@@ -4407,8 +4455,8 @@ upstream's substantially deeper platform-dependent limits throughout.
 
 The language slice remains incomplete. Async/generator declarations,
 `for-await`, other general assignment targets, module resolution,
-async/generator methods and parameter forms, private methods/accessors and
-their class-brand semantics,
+async/generator methods and parameter forms, private accessors and their
+getter/setter pairing semantics,
 generator/async class methods, non-simple ObjectLiteral
 accessor forms outside the covered
 synchronous setter slice, and callable Proxy classes are not yet implemented.
@@ -4572,7 +4620,7 @@ still pending. Uncatchable termination state is also pending. Other iterator
 classes and helpers, the remaining RegExp
 grammar/static surface and Unicode-backed String methods, non-simple
 ObjectLiteral setter forms outside the covered synchronous slice,
-async/generator class methods, private methods/accessors and their brands,
+async/generator class methods, private accessors,
 exotic-source spread, and the rest of the builtin table build on those layers.
 
 The remaining parity surface also includes the full grammar/opcode set, the
@@ -4824,8 +4872,13 @@ monolith.
 R3h keeps private-name storage and operations in
 `runtime/private_elements.rs`, VM bridging in
 `runtime/vm_host/private_elements.rs`, and lowering under `compiler/class/`.
-The public runtime facade again gains only the module seam; private methods,
-accessors, and brands remain a separate follow-up boundary.
+The public runtime facade again gains only the module seam.
+R3i extends those same owners for ordinary synchronous private methods and
+per-class-side brands, with publication checks isolated in
+`runtime/bytecode_publish/private_elements.rs`. `runtime.rs` remains a facade
+at 9,658 lines; the method and brand implementation lives in the dedicated
+private-element/compiler/VM-host modules rather than returning to the
+monolith. Private accessors remain the next follow-up boundary.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -4836,7 +4889,7 @@ Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.
 
-`README.md` remains the 45-line public entry point; milestone bookkeeping stays
+`README.md` remains the concise public entry point; milestone bookkeeping stays
 in these dedicated status and Test262 documents.
 
 ## Reproduce current evidence

@@ -278,6 +278,11 @@ pub enum Instruction {
     /// Allocate one fresh QuickJS private symbol and initialize the named
     /// class-private lexical local without exposing that symbol as a Value.
     InitializePrivateName(u16),
+    /// QuickJS private-method declaration bootstrap. Consume the class-side
+    /// HomeObject and freshly instantiated method closure, install the hidden
+    /// HomeObject edge, initialize the authenticated private-method lexical
+    /// cell, and retain only the HomeObject on the operand stack.
+    InitializePrivateMethod(u16),
     /// QuickJS `OP_get_private_field`: own-only private field read.
     GetPrivateField(PrivateNameSource),
     /// Call/compound counterpart which retains the original receiver.
@@ -622,6 +627,7 @@ impl Instruction {
             | Self::GetVarUndef(_)
             | Self::DeleteVar(_) => (0, 1),
             Self::InitializePrivateName(_) => (0, 0),
+            Self::InitializePrivateMethod(_) => (2, 1),
             Self::SetName(_) | Self::ToObject => (1, 1),
             Self::MarkSuperCall => (2, 2),
             Self::GetRefValue(_) | Self::GetRefValueUndef(_) => (1, 2),
@@ -809,6 +815,7 @@ impl BytecodeFunction {
             if matches!(
                 instruction,
                 Instruction::InitializePrivateName(_)
+                    | Instruction::InitializePrivateMethod(_)
                     | Instruction::GetPrivateField(_)
                     | Instruction::GetPrivateField2(_)
                     | Instruction::PutPrivateField(_)

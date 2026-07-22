@@ -1,0 +1,14 @@
+method-shape=A:1:2|#method|2|false|true|X:3:4
+brand-split=true|false|true|false|C:42|#staticMethod
+brand-errors=false|TypeError:invalid brand on object|TypeError:invalid brand on object|TypeError:not an object|TypeError:'#method' is read-only|TypeError:invalid 'in' operand
+reevaluation=false|true|false|false|true
+super=42|42
+derived=40|42|true|true
+nonextensible-own-reflection=false|tag|0|true|false|locked
+capture=40|41|42|42|true
+forward-order=false|TypeError:not an object|TypeError:expecting <brand> private field|TypeError:expecting <brand> private field
+uninitialized-private-in=true|true
+initializer-order=42|42
+duplicate-brand=TypeError:private method is already present
+abrupt-reentry=true:41:true:42|true:41:true:42|true:41:true:42
+r3i-class-private-methods-oracle=ok

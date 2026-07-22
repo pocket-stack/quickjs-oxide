@@ -40,7 +40,7 @@ impl Runtime {
         &self,
         value: Value,
         expected: ClassInitializerKind,
-    ) -> Result<(CallableRef, ContextId), RuntimeError> {
+    ) -> Result<(CallableRef, ContextId, bool), RuntimeError> {
         let callable = self.callable_from_value(value)?;
         let state = self.0.state.borrow();
         let object = state.heap.object(callable.as_object().object_id())?;
@@ -56,8 +56,9 @@ impl Runtime {
             ));
         }
         let realm = bytecode.realm;
+        let private_brand = bytecode.metadata.class_private_brand;
         drop(state);
-        Ok((callable, realm))
+        Ok((callable, realm, private_brand))
     }
 
     fn class_constructor_object(
@@ -167,12 +168,15 @@ impl Runtime {
             return Err(RuntimeError::WrongRuntime("class prototype"));
         }
         self.validate_fresh_class_pair(&constructor, &prototype)?;
-        let (initializer, initializer_realm) =
+        let (initializer, initializer_realm, private_brand) =
             self.class_initializer_callable(initializer, ClassInitializerKind::InstanceFields)?;
         if initializer_realm != constructor_realm {
             return Err(RuntimeError::Invariant(
                 "class instance initializer crossed its constructor realm",
             ));
+        }
+        if private_brand {
+            self.ensure_private_brand_home(&prototype)?;
         }
         let mut state = self.0.state.borrow_mut();
         state.heap.attach_bytecode_class_instance_initializer(
@@ -216,16 +220,20 @@ impl Runtime {
             return Ok(Completion::Return(Value::Undefined));
         };
         let initializer = ObjectRef::from_borrowed_handle(self.clone(), initializer)?;
-        let (initializer, initializer_realm) = self.class_initializer_callable(
+        let (initializer, initializer_realm, private_brand) = self.class_initializer_callable(
             Value::Object(initializer),
             ClassInitializerKind::InstanceFields,
         )?;
         if initializer_realm != constructor_realm
-            || self.bytecode_function_home_object(initializer.as_object())? != Some(prototype)
+            || self.bytecode_function_home_object(initializer.as_object())?
+                != Some(prototype.clone())
         {
             return Err(RuntimeError::Invariant(
                 "class instance initializer lost its authenticated owner",
             ));
+        }
+        if private_brand {
+            self.add_private_method_brand(&prototype, receiver_object)?;
         }
         self.call_internal(caller_realm, &initializer, receiver, &[])
     }
@@ -244,7 +252,7 @@ impl Runtime {
         }
         let prototype = self.published_class_prototype(&constructor)?;
         self.validate_fresh_class_pair(&constructor, &prototype)?;
-        let (initializer, initializer_realm) =
+        let (initializer, initializer_realm, private_brand) =
             self.class_initializer_callable(initializer, ClassInitializerKind::StaticElements)?;
         if initializer_realm != constructor_realm
             || self
@@ -262,6 +270,10 @@ impl Runtime {
                 .begin_bytecode_class_static_initializer(constructor.object_id())?;
         }
         self.install_object_literal_home_object(&initializer, &constructor)?;
+        if private_brand {
+            self.ensure_private_brand_home(&constructor)?;
+            self.add_private_method_brand(&constructor, &constructor)?;
+        }
         self.call_internal(caller_realm, &initializer, Value::Object(constructor), &[])
     }
 
@@ -272,18 +284,19 @@ impl Runtime {
         this_value: Value,
         block: Value,
     ) -> Result<Completion, RuntimeError> {
-        let (parent, parent_realm) = self.class_initializer_callable(
+        let (parent, parent_realm, _) = self.class_initializer_callable(
             Value::Object(static_initializer.clone()),
             ClassInitializerKind::StaticElements,
         )?;
-        let (block, block_realm) =
+        let (block, block_realm, block_private_brand) =
             self.class_initializer_callable(block, ClassInitializerKind::StaticBlock)?;
         let Some(home_object) = self.bytecode_function_home_object(parent.as_object())? else {
             return Err(RuntimeError::Invariant(
                 "class static block parent has no authenticated HomeObject",
             ));
         };
-        if caller_realm != parent_realm
+        if block_private_brand
+            || caller_realm != parent_realm
             || block_realm != parent_realm
             || this_value != Value::Object(home_object.clone())
             || self

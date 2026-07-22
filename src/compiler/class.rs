@@ -2,9 +2,9 @@
 //!
 //! This is the first vertical slice of QuickJS `js_parse_class`: class name
 //! scopes, heritage, base/derived constructors, `super()` and synchronous
-//! methods/accessors. Fields, private elements, static blocks, and
-//! generator/async methods remain explicit typed frontiers rather than being
-//! accepted with partial semantics.
+//! methods/accessors, fields, ordinary private methods, and static blocks.
+//! Private accessors plus generator/async methods remain explicit typed
+//! frontiers rather than being accepted with partial semantics.
 
 use super::function::ParsedFunctionDefinition;
 use super::*;
@@ -269,17 +269,24 @@ impl<'source> Parser<'source> {
             return Ok(());
         }
 
-        if matches!(key, ClassPropertyKey::Private { .. }) {
-            return Err(Error::unsupported(
-                "private class methods and accessors are not implemented yet",
-                source_span(function_span),
-            ));
+        if let ClassPropertyKey::Private { name, span } = &key {
+            if method_kind != DefineMethodKind::Method {
+                return Err(Error::unsupported(
+                    "private class accessors are not implemented yet",
+                    source_span(function_span),
+                ));
+            }
+            self.parse_private_class_method(elements, is_static, name.clone(), *span)?;
+            if is_static {
+                self.emit_instruction(Instruction::Swap)?;
+            }
+            return Ok(());
         }
 
         let fixed = match &key {
             ClassPropertyKey::Fixed { value } => Some(value),
             ClassPropertyKey::Computed => None,
-            ClassPropertyKey::Private { .. } => unreachable!("private methods were rejected"),
+            ClassPropertyKey::Private { .. } => unreachable!("private methods were lowered"),
         };
         let is_constructor_name =
             fixed.is_some_and(|name| *name == JsString::from_static("constructor"));
@@ -323,7 +330,7 @@ impl<'source> Parser<'source> {
                         enumerable: false,
                     })?;
                 }
-                ClassPropertyKey::Private { .. } => unreachable!("private methods were rejected"),
+                ClassPropertyKey::Private { .. } => unreachable!("private methods were lowered"),
             }
         }
         if is_static {

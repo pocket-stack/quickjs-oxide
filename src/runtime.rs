@@ -2824,7 +2824,8 @@ impl Runtime {
                     | ClosureVariableKind::EvalVariableObject
                     | ClosureVariableKind::ArgEvalVariableObject
                     | ClosureVariableKind::WithObject
-                    | ClosureVariableKind::PrivateField => {
+                    | ClosureVariableKind::PrivateField
+                    | ClosureVariableKind::PrivateMethod => {
                         return Err(RuntimeError::Invariant(
                             "global declaration has non-global binding metadata",
                         ));
@@ -2877,7 +2878,8 @@ impl Runtime {
                         | ClosureVariableKind::EvalVariableObject
                         | ClosureVariableKind::ArgEvalVariableObject
                         | ClosureVariableKind::WithObject
-                        | ClosureVariableKind::PrivateField => {
+                        | ClosureVariableKind::PrivateField
+                        | ClosureVariableKind::PrivateMethod => {
                             return Err(RuntimeError::Invariant(
                                 "global declaration has non-global binding metadata",
                             ));
@@ -3841,7 +3843,16 @@ impl Runtime {
         if !root.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("closure variable"));
         }
-        let raw = self.0.state.borrow().heap.var_ref(root.id())?.value.clone();
+        let raw = {
+            let state = self.0.state.borrow();
+            let var_ref = state.heap.var_ref(root.id())?;
+            if var_ref.kind.is_private() {
+                return Err(RuntimeError::Invariant(
+                    "ordinary VarRef read reached a private-element binding",
+                ));
+            }
+            var_ref.value.clone()
+        };
         self.root_raw_value(&raw)
     }
 
@@ -3879,6 +3890,19 @@ impl Runtime {
         let _operation = self.operation();
         if !root.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("closure variable"));
+        }
+        if self
+            .0
+            .state
+            .borrow()
+            .heap
+            .var_ref(root.id())?
+            .kind
+            .is_private()
+        {
+            return Err(RuntimeError::Invariant(
+                "ordinary VarRef write reached a private-element binding",
+            ));
         }
         self.validate_value_domain(&value, "captured variable")?;
         let raw = self.raw_property_value(&value)?;

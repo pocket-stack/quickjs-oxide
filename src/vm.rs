@@ -487,6 +487,18 @@ pub(crate) trait VmHost {
     fn initialize_private_name(&mut self, _index: u16) -> Result<(), Error> {
         Err(Error::internal("VM host cannot initialize a private name"))
     }
+    /// Initialize one authenticated private-method binding from a fresh
+    /// callable while retaining its class-side HomeObject in the VM.
+    fn initialize_private_method(
+        &mut self,
+        _index: u16,
+        _home_object: Value,
+        _method: Value,
+    ) -> Result<(), Error> {
+        Err(Error::internal(
+            "VM host cannot initialize a private method",
+        ))
+    }
     fn get_private_field(
         &mut self,
         _source: PrivateNameSource,
@@ -2943,6 +2955,11 @@ impl CallFrame {
             }
             Instruction::InitializePrivateName(index) => {
                 host.initialize_private_name(*index)?;
+            }
+            Instruction::InitializePrivateMethod(index) => {
+                let (home_object, method) = self.pop_pair()?;
+                host.initialize_private_method(*index, home_object.clone(), method)?;
+                self.stack.push(home_object);
             }
             Instruction::GetPrivateField(source) | Instruction::GetPrivateField2(source) => {
                 let keep_receiver = matches!(instruction, Instruction::GetPrivateField2(_));

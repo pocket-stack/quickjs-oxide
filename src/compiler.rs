@@ -427,6 +427,13 @@ enum BindingKind {
     PrivateField {
         is_static: bool,
     },
+    /// One class-private synchronous method. Like private fields, staticness
+    /// exists only while parsing the declaring class so same-spelling
+    /// instance/static elements conflict before the typed closure metadata is
+    /// published.
+    PrivateMethod {
+        is_static: bool,
+    },
 }
 
 fn binding_kinds_compatible(left: BindingKind, right: BindingKind) -> bool {
@@ -436,6 +443,9 @@ fn binding_kinds_compatible(left: BindingKind, right: BindingKind) -> bool {
             (
                 BindingKind::PrivateField { .. },
                 BindingKind::PrivateField { .. }
+            ) | (
+                BindingKind::PrivateMethod { .. },
+                BindingKind::PrivateMethod { .. }
             )
         )
 }
@@ -465,13 +475,18 @@ const fn binding_kind_from_closure_flags(
             // direct-eval descriptor needs only the authenticated identity kind.
             Some(BindingKind::PrivateField { is_static: false })
         }
+        ClosureVariableKind::PrivateMethod if is_lexical && is_const => {
+            // Staticness is likewise declaration-only for method identities.
+            Some(BindingKind::PrivateMethod { is_static: false })
+        }
         ClosureVariableKind::Normal
         | ClosureVariableKind::FunctionName
         | ClosureVariableKind::GlobalFunction
         | ClosureVariableKind::EvalVariableObject
         | ClosureVariableKind::ArgEvalVariableObject
         | ClosureVariableKind::WithObject
-        | ClosureVariableKind::PrivateField => None,
+        | ClosureVariableKind::PrivateField
+        | ClosureVariableKind::PrivateMethod => None,
     }
 }
 
@@ -971,6 +986,9 @@ struct FunctionIr {
     /// Synthetic QuickJS class-element program role. This is assigned only by
     /// class lowering after the ordinary method-shaped FunctionIr is created.
     class_initializer_kind: Option<ClassInitializerKind>,
+    /// Whether this authenticated instance/static aggregate installs the
+    /// private-method brand for its class side before executing element code.
+    class_private_brand: bool,
     /// QuickJS parser authority copied independently from HomeObject storage.
     super_call_allowed: bool,
     super_allowed: bool,
@@ -1276,6 +1294,7 @@ impl FunctionIr {
             class_constructor: options.class_constructor,
             derived_class_constructor: options.derived_class_constructor,
             class_initializer_kind: None,
+            class_private_brand: false,
             super_call_allowed: super_capabilities.super_call_allowed,
             super_allowed: super_capabilities.super_allowed,
             arguments_forbidden: false,
@@ -4112,9 +4131,12 @@ impl<'source> Parser<'source> {
                         "lexical binding leaked into the function var scope",
                     ));
                 }
-                (BindingStorage::Local(_), BindingKind::PrivateField { .. }) => {
+                (
+                    BindingStorage::Local(_),
+                    BindingKind::PrivateField { .. } | BindingKind::PrivateMethod { .. },
+                ) => {
                     return Err(Error::internal(
-                        "private-field binding leaked into the function var scope",
+                        "private binding leaked into the function var scope",
                     ));
                 }
                 (BindingStorage::External(_), _) => "",
@@ -8513,6 +8535,16 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 "private function-name capability is malformed",
             ));
         }
+        if function.class_private_brand
+            && !matches!(
+                function.class_initializer_kind,
+                Some(ClassInitializerKind::InstanceFields | ClassInitializerKind::StaticElements)
+            )
+        {
+            return Err(Error::internal(
+                "private brand escaped an aggregate class initializer",
+            ));
+        }
         let check_ctor_count = function
             .ops
             .iter()
@@ -9626,7 +9658,8 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 ClosureVariableKind::Normal
                 | ClosureVariableKind::FunctionName
                 | ClosureVariableKind::GlobalFunction
-                | ClosureVariableKind::PrivateField => continue,
+                | ClosureVariableKind::PrivateField
+                | ClosureVariableKind::PrivateMethod => continue,
             };
             let descriptor = function
                 .closure_variables
@@ -9748,13 +9781,15 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                                 "with object local binding metadata is malformed",
                             ));
                         }
-                        if matches!(binding.kind, BindingKind::PrivateField { .. })
-                            && (!binding.name.starts_with('#')
-                                || binding.name.len() == 1
-                                || binding.storage_scope != binding.declaration_scope
-                                || function.scopes[binding.storage_scope.0].kind
-                                    != ScopeKind::ClassPrivate
-                                || binding.is_catch_parameter)
+                        if matches!(
+                            binding.kind,
+                            BindingKind::PrivateField { .. } | BindingKind::PrivateMethod { .. }
+                        ) && (!binding.name.starts_with('#')
+                            || binding.name.len() == 1
+                            || binding.storage_scope != binding.declaration_scope
+                            || function.scopes[binding.storage_scope.0].kind
+                                != ScopeKind::ClassPrivate
+                            || binding.is_catch_parameter)
                         {
                             return Err(Error::internal(
                                 "private-field local binding metadata is malformed",
@@ -10687,7 +10722,8 @@ fn link_eval_environment(
                         BindingKind::Normal
                         | BindingKind::Lexical { .. }
                         | BindingKind::WithObject
-                        | BindingKind::PrivateField { .. } => 0,
+                        | BindingKind::PrivateField { .. }
+                        | BindingKind::PrivateMethod { .. } => 0,
                     }
                 });
             }
@@ -10827,13 +10863,16 @@ fn link_eval_environment(
                 source,
                 is_lexical: matches!(
                     resolved_kind,
-                    BindingKind::Lexical { .. } | BindingKind::PrivateField { .. }
+                    BindingKind::Lexical { .. }
+                        | BindingKind::PrivateField { .. }
+                        | BindingKind::PrivateMethod { .. }
                 ),
                 is_const: matches!(
                     resolved_kind,
                     BindingKind::Lexical { is_const: true }
                         | BindingKind::FunctionName { is_const: true }
                         | BindingKind::PrivateField { .. }
+                        | BindingKind::PrivateMethod { .. }
                 ),
                 kind: closure_kind(resolved_kind),
                 is_catch_parameter,
@@ -11262,9 +11301,12 @@ fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
             });
             let instruction = match (binding.storage, binding.kind) {
                 (BindingStorage::Argument(index), _) => Instruction::PutArg(index),
-                (BindingStorage::Local(_), BindingKind::PrivateField { .. }) => {
+                (
+                    BindingStorage::Local(_),
+                    BindingKind::PrivateField { .. } | BindingKind::PrivateMethod { .. },
+                ) => {
                     return Err(Error::internal(
-                        "private-field binding reached function hoist lowering",
+                        "private binding reached function hoist lowering",
                     ));
                 }
                 (BindingStorage::Local(index), BindingKind::Lexical { .. }) => {
@@ -12118,6 +12160,7 @@ const fn binding_is_readonly(kind: BindingKind) -> bool {
         BindingKind::Lexical { is_const: true }
             | BindingKind::FunctionName { is_const: true }
             | BindingKind::PrivateField { .. }
+            | BindingKind::PrivateMethod { .. }
     )
 }
 
@@ -12259,7 +12302,8 @@ fn push_dynamic_environment_source(
             BindingKind::Normal
             | BindingKind::Lexical { .. }
             | BindingKind::FunctionName { .. }
-            | BindingKind::PrivateField { .. },
+            | BindingKind::PrivateField { .. }
+            | BindingKind::PrivateMethod { .. },
             _,
         )
         | (_, BindingStorage::Argument(_) | BindingStorage::Global) => {
@@ -12384,9 +12428,9 @@ fn global_declaration_operation(
                 "with object reached global declaration resolution",
             ));
         }
-        BindingKind::PrivateField { .. } => {
+        BindingKind::PrivateField { .. } | BindingKind::PrivateMethod { .. } => {
             return Err(Error::internal(
-                "private-field binding reached global declaration resolution",
+                "private binding reached global declaration resolution",
             ));
         }
     };
@@ -12708,9 +12752,9 @@ fn binding_instruction(
         (BindingStorage::External(_), _, _) => Err(Error::internal(
             "eval external binding reached local instruction selection",
         )),
-        (_, BindingKind::PrivateField { .. }, _) => Err(Error::internal(
-            "private-field binding reached ordinary identifier instruction selection",
-        )),
+        (_, BindingKind::PrivateField { .. } | BindingKind::PrivateMethod { .. }, _) => Err(
+            Error::internal("private binding reached ordinary identifier instruction selection"),
+        ),
         (
             BindingStorage::Local(_),
             BindingKind::EvalVariableObject
@@ -12828,9 +12872,9 @@ fn closure_binding_operation(
         ) => Err(Error::internal(
             "hidden object binding reached source closure operation selection",
         )),
-        (BindingKind::PrivateField { .. }, _) => Err(Error::internal(
-            "private-field binding reached ordinary identifier closure selection",
-        )),
+        (BindingKind::PrivateField { .. } | BindingKind::PrivateMethod { .. }, _) => Err(
+            Error::internal("private binding reached ordinary identifier closure selection"),
+        ),
         (
             BindingKind::Normal | BindingKind::FunctionName { .. },
             IdentifierAccess::Get | IdentifierAccess::GetOrUndefined,
@@ -12910,6 +12954,7 @@ const fn closure_kind(kind: BindingKind) -> ClosureVariableKind {
         BindingKind::ArgEvalVariableObject => ClosureVariableKind::ArgEvalVariableObject,
         BindingKind::WithObject => ClosureVariableKind::WithObject,
         BindingKind::PrivateField { .. } => ClosureVariableKind::PrivateField,
+        BindingKind::PrivateMethod { .. } => ClosureVariableKind::PrivateMethod,
     }
 }
 
@@ -12975,6 +13020,7 @@ fn capture_binding_path(
                     | BindingKind::ArgEvalVariableObject
                     | BindingKind::WithObject
                     | BindingKind::PrivateField { .. }
+                    | BindingKind::PrivateMethod { .. }
             ) {
             ClosureVariableName::Constant(ensure_string_constant(function, name)?)
         } else {
@@ -12985,13 +13031,16 @@ fn capture_binding_path(
             name: descriptor_name,
             is_lexical: matches!(
                 requested_kind,
-                BindingKind::Lexical { .. } | BindingKind::PrivateField { .. }
+                BindingKind::Lexical { .. }
+                    | BindingKind::PrivateField { .. }
+                    | BindingKind::PrivateMethod { .. }
             ),
             is_const: matches!(
                 requested_kind,
                 BindingKind::Lexical { is_const: true }
                     | BindingKind::FunctionName { is_const: true }
                     | BindingKind::PrivateField { .. }
+                    | BindingKind::PrivateMethod { .. }
             ),
             kind: closure_kind(requested_kind),
         };
@@ -13204,7 +13253,9 @@ fn build_scope_lifecycles(
                     .ok_or_else(|| Error::internal("scope binding is out of bounds"))?;
                 let is_lexical = matches!(
                     binding.kind,
-                    BindingKind::Lexical { .. } | BindingKind::PrivateField { .. }
+                    BindingKind::Lexical { .. }
+                        | BindingKind::PrivateField { .. }
+                        | BindingKind::PrivateMethod { .. }
                 );
                 let is_with_object = binding.kind == BindingKind::WithObject;
                 if !is_lexical && !is_with_object {
@@ -13420,6 +13471,13 @@ fn lower_unlinked_tree(
                     is_parameter_initializer: false,
                     kind: ClosureVariableKind::PrivateField,
                 },
+                BindingKind::PrivateMethod { .. } => UnlinkedVariableDefinition {
+                    name,
+                    is_lexical: true,
+                    is_const: true,
+                    is_parameter_initializer: false,
+                    kind: ClosureVariableKind::PrivateMethod,
+                },
             }
             .with_parameter_initializer(is_parameter_initializer);
         }
@@ -13585,6 +13643,7 @@ fn lower_unlinked_tree(
                 ConstructorKind::None
             },
             class_initializer_kind: function.class_initializer_kind,
+            class_private_brand: function.class_private_brand,
         };
         let func_name = function
             .function_name

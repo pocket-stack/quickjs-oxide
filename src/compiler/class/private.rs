@@ -1,19 +1,21 @@
-//! QuickJS-shaped private data-field declaration lowering.
+//! QuickJS-shaped private field and synchronous-method declaration lowering.
 //!
 //! Each `#name` owns a lexical cell in the class body's dedicated private-name
-//! scope. Class evaluation initializes that cell with a fresh private identity;
-//! aggregate instance/static initializer children capture the cell and consume
-//! it only through `DefinePrivateField`.
+//! scope. Data fields initialize that cell with a fresh private identity;
+//! methods initialize it with the callable whose HomeObject carries the class
+//! side's brand. Aggregate initializer children install the corresponding
+//! brand or consume field identities through `DefinePrivateField`.
 
 use super::super::*;
 use super::ClassElementState;
+use crate::bytecode::DefineMethodKind;
 
 impl<'source> Parser<'source> {
-    fn register_private_field_binding(
+    fn register_private_binding(
         &mut self,
         name: &str,
         span: Span,
-        is_static: bool,
+        kind: BindingKind,
     ) -> Result<u16, Error> {
         let function = self.current_ir_mut();
         let scope = function.current_scope;
@@ -46,7 +48,7 @@ impl<'source> Parser<'source> {
             scope,
             name.to_owned(),
             BindingStorage::Local(local),
-            BindingKind::PrivateField { is_static },
+            kind,
             Some(span),
         );
         Ok(local)
@@ -63,7 +65,8 @@ impl<'source> Parser<'source> {
             return Err(Error::syntax("invalid method name", source_span(span)));
         }
 
-        let local = self.register_private_field_binding(&name, span, is_static)?;
+        let local =
+            self.register_private_binding(&name, span, BindingKind::PrivateField { is_static })?;
         // Unlike a normal lexical initializer, this opcode allocates and stores
         // the private Atom without ever constructing a public Symbol Value.
         self.emit_instruction_at(
@@ -101,5 +104,42 @@ impl<'source> Parser<'source> {
         self.current_function = parent;
         self.anonymous_function_definition = None;
         self.consume_statement_terminator()
+    }
+
+    /// Parse and publish an ordinary synchronous private method. The method
+    /// body is parsed before the namespace binding is registered, matching
+    /// QuickJS's diagnostic priority when a malformed body and a duplicate
+    /// private spelling coexist.
+    pub(super) fn parse_private_class_method(
+        &mut self,
+        elements: &mut ClassElementState,
+        is_static: bool,
+        name: String,
+        span: Span,
+    ) -> Result<(), Error> {
+        if name == "#constructor" {
+            return Err(Error::syntax("invalid method name", source_span(span)));
+        }
+
+        let method = self.parse_object_method_definition(span, DefineMethodKind::Method)?;
+        // A private method needs HomeObject even when its authored body never
+        // mentions `super`: the runtime derives its unforgeable brand from the
+        // callable's HomeObject, as pinned QuickJS does.
+        self.functions[method].needs_home_object = true;
+
+        let local =
+            self.register_private_binding(&name, span, BindingKind::PrivateMethod { is_static })?;
+        let initializer = self.ensure_class_initializer(elements, is_static, span)?;
+        self.functions[initializer].class_private_brand = true;
+
+        // The surrounding class stack already holds the relevant HomeObject
+        // immediately below the method closure. Initialization consumes the
+        // closure, preserves that HomeObject, and stores a typed callable cell.
+        self.emit_instruction_at(
+            Instruction::InitializePrivateMethod(local),
+            source_offset(span)?,
+        )?;
+        self.anonymous_function_definition = None;
+        Ok(())
     }
 }

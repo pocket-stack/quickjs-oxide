@@ -196,17 +196,10 @@ fn base_class_observation_matches_pinned_quickjs() {
 #[test]
 fn unsupported_class_families_remain_typed_frontiers() {
     for (source, expected) in [
-        (
-            "class C { #method() {} }",
-            "private class methods and accessors",
-        ),
-        (
-            "class C { get #value() {} }",
-            "private class methods and accessors",
-        ),
+        ("class C { get #value() {} }", "private class accessors"),
         (
             "class C { set #value(value) {} }",
-            "private class methods and accessors",
+            "private class accessors",
         ),
         ("class C { *method() {} }", "class generator methods"),
         ("class C { async method() {} }", "async class methods"),

@@ -90,7 +90,8 @@ const fn eval_variable_object_sentinel(kind: ClosureVariableKind) -> Option<&'st
         | ClosureVariableKind::FunctionName
         | ClosureVariableKind::GlobalFunction
         | ClosureVariableKind::WithObject
-        | ClosureVariableKind::PrivateField => None,
+        | ClosureVariableKind::PrivateField
+        | ClosureVariableKind::PrivateMethod => None,
     }
 }
 
@@ -2161,7 +2162,7 @@ fn verify_unlinked_tree_with_root(
                     )));
                 }
             } else if definition.kind != ClosureVariableKind::Normal
-                && definition.kind != ClosureVariableKind::PrivateField
+                && !definition.kind.is_private()
             {
                 return Err(RuntimeError::Engine(Error::internal(
                     "ordinary local definition uses a non-local binding kind",
@@ -2404,6 +2405,7 @@ fn verify_unlinked_tree_with_root(
                     | ClosureVariableKind::ArgEvalVariableObject
                     | ClosureVariableKind::WithObject
                     | ClosureVariableKind::PrivateField
+                    | ClosureVariableKind::PrivateMethod
             ) || matches!(
                 descriptor.source,
                 ClosureSource::GlobalDeclaration

@@ -70,6 +70,10 @@ const TEST262_CLASS_PRIVATE_FIELDS_PROFILE_SHA256: &str =
     "c03c22a7ea0d767536c77f1720b5c87766b06759d8a42a6e7b9ec3069633ffa2";
 const TEST262_CLASS_PRIVATE_FIELDS_MANIFEST_SHA256: &str =
     "c64f7f33e60c623976e0be920889d71984ac0899ffe23cb26a3b6d0f9089fe34";
+const TEST262_CLASS_PRIVATE_METHODS_PROFILE_SHA256: &str =
+    "76b0fcc5610e2ceee386469344fd727a8c359abe884befccec1ab435fed93315";
+const TEST262_CLASS_PRIVATE_METHODS_MANIFEST_SHA256: &str =
+    "af3047bf66c6477f34d4229b03493a2c4247cc3f6f2b5dc4bf26e40c3ed4c7b6";
 const TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256: &str =
     "8232e2c11e908f7cbf5a9e0f34fbd5223a9551b49ae64647f2a72b2314bcaf84";
 const TEST262_ARRAY_BINDING_FLAT_MANIFEST_SHA256: &str =
@@ -640,6 +644,7 @@ enum OxideProfileKind {
     ClassDerived,
     ClassPublicInit,
     ClassPrivateFields,
+    ClassPrivateMethods,
     ArrayBindingFlat,
     ArrayBindingNested,
     ArrayAssignmentFlat,
@@ -695,6 +700,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-class-private-fields.conf"),
             OxideProfileKind::ClassPrivateFields,
+        ),
+        (
+            root.join("tests/test262-class-private-methods.conf"),
+            OxideProfileKind::ClassPrivateMethods,
         ),
         (
             root.join("tests/test262-array-binding-flat.conf"),
@@ -771,7 +780,7 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         }
     }
     Err(format!(
-        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-aggregate-error.conf, tests/test262-argument-spread.conf, tests/test262-class-base.conf, tests/test262-class-derived.conf, tests/test262-class-public-init.conf, tests/test262-class-private-fields.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-direct-eval.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-parameter-expression-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-aggregate-error.conf, tests/test262-argument-spread.conf, tests/test262-class-base.conf, tests/test262-class-derived.conf, tests/test262-class-public-init.conf, tests/test262-class-private-fields.conf, tests/test262-class-private-methods.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-direct-eval.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-parameter-expression-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
         path.display()
     ))
 }
@@ -915,6 +924,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             TEST262_CLASS_PRIVATE_FIELDS_PROFILE_SHA256,
             "tests/test262-class-private-fields.txt",
             TEST262_CLASS_PRIVATE_FIELDS_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::ClassPrivateMethods => verify_scoped_pinned_profile(
+            options,
+            "private class methods",
+            TEST262_CLASS_PRIVATE_METHODS_PROFILE_SHA256,
+            "tests/test262-class-private-methods.txt",
+            TEST262_CLASS_PRIVATE_METHODS_MANIFEST_SHA256,
         ),
         OxideProfileKind::ArrayBindingFlat => {
             verify_sha256(
@@ -1634,9 +1650,9 @@ mod cli_tests {
         TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256, TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256,
         TEST262_CATCH_BINDING_PROFILE_SHA256, TEST262_CLASS_BASE_PROFILE_SHA256,
         TEST262_CLASS_DERIVED_PROFILE_SHA256, TEST262_CLASS_PRIVATE_FIELDS_PROFILE_SHA256,
-        TEST262_CLASS_PUBLIC_INIT_PROFILE_SHA256, TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256,
-        TEST262_IDENTIFIER_REST_PROFILE_SHA256, TEST262_MAP_PROFILE_SHA256,
-        TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
+        TEST262_CLASS_PRIVATE_METHODS_PROFILE_SHA256, TEST262_CLASS_PUBLIC_INIT_PROFILE_SHA256,
+        TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256, TEST262_IDENTIFIER_REST_PROFILE_SHA256,
+        TEST262_MAP_PROFILE_SHA256, TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_NESTED_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_REST_PROFILE_SHA256, TEST262_OBJECT_BINDING_PROFILE_SHA256,
         TEST262_OBJECT_REST_BINDING_PROFILE_SHA256,
@@ -1758,6 +1774,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-class-private-fields.conf")).unwrap(),
             OxideProfileKind::ClassPrivateFields
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-class-private-methods.conf")).unwrap(),
+            OxideProfileKind::ClassPrivateMethods
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-array-binding-flat.conf")).unwrap(),
@@ -2214,6 +2234,118 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-class-private-fields.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_class_private_methods_profile_is_bound_and_excludes_accessors_and_adjacencies() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-class-private-methods.conf",
+            "--manifest",
+            "tests/test262-class-private-methods.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_CLASS_PRIVATE_METHODS_PROFILE_SHA256
+        );
+
+        let profile =
+            super::OxideProfile::load(Path::new("tests/test262-class-private-methods.conf"))
+                .unwrap();
+        let positive =
+            Path::new("test/language/statements/class/elements/private-method-brand-check.js");
+        for feature in [
+            "class",
+            "class-fields-private",
+            "class-fields-private-in",
+            "class-fields-public",
+            "class-methods-private",
+            "class-static-fields-private",
+            "class-static-fields-public",
+            "class-static-methods-private",
+        ] {
+            assert_eq!(
+                profile.classify(positive, &[feature.to_owned()], false),
+                None,
+                "scoped profile did not admit {feature}"
+            );
+        }
+        let audited_negative = Path::new(
+            "test/language/statements/class/elements/syntax/early-errors/grammar-privatemeth-duplicate-meth-meth.js",
+        );
+        assert_eq!(
+            profile.classify(
+                audited_negative,
+                &["class".to_owned(), "class-methods-private".to_owned()],
+                true,
+            ),
+            None
+        );
+        let adjacent = profile
+            .classify(
+                positive,
+                &["class-methods-private".to_owned(), "generators".to_owned()],
+                false,
+            )
+            .unwrap();
+        assert_eq!(adjacent.outcome, "unsupported-feature");
+        assert!(adjacent.detail.ends_with("generators"));
+
+        let unaudited_accessor =
+            Path::new("test/language/statements/class/elements/private-getter-brand-check.js");
+        assert_eq!(
+            profile
+                .classify(
+                    unaudited_accessor,
+                    &["class".to_owned(), "class-methods-private".to_owned()],
+                    true,
+                )
+                .unwrap()
+                .outcome,
+            "unsupported-negative-provenance"
+        );
+
+        let global = super::OxideProfile::load(Path::new("compat/test262-oxide.conf")).unwrap();
+        for feature in ["class-methods-private", "class-static-methods-private"] {
+            assert_eq!(
+                global
+                    .classify(positive, &[feature.to_owned()], false)
+                    .unwrap()
+                    .outcome,
+                "unsupported-feature",
+                "global profile unexpectedly admitted {feature}"
+            );
+        }
+
+        for selection in [
+            ["--all", ""],
+            ["--test", positive.to_str().unwrap()],
+            ["--manifest", "tests/test262-class-private-fields.txt"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-class-private-methods.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

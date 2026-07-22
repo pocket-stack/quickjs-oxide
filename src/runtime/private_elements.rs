@@ -8,6 +8,7 @@
 //! absent fields use QuickJS's native TypeError spelling.
 
 use super::*;
+use crate::heap::EvalKind;
 use crate::object::PrivateNameRef;
 
 impl Runtime {
@@ -247,7 +248,10 @@ impl Runtime {
         let mut state = self.0.state.borrow_mut();
         {
             let var_ref = state.heap.var_ref(root.id())?;
-            if !var_ref.kind.is_private() || !var_ref.is_lexical || !var_ref.is_const {
+            if var_ref.kind != ClosureVariableKind::PrivateField
+                || !var_ref.is_lexical
+                || !var_ref.is_const
+            {
                 return Err(RuntimeError::Invariant(
                     "private-name initialization reached an ordinary VarRef",
                 ));
@@ -287,7 +291,10 @@ impl Runtime {
         let atom = {
             let state = self.0.state.borrow();
             let var_ref = state.heap.var_ref(root.id())?;
-            if !var_ref.kind.is_private() || !var_ref.is_lexical || !var_ref.is_const {
+            if var_ref.kind != ClosureVariableKind::PrivateField
+                || !var_ref.is_lexical
+                || !var_ref.is_const
+            {
                 return Err(RuntimeError::Invariant(
                     "private-name read reached an ordinary VarRef",
                 ));
@@ -314,6 +321,318 @@ impl Runtime {
             }
         };
         PrivateNameRef::from_borrowed_atom(self.clone(), atom).map_err(Into::into)
+    }
+
+    /// Capture one class-private method closure in its dedicated immutable
+    /// lexical cell. The method's HomeObject must already be installed: it is
+    /// the authority from which QuickJS derives the class-side brand.
+    pub(in crate::runtime) fn new_private_method_var_ref(
+        &self,
+        method: &CallableRef,
+    ) -> Result<VarRefRoot, RuntimeError> {
+        let _operation = self.operation();
+        let (method_id, home_object) = self.private_method_callable_parts(method)?;
+        if home_object.is_none() {
+            return Err(RuntimeError::Invariant(
+                "private-method callable has no HomeObject",
+            ));
+        }
+        let id = self
+            .0
+            .state
+            .borrow_mut()
+            .heap
+            .allocate_var_ref(VarRefData::captured(
+                RawValue::Object(method_id),
+                true,
+                true,
+                ClosureVariableKind::PrivateMethod,
+            ))?;
+        Ok(VarRefRoot::from_owned_handle(self.clone(), id))
+    }
+
+    /// Initialize an uninitialized captured private-method cell exactly once.
+    /// This bypasses the ordinary VarRef write path so the callable capability
+    /// can never escape as a mutable source-visible lexical value.
+    pub(in crate::runtime) fn initialize_private_method_var_ref(
+        &self,
+        root: &VarRefRoot,
+        method: &CallableRef,
+    ) -> Result<(), RuntimeError> {
+        let _operation = self.operation();
+        if !root.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime(
+                "private-method closure variable",
+            ));
+        }
+        let (method_id, home_object) = self.private_method_callable_parts(method)?;
+        if home_object.is_none() {
+            return Err(RuntimeError::Invariant(
+                "private-method callable has no HomeObject",
+            ));
+        }
+        let mut state = self.0.state.borrow_mut();
+        {
+            let var_ref = state.heap.var_ref(root.id())?;
+            if var_ref.kind != ClosureVariableKind::PrivateMethod
+                || !var_ref.is_lexical
+                || !var_ref.is_const
+            {
+                return Err(RuntimeError::Invariant(
+                    "private-method initialization reached an ordinary VarRef",
+                ));
+            }
+            if !matches!(var_ref.value, RawValue::Uninitialized) {
+                return Err(RuntimeError::Invariant(
+                    "private-method VarRef was initialized more than once",
+                ));
+            }
+        }
+        let cleanup = state
+            .heap
+            .replace_var_ref_value(root.id(), RawValue::Object(method_id))?;
+        state.apply_cleanup(cleanup)
+    }
+
+    /// Root the callable held by an authenticated captured private-method
+    /// cell. Generic VarRef reads deliberately reject this representation.
+    pub(in crate::runtime) fn private_method_from_raw_var_ref(
+        &self,
+        root: &VarRefRoot,
+    ) -> Result<CallableRef, RuntimeError> {
+        let _operation = self.operation();
+        if !root.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime(
+                "private-method closure variable",
+            ));
+        }
+        let method_id = {
+            let state = self.0.state.borrow();
+            let var_ref = state.heap.var_ref(root.id())?;
+            if var_ref.kind != ClosureVariableKind::PrivateMethod
+                || !var_ref.is_lexical
+                || !var_ref.is_const
+            {
+                return Err(RuntimeError::Invariant(
+                    "private-method read reached an ordinary VarRef",
+                ));
+            }
+            match var_ref.value {
+                RawValue::Object(method) => method,
+                RawValue::Uninitialized => {
+                    return Err(RuntimeError::Invariant(
+                        "private-method VarRef was read before initialization",
+                    ));
+                }
+                _ => {
+                    return Err(RuntimeError::Invariant(
+                        "private-method VarRef contains an ordinary value",
+                    ));
+                }
+            }
+        };
+        let object = ObjectRef::from_borrowed_handle(self.clone(), method_id)?;
+        let method = CallableRef::from_validated_object(object);
+        let (_, home_object) = self.private_method_callable_parts(&method)?;
+        if home_object.is_none() {
+            return Err(RuntimeError::Invariant(
+                "private-method callable lost its HomeObject",
+            ));
+        }
+        Ok(method)
+    }
+
+    /// Create the one hidden private brand owned by a class prototype or
+    /// constructor. Repeated method declarations reuse the same class-side
+    /// identity, matching QuickJS `JS_AddBrand`.
+    pub(in crate::runtime) fn ensure_private_brand_home(
+        &self,
+        home_object: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        let _operation = self.operation();
+        if !home_object.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime(
+                "private-method brand HomeObject",
+            ));
+        }
+        let mut state = self.0.state.borrow_mut();
+        if let Some(brand) = state
+            .heap
+            .object_private_brand_home(home_object.object_id())?
+        {
+            if state.atoms.kind(brand)? != AtomKind::Private {
+                return Err(RuntimeError::Invariant(
+                    "private-method HomeObject brand is not a private atom",
+                ));
+            }
+            return Ok(());
+        }
+        let brand = state
+            .atoms
+            .new_private_symbol_js_string(Some(JsString::try_from_utf8("<brand>")?))?;
+        if let Err(error) = state
+            .heap
+            .attach_object_private_brand_home(home_object.object_id(), brand)
+        {
+            state.atoms.release(brand)?;
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
+    /// Install an own-only hidden marker for one receiver. This bypasses
+    /// `[[Extensible]]`; a repeated initialization reports QuickJS's native
+    /// duplicate-private-method TypeError.
+    pub(in crate::runtime) fn add_private_method_brand(
+        &self,
+        home_object: &ObjectRef,
+        receiver: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        let _operation = self.operation();
+        if !home_object.belongs_to(self) || !receiver.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("private-method brand object"));
+        }
+        let brand = self.private_brand_atom(home_object)?;
+        let receiver_id = receiver.object_id();
+        let duplicate = {
+            let state = self.0.state.borrow();
+            let object = state.heap.object(receiver_id)?;
+            state.heap.shape(object.shape)?.find(brand).is_some()
+        };
+        if duplicate {
+            return Err(RuntimeError::Engine(Error::new(
+                ErrorKind::Type,
+                "private method is already present",
+            )));
+        }
+
+        let mut state = self.0.state.borrow_mut();
+        let (prototype, mut entries, mut slots) = {
+            let object = state.heap.object(receiver_id)?;
+            let shape = state.heap.shape(object.shape)?;
+            if shape.find(brand).is_some() {
+                drop(state);
+                return Err(RuntimeError::Engine(Error::new(
+                    ErrorKind::Type,
+                    "private method is already present",
+                )));
+            }
+            (
+                shape.prototype(),
+                shape.entries().to_vec(),
+                object.slots.clone(),
+            )
+        };
+        entries.push(ShapeEntry {
+            atom: brand,
+            flags: PropertyFlags::data(true, true, true),
+        });
+        slots.push(PropertySlot::Data(RawValue::Undefined));
+        state.replace_layout(receiver_id, prototype, &entries, slots)
+    }
+
+    /// Check a receiver against the brand derived from the method callable's
+    /// HomeObject. A missing HomeObject brand has QuickJS's distinct error;
+    /// an ordinary brand mismatch is returned as `false` for the VM opcode to
+    /// map to either `#x in value` or `invalid brand on object`.
+    pub(in crate::runtime) fn check_private_method_brand(
+        &self,
+        method: &CallableRef,
+        receiver: &ObjectRef,
+    ) -> Result<bool, RuntimeError> {
+        let _operation = self.operation();
+        if !receiver.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("private-method brand receiver"));
+        }
+        let brand = self.private_method_brand_atom(method)?;
+        let state = self.0.state.borrow();
+        let object = state.heap.object(receiver.object_id())?;
+        Ok(state.heap.shape(object.shape)?.find(brand).is_some())
+    }
+
+    /// Validate that the method's HomeObject already owns a class-side brand.
+    /// QuickJS performs this lookup before converting a private-get receiver,
+    /// which makes the missing-brand error observable even for primitives.
+    pub(in crate::runtime) fn require_private_method_brand(
+        &self,
+        method: &CallableRef,
+    ) -> Result<(), RuntimeError> {
+        let _operation = self.operation();
+        self.private_method_brand_atom(method).map(|_| ())
+    }
+
+    fn private_method_brand_atom(&self, method: &CallableRef) -> Result<Atom, RuntimeError> {
+        let (_, home_object) = self.private_method_callable_parts(method)?;
+        let Some(home_object) = home_object else {
+            return Err(Self::missing_private_brand_error());
+        };
+        let home_object = ObjectRef::from_borrowed_handle(self.clone(), home_object)?;
+        self.private_brand_atom(&home_object)
+    }
+
+    fn private_method_callable_parts(
+        &self,
+        method: &CallableRef,
+    ) -> Result<(ObjectId, Option<ObjectId>), RuntimeError> {
+        if !method.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("private-method callable"));
+        }
+        let method_id = method.as_object().object_id();
+        let state = self.0.state.borrow();
+        let object = state.heap.object(method_id)?;
+        let ObjectPayload::BytecodeFunction {
+            bytecode,
+            home_object,
+            ..
+        } = &object.payload
+        else {
+            return Err(RuntimeError::Invariant(
+                "private-method cell contains a non-bytecode callable",
+            ));
+        };
+        let metadata = state.heap.function_bytecode(*bytecode)?.metadata;
+        if object.is_constructor
+            || metadata.has_prototype
+            || metadata.constructor_kind != ConstructorKind::None
+            || metadata.class_initializer_kind.is_some()
+            || !metadata.strict
+            || metadata.eval_kind != EvalKind::None
+            || metadata.function_kind != FunctionKind::Normal
+            || !metadata.needs_home_object
+        {
+            return Err(RuntimeError::Invariant(
+                "private-method callable has invalid bytecode metadata",
+            ));
+        }
+        Ok((method_id, *home_object))
+    }
+
+    fn private_brand_atom(&self, home_object: &ObjectRef) -> Result<Atom, RuntimeError> {
+        if !home_object.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime(
+                "private-method brand HomeObject",
+            ));
+        }
+        let state = self.0.state.borrow();
+        let Some(brand) = state
+            .heap
+            .object_private_brand_home(home_object.object_id())?
+        else {
+            return Err(Self::missing_private_brand_error());
+        };
+        if state.atoms.kind(brand)? != AtomKind::Private {
+            return Err(RuntimeError::Invariant(
+                "private-method HomeObject brand is not a private atom",
+            ));
+        }
+        Ok(brand)
+    }
+
+    fn missing_private_brand_error() -> RuntimeError {
+        RuntimeError::Engine(Error::new(
+            ErrorKind::Type,
+            "expecting <brand> private field",
+        ))
     }
 
     fn validate_private_receiver(
@@ -360,6 +679,8 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bytecode::Instruction;
+    use crate::function::UnlinkedFunction;
 
     fn private_name(runtime: &Runtime, text: &str) -> PrivateNameRef {
         runtime
@@ -385,6 +706,33 @@ mod tests {
                 if error.kind() == ErrorKind::Type && error.message() == expected),
             "unexpected error: {error}"
         );
+    }
+
+    fn private_method_callable(runtime: &Runtime) -> (CallableRef, ObjectRef) {
+        let context = runtime.new_context();
+        let function = runtime
+            .publish_unlinked_function(
+                context.realm,
+                UnlinkedFunction::new(
+                    vec![Instruction::Undefined, Instruction::Return],
+                    Vec::new(),
+                    FunctionMetadata {
+                        max_stack: 1,
+                        strict: true,
+                        needs_home_object: true,
+                        ..FunctionMetadata::default()
+                    },
+                ),
+            )
+            .unwrap();
+        let method = runtime
+            .new_bytecode_closure(context.realm, &function)
+            .unwrap();
+        let home_object = runtime.new_object(None).unwrap();
+        runtime
+            .install_object_literal_home_object(&method, &home_object)
+            .unwrap();
+        (method, home_object)
     }
 
     #[test]
@@ -522,7 +870,7 @@ mod tests {
         assert!(matches!(
             runtime.read_var_ref(&captured),
             Err(RuntimeError::Invariant(
-                "private-name identity escaped into an ECMAScript Value"
+                "ordinary VarRef read reached a private-element binding"
             ))
         ));
 
@@ -549,6 +897,122 @@ mod tests {
                 "private-name VarRef was initialized more than once"
             ))
         ));
+    }
+
+    #[test]
+    fn private_method_var_refs_keep_callable_capability_typed() {
+        let runtime = Runtime::new();
+        let (method, _) = private_method_callable(&runtime);
+        let captured = runtime.new_private_method_var_ref(&method).unwrap();
+        assert_eq!(
+            runtime.private_method_from_raw_var_ref(&captured).unwrap(),
+            method
+        );
+        assert!(matches!(
+            runtime.read_var_ref(&captured),
+            Err(RuntimeError::Invariant(
+                "ordinary VarRef read reached a private-element binding"
+            ))
+        ));
+        assert!(matches!(
+            runtime.write_var_ref(&captured, Value::Int(1)),
+            Err(RuntimeError::Invariant(
+                "ordinary VarRef write reached a private-element binding"
+            ))
+        ));
+
+        let uninitialized = runtime
+            .new_uninitialized_captured_var_ref(true, true, ClosureVariableKind::PrivateMethod)
+            .unwrap();
+        runtime
+            .initialize_private_method_var_ref(&uninitialized, &method)
+            .unwrap();
+        assert_eq!(
+            runtime
+                .private_method_from_raw_var_ref(&uninitialized)
+                .unwrap(),
+            method
+        );
+        assert!(matches!(
+            runtime.initialize_private_method_var_ref(&uninitialized, &method),
+            Err(RuntimeError::Invariant(
+                "private-method VarRef was initialized more than once"
+            ))
+        ));
+        assert!(matches!(
+            runtime.private_name_from_raw_var_ref(&captured),
+            Err(RuntimeError::Invariant(
+                "private-name read reached an ordinary VarRef"
+            ))
+        ));
+    }
+
+    #[test]
+    fn private_method_brands_are_hidden_own_only_and_ignore_extensibility() {
+        let runtime = Runtime::new();
+        let (method, home_object) = private_method_callable(&runtime);
+        let receiver = runtime.new_object(None).unwrap();
+        let inherited = runtime.new_object(Some(&receiver)).unwrap();
+
+        assert_type_error(
+            runtime
+                .check_private_method_brand(&method, &receiver)
+                .unwrap_err(),
+            "expecting <brand> private field",
+        );
+        runtime.ensure_private_brand_home(&home_object).unwrap();
+        let brand = runtime
+            .0
+            .state
+            .borrow()
+            .heap
+            .object_private_brand_home(home_object.object_id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            runtime
+                .0
+                .state
+                .borrow()
+                .atoms
+                .resolve(brand)
+                .unwrap()
+                .ref_count,
+            Some(1)
+        );
+
+        runtime.prevent_extensions(&receiver).unwrap();
+        runtime
+            .add_private_method_brand(&home_object, &receiver)
+            .unwrap();
+        assert!(
+            runtime
+                .check_private_method_brand(&method, &receiver)
+                .unwrap()
+        );
+        assert!(
+            !runtime
+                .check_private_method_brand(&method, &inherited)
+                .unwrap()
+        );
+        assert!(runtime.own_property_keys(&receiver).unwrap().is_empty());
+        assert_eq!(
+            runtime
+                .0
+                .state
+                .borrow()
+                .atoms
+                .resolve(brand)
+                .unwrap()
+                .ref_count,
+            Some(2)
+        );
+        assert_type_error(
+            runtime
+                .add_private_method_brand(&home_object, &receiver)
+                .unwrap_err(),
+            "private method is already present",
+        );
     }
 
     #[test]
@@ -689,5 +1153,103 @@ mod tests {
                 "false,TypeError:private class field '#later' does not exist"
             ))
         );
+    }
+
+    #[test]
+    fn abrupt_class_scope_reentry_reuses_captured_private_method_cell() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let result = context
+            .eval(
+                r#"
+                    var checks = [], receiver;
+                    function boom() { throw 0; }
+                    for (var index = 0; index < 3; index++) {
+                        try {
+                            class C {
+                                #field = 41;
+                                #method() { return 42; }
+                                [(
+                                    checks.push(function (value) {
+                                        return [
+                                            #field in value,
+                                            value.#field,
+                                            #method in value,
+                                            value.#method()
+                                        ].join(":");
+                                    }),
+                                    index < 2 ? boom() : "ok"
+                                )]() {}
+                            }
+                            receiver = new C();
+                        } catch (error) {}
+                    }
+                    [
+                        checks[0](receiver),
+                        checks[1](receiver),
+                        checks[2](receiver)
+                    ].join("|");
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(
+            result,
+            Value::String(JsString::from_static(
+                "true:41:true:42|true:41:true:42|true:41:true:42"
+            ))
+        );
+    }
+
+    #[test]
+    fn private_method_get_checks_brand_home_before_primitive_receiver() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let result = context
+            .eval(
+                r#"
+                    try {
+                        class C {
+                            #method() { return 42; }
+                            [(1).#method] = 0;
+                        }
+                    } catch (error) {
+                        error.name + ":" + error.message;
+                    }
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(
+            result,
+            Value::String(JsString::from_static(
+                "TypeError:expecting <brand> private field"
+            ))
+        );
+    }
+
+    #[test]
+    fn uninitialized_private_in_preserves_quickjs_internal_tag_atom() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let result = context
+            .eval(
+                r#"
+                    var receiver = {"[unsupported type]": 1};
+                    var methodResult, fieldResult;
+                    class Method {
+                        [(methodResult = #later in receiver, "x")] = 0;
+                        #later() {}
+                    }
+                    class Field {
+                        [(fieldResult = #later in receiver, "x")] = 0;
+                        #later = 1;
+                    }
+                    methodResult + "," + fieldResult;
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(result, Value::String(JsString::from_static("true,true")));
     }
 }
