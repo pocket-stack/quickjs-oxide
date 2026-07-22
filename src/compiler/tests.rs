@@ -4222,7 +4222,7 @@ fn direct_eval_super_capability_is_explicit_and_independent_from_imports() {
 }
 
 #[test]
-fn nested_eval_in_derived_constructor_reaches_inner_unsupported_syntax() {
+fn nested_eval_in_derived_constructor_accepts_inner_private_fields() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     let source = r#"
@@ -4233,6 +4233,7 @@ fn nested_eval_in_derived_constructor_reaches_inner_unsupported_syntax() {
                         class Q { #f = 1; }
                         super();
                     }\`);
+                    super();
                 }
             }
             new C;
@@ -4240,14 +4241,7 @@ fn nested_eval_in_derived_constructor_reaches_inner_unsupported_syntax() {
         (function () { eval(testStr); })();
     "#;
 
-    let RuntimeError::Engine(error) = context.eval(source).unwrap_err() else {
-        panic!("nested eval did not preserve its unsupported parser diagnostic");
-    };
-    assert_eq!(error.kind(), ErrorKind::Unsupported);
-    assert_eq!(
-        error.message(),
-        "private class elements are not implemented yet"
-    );
+    assert_eq!(context.eval(source).unwrap(), Value::Undefined);
 }
 
 #[test]

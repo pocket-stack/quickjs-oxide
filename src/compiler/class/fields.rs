@@ -123,6 +123,9 @@ impl<'source> Parser<'source> {
                 self.emit_identifier(hidden.clone(), span, IdentifierAccess::Initialize)?;
                 Some(hidden)
             }
+            ClassPropertyKey::Private { .. } => {
+                unreachable!("private field reached public field lowering")
+            }
         };
 
         self.current_function = child;
@@ -152,6 +155,9 @@ impl<'source> Parser<'source> {
                     self.emit_anonymous_set_name(definition, Instruction::SetNameComputed)?;
                 }
                 self.emit_instruction(Instruction::DefineFieldComputed)?;
+            }
+            ClassPropertyKey::Private { .. } => {
+                unreachable!("private field reached public field lowering")
             }
         }
         self.emit_instruction(Instruction::Drop)?;

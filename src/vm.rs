@@ -1,7 +1,7 @@
 use crate::bigint::{BigIntError, JsBigInt};
 use crate::bytecode::{
     ApplyKind, ArgumentsKind, BytecodeFunction, DefineMethodKind, DynamicEnvironmentSource,
-    EvalVariableSource, Instruction,
+    EvalVariableSource, Instruction, PrivateNameSource,
 };
 use crate::error::{Error, ErrorKind, NativeErrorKind};
 use crate::heap::{ContextId, FunctionMetadata};
@@ -481,6 +481,42 @@ pub(crate) trait VmHost {
         initialize: bool,
         strict: bool,
     ) -> Result<Completion, Error>;
+    /// Allocate and initialize one fresh class-private data-field identity in
+    /// an authenticated lexical local. The identity never enters the operand
+    /// stack as a public JavaScript value.
+    fn initialize_private_name(&mut self, _index: u16) -> Result<(), Error> {
+        Err(Error::internal("VM host cannot initialize a private name"))
+    }
+    fn get_private_field(
+        &mut self,
+        _source: PrivateNameSource,
+        _base: Value,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal("VM host cannot read a private field"))
+    }
+    fn put_private_field(
+        &mut self,
+        _source: PrivateNameSource,
+        _base: Value,
+        _value: Value,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal("VM host cannot write a private field"))
+    }
+    fn define_private_field(
+        &mut self,
+        _source: PrivateNameSource,
+        _base: Value,
+        _value: Value,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal("VM host cannot define a private field"))
+    }
+    fn private_in(
+        &mut self,
+        _source: PrivateNameSource,
+        _base: Value,
+    ) -> Result<Completion, Error> {
+        Err(Error::internal("VM host cannot test a private field"))
+    }
     /// Constant-name property access. Keeping the constant-pool index here
     /// preserves the exact UTF-16 spelling and distinguishes a verified field
     /// operand from an arbitrary computed value.
@@ -2903,6 +2939,44 @@ impl CallFrame {
                     host.put_global_var(*index, value, initialize, self.strict)?
                 {
                     return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::InitializePrivateName(index) => {
+                host.initialize_private_name(*index)?;
+            }
+            Instruction::GetPrivateField(source) | Instruction::GetPrivateField2(source) => {
+                let keep_receiver = matches!(instruction, Instruction::GetPrivateField2(_));
+                let base = self.pop()?;
+                let receiver = keep_receiver.then(|| base.clone());
+                match host.get_private_field(*source, base)? {
+                    Completion::Return(value) => {
+                        if let Some(receiver) = receiver {
+                            self.stack.push(receiver);
+                        }
+                        self.stack.push(value);
+                    }
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::PutPrivateField(source) => {
+                let (base, value) = self.pop_pair()?;
+                if let Completion::Throw(value) = host.put_private_field(*source, base, value)? {
+                    return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::DefinePrivateField(source) => {
+                let (base, value) = self.pop_pair()?;
+                let retained_base = base.clone();
+                match host.define_private_field(*source, base, value)? {
+                    Completion::Return(_) => self.stack.push(retained_base),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::PrivateIn(source) => {
+                let base = self.pop()?;
+                match host.private_in(*source, base)? {
+                    Completion::Return(value) => self.stack.push(value),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
                 }
             }
             Instruction::GetField(index) | Instruction::GetField2(index) => {

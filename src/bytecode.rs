@@ -30,6 +30,17 @@ pub enum EvalVariableSource {
     Closure(u16),
 }
 
+/// Authenticated lexical storage for one class private name.
+///
+/// The private identity is deliberately never placed on the public operand
+/// stack.  Dedicated class-element opcodes resolve it from a compiler-authored
+/// local or closure cell after publication has verified the binding kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PrivateNameSource {
+    Local(u16),
+    Closure(u16),
+}
+
 /// Storage which owns one hidden sloppy-`with` object.
 ///
 /// Like [`EvalVariableSource`], this is compiler-authenticated frame state and
@@ -264,6 +275,20 @@ pub enum Instruction {
     PutVar(u16),
     /// QuickJS `OP_put_var_init`: initialize a lexical global binding.
     PutVarInit(u16),
+    /// Allocate one fresh QuickJS private symbol and initialize the named
+    /// class-private lexical local without exposing that symbol as a Value.
+    InitializePrivateName(u16),
+    /// QuickJS `OP_get_private_field`: own-only private field read.
+    GetPrivateField(PrivateNameSource),
+    /// Call/compound counterpart which retains the original receiver.
+    GetPrivateField2(PrivateNameSource),
+    /// QuickJS `OP_put_private_field`: own-only private field write.
+    PutPrivateField(PrivateNameSource),
+    /// QuickJS `OP_define_private_field`: define a fresh private own field
+    /// even when the receiver is non-extensible.
+    DefinePrivateField(PrivateNameSource),
+    /// QuickJS `OP_private_in` for a private data-field binding.
+    PrivateIn(PrivateNameSource),
     /// QuickJS `OP_get_field`: replace an object-like base with the value of
     /// one constant string-keyed property.
     GetField(u32),
@@ -596,11 +621,13 @@ impl Instruction {
             | Self::GetVar(_)
             | Self::GetVarUndef(_)
             | Self::DeleteVar(_) => (0, 1),
+            Self::InitializePrivateName(_) => (0, 0),
             Self::SetName(_) | Self::ToObject => (1, 1),
             Self::MarkSuperCall => (2, 2),
             Self::GetRefValue(_) | Self::GetRefValueUndef(_) => (1, 2),
-            Self::GetField(_) => (1, 1),
+            Self::GetField(_) | Self::GetPrivateField(_) | Self::PrivateIn(_) => (1, 1),
             Self::GetField2(_) => (1, 2),
+            Self::GetPrivateField2(_) => (1, 2),
             Self::GetArrayEl => (2, 1),
             Self::GetArrayEl2 => (2, 2),
             Self::GetArrayEl3 => (2, 3),
@@ -619,9 +646,12 @@ impl Instruction {
             Self::Perm5 => (5, 5),
             Self::Rot4Left => (4, 4),
             Self::PutField(_) => (2, 0),
+            Self::PutPrivateField(_) => (2, 0),
             Self::PutArrayEl => (3, 0),
             Self::PutSuperValue => (4, 0),
-            Self::DefineField(_) | Self::DefineMethod { .. } => (2, 1),
+            Self::DefineField(_) | Self::DefinePrivateField(_) | Self::DefineMethod { .. } => {
+                (2, 1)
+            }
             Self::DefineFieldComputed | Self::DefineMethodComputed { .. } => (3, 1),
             Self::DefineClass { .. } => (2, 2),
             Self::InstallClassInstanceInitializer => (3, 2),
@@ -774,6 +804,19 @@ impl BytecodeFunction {
                 // payload required by this runtime-publication opcode.
                 return Err(Error::internal(
                     "detached bytecode cannot encode RegExp constants",
+                ));
+            }
+            if matches!(
+                instruction,
+                Instruction::InitializePrivateName(_)
+                    | Instruction::GetPrivateField(_)
+                    | Instruction::GetPrivateField2(_)
+                    | Instruction::PutPrivateField(_)
+                    | Instruction::DefinePrivateField(_)
+                    | Instruction::PrivateIn(_)
+            ) {
+                return Err(Error::internal(
+                    "detached bytecode cannot encode authenticated private names",
                 ));
             }
             if let Instruction::SetName(index)

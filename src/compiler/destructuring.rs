@@ -46,6 +46,7 @@ impl DestructuringAssignmentReference {
             Self::Member(MemberReference::Field { .. }) => 1,
             Self::Member(MemberReference::Computed { .. }) => 2,
             Self::Member(MemberReference::Super { .. }) => 3,
+            Self::Member(MemberReference::Private { .. }) => 1,
         }
     }
 
@@ -62,7 +63,8 @@ impl DestructuringAssignmentReference {
             Self::Member(
                 MemberReference::Field { site, .. }
                 | MemberReference::Computed { site }
-                | MemberReference::Super { site },
+                | MemberReference::Super { site }
+                | MemberReference::Private { site, .. },
             ) => Ok(*site),
         }
     }
@@ -859,6 +861,20 @@ impl<'source> Parser<'source> {
             }
             DestructuringAssignmentReference::Member(MemberReference::Super { site }) => {
                 self.emit_instruction_at(Instruction::PutSuperValue, site)?;
+            }
+            DestructuringAssignmentReference::Member(MemberReference::Private {
+                name,
+                span,
+                scope,
+                site,
+            }) => {
+                self.emit_private_field_operation(
+                    name,
+                    span,
+                    scope,
+                    PrivateFieldAccess::Put,
+                    site,
+                )?;
             }
         }
         self.anonymous_function_definition = None;

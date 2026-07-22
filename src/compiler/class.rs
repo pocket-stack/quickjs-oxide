@@ -11,6 +11,7 @@ use super::*;
 use crate::bytecode::DefineMethodKind;
 
 mod fields;
+mod private;
 mod static_block;
 
 use fields::ClassElementState;
@@ -19,6 +20,7 @@ use fields::ClassElementState;
 enum ClassPropertyKey {
     Fixed { value: JsString },
     Computed,
+    Private { name: String, span: Span },
 }
 
 impl<'source> Parser<'source> {
@@ -97,6 +99,11 @@ impl<'source> Parser<'source> {
             false
         };
         self.expect_punctuator(Punctuator::LeftBrace)?;
+        // QuickJS enters a distinct private-name scope only after heritage has
+        // completed. Declarations are added while parsing the complete body,
+        // then child-first resolution makes them visible to every element,
+        // including references which occur before their declaration.
+        let private_scope = self.push_scope(ScopeKind::ClassPrivate);
 
         let constructor_placeholder = self.emit(IrOp::MakeClosure(u32::MAX))?;
         let class_name = name.as_ref().map_or_else(
@@ -169,6 +176,7 @@ impl<'source> Parser<'source> {
             self.emit_identifier(name.clone(), *span, IdentifierAccess::Initialize)?;
         }
         let static_initializer_start = self.finish_class_static_initializer(&mut elements)?;
+        self.pop_scope(private_scope)?;
         self.pop_scope(class_scope)?;
 
         self.current_ir_mut().strict = outer_strict;
@@ -249,16 +257,29 @@ impl<'source> Parser<'source> {
             if method_kind != DefineMethodKind::Method {
                 return Err(self.syntax_here("invalid class field"));
             }
-            self.parse_public_class_field(elements, is_static, key, function_span)?;
+            match key {
+                ClassPropertyKey::Private { name, span } => {
+                    self.parse_private_class_field(elements, is_static, name, span)?;
+                }
+                key => self.parse_public_class_field(elements, is_static, key, function_span)?,
+            }
             if is_static {
                 self.emit_instruction(Instruction::Swap)?;
             }
             return Ok(());
         }
 
+        if matches!(key, ClassPropertyKey::Private { .. }) {
+            return Err(Error::unsupported(
+                "private class methods and accessors are not implemented yet",
+                source_span(function_span),
+            ));
+        }
+
         let fixed = match &key {
             ClassPropertyKey::Fixed { value } => Some(value),
             ClassPropertyKey::Computed => None,
+            ClassPropertyKey::Private { .. } => unreachable!("private methods were rejected"),
         };
         let is_constructor_name =
             fixed.is_some_and(|name| *name == JsString::from_static("constructor"));
@@ -302,6 +323,7 @@ impl<'source> Parser<'source> {
                         enumerable: false,
                     })?;
                 }
+                ClassPropertyKey::Private { .. } => unreachable!("private methods were rejected"),
             }
         }
         if is_static {
@@ -353,8 +375,18 @@ impl<'source> Parser<'source> {
                 self.expect_punctuator(Punctuator::RightBracket)?;
                 return Ok(ClassPropertyKey::Computed);
             }
-            TokenKind::PrivateIdentifier(_) => {
-                return Err(self.unsupported_here("private class elements are not implemented yet"));
+            TokenKind::PrivateIdentifier(identifier) => {
+                if identifier.value == "constructor" {
+                    return Err(Error::syntax(
+                        "invalid method name",
+                        source_span(token.span),
+                    ));
+                }
+                self.advance()?;
+                return Ok(ClassPropertyKey::Private {
+                    name: private_reference::private_binding_name(&identifier.value),
+                    span: token.span,
+                });
             }
             _ => return Err(self.syntax_here("invalid property name")),
         };

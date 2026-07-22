@@ -66,6 +66,10 @@ const TEST262_CLASS_PUBLIC_INIT_PROFILE_SHA256: &str =
     "f02524f9abedc00c6c84dc33367680bf31a30ae94604a5317a6690f603cbd7b1";
 const TEST262_CLASS_PUBLIC_INIT_MANIFEST_SHA256: &str =
     "e06b14730f68fa17bee6ff648c806db4e730c5a1abb7ae32f2093b2274e070f3";
+const TEST262_CLASS_PRIVATE_FIELDS_PROFILE_SHA256: &str =
+    "c03c22a7ea0d767536c77f1720b5c87766b06759d8a42a6e7b9ec3069633ffa2";
+const TEST262_CLASS_PRIVATE_FIELDS_MANIFEST_SHA256: &str =
+    "c64f7f33e60c623976e0be920889d71984ac0899ffe23cb26a3b6d0f9089fe34";
 const TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256: &str =
     "8232e2c11e908f7cbf5a9e0f34fbd5223a9551b49ae64647f2a72b2314bcaf84";
 const TEST262_ARRAY_BINDING_FLAT_MANIFEST_SHA256: &str =
@@ -635,6 +639,7 @@ enum OxideProfileKind {
     ClassBase,
     ClassDerived,
     ClassPublicInit,
+    ClassPrivateFields,
     ArrayBindingFlat,
     ArrayBindingNested,
     ArrayAssignmentFlat,
@@ -686,6 +691,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-class-public-init.conf"),
             OxideProfileKind::ClassPublicInit,
+        ),
+        (
+            root.join("tests/test262-class-private-fields.conf"),
+            OxideProfileKind::ClassPrivateFields,
         ),
         (
             root.join("tests/test262-array-binding-flat.conf"),
@@ -762,7 +771,7 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         }
     }
     Err(format!(
-        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-aggregate-error.conf, tests/test262-argument-spread.conf, tests/test262-class-base.conf, tests/test262-class-derived.conf, tests/test262-class-public-init.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-direct-eval.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-parameter-expression-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-aggregate-error.conf, tests/test262-argument-spread.conf, tests/test262-class-base.conf, tests/test262-class-derived.conf, tests/test262-class-public-init.conf, tests/test262-class-private-fields.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-direct-eval.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-parameter-expression-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
         path.display()
     ))
 }
@@ -899,6 +908,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             TEST262_CLASS_PUBLIC_INIT_PROFILE_SHA256,
             "tests/test262-class-public-init.txt",
             TEST262_CLASS_PUBLIC_INIT_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::ClassPrivateFields => verify_scoped_pinned_profile(
+            options,
+            "private class fields",
+            TEST262_CLASS_PRIVATE_FIELDS_PROFILE_SHA256,
+            "tests/test262-class-private-fields.txt",
+            TEST262_CLASS_PRIVATE_FIELDS_MANIFEST_SHA256,
         ),
         OxideProfileKind::ArrayBindingFlat => {
             verify_sha256(
@@ -1617,9 +1633,10 @@ mod cli_tests {
         TEST262_ARGUMENT_SPREAD_PROFILE_SHA256, TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256, TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256,
         TEST262_CATCH_BINDING_PROFILE_SHA256, TEST262_CLASS_BASE_PROFILE_SHA256,
-        TEST262_CLASS_DERIVED_PROFILE_SHA256, TEST262_CLASS_PUBLIC_INIT_PROFILE_SHA256,
-        TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256, TEST262_IDENTIFIER_REST_PROFILE_SHA256,
-        TEST262_MAP_PROFILE_SHA256, TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
+        TEST262_CLASS_DERIVED_PROFILE_SHA256, TEST262_CLASS_PRIVATE_FIELDS_PROFILE_SHA256,
+        TEST262_CLASS_PUBLIC_INIT_PROFILE_SHA256, TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256,
+        TEST262_IDENTIFIER_REST_PROFILE_SHA256, TEST262_MAP_PROFILE_SHA256,
+        TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_NESTED_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_REST_PROFILE_SHA256, TEST262_OBJECT_BINDING_PROFILE_SHA256,
         TEST262_OBJECT_REST_BINDING_PROFILE_SHA256,
@@ -1737,6 +1754,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-class-public-init.conf")).unwrap(),
             OxideProfileKind::ClassPublicInit
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-class-private-fields.conf")).unwrap(),
+            OxideProfileKind::ClassPrivateFields
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-array-binding-flat.conf")).unwrap(),
@@ -2089,6 +2110,110 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-class-public-init.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_class_private_fields_profile_is_bound_and_admits_only_its_reviewed_features() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-class-private-fields.conf",
+            "--manifest",
+            "tests/test262-class-private-fields.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_CLASS_PRIVATE_FIELDS_PROFILE_SHA256
+        );
+
+        let profile =
+            super::OxideProfile::load(Path::new("tests/test262-class-private-fields.conf"))
+                .unwrap();
+        let positive = Path::new(
+            "test/language/expressions/class/elements/regular-definitions-private-field-usage.js",
+        );
+        for feature in [
+            "arrow-function",
+            "class",
+            "class-fields-private",
+            "class-fields-private-in",
+            "class-fields-public",
+            "class-static-fields-private",
+            "class-static-fields-public",
+        ] {
+            assert_eq!(
+                profile.classify(positive, &[feature.to_owned()], false),
+                None,
+                "scoped profile did not admit {feature}"
+            );
+        }
+        let audited_negative =
+            Path::new("test/language/expressions/class/elements/fields-duplicate-privatenames.js");
+        assert_eq!(
+            profile.classify(
+                audited_negative,
+                &["class".to_owned(), "class-fields-private".to_owned()],
+                true,
+            ),
+            None
+        );
+        let adjacent = profile
+            .classify(
+                positive,
+                &[
+                    "class-fields-private".to_owned(),
+                    "class-methods-private".to_owned(),
+                ],
+                false,
+            )
+            .unwrap();
+        assert_eq!(adjacent.outcome, "unsupported-feature");
+        assert!(adjacent.detail.ends_with("class-methods-private"));
+
+        let global = super::OxideProfile::load(Path::new("compat/test262-oxide.conf")).unwrap();
+        for feature in [
+            "class-fields-private",
+            "class-fields-private-in",
+            "class-static-fields-private",
+        ] {
+            assert_eq!(
+                global
+                    .classify(positive, &[feature.to_owned()], false)
+                    .unwrap()
+                    .outcome,
+                "unsupported-feature",
+                "global profile unexpectedly admitted {feature}"
+            );
+        }
+
+        for selection in [
+            ["--all", ""],
+            ["--test", positive.to_str().unwrap()],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-class-private-fields.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

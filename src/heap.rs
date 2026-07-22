@@ -26,7 +26,7 @@ use std::rc::Rc;
 
 use crate::atom::Atom;
 use crate::bigint::JsBigInt;
-use crate::bytecode::{Instruction, MAX_LOCAL_SLOTS};
+use crate::bytecode::{Instruction, MAX_LOCAL_SLOTS, PrivateNameSource};
 use crate::debug::Pc2LineTable;
 use crate::error::NativeErrorKind;
 use crate::regexp::CompiledRegExp;
@@ -292,6 +292,10 @@ pub enum RawValue {
     BigInt(JsBigInt),
     String(JsString),
     Symbol(Atom),
+    /// Heap-internal class-private identity. This owns one private-atom
+    /// reference exactly like `Symbol`, but it is not an ECMAScript Value and
+    /// must never cross `Runtime::root_raw_value` or enter ordinary storage.
+    Private(Atom),
     Object(ObjectId),
     Uninitialized,
     Exception,
@@ -3055,12 +3059,21 @@ pub enum ClosureVariableKind {
     /// through closures and direct-eval environment descriptors without ever
     /// becoming a source-visible lexical or variable binding.
     WithObject,
+    /// A class-private data-field identity. Its cell contains a fresh private
+    /// atom for each class evaluation and may only be consumed through typed
+    /// private-element bytecode; ordinary local/VarRef reads must reject it.
+    PrivateField,
 }
 
 impl ClosureVariableKind {
     #[must_use]
     pub const fn is_eval_variable_object(self) -> bool {
         matches!(self, Self::EvalVariableObject | Self::ArgEvalVariableObject)
+    }
+
+    #[must_use]
+    pub const fn is_private(self) -> bool {
+        matches!(self, Self::PrivateField)
     }
 }
 
@@ -3314,6 +3327,225 @@ impl VarRefData {
             kind,
         }
     }
+}
+
+fn private_binding_flags_are_valid(
+    kind: ClosureVariableKind,
+    is_lexical: bool,
+    is_const: bool,
+) -> bool {
+    kind == ClosureVariableKind::PrivateField && is_lexical && is_const
+}
+
+fn validate_published_private_source(
+    bytecode: &FunctionBytecodeData,
+    source: PrivateNameSource,
+) -> Result<(), HeapError> {
+    let valid = match source {
+        PrivateNameSource::Local(index) => bytecode
+            .local_definitions
+            .get(usize::from(index))
+            .is_some_and(|definition| {
+                private_binding_flags_are_valid(
+                    definition.kind,
+                    definition.is_lexical,
+                    definition.is_const,
+                ) && !definition.is_parameter_initializer
+                    && definition.name.is_some()
+            }),
+        PrivateNameSource::Closure(index) => bytecode
+            .closure_variables
+            .get(usize::from(index))
+            .is_some_and(|descriptor| {
+                private_binding_flags_are_valid(
+                    descriptor.kind,
+                    descriptor.is_lexical,
+                    descriptor.is_const,
+                ) && matches!(descriptor.name, ClosureVariableName::Atom(_))
+                    && matches!(
+                        descriptor.source,
+                        ClosureSource::ParentLocal(_)
+                            | ClosureSource::ParentClosure(_)
+                            | ClosureSource::EvalEnvironment(_)
+                    )
+            }),
+    };
+    if !valid {
+        return Err(HeapError::Invariant(
+            "private bytecode source is not an authenticated lexical binding",
+        ));
+    }
+    Ok(())
+}
+
+fn ordinary_private_local_operand(instruction: &Instruction) -> Option<u16> {
+    match instruction {
+        Instruction::GetLocal(index)
+        | Instruction::PutLocal(index)
+        | Instruction::SetLocal(index)
+        | Instruction::GetLocalCheck(index)
+        | Instruction::InitializeLocal(index)
+        | Instruction::InitializeDerivedLocal(index)
+        | Instruction::PutLocalCheck(index)
+        | Instruction::SetLocalCheck(index)
+        | Instruction::ReturnDerived(index) => Some(*index),
+        _ => None,
+    }
+}
+
+fn ordinary_private_closure_operand(instruction: &Instruction) -> Option<u16> {
+    match instruction {
+        Instruction::GetVarRef(index)
+        | Instruction::PutVarRef(index)
+        | Instruction::SetVarRef(index)
+        | Instruction::GetVarRefCheck(index)
+        | Instruction::PutVarRefCheck(index)
+        | Instruction::InitializeDerivedVarRef(index)
+        | Instruction::GetVar(index)
+        | Instruction::GetVarUndef(index)
+        | Instruction::DeleteVar(index)
+        | Instruction::PutVar(index)
+        | Instruction::PutVarInit(index)
+        | Instruction::GlobalReference(index) => Some(*index),
+        _ => None,
+    }
+}
+
+fn validate_published_private_elements(bytecode: &FunctionBytecodeData) -> Result<(), HeapError> {
+    let mut initialization_counts = vec![0_u8; bytecode.local_definitions.len()];
+    let mut scope_entry_counts = vec![0_u8; bytecode.local_definitions.len()];
+
+    for definition in bytecode.local_definitions.iter() {
+        if definition.kind == ClosureVariableKind::PrivateField
+            && (!private_binding_flags_are_valid(
+                definition.kind,
+                definition.is_lexical,
+                definition.is_const,
+            ) || definition.is_parameter_initializer
+                || definition.name.is_none())
+        {
+            return Err(HeapError::Invariant(
+                "published private-name local has invalid binding metadata",
+            ));
+        }
+    }
+    for descriptor in bytecode.closure_variables.iter() {
+        if descriptor.kind == ClosureVariableKind::PrivateField
+            && (!private_binding_flags_are_valid(
+                descriptor.kind,
+                descriptor.is_lexical,
+                descriptor.is_const,
+            ) || !matches!(descriptor.name, ClosureVariableName::Atom(_))
+                || !matches!(
+                    descriptor.source,
+                    ClosureSource::ParentLocal(_)
+                        | ClosureSource::ParentClosure(_)
+                        | ClosureSource::EvalEnvironment(_)
+                ))
+        {
+            return Err(HeapError::Invariant(
+                "published private-name closure has invalid binding metadata",
+            ));
+        }
+    }
+
+    for instruction in bytecode.code.iter() {
+        if let Some(index) = ordinary_private_local_operand(instruction)
+            && bytecode
+                .local_definitions
+                .get(usize::from(index))
+                .is_some_and(|definition| definition.kind.is_private())
+        {
+            return Err(HeapError::Invariant(
+                "ordinary local bytecode references a private-name binding",
+            ));
+        }
+        if let Some(index) = ordinary_private_closure_operand(instruction)
+            && bytecode
+                .closure_variables
+                .get(usize::from(index))
+                .is_some_and(|descriptor| descriptor.kind.is_private())
+        {
+            return Err(HeapError::Invariant(
+                "ordinary closure bytecode references a private-name binding",
+            ));
+        }
+
+        match *instruction {
+            Instruction::SetLocalUninitialized(index)
+                if bytecode
+                    .local_definitions
+                    .get(usize::from(index))
+                    .is_some_and(|definition| definition.kind.is_private()) =>
+            {
+                let count =
+                    scope_entry_counts
+                        .get_mut(usize::from(index))
+                        .ok_or(HeapError::Invariant(
+                            "private-name scope-entry local is out of bounds",
+                        ))?;
+                *count = count.checked_add(1).ok_or(HeapError::Invariant(
+                    "private-name scope-entry count overflowed",
+                ))?;
+            }
+            Instruction::InitializePrivateName(index) => {
+                validate_published_private_source(bytecode, PrivateNameSource::Local(index))?;
+                let count = initialization_counts.get_mut(usize::from(index)).ok_or(
+                    HeapError::Invariant("private-name initializer local is out of bounds"),
+                )?;
+                *count = count.checked_add(1).ok_or(HeapError::Invariant(
+                    "private-name initializer count overflowed",
+                ))?;
+            }
+            Instruction::GetPrivateField(source)
+            | Instruction::GetPrivateField2(source)
+            | Instruction::PutPrivateField(source)
+            | Instruction::PrivateIn(source) => {
+                validate_published_private_source(bytecode, source)?;
+            }
+            Instruction::DefinePrivateField(source) => {
+                validate_published_private_source(bytecode, source)?;
+                if !matches!(
+                    bytecode.metadata.class_initializer_kind,
+                    Some(
+                        ClassInitializerKind::InstanceFields | ClassInitializerKind::StaticElements
+                    )
+                ) {
+                    return Err(HeapError::Invariant(
+                        "private-field definition escaped a class initializer",
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if bytecode
+        .local_definitions
+        .iter()
+        .enumerate()
+        .any(|(index, definition)| {
+            definition.kind == ClosureVariableKind::PrivateField
+                && initialization_counts[index] != 1
+        })
+    {
+        return Err(HeapError::Invariant(
+            "private-name local does not have exactly one lexical initializer",
+        ));
+    }
+    if bytecode
+        .local_definitions
+        .iter()
+        .enumerate()
+        .any(|(index, definition)| {
+            definition.kind == ClosureVariableKind::PrivateField && scope_entry_counts[index] != 1
+        })
+    {
+        return Err(HeapError::Invariant(
+            "private-name local does not have exactly one lexical scope entry",
+        ));
+    }
+    Ok(())
 }
 
 /// Internal primitive payload carried by implemented wrapper classes.
@@ -5711,6 +5943,15 @@ impl Heap {
     /// Allocate and publish a realm/context node, retaining all realm roots.
     /// Symbol atoms in `intrinsics` transfer to the node on success.
     pub fn allocate_context(&mut self, context: ContextData) -> Result<ContextId, HeapError> {
+        if context
+            .intrinsics
+            .iter()
+            .any(|value| matches!(value, RawValue::Private(_)))
+        {
+            return Err(HeapError::Invariant(
+                "private-name identity escaped into a realm intrinsic",
+            ));
+        }
         let (index, generation) = self.reserve(HeapNodeKind::Context)?;
         let id = ContextId { index, generation };
         let edges = context_edges(&context);
@@ -6190,6 +6431,15 @@ impl Heap {
         &mut self,
         bytecode: FunctionBytecodeData,
     ) -> Result<FunctionBytecodeId, HeapError> {
+        if bytecode
+            .constants
+            .iter()
+            .any(|constant| matches!(constant, BytecodeConstant::Value(RawValue::Private(_))))
+        {
+            return Err(HeapError::Invariant(
+                "private-name identity escaped into a bytecode constant",
+            ));
+        }
         if bytecode.metadata.local_count > MAX_LOCAL_SLOTS {
             return Err(HeapError::Invariant(
                 "bytecode local count exceeds QuickJS JS_MAX_LOCAL_VARS",
@@ -6291,6 +6541,7 @@ impl Heap {
                 "local definition count does not match bytecode metadata",
             ));
         }
+        validate_published_private_elements(&bytecode)?;
         let unnamed_arguments = bytecode
             .argument_definitions
             .iter()
@@ -6517,7 +6768,9 @@ impl Heap {
                         "strict or malformed bytecode contains a with-object local",
                     ));
                 }
-            } else if definition.kind != ClosureVariableKind::Normal {
+            } else if definition.kind != ClosureVariableKind::Normal
+                && definition.kind != ClosureVariableKind::PrivateField
+            {
                 return Err(HeapError::Invariant(
                     "ordinary local definition uses a non-local binding kind",
                 ));
@@ -6701,6 +6954,7 @@ impl Heap {
                     | ClosureVariableKind::EvalVariableObject
                     | ClosureVariableKind::ArgEvalVariableObject
                     | ClosureVariableKind::WithObject
+                    | ClosureVariableKind::PrivateField
             );
             let allows_name = requires_name
                 || descriptor.is_lexical
@@ -7053,6 +7307,7 @@ impl Heap {
     /// to the heap. The returned reference is normally owned by the active
     /// frame; closure objects retain the same `VarRefId` when published.
     pub fn allocate_var_ref(&mut self, var_ref: VarRefData) -> Result<VarRefId, HeapError> {
+        validate_var_ref_payload(&var_ref)?;
         let (index, generation) = self.reserve(HeapNodeKind::VarRef)?;
         let id = VarRefId { index, generation };
         let edges = var_ref_edges(&var_ref);
@@ -7274,7 +7529,13 @@ impl Heap {
         id: VarRefId,
         replacement: RawValue,
     ) -> Result<HeapCleanup, HeapError> {
-        self.var_ref(id)?;
+        let current = self.var_ref(id)?;
+        validate_var_ref_value(
+            current.kind,
+            current.is_lexical,
+            current.is_const,
+            &replacement,
+        )?;
         let new_edges = raw_value_edges(&replacement);
         self.retain_edges_transactionally(&new_edges)?;
 
@@ -7302,6 +7563,7 @@ impl Heap {
         kind: ClosureVariableKind,
     ) -> Result<(), HeapError> {
         let var_ref = self.var_ref_mut(id)?;
+        validate_var_ref_value(kind, is_lexical, is_const, &var_ref.value)?;
         var_ref.is_lexical = is_lexical;
         var_ref.is_const = is_const;
         var_ref.kind = kind;
@@ -8725,6 +8987,11 @@ impl Heap {
                     "object property storage does not match its shape flags",
                 ));
             }
+            if matches!(slot, PropertySlot::Data(RawValue::Private(_))) {
+                return Err(HeapError::Invariant(
+                    "private-name identity escaped into an object value slot",
+                ));
+            }
         }
         if let ObjectPayload::BytecodeFunction {
             bytecode,
@@ -8804,10 +9071,10 @@ impl Heap {
             }
             if std::iter::once(this_value)
                 .chain(arguments.iter())
-                .any(|value| matches!(value, RawValue::Uninitialized | RawValue::Exception))
+                .any(|value| !is_map_storable_value(value))
             {
                 return Err(HeapError::Invariant(
-                    "bound function payload contains an internal value sentinel",
+                    "bound function payload contains an internal-only value",
                 ));
             }
         }
@@ -8901,6 +9168,11 @@ impl Heap {
         if !slot_matches_storage(replacement, entry.flags.storage) {
             return Err(HeapError::Invariant(
                 "replacement property storage does not match its shape flags",
+            ));
+        }
+        if matches!(replacement, PropertySlot::Data(RawValue::Private(_))) {
+            return Err(HeapError::Invariant(
+                "private-name identity escaped into an object value slot",
             ));
         }
         Ok(())
@@ -9430,6 +9702,7 @@ fn raw_value_edges(value: &RawValue) -> Vec<RawId> {
         | RawValue::BigInt(_)
         | RawValue::String(_)
         | RawValue::Symbol(_)
+        | RawValue::Private(_)
         | RawValue::Uninitialized
         | RawValue::Exception => Vec::new(),
     }
@@ -9517,7 +9790,7 @@ fn function_bytecode_edges(bytecode: &FunctionBytecodeData) -> Vec<RawId> {
 
 fn property_slot_atoms(slot: &PropertySlot) -> impl Iterator<Item = Atom> + '_ {
     match slot {
-        PropertySlot::Data(RawValue::Symbol(atom)) => Some(*atom),
+        PropertySlot::Data(RawValue::Symbol(atom) | RawValue::Private(atom)) => Some(*atom),
         PropertySlot::Data(_)
         | PropertySlot::VarRef(_)
         | PropertySlot::Accessor { .. }
@@ -9584,7 +9857,7 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
 
 fn raw_value_atom(value: &RawValue) -> Option<Atom> {
     match value {
-        RawValue::Symbol(atom) => Some(*atom),
+        RawValue::Symbol(atom) | RawValue::Private(atom) => Some(*atom),
         RawValue::Undefined
         | RawValue::Null
         | RawValue::Bool(_)
@@ -9599,7 +9872,44 @@ fn raw_value_atom(value: &RawValue) -> Option<Atom> {
 }
 
 const fn is_map_storable_value(value: &RawValue) -> bool {
-    !matches!(value, RawValue::Uninitialized | RawValue::Exception)
+    !matches!(
+        value,
+        RawValue::Private(_) | RawValue::Uninitialized | RawValue::Exception
+    )
+}
+
+fn validate_var_ref_payload(var_ref: &VarRefData) -> Result<(), HeapError> {
+    validate_var_ref_value(
+        var_ref.kind,
+        var_ref.is_lexical,
+        var_ref.is_const,
+        &var_ref.value,
+    )
+}
+
+fn validate_var_ref_value(
+    kind: ClosureVariableKind,
+    is_lexical: bool,
+    is_const: bool,
+    value: &RawValue,
+) -> Result<(), HeapError> {
+    if kind.is_private() {
+        if !is_lexical || !is_const {
+            return Err(HeapError::Invariant(
+                "private-name VarRef is not an immutable lexical binding",
+            ));
+        }
+        if !matches!(value, RawValue::Private(_) | RawValue::Uninitialized) {
+            return Err(HeapError::Invariant(
+                "private-name VarRef contains an ordinary ECMAScript value",
+            ));
+        }
+    } else if matches!(value, RawValue::Private(_)) {
+        return Err(HeapError::Invariant(
+            "private-name identity escaped into an ordinary VarRef",
+        ));
+    }
+    Ok(())
 }
 
 fn context_atoms(context: &ContextData) -> impl Iterator<Item = Atom> + '_ {
@@ -12150,6 +12460,33 @@ mod tests {
         assert_eq!(stats.cleanup.finalized_objects, 1);
         assert_eq!(stats.cleanup.finalized_shapes, 1);
         assert!(matches!(heap.object(object), Err(HeapError::Stale { .. })));
+    }
+
+    #[test]
+    fn object_slot_replacement_rejects_private_name_payloads() {
+        let mut heap = Heap::new();
+        let shape = one_slot_shape(&mut heap);
+        let object = heap
+            .allocate_object(ObjectData::ordinary(
+                shape,
+                vec![PropertySlot::Data(RawValue::Undefined)],
+            ))
+            .unwrap();
+        let private = Atom::from_raw(91);
+
+        assert_eq!(
+            heap.replace_object_slot(object, 0, PropertySlot::Data(RawValue::Private(private)),),
+            Err(HeapError::Invariant(
+                "private-name identity escaped into an object value slot"
+            ))
+        );
+        assert!(matches!(
+            heap.object(object).unwrap().slots[0],
+            PropertySlot::Data(RawValue::Undefined)
+        ));
+
+        assert_eq!(heap.release_object(object).unwrap().finalized_objects, 1);
+        assert_eq!(heap.release_shape(shape).unwrap().finalized_shapes, 1);
     }
 
     #[test]

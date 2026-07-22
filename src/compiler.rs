@@ -15,7 +15,7 @@ use crate::atom::AtomTable;
 use crate::bigint::JsBigInt;
 use crate::bytecode::{
     ApplyKind, ArgumentsKind, BytecodeFunction, DynamicEnvironmentSource, EvalVariableSource,
-    Instruction, MAX_LOCAL_SLOTS, WithObjectSource, verify_parts,
+    Instruction, MAX_LOCAL_SLOTS, PrivateNameSource, WithObjectSource, verify_parts,
 };
 use crate::debug::{DebugInfoMode, Pc2LineEntry, Pc2LineTable, QuickJsSourceLocator, SourceOffset};
 use crate::error::{Error, ErrorKind, NativeErrorMessage, SourceLocation, SourceSpan};
@@ -46,6 +46,7 @@ mod class;
 mod destructuring;
 mod function;
 mod object_literal;
+mod private_reference;
 mod pseudo_binding;
 mod template;
 
@@ -363,6 +364,11 @@ enum ScopeKind {
     FunctionBody,
     ProgramBody,
     Block,
+    /// QuickJS's class-body scope. It owns private-name declarations plus the
+    /// compiler-only lexical cells used to retain computed field keys. It is
+    /// separate from the class-name scope so heritage evaluation cannot observe
+    /// names declared later in the body.
+    ClassPrivate,
     If,
     For,
     Switch,
@@ -406,11 +412,67 @@ struct IrScope {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BindingKind {
     Normal,
-    Lexical { is_const: bool },
-    FunctionName { is_const: bool },
+    Lexical {
+        is_const: bool,
+    },
+    FunctionName {
+        is_const: bool,
+    },
     EvalVariableObject,
     ArgEvalVariableObject,
     WithObject,
+    /// One class-private data-field identity. Staticness is declaration-only
+    /// metadata used to diagnose conflicts; closure/runtime metadata needs only
+    /// the authenticated `PrivateField` kind.
+    PrivateField {
+        is_static: bool,
+    },
+}
+
+fn binding_kinds_compatible(left: BindingKind, right: BindingKind) -> bool {
+    left == right
+        || matches!(
+            (left, right),
+            (
+                BindingKind::PrivateField { .. },
+                BindingKind::PrivateField { .. }
+            )
+        )
+}
+
+const fn binding_kind_from_closure_flags(
+    kind: ClosureVariableKind,
+    is_lexical: bool,
+    is_const: bool,
+) -> Option<BindingKind> {
+    match kind {
+        ClosureVariableKind::Normal if is_lexical => Some(BindingKind::Lexical { is_const }),
+        ClosureVariableKind::Normal if !is_const => Some(BindingKind::Normal),
+        ClosureVariableKind::FunctionName if !is_lexical => {
+            Some(BindingKind::FunctionName { is_const })
+        }
+        ClosureVariableKind::EvalVariableObject if !is_lexical && !is_const => {
+            Some(BindingKind::EvalVariableObject)
+        }
+        ClosureVariableKind::ArgEvalVariableObject if !is_lexical && !is_const => {
+            Some(BindingKind::ArgEvalVariableObject)
+        }
+        ClosureVariableKind::WithObject if !is_lexical && !is_const => {
+            Some(BindingKind::WithObject)
+        }
+        ClosureVariableKind::PrivateField if is_lexical && is_const => {
+            // Staticness is declaration-only conflict metadata. A closure or
+            // direct-eval descriptor needs only the authenticated identity kind.
+            Some(BindingKind::PrivateField { is_static: false })
+        }
+        ClosureVariableKind::Normal
+        | ClosureVariableKind::FunctionName
+        | ClosureVariableKind::GlobalFunction
+        | ClosureVariableKind::EvalVariableObject
+        | ClosureVariableKind::ArgEvalVariableObject
+        | ClosureVariableKind::WithObject
+        | ClosureVariableKind::PrivateField => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -577,7 +639,7 @@ enum IdentifierReferenceAccess {
     PostPut,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum MemberReference {
     Field {
         key: u32,
@@ -591,6 +653,21 @@ enum MemberReference {
     Super {
         site: SourceOffset,
     },
+    Private {
+        name: String,
+        span: Span,
+        scope: ScopeId,
+        site: SourceOffset,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PrivateFieldAccess {
+    Get,
+    GetKeepReceiver,
+    Put,
+    Define,
+    In,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -737,6 +814,16 @@ enum IrOp {
         scope: ScopeId,
         access: IdentifierReferenceAccess,
     },
+    /// Parser/linker form of a private data-field operation. The private name
+    /// remains a source spelling plus lexical scope until child-first binding
+    /// resolution can select an authenticated local/closure cell. It is never
+    /// represented by a normal Identifier operation or public stack Value.
+    PrivateField {
+        name: String,
+        span: Span,
+        scope: ScopeId,
+        access: PrivateFieldAccess,
+    },
 }
 
 #[derive(Debug)]
@@ -846,6 +933,12 @@ impl IrOp {
                 access: IdentifierAccess::Set,
                 ..
             } => (1, 1),
+            Self::PrivateField { access, .. } => match access {
+                PrivateFieldAccess::Get | PrivateFieldAccess::In => (1, 1),
+                PrivateFieldAccess::GetKeepReceiver => (1, 2),
+                PrivateFieldAccess::Put => (2, 0),
+                PrivateFieldAccess::Define => (2, 1),
+            },
         }
     }
 }
@@ -1542,36 +1635,9 @@ fn install_eval_external_bindings(
         }
         let name = String::from_utf16(&binding.name.utf16_units().collect::<Vec<_>>())
             .map_err(|_| Error::internal("eval caller binding name is not well formed"))?;
-        let kind = match binding.kind {
-            ClosureVariableKind::Normal if binding.is_lexical => BindingKind::Lexical {
-                is_const: binding.is_const,
-            },
-            ClosureVariableKind::Normal if !binding.is_const => BindingKind::Normal,
-            ClosureVariableKind::FunctionName if !binding.is_lexical => BindingKind::FunctionName {
-                is_const: binding.is_const,
-            },
-            ClosureVariableKind::EvalVariableObject if !binding.is_lexical && !binding.is_const => {
-                BindingKind::EvalVariableObject
-            }
-            ClosureVariableKind::ArgEvalVariableObject
-                if !binding.is_lexical && !binding.is_const =>
-            {
-                BindingKind::ArgEvalVariableObject
-            }
-            ClosureVariableKind::WithObject if !binding.is_lexical && !binding.is_const => {
-                BindingKind::WithObject
-            }
-            ClosureVariableKind::Normal
-            | ClosureVariableKind::FunctionName
-            | ClosureVariableKind::GlobalFunction
-            | ClosureVariableKind::EvalVariableObject
-            | ClosureVariableKind::ArgEvalVariableObject
-            | ClosureVariableKind::WithObject => {
-                return Err(Error::internal(
-                    "eval caller binding flags are inconsistent",
-                ));
-            }
-        };
+        let kind =
+            binding_kind_from_closure_flags(binding.kind, binding.is_lexical, binding.is_const)
+                .ok_or_else(|| Error::internal("eval caller binding flags are inconsistent"))?;
         let installed = function.add_binding(
             function.var_scope,
             function.var_scope,
@@ -2700,6 +2766,22 @@ impl<'source> Parser<'source> {
                 self.emit_instruction(Instruction::Rot4Left)?;
                 self.emit_instruction_at(Instruction::PutSuperValue, site)?;
             }
+            MemberReference::Private {
+                name,
+                span,
+                scope,
+                site,
+            } => {
+                self.emit_instruction(Instruction::Insert2)?;
+                self.emit_instruction(Instruction::Drop)?;
+                self.emit_private_field_operation(
+                    name,
+                    span,
+                    scope,
+                    PrivateFieldAccess::Put,
+                    site,
+                )?;
+            }
         }
         Ok(())
     }
@@ -3783,27 +3865,9 @@ impl<'source> Parser<'source> {
             {
                 self.current_ir_mut().eval_redeclaration = Some(name.to_owned());
             }
-            let kind = match binding.kind {
-                ClosureVariableKind::Normal if binding.is_lexical => BindingKind::Lexical {
-                    is_const: binding.is_const,
-                },
-                ClosureVariableKind::Normal if !binding.is_const => BindingKind::Normal,
-                ClosureVariableKind::FunctionName if !binding.is_lexical => {
-                    BindingKind::FunctionName {
-                        is_const: binding.is_const,
-                    }
-                }
-                ClosureVariableKind::Normal
-                | ClosureVariableKind::FunctionName
-                | ClosureVariableKind::GlobalFunction
-                | ClosureVariableKind::EvalVariableObject
-                | ClosureVariableKind::ArgEvalVariableObject
-                | ClosureVariableKind::WithObject => {
-                    return Err(Error::internal(
-                        "eval caller binding flags are inconsistent",
-                    ));
-                }
-            };
+            let kind =
+                binding_kind_from_closure_flags(binding.kind, binding.is_lexical, binding.is_const)
+                    .ok_or_else(|| Error::internal("eval caller binding flags are inconsistent"))?;
             return Ok(EvalDeclarationTarget::External { index, kind });
         }
         Err(Error::internal(
@@ -3962,6 +4026,7 @@ impl<'source> Parser<'source> {
             || matches!(
                 scope_kind,
                 ScopeKind::Block
+                    | ScopeKind::ClassPrivate
                     | ScopeKind::If
                     | ScopeKind::For
                     | ScopeKind::Switch
@@ -4045,6 +4110,11 @@ impl<'source> Parser<'source> {
                 (BindingStorage::Local(_), BindingKind::Lexical { .. }) => {
                     return Err(Error::internal(
                         "lexical binding leaked into the function var scope",
+                    ));
+                }
+                (BindingStorage::Local(_), BindingKind::PrivateField { .. }) => {
+                    return Err(Error::internal(
+                        "private-field binding leaked into the function var scope",
                     ));
                 }
                 (BindingStorage::External(_), _) => "",
@@ -4312,10 +4382,11 @@ impl<'source> Parser<'source> {
         self.advance()?;
         let rhs_start = self.current_ir().ops.len();
         self.parse_assignment()?;
-        let site = match target {
+        let site = match &target {
             MemberReference::Field { site, .. }
             | MemberReference::Computed { site }
-            | MemberReference::Super { site } => site,
+            | MemberReference::Super { site }
+            | MemberReference::Private { site, .. } => *site,
         };
         self.inherit_source_marker_at(rhs_start, site)?;
 
@@ -4420,10 +4491,11 @@ impl<'source> Parser<'source> {
             }
             return Err(self.syntax_here("invalid assignment left-hand side"));
         };
-        let lvalue_depth = match target {
+        let lvalue_depth = match &target {
             MemberReference::Field { .. } => 1,
             MemberReference::Computed { .. } => 2,
             MemberReference::Super { .. } => 3,
+            MemberReference::Private { .. } => 1,
         };
 
         self.advance()?;
@@ -4622,7 +4694,9 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_relational(&mut self) -> Result<(), Error> {
-        self.parse_shift()?;
+        if !self.parse_private_in_head()? {
+            self.parse_shift()?;
+        }
         loop {
             let operation_span = self.current().span;
             let operation = match self.current().kind {
@@ -4753,6 +4827,12 @@ impl<'source> Parser<'source> {
                     }
                     MemberReference::Super { site } => {
                         self.emit_instruction_at(Instruction::ThrowDeleteSuper, site)?;
+                    }
+                    MemberReference::Private { span, .. } => {
+                        return Err(Error::syntax(
+                            "private class fields cannot be deleted",
+                            source_span(span),
+                        ));
                     }
                 }
             } else if self.current_ir().ops.len() == operand_start + 1
@@ -5007,6 +5087,15 @@ impl<'source> Parser<'source> {
             self.advance()?;
             let token = self.current().clone();
             let name = match token.kind {
+                TokenKind::PrivateIdentifier(identifier) => {
+                    let name = private_reference::private_binding_name(&identifier.value);
+                    self.advance()?;
+                    let operation =
+                        self.emit_private_field_get(name, token.span, source_offset(member_span)?)?;
+                    self.current_ir_mut().last_member_reference = Some(operation);
+                    self.anonymous_function_definition = None;
+                    return Ok(true);
+                }
                 TokenKind::Identifier(identifier) => identifier.value,
                 TokenKind::Keyword(keyword) => keyword.as_str().to_owned(),
                 _ => return Err(self.syntax_here("expecting field name")),
@@ -5062,6 +5151,10 @@ impl<'source> Parser<'source> {
             }
             IrOp::Bytecode(instruction @ Instruction::GetSuperValue) => {
                 *instruction = Instruction::GetSuperValueForCall;
+                true
+            }
+            IrOp::PrivateField { access, .. } if *access == PrivateFieldAccess::Get => {
+                *access = PrivateFieldAccess::GetKeepReceiver;
                 true
             }
             _ => false,
@@ -5286,6 +5379,17 @@ impl<'source> Parser<'source> {
                     .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
                 Ok(Some(MemberReference::Super { site }))
             }
+            IrOp::PrivateField {
+                name,
+                span,
+                scope,
+                access: PrivateFieldAccess::Get,
+            } => Ok(Some(MemberReference::Private {
+                name,
+                span,
+                scope,
+                site,
+            })),
             _ => Err(Error::internal(
                 "member Reference marker did not point to a getter",
             )),
@@ -5354,6 +5458,23 @@ impl<'source> Parser<'source> {
                 *instruction = Instruction::GetArrayEl3;
                 (MemberReference::Computed { site }, 2)
             }
+            IrOp::PrivateField {
+                name,
+                span,
+                scope,
+                access,
+            } if *access == PrivateFieldAccess::Get => {
+                *access = PrivateFieldAccess::GetKeepReceiver;
+                (
+                    MemberReference::Private {
+                        name: name.clone(),
+                        span: *span,
+                        scope: *scope,
+                        site,
+                    },
+                    1,
+                )
+            }
             _ => {
                 return Err(Error::internal(
                     "member Reference marker did not point to a getter",
@@ -5381,6 +5502,21 @@ impl<'source> Parser<'source> {
                 self.emit_instruction(Instruction::Insert4)?;
                 self.emit_instruction(Instruction::PutSuperValue)?;
             }
+            MemberReference::Private {
+                name,
+                span,
+                scope,
+                site,
+            } => {
+                self.emit_instruction(Instruction::Insert2)?;
+                self.emit_private_field_operation(
+                    name,
+                    span,
+                    scope,
+                    PrivateFieldAccess::Put,
+                    site,
+                )?;
+            }
         }
         Ok(())
     }
@@ -5400,6 +5536,21 @@ impl<'source> Parser<'source> {
             MemberReference::Super { .. } => {
                 self.emit_instruction(Instruction::Perm5)?;
                 self.emit_instruction(Instruction::PutSuperValue)?;
+            }
+            MemberReference::Private {
+                name,
+                span,
+                scope,
+                site,
+            } => {
+                self.emit_instruction(Instruction::Perm3)?;
+                self.emit_private_field_operation(
+                    name,
+                    span,
+                    scope,
+                    PrivateFieldAccess::Put,
+                    site,
+                )?;
             }
         }
         Ok(())
@@ -5646,6 +5797,12 @@ impl<'source> Parser<'source> {
             self.advance()?;
             let token = self.current().clone();
             let name = match token.kind {
+                TokenKind::PrivateIdentifier(_) => {
+                    return Err(Error::syntax(
+                        "private class field forbidden after super",
+                        source_span(token.span),
+                    ));
+                }
                 TokenKind::Identifier(identifier) => identifier.value,
                 TokenKind::Keyword(keyword) => keyword.as_str().to_owned(),
                 _ => return Err(self.syntax_here("expecting field name")),
@@ -5831,7 +5988,10 @@ impl<'source> Parser<'source> {
                 self.advance()?;
             }
             TokenKind::PrivateIdentifier(_) => {
-                return Err(self.unsupported_here("this literal form is not implemented yet"));
+                return Err(Error::syntax(
+                    "private identifier is only valid in a private field reference or '#x in obj'",
+                    source_span(token.span),
+                ));
             }
             TokenKind::Punctuator(punctuator) => {
                 return Err(self.syntax_here(format!(
@@ -9465,7 +9625,8 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 ClosureVariableKind::WithObject => WITH_OBJECT_LOCAL_NAME,
                 ClosureVariableKind::Normal
                 | ClosureVariableKind::FunctionName
-                | ClosureVariableKind::GlobalFunction => continue,
+                | ClosureVariableKind::GlobalFunction
+                | ClosureVariableKind::PrivateField => continue,
             };
             let descriptor = function
                 .closure_variables
@@ -9587,12 +9748,25 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                                 "with object local binding metadata is malformed",
                             ));
                         }
+                        if matches!(binding.kind, BindingKind::PrivateField { .. })
+                            && (!binding.name.starts_with('#')
+                                || binding.name.len() == 1
+                                || binding.storage_scope != binding.declaration_scope
+                                || function.scopes[binding.storage_scope.0].kind
+                                    != ScopeKind::ClassPrivate
+                                || binding.is_catch_parameter)
+                        {
+                            return Err(Error::internal(
+                                "private-field local binding metadata is malformed",
+                            ));
+                        }
                         if matches!(binding.kind, BindingKind::Lexical { .. }) {
                             let scope_kind = function.scopes[binding.storage_scope.0].kind;
                             let supported_scope = matches!(
                                 scope_kind,
                                 ScopeKind::Parameter
                                     | ScopeKind::Block
+                                    | ScopeKind::ClassPrivate
                                     | ScopeKind::If
                                     | ScopeKind::For
                                     | ScopeKind::Switch
@@ -9658,46 +9832,14 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                                 "eval external slot has more than one binding identity",
                             ));
                         }
-                        let expected_kind = match external.kind {
-                            ClosureVariableKind::Normal if external.is_lexical => {
-                                BindingKind::Lexical {
-                                    is_const: external.is_const,
-                                }
-                            }
-                            ClosureVariableKind::Normal if !external.is_const => {
-                                BindingKind::Normal
-                            }
-                            ClosureVariableKind::FunctionName if !external.is_lexical => {
-                                BindingKind::FunctionName {
-                                    is_const: external.is_const,
-                                }
-                            }
-                            ClosureVariableKind::EvalVariableObject
-                                if !external.is_lexical && !external.is_const =>
-                            {
-                                BindingKind::EvalVariableObject
-                            }
-                            ClosureVariableKind::ArgEvalVariableObject
-                                if !external.is_lexical && !external.is_const =>
-                            {
-                                BindingKind::ArgEvalVariableObject
-                            }
-                            ClosureVariableKind::WithObject
-                                if !external.is_lexical && !external.is_const =>
-                            {
-                                BindingKind::WithObject
-                            }
-                            ClosureVariableKind::Normal
-                            | ClosureVariableKind::FunctionName
-                            | ClosureVariableKind::GlobalFunction
-                            | ClosureVariableKind::EvalVariableObject
-                            | ClosureVariableKind::ArgEvalVariableObject
-                            | ClosureVariableKind::WithObject => {
-                                return Err(Error::internal(
-                                    "eval external binding flags are inconsistent",
-                                ));
-                            }
-                        };
+                        let expected_kind = binding_kind_from_closure_flags(
+                            external.kind,
+                            external.is_lexical,
+                            external.is_const,
+                        )
+                        .ok_or_else(|| {
+                            Error::internal("eval external binding flags are inconsistent")
+                        })?;
                         if !matches!(function.kind, FunctionKind::Eval(EvalKind::Direct))
                             || function.parent.is_some()
                             || binding.storage_scope != function.var_scope
@@ -9705,7 +9847,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                             || binding.declaration_span.is_some()
                             || binding.is_catch_parameter != external.is_catch_parameter
                             || binding.name != external.name.to_utf8_lossy()
-                            || binding.kind != expected_kind
+                            || !binding_kinds_compatible(binding.kind, expected_kind)
                         {
                             return Err(Error::internal(
                                 "eval external binding metadata is malformed",
@@ -10009,6 +10151,13 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
 }
 
 fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
+    #[derive(Clone, Copy)]
+    enum UnresolvedAccess {
+        Identifier(IdentifierAccess),
+        IdentifierReference(IdentifierReferenceAccess),
+        PrivateField(PrivateFieldAccess),
+    }
+
     install_eval_variable_objects(tree)?;
     validate_scope_graph(tree)?;
     seed_global_declarations(tree)?;
@@ -10033,30 +10182,66 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
                             span,
                             scope,
                             access,
-                        } => Some((index, name.clone(), *span, *scope, Ok(*access))),
+                        } => Some((
+                            index,
+                            name.clone(),
+                            *span,
+                            *scope,
+                            UnresolvedAccess::Identifier(*access),
+                        )),
                         IrOp::IdentifierReference {
                             name,
                             span,
                             scope,
                             access,
-                        } => Some((index, name.clone(), *span, *scope, Err(*access))),
+                        } => Some((
+                            index,
+                            name.clone(),
+                            *span,
+                            *scope,
+                            UnresolvedAccess::IdentifierReference(*access),
+                        )),
+                        IrOp::PrivateField {
+                            name,
+                            span,
+                            scope,
+                            access,
+                        } => Some((
+                            index,
+                            name.clone(),
+                            *span,
+                            *scope,
+                            UnresolvedAccess::PrivateField(*access),
+                        )),
                         _ => None,
                     })
                     .collect::<Vec<_>>();
 
                 for (operation_index, name, span, scope, access) in unresolved {
                     let operation = match access {
-                        Ok(access) => {
+                        UnresolvedAccess::Identifier(access) => {
                             resolve_identifier(tree, function_id, scope, &name, span, access)?
                         }
-                        Err(access) => resolve_identifier_reference(
-                            tree,
-                            function_id,
-                            scope,
-                            &name,
-                            span,
-                            access,
-                        )?,
+                        UnresolvedAccess::IdentifierReference(access) => {
+                            resolve_identifier_reference(
+                                tree,
+                                function_id,
+                                scope,
+                                &name,
+                                span,
+                                access,
+                            )?
+                        }
+                        UnresolvedAccess::PrivateField(access) => {
+                            private_reference::resolve_private_field_operation(
+                                tree,
+                                function_id,
+                                scope,
+                                &name,
+                                span,
+                                access,
+                            )?
+                        }
                     };
                     tree.functions[function_id].ops[operation_index].op = operation;
                 }
@@ -10235,7 +10420,7 @@ const fn eval_scope_kind(kind: ScopeKind) -> EvalScopeKind {
         ScopeKind::Parameter => EvalScopeKind::Parameter,
         ScopeKind::FunctionBody => EvalScopeKind::FunctionBody,
         ScopeKind::ProgramBody => EvalScopeKind::ProgramBody,
-        ScopeKind::Block => EvalScopeKind::Block,
+        ScopeKind::Block | ScopeKind::ClassPrivate => EvalScopeKind::Block,
         ScopeKind::If => EvalScopeKind::If,
         ScopeKind::For => EvalScopeKind::For,
         ScopeKind::Switch => EvalScopeKind::Switch,
@@ -10501,7 +10686,8 @@ fn link_eval_environment(
                         }
                         BindingKind::Normal
                         | BindingKind::Lexical { .. }
-                        | BindingKind::WithObject => 0,
+                        | BindingKind::WithObject
+                        | BindingKind::PrivateField { .. } => 0,
                     }
                 });
             }
@@ -10624,7 +10810,7 @@ fn link_eval_environment(
                     true,
                     true,
                 )?;
-                if resolved_kind != binding_kind
+                if !binding_kinds_compatible(resolved_kind, binding_kind)
                     && !matches!(
                         (binding_kind, resolved_kind),
                         (BindingKind::FunctionName { .. }, BindingKind::Normal)
@@ -10639,11 +10825,15 @@ fn link_eval_environment(
             bindings.push(EvalBinding {
                 name: JsString::try_from_utf8(&name)?,
                 source,
-                is_lexical: matches!(resolved_kind, BindingKind::Lexical { .. }),
+                is_lexical: matches!(
+                    resolved_kind,
+                    BindingKind::Lexical { .. } | BindingKind::PrivateField { .. }
+                ),
                 is_const: matches!(
                     resolved_kind,
                     BindingKind::Lexical { is_const: true }
                         | BindingKind::FunctionName { is_const: true }
+                        | BindingKind::PrivateField { .. }
                 ),
                 kind: closure_kind(resolved_kind),
                 is_catch_parameter,
@@ -10681,40 +10871,11 @@ fn link_eval_environment(
         for (external_index, binding) in snapshots {
             let external_index = u16::try_from(external_index)
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"))?;
-            let binding_kind = match binding.kind {
-                ClosureVariableKind::Normal if binding.is_lexical => BindingKind::Lexical {
-                    is_const: binding.is_const,
-                },
-                ClosureVariableKind::Normal if !binding.is_const => BindingKind::Normal,
-                ClosureVariableKind::FunctionName if !binding.is_lexical => {
-                    BindingKind::FunctionName {
-                        is_const: binding.is_const,
-                    }
-                }
-                ClosureVariableKind::EvalVariableObject
-                    if !binding.is_lexical && !binding.is_const =>
-                {
-                    BindingKind::EvalVariableObject
-                }
-                ClosureVariableKind::ArgEvalVariableObject
-                    if !binding.is_lexical && !binding.is_const =>
-                {
-                    BindingKind::ArgEvalVariableObject
-                }
-                ClosureVariableKind::WithObject if !binding.is_lexical && !binding.is_const => {
-                    BindingKind::WithObject
-                }
-                ClosureVariableKind::Normal
-                | ClosureVariableKind::FunctionName
-                | ClosureVariableKind::GlobalFunction
-                | ClosureVariableKind::EvalVariableObject
-                | ClosureVariableKind::ArgEvalVariableObject
-                | ClosureVariableKind::WithObject => {
-                    return Err(Error::internal(
-                        "imported eval binding flags are inconsistent",
-                    ));
-                }
-            };
+            let binding_kind =
+                binding_kind_from_closure_flags(binding.kind, binding.is_lexical, binding.is_const)
+                    .ok_or_else(|| {
+                        Error::internal("imported eval binding flags are inconsistent")
+                    })?;
             let source = if consuming_function == 0 {
                 EvalBindingSource::Closure(external_index)
             } else {
@@ -10731,7 +10892,7 @@ fn link_eval_environment(
                     true,
                     false,
                 )?;
-                if relayed_kind != binding_kind {
+                if !binding_kinds_compatible(relayed_kind, binding_kind) {
                     return Err(Error::internal(
                         "imported eval binding relay changed metadata",
                     ));
@@ -11101,6 +11262,11 @@ fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
             });
             let instruction = match (binding.storage, binding.kind) {
                 (BindingStorage::Argument(index), _) => Instruction::PutArg(index),
+                (BindingStorage::Local(_), BindingKind::PrivateField { .. }) => {
+                    return Err(Error::internal(
+                        "private-field binding reached function hoist lowering",
+                    ));
+                }
                 (BindingStorage::Local(index), BindingKind::Lexical { .. }) => {
                     Instruction::PutLocalCheck(index)
                 }
@@ -11949,7 +12115,9 @@ fn resolve_identifier_path(
 const fn binding_is_readonly(kind: BindingKind) -> bool {
     matches!(
         kind,
-        BindingKind::Lexical { is_const: true } | BindingKind::FunctionName { is_const: true }
+        BindingKind::Lexical { is_const: true }
+            | BindingKind::FunctionName { is_const: true }
+            | BindingKind::PrivateField { .. }
     )
 }
 
@@ -12088,7 +12256,10 @@ fn push_dynamic_environment_source(
             DynamicEnvironmentSource::With(WithObjectSource::Closure(index))
         }
         (
-            BindingKind::Normal | BindingKind::Lexical { .. } | BindingKind::FunctionName { .. },
+            BindingKind::Normal
+            | BindingKind::Lexical { .. }
+            | BindingKind::FunctionName { .. }
+            | BindingKind::PrivateField { .. },
             _,
         )
         | (_, BindingStorage::Argument(_) | BindingStorage::Global) => {
@@ -12148,25 +12319,9 @@ fn resolve_eval_external_chain(
         if binding.name.to_utf8_lossy() != name {
             continue;
         }
-        let kind = match binding.kind {
-            ClosureVariableKind::Normal if binding.is_lexical => BindingKind::Lexical {
-                is_const: binding.is_const,
-            },
-            ClosureVariableKind::Normal if !binding.is_const => BindingKind::Normal,
-            ClosureVariableKind::FunctionName if !binding.is_lexical => BindingKind::FunctionName {
-                is_const: binding.is_const,
-            },
-            ClosureVariableKind::Normal
-            | ClosureVariableKind::FunctionName
-            | ClosureVariableKind::GlobalFunction
-            | ClosureVariableKind::EvalVariableObject
-            | ClosureVariableKind::ArgEvalVariableObject
-            | ClosureVariableKind::WithObject => {
-                return Err(Error::internal(
-                    "eval caller binding flags are inconsistent",
-                ));
-            }
-        };
+        let kind =
+            binding_kind_from_closure_flags(binding.kind, binding.is_lexical, binding.is_const)
+                .ok_or_else(|| Error::internal("eval caller binding flags are inconsistent"))?;
         return Ok(Some(ResolvedBinding {
             storage: BindingStorage::External(index),
             kind,
@@ -12227,6 +12382,11 @@ fn global_declaration_operation(
         BindingKind::WithObject => {
             return Err(Error::internal(
                 "with object reached global declaration resolution",
+            ));
+        }
+        BindingKind::PrivateField { .. } => {
+            return Err(Error::internal(
+                "private-field binding reached global declaration resolution",
             ));
         }
     };
@@ -12548,6 +12708,9 @@ fn binding_instruction(
         (BindingStorage::External(_), _, _) => Err(Error::internal(
             "eval external binding reached local instruction selection",
         )),
+        (_, BindingKind::PrivateField { .. }, _) => Err(Error::internal(
+            "private-field binding reached ordinary identifier instruction selection",
+        )),
         (
             BindingStorage::Local(_),
             BindingKind::EvalVariableObject
@@ -12665,6 +12828,9 @@ fn closure_binding_operation(
         ) => Err(Error::internal(
             "hidden object binding reached source closure operation selection",
         )),
+        (BindingKind::PrivateField { .. }, _) => Err(Error::internal(
+            "private-field binding reached ordinary identifier closure selection",
+        )),
         (
             BindingKind::Normal | BindingKind::FunctionName { .. },
             IdentifierAccess::Get | IdentifierAccess::GetOrUndefined,
@@ -12743,6 +12909,7 @@ const fn closure_kind(kind: BindingKind) -> ClosureVariableKind {
         BindingKind::EvalVariableObject => ClosureVariableKind::EvalVariableObject,
         BindingKind::ArgEvalVariableObject => ClosureVariableKind::ArgEvalVariableObject,
         BindingKind::WithObject => ClosureVariableKind::WithObject,
+        BindingKind::PrivateField { .. } => ClosureVariableKind::PrivateField,
     }
 }
 
@@ -12807,6 +12974,7 @@ fn capture_binding_path(
                     | BindingKind::EvalVariableObject
                     | BindingKind::ArgEvalVariableObject
                     | BindingKind::WithObject
+                    | BindingKind::PrivateField { .. }
             ) {
             ClosureVariableName::Constant(ensure_string_constant(function, name)?)
         } else {
@@ -12815,11 +12983,15 @@ fn capture_binding_path(
         let descriptor = ClosureVariable {
             source,
             name: descriptor_name,
-            is_lexical: matches!(requested_kind, BindingKind::Lexical { .. }),
+            is_lexical: matches!(
+                requested_kind,
+                BindingKind::Lexical { .. } | BindingKind::PrivateField { .. }
+            ),
             is_const: matches!(
                 requested_kind,
                 BindingKind::Lexical { is_const: true }
                     | BindingKind::FunctionName { is_const: true }
+                    | BindingKind::PrivateField { .. }
             ),
             kind: closure_kind(requested_kind),
         };
@@ -12855,7 +13027,7 @@ fn ensure_captured_closure_variable(
             (BindingKind::FunctionName { .. }, BindingKind::Normal)
                 | (BindingKind::Normal, BindingKind::FunctionName { .. })
         );
-        if actual_kind != requested_kind && !function_name_erasure {
+        if !binding_kinds_compatible(actual_kind, requested_kind) && !function_name_erasure {
             return Err(Error::internal(
                 "closure storage source has conflicting binding metadata",
             ));
@@ -12882,38 +13054,10 @@ fn ensure_captured_closure_variable(
 }
 
 fn binding_kind_from_closure_descriptor(descriptor: ClosureVariable) -> Result<BindingKind, Error> {
-    match descriptor.kind {
-        ClosureVariableKind::Normal if descriptor.is_lexical => Ok(BindingKind::Lexical {
-            is_const: descriptor.is_const,
-        }),
-        ClosureVariableKind::Normal if !descriptor.is_const => Ok(BindingKind::Normal),
-        ClosureVariableKind::FunctionName if !descriptor.is_lexical => {
-            Ok(BindingKind::FunctionName {
-                is_const: descriptor.is_const,
-            })
-        }
-        ClosureVariableKind::EvalVariableObject
-            if !descriptor.is_lexical && !descriptor.is_const =>
-        {
-            Ok(BindingKind::EvalVariableObject)
-        }
-        ClosureVariableKind::ArgEvalVariableObject
-            if !descriptor.is_lexical && !descriptor.is_const =>
-        {
-            Ok(BindingKind::ArgEvalVariableObject)
-        }
-        ClosureVariableKind::WithObject if !descriptor.is_lexical && !descriptor.is_const => {
-            Ok(BindingKind::WithObject)
-        }
-        ClosureVariableKind::Normal
-        | ClosureVariableKind::FunctionName
-        | ClosureVariableKind::GlobalFunction
-        | ClosureVariableKind::EvalVariableObject
-        | ClosureVariableKind::ArgEvalVariableObject
-        | ClosureVariableKind::WithObject => Err(Error::internal(
-            "captured closure descriptor has inconsistent binding metadata",
-        )),
-    }
+    binding_kind_from_closure_flags(descriptor.kind, descriptor.is_lexical, descriptor.is_const)
+        .ok_or_else(|| {
+            Error::internal("captured closure descriptor has inconsistent binding metadata")
+        })
 }
 
 fn ensure_closure_variable(
@@ -13058,7 +13202,10 @@ fn build_scope_lifecycles(
                     .bindings
                     .get(binding_id.0)
                     .ok_or_else(|| Error::internal("scope binding is out of bounds"))?;
-                let is_lexical = matches!(binding.kind, BindingKind::Lexical { .. });
+                let is_lexical = matches!(
+                    binding.kind,
+                    BindingKind::Lexical { .. } | BindingKind::PrivateField { .. }
+                );
                 let is_with_object = binding.kind == BindingKind::WithObject;
                 if !is_lexical && !is_with_object {
                     continue;
@@ -13266,6 +13413,13 @@ fn lower_unlinked_tree(
                     kind: ClosureVariableKind::ArgEvalVariableObject,
                 },
                 BindingKind::WithObject => UnlinkedVariableDefinition::with_object(),
+                BindingKind::PrivateField { .. } => UnlinkedVariableDefinition {
+                    name,
+                    is_lexical: true,
+                    is_const: true,
+                    is_parameter_initializer: false,
+                    kind: ClosureVariableKind::PrivateField,
+                },
             }
             .with_parameter_initializer(is_parameter_initializer);
         }
@@ -14190,9 +14344,11 @@ fn lower_ops(operations: Vec<SpannedIrOp>, scopes: &[ScopeLifecycle]) -> Result<
                     &mut pc_sites,
                 )?;
             }
-            IrOp::Identifier { .. } | IrOp::IdentifierReference { .. } => {
+            IrOp::Identifier { .. }
+            | IrOp::IdentifierReference { .. }
+            | IrOp::PrivateField { .. } => {
                 return Err(Error::internal(
-                    "identifier reached bytecode lowering before resolution",
+                    "lexical operation reached bytecode lowering before resolution",
                 ));
             }
         }

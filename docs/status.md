@@ -1526,6 +1526,28 @@ claim full parity.
   inferred names, descriptors, HomeObject, lexical scope, and abrupt
   completion.
 
+  R3h ports the field-only private-element path: private instance and static
+  data fields, private reads/writes/updates, and `#name in value`. Each class
+  evaluation creates fresh typed private-name cells; field storage is own-only,
+  hidden from public reflection, and independent of ordinary extensibility.
+  Nested functions, arrows, and direct eval retain the same authenticated name
+  identity without exposing it as an ECMAScript value. The implementation is
+  anchored to QuickJS 2026-06-04's private-field operations at `quickjs.c`
+  8365-8460, private-`in` operator at 15964-15999, class-field parsing and
+  initialization at 24314-24330 and 25049-25629, and private-reference
+  resolution at 33281-33466.
+
+  The hash-authenticated R3h profile freezes 630 paths / 1,260 variants. Oxide
+  passes 1,260/1,260 and pinned QuickJS passes 630/630, with zero failure,
+  unsupported, skip, timeout, crash, or infrastructure result. The focused
+  profile and manifest-path-stream SHA-256 values are
+  `c03c22a7ea0d767536c77f1720b5c87766b06759d8a42a6e7b9ec3069633ffa2`
+  and
+  `8ae21223239ac757bad085913f11f0d86f0b371d66131843932824eb69744f78`.
+  Admission remains manifest-scoped. Private methods, private accessors, and
+  their QuickJS brand path (`quickjs.c` 8462-8550) are the next explicit
+  frontier rather than part of this field-only milestone.
+
   Generator/async and destructuring eval declarations, unsupported class
   elements, and ill-formed UTF-16 source stay explicit frontiers.
   QuickJS also allocates the callable and VarRef
@@ -4385,7 +4407,8 @@ upstream's substantially deeper platform-dependent limits throughout.
 
 The language slice remains incomplete. Async/generator declarations,
 `for-await`, other general assignment targets, module resolution,
-async/generator methods and parameter forms, private class elements,
+async/generator methods and parameter forms, private methods/accessors and
+their class-brand semantics,
 generator/async class methods, non-simple ObjectLiteral
 accessor forms outside the covered
 synchronous setter slice, and callable Proxy classes are not yet implemented.
@@ -4399,8 +4422,8 @@ cover fixed and computed properties, undefined-only defaults, NamedEvaluation,
 array terminal rest, object rest, and object/array recursion. These forms also
 work in scripts, and ordinary
 bodies including classic heads are available through the normal `%Function%`
-constructor. Single-statement lexical declarations and the remaining
-private-name/class-element environments remain later compiler slices. Base
+constructor. Single-statement lexical declarations and the remaining private
+method/accessor brand environments remain later compiler slices. Base
 class declaration/expression lexical environments and TDZ behavior land in
 R3e; heritage, derived construction, and `super()` land in R3f. Direct
 Program lexicals now use the production global VarRef path with two-phase
@@ -4549,7 +4572,7 @@ still pending. Uncatchable termination state is also pending. Other iterator
 classes and helpers, the remaining RegExp
 grammar/static surface and Unicode-backed String methods, non-simple
 ObjectLiteral setter forms outside the covered synchronous slice,
-async/generator class methods, private class elements,
+async/generator class methods, private methods/accessors and their brands,
 exotic-source spread, and the rest of the builtin table build on those layers.
 
 The remaining parity surface also includes the full grammar/opcode set, the
@@ -4798,6 +4821,11 @@ checkpoint, while public-field and static-block lowering/runtime behavior live
 under `compiler/class/` and `runtime/class_fields.rs`. The facade gains only
 the module seam; initializer execution and validation do not return to the
 monolith.
+R3h keeps private-name storage and operations in
+`runtime/private_elements.rs`, VM bridging in
+`runtime/vm_host/private_elements.rs`, and lowering under `compiler/class/`.
+The public runtime facade again gains only the module seam; private methods,
+accessors, and brands remain a separate follow-up boundary.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -5091,6 +5119,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-class-base.sh
 ./scripts/test-test262-class-derived.sh
 ./scripts/test-test262-class-public-init.sh
+./scripts/test-test262-class-private-fields.sh
 ./scripts/test-test262-full.sh
 ```
 

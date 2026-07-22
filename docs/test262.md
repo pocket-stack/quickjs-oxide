@@ -34,9 +34,10 @@ intended early `SyntaxError`, rather than because class parsing is absent.
 This 193/193 result is a runner smoke baseline, not a project-wide 100%
 estimate. The sample was selected from already implemented synchronous
 surfaces. Module, async/jobs, most `$262` host hooks, advanced RegExp pattern
-grammar, private class elements, async/generator class forms, generators,
+grammar, private methods/accessors, async/generator class forms, generators,
 TypedArrays and many other broad layers remain absent. Public fields and static
-blocks are measured separately by the scoped R3g gate below.
+blocks and private data fields are measured separately by the scoped R3g/R3h
+gates below.
 
 Nineteen additional provenance variants guard the result: four audited negative
 variants pass for the intended parse error, while 15 unsupported grammar
@@ -2854,6 +2855,43 @@ cargo build --bin qjs
 Use `--check` on either script to authenticate its frozen inputs without
 claiming a new full-vector baseline.
 
+## R3h private data fields
+
+R3h is deliberately field-only: private instance data fields, private static
+data fields, their read/write/update References, and `#name in value`. Private
+methods, private accessors, and their shared brand operations are not included.
+The semantic anchors are QuickJS 2026-06-04's own-field operations at
+`quickjs.c` 8365-8460, private-`in` operator at 15964-15999, class-field parser
+and initialization path at 24314-24330 and 25049-25629, and private-reference
+resolution at 33281-33466. The adjacent `JS_AddBrand`/`JS_CheckBrand` path at
+8462-8550 remains the next methods/accessors milestone.
+
+The dependency-audited cohort contains 630 paths / 1,260 sloppy-and-strict
+variants: 405 positive paths and 225 parse-negative `SyntaxError` paths. Oxide
+passes 1,260/1,260 and pinned QuickJS passes 630/630: 100% of this focused
+cohort, with zero failure, unsupported, skip, timeout, crash, or runner fault.
+This is not a full-Test262 percentage or a claim for all private elements.
+
+The focused profile is hash-authenticated to the exact manifest. Its profile,
+manifest path stream, variant-key stream, TSV, and JSONL SHA-256 values are
+`c03c22a7ea0d767536c77f1720b5c87766b06759d8a42a6e7b9ec3069633ffa2`,
+`8ae21223239ac757bad085913f11f0d86f0b371d66131843932824eb69744f78`,
+`dc8a4cd362471eb05abc94b29a5c0ffcb967e5224ab0a75eb50446083015c6ac`,
+`755120cd0d3222bf2ec26d43813470dcab31a0ecb6a9f25b904d121df4e35b78`,
+and
+`f391809104b47e5e05609e625321df4a2759339a080a17d98a34f7be2f181ec4`.
+The global profile continues to reject the three private-field tags; ordinary
+public observer methods and function-valued data fields do not widen this gate
+to private method syntax.
+
+Reproduce the frozen inventory and pinned QuickJS oracle with:
+
+```sh
+./scripts/test-test262-class-private-fields.sh --check
+```
+
+Run the same command without `--check` for the authenticated Oxide vector.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -3107,6 +3145,10 @@ R3g adds public instance/static fields and static blocks. Its distinct
 oracle. The result remains manifest-scoped; no new whole-suite percentage or
 global `class` admission is claimed until the full join and the remaining
 private/async/generator class surfaces are complete.
+R3h adds private instance/static data fields and private-`in` References. Its
+hash-authenticated 630-path/1,260-variant focused gate passes 1,260/1,260;
+pinned QuickJS passes 630/630. Private methods/accessors and their brand path
+remain the next class-element frontier, and the global profile stays closed.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

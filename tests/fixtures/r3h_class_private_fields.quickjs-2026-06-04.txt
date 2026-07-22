@@ -1,0 +1,9 @@
+identity=41|42|true|false|false|true
+operations=1|40|42|42|44|44|true|false
+field-order=static:first,static:second,instance:first,instance:second
+nonextensible-own-reflection=false|marker|0|false|true|false|42|TypeError:private class field '#answer' does not exist
+static=42|42|true|false|TypeError:private class field '#value' does not exist
+capture=43|44|42|42|42|true
+errors=TypeError:private class field '#value' does not exist|TypeError:private class field '#value' does not exist|TypeError:not an object|TypeError:not an object|TypeError:invalid 'in' operand
+forward-order=false|computed-before,static-after,public-instance,private-instance|TypeError:not a symbol
+r3h-class-private-fields-oracle=ok

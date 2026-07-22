@@ -6,13 +6,16 @@
 use super::*;
 use crate::bytecode::{
     ApplyKind, ArgumentsKind, DefineMethodKind, DynamicEnvironmentSource, EvalVariableSource,
+    PrivateNameSource,
 };
 use crate::heap::{EvalBinding, EvalBindingSource, EvalVariableEnvironment};
+use crate::object::PrivateNameRef;
 use crate::vm::{
     AppendStartOutcome, ArgumentListOutcome, CallInput, DirectEvalInvocation, Vm, VmHost,
 };
 
 mod dynamic_environment;
+mod private_elements;
 mod super_property;
 
 /// Validated caller state retained while primitive-String eval is compiled.
@@ -41,6 +44,7 @@ pub(in crate::runtime) struct MaterializedEvalEnvironment {
 
 enum FrameBinding {
     Direct(Value),
+    Private(PrivateNameRef),
     Uninitialized,
     Captured(VarRefRoot),
 }
@@ -64,6 +68,9 @@ pub(super) fn closure_view_matches_cell(
 fn read_frame_binding(runtime: &Runtime, binding: &FrameBinding) -> Result<Value, Error> {
     match binding {
         FrameBinding::Direct(value) => Ok(value.clone()),
+        FrameBinding::Private(_) => Err(Error::internal(
+            "ordinary local read reached a private-name binding",
+        )),
         FrameBinding::Uninitialized => Err(Error::internal(
             "unchecked local read reached an uninitialized lexical binding",
         )),
@@ -83,6 +90,9 @@ fn write_frame_binding(
             *slot = value;
             Ok(())
         }
+        FrameBinding::Private(_) => Err(Error::internal(
+            "ordinary local write reached a private-name binding",
+        )),
         FrameBinding::Uninitialized => Err(Error::internal(
             "unchecked local write reached an uninitialized lexical binding",
         )),
@@ -99,6 +109,11 @@ fn capture_frame_binding(
 ) -> Result<VarRefRoot, Error> {
     match binding {
         FrameBinding::Direct(value) => {
+            if descriptor.kind.is_private() {
+                return Err(Error::internal(
+                    "private-name capture reached an ordinary frame value",
+                ));
+            }
             let root = runtime
                 .new_var_ref(
                     value.clone(),
@@ -106,6 +121,18 @@ fn capture_frame_binding(
                     descriptor.is_const,
                     descriptor.kind,
                 )
+                .map_err(|error| Error::internal(error.to_string()))?;
+            *binding = FrameBinding::Captured(root.clone());
+            Ok(root)
+        }
+        FrameBinding::Private(name) => {
+            if !descriptor.kind.is_private() || !descriptor.is_lexical || !descriptor.is_const {
+                return Err(Error::internal(
+                    "private-name frame cell used an ordinary closure descriptor",
+                ));
+            }
+            let root = runtime
+                .new_private_var_ref(name)
                 .map_err(|error| Error::internal(error.to_string()))?;
             *binding = FrameBinding::Captured(root.clone());
             Ok(root)
@@ -137,14 +164,18 @@ fn close_frame_binding(runtime: &Runtime, binding: &mut FrameBinding) -> Result<
     let raw = runtime
         .raw_var_ref_value(root)
         .map_err(|error| Error::internal(error.to_string()))?;
-    let detached = if matches!(raw, RawValue::Uninitialized) {
-        FrameBinding::Uninitialized
-    } else {
-        FrameBinding::Direct(
+    let detached = match raw {
+        RawValue::Uninitialized => FrameBinding::Uninitialized,
+        RawValue::Private(_) => FrameBinding::Private(
+            runtime
+                .private_name_from_raw_var_ref(root)
+                .map_err(runtime_error_to_vm_error)?,
+        ),
+        raw => FrameBinding::Direct(
             runtime
                 .root_raw_value(&raw)
                 .map_err(runtime_error_to_vm_error)?,
-        )
+        ),
     };
     *binding = detached;
     Ok(())
@@ -2249,6 +2280,15 @@ impl VmHost for RuntimeVmHost {
     }
 
     fn global_reference(&mut self, index: u16) -> Result<Completion, Error> {
+        if self
+            .closure_variables
+            .get(usize::from(index))
+            .is_some_and(|descriptor| descriptor.kind.is_private())
+        {
+            return Err(Error::internal(
+                "global reference referenced a private-name binding",
+            ));
+        }
         self.global_reference_impl(index)
     }
 
@@ -2577,6 +2617,11 @@ impl VmHost for RuntimeVmHost {
             .closure_variables
             .get(usize::from(index))
             .ok_or_else(|| Error::internal("global closure index is out of bounds"))?;
+        if descriptor.kind.is_private() {
+            return Err(Error::internal(
+                "global read referenced a private-name binding",
+            ));
+        }
         let ClosureVariableName::Atom(atom) = descriptor.name else {
             return Err(Error::internal(
                 "published global closure descriptor has no name atom",
@@ -2644,6 +2689,11 @@ impl VmHost for RuntimeVmHost {
             .closure_variables
             .get(usize::from(index))
             .ok_or_else(|| Error::internal("global closure index is out of bounds"))?;
+        if descriptor.kind.is_private() {
+            return Err(Error::internal(
+                "global delete referenced a private-name binding",
+            ));
+        }
         let ClosureVariableName::Atom(atom) = descriptor.name else {
             return Err(Error::internal(
                 "published global closure descriptor has no name atom",
@@ -2700,6 +2750,11 @@ impl VmHost for RuntimeVmHost {
             .closure_variables
             .get(usize::from(index))
             .ok_or_else(|| Error::internal("global closure index is out of bounds"))?;
+        if descriptor.kind.is_private() {
+            return Err(Error::internal(
+                "global write referenced a private-name binding",
+            ));
+        }
         let ClosureVariableName::Atom(atom) = descriptor.name else {
             return Err(Error::internal(
                 "published global closure descriptor has no name atom",
@@ -2823,6 +2878,40 @@ impl VmHost for RuntimeVmHost {
                 .call_internal(self.current_realm, &setter, receiver, &[argument])
                 .map_err(runtime_error_to_vm_error),
         }
+    }
+
+    fn initialize_private_name(&mut self, index: u16) -> Result<(), Error> {
+        self.initialize_private_name_binding(index)
+    }
+
+    fn get_private_field(
+        &mut self,
+        source: PrivateNameSource,
+        base: Value,
+    ) -> Result<Completion, Error> {
+        self.get_private_field_value(source, base)
+    }
+
+    fn put_private_field(
+        &mut self,
+        source: PrivateNameSource,
+        base: Value,
+        value: Value,
+    ) -> Result<Completion, Error> {
+        self.put_private_field_value(source, base, value)
+    }
+
+    fn define_private_field(
+        &mut self,
+        source: PrivateNameSource,
+        base: Value,
+        value: Value,
+    ) -> Result<Completion, Error> {
+        self.define_private_field_value(source, base, value)
+    }
+
+    fn private_in(&mut self, source: PrivateNameSource, base: Value) -> Result<Completion, Error> {
+        self.private_in_value(source, base)
     }
 
     fn get_field(&mut self, base: Value, key_index: u32) -> Result<Completion, Error> {
@@ -3129,6 +3218,11 @@ impl VmHost for RuntimeVmHost {
                 "ordinary local read referenced a private with object",
             ));
         }
+        if definition.kind.is_private() {
+            return Err(Error::internal(
+                "ordinary local read referenced a private-name binding",
+            ));
+        }
         if definition.is_lexical {
             return Err(Error::internal(
                 "unchecked local read referenced a lexical definition",
@@ -3146,6 +3240,11 @@ impl VmHost for RuntimeVmHost {
         if definition.kind == ClosureVariableKind::WithObject {
             return Err(Error::internal(
                 "ordinary local write referenced a private with object",
+            ));
+        }
+        if definition.kind.is_private() {
+            return Err(Error::internal(
+                "ordinary local write referenced a private-name binding",
             ));
         }
         if definition.is_lexical {
@@ -3190,6 +3289,14 @@ impl VmHost for RuntimeVmHost {
                 // proves that a later lifetime skipped CloseLocal.
                 return Ok(());
             }
+            if definition.kind.is_private() {
+                // A caught abrupt completion can bypass the authored
+                // CloseLocal. Detach the frame's ownership instead of
+                // overwriting the old VarRef: escaped closures must retain
+                // the previous class evaluation's private identity.
+                *binding = FrameBinding::Uninitialized;
+                return Ok(());
+            }
             if reusable {
                 self.runtime
                     .reset_var_ref_uninitialized(root)
@@ -3206,6 +3313,11 @@ impl VmHost for RuntimeVmHost {
 
     fn get_local_checked(&mut self, index: u16) -> Result<Value, Error> {
         let definition = self.local_definition(index)?;
+        if definition.kind.is_private() {
+            return Err(Error::internal(
+                "checked local read referenced a private-name binding",
+            ));
+        }
         if !definition.is_lexical {
             return Err(Error::internal(
                 "checked local read referenced an ordinary definition",
@@ -3217,6 +3329,9 @@ impl VmHost for RuntimeVmHost {
             .ok_or_else(|| Error::internal("local index is out of bounds"))?;
         match binding {
             FrameBinding::Direct(value) => Ok(value.clone()),
+            FrameBinding::Private(_) => Err(Error::internal(
+                "checked local read reached a private-name frame cell",
+            )),
             FrameBinding::Uninitialized => Err(self.lexical_uninitialized_error(definition.name)?),
             FrameBinding::Captured(root) => {
                 let raw = self
@@ -3236,6 +3351,11 @@ impl VmHost for RuntimeVmHost {
 
     fn initialize_local(&mut self, index: u16, value: Value) -> Result<(), Error> {
         let definition = self.local_definition(index)?;
+        if definition.kind.is_private() {
+            return Err(Error::internal(
+                "ordinary lexical initialization referenced a private-name binding",
+            ));
+        }
         if !definition.is_lexical && definition.kind != ClosureVariableKind::WithObject {
             return Err(Error::internal(
                 "local initialization referenced an ordinary local definition",
@@ -3262,6 +3382,9 @@ impl VmHost for RuntimeVmHost {
                 *slot = value;
                 Ok(())
             }
+            FrameBinding::Private(_) => Err(Error::internal(
+                "ordinary lexical initialization reached a private-name frame cell",
+            )),
             FrameBinding::Uninitialized => {
                 *binding = FrameBinding::Direct(value);
                 Ok(())
@@ -3296,7 +3419,7 @@ impl VmHost for RuntimeVmHost {
         {
             FrameBinding::Uninitialized => None,
             FrameBinding::Captured(root) => Some(root.clone()),
-            FrameBinding::Direct(_) => {
+            FrameBinding::Direct(_) | FrameBinding::Private(_) => {
                 return Err(Error::new(
                     ErrorKind::Reference,
                     "'this' can be initialized only once",
@@ -3329,6 +3452,11 @@ impl VmHost for RuntimeVmHost {
 
     fn put_local_checked(&mut self, index: u16, value: Value) -> Result<(), Error> {
         let definition = self.local_definition(index)?;
+        if definition.kind.is_private() {
+            return Err(Error::internal(
+                "checked local write referenced a private-name binding",
+            ));
+        }
         if !definition.is_lexical {
             return Err(Error::internal(
                 "checked local write referenced an ordinary definition",
@@ -3346,6 +3474,9 @@ impl VmHost for RuntimeVmHost {
                 *slot = value;
                 Ok(())
             }
+            FrameBinding::Private(_) => Err(Error::internal(
+                "checked local write reached a private-name frame cell",
+            )),
             FrameBinding::Uninitialized => Err(self.lexical_uninitialized_error(definition.name)?),
             FrameBinding::Captured(root) => {
                 let cell = self
@@ -3410,6 +3541,11 @@ impl VmHost for RuntimeVmHost {
             .closure_variables
             .get(usize::from(index))
             .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?;
+        if descriptor.kind.is_private() {
+            return Err(Error::internal(
+                "ordinary closure read referenced a private-name binding",
+            ));
+        }
         if descriptor.is_lexical {
             return Err(Error::internal(
                 "unchecked closure read referenced a lexical binding",
@@ -3429,6 +3565,11 @@ impl VmHost for RuntimeVmHost {
             .closure_variables
             .get(usize::from(index))
             .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?;
+        if descriptor.kind.is_private() {
+            return Err(Error::internal(
+                "ordinary closure write referenced a private-name binding",
+            ));
+        }
         if descriptor.is_lexical {
             return Err(Error::internal(
                 "unchecked closure write referenced a lexical binding",
@@ -3448,6 +3589,11 @@ impl VmHost for RuntimeVmHost {
             .closure_variables
             .get(usize::from(index))
             .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?;
+        if descriptor.kind.is_private() {
+            return Err(Error::internal(
+                "checked closure read referenced a private-name binding",
+            ));
+        }
         if !descriptor.is_lexical {
             return Err(Error::internal(
                 "checked closure read referenced an ordinary binding",
@@ -3474,6 +3620,11 @@ impl VmHost for RuntimeVmHost {
             .closure_variables
             .get(usize::from(index))
             .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?;
+        if descriptor.kind.is_private() {
+            return Err(Error::internal(
+                "checked closure write referenced a private-name binding",
+            ));
+        }
         if !descriptor.is_lexical {
             return Err(Error::internal(
                 "checked closure write referenced an ordinary binding",
@@ -3563,6 +3714,11 @@ impl VmHost for RuntimeVmHost {
                     .ok_or_else(|| Error::internal("local index is out of bounds"))?;
                 let this_value = match binding {
                     FrameBinding::Direct(value) => value.clone(),
+                    FrameBinding::Private(_) => {
+                        return Err(Error::internal(
+                            "derived this local contains a private-name identity",
+                        ));
+                    }
                     FrameBinding::Uninitialized => {
                         return self
                             .runtime

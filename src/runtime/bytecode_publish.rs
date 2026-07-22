@@ -1,5 +1,7 @@
 //! Validation and iterative flattening for unlinked bytecode publication.
 
+mod private_elements;
+
 use super::*;
 use std::collections::HashSet;
 
@@ -87,7 +89,8 @@ const fn eval_variable_object_sentinel(kind: ClosureVariableKind) -> Option<&'st
         ClosureVariableKind::Normal
         | ClosureVariableKind::FunctionName
         | ClosureVariableKind::GlobalFunction
-        | ClosureVariableKind::WithObject => None,
+        | ClosureVariableKind::WithObject
+        | ClosureVariableKind::PrivateField => None,
     }
 }
 
@@ -1915,6 +1918,7 @@ fn verify_unlinked_tree_with_root(
                 "local definition count does not match bytecode metadata",
             )));
         }
+        private_elements::verify_unlinked(function)?;
         let unnamed_arguments = function
             .argument_definitions()
             .iter()
@@ -2156,7 +2160,9 @@ fn verify_unlinked_tree_with_root(
                         "strict or malformed bytecode contains a with-object local",
                     )));
                 }
-            } else if definition.kind != ClosureVariableKind::Normal {
+            } else if definition.kind != ClosureVariableKind::Normal
+                && definition.kind != ClosureVariableKind::PrivateField
+            {
                 return Err(RuntimeError::Engine(Error::internal(
                     "ordinary local definition uses a non-local binding kind",
                 )));
@@ -2397,6 +2403,7 @@ fn verify_unlinked_tree_with_root(
                     | ClosureVariableKind::EvalVariableObject
                     | ClosureVariableKind::ArgEvalVariableObject
                     | ClosureVariableKind::WithObject
+                    | ClosureVariableKind::PrivateField
             ) || matches!(
                 descriptor.source,
                 ClosureSource::GlobalDeclaration

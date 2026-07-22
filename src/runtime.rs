@@ -14,6 +14,7 @@ mod intrinsics;
 mod native_dispatch;
 mod native_stack;
 mod object_literal;
+mod private_elements;
 mod properties;
 mod template_object;
 mod vm_host;
@@ -2822,7 +2823,8 @@ impl Runtime {
                     | ClosureVariableKind::GlobalFunction
                     | ClosureVariableKind::EvalVariableObject
                     | ClosureVariableKind::ArgEvalVariableObject
-                    | ClosureVariableKind::WithObject => {
+                    | ClosureVariableKind::WithObject
+                    | ClosureVariableKind::PrivateField => {
                         return Err(RuntimeError::Invariant(
                             "global declaration has non-global binding metadata",
                         ));
@@ -2874,7 +2876,8 @@ impl Runtime {
                         | ClosureVariableKind::GlobalFunction
                         | ClosureVariableKind::EvalVariableObject
                         | ClosureVariableKind::ArgEvalVariableObject
-                        | ClosureVariableKind::WithObject => {
+                        | ClosureVariableKind::WithObject
+                        | ClosureVariableKind::PrivateField => {
                             return Err(RuntimeError::Invariant(
                                 "global declaration has non-global binding metadata",
                             ));
@@ -3959,6 +3962,11 @@ impl Runtime {
             RawValue::BigInt(value) => Value::BigInt(value),
             RawValue::String(value) => Value::String(value),
             RawValue::Symbol(atom) => Value::Symbol(SymbolRef::from_owned_atom(self.clone(), atom)),
+            RawValue::Private(_) => {
+                return Err(RuntimeError::Invariant(
+                    "private-name identity occupied a public runtime root",
+                ));
+            }
             RawValue::Object(object) => {
                 Value::Object(ObjectRef::from_owned_handle(self.clone(), object))
             }
@@ -8067,6 +8075,11 @@ impl Runtime {
             RawValue::Symbol(atom) => {
                 Value::Symbol(SymbolRef::from_borrowed_atom(self.clone(), *atom)?)
             }
+            RawValue::Private(_) => {
+                return Err(RuntimeError::Invariant(
+                    "private-name identity escaped into an ECMAScript Value",
+                ));
+            }
             RawValue::Object(object) => {
                 Value::Object(ObjectRef::from_borrowed_handle(self.clone(), *object)?)
             }
@@ -8626,6 +8639,11 @@ impl RuntimeState {
             RawValue::Symbol(atom) => {
                 self.atoms.retain(*atom)?;
             }
+            RawValue::Private(_) => {
+                return Err(RuntimeError::Invariant(
+                    "private-name identity cannot become a public runtime root",
+                ));
+            }
             RawValue::Undefined
             | RawValue::Null
             | RawValue::Bool(_)
@@ -8650,6 +8668,11 @@ impl RuntimeState {
             }
             RawValue::Symbol(atom) => {
                 self.atoms.release(atom)?;
+            }
+            RawValue::Private(_) => {
+                return Err(RuntimeError::Invariant(
+                    "private-name identity occupied a public runtime root",
+                ));
             }
             RawValue::Undefined
             | RawValue::Null
@@ -8721,7 +8744,7 @@ impl RuntimeState {
         let atoms = slots
             .iter()
             .filter_map(|slot| match slot {
-                PropertySlot::Data(RawValue::Symbol(atom)) => Some(*atom),
+                PropertySlot::Data(RawValue::Symbol(atom) | RawValue::Private(atom)) => Some(*atom),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -8743,7 +8766,7 @@ impl RuntimeState {
         let atoms = values
             .into_iter()
             .filter_map(|value| match value {
-                RawValue::Symbol(atom) => Some(*atom),
+                RawValue::Symbol(atom) | RawValue::Private(atom) => Some(*atom),
                 _ => None,
             })
             .collect::<Vec<_>>();

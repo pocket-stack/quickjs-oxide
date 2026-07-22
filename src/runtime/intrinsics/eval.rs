@@ -552,7 +552,8 @@ impl Runtime {
                         | ClosureVariableKind::GlobalFunction
                         | ClosureVariableKind::EvalVariableObject
                         | ClosureVariableKind::ArgEvalVariableObject
-                        | ClosureVariableKind::WithObject => {
+                        | ClosureVariableKind::WithObject
+                        | ClosureVariableKind::PrivateField => {
                             return Err(RuntimeError::Invariant(
                                 "eval global declaration has non-global binding metadata",
                             ));
@@ -684,7 +685,8 @@ impl Runtime {
                         | ClosureVariableKind::GlobalFunction
                         | ClosureVariableKind::EvalVariableObject
                         | ClosureVariableKind::ArgEvalVariableObject
-                        | ClosureVariableKind::WithObject => {
+                        | ClosureVariableKind::WithObject
+                        | ClosureVariableKind::PrivateField => {
                             return Err(RuntimeError::Invariant(
                                 "eval global declaration has non-global binding metadata",
                             ));

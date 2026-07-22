@@ -223,6 +223,40 @@ impl fmt::Debug for AtomOwner {
     }
 }
 
+/// Runtime-owned identity for one class private name.
+///
+/// This handle is intentionally crate-private and has no conversion to
+/// [`PropertyKey`], [`SymbolRef`], or [`Value`].  Private names are compiler-
+/// authenticated runtime metadata, not ECMAScript values which embedders can
+/// observe or manufacture.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct PrivateNameRef(AtomOwner);
+
+impl PrivateNameRef {
+    /// Consume one already-owned private atom reference.
+    #[must_use]
+    pub(crate) const fn from_owned_atom(runtime: Runtime, atom: Atom) -> Self {
+        Self(AtomOwner::from_owned_handle(runtime, atom))
+    }
+
+    /// Promote one borrowed private atom edge to an owning runtime root.
+    pub(crate) fn from_borrowed_atom(runtime: Runtime, atom: Atom) -> Result<Self, AtomError> {
+        AtomOwner::from_borrowed_handle(runtime, atom).map(Self)
+    }
+
+    /// Return whether this private name belongs to `runtime`.
+    #[must_use]
+    pub(crate) fn belongs_to(&self, runtime: &Runtime) -> bool {
+        self.0.belongs_to(runtime)
+    }
+
+    /// Raw identity for runtime, shape, and captured-cell internals.
+    #[must_use]
+    pub(crate) const fn atom(&self) -> Atom {
+        self.0.atom()
+    }
+}
+
 /// A runtime-owned ECMAScript property key.
 ///
 /// This wrapper carries the runtime domain missing from a raw `Atom`, so two
