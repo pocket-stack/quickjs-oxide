@@ -29,6 +29,7 @@ impl Runtime {
             ObjectPayload::Primitive(PrimitiveObjectData::String(value)) => Some(value.len()),
             ObjectPayload::Ordinary
             | ObjectPayload::RawJson
+            | ObjectPayload::Promise(_)
             | ObjectPayload::Date(_)
             | ObjectPayload::RegExp(_)
             | ObjectPayload::Array { .. }
@@ -1184,6 +1185,7 @@ impl Runtime {
                 }
                 ObjectPayload::Ordinary
                 | ObjectPayload::RawJson
+                | ObjectPayload::Promise(_)
                 | ObjectPayload::Date(_)
                 | ObjectPayload::RegExp(_)
                 | ObjectPayload::Array { .. }

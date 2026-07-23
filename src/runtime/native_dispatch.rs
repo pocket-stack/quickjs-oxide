@@ -464,6 +464,15 @@ impl Runtime {
             NativeFunctionId::MapIteratorNext => self.call_map_iterator_next(realm, invocation),
             NativeFunctionId::Set(kind) => self.call_set_native(realm, kind, invocation, arguments),
             NativeFunctionId::SetIteratorNext => self.call_set_iterator_next(realm, invocation),
+            NativeFunctionId::Promise(kind) => {
+                self.call_promise_native(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::PromiseResolving(kind) => {
+                self.call_promise_resolving(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::PromiseCapabilityExecutor => {
+                self.call_promise_capability_executor(realm, invocation, arguments)
+            }
             NativeFunctionId::ThrowTypeError => {
                 self.call_throw_type_error(realm, invocation, arguments)
             }
@@ -584,6 +593,7 @@ impl Runtime {
             NativeFunctionId::StringCodePointRange => {
                 self.call_string_code_point_range(realm, invocation, arguments)
             }
+            NativeFunctionId::QjsPrint => self.call_qjs_print(realm, invocation, arguments),
             NativeFunctionId::PrimitivePrototypeToString(kind) => {
                 self.call_primitive_prototype_to_string(realm, kind, invocation, arguments)
             }

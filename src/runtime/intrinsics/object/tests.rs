@@ -745,7 +745,7 @@ fn object_integrity_autoinit_materializes_and_tightens_in_pinned_order() {
         let function = state.heap.object(*function).unwrap();
         assert!(matches!(
             &function.payload,
-            ObjectPayload::NativeFunction { data }
+            ObjectPayload::NativeFunction { data, .. }
                 if data.target == NativeFunctionId::ObjectIntegrity(kind)
                     && data.realm == Some(context.realm)
                     && data.min_readable_args == 1
@@ -1180,7 +1180,7 @@ fn object_keys_descriptor_recheck_materializes_non_enumerable_autoinits() {
         let function = state.heap.object(*function).unwrap();
         assert!(matches!(
             &function.payload,
-            ObjectPayload::NativeFunction { data }
+            ObjectPayload::NativeFunction { data, .. }
                 if data.target == NativeFunctionId::ObjectKeys(kind)
                     && data.realm == Some(context.realm)
                     && data.min_readable_args == 1

@@ -2135,7 +2135,7 @@ fn string_method_slice_matches_quickjs_table_and_code_unit_rules() {
             }) if value == JsString::try_from_utf8(function_name).unwrap()
         ));
         let state = runtime.0.state.borrow();
-        let ObjectPayload::NativeFunction { data } = &state
+        let ObjectPayload::NativeFunction { data, .. } = &state
             .heap
             .object(method.as_object().object_id())
             .unwrap()
@@ -4376,7 +4376,7 @@ fn iterator_to_string_tag_accessor_matches_quickjs_metadata_and_setter_semantics
             }) if value == expected_length
         ));
         let state = runtime.0.state.borrow();
-        let ObjectPayload::NativeFunction { data } = &state
+        let ObjectPayload::NativeFunction { data, .. } = &state
             .heap
             .object(callable.as_object().object_id())
             .unwrap()
@@ -4706,7 +4706,7 @@ fn native_iterator_next_wraps_public_calls_but_for_of_consumes_raw_outcomes() {
     let next = runtime.as_callable(&next).unwrap().unwrap();
     {
         let state = runtime.0.state.borrow();
-        let ObjectPayload::NativeFunction { data } = &state
+        let ObjectPayload::NativeFunction { data, .. } = &state
             .heap
             .object(next.as_object().object_id())
             .unwrap()
@@ -5994,7 +5994,7 @@ fn function_constructor_intrinsic_and_dynamic_source_match_quickjs() {
     ));
     {
         let state = runtime.0.state.borrow();
-        let ObjectPayload::NativeFunction { data } = &state
+        let ObjectPayload::NativeFunction { data, .. } = &state
             .heap
             .object(constructor.as_object().object_id())
             .unwrap()
@@ -6905,7 +6905,7 @@ fn function_debug_accessors_match_quickjs_descriptors_realms_and_receivers() {
             }) if value == JsString::try_from_utf8(getter_name).unwrap()
         ));
         let state = runtime.0.state.borrow();
-        let ObjectPayload::NativeFunction { data } = &state
+        let ObjectPayload::NativeFunction { data, .. } = &state
             .heap
             .object(getter.as_object().object_id())
             .unwrap()
@@ -13469,5 +13469,39 @@ fn publication_rollback_releases_the_new_debug_filename_atom() {
     assert_eq!(
         runtime.heap_counts().function_bytecode_nodes,
         baseline_bytecode
+    );
+}
+
+#[test]
+fn pending_promise_reaction_does_not_retain_the_species_result_object() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let Value::Object(result) = context
+        .eval(
+            r#"
+var pendingSource = new Promise(function () {});
+function CustomCapability(executor) {
+    executor(function () {}, function () {});
+    return { marker: 42 };
+}
+pendingSource.constructor = { [Symbol.species]: CustomCapability };
+pendingSource.then();
+"#,
+        )
+        .unwrap()
+    else {
+        panic!("custom Promise capability did not return its result object");
+    };
+    let result_id = result.object_id();
+    drop(result);
+
+    runtime.run_gc().unwrap();
+    assert!(
+        runtime.0.state.borrow().heap.object(result_id).is_err(),
+        "a pending reaction retained the custom species result object"
+    );
+    assert_eq!(
+        context.eval("typeof pendingSource.then").unwrap(),
+        Value::String(JsString::from_static("function"))
     );
 }

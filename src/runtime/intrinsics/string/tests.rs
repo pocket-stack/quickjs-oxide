@@ -104,7 +104,7 @@ fn code_point_range_context_api_preserves_quickjs_native_contract() {
     ));
     {
         let state = runtime.0.state.borrow();
-        let ObjectPayload::NativeFunction { data } = &state
+        let ObjectPayload::NativeFunction { data, .. } = &state
             .heap
             .object(helper.as_object().object_id())
             .unwrap()
@@ -1272,7 +1272,7 @@ fn string_trim_family_preserves_alias_materialization_order_and_independence() {
         ] {
             assert!(matches!(
                 &state.heap.object(id).unwrap().payload,
-                ObjectPayload::NativeFunction { data }
+                ObjectPayload::NativeFunction { data, .. }
                     if data.target == NativeFunctionId::StringPrototypeTrim(selector)
                         && data.realm == Some(context.realm)
                         && data.min_readable_args == 0

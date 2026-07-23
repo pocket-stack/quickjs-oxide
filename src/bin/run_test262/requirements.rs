@@ -14,13 +14,14 @@ pub(super) fn missing_host_capability_hints(
     path: &Path,
     source: &str,
     metadata: &Metadata,
+    allow_async: bool,
 ) -> Vec<String> {
     let mut missing = BTreeSet::new();
 
     if metadata.is_module() {
         missing.insert("module".to_owned());
     }
-    if metadata.is_async() {
+    if metadata.is_async() && !allow_async {
         missing.insert("async".to_owned());
     }
     if metadata.flags.contains("CanBlockIsFalse") {
@@ -290,6 +291,7 @@ mod tests {
             Path::new("test/example.js"),
             "$262.createRealm(); $262.evalScript('0'); $262.gc();",
             &metadata,
+            false,
         );
         assert_eq!(
             actual,
@@ -311,7 +313,17 @@ mod tests {
     fn can_block_true_is_the_supported_default_and_is_not_missing() {
         let metadata = metadata(&["CanBlockIsTrue"], &[], &[]);
         assert!(
-            missing_host_capability_hints(Path::new("test/example.js"), "0;", &metadata).is_empty()
+            missing_host_capability_hints(Path::new("test/example.js"), "0;", &metadata, false)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn scoped_async_host_removes_only_the_async_execution_gap() {
+        let metadata = metadata(&["module", "async"], &[], &[]);
+        assert_eq!(
+            missing_host_capability_hints(Path::new("test/example.js"), "0;", &metadata, true,),
+            ["module"]
         );
     }
 
@@ -329,7 +341,8 @@ mod tests {
             missing_host_capability_hints(
                 Path::new("test/example.js"),
                 source,
-                &Metadata::default()
+                &Metadata::default(),
+                false,
             ),
             ["abstract-module-source", "is-html-dda"]
         );
@@ -342,7 +355,8 @@ mod tests {
             missing_host_capability_hints(
                 Path::new("test/example.js"),
                 source,
-                &Metadata::default()
+                &Metadata::default(),
+                false,
             ),
             ["gc"]
         );
@@ -355,7 +369,8 @@ mod tests {
             missing_host_capability_hints(
                 Path::new("test/example.js"),
                 source,
-                &Metadata::default()
+                &Metadata::default(),
+                false,
             ),
             ["global", "unknown:$262.futureHook"]
         );
@@ -370,12 +385,13 @@ mod tests {
                 Path::new("test/harness/detachArrayBuffer-host-detachArrayBuffer.js"),
                 source,
                 &metadata,
+                false,
             )
             .is_empty()
         );
 
         assert_eq!(
-            missing_host_capability_hints(Path::new("test/ordinary.js"), source, &metadata,),
+            missing_host_capability_hints(Path::new("test/ordinary.js"), source, &metadata, false,),
             ["detach-array-buffer"]
         );
     }
@@ -395,6 +411,7 @@ mod tests {
             Path::new("test/example.js"),
             source,
             &Metadata::default(),
+            false,
         );
         assert_eq!(
             actual.into_iter().collect::<BTreeSet<_>>(),

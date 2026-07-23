@@ -234,6 +234,7 @@ impl Runtime {
             }
             ObjectPayload::Ordinary
             | ObjectPayload::RawJson
+            | ObjectPayload::Promise(_)
             | ObjectPayload::Array { .. }
             | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }

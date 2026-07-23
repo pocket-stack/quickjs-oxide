@@ -12,15 +12,20 @@ mod for_in;
 mod generator;
 mod home_object;
 mod intrinsics;
+mod jobs;
 mod native_dispatch;
 mod native_stack;
 mod object_literal;
 mod private_elements;
 mod properties;
+mod qjs_host;
 mod template_object;
 mod vm_host;
 
 use self::intrinsics::date::{DateHost, SystemDateHost};
+use self::intrinsics::promise::HostPromiseRejectionTracker;
+pub use self::intrinsics::promise::PromiseRejectionEvent;
+pub use self::jobs::PendingJobError;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -80,6 +85,7 @@ struct RuntimeInner {
     state: RefCell<RuntimeState>,
     deferred_references: RefCell<VecDeque<DeferredRefOp>>,
     date_host: Rc<dyn DateHost>,
+    promise_rejection_tracker: RefCell<Option<HostPromiseRejectionTracker>>,
     /// Address marker captured at the outermost JavaScript/native call entry.
     /// Nested call guards compare against it using QuickJS's one-MiB host-stack
     /// budget; no pointer is dereferenced after the marker's lifetime ends.
@@ -121,6 +127,9 @@ struct RuntimeState {
     /// carry one manually retained root; no public `Value::Exception` sentinel
     /// exists.
     pending_exception: Option<RawValue>,
+    /// QuickJS `JSRuntime.job_list`: jobs are FIFO and own only raw arena/
+    /// atom roots so the queue never creates an `Rc<RuntimeInner>` cycle.
+    pending_jobs: VecDeque<jobs::PendingJob>,
     /// Observable function-debug portion of QuickJS `JS_SetStripInfo`, sampled
     /// by each subsequent compilation.
     debug_info_mode: DebugInfoMode,
@@ -679,6 +688,7 @@ impl Runtime {
                 atoms,
                 heap: Heap::new(),
                 pending_exception: None,
+                pending_jobs: VecDeque::new(),
                 debug_info_mode: DebugInfoMode::Full,
                 shape_cache: HashMap::new(),
                 shape_fingerprints: HashMap::new(),
@@ -692,6 +702,7 @@ impl Runtime {
             }),
             deferred_references: RefCell::new(VecDeque::new()),
             date_host,
+            promise_rejection_tracker: RefCell::new(None),
             host_stack_top: Cell::new(None),
             next_context_id: Cell::new(0),
             domain_id,
@@ -1001,6 +1012,13 @@ impl Runtime {
             &global_object,
         )
         .expect("Set intrinsic initialization must succeed");
+        self.initialize_promise_intrinsic(
+            realm,
+            &function_prototype,
+            &object_prototype,
+            &global_object,
+        )
+        .expect("Promise intrinsic initialization must succeed");
         drop(global_var_object);
         drop(global_object);
         drop(uninitialized_vars);
@@ -4545,7 +4563,7 @@ impl Runtime {
                         actual_arg_count,
                         readable_arg_count,
                     },
-                    ObjectPayload::NativeFunction { data },
+                    ObjectPayload::NativeFunction { data, .. },
                     None,
                 ) if data.target == target
                     && data.realm == Some(realm)
@@ -4784,7 +4802,7 @@ impl Runtime {
             let state = self.0.state.borrow();
             let object = state.heap.object(callable.as_object().object_id())?;
             match &object.payload {
-                ObjectPayload::NativeFunction { data } => {
+                ObjectPayload::NativeFunction { data, .. } => {
                     let realm = data.realm.ok_or(RuntimeError::Invariant(
                         "native function was called before its defining realm was attached",
                     ))?;
@@ -4824,6 +4842,7 @@ impl Runtime {
                 } => (*bytecode, closure_slots.clone()),
                 ObjectPayload::Ordinary
                 | ObjectPayload::RawJson
+                | ObjectPayload::Promise(_)
                 | ObjectPayload::Date(_)
                 | ObjectPayload::RegExp(_)
                 | ObjectPayload::Array { .. }
@@ -4873,7 +4892,7 @@ impl Runtime {
         let state = self.0.state.borrow();
         let object = state.heap.object(callable.as_object().object_id())?;
         match &object.payload {
-            ObjectPayload::NativeFunction { data } => {
+            ObjectPayload::NativeFunction { data, .. } => {
                 let realm = data.realm.ok_or(RuntimeError::Invariant(
                     "native function was called before its defining realm was attached",
                 ))?;
@@ -4885,6 +4904,7 @@ impl Runtime {
             }
             ObjectPayload::Ordinary
             | ObjectPayload::RawJson
+            | ObjectPayload::Promise(_)
             | ObjectPayload::Date(_)
             | ObjectPayload::RegExp(_)
             | ObjectPayload::Array { .. }
@@ -5218,7 +5238,7 @@ impl Runtime {
             let state = self.0.state.borrow();
             let object = state.heap.object(callable.as_object().object_id())?;
             match &object.payload {
-                ObjectPayload::NativeFunction { data } if data.realm.is_some() => {
+                ObjectPayload::NativeFunction { data, .. } if data.realm.is_some() => {
                     let realm = data
                         .realm
                         .expect("guard proved native function has a defining realm");
@@ -5243,6 +5263,7 @@ impl Runtime {
                 }
                 ObjectPayload::Ordinary
                 | ObjectPayload::RawJson
+                | ObjectPayload::Promise(_)
                 | ObjectPayload::Date(_)
                 | ObjectPayload::RegExp(_)
                 | ObjectPayload::Array { .. }
@@ -5347,7 +5368,7 @@ impl Runtime {
         {
             let state = self.0.state.borrow();
             let object = state.heap.object(callable.as_object().object_id())?;
-            let ObjectPayload::NativeFunction { data } = &object.payload else {
+            let ObjectPayload::NativeFunction { data, .. } = &object.payload else {
                 return Err(RuntimeError::Invariant(
                     "native invocation target was not a native function",
                 ));
@@ -5685,9 +5706,18 @@ impl Runtime {
                 self.prepare_get_property_with_receiver(&prototype, key, receiver.clone())?
             }
             Value::Undefined | Value::Null => {
-                return Err(RuntimeError::Engine(Error::internal(
-                    "primitive value property lookup is not implemented yet",
-                )));
+                let suffix = if matches!(receiver, Value::Null) {
+                    "' of null"
+                } else {
+                    "' of undefined"
+                };
+                let error =
+                    self.native_atom_error(ErrorKind::Type, "cannot read property '", key, suffix)?;
+                return Ok(Completion::Throw(self.new_native_error_from_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    &error,
+                )?));
             }
         };
         match action {
@@ -6300,6 +6330,7 @@ impl Runtime {
                         }
                         ObjectPayload::Ordinary
                         | ObjectPayload::RawJson
+                        | ObjectPayload::Promise(_)
                         | ObjectPayload::Date(_)
                         | ObjectPayload::RegExp(_)
                         | ObjectPayload::Array { .. }
@@ -6619,6 +6650,7 @@ impl Runtime {
                 }
                 ObjectPayload::Ordinary
                 | ObjectPayload::RawJson
+                | ObjectPayload::Promise(_)
                 | ObjectPayload::Date(_)
                 | ObjectPayload::RegExp(_)
                 | ObjectPayload::Array { .. }
@@ -6837,6 +6869,7 @@ impl Runtime {
                         | ObjectPayload::BytecodeFunction { .. } => None,
                         ObjectPayload::Ordinary
                         | ObjectPayload::RawJson
+                        | ObjectPayload::Promise(_)
                         | ObjectPayload::Date(_)
                         | ObjectPayload::RegExp(_)
                         | ObjectPayload::Array { .. }
@@ -6932,7 +6965,7 @@ impl Runtime {
                     let state = self.0.state.borrow();
                     let object = state.heap.object(method.as_object().object_id())?;
                     match &object.payload {
-                        ObjectPayload::NativeFunction { data }
+                        ObjectPayload::NativeFunction { data, .. }
                             if data.target == NativeFunctionId::FunctionPrototypeHasInstance =>
                         {
                             Some((
@@ -6944,6 +6977,7 @@ impl Runtime {
                         }
                         ObjectPayload::Ordinary
                         | ObjectPayload::RawJson
+                        | ObjectPayload::Promise(_)
                         | ObjectPayload::Date(_)
                         | ObjectPayload::RegExp(_)
                         | ObjectPayload::Array { .. }
@@ -7318,6 +7352,7 @@ impl Runtime {
                     }
                     ObjectPayload::Ordinary
                     | ObjectPayload::RawJson
+                    | ObjectPayload::Promise(_)
                     | ObjectPayload::Date(_)
                     | ObjectPayload::RegExp(_)
                     | ObjectPayload::Array { .. }
@@ -8240,6 +8275,7 @@ impl Runtime {
                 ObjectPayload::GlobalObject { uninitialized_vars } => Some(uninitialized_vars),
                 ObjectPayload::Ordinary
                 | ObjectPayload::RawJson
+                | ObjectPayload::Promise(_)
                 | ObjectPayload::Date(_)
                 | ObjectPayload::RegExp(_)
                 | ObjectPayload::Array { .. }
@@ -9007,6 +9043,10 @@ impl Drop for RuntimeInner {
                 "runtime deferred teardown failed: {result:?}"
             );
         }
+        while let Some(job) = state.pending_jobs.pop_front() {
+            let result = state.release_pending_job_roots(&job);
+            debug_assert!(result.is_ok(), "pending job teardown failed: {result:?}");
+        }
         if let Some(exception) = state.pending_exception.take() {
             let result = state.release_owned_raw_root(exception);
             debug_assert!(
@@ -9187,6 +9227,12 @@ impl Context {
     #[must_use]
     pub const fn id(&self) -> u64 {
         self.id
+    }
+
+    /// Return the stable arena identity used by runtime jobs and host hooks.
+    #[must_use]
+    pub const fn realm_id(&self) -> ContextId {
+        self.realm
     }
 
     #[must_use]

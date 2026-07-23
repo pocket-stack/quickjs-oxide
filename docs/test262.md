@@ -3141,6 +3141,45 @@ cargo build --bin qjs
 Use `--check` on either script to authenticate only the frozen inputs and
 pinned QuickJS oracle.
 
+## R3m Promise constructor and jobs
+
+R3m establishes the first Promise/microtask acceptance boundary without
+claiming the rest of the 652-path Promise tree. The frozen candidate universe
+is the 58 JavaScript files directly under `test/built-ins/Promise/`; the single
+`proto-from-ctor-realm.js` path remains excluded because it requires the
+separate `$262.createRealm` host capability. The resulting gate contains 57
+paths / 112 sloppy/strict variants: 26 async paths, 31 synchronous paths, and
+one each of `noStrict` and `onlyStrict`.
+
+Oxide passes 112/112 variants and pinned QuickJS 2026-06-04 passes all 57
+paths. There are no failures, unsupported results, skips, timeouts, crashes, or
+runner faults. The manifest, scoped profile, variant-key stream, TSV, JSONL,
+and empty non-pass SHA-256 values are
+`6cd3564883d5c0e459872b835e19ee7bb8c7f13716824fa2617ca1e698d5ed25`,
+`f3a07d4c1c839b4d252ed65f8fb9cadc1862cd31280002caa4656d581007eb71`,
+`0290f32ed1fe1968adf0e039748011f30588f4c1ac4b99719c5ce95d1ed9623c`,
+`ae6c2454e0aba85f1ce89e1216007c863bcefbf3ce092b2f231549e544b689cf`,
+`0d0c92b15448bf8ef94f040ff36c970e1c1d795bfdc99a720e1dff45d1071c18`,
+and
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+
+The scoped profile declares only the metadata features actually present
+(`Reflect`, `Reflect.construct`, and `arrow-function`) and opts into the
+Test262 async host through `[execution] async=true`. That opt-in loads
+`doneprintHandle.js`, captures every string argument passed to `print` behind a
+read-only snapshot boundary, drains the FIFO runtime job queue, and requires
+exactly one `$DONE` report. The global profile has no execution section, so
+async tests remain fail-closed outside this pinned manifest.
+
+Reproduce the gate with:
+
+```sh
+./scripts/test-test262-promise-constructor-jobs.sh
+```
+
+Use `--check` to authenticate only the frozen manifest/profile and pinned
+QuickJS oracle.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -3157,12 +3196,13 @@ pinned QuickJS oracle.
 - unsupported features and unaudited negative tests fail closed through the
   checksum-pinned quickjs-oxide capability profile;
 - metadata and source requirements classify module, async, `CanBlockIsFalse`,
-  and the `$262` host hooks used by the pinned suite before execution;
+  and the `$262` host hooks used by the pinned suite before execution; async
+  execution requires an authenticated scoped-profile opt-in;
 - bounded parallel workers with deterministic result ordering and full child
   cleanup after errors;
 - deterministic TSV outcome vector plus a JSONL sidecar;
-- module and async variants reported as unsupported and treated as failures
-  unless a caller is explicitly recording a baseline.
+- module variants and non-opted-in async variants reported as unsupported and
+  treated as failures unless a caller is explicitly recording a baseline.
 
 The host scan is deliberately conservative and the pinned inventory has no
 unknown `$262` hook. Native `$262` objects and an out-of-band host sentinel are

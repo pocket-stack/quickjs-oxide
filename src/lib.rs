@@ -35,11 +35,14 @@ pub use debug::{
 };
 pub use error::{Error, ErrorKind, SourceLocation, SourceSpan};
 pub use function::FunctionBytecodeRef;
+pub use heap::ContextId;
 pub use object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
     OrdinaryPropertyDescriptor, PropertyKey, SymbolRef, WellKnownSymbol,
 };
-pub use runtime::{Context, EvalOptions, Runtime, RuntimeError};
+pub use runtime::{
+    Context, EvalOptions, PendingJobError, PromiseRejectionEvent, Runtime, RuntimeError,
+};
 pub use value::{JsString, JsStringError, Value};
 
 /// The exact upstream release whose observable behavior is the compatibility

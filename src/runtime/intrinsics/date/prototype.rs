@@ -101,6 +101,7 @@ impl Runtime {
                 ObjectPayload::Date(value) => Some(*value),
                 ObjectPayload::Ordinary
                 | ObjectPayload::RawJson
+                | ObjectPayload::Promise(_)
                 | ObjectPayload::RegExp(_)
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }

@@ -131,8 +131,29 @@ fn evaluate(
     let runtime = Runtime::new();
     runtime.set_debug_info_mode(debug_info);
     let mut context = runtime.new_context();
+    if let Err(error) = context.install_qjs_print() {
+        eprintln!("{error}");
+        return ExitCode::from(1);
+    }
     match context.eval_with_filename(source, filename) {
         Ok(value) => {
+            loop {
+                match runtime.execute_pending_job() {
+                    Ok(true) => {}
+                    Ok(false) => break,
+                    Err(RuntimeError::Exception) => {
+                        match format_pending_exception(&runtime, &mut context) {
+                            Some(exception) => eprintln!("{exception}"),
+                            None => eprintln!("JavaScript exception"),
+                        }
+                        return ExitCode::from(1);
+                    }
+                    Err(error) => {
+                        eprintln!("{error}");
+                        return ExitCode::from(1);
+                    }
+                }
+            }
             if print_result {
                 println!("{}", completion_text(value));
             }

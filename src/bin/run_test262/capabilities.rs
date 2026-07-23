@@ -4,7 +4,12 @@ use std::path::Path;
 
 const FEATURES_SECTION: &str = "features";
 const AUDITED_NEGATIVE_TESTS_SECTION: &str = "audited-negative-tests";
-const SECTION_ORDER: [&str; 2] = [FEATURES_SECTION, AUDITED_NEGATIVE_TESTS_SECTION];
+const EXECUTION_SECTION: &str = "execution";
+const SECTION_ORDER: [&str; 3] = [
+    FEATURES_SECTION,
+    AUDITED_NEGATIVE_TESTS_SECTION,
+    EXECUTION_SECTION,
+];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct FailClosedClassification {
@@ -16,6 +21,7 @@ pub(super) struct FailClosedClassification {
 pub(super) struct OxideProfile {
     features: BTreeSet<String>,
     audited_negative_tests: BTreeSet<String>,
+    async_execution: bool,
 }
 
 impl OxideProfile {
@@ -30,6 +36,7 @@ impl OxideProfile {
         let mut seen_sections = BTreeSet::new();
         let mut section_index = None;
         let mut previous_entry: Option<String> = None;
+        let mut saw_async_execution_entry = false;
 
         for (line_index, raw_line) in source.lines().enumerate() {
             let line_number = line_index + 1;
@@ -67,14 +74,18 @@ impl OxideProfile {
                 if !seen_sections.insert(name.to_owned()) {
                     return Err(format!("line {line_number}: duplicate section [{name}]"));
                 }
+                let section_position = SECTION_ORDER
+                    .iter()
+                    .position(|section| *section == name)
+                    .expect("known section was checked");
                 let expected_index = seen_sections.len() - 1;
-                if SECTION_ORDER[expected_index] != name {
+                if section_position != expected_index {
                     return Err(format!(
                         "line {line_number}: section [{name}] is out of order; expected [{}]",
                         SECTION_ORDER[expected_index]
                     ));
                 }
-                section_index = Some(expected_index);
+                section_index = Some(section_position);
                 previous_entry = None;
                 continue;
             }
@@ -85,6 +96,17 @@ impl OxideProfile {
                 ));
             };
             validate_entry(line, current_section, line_number)?;
+
+            if current_section == 2 {
+                if saw_async_execution_entry {
+                    return Err(format!(
+                        "line {line_number}: duplicate entry {line:?} in [{EXECUTION_SECTION}]"
+                    ));
+                }
+                profile.async_execution = true;
+                saw_async_execution_entry = true;
+                continue;
+            }
 
             let entries = if current_section == 0 {
                 &mut profile.features
@@ -109,12 +131,21 @@ impl OxideProfile {
             previous_entry = Some(line.to_owned());
         }
 
-        for section in SECTION_ORDER {
+        for section in [FEATURES_SECTION, AUDITED_NEGATIVE_TESTS_SECTION] {
             if !seen_sections.contains(section) {
                 return Err(format!("missing required section [{section}]"));
             }
         }
+        if seen_sections.contains(EXECUTION_SECTION) && !saw_async_execution_entry {
+            return Err(format!(
+                "section [{EXECUTION_SECTION}] must contain async=true"
+            ));
+        }
         Ok(profile)
+    }
+
+    pub(super) fn allows_async_execution(&self) -> bool {
+        self.async_execution
     }
 
     pub(super) fn audited_negative_paths(&self) -> impl Iterator<Item = &str> {
@@ -160,6 +191,14 @@ impl OxideProfile {
 }
 
 fn validate_entry(entry: &str, section_index: usize, line_number: usize) -> Result<(), String> {
+    if section_index == 2 {
+        if entry != "async=true" {
+            return Err(format!(
+                "line {line_number}: [{EXECUTION_SECTION}] only accepts async=true"
+            ));
+        }
+        return Ok(());
+    }
     if entry
         .chars()
         .any(|character| character.is_whitespace() || character.is_control())
@@ -194,7 +233,10 @@ mod tests {
     use std::collections::BTreeSet;
     use std::path::Path;
 
-    use super::{AUDITED_NEGATIVE_TESTS_SECTION, FEATURES_SECTION, OxideProfile, SECTION_ORDER};
+    use super::{
+        AUDITED_NEGATIVE_TESTS_SECTION, EXECUTION_SECTION, FEATURES_SECTION, OxideProfile,
+        SECTION_ORDER,
+    };
 
     const CHECKED_IN_PROFILE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -574,6 +616,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(profile, loaded);
+        assert!(!profile.allows_async_execution());
         assert!(
             profile
                 .features
@@ -717,6 +760,24 @@ mod tests {
     }
 
     #[test]
+    fn optional_execution_section_enables_only_the_async_host() {
+        let source = "[features]\nPromise\n[audited-negative-tests]\n[execution]\nasync=true\n";
+        let profile = OxideProfile::parse(source).unwrap();
+        assert!(profile.allows_async_execution());
+
+        for invalid in [
+            "[features]\nPromise\n[audited-negative-tests]\n[execution]\n",
+            "[features]\nPromise\n[audited-negative-tests]\n[execution]\nasync=false\n",
+            "[features]\nPromise\n[audited-negative-tests]\n[execution]\nasync=true\nasync=true\n",
+        ] {
+            assert!(
+                OxideProfile::parse(invalid).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
     fn parser_requires_entries_to_follow_the_fixed_section_order() {
         let source = "BigInt\n[features]\n[audited-negative-tests]\n";
         assert!(
@@ -726,7 +787,11 @@ mod tests {
         );
         assert_eq!(
             SECTION_ORDER,
-            [FEATURES_SECTION, AUDITED_NEGATIVE_TESTS_SECTION]
+            [
+                FEATURES_SECTION,
+                AUDITED_NEGATIVE_TESTS_SECTION,
+                EXECUTION_SECTION,
+            ]
         );
     }
 }

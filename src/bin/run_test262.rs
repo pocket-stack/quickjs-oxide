@@ -86,6 +86,10 @@ const TEST262_CLASS_PRIVATE_GENERATOR_METHODS_PROFILE_SHA256: &str =
     "e3732db0b47608265f4f950c1c72929e782eb507597c5f0b336896e51874133e";
 const TEST262_CLASS_PRIVATE_GENERATOR_METHODS_MANIFEST_SHA256: &str =
     "b7b2c71cab374f9bcc6754bd9a80506d273d2e135e3f66eb373f325c94d33685";
+const TEST262_PROMISE_CONSTRUCTOR_JOBS_PROFILE_SHA256: &str =
+    "f3a07d4c1c839b4d252ed65f8fb9cadc1862cd31280002caa4656d581007eb71";
+const TEST262_PROMISE_CONSTRUCTOR_JOBS_MANIFEST_SHA256: &str =
+    "6cd3564883d5c0e459872b835e19ee7bb8c7f13716824fa2617ca1e698d5ed25";
 const TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256: &str =
     "8232e2c11e908f7cbf5a9e0f34fbd5223a9551b49ae64647f2a72b2314bcaf84";
 const TEST262_ARRAY_BINDING_FLAT_MANIFEST_SHA256: &str =
@@ -232,6 +236,7 @@ struct WorkerOptions {
     suite: PathBuf,
     test: PathBuf,
     variant: Variant,
+    allow_async_host: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -323,6 +328,7 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
     let mut allow_failures = false;
     let mut variant = None;
     let mut metadata_records = None;
+    let mut allow_async_host = false;
     let mut index = 0;
     while index < arguments.len() {
         let argument = &arguments[index];
@@ -337,6 +343,7 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
         };
         match argument.as_str() {
             "--worker-one" => {}
+            "--allow-async-host" => allow_async_host = true,
             "--suite" => suite = Some(PathBuf::from(take_value("--suite")?)),
             "--config" => config = Some(PathBuf::from(take_value("--config")?)),
             "--oxide-profile" => {
@@ -391,6 +398,7 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             || mode_explicit
             || timeout_explicit
             || workers.is_some()
+            || allow_async_host
         {
             return Err("--validate-metadata cannot be combined with execution options".to_owned());
         }
@@ -417,7 +425,11 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             suite,
             test: tests.remove(0),
             variant: variant.ok_or_else(|| "--worker-one requires --variant".to_owned())?,
+            allow_async_host,
         }));
+    }
+    if allow_async_host {
+        return Err("--allow-async-host is internal to --worker-one".to_owned());
     }
     if variant.is_some() {
         return Err("--variant is internal to --worker-one".to_owned());
@@ -463,8 +475,9 @@ usage: run-test262 --suite DIR --config FILE --oxide-profile FILE (--manifest FI
   --validate-metadata FILE\n\
                        serialize the complete pinned metadata inventory\n\
 \n\
-Every variant runs in a fresh subprocess. Module and async tests are reported\n\
-as unsupported until those runtime surfaces are implemented."
+Every variant runs in a fresh subprocess. Module tests remain unsupported;\n\
+async tests remain fail-closed unless a pinned scoped profile opts into the\n\
+job-draining Test262 host."
     );
 }
 
@@ -539,7 +552,12 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
             .map_err(|error| format!("parse metadata for {}: {error}", relative.display()))?;
         let variants = metadata.variants(options.mode);
         let skip = skip_reason(&relative, &metadata, &config);
-        let missing_host = missing_host_capability_hints(&relative, &source, &metadata);
+        let missing_host = missing_host_capability_hints(
+            &relative,
+            &source,
+            &metadata,
+            oxide_profile.allows_async_execution(),
+        );
         let capability =
             oxide_profile.classify(&relative, &metadata.features, metadata.negative.is_some());
         let selection_result = if let Some((outcome, detail)) = &skip {
@@ -599,6 +617,7 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
             &test.relative,
             job.variant,
             options.timeout,
+            oxide_profile.allows_async_execution(),
         )
     })?;
     for (job, result) in runnable_jobs.iter().zip(worker_results) {
@@ -660,6 +679,7 @@ enum OxideProfileKind {
     ClassPrivateAccessors,
     ClassGeneratorMethods,
     ClassPrivateGeneratorMethods,
+    PromiseConstructorJobs,
     ArrayBindingFlat,
     ArrayBindingNested,
     ArrayAssignmentFlat,
@@ -731,6 +751,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-class-private-generator-methods.conf"),
             OxideProfileKind::ClassPrivateGeneratorMethods,
+        ),
+        (
+            root.join("tests/test262-promise-constructor-jobs.conf"),
+            OxideProfileKind::PromiseConstructorJobs,
         ),
         (
             root.join("tests/test262-array-binding-flat.conf"),
@@ -807,7 +831,7 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         }
     }
     Err(format!(
-        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-aggregate-error.conf, tests/test262-argument-spread.conf, tests/test262-class-base.conf, tests/test262-class-derived.conf, tests/test262-class-public-init.conf, tests/test262-class-private-fields.conf, tests/test262-class-private-methods.conf, tests/test262-class-private-accessors.conf, tests/test262-class-generator-methods.conf, tests/test262-class-private-generator-methods.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-direct-eval.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-parameter-expression-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-aggregate-error.conf, tests/test262-argument-spread.conf, tests/test262-class-base.conf, tests/test262-class-derived.conf, tests/test262-class-public-init.conf, tests/test262-class-private-fields.conf, tests/test262-class-private-methods.conf, tests/test262-class-private-accessors.conf, tests/test262-class-generator-methods.conf, tests/test262-class-private-generator-methods.conf, tests/test262-promise-constructor-jobs.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-direct-eval.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-parameter-expression-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
         path.display()
     ))
 }
@@ -979,6 +1003,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             TEST262_CLASS_PRIVATE_GENERATOR_METHODS_PROFILE_SHA256,
             "tests/test262-class-private-generator-methods.txt",
             TEST262_CLASS_PRIVATE_GENERATOR_METHODS_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::PromiseConstructorJobs => verify_scoped_pinned_profile(
+            options,
+            "Promise constructor and jobs",
+            TEST262_PROMISE_CONSTRUCTOR_JOBS_PROFILE_SHA256,
+            "tests/test262-promise-constructor-jobs.txt",
+            TEST262_PROMISE_CONSTRUCTOR_JOBS_MANIFEST_SHA256,
         ),
         OxideProfileKind::ArrayBindingFlat => {
             verify_sha256(
@@ -1789,6 +1820,40 @@ mod cli_tests {
             "10",
         ]);
         assert_eq!(worker, "invalid coordinator option passed to --worker-one");
+
+        let coordinator = parse_error(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "profile",
+            "--all",
+            "--report",
+            "report.tsv",
+            "--allow-async-host",
+        ]);
+        assert_eq!(
+            coordinator,
+            "--allow-async-host is internal to --worker-one"
+        );
+    }
+
+    #[test]
+    fn worker_accepts_the_explicit_scoped_async_host_flag() {
+        let invocation = parse(&[
+            "--worker-one",
+            "--suite",
+            "suite",
+            "--test",
+            "test/a.js",
+            "--variant",
+            "sloppy",
+            "--allow-async-host",
+        ])
+        .unwrap();
+        let Invocation::Worker(options) = invocation else {
+            panic!("worker arguments selected another invocation");
+        };
+        assert!(options.allow_async_host);
     }
 
     #[test]
@@ -1846,6 +1911,11 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::ClassPrivateGeneratorMethods
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-promise-constructor-jobs.conf",))
+                .unwrap(),
+            OxideProfileKind::PromiseConstructorJobs
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-array-binding-flat.conf")).unwrap(),

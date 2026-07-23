@@ -1895,7 +1895,7 @@ impl RuntimeVmHost {
             .map_err(|error| Error::internal(error.to_string()))?;
         Ok(matches!(
             &object.payload,
-            ObjectPayload::NativeFunction { data } if data.target == expected
+            ObjectPayload::NativeFunction { data, .. } if data.target == expected
         ))
     }
 
@@ -2446,6 +2446,7 @@ impl VmHost for RuntimeVmHost {
             | ObjectPayload::BytecodeFunction { .. } => "function",
             ObjectPayload::Ordinary
             | ObjectPayload::RawJson
+            | ObjectPayload::Promise(_)
             | ObjectPayload::Date(_)
             | ObjectPayload::RegExp(_)
             | ObjectPayload::Array { .. }

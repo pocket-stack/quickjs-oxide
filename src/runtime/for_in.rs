@@ -148,6 +148,7 @@ impl Runtime {
             } => *fast_len,
             ObjectPayload::Ordinary
             | ObjectPayload::RawJson
+            | ObjectPayload::Promise(_)
             | ObjectPayload::Date(_)
             | ObjectPayload::RegExp(_)
             | ObjectPayload::Array { fast_len: None }

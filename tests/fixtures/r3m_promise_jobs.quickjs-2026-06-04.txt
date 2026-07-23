@@ -1,0 +1,10 @@
+executor-sync=executor|after-resolve|after-constructor|after-then:false
+executor-reaction=executor|after-resolve|after-constructor|after-then:false|reaction:40|result:41
+fifo-nested-tail=A|B|nested
+settled-late-then=first|after-register|late:42
+pass-throw-catch=fulfilled-pass|rejected-pass|RangeError:chain|42
+thenable-timing=get|after-resolve|throwing-get|after-throwing-resolve|call|getter-rejected|reaction:42
+first-call-self=first:42|self:TypeError
+constructor-species=true|true|true|true|false|true|true|true|true|false|41|40|true|true|42
+queued-job-retention=42
+r3m-promise-jobs-oracle=ok

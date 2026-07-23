@@ -45,6 +45,7 @@ impl Runtime {
             ObjectPayload::NativeFunction { .. } | ObjectPayload::BoundFunction { .. } => None,
             ObjectPayload::Ordinary
             | ObjectPayload::RawJson
+            | ObjectPayload::Promise(_)
             | ObjectPayload::Array { .. }
             | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }

@@ -19,6 +19,7 @@
 //! atoms in [`HeapCleanup::atoms`] so the caller can release them without
 //! making this low-level arena depend on `AtomTable` mutability or callbacks.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt;
@@ -408,6 +409,17 @@ pub struct GeneratorRealmData {
     pub function_prototype: ObjectId,
 }
 
+/// Realm-owned Promise identities used by allocation and species fallback.
+///
+/// Both identities remain explicit Context roots.  User code may delete the
+/// public global and constructor/prototype properties without changing the
+/// intrinsic identities used by Promise abstract operations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PromiseRealmData {
+    pub prototype: ObjectId,
+    pub constructor: ObjectId,
+}
+
 /// Realm-owned roots which participate in QuickJS's cycle graph.
 ///
 /// The bootstrap roots needed by ordinary script evaluation are explicit;
@@ -462,6 +474,9 @@ pub struct ContextData {
     /// `%GeneratorFunction.prototype%`, attached after their reciprocal
     /// constructor/prototype graph has been initialized.
     pub generator: Option<GeneratorRealmData>,
+    /// Realm-local `%Promise.prototype%` and `%Promise%`, attached atomically
+    /// after their reciprocal public property graph is initialized.
+    pub promise: Option<PromiseRealmData>,
     /// `%Function%`, published after the cyclic realm bootstrap has created
     /// `%Function.prototype%` and the global object.
     pub function_constructor: Option<ObjectId>,
@@ -519,6 +534,7 @@ impl ContextData {
             map: None,
             set: None,
             generator: None,
+            promise: None,
             function_constructor: None,
             throw_type_error: None,
             eval_function: None,
@@ -4300,6 +4316,78 @@ pub struct GeneratorActivationData {
     pub reusable_captured_locals: Vec<bool>,
 }
 
+/// ECMAScript-visible state of one genuine Promise object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PromiseState {
+    Pending,
+    Fulfilled,
+    Rejected,
+}
+
+/// Which settlement path owns a Promise reaction record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PromiseReactionKind {
+    Fulfill,
+    Reject,
+}
+
+/// Raw, heap-owned resolving functions retained by a Promise reaction.
+///
+/// These are internal arena edges, not public runtime-owning wrappers.  A
+/// reaction keeps both callables alive until it is detached or its owning
+/// Promise is finalized. The result Promise itself is returned synchronously
+/// from `then`; QuickJS does not retain it as a separate reaction edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PromiseCapabilityData {
+    pub resolve: ObjectId,
+    pub reject: ObjectId,
+}
+
+/// One `PerformPromiseThen` reaction retained by a pending Promise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PromiseReaction {
+    pub kind: PromiseReactionKind,
+    pub handler: Option<ObjectId>,
+    pub capability: PromiseCapabilityData,
+}
+
+/// Complete hidden state of one genuine Promise object.
+///
+/// `result` is `undefined` while pending.  Reaction vectors are kept separate
+/// to preserve QuickJS's fulfill/reject list order, while each record also
+/// carries its kind so queued jobs remain self-describing after detachment.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PromiseData {
+    pub state: PromiseState,
+    pub result: RawValue,
+    pub fulfill_reactions: Vec<PromiseReaction>,
+    pub reject_reactions: Vec<PromiseReaction>,
+    pub is_handled: bool,
+}
+
+/// Mutable edge capture owned by an internal NewPromiseCapability executor.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PromiseCapabilityExecutorData {
+    pub resolve: Option<RawValue>,
+    pub reject: Option<RawValue>,
+}
+
+/// Typed hidden payload carried only by runtime-created native functions.
+///
+/// The shared `already_resolved` cell is intentionally a non-arena leaf: the
+/// resolve/reject pair shares one first-call-wins bit without introducing a
+/// `Runtime -> heap -> Runtime` ownership cycle.  Every raw object identity in
+/// this enum is still an ordinary traced and reference-counted heap edge.
+#[derive(Clone, Debug, PartialEq)]
+pub enum InternalCallableData {
+    PromiseResolving {
+        promise: ObjectId,
+        already_resolved: Rc<Cell<bool>>,
+        kind: PromiseResolvingKind,
+    },
+    PromiseCapabilityExecutor(PromiseCapabilityExecutorData),
+}
+
 /// Class-specific edges stored alongside an object's ordinary properties.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ObjectPayload {
@@ -4400,6 +4488,7 @@ pub enum ObjectPayload {
     },
     NativeFunction {
         data: NativeFunctionData,
+        internal: Option<InternalCallableData>,
     },
     /// QuickJS `JSBoundFunction`: the target, bound receiver and each bound
     /// argument are independently owned edges of the function object.
@@ -4431,6 +4520,9 @@ pub enum ObjectPayload {
         state: GeneratorState,
         activation: Option<Box<GeneratorActivationData>>,
     },
+    /// `JS_CLASS_PROMISE`: settlement state, result, and pending reactions are
+    /// traced directly in the arena rather than hidden in a runtime side map.
+    Promise(PromiseData),
 }
 
 /// Object storage category.  Additional QuickJS classes will extend this enum
@@ -4457,6 +4549,7 @@ pub enum ObjectKind {
     BoundFunction,
     BytecodeFunction,
     Generator,
+    Promise,
 }
 
 /// One string-key entry captured by QuickJS's `JS_GPN_SET_ENUM` enumeration.
@@ -5172,6 +5265,24 @@ pub enum SetNativeKind {
     Iterator(SetIteratorKind),
 }
 
+/// Typed handler family for the Promise constructor and its initial surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PromiseNativeKind {
+    Constructor,
+    Species,
+    Then,
+    Catch,
+    Resolve,
+    Reject,
+}
+
+/// Selector shared by the paired internal Promise resolving functions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PromiseResolvingKind {
+    Resolve,
+    Reject,
+}
+
 /// Runtime-provided callable identities. The enum is stored in heap payloads
 /// so native dispatch stays typed and does not rely on function pointers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -5249,10 +5360,16 @@ pub enum NativeFunctionId {
     MapIteratorNext,
     Set(SetNativeKind),
     SetIteratorNext,
+    Promise(PromiseNativeKind),
+    PromiseResolving(PromiseResolvingKind),
+    PromiseCapabilityExecutor,
     PrimitiveConstructor(PrimitiveKind),
     StringStatic(StringStaticKind),
     /// QuickJS's test262-only `js_string_codePointRange` helper.
     StringCodePointRange,
+    /// qjs-host `print`, installed explicitly by the CLI rather than as an
+    /// ECMAScript intrinsic in every Context.
+    QjsPrint,
     PrimitivePrototypeToString(PrimitiveKind),
     PrimitivePrototypeValueOf(PrimitiveKind),
     StringPrototypeCharAt(StringCharAtKind),
@@ -5661,6 +5778,14 @@ impl NativeFunctionId {
                 | SetNativeKind::Union
                 | SetNativeKind::Iterator(_),
             )
+            | Self::Promise(
+                PromiseNativeKind::Then
+                | PromiseNativeKind::Catch
+                | PromiseNativeKind::Resolve
+                | PromiseNativeKind::Reject,
+            )
+            | Self::PromiseResolving(_)
+            | Self::PromiseCapabilityExecutor
             | Self::Reflect(
                 ReflectKind::Apply
                 | ReflectKind::Construct
@@ -5675,6 +5800,7 @@ impl NativeFunctionId {
             | Self::PrimitivePrototypeValueOf(_)
             | Self::StringStatic(_)
             | Self::StringCodePointRange
+            | Self::QjsPrint
             | Self::StringPrototypeCharCodeAt
             | Self::StringPrototypeConcat
             | Self::StringPrototypeCodePointAt
@@ -5783,18 +5909,19 @@ impl NativeFunctionId {
             | Self::RegExp(RegExpNativeKind::Constructor) => NativeFunctionDescriptor {
                 cproto: NativeCProto::ConstructorOrFunction,
             },
-            Self::Map(MapNativeKind::Constructor) | Self::Set(SetNativeKind::Constructor) => {
-                NativeFunctionDescriptor {
-                    cproto: NativeCProto::Constructor,
-                }
-            }
+            Self::Map(MapNativeKind::Constructor)
+            | Self::Set(SetNativeKind::Constructor)
+            | Self::Promise(PromiseNativeKind::Constructor) => NativeFunctionDescriptor {
+                cproto: NativeCProto::Constructor,
+            },
             Self::FunctionPrototypeFileName
             | Self::ObjectPrototypeProtoGetter
             | Self::RegExp(
                 RegExpNativeKind::Species | RegExpNativeKind::Source | RegExpNativeKind::Flags,
             )
             | Self::Map(MapNativeKind::Species | MapNativeKind::Size)
-            | Self::Set(SetNativeKind::Species | SetNativeKind::Size) => NativeFunctionDescriptor {
+            | Self::Set(SetNativeKind::Species | SetNativeKind::Size)
+            | Self::Promise(PromiseNativeKind::Species) => NativeFunctionDescriptor {
                 cproto: NativeCProto::Getter,
             },
             Self::ObjectPrototypeProtoSetter => NativeFunctionDescriptor {
@@ -6274,6 +6401,7 @@ impl ObjectData {
                     realm: None,
                     min_readable_args,
                 },
+                internal: None,
             },
         }
     }
@@ -6301,6 +6429,38 @@ impl ObjectData {
                     realm: Some(realm),
                     min_readable_args,
                 },
+                internal: None,
+            },
+        }
+    }
+
+    /// Construct a realm-bound internal native callable with typed hidden
+    /// capture data.  Allocation retains every raw edge in `internal`; the
+    /// caller transfers no public runtime-owning wrapper into the heap.
+    #[must_use]
+    pub(crate) const fn bound_internal_native_function(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        target: NativeFunctionId,
+        realm: ContextId,
+        min_readable_args: u8,
+        internal: InternalCallableData,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::NativeFunction,
+            payload: ObjectPayload::NativeFunction {
+                data: NativeFunctionData {
+                    target,
+                    realm: Some(realm),
+                    min_readable_args,
+                },
+                internal: Some(internal),
             },
         }
     }
@@ -6410,6 +6570,29 @@ impl ObjectData {
                 state: GeneratorState::SuspendedStart,
                 activation: Some(Box::new(activation)),
             },
+        }
+    }
+
+    /// Construct one genuine pending Promise.  Its result slot starts at
+    /// `undefined` and owns no reactions until `PerformPromiseThen` appends
+    /// them through [`Heap::promise_add_reactions`].
+    #[must_use]
+    pub const fn promise(shape: ShapeId, slots: Vec<PropertySlot>) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::Promise,
+            payload: ObjectPayload::Promise(PromiseData {
+                state: PromiseState::Pending,
+                result: RawValue::Undefined,
+                fulfill_reactions: Vec::new(),
+                reject_reactions: Vec::new(),
+                is_handled: false,
+            }),
         }
     }
 }
@@ -6655,7 +6838,8 @@ impl Heap {
         if matches!(
             &object.payload,
             ObjectPayload::NativeFunction {
-                data: NativeFunctionData { realm: None, .. }
+                data: NativeFunctionData { realm: None, .. },
+                ..
             }
         ) {
             return Err(HeapError::Invariant(
@@ -6679,7 +6863,8 @@ impl Heap {
                     target: NativeFunctionId::FunctionPrototype,
                     realm: None,
                     ..
-                }
+                },
+                ..
             }
         ) {
             return Err(HeapError::Invariant(
@@ -6745,9 +6930,11 @@ impl Heap {
         match &self.object(object)?.payload {
             ObjectPayload::NativeFunction {
                 data: NativeFunctionData { realm: None, .. },
+                ..
             } => {}
             ObjectPayload::NativeFunction {
                 data: NativeFunctionData { realm: Some(_), .. },
+                ..
             } => {
                 return Err(HeapError::Invariant(
                     "native function already has a defining realm",
@@ -6772,7 +6959,8 @@ impl Heap {
             | ObjectPayload::StringIterator { .. }
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. }
-            | ObjectPayload::Generator { .. } => {
+            | ObjectPayload::Generator { .. }
+            | ObjectPayload::Promise(_) => {
                 return Err(HeapError::Invariant(
                     "attempted to attach a native realm to a non-native function",
                 ));
@@ -6780,7 +6968,8 @@ impl Heap {
         }
 
         self.retain_raw(RawId::Context(realm), 1)?;
-        let ObjectPayload::NativeFunction { data } = &mut self.object_mut(object)?.payload else {
+        let ObjectPayload::NativeFunction { data, .. } = &mut self.object_mut(object)?.payload
+        else {
             unreachable!("native-function payload was validated before retaining its realm")
         };
         data.realm = Some(realm);
@@ -6808,7 +6997,8 @@ impl Heap {
                     target: NativeFunctionId::ThrowTypeError,
                     realm: Some(target_realm),
                     ..
-                }
+                },
+                ..
             } if target_realm == realm
         ) {
             return Err(HeapError::Invariant(
@@ -6847,7 +7037,8 @@ impl Heap {
                     target: NativeFunctionId::ArrayPrototypeIterator(ArrayIteratorKind::Value),
                     realm: Some(target_realm),
                     ..
-                }
+                },
+                ..
             } if target_realm == realm
         ) {
             return Err(HeapError::Invariant(
@@ -6886,7 +7077,8 @@ impl Heap {
                         target: NativeFunctionId::FunctionConstructor(DynamicFunctionKind::Normal),
                         realm: Some(target_realm),
                         ..
-                    }
+                    },
+                    ..
                 } if target_realm == realm
             )
         {
@@ -6926,7 +7118,8 @@ impl Heap {
                         target: NativeFunctionId::GlobalEval,
                         realm: Some(target_realm),
                         ..
-                    }
+                    },
+                    ..
                 } if target_realm == realm
             )
         {
@@ -6966,7 +7159,8 @@ impl Heap {
                         target: NativeFunctionId::ArrayConstructor,
                         realm: Some(target_realm),
                         ..
-                    }
+                    },
+                    ..
                 } if target_realm == realm
             )
         {
@@ -7016,7 +7210,8 @@ impl Heap {
                         target: NativeFunctionId::RegExp(RegExpNativeKind::Constructor),
                         realm: Some(target_realm),
                         ..
-                    }
+                    },
+                    ..
                 } if target_realm == realm
             )
         {
@@ -7184,6 +7379,64 @@ impl Heap {
             unreachable!("context identity was validated before retaining Set roots")
         };
         context.set = Some(set);
+        Ok(())
+    }
+
+    /// Atomically publish the realm's Promise constructor and ordinary
+    /// prototype after their public constructor/prototype links exist.
+    pub(crate) fn attach_promise_intrinsics(
+        &mut self,
+        realm: ContextId,
+        promise: PromiseRealmData,
+    ) -> Result<(), HeapError> {
+        let context = self.context(realm)?;
+        if context.promise.is_some() {
+            return Err(HeapError::Invariant(
+                "context already has Promise intrinsic roots",
+            ));
+        }
+        let object_prototype = context.object_prototype;
+
+        let constructor = self.object(promise.constructor)?;
+        if !constructor.is_constructor
+            || !matches!(
+                constructor.payload,
+                ObjectPayload::NativeFunction {
+                    data: NativeFunctionData {
+                        target: NativeFunctionId::Promise(PromiseNativeKind::Constructor),
+                        realm: Some(target_realm),
+                        ..
+                    },
+                    internal: None,
+                } if target_realm == realm
+            )
+        {
+            return Err(HeapError::Invariant(
+                "Promise constructor root is not the realm's Promise native",
+            ));
+        }
+
+        let prototype = self.object(promise.prototype)?;
+        if prototype.kind != ObjectKind::Ordinary
+            || !matches!(prototype.payload, ObjectPayload::Ordinary)
+            || self.shape(prototype.shape)?.prototype() != Some(object_prototype)
+        {
+            return Err(HeapError::Invariant(
+                "Promise prototype is not an ordinary child of Object.prototype",
+            ));
+        }
+
+        let edges = [
+            RawId::Object(promise.prototype),
+            RawId::Object(promise.constructor),
+        ];
+        self.retain_edges_transactionally(&edges)?;
+
+        let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(realm))?.data
+        else {
+            unreachable!("context identity was validated before retaining Promise roots")
+        };
+        context.promise = Some(promise);
         Ok(())
     }
 
@@ -8387,6 +8640,236 @@ impl Heap {
         state ^= state >> 27;
         context.math_random_state = state;
         Ok(state.wrapping_mul(0x2545_f491_4f6c_dd1d))
+    }
+
+    /// Clone one native function's typed hidden capture.  Returned raw values
+    /// and identities are borrowed snapshots; callers that keep them across a
+    /// heap mutation must first promote or otherwise retain their edges.
+    pub(crate) fn native_internal_callable(
+        &self,
+        id: ObjectId,
+    ) -> Result<Option<InternalCallableData>, HeapError> {
+        let ObjectPayload::NativeFunction { internal, .. } = &self.object(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "internal callable lookup reached a non-native function",
+            ));
+        };
+        Ok(internal.clone())
+    }
+
+    /// Store the two arbitrary arguments supplied to a NewPromiseCapability
+    /// executor.  Callability is deliberately checked later by the runtime,
+    /// after the custom constructor returns, as required by the specification.
+    ///
+    /// Object edges are retained before publication.  Symbol atoms must be
+    /// pre-owned by the caller and transfer to the capture only when this
+    /// returns `true`. `false` reports the spec-visible repeated invocation;
+    /// the runtime must throw a TypeError and retain caller ownership.
+    pub(crate) fn set_promise_capability_capture(
+        &mut self,
+        id: ObjectId,
+        resolve: RawValue,
+        reject: RawValue,
+    ) -> Result<bool, HeapError> {
+        if !is_promise_storable_value(&resolve) || !is_promise_storable_value(&reject) {
+            return Err(HeapError::Invariant(
+                "Promise capability capture contains an internal value sentinel",
+            ));
+        }
+        match &self.object(id)?.payload {
+            ObjectPayload::NativeFunction {
+                data:
+                    NativeFunctionData {
+                        target: NativeFunctionId::PromiseCapabilityExecutor,
+                        ..
+                    },
+                internal: Some(InternalCallableData::PromiseCapabilityExecutor(capture)),
+            } if capture
+                .resolve
+                .as_ref()
+                .is_none_or(|value| matches!(value, RawValue::Undefined))
+                && capture
+                    .reject
+                    .as_ref()
+                    .is_none_or(|value| matches!(value, RawValue::Undefined)) => {}
+            ObjectPayload::NativeFunction {
+                data:
+                    NativeFunctionData {
+                        target: NativeFunctionId::PromiseCapabilityExecutor,
+                        ..
+                    },
+                internal: Some(InternalCallableData::PromiseCapabilityExecutor(_)),
+            } => {
+                return Ok(false);
+            }
+            _ => {
+                return Err(HeapError::Invariant(
+                    "Promise capability capture reached the wrong native function",
+                ));
+            }
+        }
+
+        let mut edges = raw_value_edges(&resolve);
+        edges.extend(raw_value_edges(&reject));
+        self.retain_edges_transactionally(&edges)?;
+        let ObjectPayload::NativeFunction {
+            internal: Some(InternalCallableData::PromiseCapabilityExecutor(capture)),
+            ..
+        } = &mut self.object_mut(id)?.payload
+        else {
+            unreachable!("Promise capability executor was validated before retaining arguments")
+        };
+        capture.resolve = Some(resolve);
+        capture.reject = Some(reject);
+        Ok(true)
+    }
+
+    /// Borrow a copy of the current NewPromiseCapability capture.
+    /// Raw values in the result do not own additional heap or atom references.
+    pub(crate) fn promise_capability_capture(
+        &self,
+        id: ObjectId,
+    ) -> Result<PromiseCapabilityExecutorData, HeapError> {
+        match &self.object(id)?.payload {
+            ObjectPayload::NativeFunction {
+                data:
+                    NativeFunctionData {
+                        target: NativeFunctionId::PromiseCapabilityExecutor,
+                        ..
+                    },
+                internal: Some(InternalCallableData::PromiseCapabilityExecutor(capture)),
+            } => Ok(capture.clone()),
+            _ => Err(HeapError::Invariant(
+                "Promise capability lookup reached the wrong native function",
+            )),
+        }
+    }
+
+    /// Borrow a complete snapshot of one genuine Promise's hidden state.
+    /// Raw edges in the clone are not independently retained.
+    pub(crate) fn promise_snapshot(&self, id: ObjectId) -> Result<PromiseData, HeapError> {
+        let ObjectPayload::Promise(data) = &self.object(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "Promise snapshot reached an object with the wrong class",
+            ));
+        };
+        Ok(data.clone())
+    }
+
+    /// Append the paired reactions created by one `PerformPromiseThen` call.
+    /// Every handler and capability identity is retained transactionally
+    /// before either vector becomes observable to the collector.
+    pub(crate) fn promise_add_reactions(
+        &mut self,
+        id: ObjectId,
+        fulfill: PromiseReaction,
+        reject: PromiseReaction,
+    ) -> Result<(), HeapError> {
+        if fulfill.kind != PromiseReactionKind::Fulfill
+            || reject.kind != PromiseReactionKind::Reject
+        {
+            return Err(HeapError::Invariant(
+                "Promise reactions were appended to the wrong settlement lists",
+            ));
+        }
+        match &self.object(id)?.payload {
+            ObjectPayload::Promise(PromiseData {
+                state: PromiseState::Pending,
+                ..
+            }) => {}
+            ObjectPayload::Promise(_) => {
+                return Err(HeapError::Invariant(
+                    "cannot append reactions to a settled Promise",
+                ));
+            }
+            _ => {
+                return Err(HeapError::Invariant(
+                    "Promise reaction append reached an object with the wrong class",
+                ));
+            }
+        }
+
+        let mut edges = promise_reaction_edges(&fulfill);
+        edges.extend(promise_reaction_edges(&reject));
+        self.retain_edges_transactionally(&edges)?;
+        let ObjectPayload::Promise(data) = &mut self.object_mut(id)?.payload else {
+            unreachable!("Promise payload was validated before retaining reactions")
+        };
+        data.fulfill_reactions.push(fulfill);
+        data.reject_reactions.push(reject);
+        Ok(())
+    }
+
+    /// Settle one pending Promise and detach all pending reaction ownership.
+    ///
+    /// The runtime must first snapshot and enqueue the selected reaction list;
+    /// job enqueue retains its own edges.  This method then publishes the
+    /// settled result, releases both obsolete reaction lists, and returns any
+    /// detached Symbol atom ownership through the usual cleanup channel.
+    pub(crate) fn promise_settle(
+        &mut self,
+        id: ObjectId,
+        state: PromiseState,
+        result: RawValue,
+    ) -> Result<HeapCleanup, HeapError> {
+        if state == PromiseState::Pending || !is_promise_storable_value(&result) {
+            return Err(HeapError::Invariant(
+                "Promise settlement requires a final state and ordinary value",
+            ));
+        }
+        match &self.object(id)?.payload {
+            ObjectPayload::Promise(PromiseData {
+                state: PromiseState::Pending,
+                ..
+            }) => {}
+            ObjectPayload::Promise(_) => {
+                return Err(HeapError::Invariant("Promise was settled more than once"));
+            }
+            _ => {
+                return Err(HeapError::Invariant(
+                    "Promise settlement reached an object with the wrong class",
+                ));
+            }
+        }
+
+        let new_edges = raw_value_edges(&result);
+        self.retain_edges_transactionally(&new_edges)?;
+        let (previous, fulfill_reactions, reject_reactions) = {
+            let ObjectPayload::Promise(data) = &mut self.object_mut(id)?.payload else {
+                unreachable!("Promise payload was validated before retaining its result")
+            };
+            let previous = std::mem::replace(&mut data.result, result);
+            data.state = state;
+            (
+                previous,
+                std::mem::take(&mut data.fulfill_reactions),
+                std::mem::take(&mut data.reject_reactions),
+            )
+        };
+
+        let mut cleanup = HeapCleanup::default();
+        cleanup.atoms.extend(raw_value_atom(&previous));
+        for edge in raw_value_edges(&previous) {
+            self.release_raw_no_drain(edge)?;
+        }
+        for reaction in fulfill_reactions.iter().chain(&reject_reactions) {
+            for edge in promise_reaction_edges(reaction) {
+                self.release_raw_no_drain(edge)?;
+            }
+        }
+        cleanup.merge(self.drain_zero_queue()?);
+        Ok(cleanup)
+    }
+
+    /// Mark one genuine Promise handled and report whether it was already
+    /// handled, allowing the runtime to mirror QuickJS rejection tracking.
+    pub(crate) fn promise_mark_handled(&mut self, id: ObjectId) -> Result<bool, HeapError> {
+        let ObjectPayload::Promise(data) = &mut self.object_mut(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "Promise handled update reached an object with the wrong class",
+            ));
+        };
+        Ok(std::mem::replace(&mut data.is_handled, true))
     }
 
     /// Read immutable executable data without promoting any raw cpool edges.
@@ -9990,6 +10473,7 @@ impl Heap {
                     ObjectPayload::BytecodeFunction { .. }
                 )
                 | (ObjectKind::Generator, ObjectPayload::Generator { .. })
+                | (ObjectKind::Promise, ObjectPayload::Promise(_))
         ) {
             return Err(HeapError::Invariant(
                 "object kind does not match its class payload",
@@ -10010,6 +10494,65 @@ impl Heap {
             if matches!(slot, PropertySlot::Data(RawValue::Private(_))) {
                 return Err(HeapError::Invariant(
                     "private-name identity escaped into an object value slot",
+                ));
+            }
+        }
+        if let ObjectPayload::NativeFunction { data, internal } = &object.payload {
+            match (data.target, internal) {
+                (
+                    NativeFunctionId::PromiseResolving(target_kind),
+                    Some(InternalCallableData::PromiseResolving { promise, kind, .. }),
+                ) if target_kind == *kind => {
+                    if object.is_constructor
+                        || !matches!(self.object(*promise)?.payload, ObjectPayload::Promise(_))
+                    {
+                        return Err(HeapError::Invariant(
+                            "Promise resolving callable has invalid hidden state",
+                        ));
+                    }
+                }
+                (
+                    NativeFunctionId::PromiseCapabilityExecutor,
+                    Some(InternalCallableData::PromiseCapabilityExecutor(capture)),
+                ) => {
+                    if object.is_constructor
+                        || capture
+                            .resolve
+                            .iter()
+                            .chain(capture.reject.iter())
+                            .any(|value| !is_promise_storable_value(value))
+                    {
+                        return Err(HeapError::Invariant(
+                            "Promise capability executor has invalid hidden state",
+                        ));
+                    }
+                }
+                (NativeFunctionId::PromiseResolving(_), _)
+                | (NativeFunctionId::PromiseCapabilityExecutor, _)
+                | (_, Some(_)) => {
+                    return Err(HeapError::Invariant(
+                        "native target does not match its internal callable capture",
+                    ));
+                }
+                (_, None) => {}
+            }
+        }
+        if let ObjectPayload::Promise(data) = &object.payload {
+            if !is_promise_storable_value(&data.result)
+                || (data.state == PromiseState::Pending && data.result != RawValue::Undefined)
+                || (data.state != PromiseState::Pending
+                    && (!data.fulfill_reactions.is_empty() || !data.reject_reactions.is_empty()))
+                || data
+                    .fulfill_reactions
+                    .iter()
+                    .any(|reaction| reaction.kind != PromiseReactionKind::Fulfill)
+                || data
+                    .reject_reactions
+                    .iter()
+                    .any(|reaction| reaction.kind != PromiseReactionKind::Reject)
+            {
+                return Err(HeapError::Invariant(
+                    "Promise payload has invalid hidden state",
                 ));
             }
         }
@@ -10687,8 +11230,10 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::GlobalObject { .. }
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
-        | ObjectPayload::NativeFunction { .. }
         | ObjectPayload::Generator { .. } => 0,
+        ObjectPayload::NativeFunction { internal, .. } => internal
+            .as_ref()
+            .map_or(0, |internal| internal_callable_edges(internal).len()),
         ObjectPayload::RegExpStringIterator { .. } => 1,
         ObjectPayload::Map { records, .. } => records
             .iter()
@@ -10709,6 +11254,12 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         ObjectPayload::SetIterator { .. } => 1,
         ObjectPayload::BoundFunction { arguments, .. } => arguments.len().saturating_add(2),
         ObjectPayload::BytecodeFunction { closure_slots, .. } => closure_slots.len(),
+        ObjectPayload::Promise(data) => raw_value_edges(&data.result).len().saturating_add(
+            data.fulfill_reactions
+                .len()
+                .saturating_add(data.reject_reactions.len())
+                .saturating_mul(4),
+        ),
     };
     let mut edges = Vec::with_capacity(
         object
@@ -10764,8 +11315,11 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         ObjectPayload::GlobalObject { uninitialized_vars } => {
             edges.push(RawId::Object(*uninitialized_vars))
         }
-        ObjectPayload::NativeFunction { data } => {
+        ObjectPayload::NativeFunction { data, internal } => {
             edges.extend(data.realm.map(RawId::Context));
+            if let Some(internal) = internal {
+                edges.extend(internal_callable_edges(internal));
+            }
         }
         ObjectPayload::BoundFunction {
             target,
@@ -10799,8 +11353,44 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
                 edges.extend(generator_activation_edges(activation));
             }
         }
+        ObjectPayload::Promise(data) => {
+            edges.extend(raw_value_edges(&data.result));
+            for reaction in data.fulfill_reactions.iter().chain(&data.reject_reactions) {
+                edges.extend(promise_reaction_edges(reaction));
+            }
+        }
     }
     edges
+}
+
+fn promise_capability_edges(capability: &PromiseCapabilityData) -> [RawId; 2] {
+    [
+        RawId::Object(capability.resolve),
+        RawId::Object(capability.reject),
+    ]
+}
+
+fn promise_reaction_edges(reaction: &PromiseReaction) -> Vec<RawId> {
+    reaction
+        .handler
+        .map(RawId::Object)
+        .into_iter()
+        .chain(promise_capability_edges(&reaction.capability))
+        .collect()
+}
+
+fn internal_callable_edges(internal: &InternalCallableData) -> Vec<RawId> {
+    match internal {
+        InternalCallableData::PromiseResolving { promise, .. } => {
+            vec![RawId::Object(*promise)]
+        }
+        InternalCallableData::PromiseCapabilityExecutor(capture) => capture
+            .resolve
+            .iter()
+            .chain(capture.reject.iter())
+            .flat_map(raw_value_edges)
+            .collect(),
+    }
 }
 
 fn generator_activation_edges(activation: &GeneratorActivationData) -> Vec<RawId> {
@@ -10903,6 +11493,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
             .saturating_add(context.map.map_or(0, |_| 2))
             .saturating_add(context.set.map_or(0, |_| 2))
             .saturating_add(context.generator.map_or(0, |_| 2))
+            .saturating_add(context.promise.map_or(0, |_| 2))
             .saturating_add(context.global_objects.len())
             .saturating_add(context.intrinsics.len())
             .saturating_add(context.initial_shapes.len()),
@@ -10939,6 +11530,10 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     if let Some(generator) = context.generator {
         edges.push(RawId::Object(generator.prototype));
         edges.push(RawId::Object(generator.function_prototype));
+    }
+    if let Some(promise) = context.promise {
+        edges.push(RawId::Object(promise.prototype));
+        edges.push(RawId::Object(promise.constructor));
     }
     edges.extend(context.function_constructor.map(RawId::Object));
     edges.extend(context.array_constructor.map(RawId::Object));
@@ -11030,6 +11625,16 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
             .as_deref()
             .map(generator_activation_atoms)
             .unwrap_or_default(),
+        ObjectPayload::Promise(data) => raw_value_atom(&data.result).into_iter().collect(),
+        ObjectPayload::NativeFunction {
+            internal: Some(InternalCallableData::PromiseCapabilityExecutor(capture)),
+            ..
+        } => capture
+            .resolve
+            .iter()
+            .chain(capture.reject.iter())
+            .filter_map(raw_value_atom)
+            .collect(),
         ObjectPayload::Ordinary
         | ObjectPayload::RawJson
         | ObjectPayload::Array { .. }
@@ -11093,6 +11698,13 @@ fn raw_value_atom(value: &RawValue) -> Option<Atom> {
 }
 
 const fn is_map_storable_value(value: &RawValue) -> bool {
+    !matches!(
+        value,
+        RawValue::Private(_) | RawValue::Uninitialized | RawValue::Exception
+    )
+}
+
+const fn is_promise_storable_value(value: &RawValue) -> bool {
     !matches!(
         value,
         RawValue::Private(_) | RawValue::Uninitialized | RawValue::Exception
@@ -12820,6 +13432,7 @@ mod tests {
                     realm: Some(stored_realm),
                     min_readable_args: 1,
                 },
+                ..
             } if stored_target == target && stored_realm == realm
         ));
         assert_eq!(
@@ -13352,7 +13965,7 @@ mod tests {
         let realm_data = fixture.realm_data();
 
         {
-            let ObjectPayload::NativeFunction { data } = &mut fixture
+            let ObjectPayload::NativeFunction { data, .. } = &mut fixture
                 .heap
                 .object_mut(fixture.constructor)
                 .unwrap()
@@ -13369,7 +13982,7 @@ mod tests {
                 .is_err()
         );
         {
-            let ObjectPayload::NativeFunction { data } = &mut fixture
+            let ObjectPayload::NativeFunction { data, .. } = &mut fixture
                 .heap
                 .object_mut(fixture.constructor)
                 .unwrap()
@@ -13381,7 +13994,7 @@ mod tests {
         }
 
         {
-            let ObjectPayload::NativeFunction { data } = &mut fixture
+            let ObjectPayload::NativeFunction { data, .. } = &mut fixture
                 .heap
                 .object_mut(fixture.constructor)
                 .unwrap()
@@ -13398,7 +14011,7 @@ mod tests {
                 .is_err()
         );
         {
-            let ObjectPayload::NativeFunction { data } = &mut fixture
+            let ObjectPayload::NativeFunction { data, .. } = &mut fixture
                 .heap
                 .object_mut(fixture.constructor)
                 .unwrap()

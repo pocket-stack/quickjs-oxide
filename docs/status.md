@@ -1,6 +1,6 @@
 # Implementation status
 
-Last audited: 2026-07-22. The completion definition remains
+Last audited: 2026-07-23. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
@@ -1732,6 +1732,35 @@ claim full parity.
   gate.
   The global profile remains fail-closed for `generators`; this focused result
   does not change the complete-vector percentage.
+
+  R3m adds QuickJS-shaped Promise heap state, paired first-call resolving
+  functions, the constructor, `then`, generic `catch`, static `resolve` and
+  `reject`, species construction, thenable assimilation, and a runtime-wide
+  FIFO job queue. Evaluation remains non-draining; embedders execute one job at
+  a time and can recover its originating `ContextId`, while the qjs and scoped
+  Test262 hosts explicitly drain to empty. Job records and pending reactions
+  retain only QuickJS's handler/resolving-function/value/context edges across
+  GC. The host rejection tracker reports initial unhandled rejection and later
+  handled transitions.
+
+  The authenticated R3m gate freezes the 58 files directly under
+  `built-ins/Promise`, excluding only the `$262.createRealm` path. Oxide passes
+  all 112 sloppy/strict variants across the remaining 57 paths; pinned QuickJS
+  2026-06-04 passes 57/57. The manifest, scoped profile, variant-key, TSV,
+  JSONL, and empty non-pass SHA-256 values are
+  `6cd3564883d5c0e459872b835e19ee7bb8c7f13716824fa2617ca1e698d5ed25`,
+  `f3a07d4c1c839b4d252ed65f8fb9cadc1862cd31280002caa4656d581007eb71`,
+  `0290f32ed1fe1968adf0e039748011f30588f4c1ac4b99719c5ce95d1ed9623c`,
+  `ae6c2454e0aba85f1ce89e1216007c863bcefbf3ce092b2f231549e544b689cf`,
+  `0d0c92b15448bf8ef94f040ff36c970e1c1d795bfdc99a720e1dff45d1071c18`,
+  and
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+  A pinned transcript additionally checks synchronous executor order, nested
+  FIFO tails, late reactions, propagation, thenable timing, self-resolution,
+  species, identities, and forced GC. The global profile remains async
+  fail-closed; `Promise.all`, `allSettled`, `any`, `race`, `try`,
+  `withResolvers`, and `Promise.prototype.finally` remain explicit next
+  frontiers rather than false parity claims.
 
   Async functions/generators, destructuring eval declarations, unsupported
   class elements, and ill-formed UTF-16 source stay explicit frontiers.
@@ -4573,9 +4602,10 @@ The complete pinned Test262 vector is now recorded conservatively. Remaining
 parser frontiers with generic syntax diagnostics cannot contribute negative
 test passes until they gain typed `Unsupported` provenance or are individually
 audited as genuine early errors. The remaining native `$262` host hooks, module
-parse/link/evaluate, Promises/jobs and async completion, the ES5.1 suite, and a
-separate QuickJS-runner-quirk profile remain future milestones. Unsupported and
-host-missing outcomes are failures, not additional feature skips.
+parse/link/evaluate, Promise combinators and async-function integration, the
+ES5.1 suite, and a separate QuickJS-runner-quirk profile remain future
+milestones. Unsupported and host-missing outcomes are failures, not additional
+feature skips.
 
 The former default-libtest-stack gate debt is closed. QuickJS checks its real
 platform stack pointer at both native and bytecode call boundaries; the
@@ -4655,8 +4685,12 @@ removes the represented function source/location payload. The `qjs`
 including combined short options and their effect on `toString`, function debug
 accessors and Error backtraces. Strip-debug compilation also removes ordinary
 lexical vardef and captured-relay names while retaining atoms needed by
-read-only execution; bytecode debug serialization remains pending. The normal
-`%Function%` graph is present; dynamic formal parameters support identifiers,
+read-only execution; bytecode debug serialization remains pending. The qjs
+host now supplies `print` for runnable demos and Promise-job transcripts,
+but non-String values still use JavaScript `ToString`; QuickJS's host-side,
+side-effect-free structured `JS_PrintValue` formatting remains a separate CLI
+parity frontier. The normal `%Function%` graph is present; dynamic formal
+parameters support identifiers,
 identifier defaults, one terminal identifier-rest parameter, and recursive
 array/object/rest BindingPatterns, including mixed standalone parameter
 expressions and the same Parameter Environment semantics as authored ordinary

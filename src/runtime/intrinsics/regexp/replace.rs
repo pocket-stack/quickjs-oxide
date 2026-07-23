@@ -666,6 +666,6 @@ fn raw_native_function_matches(
 ) -> Result<bool, RuntimeError> {
     Ok(matches!(
         &heap.object(object)?.payload,
-        ObjectPayload::NativeFunction { data } if data.target == expected
+        ObjectPayload::NativeFunction { data, .. } if data.target == expected
     ))
 }

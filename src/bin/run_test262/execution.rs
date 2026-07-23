@@ -15,9 +15,40 @@ use super::report::WorkerResult;
 use super::{Variant, WorkerOptions, validate_relative_test_path};
 
 const WORKER_HOST_FILENAME: &str = "<test262-worker-host>";
+const WORKER_PRINT_LOG_PROPERTY: &str = "__quickjs_oxide_test262_print_log__";
 const WORKER_HOST_SOURCE: &str = r#"
 globalThis.print = function print(value) {};
 "#;
+const ASYNC_WORKER_HOST_SOURCE: &str = r#"
+(function installTest262PrintHost() {
+  var create = Object.create;
+  var defineProperty = Object.defineProperty;
+  var messages = Object.create(null);
+  messages.length = 0;
+  defineProperty(globalThis, "__quickjs_oxide_test262_print_log__", {
+    get: function getTest262PrintLog() {
+      var snapshot = create(null);
+      defineProperty(snapshot, "length", { value: messages.length });
+      for (var i = 0; i < messages.length; i += 1) {
+        defineProperty(snapshot, i, { value: messages[i] });
+      }
+      return snapshot;
+    },
+    enumerable: false,
+    configurable: false
+  });
+  globalThis.print = function print(value) {
+    for (var i = 0; i < arguments.length; i += 1) {
+      if (typeof arguments[i] === "string") {
+        messages[messages.length] = arguments[i];
+        messages.length += 1;
+      }
+    }
+  };
+})();
+"#;
+const ASYNC_COMPLETE: &str = "Test262:AsyncTestComplete";
+const ASYNC_FAILURE_PREFIX: &str = "Test262:AsyncTestFailure:";
 
 pub(super) fn run_isolated_worker(
     executable: &Path,
@@ -25,15 +56,21 @@ pub(super) fn run_isolated_worker(
     test: &Path,
     variant: Variant,
     timeout: Duration,
+    allow_async_host: bool,
 ) -> Result<WorkerResult, String> {
-    let mut child = Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .arg("--worker-one")
         .arg("--suite")
         .arg(suite)
         .arg("--test")
         .arg(test)
         .arg("--variant")
-        .arg(variant.name())
+        .arg(variant.name());
+    if allow_async_host {
+        command.arg("--allow-async-host");
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -125,13 +162,14 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     let source =
         fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let metadata = parse_metadata(&source)?;
-    if metadata.is_module() || metadata.is_async() {
+    if metadata.is_module() || (metadata.is_async() && !options.allow_async_host) {
         return Err("unsupported test reached worker".to_owned());
     }
+    let async_test = metadata.is_async();
 
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
-    install_worker_host(&runtime, &mut context)?;
+    install_worker_host(&runtime, &mut context, async_test)?;
     // The progress baseline follows the pinned Test262 interpretation rather
     // than run-test262.c's raw-test deviation: raw means no harness and no
     // source rewriting. The qjs-compatible `print` surface above is a worker
@@ -141,6 +179,9 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     if !metadata.is_raw() {
         includes.extend(["assert.js".to_owned(), "sta.js".to_owned()]);
         includes.extend(metadata.includes.iter().cloned());
+    }
+    if async_test {
+        includes.push("doneprintHandle.js".to_owned());
     }
     for include in includes {
         let include_path = options.suite.join("harness").join(&include);
@@ -247,6 +288,7 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
         return Ok(classify_normal(&metadata));
     }
     match context.execute(&function) {
+        Ok(_) if async_test => Ok(finish_async_test(&runtime, &mut context, &metadata)),
         Ok(_) => Ok(classify_normal(&metadata)),
         Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
             Ok(WorkerResult::failure(
@@ -269,10 +311,133 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     }
 }
 
-fn install_worker_host(runtime: &Runtime, context: &mut Context) -> Result<(), String> {
+fn finish_async_test(
+    runtime: &Runtime,
+    context: &mut Context,
+    metadata: &Metadata,
+) -> WorkerResult {
+    while runtime.is_job_pending() {
+        match runtime.execute_pending_job() {
+            Ok(true) => {}
+            Ok(false) => {
+                return WorkerResult::failure(
+                    "async-job-invariant",
+                    "async",
+                    "Invariant",
+                    "runtime reported a pending job but executed none",
+                );
+            }
+            Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
+                return WorkerResult::failure(
+                    "unsupported-runtime",
+                    "async-job",
+                    "Unsupported",
+                    error.message(),
+                );
+            }
+            Err(RuntimeError::Exception) => {
+                let (error_type, detail) = take_error(runtime, context, RuntimeError::Exception);
+                return classify_completion(metadata, "runtime", &error_type, &detail);
+            }
+            Err(error) => return engine_fault("engine-fault", "async-job", error, None),
+        }
+    }
+
+    match read_worker_print_log(runtime, context) {
+        Ok(messages) => classify_async_print_log(metadata, &messages),
+        Err(error) => WorkerResult::failure("async-host-error", "async-host", "HostError", error),
+    }
+}
+
+fn read_worker_print_log(runtime: &Runtime, context: &mut Context) -> Result<Vec<String>, String> {
+    let global = context
+        .global_object()
+        .map_err(|error| worker_host_error(runtime, context, "read print global", error))?;
+    let log_key = runtime
+        .intern_property_key(WORKER_PRINT_LOG_PROPERTY)
+        .map_err(|error| format!("intern Test262 print log key: {error}"))?;
+    let log = match context
+        .get_property(&global, &log_key)
+        .map_err(|error| worker_host_error(runtime, context, "read print log", error))?
+    {
+        Value::Object(log) => log,
+        _ => return Err("Test262 print log is not an object".to_owned()),
+    };
+    let length_key = runtime
+        .intern_property_key("length")
+        .map_err(|error| format!("intern Test262 print log length key: {error}"))?;
+    let length = match context
+        .get_property(&log, &length_key)
+        .map_err(|error| worker_host_error(runtime, context, "read print log length", error))?
+    {
+        Value::Int(length) if length >= 0 => length as usize,
+        Value::Float(length) if length.is_finite() && length >= 0.0 && length.fract() == 0.0 => {
+            length as usize
+        }
+        _ => return Err("Test262 print log length is not a non-negative integer".to_owned()),
+    };
+
+    let mut messages = Vec::with_capacity(length);
+    for index in 0..length {
+        let key = runtime
+            .intern_property_key(&index.to_string())
+            .map_err(|error| format!("intern Test262 print log index {index}: {error}"))?;
+        match context
+            .get_property(&log, &key)
+            .map_err(|error| worker_host_error(runtime, context, "read print log entry", error))?
+        {
+            Value::String(message) => messages.push(message.to_utf8_lossy()),
+            _ => return Err(format!("Test262 print log entry {index} is not a string")),
+        }
+    }
+    Ok(messages)
+}
+
+fn classify_async_print_log(metadata: &Metadata, messages: &[String]) -> WorkerResult {
+    let reports = messages
+        .iter()
+        .filter(|message| {
+            message.as_str() == ASYNC_COMPLETE || message.starts_with(ASYNC_FAILURE_PREFIX)
+        })
+        .collect::<Vec<_>>();
+    if reports.len() != 1 {
+        return WorkerResult::failure(
+            "fail-async-done-count",
+            "async",
+            "TypeError",
+            format!(
+                "$DONE() must report exactly once; observed {} completion reports",
+                reports.len()
+            ),
+        );
+    }
+
+    let report = reports[0];
+    if report.as_str() == ASYNC_COMPLETE {
+        return classify_normal(metadata);
+    }
+    let failure = report
+        .strip_prefix(ASYNC_FAILURE_PREFIX)
+        .expect("async report prefix was filtered");
+    let (actual_type, detail) = failure
+        .split_once(": ")
+        .map_or(("Test262Error", failure), |(name, detail)| (name, detail));
+    WorkerResult::failure("fail-async", "async", actual_type, detail)
+}
+
+fn install_worker_host(
+    runtime: &Runtime,
+    context: &mut Context,
+    record_print: bool,
+) -> Result<(), String> {
     let options = CompileOptions::new(WORKER_HOST_FILENAME);
+    let source = if record_print {
+        ASYNC_WORKER_HOST_SOURCE
+    } else {
+        WORKER_HOST_SOURCE
+    };
     let function = context
-        .compile_with_options_preserving_unsupported_diagnostics(WORKER_HOST_SOURCE, &options)
+        .compile_with_options_preserving_unsupported_diagnostics(source, &options)
         .map_err(|error| worker_host_error(runtime, context, "compile", error))?;
     context
         .execute(&function)
@@ -544,7 +709,7 @@ mod tests {
 
     use quickjs_oxide::{CompileOptions, ErrorKind, Runtime, RuntimeError};
 
-    use super::{classify_completion, run_worker};
+    use super::{classify_async_print_log, classify_completion, run_worker};
     use crate::metadata::{Metadata, NegativeExpectation};
     use crate::{Variant, WorkerOptions};
 
@@ -571,6 +736,43 @@ mod tests {
     }
 
     #[test]
+    fn async_completion_requires_exactly_one_done_report() {
+        let metadata = Metadata::default();
+        let complete = classify_async_print_log(
+            &metadata,
+            &[
+                "ordinary output".to_owned(),
+                "Test262:AsyncTestComplete".to_owned(),
+            ],
+        );
+        assert_eq!(complete.outcome, "pass");
+
+        for messages in [
+            Vec::<String>::new(),
+            vec![
+                "Test262:AsyncTestComplete".to_owned(),
+                "Test262:AsyncTestComplete".to_owned(),
+            ],
+        ] {
+            let result = classify_async_print_log(&metadata, &messages);
+            assert_eq!(result.outcome, "fail-async-done-count");
+            assert_eq!(result.actual_type, "TypeError");
+        }
+    }
+
+    #[test]
+    fn async_done_failure_preserves_type_and_message() {
+        let result = classify_async_print_log(
+            &Metadata::default(),
+            &["Test262:AsyncTestFailure:Test262Error: sentinel".to_owned()],
+        );
+        assert_eq!(result.outcome, "fail-async");
+        assert_eq!(result.actual_phase, "async");
+        assert_eq!(result.actual_type, "Test262Error");
+        assert_eq!(result.detail, "sentinel");
+    }
+
+    #[test]
     fn parse_negative_that_compiles_is_not_executed() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -592,6 +794,7 @@ mod tests {
             suite: suite.clone(),
             test: relative,
             variant: Variant::Sloppy,
+            allow_async_host: false,
         })
         .unwrap();
         fs::remove_dir_all(suite).unwrap();
@@ -599,6 +802,83 @@ mod tests {
         assert_eq!(result.outcome, "fail-missing-throw");
         assert_eq!(result.actual_phase, "normal");
         assert!(result.detail.contains("expected SyntaxError during parse"));
+    }
+
+    #[test]
+    fn async_worker_host_is_explicit_and_requires_one_done_report() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let suite = std::env::temp_dir().join(format!(
+            "quickjs-oxide-test262-async-host-{}-{unique}",
+            std::process::id()
+        ));
+        let relative = PathBuf::from("test/async-host.js");
+        fs::create_dir_all(suite.join("test")).unwrap();
+        fs::create_dir_all(suite.join("harness")).unwrap();
+        fs::write(
+            suite.join("harness/doneprintHandle.js"),
+            "function $DONE(error) { print(error ? 'Test262:AsyncTestFailure:Test262Error: failed' : 'Test262:AsyncTestComplete'); }\n",
+        )
+        .unwrap();
+        fs::write(
+            suite.join(&relative),
+            "/*---\nflags: [async, raw]\n---*/\n$DONE();\n",
+        )
+        .unwrap();
+
+        let denied = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: relative.clone(),
+            variant: Variant::Sloppy,
+            allow_async_host: false,
+        })
+        .unwrap_err();
+        assert_eq!(denied, "unsupported test reached worker");
+
+        let result = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: relative,
+            variant: Variant::Sloppy,
+            allow_async_host: true,
+        })
+        .unwrap();
+        fs::remove_dir_all(suite).unwrap();
+
+        assert_eq!(result.outcome, "pass", "{}", result.detail);
+    }
+
+    #[test]
+    fn async_worker_print_scans_all_arguments_and_keeps_its_log_private() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let suite = std::env::temp_dir().join(format!(
+            "quickjs-oxide-test262-async-print-{}-{unique}",
+            std::process::id()
+        ));
+        let relative = PathBuf::from("test/async-print.js");
+        fs::create_dir_all(suite.join("test")).unwrap();
+        fs::create_dir_all(suite.join("harness")).unwrap();
+        fs::write(suite.join("harness/doneprintHandle.js"), "").unwrap();
+        fs::write(
+            suite.join(&relative),
+            "/*---\nflags: [async, raw]\n---*/\nvar copy = globalThis.__quickjs_oxide_test262_print_log__;\ncopy.length = 0;\nprint('ordinary output', 'Test262:AsyncTestComplete');\n",
+        )
+        .unwrap();
+
+        let result = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: relative,
+            variant: Variant::Sloppy,
+            allow_async_host: true,
+        })
+        .unwrap();
+        fs::remove_dir_all(suite).unwrap();
+
+        assert_eq!(result.outcome, "pass", "{}", result.detail);
     }
 
     #[test]
@@ -647,6 +927,7 @@ if (r[Symbol.replace]("aa", "b") !== "ba") {
             suite: suite.clone(),
             test: relative,
             variant: Variant::Sloppy,
+            allow_async_host: false,
         })
         .unwrap();
         fs::remove_dir_all(suite).unwrap();
@@ -741,6 +1022,7 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
             suite: suite.clone(),
             test: relative,
             variant: Variant::Sloppy,
+            allow_async_host: false,
         })
         .unwrap();
         fs::remove_dir_all(suite).unwrap();

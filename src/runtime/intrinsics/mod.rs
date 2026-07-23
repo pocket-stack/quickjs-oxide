@@ -8,6 +8,7 @@ mod json;
 mod map;
 mod math;
 mod object;
+pub(super) mod promise;
 mod reflect;
 mod regexp;
 mod replacement;
