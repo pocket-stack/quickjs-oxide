@@ -1,0 +1,12 @@
+descriptors=allSettled:1:truefalsetrue|any:1:truefalsetrue
+allSettled-custom-overwrite=rejected:rejected-20,rejected:rejected-22||false||false||:1||resolve:20|then:20|outer-resolve|resolve:22|then:22|outer-resolve
+any-custom-order=true||false||:1||0,1,2||errors||0,1,2,length
+sync-continues=allSettled:next:0|resolve:0|then:0|next:1|resolve:1|then:1|next:2|resolve:2|then:2|done|outer-resolve||any:next:0|resolve:0|then:0|outer-resolve|next:1|resolve:1|then:1|outer-resolve|next:2|resolve:2|then:2|outer-resolve|done
+allSettled-frozen-values=next:0|then:0|resolve:0,length|next:1|then:1|resolve:0,length|next:2||reject:false
+gc=allSettled:true|any:true|object:true|symbol:true
+allSettled-results=status,value|status,reason|object:true|reason:true|descriptors:true
+empty=after-call|allSettled:0|any:0
+resolve-getters=allSettled:resolve-get|iterator|resolve:1|resolve:2:2||any:resolve-get|iterator|resolve:1|resolve:2:1
+iterator-no-close=allSettled:get:next-get||allSettled:call:next-call||any:get:next-get||any:call:next-call
+iterator-close=allSettled:resolve:next|resolve|close||allSettled:then:next|resolve|then-get|close||any:resolve:next|resolve|close||any:then:next|resolve|then-get|close
+thenable-identities=object:true|reason:true|symbol:true|any-symbol:true

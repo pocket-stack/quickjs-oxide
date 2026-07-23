@@ -43,14 +43,16 @@ initial snapshot. Both paths are pinned in `tests/oracle_for_in.rs`.
 
 ## Open implementation frontiers
 
-- `Promise.all` matches pinned QuickJS on ordinary JavaScript-observable paths,
-  but internal allocation failure is not yet routed identically. Failure to
-  allocate the values Array currently returns a host runtime error instead of
-  rejecting the new capability; failure to allocate an element callback also
-  omits QuickJS's close-then-reject path. The checked `u32` element counter has
-  a theoretical multi-billion-element RangeError boundary instead of
-  QuickJS's C `int` environment behavior. These are unresolved hardening
-  frontiers, not approved deviations.
+- `Promise.all`, `Promise.allSettled`, and `Promise.any` match pinned QuickJS on
+  ordinary JavaScript-observable paths, but internal allocation failure is not
+  yet routed identically. Failure to allocate the output Array currently
+  returns a host runtime error instead of rejecting the new capability;
+  failure to allocate an element callback also omits QuickJS's
+  close-then-reject path. Internal `AggregateError` allocation has the same
+  runtime-error boundary. The checked `u32` element index has a theoretical
+  multi-billion-element RangeError boundary instead of QuickJS's C `int`
+  environment behavior. These are unresolved hardening frontiers, not
+  approved deviations.
 - `for-in` over Proxy is not implemented because Proxy itself is absent. The VM
   host outcome already carries arbitrary JavaScript throws; before Proxy is
   admitted, differential tests must lock the two prototype passes, `ownKeys`,

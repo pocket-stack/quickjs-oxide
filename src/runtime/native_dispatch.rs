@@ -487,6 +487,12 @@ impl Runtime {
             NativeFunctionId::PromiseAllResolveElement => {
                 self.call_promise_all_resolve_element(realm, invocation, arguments)
             }
+            NativeFunctionId::PromiseAllSettledElement(outcome) => {
+                self.call_promise_all_settled_element(outcome, realm, invocation, arguments)
+            }
+            NativeFunctionId::PromiseAnyRejectElement => {
+                self.call_promise_any_reject_element(realm, invocation, arguments)
+            }
             NativeFunctionId::ThrowTypeError => {
                 self.call_throw_type_error(realm, invocation, arguments)
             }

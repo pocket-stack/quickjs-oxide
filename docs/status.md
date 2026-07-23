@@ -1986,6 +1986,69 @@ claim full parity.
   a theoretical multi-billion-element boundary. The remaining explicit
   aggregate Promise frontiers are `Promise.allSettled` and `Promise.any`.
 
+  R3q closes those two aggregate frontiers against the same pinned QuickJS
+  `js_promise_all` loop. `Promise.all`, `Promise.allSettled`, and `Promise.any`
+  now enter one shared typed Rust algorithm while retaining three distinct
+  heap callback captures. `allSettled` creates fulfillment records with
+  `{ status, value }` and rejection records with `{ status, reason }` in the
+  callback's calling Context. Deliberately matching QuickJS's copied
+  CFunctionData cells, its fulfillment and rejection callbacks do not share
+  an already-called bit: a hostile synchronous `then` may invoke both and the
+  later callback can overwrite the same output slot. The signed shared counter
+  preserves QuickJS's corresponding below-zero state after this edge case.
+  Internal indexed writes also use QuickJS's no-throw define mode: if an early
+  custom capability exposes and freezes the output Array, a later rejected
+  definition is ignored and iteration continues instead of closing and
+  rejecting with a synthesized `TypeError`.
+
+  `Promise.any` passes the outer capability resolve itself as every fulfillment
+  handler, allocates one fresh typed rejection handler per element, and
+  pre-fills the errors Array before invoking `then`. Final rejection constructs
+  the intrinsic branded `AggregateError` internally, retaining the exact
+  errors Array without consulting the public constructor or iterating/copying
+  it. The errors Array belongs to the aggregate call Context; a non-empty final
+  `AggregateError` belongs to the last rejection callback's calling Context,
+  while the empty-input error belongs to the builtin's defining Context. GC
+  traces each output Array and final settlement callable through the typed
+  callback captures.
+
+  The complete authenticated `allSettled` inventory is 104 paths / 208
+  variants (57 async paths / 114 variants and 47 synchronous paths / 94
+  variants). The `any` inventory is 94 paths / 188 variants (65 async paths /
+  130 variants and 29 synchronous paths / 58 variants). Neither cohort has a
+  negative, Proxy, or `$262` host test. Oxide passes 208/208 and 188/188 with
+  zero failures, unsupported results, or skips; pinned QuickJS passes 104/104
+  and 94/94 paths. Their manifest, scoped-profile, variant-key, TSV, and JSONL
+  SHA-256 values are, respectively:
+
+  - `allSettled`:
+    `5ac6c5f7e21194ee432a6480fc8e8b5ae7fff2c3c859aa61da98f7605261eb52`,
+    `755439ed09621a0460802bfda11ed27983364d572b13baaf93a2e00c5b481947`,
+    `9b27ccbbdc3e2d8f3eae0f76b783625cc0aefebc52a2802446e21a6f5dbb083c`,
+    `69f7dffcd523a759ea7518708d02a74e56349000c86058574c0dc10bc6313b62`,
+    and
+    `d3173fdd5c6d7d2b6b2523c1e9c05b19b3524a6411d383f529c09877a687cc55`;
+  - `any`:
+    `331a3d6f0b19a9353904afa5c5d740f844f97c89fcbc99b58cd11275d3b67eaf`,
+    `8059eea59f179846a4739ddb280b4d16518286261d1cdb361a2d383474f27826`,
+    `4f2cd9023246ba0631d27846c942f9e227425717208ef0454da1178c105872a5`,
+    `6b984703c5f155cfd5300314f0f32a98801ad058294aa8b60125f56d478f83a3`,
+    and
+    `856e0679a8425f1a1a403d2577d39547fbeb6053c88dcca4bd9778bf67e6b0f8`.
+
+  The independent combined differential locks descriptors, custom
+  capabilities and handler identities, QuickJS's two-callback overwrite,
+  result/error property order and descriptors, empty/sentinel ordering,
+  resolve and iterator-close boundaries, forced-GC capture lifetime, and
+  cross-Context realm routing. Its fixture and pinned transcript hashes are
+  `e053bb7944943607b9a29ef15fd34d44a58c44792afaf5193e6b757f4231d8c4`
+  and
+  `992d7e26fa681747b67c49a6cfd296c22ae54a558f1d8a86d70ce9eeea3a71e9`.
+  `runtime.rs` remains 9,803 lines; the shared aggregate owner is the dedicated
+  496-line `runtime/intrinsics/promise/all.rs` module. Exact allocation-failure
+  routing and the theoretical multi-billion-element index boundary remain
+  explicit hardening debt in `docs/deviations.md`, not approved differences.
+
   Async functions/generators, destructuring eval declarations, unsupported
   class elements, and ill-formed UTF-16 source stay explicit frontiers.
   QuickJS also allocates the callable and VarRef
@@ -5292,13 +5355,15 @@ under `compiler/class/`, private callable/brand storage stays in
 `runtime/vm_host/private_elements.rs`, and both publication defenses retain
 their dedicated owners. `runtime.rs` remains the 9,748-line facade; this slice
 adds no product code to that monolith or a second generator state machine.
-R3m-R3p preserve that boundary for Promise work: the Promise object/reaction
+R3m-R3q preserve that boundary for Promise work: the Promise object/reaction
 owner remains `runtime/intrinsics/promise.rs`, the runtime FIFO remains
 `runtime/jobs.rs`, and R3n places its new static-method and race algorithms in
 the 327-line `runtime/intrinsics/promise/convenience.rs`; R3o and R3p place
 their algorithms in the 203-line `runtime/intrinsics/promise/finally.rs` and
-240-line `runtime/intrinsics/promise/all.rs` modules. The current `runtime.rs`
-facade is 9,803 lines rather than absorbing those algorithms.
+the initially 240-line `runtime/intrinsics/promise/all.rs` modules. R3q extends
+the latter shared aggregate owner to 496 lines for `allSettled` and `any`. The
+current `runtime.rs` facade is still 9,803 lines rather than absorbing those
+algorithms.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage

@@ -4,13 +4,13 @@ An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
 The `unsafe`-free engine is runnable but incomplete. Synchronous classes and
-generators are available. R3p completes `Promise.all`: its complete focused
-gate passes 196/196 variants, and the earlier `race`/`try`/`withResolvers`
-gate now passes 224/224. `Promise.prototype.finally` passes 56/58, with only
-the two Proxy-dependent variants failing. This is not full-suite parity:
-modules, async functions/generators, `Promise.allSettled`, `Promise.any`, and
-broad built-in coverage remain incomplete. Unsupported paths fail explicitly;
-pinned QuickJS is only an oracle.
+generators are available. R3q completes the aggregate Promise statics:
+`all` passes 196/196 focused Test262 variants, `allSettled` 208/208, and `any`
+188/188. The earlier `race`/`try`/`withResolvers` gate passes 224/224;
+`Promise.prototype.finally` passes 56/58, with only two Proxy-dependent
+variants failing. This is not full-suite parity: modules, async
+functions/generators, Proxy, and broad built-in coverage remain incomplete.
+Unsupported paths fail explicitly; pinned QuickJS is only an oracle.
 
 ## Try it
 
@@ -40,7 +40,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-class-private-{methods,accessors}.sh
 ./scripts/test-test262-class-generator-methods.sh
 ./scripts/test-test262-class-private-generator-methods.sh
-./scripts/test-test262-promise-{race-try-with-resolvers,finally,all}.sh
+./scripts/test-test262-promise-{race-try-with-resolvers,finally,all,all-settled,any}.sh
 ```
 
 ## License

@@ -215,6 +215,26 @@ impl Runtime {
         Ok(Completion::Return(value))
     }
 
+    /// Pinned QuickJS's internal `Promise.any` AggregateError path: retain the
+    /// exact errors Array without invoking the public constructor or backtrace.
+    pub(super) fn new_internal_aggregate_error(
+        &self,
+        realm: ContextId,
+        errors: ObjectRef,
+    ) -> Result<ObjectRef, RuntimeError> {
+        let prototype = {
+            let state = self.0.state.borrow();
+            state.heap.context(realm)?.native_error_prototypes[NativeErrorKind::Aggregate.index()]
+                .ok_or(RuntimeError::Invariant(
+                "realm has no AggregateError prototype",
+            ))?
+        };
+        let prototype = ObjectRef::from_borrowed_handle(self.clone(), prototype)?;
+        let object = self.new_error_object(&prototype)?;
+        self.define_function_data_property(&object, "errors", Value::Object(errors), true, true)?;
+        Ok(object)
+    }
+
     /// Pinned QuickJS `iterator_to_array`, used only by AggregateError.
     /// Iterator-step and indexed-definition failures close an acquired
     /// iterator while preserving the original abrupt completion.

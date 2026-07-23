@@ -3428,6 +3428,64 @@ Reproduce both R3p locks with:
 Use `--check` on either script to authenticate pinned inputs without comparing
 an Oxide oracle transcript or executing the Oxide Test262 cohort.
 
+## R3q Promise.allSettled and Promise.any
+
+R3q freezes both remaining aggregate Promise directories from the pinned
+Test262 checkout. `Promise.allSettled` contains 104 paths / 208 sloppy and
+strict variants: 57 async paths / 114 variants and 47 synchronous paths / 94
+variants. `Promise.any` contains 94 paths / 188 variants: 65 async paths / 130
+variants and 29 synchronous paths / 58 variants. Neither cohort contains a
+negative, Proxy, or `$262` host test.
+
+Oxide passes the complete cohorts at 208/208 and 188/188, with zero failures,
+unsupported results, or skips. Pinned QuickJS 2026-06-04 passes all 104/104
+`allSettled` paths and all 94/94 `any` paths. The scoped profiles admit only
+the metadata features observed in their respective manifests plus
+`[execution] async=true`; the global profile remains byte-identical and
+fail-closed for async execution.
+
+For `allSettled`, the manifest, scoped-profile, variant-key, empty non-pass,
+TSV, and JSONL hashes are:
+
+```text
+5ac6c5f7e21194ee432a6480fc8e8b5ae7fff2c3c859aa61da98f7605261eb52
+755439ed09621a0460802bfda11ed27983364d572b13baaf93a2e00c5b481947
+9b27ccbbdc3e2d8f3eae0f76b783625cc0aefebc52a2802446e21a6f5dbb083c
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+69f7dffcd523a759ea7518708d02a74e56349000c86058574c0dc10bc6313b62
+d3173fdd5c6d7d2b6b2523c1e9c05b19b3524a6411d383f529c09877a687cc55
+```
+
+For `any`, the corresponding hashes are:
+
+```text
+331a3d6f0b19a9353904afa5c5d740f844f97c89fcbc99b58cd11275d3b67eaf
+8059eea59f179846a4739ddb280b4d16518286261d1cdb361a2d383474f27826
+4f2cd9023246ba0631d27846c942f9e227425717208ef0454da1178c105872a5
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+6b984703c5f155cfd5300314f0f32a98801ad058294aa8b60125f56d478f83a3
+856e0679a8425f1a1a403d2577d39547fbeb6053c88dcca4bd9778bf67e6b0f8
+```
+
+The combined independent differential fixes QuickJS-specific callback
+identity, duplicate-call, property descriptor/order, sentinel, IteratorClose,
+forced-GC, and cross-Context realm behavior. Its fixture and pinned transcript
+hashes are
+`e053bb7944943607b9a29ef15fd34d44a58c44792afaf5193e6b757f4231d8c4`
+and
+`992d7e26fa681747b67c49a6cfd296c22ae54a558f1d8a86d70ce9eeea3a71e9`.
+
+Reproduce R3q with:
+
+```sh
+./scripts/test-r3q-promise-aggregates-oracle.sh --oxide target/debug/qjs
+./scripts/test-test262-promise-all-settled.sh
+./scripts/test-test262-promise-any.sh
+```
+
+Use `--check` on any script to authenticate its frozen inputs without running
+the Oxide differential or Test262 cohort.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:

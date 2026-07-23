@@ -843,6 +843,24 @@ impl Runtime {
         self.create_indexed_data_property(realm, object, u64::from(index), value)
     }
 
+    /// QuickJS `JS_DefinePropertyValueUint32` without `JS_PROP_THROW`: an
+    /// ordinary `false` result is ignored, while an actual JavaScript throw is
+    /// still returned to the caller. Promise aggregate element handlers use
+    /// this form, which is observably distinct after a custom capability
+    /// exposes and freezes their output Array early.
+    pub(in crate::runtime) fn define_array_data_property_without_throw(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+        index: u32,
+        value: Value,
+    ) -> Result<Option<Value>, RuntimeError> {
+        match self.define_indexed_data_property(realm, object, u64::from(index), value)? {
+            PropertyDefineOutcome::Defined(_) => Ok(None),
+            PropertyDefineOutcome::Throw(value) => Ok(Some(value)),
+        }
+    }
+
     /// Array construction uses ordinary `Set`, not CreateDataProperty. A
     /// custom `newTarget.prototype` can therefore intercept an element with
     /// an inherited setter or reject it with a fixed data/accessor property.
@@ -864,21 +882,10 @@ impl Runtime {
         index: u64,
         value: Value,
     ) -> Result<Option<Value>, RuntimeError> {
-        let key = self.intern_property_key(&index.to_string())?;
-        match self.define_own_property_in_realm(
-            Some(realm),
-            object,
-            &key,
-            &OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(value),
-                writable: DescriptorField::Present(true),
-                enumerable: DescriptorField::Present(true),
-                configurable: DescriptorField::Present(true),
-                ..OrdinaryPropertyDescriptor::new()
-            },
-        )? {
+        match self.define_indexed_data_property(realm, object, index, value)? {
             PropertyDefineOutcome::Defined(true) => Ok(None),
             PropertyDefineOutcome::Defined(false) => {
+                let key = self.intern_property_key(&index.to_string())?;
                 let array_length_read_only =
                     if let ArrayOwnKey::Index(index) = self.array_own_key(object, &key)? {
                         let (length, writable) = self.array_length_state(object)?;
@@ -902,6 +909,28 @@ impl Runtime {
             }
             PropertyDefineOutcome::Throw(value) => Ok(Some(value)),
         }
+    }
+
+    fn define_indexed_data_property(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+        index: u64,
+        value: Value,
+    ) -> Result<PropertyDefineOutcome, RuntimeError> {
+        let key = self.intern_property_key(&index.to_string())?;
+        self.define_own_property_in_realm(
+            Some(realm),
+            object,
+            &key,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(value),
+                writable: DescriptorField::Present(true),
+                enumerable: DescriptorField::Present(true),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )
     }
 
     pub(in crate::runtime) fn call_array_is_array(

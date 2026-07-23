@@ -4398,7 +4398,22 @@ pub enum InternalCallableData {
     PromiseAllResolveElement {
         values: ObjectId,
         resolve: ObjectId,
-        remaining: Rc<Cell<u32>>,
+        remaining: Rc<Cell<i32>>,
+        already_called: Rc<Cell<bool>>,
+        index: u32,
+    },
+    PromiseAllSettledElement {
+        values: ObjectId,
+        resolve: ObjectId,
+        remaining: Rc<Cell<i32>>,
+        already_called: Rc<Cell<bool>>,
+        index: u32,
+        outcome: PromiseReactionKind,
+    },
+    PromiseAnyRejectElement {
+        errors: ObjectId,
+        reject: ObjectId,
+        remaining: Rc<Cell<i32>>,
         already_called: Rc<Cell<bool>>,
         index: u32,
     },
@@ -5292,6 +5307,8 @@ pub enum PromiseNativeKind {
     Resolve,
     Reject,
     All,
+    AllSettled,
+    Any,
     Try,
     Race,
     WithResolvers,
@@ -5387,6 +5404,8 @@ pub enum NativeFunctionId {
     PromiseFinallyHandler(PromiseReactionKind),
     PromiseFinallyThunk(PromiseReactionKind),
     PromiseAllResolveElement,
+    PromiseAllSettledElement(PromiseReactionKind),
+    PromiseAnyRejectElement,
     PrimitiveConstructor(PrimitiveKind),
     StringStatic(StringStaticKind),
     /// QuickJS's test262-only `js_string_codePointRange` helper.
@@ -5742,6 +5761,8 @@ impl NativeFunctionId {
                 | Self::PromiseFinallyHandler(_)
                 | Self::PromiseFinallyThunk(_)
                 | Self::PromiseAllResolveElement
+                | Self::PromiseAllSettledElement(_)
+                | Self::PromiseAnyRejectElement
         )
     }
 
@@ -5828,6 +5849,8 @@ impl NativeFunctionId {
                 | PromiseNativeKind::Resolve
                 | PromiseNativeKind::Reject
                 | PromiseNativeKind::All
+                | PromiseNativeKind::AllSettled
+                | PromiseNativeKind::Any
                 | PromiseNativeKind::Try
                 | PromiseNativeKind::Race
                 | PromiseNativeKind::WithResolvers,
@@ -5837,6 +5860,8 @@ impl NativeFunctionId {
             | Self::PromiseFinallyHandler(_)
             | Self::PromiseFinallyThunk(_)
             | Self::PromiseAllResolveElement
+            | Self::PromiseAllSettledElement(_)
+            | Self::PromiseAnyRejectElement
             | Self::Reflect(
                 ReflectKind::Apply
                 | ReflectKind::Construct
@@ -10644,11 +10669,68 @@ impl Heap {
                         ));
                     }
                 }
+                (
+                    NativeFunctionId::PromiseAllSettledElement(target_outcome),
+                    Some(InternalCallableData::PromiseAllSettledElement {
+                        values,
+                        resolve,
+                        index,
+                        outcome,
+                        ..
+                    }),
+                ) if target_outcome == *outcome => {
+                    let values = self.object(*values)?;
+                    let resolve = self.object(*resolve)?;
+                    let resolve_is_callable = matches!(
+                        resolve.kind,
+                        ObjectKind::NativeFunction
+                            | ObjectKind::BoundFunction
+                            | ObjectKind::BytecodeFunction
+                    );
+                    if object.is_constructor
+                        || !matches!(values.payload, ObjectPayload::Array { .. })
+                        || !resolve_is_callable
+                        || *index == u32::MAX
+                    {
+                        return Err(HeapError::Invariant(
+                            "Promise.allSettled element callable has invalid hidden state",
+                        ));
+                    }
+                }
+                (
+                    NativeFunctionId::PromiseAnyRejectElement,
+                    Some(InternalCallableData::PromiseAnyRejectElement {
+                        errors,
+                        reject,
+                        index,
+                        ..
+                    }),
+                ) => {
+                    let errors = self.object(*errors)?;
+                    let reject = self.object(*reject)?;
+                    let reject_is_callable = matches!(
+                        reject.kind,
+                        ObjectKind::NativeFunction
+                            | ObjectKind::BoundFunction
+                            | ObjectKind::BytecodeFunction
+                    );
+                    if object.is_constructor
+                        || !matches!(errors.payload, ObjectPayload::Array { .. })
+                        || !reject_is_callable
+                        || *index == u32::MAX
+                    {
+                        return Err(HeapError::Invariant(
+                            "Promise.any reject-element callable has invalid hidden state",
+                        ));
+                    }
+                }
                 (NativeFunctionId::PromiseResolving(_), _)
                 | (NativeFunctionId::PromiseCapabilityExecutor, _)
                 | (NativeFunctionId::PromiseFinallyHandler(_), _)
                 | (NativeFunctionId::PromiseFinallyThunk(_), _)
                 | (NativeFunctionId::PromiseAllResolveElement, _)
+                | (NativeFunctionId::PromiseAllSettledElement(_), _)
+                | (NativeFunctionId::PromiseAnyRejectElement, _)
                 | (_, Some(_)) => {
                     return Err(HeapError::Invariant(
                         "native target does not match its internal callable capture",
@@ -11522,6 +11604,12 @@ fn internal_callable_edges(internal: &InternalCallableData) -> Vec<RawId> {
         InternalCallableData::PromiseAllResolveElement {
             values, resolve, ..
         } => vec![RawId::Object(*values), RawId::Object(*resolve)],
+        InternalCallableData::PromiseAllSettledElement {
+            values, resolve, ..
+        } => vec![RawId::Object(*values), RawId::Object(*resolve)],
+        InternalCallableData::PromiseAnyRejectElement { errors, reject, .. } => {
+            vec![RawId::Object(*errors), RawId::Object(*reject)]
+        }
     }
 }
 
@@ -11734,7 +11822,9 @@ fn internal_callable_atoms(internal: &InternalCallableData) -> Vec<Atom> {
         }
         InternalCallableData::PromiseResolving { .. }
         | InternalCallableData::PromiseFinallyHandler { .. }
-        | InternalCallableData::PromiseAllResolveElement { .. } => Vec::new(),
+        | InternalCallableData::PromiseAllResolveElement { .. }
+        | InternalCallableData::PromiseAllSettledElement { .. }
+        | InternalCallableData::PromiseAnyRejectElement { .. } => Vec::new(),
     }
 }
 
