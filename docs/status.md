@@ -1760,7 +1760,62 @@ claim full parity.
   species, identities, and forced GC. The global profile remains async
   fail-closed; `Promise.all`, `allSettled`, `any`, `race`, `try`,
   `withResolvers`, and `Promise.prototype.finally` remain explicit next
-  frontiers rather than false parity claims.
+  frontiers at the R3m checkpoint rather than false parity claims.
+
+  R3n adds `Promise.try`, `Promise.withResolvers`, and `Promise.race` without
+  claiming the still-absent `all`/`allSettled`/`any`/`finally` surfaces.
+  `try` creates the custom capability before synchronously calling its callback
+  with `undefined` receiver and all trailing arguments, then routes return or
+  throw through the captured resolve/reject callable. `withResolvers` returns
+  a realm-local ordinary object whose enumerable `promise`, `resolve`, and
+  `reject` fields preserve that order. `race` creates the capability first,
+  reads and validates the constructor's `resolve` once, then consumes the
+  cached iterator-next method synchronously and dynamically invokes each
+  resolved value's `then`. Empty input remains pending. Pinned QuickJS's actual
+  close boundary is retained: iterator-next/value failures reject without
+  `IteratorClose`, while abrupt constructor-resolve or dynamic-then paths close
+  the acquired iterator and preserve the original exception. Result,
+  iterator, thenable, and queued-job edges remain rooted across forced GC.
+  Direct upstream anchors are `quickjs.c` 53592-53655, 53895-53962, and
+  16512-16675.
+
+  The complete authenticated R3n inventory contains 112 paths / 224
+  sloppy/strict variants: 94 race paths, 12 try paths, six withResolvers
+  paths, 66 async paths, and 46 synchronous paths. Oxide records 214 passes and
+  ten `fail-runtime` results, with zero unsupported or skipped variants;
+  pinned QuickJS 2026-06-04 passes 112/112 paths. The ten failures are exactly
+  both variants of these five adjacent consumers:
+
+  - `test/built-ins/Promise/race/resolved-sequence-extra-ticks.js`
+  - `test/built-ins/Promise/race/resolved-sequence-mixed.js`
+  - `test/built-ins/Promise/race/resolved-sequence-with-rejections.js`
+  - `test/built-ins/Promise/race/resolved-sequence.js`
+  - `test/built-ins/Promise/race/resolved-then-catch-finally.js`
+
+  They require the next `Promise.all`/`Promise.prototype.finally` slice rather
+  than exposing a race/try/withResolvers defect. Manifest, scoped-profile,
+  variant-key, adjacency-inventory, non-pass, TSV, and JSONL SHA-256 values are
+  `be545aefd5f2029faae9745d859a43de176ec9865599a916f15ec465bf84d340`,
+  `8548d12a4d7f3141583b986c8e3ffcae4e1afb93476ae8a444f64b940bb44654`,
+  `bfe113d1c47283c84f5fc5f97e30cc74e3fea8d5975a3b87129e5b51eb05d7db`,
+  `9383382995694ab1f7356f23541c00e5f99910dfd6d80ab6f38662117043e7ae`,
+  `2fb9eb8c655158ba09dffcad4c9e50f96584cb218ad5e2e5d43a4216b90d3790`,
+  `faf0b4f680edab60b560e54a62ad0b9ba242c7b85abe92c9714b4152c87324cf`,
+  and
+  `fc10101195f430cd4c382c84a4a1a7bd84bb05daff24cd3e7d62351e7dda0968`.
+  The pinned static-method differential's source/transcript SHA-256 values are
+  `2bc2a52869d42f314614905f4ac750b87064d6e44cbcfdcb20b3703522bdd0b2`
+  and
+  `0da636dbcf08f6d6ec112b439a54ec3d6b0816fff34f1381516a5cad3789f16d`.
+  Its scoped profile alone opts into async execution and the two new feature
+  tags; the unchanged global profile
+  (`1860224ce1e828406f4869b66b3f1964f96fad85e4eab6ba7fecb256b4b6c2f2`)
+  remains fail-closed with no `[execution]` section.
+
+  R3n leaves the facade bounded at 9,794 lines in `runtime.rs`; the new
+  capability/convenience/race algorithms live in the dedicated 327-line
+  `runtime/intrinsics/promise/convenience.rs` module rather than extending the
+  monolith.
 
   Async functions/generators, destructuring eval declarations, unsupported
   class elements, and ill-formed UTF-16 source stay explicit frontiers.
@@ -5068,6 +5123,11 @@ under `compiler/class/`, private callable/brand storage stays in
 `runtime/vm_host/private_elements.rs`, and both publication defenses retain
 their dedicated owners. `runtime.rs` remains the 9,748-line facade; this slice
 adds no product code to that monolith or a second generator state machine.
+R3m/R3n preserve that boundary for Promise work: the Promise object/reaction
+owner remains `runtime/intrinsics/promise.rs`, the runtime FIFO remains
+`runtime/jobs.rs`, and R3n places its new static-method and race algorithms in
+the 327-line `runtime/intrinsics/promise/convenience.rs`. The current
+`runtime.rs` facade is 9,794 lines rather than absorbing those algorithms.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage

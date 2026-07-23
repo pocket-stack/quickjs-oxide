@@ -11,6 +11,8 @@ use crate::heap::{
 
 use super::super::*;
 
+mod convenience;
+
 /// One notification from QuickJS's host Promise rejection tracker boundary.
 ///
 /// `handled == false` reports a rejection which had no handler when it was
@@ -117,17 +119,20 @@ impl Runtime {
             "Promise",
             1,
         )?;
-        for (kind, name) in [
-            (PromiseNativeKind::Resolve, "resolve"),
-            (PromiseNativeKind::Reject, "reject"),
+        for (kind, name, length) in [
+            (PromiseNativeKind::Resolve, "resolve", 1),
+            (PromiseNativeKind::Reject, "reject", 1),
+            (PromiseNativeKind::Try, "try", 1),
+            (PromiseNativeKind::Race, "race", 1),
+            (PromiseNativeKind::WithResolvers, "withResolvers", 0),
         ] {
             self.define_native_builtin_auto_init(
                 constructor.as_object(),
                 realm,
                 NativeFunctionId::Promise(kind),
                 name,
-                1,
-                1,
+                length,
+                length,
             )?;
         }
         let species_getter = self.new_native_builtin(
@@ -481,6 +486,9 @@ impl Runtime {
             PromiseNativeKind::Resolve | PromiseNativeKind::Reject => {
                 self.call_promise_static_resolve(realm, kind, invocation, arguments)
             }
+            PromiseNativeKind::Try => self.call_promise_try(realm, invocation, arguments),
+            PromiseNativeKind::Race => self.call_promise_race(realm, invocation, arguments),
+            PromiseNativeKind::WithResolvers => self.call_promise_with_resolvers(realm, invocation),
         }
     }
 

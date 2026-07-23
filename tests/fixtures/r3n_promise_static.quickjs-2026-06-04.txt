@@ -1,0 +1,11 @@
+descriptors=try:1:truefalsetrue|race:1:truefalsetrue|withResolvers:0:truefalsetrue
+custom-generic=construct|callback:20:22|resolve:42|construct|reject:custom|construct|static-resolve:42|then:42|resolve:42||TypeError||TypeError||TypeError
+try=call:19:23|after-return|throw|after-throw|fulfilled:42|rejected:true
+withResolvers=promise,resolve,reject||promise:truetruetrue|resolve:truetruetrue|reject:truetruetrue||after-settle|fulfilled:42
+race-empty-fifo=pending|checkpoint|winner:first
+race-resolve-getter=resolve-get
+race-next-no-close=iterator|next
+race-resolve-close=next|resolve|close
+race-then-close=next|then|close|original:true
+race-gc=42
+r3n-promise-static-oracle=ok

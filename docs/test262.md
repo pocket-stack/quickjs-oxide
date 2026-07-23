@@ -3180,6 +3180,65 @@ Reproduce the gate with:
 Use `--check` to authenticate only the frozen manifest/profile and pinned
 QuickJS oracle.
 
+## R3n Promise.try, Promise.withResolvers, and Promise.race
+
+R3n freezes every file directly under the pinned Test262
+`built-ins/Promise/race`, `Promise/try`, and `Promise/withResolvers`
+directories: 112 complete paths / 224 sloppy and strict variants. The inventory
+contains 94 race paths, 12 try paths, six withResolvers paths, 66 async paths,
+and 46 synchronous paths. No negative test or unrelated Promise directory is
+admitted.
+
+Oxide passes 214 variants. The remaining ten are `fail-runtime`; there are zero
+unsupported results and zero skips. Pinned QuickJS 2026-06-04 passes all
+112/112 paths. Every failure is the sloppy and strict mode of one of these five
+explicit `Promise.all`/`Promise.prototype.finally` adjacency consumers:
+
+- `test/built-ins/Promise/race/resolved-sequence-extra-ticks.js`
+- `test/built-ins/Promise/race/resolved-sequence-mixed.js`
+- `test/built-ins/Promise/race/resolved-sequence-with-rejections.js`
+- `test/built-ins/Promise/race/resolved-sequence.js`
+- `test/built-ins/Promise/race/resolved-then-catch-finally.js`
+
+The passing rows cover method descriptors and generic/custom constructors;
+`Promise.try` argument forwarding, synchronous callback invocation, return and
+throw routing; `withResolvers` result shape and first-call settlement; and
+`race` empty-input pending state, FIFO resolution, one-time resolve lookup,
+pinned iterator-next no-close behavior, abrupt resolve/then IteratorClose, and
+job-graph lifetime across GC. Thus the ten adjacent failures do not widen the
+implemented R3n semantic frontier.
+
+Manifest, scoped-profile, variant-key, adjacency-inventory, non-pass, TSV, and
+JSONL SHA-256 values are
+`be545aefd5f2029faae9745d859a43de176ec9865599a916f15ec465bf84d340`,
+`8548d12a4d7f3141583b986c8e3ffcae4e1afb93476ae8a444f64b940bb44654`,
+`bfe113d1c47283c84f5fc5f97e30cc74e3fea8d5975a3b87129e5b51eb05d7db`,
+`9383382995694ab1f7356f23541c00e5f99910dfd6d80ab6f38662117043e7ae`,
+`2fb9eb8c655158ba09dffcad4c9e50f96584cb218ad5e2e5d43a4216b90d3790`,
+`faf0b4f680edab60b560e54a62ad0b9ba242c7b85abe92c9714b4152c87324cf`,
+and
+`fc10101195f430cd4c382c84a4a1a7bd84bb05daff24cd3e7d62351e7dda0968`.
+The independent pinned QuickJS static-method fixture/transcript hashes are
+`2bc2a52869d42f314614905f4ac750b87064d6e44cbcfdcb20b3703522bdd0b2`
+and
+`0da636dbcf08f6d6ec112b439a54ec3d6b0816fff34f1381516a5cad3789f16d`.
+
+The scoped profile declares exactly its eight observed feature tags and
+`[execution] async=true`. The global profile remains byte-identical at
+`1860224ce1e828406f4869b66b3f1964f96fad85e4eab6ba7fecb256b4b6c2f2`;
+it has no execution section, so async execution and the two new Promise feature
+tags continue to fail closed outside this authenticated manifest.
+
+Reproduce both locks with:
+
+```sh
+./scripts/test-r3n-promise-static-oracle.sh --check
+./scripts/test-test262-promise-race-try-with-resolvers.sh
+```
+
+Use `--check` on the Test262 command to authenticate only its frozen
+manifest/profile and pinned QuickJS result.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -3455,7 +3514,12 @@ QuickJS passes 82/82. Async forms and private generator methods remain later
 frontiers at the R3k checkpoint. R3l adds the private instance/static class-
 generator slice: its authenticated 82-path/160-variant gate passes 160/160,
 and pinned QuickJS passes 82/82. Async forms remain later frontiers, and the
-global profile stays closed for `generators`.
+global profile stays closed for `generators`. R3m establishes the Promise
+constructor/reaction/job boundary with 112/112 focused variants and QuickJS
+57/57 paths. R3n adds `try`, `withResolvers`, and `race`; its complete
+112-path/224-variant inventory records 214 passes and the ten explicitly
+listed `all`/`finally` adjacency failures, while pinned QuickJS passes 112/112.
+The global profile remains async- and Promise-feature-fail-closed.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

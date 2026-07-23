@@ -5274,6 +5274,9 @@ pub enum PromiseNativeKind {
     Catch,
     Resolve,
     Reject,
+    Try,
+    Race,
+    WithResolvers,
 }
 
 /// Selector shared by the paired internal Promise resolving functions.
@@ -5782,7 +5785,10 @@ impl NativeFunctionId {
                 PromiseNativeKind::Then
                 | PromiseNativeKind::Catch
                 | PromiseNativeKind::Resolve
-                | PromiseNativeKind::Reject,
+                | PromiseNativeKind::Reject
+                | PromiseNativeKind::Try
+                | PromiseNativeKind::Race
+                | PromiseNativeKind::WithResolvers,
             )
             | Self::PromiseResolving(_)
             | Self::PromiseCapabilityExecutor
