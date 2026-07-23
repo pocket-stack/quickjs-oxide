@@ -34,7 +34,9 @@ use config::{parse_config, skip_reason, validate_config, validate_suite, verify_
 use execution::{run_isolated_worker, run_worker};
 use metadata::{Metadata, parse_metadata};
 use report::{WorkerResult, report_row, write_report};
-use requirements::missing_host_capability_hints;
+use requirements::{
+    generator_destructuring_source_needs_async_guard, missing_host_capability_hints,
+};
 use scheduler::run_bounded;
 
 const TEST262_COMMIT: &str = "5c8206929d81b2d3d727ca6aac56c18358c8d790";
@@ -45,7 +47,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "1860224ce1e828406f4869b66b3f1964f96fad85e4eab6ba7fecb256b4b6c2f2";
+    "d01f4f49fbd14b2cad610983624142b468587b2e0bd10ae6264641c39cffa05f";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -592,15 +594,24 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
             Some(WorkerResult::failure(outcome, "selection", "", detail))
         } else if let Some(result) = missing_host_result(&missing_host) {
             Some(result)
+        } else if let Some(classification) = capability {
+            Some(WorkerResult::failure(
+                classification.outcome,
+                "selection",
+                "EngineCapability",
+                classification.detail,
+            ))
+        } else if !oxide_profile.allows_async_execution()
+            && generator_destructuring_source_needs_async_guard(&source, &metadata)
+        {
+            Some(WorkerResult::failure(
+                "unsupported-async",
+                "selection",
+                "ExecutionMode",
+                "missing execution capabilities: async",
+            ))
         } else {
-            capability.map(|classification| {
-                WorkerResult::failure(
-                    classification.outcome,
-                    "selection",
-                    "EngineCapability",
-                    classification.detail,
-                )
-            })
+            None
         };
         let test_index = planned_tests.len();
         planned_tests.push(PlannedTest { relative, metadata });
@@ -2808,11 +2819,9 @@ mod cli_tests {
 
         let global = super::OxideProfile::load(Path::new("compat/test262-oxide.conf")).unwrap();
         assert_eq!(
-            global
-                .classify(positive, &["generators".to_owned()], false)
-                .unwrap()
-                .outcome,
-            "unsupported-feature"
+            global.classify(positive, &["generators".to_owned()], false),
+            None,
+            "global profile should admit the globally audited generators feature"
         );
 
         for selection in [
@@ -2921,11 +2930,7 @@ mod cli_tests {
         assert!(excluded.detail.ends_with("object-spread"));
 
         let global = super::OxideProfile::load(Path::new("compat/test262-oxide.conf")).unwrap();
-        for feature in [
-            "class-methods-private",
-            "class-static-methods-private",
-            "generators",
-        ] {
+        for feature in ["class-methods-private", "class-static-methods-private"] {
             assert_eq!(
                 global
                     .classify(positive, &[feature.to_owned()], false)
@@ -2935,6 +2940,11 @@ mod cli_tests {
                 "global profile unexpectedly admitted {feature}"
             );
         }
+        assert_eq!(
+            global.classify(positive, &["generators".to_owned()], false),
+            None,
+            "global profile should admit the globally audited generators feature"
+        );
 
         for selection in [
             ["--all", ""],

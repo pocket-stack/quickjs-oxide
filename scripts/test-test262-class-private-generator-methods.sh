@@ -65,12 +65,12 @@ manifest_paths() {
 }
 
 profile_section() {
-    local section=$1
+    local section=$1 profile=${2:-$admission_profile}
     awk -v section="[$section]" '
         $0 == section { inside=1; next }
         /^\[/ { inside=0 }
         inside && NF && $1 !~ /^#/ { print }
-    ' "$admission_profile"
+    ' "$profile"
 }
 
 metadata_block() {
@@ -303,8 +303,8 @@ diff -u <(profile_section audited-negative-tests | LC_ALL=C sort) <(printf '%s\n
 [[ "$(sha256_file "$global_profile")" == "$(read_value global_oxide_profile_sha256)" \
     && "$(sha256_file "$admission_profile")" == "$(read_value oxide_profile_sha256)" ]] \
     || { echo "error: class-private-generator capability profile drifted" >&2; exit 1; }
-if awk '/^\[features\]$/ { inside=1; next } /^\[/ { inside=0 } inside && $0 == "generators" { found=1 } END { exit !found }' "$global_profile"; then
-    echo "error: global Test262 profile must remain fail-closed for generators" >&2
+if ! profile_section features "$global_profile" | grep -Fxq generators; then
+    echo "error: global Test262 profile must admit generators" >&2
     exit 1
 fi
 

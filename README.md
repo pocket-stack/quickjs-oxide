@@ -3,13 +3,13 @@
 An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
-The `unsafe`-free engine is runnable but incomplete. R3t authenticates a pinned
-synchronous 11-feature `generators` + `destructuring-binding` cohort: Oxide and
-pinned QuickJS both pass 6,593/6,593 variants. The result remains scoped; the
-conservative full Test262 vector records 36,928/102,037 passes with no engine
-fault. Modules, async functions/generators, Proxy, and broad built-in coverage
-remain incomplete. Unsupported paths fail explicitly; pinned QuickJS is the
-semantic oracle, not a product dependency.
+The `unsafe`-free engine is runnable but incomplete. R3u globally admits the
+pinned synchronous `generators` + `destructuring-binding` cohort after Oxide
+and pinned QuickJS both pass 6,593/6,593 variants. The conservative full
+Test262 vector records 43,521/102,037 passes with no engine fault. Modules,
+async functions/generators, Proxy, and broad built-in coverage remain
+incomplete. Unsupported paths fail explicitly; pinned QuickJS is the semantic
+oracle, not a product dependency.
 
 ## Try it
 

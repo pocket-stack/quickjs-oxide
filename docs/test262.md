@@ -10,7 +10,7 @@ differentials still decide exact behavior inside each implemented slice.
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
 - quickjs-oxide capability profile SHA-256:
-  `1860224ce1e828406f4869b66b3f1964f96fad85e4eab6ba7fecb256b4b6c2f2`
+  `d01f4f49fbd14b2cad610983624142b468587b2e0bd10ae6264641c39cffa05f`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -39,8 +39,8 @@ absent. Public fields, static blocks, private elements, and public/private
 synchronous generator methods are measured separately by the scoped
 R3g/R3h/R3i/R3j/R3k/R3l gates below.
 
-Nineteen additional provenance variants guard the result: four audited negative
-variants pass for the intended parse error, while 15 unsupported grammar
+Nineteen additional provenance variants guard the result: eight audited negative
+variants pass for the intended parse error, while 11 unsupported grammar
 variants fail closed instead of passing because they happened to throw a
 `SyntaxError`.
 
@@ -50,28 +50,28 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 36,928 pass;
+- 43,521 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 45,150 are classified as unsupported because of a feature, mode, host
+- 38,557 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
 - 97 fail to parse, 1,284 fail at runtime, 97 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 38,483 variants to execution. That count includes variants
-which then report a typed parser or harness frontier rather than an observed
-non-unsupported outcome.
+The runner admitted 45,076 variants to execution. That count includes variants
+which then report a typed parser/runtime frontier or harness failure rather
+than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 36.19% (`36,928 / 102,037`);
-- conservative target-scope lower bound: 44.19%
-  (`36,928 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 96.14%
-  (`36,928 / 38,412`).
+- raw suite pass rate: 42.65% (`43,521 / 102,037`);
+- conservative target-scope lower bound: 52.08%
+  (`43,521 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 96.70%
+  (`43,521 / 45,005`).
 
-The 44.19% figure is the useful whole-project progress floor, not a claim that
-the engine is 44.19% conformant. The 96.14% conditional rate measures quality
+The 52.08% figure is the useful whole-project progress floor, not a claim that
+the engine is 52.08% conformant. The 96.70% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -99,8 +99,8 @@ class slice, exposes adjacent derived/class-element and missing-intrinsic
 frontiers, and again keeps the runnable count fixed. R3f adds 545 passes by
 opening synchronous heritage/derived construction, while 88 adjacent variants
 move from parser/harness frontiers to honest missing-intrinsic, optional-chain,
-or pinned-target-error outcomes. The capability profile currently admits 71
-reviewed Test262 feature tags and 423 reviewed
+or pinned-target-error outcomes. The capability profile currently admits 73
+reviewed Test262 feature tags and 802 reviewed
 negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
 lands can only make the measurement more representative. Focused QuickJS
@@ -109,8 +109,9 @@ differential tests remain the semantic judge.
 R3s separately admits `RegExp.escape` only in its checksum-bound complete
 RegExp built-ins profile; the global profile remains fail-closed for that tag.
 R3t likewise authenticates synchronous `generators` plus
-`destructuring-binding` in a checksum-bound scoped profile while leaving both
-tags fail-closed globally.
+`destructuring-binding` in a checksum-bound scoped profile. R3u promotes that
+authenticated synchronous cohort into the global profile while keeping its
+three async-function/arrow adjacencies fail-closed.
 
 The complete TSV/JSONL reports are generated under `target/` rather than
 committed (together they are tens of megabytes). Their complete hashes and
@@ -125,9 +126,9 @@ parallel defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`6b2fb9219bad5f25bfcebc297ce9373798cd210140ebab0566a18e8dd83d052b`
+`202ab3480b39a6c7a68443bf9faba7bf9eb139b7c15baf2fde25c55c40c5d023`
 and
-`d2cf352f98f7d12b1ff734d7ff001c443c896be3c8adddd54951dd0a47f78eb2`.
+`25df14d037d181bc82b70855a44e782cfbff3118603666dca6ec908cfd659387`.
 
 ## Milestone policy
 
@@ -3038,18 +3039,21 @@ SHA-256 values are
 `30857ac44aa29bf86925b72b14da28c9215fb3bc29f81fc6b950694fa0d70b0f`,
 `eab79cc5f8ba041e93b7ea04bc391bed8fa249eaf5cbb11857d533fe27028c52`,
 `184f80aeb39690da69a802db371fe30cd1678726797181b4a660bf25a9996256`,
-`b51f9551d8cc50c1daf1db6f919605c759e13ce57cdfa532b870105eafca89f3`,
-`24634a50a1587b22631d09570a562421885137059857beaf9980e961847a340c`,
+`018401955c96b0909e2a56e76be443556e790f4a06dd067bd2d70414afa8e94f`,
+`6d005f8570ef7bb45b36b50a65cb6672e1e6863a67bf825eee0ccc25a2438f99`,
 and
 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 The checked-in baseline also authenticates the pinned Test262 patch/config/
-metadata and the global fail-closed profile.
+metadata and current global-profile provenance. R3t refined ten passing
+negative-row `yield` diagnostics without moving an outcome; the hashes above
+are the refreshed vectors.
 
-The global profile intentionally does not admit the `generators` feature tag.
-R3k kept private class generator methods separate; R3l measures that slice
-below. Async functions/generators, Proxy-dependent paths, and unrelated
-unsupported dependencies remain separate frontiers, so this focused gate is
-not a whole-Test262 percentage or a full generator-parity claim.
+The global profile did not admit `generators` at the R3k checkpoint. R3k kept
+private class generator methods separate; R3l measures that slice below. R3u
+now admits the authenticated synchronous cohort globally. Async
+functions/generators, Proxy-dependent paths, and unrelated unsupported
+dependencies remain separate frontiers, so this focused gate is not a
+whole-Test262 percentage or a full generator-parity claim.
 
 A supplemental fresh-tree dependency audit broadens the selection to 1,203
 paths / 2,378 variants. Oxide passes 2,376 with zero engine faults or skips.
@@ -3102,10 +3106,12 @@ non-pass SHA-256 values are
 `b7b2c71cab374f9bcc6754bd9a80506d273d2e135e3f66eb373f325c94d33685`,
 `e3732db0b47608265f4f950c1c72929e782eb507597c5f0b336896e51874133e`,
 `74f827bf644507c0f0101d6597a8c5560de82b8d2303ef236beef1f3ac9de22d`,
-`13e751e511245db9f2ed3db749dbb58cc107161684b62bc7d9806431b79ccf94`,
-`c4fcd1c4b3cdfeffaddd633a6f5676286fa99266ba103ec64c86a718b4ec27be`,
+`24f51f0526a7c950b229ae789be58ccc42eb167f0d0f80c8c788fca832619654`,
+`2f54d423f00a410b57c6dbd4c1e3fe1c82fd8bf965f07dcf6d6bb07f69192486`,
 and
 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+R3t refined eight passing negative-row `yield` diagnostics without moving an
+outcome; the hashes above are the refreshed vectors.
 
 The pinned differential independently locks parameter evaluation before the
 first `next`, resumable instance/static bodies, brand-check ordering, callable
@@ -3603,9 +3609,10 @@ outcomes. A path enters the raw universe when it carries `generators` or
 `destructuring-binding` and all of its remaining feature tags belong to the
 exact 11-tag scoped profile. That yields 3,418 paths and 6,624 variants.
 Removing 25 module paths/variants leaves 3,393 paths and 6,599 variants. Three
-source-audited paths contain real async syntax despite omitting the `async`
-metadata flag; excluding their six variants freezes the synchronous gate at
-3,390 paths and 6,593 variants.
+source-audited paths contain async-callable grammar not represented by their
+non-exhaustive feature metadata; excluding their six variants freezes the
+synchronous gate at 3,390 paths and 6,593 variants. The Test262 `async` flag
+governs `$DONE` completion and would be incorrect for these tests.
 
 The final inventory contains 3,011 positive paths/5,906 variants and 379
 parse-negative paths/687 variants. Its mode split is 3,313 sloppy and 3,280
@@ -3662,7 +3669,65 @@ Reproduce R3t with:
 ```
 
 Use `./scripts/test-test262-generator-destructuring.sh --check` to authenticate
-the static inventory, scoped profile, and QuickJS oracle without running Oxide.
+the static inventory, scoped profile, QuickJS oracle, and six-row Oxide async
+admission guard without running the 6,593-row Oxide synchronous gate.
+
+## R3u global generator/destructuring admission
+
+R3u changes the conservative scoreboard, not the engine semantics already
+authenticated by R3t. The global profile becomes the bytewise-sorted union of
+the previous global profile and R3t's reviewed capability set: 73 feature tags
+and 802 exact audited negative paths. Its SHA-256 is
+`d01f4f49fbd14b2cad610983624142b468587b2e0bd10ae6264641c39cffa05f`;
+it still has no `[execution]` section.
+
+Test262 feature metadata is non-exhaustive for three paths in this cohort.
+Their source contains async function or async-arrow grammar even though the
+tests complete synchronously and correctly omit the `$DONE`-oriented `async`
+flag. A final, feature-scoped source guard therefore keeps all six variants
+`unsupported-async`. Config exclusions, declared module/async modes, host
+requirements, feature gaps, and negative provenance retain priority. The
+general `$262` host-hook scan stays independently conservative and never skips
+possible RegExp text, so the scoped lexical audit cannot hide a host
+requirement.
+
+The exact R3t/R3u join contains the same 102,037 unique `(path, variant)` keys
+in the same order. Its only outcome transitions are:
+
+- 6,593 `unsupported-feature -> pass`;
+- six `unsupported-feature -> unsupported-async`.
+
+Another 6,583 `unsupported-feature` rows keep the same outcome and change only
+their detail after the newly admitted tags are removed from the remaining
+feature-gap list. The complete row-level diff is therefore 13,182 rows.
+
+There are no previous-pass regressions, missing or extra keys, duplicates,
+crashes, or runner/engine infrastructure faults. Passes rise from 36,928 to
+43,521 and runnable variants from 38,483 to 45,076. `unsupported-feature`
+falls from 30,523 to 23,924 while `unsupported-async` rises from 9,986 to
+9,992; every other outcome count is unchanged. The final TSV/JSONL SHA-256
+values are
+`202ab3480b39a6c7a68443bf9faba7bf9eb139b7c15baf2fde25c55c40c5d023`
+and
+`25df14d037d181bc82b70855a44e782cfbff3118603666dca6ec908cfd659387`.
+
+The migration also re-pins profile metadata for 31 direct-global focused
+vectors and 14 scoped vectors. Their test rows do not intersect this admission
+and the admission itself does not change their outcomes. Re-running the two
+class-generator gates exposed stale R3k/R3l report hashes: R3t had refined ten
+public and eight private passing `yield` diagnostic rows without refreshing
+those older vectors. Their current hashes now record those detail-only changes.
+The provenance canary does change semantically: four destructuring variants
+become intended parse-negative passes, moving it to eight pass and eleven
+fail-closed variants.
+
+Reproduce R3u with:
+
+```sh
+./scripts/test-test262-generator-destructuring.sh
+./scripts/test-test262-provenance.sh
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
 
 ## Runner contract
 
@@ -3961,8 +4026,10 @@ full vector to 36,927 passes without a previous-pass regression.
 R3t closes the authenticated synchronous generator/destructuring cohort at
 6,593/6,593. Its untagged Annex B fix raises the conservative full vector by
 one to 36,928 passes; the scoped cohort itself remains outside that global
-score. The global profile remains fail-closed for async and Promise features
-and for `generators`/`destructuring-binding`.
+score. R3u then admits that synchronous cohort globally: 6,593 variants move
+to pass, six async adjacencies remain fail-closed, and the vector reaches
+43,521 passes. The global profile remains fail-closed for async execution and
+Promise features.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

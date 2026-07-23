@@ -10,19 +10,19 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 71 reviewed feature tags and 423 exact audited
+  capability profile now admits 73 reviewed feature tags and 802 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 36,928 passes and 38,483 runnable variants: 36.19% raw, a 44.19% lower
-  bound after the 18,475 pinned QuickJS target exclusions, or 96.14% among the
-  38,412 variants with a non-unsupported observed outcome. It records 97
+  has 43,521 passes and 45,076 runnable variants: 42.65% raw, a 52.08% lower
+  bound after the 18,475 pinned QuickJS target exclusions, or 96.70% among the
+  45,005 variants with a non-unsupported observed outcome. It records 97
   parse failures and 1,284 runtime failures; current full TSV/JSONL SHA-256
   values are
-  `6b2fb9219bad5f25bfcebc297ce9373798cd210140ebab0566a18e8dd83d052b`
+  `202ab3480b39a6c7a68443bf9faba7bf9eb139b7c15baf2fde25c55c40c5d023`
   and
-  `d2cf352f98f7d12b1ff734d7ff001c443c896be3c8adddd54951dd0a47f78eb2`.
+  `25df14d037d181bc82b70855a44e782cfbff3118603666dca6ec908cfd659387`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -1657,12 +1657,14 @@ claim full parity.
   `30857ac44aa29bf86925b72b14da28c9215fb3bc29f81fc6b950694fa0d70b0f`,
   `eab79cc5f8ba041e93b7ea04bc391bed8fa249eaf5cbb11857d533fe27028c52`,
   `184f80aeb39690da69a802db371fe30cd1678726797181b4a660bf25a9996256`,
-  `b51f9551d8cc50c1daf1db6f919605c759e13ce57cdfa532b870105eafca89f3`,
-  `24634a50a1587b22631d09570a562421885137059857beaf9980e961847a340c`,
+  `018401955c96b0909e2a56e76be443556e790f4a06dd067bd2d70414afa8e94f`,
+  `6d005f8570ef7bb45b36b50a65cb6672e1e6863a67bf825eee0ccc25a2438f99`,
   and
   `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
-  The global capability profile deliberately remains fail-closed for the
-  `generators` tag; this focused result does not claim full-suite admission.
+  R3t later refined ten passing negative-row `yield` diagnostics without
+  changing an outcome; the hashes above are the refreshed current vectors.
+  The global capability profile remained fail-closed for `generators` at this
+  checkpoint; R3u later admits the authenticated synchronous cohort.
 
   A supplemental fresh-tree dependency audit widens the selection to 1,203
   paths / 2,378 variants. It passes 2,376, has zero engine faults or skips, and
@@ -1706,10 +1708,12 @@ claim full parity.
   `b7b2c71cab374f9bcc6754bd9a80506d273d2e135e3f66eb373f325c94d33685`,
   `e3732db0b47608265f4f950c1c72929e782eb507597c5f0b336896e51874133e`,
   `74f827bf644507c0f0101d6597a8c5560de82b8d2303ef236beef1f3ac9de22d`,
-  `13e751e511245db9f2ed3db749dbb58cc107161684b62bc7d9806431b79ccf94`,
-  `c4fcd1c4b3cdfeffaddd633a6f5676286fa99266ba103ec64c86a718b4ec27be`,
+  `24f51f0526a7c950b229ae789be58ccc42eb167f0d0f80c8c788fca832619654`,
+  `2f54d423f00a410b57c6dbd4c1e3fe1c82fd8bf965f07dcf6d6bb07f69192486`,
   and
   `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+  R3t later refined eight passing negative-row `yield` diagnostics without
+  changing an outcome; the hashes above are the refreshed current vectors.
   Its pinned differential covers parameter timing, brand/error ordering,
   extracted calls, reflection/source, dynamic `super`, private capture,
   `yield*`, reevaluation, static subclass separation, and outer-generator class
@@ -2140,8 +2144,9 @@ claim full parity.
   related `for-in` negatives retain genuine `SyntaxError` provenance.
 
   The static metadata universe contains 3,418 paths/6,624 variants. Removing
-  25 module paths/variants and three source-audited metadata-missing async
-  paths/six variants leaves 3,390 synchronous paths and 6,593 variants:
+  25 module paths/variants and three source-audited async-callable paths (six
+  variants) whose feature metadata is non-exhaustive leaves 3,390 synchronous
+  paths and 6,593 variants:
   3,011 positive paths/5,906 variants plus 379 parse-negative paths/687
   variants. Oxide and pinned QuickJS both pass 6,593/6,593. The manifest,
   scoped-profile, key, TSV, and JSONL hashes are
@@ -2165,6 +2170,31 @@ claim full parity.
   `d2cf352f98f7d12b1ff734d7ff001c443c896be3c8adddd54951dd0a47f78eb2`.
   A separate admission milestone will classify the three async adjacencies and
   migrate the globally profile-bound baselines.
+
+  R3u performs that global admission without changing engine semantics. The
+  global profile is the bytewise-sorted union of the previous global profile
+  and R3t's reviewed surface: 73 feature tags and 802 exact negative paths,
+  SHA-256
+  `d01f4f49fbd14b2cad610983624142b468587b2e0bd10ae6264641c39cffa05f`.
+  A cohort-scoped source guard catches the three tests whose source contains
+  async function/arrow grammar not represented by their non-exhaustive feature
+  metadata; all six variants remain `unsupported-async`. Metadata modes, host
+  hooks, ordinary feature gaps, and negative provenance retain priority, and
+  the `$262` scanner keeps its conservative non-RegExp-skipping path.
+
+  The exact 102,037-key R3t/R3u join records 6,593
+  `unsupported-feature -> pass` and six
+  `unsupported-feature -> unsupported-async` transitions, with no other
+  outcome movement, key drift, duplicate, engine fault, or previous-pass
+  regression. The vector reaches 43,521 passes and 45,076 runnable variants.
+  Its TSV/JSONL SHA-256 values are
+  `202ab3480b39a6c7a68443bf9faba7bf9eb139b7c15baf2fde25c55c40c5d023`
+  and
+  `25df14d037d181bc82b70855a44e782cfbff3118603666dca6ec908cfd659387`.
+  The parser-provenance canary now records eight intended passes and eleven
+  fail-closed variants. Re-running the public/private class-generator gates
+  also refreshes two stale R3k/R3l report hashes for R3t's ten/eight
+  detail-only `yield` diagnostic refinements; both gates remain 160/160.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/

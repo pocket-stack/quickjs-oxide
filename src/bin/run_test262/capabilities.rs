@@ -246,11 +246,15 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-regexp-unicode-properties.txt"
     ));
+    const GENERATOR_DESTRUCTURING_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-generator-destructuring.conf"
+    ));
     const PROPERTY_POSITIVE_PATHS: [&str; 2] = [
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 71] = [
+    const EXPECTED_FEATURES: [&str; 73] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -298,9 +302,11 @@ mod tests {
         "change-array-by-copy",
         "coalesce-expression",
         "const",
+        "destructuring-binding",
         "error-cause",
         "exponentiation",
         "for-in-order",
+        "generators",
         "hashbang",
         "json-parse-with-source",
         "let",
@@ -624,7 +630,7 @@ mod tests {
                 .map(String::as_str)
                 .eq(EXPECTED_FEATURES)
         );
-        let expected_audited_negatives = EXPECTED_AUDITED_NEGATIVES
+        let previously_audited_negatives = EXPECTED_AUDITED_NEGATIVES
             .into_iter()
             .chain(PROPERTY_MANIFEST.lines().filter(|path| {
                 path.starts_with("test/built-ins/RegExp/property-escapes/")
@@ -632,7 +638,31 @@ mod tests {
                     && !PROPERTY_POSITIVE_PATHS.contains(path)
             }))
             .collect::<BTreeSet<_>>();
-        assert_eq!(expected_audited_negatives.len(), 423);
+        assert_eq!(previously_audited_negatives.len(), 423);
+
+        let generator_destructuring_profile =
+            OxideProfile::parse(GENERATOR_DESTRUCTURING_PROFILE).unwrap();
+        assert_eq!(
+            generator_destructuring_profile.audited_negative_tests.len(),
+            379
+        );
+        assert!(
+            generator_destructuring_profile
+                .audited_negative_tests
+                .iter()
+                .all(|path| !previously_audited_negatives.contains(path.as_str()))
+        );
+
+        let expected_audited_negatives = previously_audited_negatives
+            .into_iter()
+            .chain(
+                generator_destructuring_profile
+                    .audited_negative_tests
+                    .iter()
+                    .map(String::as_str),
+            )
+            .collect::<BTreeSet<_>>();
+        assert_eq!(expected_audited_negatives.len(), 802);
         assert!(
             profile
                 .audited_negative_tests

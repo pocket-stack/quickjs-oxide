@@ -36,4 +36,4 @@ if ! cmp -s "$json_baseline" "$json_report"; then
     exit 1
 fi
 
-echo "Test262 provenance canaries match: 4 audited pass, 15 fail-closed"
+echo "Test262 provenance canaries match: 8 audited pass, 11 fail-closed"

@@ -19,7 +19,7 @@ workers=${TEST262_WORKERS:-8}
 
 usage() {
     printf 'usage: %s [--check]\n' "${0##*/}"
-    printf '  --check  verify the frozen inventory/profile and pinned QuickJS oracle only\n'
+    printf '  --check  verify inventory/profile, QuickJS, and the 6-row Oxide async guard; skip the 6,593-row Oxide synchronous gate\n'
 }
 
 check_only=false
@@ -56,12 +56,12 @@ sha256_file() {
 }
 
 profile_section() {
-    local section=$1
+    local section=$1 profile=${2:-$admission_profile}
     awk -v section="[$section]" '
         $0 == section { inside=1; next }
         /^\[/ { inside=0 }
         inside && NF && $1 !~ /^#/ { print }
-    ' "$admission_profile"
+    ' "$profile"
 }
 
 inventory_count() {
@@ -193,16 +193,17 @@ profile_section features | LC_ALL=C sort > "$features_file"
     && "$(sha256_file "$admission_profile")" == "$(read_value oxide_profile_sha256)" ]] \
     || { echo "error: generator/destructuring capability profile drifted" >&2; exit 1; }
 for feature in generators destructuring-binding; do
-    if awk -v feature="$feature" '
-        /^\[features\]$/ { inside=1; next }
-        /^\[/ { inside=0 }
-        inside && $0 == feature { found=1 }
-        END { exit !found }
-    ' "$global_profile"; then
-        echo "error: global Test262 profile must remain fail-closed for $feature" >&2
+    if ! profile_section features "$global_profile" | grep -Fxq "$feature"; then
+        echo "error: global Test262 profile must admit $feature" >&2
         exit 1
     fi
 done
+if [[ -n "$(comm -23 \
+    <(profile_section audited-negative-tests | LC_ALL=C sort) \
+    <(profile_section audited-negative-tests "$global_profile" | LC_ALL=C sort))" ]]; then
+    echo "error: generator/destructuring audited negatives must be a subset of the global profile" >&2
+    exit 1
+fi
 
 rm -f -- "$metadata_records"
 cargo run --locked --release --quiet --bin run-test262 -- \
@@ -256,8 +257,10 @@ comm -23 "$metadata_universe" "$module_excluded" > "$metadata_sync"
 verify_inventory metadata_sync "$metadata_sync"
 verify_variant_count metadata_sync_variants "$metadata_sync"
 
-# Three pinned tests contain real async syntax but omit the async metadata flag.
-# Strip only frontmatter before scanning so prose about AsyncFunction does not
+# Test262 feature metadata is non-exhaustive: three pinned tests exercise async
+# callable grammar without async feature tags. `flags: [async]` instead controls
+# $DONE completion and would be incorrect for these synchronously-completing
+# tests. Strip frontmatter before scanning so prose about AsyncFunction does not
 # widen the exclusion. The exact result is frozen and source-audited.
 while IFS= read -r test_path; do
     if sed '/^\/\*---$/,/^---\*\/$/d' "$suite/$test_path" \
@@ -371,14 +374,42 @@ diff -u \
     || { echo "error: generator/destructuring variant key inventory drifted" >&2; exit 1; }
 
 verify_quickjs_oracle
+async_report=$tmp_dir/async-classification.tsv
+async_output=$(cargo run --locked --release --quiet --bin run-test262 -- \
+    --suite "$suite" \
+    --config "$source_dir/test262.conf" \
+    --oxide-profile "$global_profile" \
+    --manifest "$async_exclusions" \
+    --report "$async_report" \
+    --mode both \
+    --workers "$workers" \
+    --timeout-ms "$(read_value timeout_ms)" \
+    --allow-failures)
+async_variants=$(awk -F'\t' '
+    !/^#/ && !($1 == "path" && $2 == "variant") { count++ }
+    END { print count + 0 }
+' "$async_report")
+async_misclassified=$(awk -F'\t' '
+    !/^#/ && !($1 == "path" && $2 == "variant") && $7 != "unsupported-async" {
+        print $1 "\t" $2 "\t" $7
+    }
+' "$async_report")
+if [[ "$async_variants" != "$(read_value async_excluded_variants)" \
+    || -n "$async_misclassified" \
+    || "$async_output" != *"execution: runnable=0 "* ]]; then
+    echo "error: async-adjacent generator/destructuring variants must fail closed as unsupported-async" >&2
+    [[ -z "$async_misclassified" ]] || printf '%s\n' "$async_misclassified" >&2
+    exit 1
+fi
 if "$check_only"; then
-    printf 'generator/destructuring inputs verified: %s raw - %s modules - %s async = %s paths; QuickJS %s passes all %s variants\n' \
+    printf 'generator/destructuring inputs verified: %s raw - %s modules - %s async = %s paths; QuickJS %s passes all %s synchronous variants; Oxide classifies all %s async variants unsupported-async\n' \
         "$(read_value metadata_universe_paths)" \
         "$(read_value module_excluded_paths)" \
         "$(read_value async_excluded_paths)" \
         "$(read_value paths)" \
         "$(read_value quickjs)" \
-        "$(read_value quickjs_passes)"
+        "$(read_value quickjs_passes)" \
+        "$(read_value async_excluded_variants)"
     exit 0
 fi
 

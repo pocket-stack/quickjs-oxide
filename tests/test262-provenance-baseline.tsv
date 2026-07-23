@@ -4,14 +4,14 @@
 # test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
 # test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
 # test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
-# oxide_profile_sha256=1860224ce1e828406f4869b66b3f1964f96fad85e4eab6ba7fecb256b4b6c2f2
+# oxide_profile_sha256=d01f4f49fbd14b2cad610983624142b468587b2e0bd10ae6264641c39cffa05f
 # profile=test262-canonical-classified-v2
 # mode=both
 path	variant	flags	features	expected_phase	expected_type	outcome	actual_phase	actual_type	detail
 test/language/expressions/arrow-function/params-duplicate.js	sloppy			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/expressions/arrow-function/params-duplicate.js
 test/language/expressions/arrow-function/params-duplicate.js	strict			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/expressions/arrow-function/params-duplicate.js
-test/language/expressions/assignment/dstr/array-rest-before-element.js	sloppy	generated	destructuring-binding	parse	SyntaxError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: destructuring-binding
-test/language/expressions/assignment/dstr/array-rest-before-element.js	strict	generated	destructuring-binding	parse	SyntaxError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: destructuring-binding
+test/language/expressions/assignment/dstr/array-rest-before-element.js	sloppy	generated	destructuring-binding	parse	SyntaxError	pass	parse	SyntaxError	rest element must be the last one
+test/language/expressions/assignment/dstr/array-rest-before-element.js	strict	generated	destructuring-binding	parse	SyntaxError	pass	parse	SyntaxError	rest element must be the last one
 test/language/expressions/object/__proto__-duplicate.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	duplicate __proto__ property name
 test/language/expressions/object/__proto__-duplicate.js	strict			parse	SyntaxError	pass	parse	SyntaxError	duplicate __proto__ property name
 test/language/expressions/optional-chaining/early-errors-tail-position-null-op-template-string.js	sloppy		optional-chaining	parse	SyntaxError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: optional-chaining
@@ -21,10 +21,10 @@ test/language/rest-parameters/position-invalid.js	strict			parse	SyntaxError	uns
 test/language/statements/async-function/early-errors-declaration-duplicate-parameters.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/statements/async-function/early-errors-declaration-duplicate-parameters.js
 test/language/statements/function/dflt-params-duplicates.js	sloppy	generated	default-parameters	parse	SyntaxError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: default-parameters
 test/language/statements/function/dflt-params-duplicates.js	strict	generated	default-parameters	parse	SyntaxError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: default-parameters
-test/language/statements/generators/dflt-params-duplicates.js	sloppy	generated	default-parameters,generators	parse	SyntaxError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: default-parameters, generators
-test/language/statements/generators/dflt-params-duplicates.js	strict	generated	default-parameters,generators	parse	SyntaxError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: default-parameters, generators
+test/language/statements/generators/dflt-params-duplicates.js	sloppy	generated	default-parameters,generators	parse	SyntaxError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: default-parameters
+test/language/statements/generators/dflt-params-duplicates.js	strict	generated	default-parameters,generators	parse	SyntaxError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: default-parameters
 test/language/statements/variable/S12.2_A8_T2.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	expecting ';'
 test/language/statements/variable/S12.2_A8_T2.js	strict			parse	SyntaxError	pass	parse	SyntaxError	expecting ';'
-test/language/statements/variable/dstr/ary-ptrn-rest-not-final-id.js	sloppy	generated	destructuring-binding	parse	SyntaxError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: destructuring-binding
-test/language/statements/variable/dstr/ary-ptrn-rest-not-final-id.js	strict	generated	destructuring-binding	parse	SyntaxError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: destructuring-binding
-# summary pass=4 unsupported-feature=10 unsupported-negative-provenance=5
+test/language/statements/variable/dstr/ary-ptrn-rest-not-final-id.js	sloppy	generated	destructuring-binding	parse	SyntaxError	pass	parse	SyntaxError	rest element must be the last one
+test/language/statements/variable/dstr/ary-ptrn-rest-not-final-id.js	strict	generated	destructuring-binding	parse	SyntaxError	pass	parse	SyntaxError	rest element must be the last one
+# summary pass=8 unsupported-feature=6 unsupported-negative-provenance=5
