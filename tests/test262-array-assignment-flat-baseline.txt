@@ -1,5 +1,7 @@
 # R2u freezes the audited direct flat array destructuring-assignment surface.
 # All 70 paths and 131 sloppy/strict variants pass.
+# R3r refreshes two successful strict parse-negative detail strings after the
+# synchronous-generator parser began emitting QuickJS's dedicated yield error.
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
@@ -20,6 +22,6 @@ manifest_sha256=ee0b310ee20a89e3cff58469a4a7020a4a73980f5086fe189964a2c6c10c120f
 manifest_file_sha256=046679bd745132066b4982770f13236bfecdbd953b70bdba98afa60424c599c8
 keys_sha256=093abb8f2b240a97cd1bcf5728cbd720203e91b5ed9df00d22f0394cd86ef4cb
 nonpass_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-tsv_sha256=e3b579aacafa0f63e1e17857b242311ca2512481e86f8ddbe55fcbf28267df51
-jsonl_sha256=832eebb660ad3f50771c60348d203cb5eaef7055098d2a07098f86d04a1b5fc8
+tsv_sha256=8272e3e442e7c8195d22e2c0d09e6d63f15e4829ef18dc352cf7cc73669cf80d
+jsonl_sha256=273483bf7d554ad7fb5f7def97428740457c18f9d46e7967c2833785c752a1e6
 summary=pass=131

@@ -10,7 +10,9 @@ generators are available. R3q completes the aggregate Promise statics:
 `Promise.prototype.finally` passes 56/58, with only two Proxy-dependent
 variants failing. This is not full-suite parity: modules, async
 functions/generators, Proxy, and broad built-in coverage remain incomplete.
-Unsupported paths fail explicitly; pinned QuickJS is only an oracle.
+The pinned complete Test262 vector currently records 36,923 passes with no
+engine fault. Unsupported paths fail explicitly; pinned QuickJS is only an
+oracle.
 
 ## Try it
 

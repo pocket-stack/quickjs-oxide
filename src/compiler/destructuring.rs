@@ -1027,6 +1027,7 @@ impl<'source> Parser<'source> {
     fn parse_array_assignment_pattern(&mut self) -> Result<(), Error> {
         self.expect_punctuator(Punctuator::LeftBracket)?;
         self.emit_instruction(Instruction::ForOfStart)?;
+        self.push_destructuring_iterator_control()?;
 
         while !self.is_punctuator(Punctuator::RightBracket) {
             let is_rest = self.consume_punctuator(Punctuator::Ellipsis)?;
@@ -1101,6 +1102,7 @@ impl<'source> Parser<'source> {
 
         self.expect_punctuator(Punctuator::RightBracket)?;
         self.emit_instruction(Instruction::IteratorClose)?;
+        self.pop_destructuring_iterator_control()?;
         self.anonymous_function_definition = None;
         Ok(())
     }
@@ -1519,6 +1521,7 @@ impl<'source> Parser<'source> {
     ) -> Result<(), Error> {
         self.expect_punctuator(Punctuator::LeftBracket)?;
         self.emit_instruction(Instruction::ForOfStart)?;
+        self.push_destructuring_iterator_control()?;
 
         while !self.is_punctuator(Punctuator::RightBracket) {
             let is_rest = self.consume_punctuator(Punctuator::Ellipsis)?;
@@ -1763,6 +1766,7 @@ impl<'source> Parser<'source> {
 
         self.expect_punctuator(Punctuator::RightBracket)?;
         self.emit_instruction(Instruction::IteratorClose)?;
+        self.pop_destructuring_iterator_control()?;
         Ok(())
     }
 

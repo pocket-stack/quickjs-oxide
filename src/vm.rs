@@ -3982,7 +3982,7 @@ impl VmActivation {
                 unreachable!("for-in dispatch was bypassed")
             }
             Instruction::IteratorClose => {
-                let (iterator, enabled) = self.take_iterator_region(false)?;
+                let (iterator, enabled) = self.take_iterator_region(false, "IteratorClose")?;
                 if enabled {
                     match host.iterator_close(iterator, false)? {
                         IteratorCloseOutcome::Closed => {}
@@ -3993,7 +3993,8 @@ impl VmActivation {
                 }
             }
             Instruction::IteratorClosePreserve => {
-                let (iterator, enabled) = self.take_iterator_region(true)?;
+                let (iterator, enabled) =
+                    self.take_iterator_region(true, "IteratorClosePreserve")?;
                 if enabled {
                     match host.iterator_close(iterator, false)? {
                         IteratorCloseOutcome::Closed => {}
@@ -4002,6 +4003,9 @@ impl VmActivation {
                         }
                     }
                 }
+            }
+            Instruction::IteratorDropPreserve => {
+                let _ = self.take_iterator_region(true, "IteratorDropPreserve")?;
             }
             Instruction::Call(_)
             | Instruction::Eval { .. }
@@ -4197,38 +4201,37 @@ impl VmActivation {
     /// Remove the innermost iterator region. When `preserve_top` is true, the
     /// top operand replaces the complete iterator record and all intermediate
     /// values, matching an abrupt return crossing a for-of loop.
-    fn take_iterator_region(&mut self, preserve_top: bool) -> Result<(Value, bool), Error> {
-        let region = self.regions.pop().ok_or_else(|| {
-            Error::internal(if preserve_top {
-                "IteratorClosePreserve has no iterator region"
-            } else {
-                "IteratorClose has no iterator region"
-            })
-        })?;
+    fn take_iterator_region(
+        &mut self,
+        preserve_top: bool,
+        operation: &'static str,
+    ) -> Result<(Value, bool), Error> {
+        let region = self
+            .regions
+            .pop()
+            .ok_or_else(|| Error::internal(format!("{operation} has no iterator region")))?;
         let VmUnwindRegion::Iterator {
             record_base,
             enabled,
         } = region
         else {
-            return Err(Error::internal(if preserve_top {
-                "IteratorClosePreserve did not target the innermost unwind region"
-            } else {
-                "IteratorClose did not target the innermost unwind region"
-            }));
+            return Err(Error::internal(format!(
+                "{operation} did not target the innermost unwind region"
+            )));
         };
         let record_end = record_base
             .checked_add(2)
             .ok_or_else(|| Error::internal("iterator record depth overflow"))?;
         if preserve_top {
             if self.stack.len() <= record_end {
-                return Err(Error::internal(
-                    "IteratorClosePreserve has no value above its iterator marker",
-                ));
+                return Err(Error::internal(format!(
+                    "{operation} has no value above its iterator marker"
+                )));
             }
         } else if self.stack.len() != record_end {
-            return Err(Error::internal(
-                "IteratorClose did not reach its iterator record",
-            ));
+            return Err(Error::internal(format!(
+                "{operation} did not reach its iterator record"
+            )));
         }
         let iterator = self
             .stack
@@ -5785,6 +5788,30 @@ mod tests {
             Completion::Throw(Value::Int(88))
         );
         assert_eq!(host.iterator_close_pending, vec![false]);
+
+        let drop_without_close = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::PushI32(42),
+                Instruction::IteratorDropPreserve,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        drop_without_close.verify().unwrap();
+        let mut host = DetachedHost::new(&drop_without_close);
+        host.iterator_start_record = Some((Value::Int(10), Value::Int(11)));
+        assert_eq!(
+            CallFrame::new(4)
+                .execute(&drop_without_close.code, &mut host)
+                .unwrap(),
+            Completion::Return(Value::Int(42))
+        );
+        assert!(host.iterator_close_pending.is_empty());
     }
 
     #[test]

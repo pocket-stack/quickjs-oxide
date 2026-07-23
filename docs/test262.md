@@ -50,12 +50,12 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 36,293 pass;
+- 36,923 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 45,267 are classified as unsupported because of a feature, mode, host
+- 45,154 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 275 fail to parse, 1,624 fail at runtime, 97 fail in the harness, and six
+- 98 fail to parse, 1,284 fail at runtime, 97 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 38,483 variants to execution. That count includes variants
@@ -64,14 +64,14 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 35.57% (`36,293 / 102,037`);
-- conservative target-scope lower bound: 43.43%
-  (`36,293 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 94.77%
-  (`36,293 / 38,295`).
+- raw suite pass rate: 36.19% (`36,923 / 102,037`);
+- conservative target-scope lower bound: 44.19%
+  (`36,923 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 96.13%
+  (`36,923 / 38,408`).
 
-The 43.43% figure is the useful whole-project progress floor, not a claim that
-the engine is 43.43% conformant. The 94.77% conditional rate measures quality
+The 44.19% figure is the useful whole-project progress floor, not a claim that
+the engine is 44.19% conformant. The 96.13% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -119,9 +119,9 @@ parallel defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`018c55de6e745b35eae7bb8f7d1c3b7680579a58d8bbb241641d860c723a0e34`
+`87b1adf3234e6625dd95c96c11357e347447438d412b4007ec2236cb0fd18c7c`
 and
-`995cce2dc58694f8728e1ad12602b2ec5c65169f650cff5047e45d84bc4b407a`.
+`90726c1feee169bf923c857101d73c4f95ffc002de378dfe1f637451ce4fa906`.
 
 ## Milestone policy
 
@@ -3486,6 +3486,63 @@ Reproduce R3q with:
 Use `--check` on any script to authenticate its frozen inputs without running
 the Oxide differential or Test262 cohort.
 
+## R3r generator destructuring return unwind
+
+R3r fixes the only engine faults in the current complete vector. A generator
+return injected at a `yield` inside an active array binding or assignment
+pattern now follows QuickJS's transient `BlockEnv.has_iterator` path: nested
+destructuring iterators close from inner to outer before the return completes,
+and an enclosing `finally` runs afterward. The compiler models that region
+explicitly; the bytecode verifier remains strict.
+
+QuickJS precompiles a for-of head's assignment fragment before marking the
+outer loop iterator in its parser control stack. Its observable behavior is
+therefore unusual but pinned: returning from a yield in that fragment closes
+an inner destructuring iterator but abandons the outer loop iterator without
+calling its `return` method. Oxide reproduces that behavior with the typed
+`IteratorDropPreserve` opcode. If the inner close throws, the drop is not
+reached and ordinary exception unwinding closes the still-active outer
+iterator with the original throw pending, preserving QuickJS's exception
+priority.
+
+The independent differential covers binding, assignment, nested patterns,
+`finally`, `yield*`, the for-of-head abandon path, and the inner-close throw
+path. Its fixture and pinned transcript SHA-256 values are
+`05d8e677e984df2a9accb0c56ddb6f2e06ba6d3b2d2d08a51d4ba48811463398`
+and
+`4e39206df0f8213845227839ad1986759f12566e570a4820265a40e239add715`.
+
+The complete 102,037-key join has no missing or extra key and no previous-pass
+regression. Relative to the last checked full baseline it adds 630 passes:
+371 `fail-runtime -> pass`, 166 `fail-parse -> pass`, 81
+`unsupported-parser -> pass`, and 12 `unsupported-runtime -> pass`; the
+remaining changed outcomes are 14 `unsupported-harness-parser ->
+fail-runtime`, 11 `fail-parse -> fail-runtime`, and six
+`unsupported-parser -> fail-runtime`. Relative to the immediately preceding
+R3q implementation rerun, the only changes are both variants of
+`staging/sm/expressions/destructuring-array-default-yield.js` moving from
+`engine-fault` to `pass`. The complete vector reaches 36,923 passes with no
+engine fault; its TSV and JSONL hashes are
+`87b1adf3234e6625dd95c96c11357e347447438d412b4007ec2236cb0fd18c7c`
+and
+`90726c1feee169bf923c857101d73c4f95ffc002de378dfe1f637451ce4fa906`.
+
+R3r also refreshes the flat array-assignment gate's report hashes. All 131
+variants still pass; only two successful strict parse-negative detail fields
+changed when R3k introduced QuickJS's dedicated `unexpected 'yield' keyword`
+diagnostic. A detached R3q checkout produced byte-identical reports to R3r,
+proving this bookkeeping refresh is not caused by the unwind fix.
+
+Reproduce R3r with:
+
+```sh
+./scripts/test-r3r-generator-destructuring-return-oracle.sh --oxide target/debug/qjs
+./scripts/test-test262-array-binding-flat.sh
+./scripts/test-test262-array-binding-nested.sh
+./scripts/test-test262-array-assignment-flat.sh
+./scripts/test-test262-full.sh
+```
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -3588,6 +3645,7 @@ canonical progress report.
 ./scripts/test-test262-class-private-accessors.sh
 ./scripts/test-test262-class-generator-methods.sh
 ./scripts/test-test262-class-private-generator-methods.sh
+./scripts/test-r3r-generator-destructuring-return-oracle.sh --oxide target/debug/qjs
 ./scripts/test-test262-full.sh
 ```
 

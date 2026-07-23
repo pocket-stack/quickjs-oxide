@@ -543,6 +543,12 @@ pub enum Instruction {
     /// typed equivalent of QuickJS's `nip_catch; rot3r; undefined;
     /// iterator_close` return-unwind sequence.
     IteratorClosePreserve,
+    /// Preserve the top operand while removing the innermost iterator record
+    /// and every intermediate operand, without invoking the iterator's
+    /// `return` method. QuickJS uses this shape when an injected generator
+    /// return leaves the precompiled assignment fragment of a for-of head:
+    /// the loop iterator record is abandoned rather than normally closed.
+    IteratorDropPreserve,
     /// `yield*`-specific GetIterator. Unlike [`Instruction::ForOfStart`], its
     /// three outputs are ordinary retained operands (`iterator`, cached
     /// `next`, placeholder) and do not install an automatic unwind region.
@@ -773,7 +779,7 @@ impl Instruction {
             Self::Swap => (2, 2),
             // The verifier replaces this nominal value-preserving effect with
             // the active handler's recorded entry depth.
-            Self::NipCatch | Self::IteratorClosePreserve => (1, 1),
+            Self::NipCatch | Self::IteratorClosePreserve | Self::IteratorDropPreserve => (1, 1),
             Self::IteratorClose => (3, 0),
             Self::Yield | Self::YieldStar => (1, 2),
             Self::SetLocal(_) | Self::SetLocalCheck(_) | Self::SetArg(_) | Self::SetVarRef(_) => {
@@ -1226,32 +1232,37 @@ pub(crate) fn verify_parts(
                     ));
                 }
             }
-            Instruction::IteratorClosePreserve => {
+            Instruction::IteratorClosePreserve | Instruction::IteratorDropPreserve => {
+                let operation = if matches!(instruction, Instruction::IteratorClosePreserve) {
+                    "IteratorClosePreserve"
+                } else {
+                    "IteratorDropPreserve"
+                };
                 let region = next_regions.pop().ok_or_else(|| {
-                    Error::internal("IteratorClosePreserve has no iterator region")
+                    Error::internal(format!("{operation} has no iterator region"))
                 })?;
                 let UnwindRegionState::Iterator {
                     record_base,
                     marker_depth,
                 } = region
                 else {
-                    return Err(Error::internal(
-                        "IteratorClosePreserve did not target the innermost unwind region",
-                    ));
+                    return Err(Error::internal(format!(
+                        "{operation} did not target the innermost unwind region"
+                    )));
                 };
                 if state.depth <= marker_depth {
-                    return Err(Error::internal(
-                        "IteratorClosePreserve has no value above its iterator marker",
-                    ));
+                    return Err(Error::internal(format!(
+                        "{operation} has no value above its iterator marker"
+                    )));
                 }
                 if state
                     .return_addresses
                     .last()
                     .is_some_and(|address| *address == state.depth - 1)
                 {
-                    return Err(Error::internal(
-                        "IteratorClosePreserve cannot preserve a gosub return address",
-                    ));
+                    return Err(Error::internal(format!(
+                        "{operation} cannot preserve a gosub return address"
+                    )));
                 }
                 // Like `NipCatch`, this is a dynamic abrupt-completion
                 // cleanup. A return which crosses nested finally and for-of
@@ -2473,6 +2484,21 @@ mod tests {
             max_stack: 4,
         };
         assert_eq!(preserve.verify().unwrap().max_stack, 4);
+
+        let drop_preserve = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::PushI32(42),
+                Instruction::IteratorDropPreserve,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        assert_eq!(drop_preserve.verify().unwrap().max_stack, 4);
     }
 
     #[test]

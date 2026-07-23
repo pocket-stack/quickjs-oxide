@@ -217,6 +217,296 @@ fn generator_lexical_context_matches_nested_function_and_arrow_boundaries() {
 }
 
 #[test]
+fn generator_yield_in_array_destructuring_unwinds_transient_iterators() {
+    let source = r#"
+        (function(){
+            var log="";
+            function make(name,first){
+                var step=0;
+                return {
+                    [Symbol.iterator]:function(){log+="I"+name;return this},
+                    next:function(){
+                        log+="N"+name;
+                        if(step++===0)return{value:first,done:false};
+                        return{done:true}
+                    },
+                    return:function(){log+="R"+name;return{done:true}}
+                }
+            }
+
+            function* binding(){
+                var[a=yield 1]=make("b",undefined);
+                return a
+            }
+            var b=binding(),b0=b.next(),b1=b.return(40);
+
+            function* assignment(){
+                var a;
+                [a=yield 2]=make("a",undefined);
+                return a
+            }
+            var a=assignment(),a0=a.next(),a1=a.return(41);
+
+            function* nested(){
+                var[[x=yield 3]]=make("o",make("n",undefined));
+                return x
+            }
+            var n=nested(),n0=n.next(),n1=n.return(42);
+
+            function* thrown(){
+                var[x=yield 4]=make("t",undefined)
+            }
+            var t=thrown(),t0=t.next(),caught;
+            try{t.throw("x")}catch(e){caught=e}
+
+            function* normal(){
+                var[x=yield 5]=make("c",undefined);
+                return x
+            }
+            var c=normal(),c0=c.next(),c1=c.next(43);
+
+            return [
+                b0.value,b0.done,b1.value,b1.done,
+                a0.value,a1.value,n0.value,n1.value,
+                t0.value,caught,c0.value,c1.value,c1.done,log
+            ].join("|")
+        })()
+    "#;
+    assert_eq!(
+        evaluate_in_context(source),
+        Value::String(JsString::from_static(
+            "1|false|40|true|2|41|3|42|4|x|5|43|true|\
+             IbNbRbIaNaRaIoNoInNnRnRoItNtRtIcNcRc"
+        )),
+    );
+}
+
+#[test]
+fn generator_destructuring_return_orders_iterator_finally_and_yield_star() {
+    let source = r#"
+        (function(){
+            var log="";
+            function source(name){
+                var step=0;
+                return {
+                    [Symbol.iterator]:function(){log+="I"+name+"|";return this},
+                    next:function(){
+                        log+="N"+name+"|";
+                        if(step++===0)return{value:undefined,done:false};
+                        return{done:true}
+                    },
+                    return:function(){log+="R"+name+"|";return{done:true}}
+                }
+            }
+
+            function* withFinally(){
+                try{
+                    var[x=yield 1]=source("outer")
+                }finally{
+                    log+="F|"
+                }
+            }
+            var a=withFinally(),a0=a.next(),a1=a.return(40);
+
+            var delegate={
+                [Symbol.iterator]:function(){log+="Id|";return this},
+                next:function(){log+="Nd|";return{value:2,done:false}},
+                return:function(value){
+                    log+="Rd:"+value+"|";
+                    return{value:value,done:true}
+                }
+            };
+            function* delegated(){
+                var[x=yield* delegate]=source("host")
+            }
+            var b=delegated(),b0=b.next(),b1=b.return(41);
+
+            return [
+                a0.value,a1.value,a1.done,
+                b0.value,b1.value,b1.done,log
+            ].join("|")
+        })()
+    "#;
+    assert_eq!(
+        evaluate_in_context(source),
+        Value::String(JsString::from_static(
+            "1|40|true|2|41|true|Iouter|Nouter|Router|F|\
+             Ihost|Nhost|Id|Nd|Rd:41|Rhost|"
+        )),
+    );
+}
+
+#[test]
+fn generator_for_of_head_return_drops_outer_iterator_like_quickjs() {
+    let source = r#"
+        (function(){
+            var log="",out=[],holder={};
+            function make(name,values){
+                var index=0;
+                return {
+                    [Symbol.iterator]:function(){log+="I"+name;return this},
+                    next:function(){
+                        log+="N"+name;
+                        return index<values.length
+                            ? {value:values[index++],done:false}
+                            : {done:true}
+                    },
+                    return:function(){log+="R"+name;return{done:true}}
+                }
+            }
+            function take(name,run){
+                log="";
+                out.push(name+":"+run()+":"+log)
+            }
+
+            take("binding",function(){
+                function* g(){
+                    for(var[x=yield 1]of make("o",[make("i",[undefined])])){}
+                }
+                var iterator=g(),first=iterator.next(),last=iterator.return(40);
+                return[first.value,first.done,last.value,last.done].join(",")
+            });
+            take("assignment",function(){
+                var x;
+                function* g(){
+                    for([x=yield 2]of make("o",[make("i",[undefined])])){}
+                }
+                var iterator=g(),first=iterator.next(),last=iterator.return(41);
+                return[first.value,last.value,last.done].join(",")
+            });
+            take("computed-return",function(){
+                function* g(){for(holder[yield 3]of make("o",[9])){}}
+                var iterator=g(),first=iterator.next(),last=iterator.return(42);
+                return[first.value,last.value,last.done].join(",")
+            });
+            take("computed-next",function(){
+                function* g(){
+                    for(holder[yield 4]of make("o",[9])){log+="B"+holder.k}
+                }
+                var iterator=g(),first=iterator.next(),last=iterator.next("k");
+                return[first.value,last.value,last.done,holder.k].join(",")
+            });
+            take("nested",function(){
+                function* g(){
+                    for(var[[x=yield 5]]of
+                        make("o",[make("m",[make("i",[undefined])])])){}
+                }
+                var iterator=g(),first=iterator.next(),last=iterator.return(43);
+                return[first.value,last.value,last.done].join(",")
+            });
+            take("yield-star",function(){
+                var delegate={
+                    [Symbol.iterator]:function(){log+="Id";return this},
+                    next:function(){log+="Nd";return{value:6,done:false}},
+                    return:function(value){
+                        log+="Rd"+value;
+                        return{value:value,done:true}
+                    }
+                };
+                function* g(){
+                    for(var[x=yield* delegate]of
+                        make("o",[make("i",[undefined])])){}
+                }
+                var iterator=g(),first=iterator.next(),last=iterator.return(44);
+                return[first.value,last.value,last.done].join(",")
+            });
+            take("body",function(){
+                function* g(){for(var x of make("o",[9]))yield 7}
+                var iterator=g(),first=iterator.next(),last=iterator.return(45);
+                return[first.value,last.value,last.done].join(",")
+            });
+            take("rhs",function(){
+                function* g(){
+                    for(var x of(log+="Q",yield 8,make("o",[9]))){}
+                }
+                var iterator=g(),first=iterator.next(),last=iterator.return(46);
+                return[first.value,last.value,last.done].join(",")
+            });
+            take("for-in-assignment",function(){
+                function* g(){for(holder[yield 9]in{a:1}){}}
+                var iterator=g(),first=iterator.next(),last=iterator.return(47);
+                return[first.value,last.value,last.done].join(",")
+            });
+            take("for-in-binding",function(){
+                function* g(){for(var{[yield 10]:x}in{a:1}){}}
+                var iterator=g(),first=iterator.next(),last=iterator.return(48);
+                return[first.value,last.value,last.done].join(",")
+            });
+            return out.join("|")
+        })()
+    "#;
+    assert_eq!(
+        evaluate_in_context(source),
+        Value::String(JsString::from_static(
+            "binding:1,false,40,true:IoNoIiNiRi|\
+             assignment:2,41,true:IoNoIiNiRi|\
+             computed-return:3,42,true:IoNo|\
+             computed-next:4,,true,9:IoNoB9No|\
+             nested:5,43,true:IoNoImNmIiNiRiRm|\
+             yield-star:6,44,true:IoNoIiNiIdNdRd44Ri|\
+             body:7,45,true:IoNoRo|\
+             rhs:8,46,true:Q|\
+             for-in-assignment:9,47,true:|\
+             for-in-binding:10,48,true:"
+        )),
+    );
+}
+
+#[test]
+fn generator_for_of_head_inner_close_throw_pending_closes_outer() {
+    let source = r#"
+        (function(){
+            var log="",out=[];
+            function make(name,values,throwValue){
+                var index=0;
+                return {
+                    [Symbol.iterator]:function(){log+="I"+name;return this},
+                    next:function(){
+                        log+="N"+name;
+                        return index<values.length
+                            ? {value:values[index++],done:false}
+                            : {done:true}
+                    },
+                    return:function(){
+                        log+="R"+name;
+                        if(throwValue!==undefined)throw throwValue;
+                        return{done:true}
+                    }
+                }
+            }
+            function run(name,outerThrow,throwResume){
+                log="";
+                function* g(){
+                    for(var[x=yield 1]of
+                        make("o",[make("i",[undefined],"inner")],outerThrow)){}
+                }
+                var iterator=g(),caught;
+                iterator.next();
+                try{
+                    if(throwResume)iterator.throw("pending");
+                    else iterator.return(42)
+                }catch(error){
+                    caught=error
+                }
+                out.push(name+":"+caught+":"+log)
+            }
+            run("outer-normal",undefined,false);
+            run("outer-throw","outer",false);
+            run("resume-throw","outer",true);
+            return out.join("|")
+        })()
+    "#;
+    assert_eq!(
+        evaluate_in_context(source),
+        Value::String(JsString::from_static(
+            "outer-normal:inner:IoNoIiNiRiRo|\
+             outer-throw:inner:IoNoIiNiRiRo|\
+             resume-throw:pending:IoNoIiNiRiRo"
+        )),
+    );
+}
+
+#[test]
 fn synchronous_generator_methods_keep_async_frontier_explicit() {
     for source in [
         "class C { *constructor(){} }",

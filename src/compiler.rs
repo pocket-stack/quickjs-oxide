@@ -899,6 +899,18 @@ struct SpannedIrOp {
 enum BreakControlKind {
     RegularStatement,
     Loop,
+    /// QuickJS installs a transient `BlockEnv` with `has_iterator` while
+    /// lowering every ArrayBindingPattern or ArrayAssignmentPattern. It has
+    /// no break/continue target, but a generator `.return(value)` injected at
+    /// a `yield` inside the pattern must still close this iterator before the
+    /// frame returns.
+    DestructuringIterator,
+    /// QuickJS precompiles the assignment fragment of a for-of head before
+    /// the right-hand side installs the loop iterator record. At runtime that
+    /// fragment executes with the record active, but a generator return from
+    /// the fragment abandons it without calling the outer iterator's
+    /// `return` method.
+    ForOfAssignmentFragment,
     /// QuickJS's `has_iterator` BlockEnv. Its target depth retains the
     /// conceptual `iterator`, `next`, and private unwind marker slots. A
     /// same-loop continue keeps that record, a break reaches the shared close
@@ -2484,8 +2496,14 @@ impl<'source> Parser<'source> {
         self.current_ir_mut().stack_depth = entry_depth
             .checked_add(retained_slots + 1)
             .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+        if iteration_hint == ForIterationKind::Of {
+            self.push_for_of_assignment_fragment_control(entry_depth)?;
+        }
         let target = self.parse_for_iteration_assignment_target(iteration_hint)?;
         self.require_stack_depth(entry_depth + retained_slots, "for-in/of assignment target")?;
+        if iteration_hint == ForIterationKind::Of {
+            self.pop_for_of_assignment_fragment_control(entry_depth)?;
+        }
         let body_jump = self.emit_instruction(Instruction::Goto(u32::MAX))?;
 
         let expression_target = self.current_ir().ops.len();
@@ -3284,6 +3302,19 @@ impl<'source> Parser<'source> {
                     }
                     self.emit_instruction(Instruction::IteratorClose)?;
                 }
+                BreakControlKind::DestructuringIterator => {
+                    if drop_count != 3 {
+                        return Err(Error::internal(
+                            "destructuring control has the wrong iterator-record depth",
+                        ));
+                    }
+                    self.emit_instruction(Instruction::IteratorClose)?;
+                }
+                BreakControlKind::ForOfAssignmentFragment => {
+                    return Err(Error::internal(
+                        "break/continue crossed a for-of assignment fragment",
+                    ));
+                }
                 BreakControlKind::RegularStatement
                 | BreakControlKind::Loop
                 | BreakControlKind::ForIn
@@ -3373,6 +3404,83 @@ impl<'source> Parser<'source> {
                 continue_jumps: Vec::new(),
                 finally_gosubs: Vec::new(),
             });
+        Ok(())
+    }
+
+    fn push_destructuring_iterator_control(&mut self) -> Result<(), Error> {
+        let record_depth = self.current_ir().stack_depth;
+        if record_depth < 3 {
+            return Err(Error::internal(
+                "destructuring iterator record is below the stack base",
+            ));
+        }
+        self.push_break_control(
+            BreakControlKind::DestructuringIterator,
+            None,
+            record_depth,
+            3,
+        );
+        Ok(())
+    }
+
+    fn push_for_of_assignment_fragment_control(&mut self, entry_depth: usize) -> Result<(), Error> {
+        let record_depth = entry_depth
+            .checked_add(3)
+            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+        self.require_stack_depth(
+            record_depth
+                .checked_add(1)
+                .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?,
+            "for-of assignment fragment entry",
+        )?;
+        self.push_break_control(
+            BreakControlKind::ForOfAssignmentFragment,
+            None,
+            record_depth,
+            3,
+        );
+        Ok(())
+    }
+
+    fn pop_for_of_assignment_fragment_control(&mut self, entry_depth: usize) -> Result<(), Error> {
+        let record_depth = entry_depth
+            .checked_add(3)
+            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+        let control = self.pop_break_control()?;
+        if control.kind != BreakControlKind::ForOfAssignmentFragment
+            || control.label_name.is_some()
+            || control.entry_depth != record_depth
+            || control.drop_count != 3
+            || !control.break_jumps.is_empty()
+            || !control.continue_jumps.is_empty()
+            || !control.finally_gosubs.is_empty()
+        {
+            return Err(Error::internal(
+                "for-of assignment fragment control stack is unbalanced",
+            ));
+        }
+        Ok(())
+    }
+
+    fn pop_destructuring_iterator_control(&mut self) -> Result<(), Error> {
+        let control = self.pop_break_control()?;
+        if control.kind != BreakControlKind::DestructuringIterator
+            || control.label_name.is_some()
+            || control.entry_depth
+                != self
+                    .current_ir()
+                    .stack_depth
+                    .checked_add(3)
+                    .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?
+            || control.drop_count != 3
+            || !control.break_jumps.is_empty()
+            || !control.continue_jumps.is_empty()
+            || !control.finally_gosubs.is_empty()
+        {
+            return Err(Error::internal(
+                "destructuring iterator control stack is unbalanced",
+            ));
+        }
         Ok(())
     }
 
@@ -3507,14 +3615,17 @@ impl<'source> Parser<'source> {
             .filter_map(|(index, control)| {
                 matches!(
                     control.kind,
-                    BreakControlKind::ForOf | BreakControlKind::TryFinally
+                    BreakControlKind::DestructuringIterator
+                        | BreakControlKind::ForOfAssignmentFragment
+                        | BreakControlKind::ForOf
+                        | BreakControlKind::TryFinally
                 )
                 .then_some((index, control.kind, control.entry_depth))
             })
             .collect::<Vec<_>>();
         for (control_index, kind, handler_depth) in unwind_controls {
             match kind {
-                BreakControlKind::ForOf => {
+                BreakControlKind::DestructuringIterator | BreakControlKind::ForOf => {
                     if handler_depth < 3 || handler_depth >= self.current_ir().stack_depth {
                         return Err(Error::internal(
                             "return unwind targeted an invalid iterator record",
@@ -3524,6 +3635,18 @@ impl<'source> Parser<'source> {
                     // The generic instruction effect is value preserving, but
                     // this typed form also truncates the complete iterator
                     // record and any intermediate finally operands.
+                    self.current_ir_mut().stack_depth = handler_depth - 2;
+                }
+                BreakControlKind::ForOfAssignmentFragment => {
+                    if handler_depth < 3 || handler_depth >= self.current_ir().stack_depth {
+                        return Err(Error::internal(
+                            "return unwind targeted an invalid for-of assignment record",
+                        ));
+                    }
+                    self.emit_instruction(Instruction::IteratorDropPreserve)?;
+                    // As in pinned QuickJS, leaving the precompiled head
+                    // assignment abandons the outer record without invoking
+                    // IteratorClose.
                     self.current_ir_mut().stack_depth = handler_depth - 2;
                 }
                 BreakControlKind::TryFinally => {

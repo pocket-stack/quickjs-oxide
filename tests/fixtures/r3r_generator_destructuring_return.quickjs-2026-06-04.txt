@@ -1,0 +1,8 @@
+var=var.iterator,var.next,next=pause:false,var.return(-),return=42:true
+assignment=assignment.iterator,assignment.next,next=pause:false,assignment.return(-),return=42:true
+nested=outer.iterator,outer.next,inner.iterator,inner.next,next=pause:false,inner.return(-),outer.return(-),return=42:true
+finally=finally-iterator.iterator,finally-iterator.next,next=pause:false,finally-iterator.return(-),finally,return=42:true
+yield-star=host.iterator,host.next,delegate.iterator,delegate.next,next=pause:false,delegate.return(42),host.return(-),return=42:true
+for-of-head=loop.iterator,loop.next,head.iterator,head.next,next=pause:false,head.return(-),return=42:true
+throwing-inner-close=throw-outer.iterator,throw-outer.next,throw-inner.iterator,throw-inner.next,next=pause:false,throw-inner.return(-),throw-outer.return(-),return=Error:inner-close
+r3r-generator-destructuring-return-oracle=ok

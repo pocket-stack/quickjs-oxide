@@ -15,14 +15,14 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 36,293 passes and 38,483 runnable variants: 35.57% raw, a 43.43% lower
-  bound after the 18,475 pinned QuickJS target exclusions, or 94.77% among the
-  38,295 variants with a non-unsupported observed outcome. It records 275
-  parse failures and 1,624 runtime failures; current full TSV/JSONL SHA-256
+  has 36,923 passes and 38,483 runnable variants: 36.19% raw, a 44.19% lower
+  bound after the 18,475 pinned QuickJS target exclusions, or 96.13% among the
+  38,408 variants with a non-unsupported observed outcome. It records 98
+  parse failures and 1,284 runtime failures; current full TSV/JSONL SHA-256
   values are
-  `018c55de6e745b35eae7bb8f7d1c3b7680579a58d8bbb241641d860c723a0e34`
+  `87b1adf3234e6625dd95c96c11357e347447438d412b4007ec2236cb0fd18c7c`
   and
-  `995cce2dc58694f8728e1ad12602b2ec5c65169f650cff5047e45d84bc4b407a`.
+  `90726c1feee169bf923c857101d73c4f95ffc002de378dfe1f637451ce4fa906`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -2048,6 +2048,36 @@ claim full parity.
   496-line `runtime/intrinsics/promise/all.rs` module. Exact allocation-failure
   routing and the theoretical multi-billion-element index boundary remain
   explicit hardening debt in `docs/deviations.md`, not approved differences.
+
+  R3r removes the complete vector's two engine faults by porting QuickJS's
+  transient iterator control around array BindingPatterns and
+  AssignmentPatterns. A generator `.return(value)` injected at a suspended
+  default initializer now closes nested pattern iterators inside-out before
+  returning or entering an enclosing `finally`. The compiler owns the control
+  shape across `src/compiler.rs` and `src/compiler/destructuring.rs`; no logic
+  moves into `runtime.rs`.
+
+  For a yield in a for-of head assignment fragment, pinned QuickJS abandons
+  the active outer loop record without calling its `return` method. The typed
+  `IteratorDropPreserve` bytecode operation reproduces that parser-ordering
+  behavior while explicitly discharging the verifier region rather than
+  weakening the `Return` invariant. An inner close throw instead follows the
+  normal pending-exception path and closes the outer iterator without replacing
+  the original throw. The frozen QuickJS differential covers ordinary,
+  nested, `finally`, `yield*`, for-of-head, and close-throw ordering; its
+  fixture/transcript hashes are
+  `05d8e677e984df2a9accb0c56ddb6f2e06ba6d3b2d2d08a51d4ba48811463398`
+  and
+  `4e39206df0f8213845227839ad1986759f12566e570a4820265a40e239add715`.
+
+  The complete 102,037-key join has zero previous-pass regressions. Relative
+  to the immediately preceding R3q rerun, exactly two `engine-fault -> pass`
+  transitions remain; relative to the last checked baseline, 630 variants
+  become passes. The vector now records 36,923 passes and no engine fault,
+  with TSV/JSONL hashes
+  `87b1adf3234e6625dd95c96c11357e347447438d412b4007ec2236cb0fd18c7c`
+  and
+  `90726c1feee169bf923c857101d73c4f95ffc002de378dfe1f637451ce4fa906`.
 
   Async functions/generators, destructuring eval declarations, unsupported
   class elements, and ill-formed UTF-16 source stay explicit frontiers.
