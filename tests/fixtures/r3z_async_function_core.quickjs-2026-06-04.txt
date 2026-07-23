@@ -1,0 +1,14 @@
+body
+then:get
+stack-boundary:true
+construct:TypeError
+shape|function|1|r3zCore|false|[object AsyncFunction]|AsyncFunction|1|false
+sync
+then:call
+await:20
+catch:x
+finally
+done:42
+outer-independent:true
+adopted:42
+dynamic:42

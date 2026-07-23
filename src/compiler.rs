@@ -2015,32 +2015,10 @@ impl<'source> Parser<'source> {
             TokenKind::Keyword(Keyword::Break) => self.parse_loop_jump_statement(false),
             TokenKind::Keyword(Keyword::Continue) => self.parse_loop_jump_statement(true),
             TokenKind::Keyword(Keyword::Function) => {
-                if matches!(self.current_ir().kind, FunctionKind::Script)
-                    && position == StatementPosition::ProgramBody
-                {
-                    self.parse_program_function_declaration()
-                } else if matches!(self.current_ir().kind, FunctionKind::Eval(_))
-                    && position == StatementPosition::ProgramBody
-                {
-                    self.parse_eval_program_function_declaration()
-                } else if matches!(
-                    self.current_ir().kind,
-                    FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
-                ) && position == StatementPosition::FunctionBody
-                {
-                    self.parse_function_body_declaration()
-                } else if matches!(
-                    position,
-                    StatementPosition::NestedList
-                        | StatementPosition::AnnexBIfArm
-                        | StatementPosition::AnnexBLabelBody
-                ) {
-                    self.parse_annex_b_function_declaration()
-                } else {
-                    Err(self.syntax_here(
-                        "function declarations can't appear in single-statement context",
-                    ))
-                }
+                self.parse_hoistable_function_declaration(position)
+            }
+            TokenKind::Identifier(_) if self.async_function_ahead() => {
+                self.parse_hoistable_function_declaration(position)
             }
             TokenKind::Keyword(Keyword::Class) => {
                 if position.allows_other_declaration() {
@@ -2063,6 +2041,36 @@ impl<'source> Parser<'source> {
             }
             TokenKind::Keyword(Keyword::Throw) => self.parse_throw_statement(),
             _ => self.parse_expression_statement(completion),
+        }
+    }
+
+    fn parse_hoistable_function_declaration(
+        &mut self,
+        position: StatementPosition,
+    ) -> Result<(), Error> {
+        if matches!(self.current_ir().kind, FunctionKind::Script)
+            && position == StatementPosition::ProgramBody
+        {
+            self.parse_program_function_declaration()
+        } else if matches!(self.current_ir().kind, FunctionKind::Eval(_))
+            && position == StatementPosition::ProgramBody
+        {
+            self.parse_eval_program_function_declaration()
+        } else if matches!(
+            self.current_ir().kind,
+            FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
+        ) && position == StatementPosition::FunctionBody
+        {
+            self.parse_function_body_declaration()
+        } else if matches!(
+            position,
+            StatementPosition::NestedList
+                | StatementPosition::AnnexBIfArm
+                | StatementPosition::AnnexBLabelBody
+        ) {
+            self.parse_annex_b_function_declaration()
+        } else {
+            Err(self.syntax_here("function declarations can't appear in single-statement context"))
         }
     }
 
@@ -5011,6 +5019,21 @@ impl<'source> Parser<'source> {
             self.lower_update_expression(operator_span, increment, false)?;
             return self.parse_power_suffix(power_mode);
         }
+        if matches!(self.current().kind, TokenKind::Keyword(Keyword::Await)) {
+            if self.current_ir().execution_kind != BytecodeFunctionKind::Async {
+                return Err(self.syntax_here("unexpected 'await' keyword"));
+            }
+            if !self.current_ir().in_function_body {
+                return Err(self.syntax_here("await in default expression"));
+            }
+            self.advance()?;
+            self.parse_unary_with_power(PowerMode::Forbidden)?;
+            self.emit_instruction(Instruction::Await)?;
+            self.anonymous_function_definition = None;
+            self.current_ir_mut().last_member_reference = None;
+            self.current_ir_mut().last_identifier_reference = None;
+            return Ok(());
+        }
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Typeof)) {
             self.advance()?;
             let operand_start = self.current_ir().ops.len();
@@ -6132,6 +6155,13 @@ impl<'source> Parser<'source> {
             TokenKind::Template(_) => {
                 self.parse_template_literal()?;
             }
+            TokenKind::Identifier(ref identifier)
+                if identifier.value == "async"
+                    && !identifier.has_escape
+                    && self.async_function_ahead() =>
+            {
+                self.parse_function_expression()?;
+            }
             TokenKind::Identifier(identifier) => {
                 self.reject_forbidden_identifier_reference(&identifier.value, token.span)?;
                 validate_identifier(
@@ -6672,8 +6702,8 @@ impl<'source> Parser<'source> {
             .as_ref()
             .map(|(identifier, span)| (identifier.value.clone(), *span))
             .ok_or_else(|| Error::internal("required scoped function lost its name"))?;
-        let generator = header.execution_kind == BytecodeFunctionKind::Generator;
-        let prepared = self.prepare_scoped_function(&name, declaration_span, generator)?;
+        let non_ordinary = header.execution_kind != BytecodeFunctionKind::Normal;
+        let prepared = self.prepare_scoped_function(&name, declaration_span, non_ordinary)?;
         let parsed = self.parse_function_definition_tail(header, false)?;
         if parsed.name.as_ref().map(|(parsed, _)| parsed.as_str()) != Some(name.as_str()) {
             return Err(Error::internal(
@@ -6713,7 +6743,7 @@ impl<'source> Parser<'source> {
         &mut self,
         name: &str,
         declaration_span: Span,
-        generator: bool,
+        lexical_only: bool,
     ) -> Result<PreparedScopedFunction, Error> {
         let function = self.current_ir();
         let scope_kind = function.scopes[function.current_scope.0].kind;
@@ -6729,15 +6759,16 @@ impl<'source> Parser<'source> {
                 "scoped function escaped an Annex B declaration scope",
             ));
         }
-        // Annex B.3.2 applies only to ordinary FunctionDeclarations.
-        // GeneratorDeclarations remain lexical even in sloppy blocks.
-        let create_annex_binding = !generator && self.scoped_function_is_annex_b_eligible(name);
+        // Annex B.3.2 applies only to synchronous ordinary
+        // FunctionDeclarations. Generator and async declarations remain
+        // lexical even in sloppy blocks.
+        let create_annex_binding = !lexical_only && self.scoped_function_is_annex_b_eligible(name);
         let conflict_span = self.current().span;
         let binding = self.register_scoped_function_binding(
             name,
             declaration_span,
             conflict_span,
-            generator,
+            lexical_only,
         )?;
         Ok(PreparedScopedFunction {
             binding,
@@ -6810,13 +6841,13 @@ impl<'source> Parser<'source> {
         name: &str,
         declaration_span: Span,
         conflict_span: Span,
-        generator: bool,
+        lexical_only: bool,
     ) -> Result<BindingId, Error> {
         let scope = self.current_ir().current_scope;
         if let Some(existing) = self.current_ir().binding_id_in_scope(scope, name) {
             let existing = &self.current_ir().bindings[existing.0];
             let duplicate_ordinary_function =
-                existing.is_scoped_function && !existing.is_scoped_generator && !generator;
+                existing.is_scoped_function && !existing.is_scoped_generator && !lexical_only;
             if self.current_ir().strict || !duplicate_ordinary_function {
                 return Err(Error::syntax(
                     "invalid redefinition of lexical identifier",
@@ -6843,7 +6874,7 @@ impl<'source> Parser<'source> {
                 Some(declaration_span),
             );
             function.bindings[binding.0].is_scoped_function = true;
-            function.bindings[binding.0].is_scoped_generator = generator;
+            function.bindings[binding.0].is_scoped_generator = lexical_only;
             return Ok(binding);
         }
 
@@ -6853,7 +6884,7 @@ impl<'source> Parser<'source> {
             .binding_id_in_scope(scope, name)
             .ok_or_else(|| Error::internal("scoped function binding was not registered"))?;
         self.current_ir_mut().bindings[binding.0].is_scoped_function = true;
-        self.current_ir_mut().bindings[binding.0].is_scoped_generator = generator;
+        self.current_ir_mut().bindings[binding.0].is_scoped_generator = lexical_only;
         Ok(binding)
     }
 
@@ -7503,11 +7534,7 @@ impl<'source> Parser<'source> {
         annex_b_function_allowed: bool,
     ) -> Result<bool, Error> {
         let generator = matches!(self.current().kind, TokenKind::Keyword(Keyword::Function));
-        let async_function = matches!(
-            &self.current().kind,
-            TokenKind::Identifier(identifier)
-                if identifier.value == "async" && !identifier.has_escape
-        );
+        let async_function = self.async_function_ahead();
         if (!generator || !annex_b_function_allowed) && !async_function {
             return Ok(false);
         }
@@ -7520,9 +7547,27 @@ impl<'source> Parser<'source> {
                 TokenKind::Punctuator(Punctuator::Multiply)
             ))
         } else {
-            Ok(!next.line_terminator_before
-                && matches!(next.kind, TokenKind::Keyword(Keyword::Function)))
+            Ok(async_function)
         }
+    }
+
+    /// Non-committing recognition of QuickJS's `async function`
+    /// pseudo-keyword pair. Escapes and a LineTerminator after `async` leave it
+    /// as an ordinary IdentifierReference.
+    fn async_function_ahead(&self) -> bool {
+        let TokenKind::Identifier(identifier) = &self.current().kind else {
+            return false;
+        };
+        if identifier.value != "async" || identifier.has_escape {
+            return false;
+        }
+        let mut lexer = self.lexer.clone();
+        lexer.seek(self.current().span.end);
+        let Ok(function) = lexer.next_token_with_goal(LexicalGoal::Div) else {
+            return false;
+        };
+        !function.line_terminator_before
+            && matches!(function.kind, TokenKind::Keyword(Keyword::Function))
     }
 
     fn at_eof(&self) -> bool {
@@ -8537,13 +8582,20 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 )
             })
             .count();
+        let await_ops = function
+            .ops
+            .iter()
+            .filter(|operation| matches!(operation.op, IrOp::Bytecode(Instruction::Await)))
+            .count();
         match function.execution_kind {
-            BytecodeFunctionKind::Normal if initial_yields == 0 && suspension_ops == 0 => {}
+            BytecodeFunctionKind::Normal
+                if initial_yields == 0 && suspension_ops == 0 && await_ops == 0 => {}
             BytecodeFunctionKind::Generator
                 if matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method)
                     && !function.class_constructor
                     && function.class_initializer_kind.is_none()
                     && function.in_function_body
+                    && await_ops == 0
                     && initial_yields == 1 =>
             {
                 let initial = function
@@ -8566,10 +8618,15 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                     ));
                 }
             }
-            BytecodeFunctionKind::Async | BytecodeFunctionKind::AsyncGenerator => {
-                return Err(Error::internal(
-                    "compiler published an unsupported async execution kind",
-                ));
+            BytecodeFunctionKind::Async
+                if function.kind == FunctionKind::Ordinary
+                    && !function.class_constructor
+                    && function.class_initializer_kind.is_none()
+                    && function.in_function_body
+                    && initial_yields == 0
+                    && suspension_ops == 0 => {}
+            BytecodeFunctionKind::AsyncGenerator => {
+                return Err(Error::internal("compiler published an async generator"));
             }
             _ => {
                 return Err(Error::internal(
@@ -9563,7 +9620,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 .get(*child_id)
                 .ok_or_else(|| Error::internal("scoped child function is out of bounds"))?;
             if child.function_name.as_deref() != Some(binding.name.as_str())
-                || (child.execution_kind == BytecodeFunctionKind::Generator)
+                || (child.execution_kind != BytecodeFunctionKind::Normal)
                     != binding.is_scoped_generator
                 || child.private_name_binding
                 || child.parent

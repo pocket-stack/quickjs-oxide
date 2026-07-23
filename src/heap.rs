@@ -409,6 +409,17 @@ pub struct GeneratorRealmData {
     pub function_prototype: ObjectId,
 }
 
+/// Realm-owned `%AsyncFunction.prototype%` identity.
+///
+/// Async function objects inherit from this ordinary object, which is itself
+/// a direct child of the realm's `%Function.prototype%`. The hidden
+/// `AsyncFunction` constructor remains reachable through the reciprocal
+/// property graph and therefore needs no independent Context root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AsyncFunctionRealmData {
+    pub function_prototype: ObjectId,
+}
+
 /// Realm-owned Promise identities used by allocation and species fallback.
 ///
 /// Both identities remain explicit Context roots.  User code may delete the
@@ -490,6 +501,9 @@ pub struct ContextData {
     /// `%GeneratorFunction.prototype%`, attached after their reciprocal
     /// constructor/prototype graph has been initialized.
     pub generator: Option<GeneratorRealmData>,
+    /// Realm-local `%AsyncFunction.prototype%`, attached after its hidden
+    /// constructor/prototype graph has been initialized.
+    pub async_function: Option<AsyncFunctionRealmData>,
     /// Realm-local `%Promise.prototype%` and `%Promise%`, attached atomically
     /// after their reciprocal public property graph is initialized.
     pub promise: Option<PromiseRealmData>,
@@ -553,6 +567,7 @@ impl ContextData {
             map: None,
             set: None,
             generator: None,
+            async_function: None,
             promise: None,
             iterator: None,
             function_constructor: None,
@@ -4336,6 +4351,41 @@ pub struct GeneratorActivationData {
     pub reusable_captured_locals: Vec<bool>,
 }
 
+/// Settlement branch selected by an internal async-function resume callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AsyncFunctionResumeKind {
+    Fulfill,
+    Reject,
+}
+
+/// Heap-visible lifecycle of one async-function driver.
+///
+/// The active VM frame is rooted by the runtime while `Executing`. At an
+/// `await`, ownership transfers into the state object and the phase becomes
+/// `Awaiting`; `Completed` is absorbing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AsyncFunctionPhase {
+    Executing,
+    Awaiting,
+    Completed,
+}
+
+/// Hidden driver state shared by the two callbacks installed for one `await`.
+///
+/// QuickJS keeps this as a separate GC object so the pending Promise reaction
+/// owns the dormant activation without exposing it through authored
+/// properties. `driver_realm` is the original caller realm which supplies the
+/// returned Promise and await jobs; it may differ from the bytecode activation
+/// realm. Every arena identity here is a raw, traced edge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AsyncFunctionStateData {
+    pub driver_realm: ContextId,
+    pub outer_resolve: ObjectId,
+    pub outer_reject: ObjectId,
+    pub activation: Option<Box<GeneratorActivationData>>,
+    pub phase: AsyncFunctionPhase,
+}
+
 /// Lazy operation retained by a genuine Iterator Helper object.
 ///
 /// The eager consumers (`every`, `find`, `forEach`, and `some`) do not
@@ -4461,7 +4511,9 @@ pub struct PromiseCapabilityData {
 pub struct PromiseReaction {
     pub kind: PromiseReactionKind,
     pub handler: Option<ObjectId>,
-    pub capability: PromiseCapabilityData,
+    /// `None` is QuickJS's thrown-away capability optimization used by the
+    /// internal reactions which resume a suspended async function.
+    pub capability: Option<PromiseCapabilityData>,
 }
 
 /// Complete hidden state of one genuine Promise object.
@@ -4493,6 +4545,10 @@ pub struct PromiseCapabilityExecutorData {
 /// this enum is still an ordinary traced and reference-counted heap edge.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InternalCallableData {
+    AsyncFunctionResume {
+        state: ObjectId,
+        kind: AsyncFunctionResumeKind,
+    },
     PromiseResolving {
         promise: ObjectId,
         already_resolved: Rc<Cell<bool>>,
@@ -4675,6 +4731,9 @@ pub enum ObjectPayload {
         state: GeneratorState,
         activation: Option<Box<GeneratorActivationData>>,
     },
+    /// Hidden GC-visible async-function driver shared by its pending `await`
+    /// reactions. It is never exposed to authored ECMAScript code.
+    AsyncFunctionState(AsyncFunctionStateData),
     /// `JS_CLASS_PROMISE`: settlement state, result, and pending reactions are
     /// traced directly in the arena rather than hidden in a runtime side map.
     Promise(PromiseData),
@@ -4707,6 +4766,7 @@ pub enum ObjectKind {
     BoundFunction,
     BytecodeFunction,
     Generator,
+    AsyncFunctionState,
     Promise,
 }
 
@@ -5527,6 +5587,7 @@ pub enum NativeFunctionId {
     Set(SetNativeKind),
     SetIteratorNext,
     Promise(PromiseNativeKind),
+    AsyncFunctionResume(AsyncFunctionResumeKind),
     PromiseResolving(PromiseResolvingKind),
     PromiseCapabilityExecutor,
     PromiseFinallyHandler(PromiseReactionKind),
@@ -5898,7 +5959,8 @@ impl NativeFunctionId {
     pub const fn uses_calling_realm(self) -> bool {
         matches!(
             self,
-            Self::PromiseResolving(_)
+            Self::AsyncFunctionResume(_)
+                | Self::PromiseResolving(_)
                 | Self::PromiseCapabilityExecutor
                 | Self::PromiseFinallyHandler(_)
                 | Self::PromiseFinallyThunk(_)
@@ -5999,6 +6061,7 @@ impl NativeFunctionId {
                 | PromiseNativeKind::Race
                 | PromiseNativeKind::WithResolvers,
             )
+            | Self::AsyncFunctionResume(_)
             | Self::PromiseResolving(_)
             | Self::PromiseCapabilityExecutor
             | Self::PromiseFinallyHandler(_)
@@ -6873,6 +6936,35 @@ impl ObjectData {
         }
     }
 
+    /// Construct one hidden async-function driver in its initial executing
+    /// phase. The runtime roots the active frame until the first suspension;
+    /// the state object owns the outer resolving functions immediately.
+    #[must_use]
+    pub const fn async_function_state(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        driver_realm: ContextId,
+        outer_resolve: ObjectId,
+        outer_reject: ObjectId,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::AsyncFunctionState,
+            payload: ObjectPayload::AsyncFunctionState(AsyncFunctionStateData {
+                driver_realm,
+                outer_resolve,
+                outer_reject,
+                activation: None,
+                phase: AsyncFunctionPhase::Executing,
+            }),
+        }
+    }
+
     /// Construct one genuine pending Promise.  Its result slot starts at
     /// `undefined` and owns no reactions until `PerformPromiseThen` appends
     /// them through [`Heap::promise_add_reactions`].
@@ -7263,6 +7355,7 @@ impl Heap {
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. }
             | ObjectPayload::Generator { .. }
+            | ObjectPayload::AsyncFunctionState(_)
             | ObjectPayload::Promise(_) => {
                 return Err(HeapError::Invariant(
                     "attempted to attach a native realm to a non-native function",
@@ -7878,6 +7971,40 @@ impl Heap {
         Ok(())
     }
 
+    /// Atomically publish the realm-local `%AsyncFunction.prototype%` root
+    /// after its hidden constructor/prototype property graph exists.
+    pub(crate) fn attach_async_function_intrinsics(
+        &mut self,
+        realm: ContextId,
+        async_function: AsyncFunctionRealmData,
+    ) -> Result<(), HeapError> {
+        let context = self.context(realm)?;
+        if context.async_function.is_some() {
+            return Err(HeapError::Invariant(
+                "context already has AsyncFunction intrinsic roots",
+            ));
+        }
+        let function_prototype = context.function_prototype;
+
+        let async_function_prototype = self.object(async_function.function_prototype)?;
+        if async_function_prototype.kind != ObjectKind::Ordinary
+            || !matches!(async_function_prototype.payload, ObjectPayload::Ordinary)
+            || self.shape(async_function_prototype.shape)?.prototype() != Some(function_prototype)
+        {
+            return Err(HeapError::Invariant(
+                "AsyncFunction prototype does not inherit from Function.prototype",
+            ));
+        }
+
+        self.retain_raw(RawId::Object(async_function.function_prototype), 1)?;
+        let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(realm))?.data
+        else {
+            unreachable!("context identity was validated before retaining AsyncFunction roots")
+        };
+        context.async_function = Some(async_function);
+        Ok(())
+    }
+
     /// Allocate and publish immutable function bytecode, retaining its realm
     /// and every GC edge in its constant pool. `auxiliary_atoms` and symbol
     /// constants transfer to the node on success. No arena slot is reserved
@@ -7933,6 +8060,10 @@ impl Heap {
                     | Instruction::ThrowIteratorMissingThrow
             )
         });
+        let has_await = bytecode
+            .code
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::Await));
         match bytecode.metadata.function_kind {
             FunctionKind::Generator => {
                 if initial_yields.len() != 1
@@ -7940,16 +8071,29 @@ impl Heap {
                     || bytecode.metadata.constructor_kind != ConstructorKind::None
                     || bytecode.metadata.class_initializer_kind.is_some()
                     || parameter_body_pc.is_some_and(|body_pc| initial_yields[0] < body_pc)
+                    || has_await
                 {
                     return Err(HeapError::Invariant(
                         "generator bytecode has invalid suspension metadata",
                     ));
                 }
             }
-            FunctionKind::Normal | FunctionKind::Async | FunctionKind::AsyncGenerator => {
-                if !initial_yields.is_empty() || has_generator_only_instruction {
+            FunctionKind::Async => {
+                if !initial_yields.is_empty()
+                    || has_generator_only_instruction
+                    || bytecode.metadata.has_prototype
+                    || bytecode.metadata.constructor_kind != ConstructorKind::None
+                    || bytecode.metadata.class_initializer_kind.is_some()
+                {
                     return Err(HeapError::Invariant(
-                        "non-generator bytecode contains a generator suspension opcode",
+                        "async bytecode has invalid execution metadata",
+                    ));
+                }
+            }
+            FunctionKind::Normal | FunctionKind::AsyncGenerator => {
+                if !initial_yields.is_empty() || has_generator_only_instruction || has_await {
+                    return Err(HeapError::Invariant(
+                        "non-async bytecode contains a suspension opcode",
                     ));
                 }
             }
@@ -9141,8 +9285,9 @@ impl Heap {
     }
 
     /// Append the paired reactions created by one `PerformPromiseThen` call.
-    /// Every handler and capability identity is retained transactionally
-    /// before either vector becomes observable to the collector.
+    /// Every handler and present capability identity is retained
+    /// transactionally before either vector becomes observable to the
+    /// collector.
     pub(crate) fn promise_add_reactions(
         &mut self,
         id: ObjectId,
@@ -10558,6 +10703,148 @@ impl Heap {
         Ok(())
     }
 
+    /// Clone one async driver state while its hidden object still owns every
+    /// referenced edge. The runtime must promote any raw identities it keeps
+    /// across a subsequent heap mutation.
+    pub(crate) fn async_function_state_snapshot(
+        &self,
+        id: ObjectId,
+    ) -> Result<AsyncFunctionStateData, HeapError> {
+        let ObjectPayload::AsyncFunctionState(data) = &self.object(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "AsyncFunction state requested for an object with the wrong class",
+            ));
+        };
+        Ok(data.clone())
+    }
+
+    /// Transfer a newly suspended async VM frame into the hidden driver.
+    ///
+    /// Atom occurrences are pre-owned by the runtime. Arena edges are retained
+    /// transactionally before the phase becomes observable as `Awaiting`.
+    pub(crate) fn suspend_async_function(
+        &mut self,
+        id: ObjectId,
+        activation: GeneratorActivationData,
+    ) -> Result<(), HeapError> {
+        match &self.object(id)?.payload {
+            ObjectPayload::AsyncFunctionState(AsyncFunctionStateData {
+                phase: AsyncFunctionPhase::Executing,
+                activation: None,
+                ..
+            }) => {}
+            ObjectPayload::AsyncFunctionState(_) => {
+                return Err(HeapError::Invariant(
+                    "AsyncFunction suspension did not follow an executing phase",
+                ));
+            }
+            _ => {
+                return Err(HeapError::Invariant(
+                    "AsyncFunction suspension reached an object with the wrong class",
+                ));
+            }
+        }
+
+        let mut candidate = self.object(id)?.clone();
+        let ObjectPayload::AsyncFunctionState(candidate_data) = &mut candidate.payload else {
+            unreachable!("AsyncFunction payload was validated before suspension")
+        };
+        candidate_data.phase = AsyncFunctionPhase::Awaiting;
+        candidate_data.activation = Some(Box::new(activation.clone()));
+        self.validate_object_layout(&candidate)?;
+
+        let edges = generator_activation_edges(&activation);
+        self.retain_edges_transactionally(&edges)?;
+        let ObjectPayload::AsyncFunctionState(data) = &mut self.object_mut(id)?.payload else {
+            unreachable!("AsyncFunction payload was validated before retaining its activation")
+        };
+        data.phase = AsyncFunctionPhase::Awaiting;
+        data.activation = Some(Box::new(activation));
+        Ok(())
+    }
+
+    /// Move an awaiting async driver back to `Executing` and detach its
+    /// heap-owned activation. The caller must first root the snapshot it will
+    /// execute so releasing the dormant occurrences remains safe.
+    pub(crate) fn begin_async_function_resume(
+        &mut self,
+        id: ObjectId,
+    ) -> Result<(GeneratorActivationData, HeapCleanup), HeapError> {
+        let activation = {
+            let ObjectPayload::AsyncFunctionState(data) = &mut self.object_mut(id)?.payload else {
+                return Err(HeapError::Invariant(
+                    "AsyncFunction resume reached an object with the wrong class",
+                ));
+            };
+            if data.phase != AsyncFunctionPhase::Awaiting {
+                return Err(HeapError::Invariant(
+                    "AsyncFunction resume began outside an awaiting phase",
+                ));
+            }
+            let activation = data.activation.take().ok_or(HeapError::Invariant(
+                "awaiting AsyncFunction has no activation",
+            ))?;
+            data.phase = AsyncFunctionPhase::Executing;
+            *activation
+        };
+
+        let edges = generator_activation_edges(&activation);
+        let atoms = generator_activation_atoms(&activation);
+        for edge in edges {
+            self.release_raw_no_drain(edge)?;
+        }
+        let mut cleanup = self.drain_zero_queue()?;
+        cleanup.atoms.extend(atoms);
+        Ok((activation, cleanup))
+    }
+
+    /// Permanently finish an async driver after resolving or rejecting its
+    /// outer promise. Failure after an `await` has been published may complete
+    /// directly from `Awaiting`; in that case dormant frame ownership is
+    /// detached and returned through the ordinary cleanup channel.
+    pub(crate) fn complete_async_function(
+        &mut self,
+        id: ObjectId,
+    ) -> Result<HeapCleanup, HeapError> {
+        let activation = {
+            let ObjectPayload::AsyncFunctionState(data) = &mut self.object_mut(id)?.payload else {
+                return Err(HeapError::Invariant(
+                    "AsyncFunction completion reached an object with the wrong class",
+                ));
+            };
+            let activation = match data.phase {
+                AsyncFunctionPhase::Executing if data.activation.is_none() => None,
+                AsyncFunctionPhase::Awaiting if data.activation.is_some() => {
+                    let Some(activation) = data.activation.take() else {
+                        unreachable!("activation presence was checked")
+                    };
+                    Some(*activation)
+                }
+                AsyncFunctionPhase::Executing
+                | AsyncFunctionPhase::Awaiting
+                | AsyncFunctionPhase::Completed => {
+                    return Err(HeapError::Invariant(
+                        "AsyncFunction completion reached an inconsistent phase",
+                    ));
+                }
+            };
+            data.phase = AsyncFunctionPhase::Completed;
+            activation
+        };
+
+        let Some(activation) = activation else {
+            return Ok(HeapCleanup::default());
+        };
+        let edges = generator_activation_edges(&activation);
+        let atoms = generator_activation_atoms(&activation);
+        for edge in edges {
+            self.release_raw_no_drain(edge)?;
+        }
+        let mut cleanup = self.drain_zero_queue()?;
+        cleanup.atoms.extend(atoms);
+        Ok(cleanup)
+    }
+
     /// Advance within one snapshotted level without cloning the complete key
     /// vector or visited set. Non-enumerable and duplicate prototype keys are
     /// consumed internally because neither can be yielded.
@@ -11260,6 +11547,10 @@ impl Heap {
                     ObjectPayload::BytecodeFunction { .. }
                 )
                 | (ObjectKind::Generator, ObjectPayload::Generator { .. })
+                | (
+                    ObjectKind::AsyncFunctionState,
+                    ObjectPayload::AsyncFunctionState(_)
+                )
                 | (ObjectKind::Promise, ObjectPayload::Promise(_))
         ) {
             return Err(HeapError::Invariant(
@@ -11286,6 +11577,23 @@ impl Heap {
         }
         if let ObjectPayload::NativeFunction { data, internal } = &object.payload {
             match (data.target, internal) {
+                (
+                    NativeFunctionId::AsyncFunctionResume(target_kind),
+                    Some(InternalCallableData::AsyncFunctionResume { state, kind }),
+                ) if target_kind == *kind => {
+                    let ObjectPayload::AsyncFunctionState(state_data) =
+                        &self.object(*state)?.payload
+                    else {
+                        return Err(HeapError::Invariant(
+                            "AsyncFunction resume callable has invalid hidden state",
+                        ));
+                    };
+                    if object.is_constructor || data.realm != Some(state_data.driver_realm) {
+                        return Err(HeapError::Invariant(
+                            "AsyncFunction resume callable has invalid hidden state",
+                        ));
+                    }
+                }
                 (
                     NativeFunctionId::PromiseResolving(target_kind),
                     Some(InternalCallableData::PromiseResolving { promise, kind, .. }),
@@ -11435,7 +11743,8 @@ impl Heap {
                         ));
                     }
                 }
-                (NativeFunctionId::PromiseResolving(_), _)
+                (NativeFunctionId::AsyncFunctionResume(_), _)
+                | (NativeFunctionId::PromiseResolving(_), _)
                 | (NativeFunctionId::PromiseCapabilityExecutor, _)
                 | (NativeFunctionId::PromiseFinallyHandler(_), _)
                 | (NativeFunctionId::PromiseFinallyThunk(_), _)
@@ -11650,6 +11959,9 @@ impl Heap {
                     }
                 }
             }
+        }
+        if let ObjectPayload::AsyncFunctionState(data) = &object.payload {
+            validate_async_function_state(self, object, data)?;
         }
         if let ObjectPayload::IteratorHelper(data) = &object.payload {
             if object.is_constructor {
@@ -12168,6 +12480,11 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
         | ObjectPayload::Generator { .. } => 0,
+        ObjectPayload::AsyncFunctionState(data) => 3usize.saturating_add(
+            data.activation
+                .as_deref()
+                .map_or(0, |activation| generator_activation_edges(activation).len()),
+        ),
         ObjectPayload::IteratorHelper(data) => 1usize
             .saturating_add(raw_value_edges(&data.next).len())
             .saturating_add(raw_value_edges(&data.callback).len())
@@ -12211,9 +12528,13 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         ObjectPayload::BytecodeFunction { closure_slots, .. } => closure_slots.len(),
         ObjectPayload::Promise(data) => raw_value_edges(&data.result).len().saturating_add(
             data.fulfill_reactions
-                .len()
-                .saturating_add(data.reject_reactions.len())
-                .saturating_mul(4),
+                .iter()
+                .chain(&data.reject_reactions)
+                .map(|reaction| {
+                    usize::from(reaction.handler.is_some())
+                        .saturating_add(reaction.capability.map_or(0, |_| 2))
+                })
+                .sum(),
         ),
     };
     let mut edges = Vec::with_capacity(
@@ -12328,6 +12649,14 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
                 edges.extend(generator_activation_edges(activation));
             }
         }
+        ObjectPayload::AsyncFunctionState(data) => {
+            edges.push(RawId::Context(data.driver_realm));
+            edges.push(RawId::Object(data.outer_resolve));
+            edges.push(RawId::Object(data.outer_reject));
+            if let Some(activation) = data.activation.as_deref() {
+                edges.extend(generator_activation_edges(activation));
+            }
+        }
         ObjectPayload::Promise(data) => {
             edges.extend(raw_value_edges(&data.result));
             for reaction in data.fulfill_reactions.iter().chain(&data.reject_reactions) {
@@ -12350,12 +12679,21 @@ fn promise_reaction_edges(reaction: &PromiseReaction) -> Vec<RawId> {
         .handler
         .map(RawId::Object)
         .into_iter()
-        .chain(promise_capability_edges(&reaction.capability))
+        .chain(
+            reaction
+                .capability
+                .as_ref()
+                .into_iter()
+                .flat_map(promise_capability_edges),
+        )
         .collect()
 }
 
 fn internal_callable_edges(internal: &InternalCallableData) -> Vec<RawId> {
     match internal {
+        InternalCallableData::AsyncFunctionResume { state, .. } => {
+            vec![RawId::Object(*state)]
+        }
         InternalCallableData::PromiseResolving { promise, .. } => {
             vec![RawId::Object(*promise)]
         }
@@ -12486,6 +12824,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
             .saturating_add(context.map.map_or(0, |_| 2))
             .saturating_add(context.set.map_or(0, |_| 2))
             .saturating_add(context.generator.map_or(0, |_| 2))
+            .saturating_add(context.async_function.map_or(0, |_| 1))
             .saturating_add(context.promise.map_or(0, |_| 2))
             .saturating_add(context.iterator.map_or(0, |_| 4))
             .saturating_add(context.global_objects.len())
@@ -12524,6 +12863,9 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     if let Some(generator) = context.generator {
         edges.push(RawId::Object(generator.prototype));
         edges.push(RawId::Object(generator.function_prototype));
+    }
+    if let Some(async_function) = context.async_function {
+        edges.push(RawId::Object(async_function.function_prototype));
     }
     if let Some(promise) = context.promise {
         edges.push(RawId::Object(promise.prototype));
@@ -12600,7 +12942,8 @@ fn internal_callable_atoms(internal: &InternalCallableData) -> Vec<Atom> {
         InternalCallableData::PromiseFinallyThunk { value } => {
             raw_value_atom(value).into_iter().collect()
         }
-        InternalCallableData::PromiseResolving { .. }
+        InternalCallableData::AsyncFunctionResume { .. }
+        | InternalCallableData::PromiseResolving { .. }
         | InternalCallableData::PromiseFinallyHandler { .. }
         | InternalCallableData::PromiseAllResolveElement { .. }
         | InternalCallableData::PromiseAllSettledElement { .. }
@@ -12641,6 +12984,11 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
             .filter_map(|record| record.key.as_ref().and_then(raw_value_atom))
             .collect::<Vec<_>>(),
         ObjectPayload::Generator { activation, .. } => activation
+            .as_deref()
+            .map(generator_activation_atoms)
+            .unwrap_or_default(),
+        ObjectPayload::AsyncFunctionState(data) => data
+            .activation
             .as_deref()
             .map(generator_activation_atoms)
             .unwrap_or_default(),
@@ -12740,6 +13088,140 @@ const fn is_promise_storable_value(value: &RawValue) -> bool {
         value,
         RawValue::Private(_) | RawValue::Uninitialized | RawValue::Exception
     )
+}
+
+fn validate_async_function_state(
+    heap: &Heap,
+    object: &ObjectData,
+    data: &AsyncFunctionStateData,
+) -> Result<(), HeapError> {
+    if object.is_constructor
+        || (data.phase == AsyncFunctionPhase::Awaiting) != data.activation.is_some()
+    {
+        return Err(HeapError::Invariant(
+            "AsyncFunction state has inconsistent phase and activation",
+        ));
+    }
+    heap.context(data.driver_realm)?;
+    for resolving_function in [data.outer_resolve, data.outer_reject] {
+        if !matches!(
+            heap.object(resolving_function)?.payload,
+            ObjectPayload::NativeFunction { .. }
+                | ObjectPayload::BoundFunction { .. }
+                | ObjectPayload::BytecodeFunction { .. }
+        ) {
+            return Err(HeapError::Invariant(
+                "AsyncFunction state retains a non-callable resolving function",
+            ));
+        }
+    }
+
+    let Some(activation) = data.activation.as_deref() else {
+        return Ok(());
+    };
+    let bytecode = heap.function_bytecode(activation.bytecode)?;
+    let vm = &activation.vm;
+    let function = heap.object(vm.current_function)?;
+    if bytecode.metadata.function_kind != FunctionKind::Async
+        || bytecode.metadata.constructor_kind != ConstructorKind::None
+        || bytecode.metadata.has_prototype
+        || bytecode.metadata.class_initializer_kind.is_some()
+        || bytecode.realm != vm.callee_realm
+        || vm.strict != bytecode.metadata.strict
+        || heap.context(vm.callee_realm)?.global_object != vm.callee_global
+        || !matches!(
+            function.payload,
+            ObjectPayload::BytecodeFunction {
+                bytecode: owner,
+                ..
+            } if owner == activation.bytecode
+        )
+        || function.is_constructor
+        || activation.arguments.len() < usize::from(bytecode.metadata.argument_count)
+        || activation.actual_argument_count > activation.arguments.len()
+        || activation.locals.len() != usize::from(bytecode.metadata.local_count)
+        || activation.reusable_captured_locals.len() != activation.locals.len()
+        || vm.stack.len() > usize::from(bytecode.metadata.max_stack)
+        || vm.pc == 0
+        || vm.pc > bytecode.code.len()
+    {
+        return Err(HeapError::Invariant(
+            "AsyncFunction activation has invalid frame metadata",
+        ));
+    }
+    if !matches!(bytecode.code.get(vm.pc - 1), Some(Instruction::Await)) {
+        return Err(HeapError::Invariant(
+            "AsyncFunction activation is not parked after its await opcode",
+        ));
+    }
+
+    for value in vm
+        .stack
+        .iter()
+        .chain(std::iter::once(&vm.this_value))
+        .chain(vm.normalized_this.iter())
+        .chain(std::iter::once(&vm.new_target))
+    {
+        if !is_map_storable_value(value) {
+            return Err(HeapError::Invariant(
+                "AsyncFunction activation contains an internal-only value",
+            ));
+        }
+    }
+    for binding in activation.arguments.iter().chain(activation.locals.iter()) {
+        match binding {
+            GeneratorFrameBinding::Direct(value) if !is_map_storable_value(value) => {
+                return Err(HeapError::Invariant(
+                    "AsyncFunction frame binding contains an internal-only value",
+                ));
+            }
+            GeneratorFrameBinding::Private(atom) if atom.is_null() => {
+                return Err(HeapError::Invariant(
+                    "AsyncFunction private binding contains the null atom",
+                ));
+            }
+            GeneratorFrameBinding::PrivateCallable(callable) => {
+                if !matches!(
+                    heap.object(*callable)?.payload,
+                    ObjectPayload::NativeFunction { .. }
+                        | ObjectPayload::BoundFunction { .. }
+                        | ObjectPayload::BytecodeFunction { .. }
+                ) {
+                    return Err(HeapError::Invariant(
+                        "AsyncFunction private callable binding is not callable",
+                    ));
+                }
+            }
+            GeneratorFrameBinding::Captured(var_ref) => {
+                heap.var_ref(*var_ref)?;
+            }
+            GeneratorFrameBinding::Direct(_)
+            | GeneratorFrameBinding::Private(_)
+            | GeneratorFrameBinding::Uninitialized => {}
+        }
+    }
+    for region in &vm.regions {
+        match *region {
+            crate::vm::VmUnwindRegion::Catch {
+                target,
+                stack_depth,
+            } if target >= bytecode.code.len() || stack_depth > vm.stack.len() => {
+                return Err(HeapError::Invariant(
+                    "AsyncFunction catch region is outside its saved frame",
+                ));
+            }
+            crate::vm::VmUnwindRegion::Iterator { record_base, .. }
+                if record_base.saturating_add(1) >= vm.stack.len() =>
+            {
+                return Err(HeapError::Invariant(
+                    "AsyncFunction iterator region is outside its saved frame",
+                ));
+            }
+            crate::vm::VmUnwindRegion::Catch { .. }
+            | crate::vm::VmUnwindRegion::Iterator { .. } => {}
+        }
+    }
+    Ok(())
 }
 
 fn validate_iterator_helper_data(heap: &Heap, data: &IteratorHelperData) -> Result<(), HeapError> {
@@ -18764,6 +19246,386 @@ mod tests {
         assert_eq!(context_cleanup.finalized_contexts, 1);
         assert_eq!(context_cleanup.finalized_objects, 1);
         assert_eq!(context_cleanup.finalized_shapes, 1);
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn async_function_intrinsic_root_is_a_function_prototype_child() {
+        let mut heap = Heap::new();
+        let base_shape = empty_shape(&mut heap);
+        let function_prototype = leaf(&mut heap, base_shape);
+        let realm = heap
+            .allocate_context(ContextData::new(
+                function_prototype,
+                function_prototype,
+                function_prototype,
+                function_prototype,
+                function_prototype,
+                function_prototype,
+                function_prototype,
+                function_prototype,
+            ))
+            .unwrap();
+        let child_shape = heap
+            .allocate_shape(Shape::new(Some(function_prototype), []).unwrap())
+            .unwrap();
+        let async_function_prototype = leaf(&mut heap, child_shape);
+        let wrong_prototype = leaf(&mut heap, base_shape);
+
+        assert_eq!(
+            heap.attach_async_function_intrinsics(
+                realm,
+                AsyncFunctionRealmData {
+                    function_prototype: wrong_prototype,
+                },
+            ),
+            Err(HeapError::Invariant(
+                "AsyncFunction prototype does not inherit from Function.prototype"
+            ))
+        );
+        assert_eq!(heap.context(realm).unwrap().async_function, None);
+
+        let roots = AsyncFunctionRealmData {
+            function_prototype: async_function_prototype,
+        };
+        let before = heap.object_strong_count(async_function_prototype).unwrap();
+        heap.attach_async_function_intrinsics(realm, roots).unwrap();
+        assert_eq!(heap.context(realm).unwrap().async_function, Some(roots));
+        assert_eq!(
+            heap.object_strong_count(async_function_prototype),
+            Ok(before + 1)
+        );
+        assert_eq!(
+            heap.attach_async_function_intrinsics(realm, roots),
+            Err(HeapError::Invariant(
+                "context already has AsyncFunction intrinsic roots"
+            ))
+        );
+        assert_eq!(
+            heap.object_strong_count(async_function_prototype),
+            Ok(before + 1)
+        );
+        assert!(
+            context_edges(heap.context(realm).unwrap())
+                .contains(&RawId::Object(async_function_prototype))
+        );
+
+        heap.release_context(realm).unwrap();
+        heap.release_object(async_function_prototype).unwrap();
+        heap.release_object(wrong_prototype).unwrap();
+        heap.release_shape(child_shape).unwrap();
+        heap.release_object(function_prototype).unwrap();
+        heap.release_shape(base_shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn async_function_state_traces_callbacks_and_transfers_await_activation() {
+        let mut heap = Heap::new();
+        let base_shape = empty_shape(&mut heap);
+        let prototype = leaf(&mut heap, base_shape);
+        let realm = heap
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+                prototype,
+            ))
+            .unwrap();
+        let callee_realm = heap
+            .allocate_context(ContextData::new(
+                prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+                prototype,
+            ))
+            .unwrap();
+        let function_shape = heap
+            .allocate_shape(Shape::new(Some(prototype), []).unwrap())
+            .unwrap();
+        let outer_resolve = heap
+            .allocate_object(ObjectData::bound_native_function(
+                function_shape,
+                Vec::new(),
+                NativeFunctionId::ErrorIsError,
+                realm,
+                1,
+            ))
+            .unwrap();
+        let outer_reject = heap
+            .allocate_object(ObjectData::bound_native_function(
+                function_shape,
+                Vec::new(),
+                NativeFunctionId::ErrorIsError,
+                realm,
+                1,
+            ))
+            .unwrap();
+
+        let ordinary = leaf(&mut heap, base_shape);
+        assert_eq!(
+            heap.allocate_object(ObjectData::async_function_state(
+                base_shape,
+                Vec::new(),
+                realm,
+                ordinary,
+                outer_reject,
+            )),
+            Err(HeapError::Invariant(
+                "AsyncFunction state retains a non-callable resolving function"
+            ))
+        );
+        let mut inconsistent_state = ObjectData::async_function_state(
+            base_shape,
+            Vec::new(),
+            realm,
+            outer_resolve,
+            outer_reject,
+        );
+        let ObjectPayload::AsyncFunctionState(inconsistent_data) = &mut inconsistent_state.payload
+        else {
+            unreachable!("constructor publishes AsyncFunction state payload")
+        };
+        inconsistent_data.phase = AsyncFunctionPhase::Awaiting;
+        assert_eq!(
+            heap.allocate_object(inconsistent_state),
+            Err(HeapError::Invariant(
+                "AsyncFunction state has inconsistent phase and activation"
+            ))
+        );
+
+        let state = heap
+            .allocate_object(ObjectData::async_function_state(
+                base_shape,
+                Vec::new(),
+                realm,
+                outer_resolve,
+                outer_reject,
+            ))
+            .unwrap();
+        assert_eq!(
+            object_edges(heap.object(state).unwrap()),
+            [
+                RawId::Shape(base_shape),
+                RawId::Context(realm),
+                RawId::Object(outer_resolve),
+                RawId::Object(outer_reject),
+            ]
+        );
+        assert_eq!(
+            heap.async_function_state_snapshot(state).unwrap().phase,
+            AsyncFunctionPhase::Executing
+        );
+        assert_eq!(
+            heap.begin_async_function_resume(state),
+            Err(HeapError::Invariant(
+                "AsyncFunction resume began outside an awaiting phase"
+            ))
+        );
+
+        let callback = heap
+            .allocate_object(ObjectData::bound_internal_native_function(
+                function_shape,
+                Vec::new(),
+                NativeFunctionId::AsyncFunctionResume(AsyncFunctionResumeKind::Fulfill),
+                realm,
+                1,
+                InternalCallableData::AsyncFunctionResume {
+                    state,
+                    kind: AsyncFunctionResumeKind::Fulfill,
+                },
+            ))
+            .unwrap();
+        assert!(
+            NativeFunctionId::AsyncFunctionResume(AsyncFunctionResumeKind::Reject)
+                .uses_calling_realm()
+        );
+        assert_eq!(
+            NativeFunctionId::AsyncFunctionResume(AsyncFunctionResumeKind::Fulfill)
+                .descriptor()
+                .cproto,
+            NativeCProto::Generic
+        );
+        assert!(!heap.object(callback).unwrap().is_constructor);
+        assert_eq!(
+            heap.allocate_object(ObjectData::bound_internal_native_function(
+                function_shape,
+                Vec::new(),
+                NativeFunctionId::AsyncFunctionResume(AsyncFunctionResumeKind::Reject),
+                realm,
+                1,
+                InternalCallableData::AsyncFunctionResume {
+                    state,
+                    kind: AsyncFunctionResumeKind::Fulfill,
+                },
+            )),
+            Err(HeapError::Invariant(
+                "native target does not match its internal callable capture"
+            ))
+        );
+
+        let code: Rc<[Instruction]> = Rc::from([
+            Instruction::Undefined,
+            Instruction::Await,
+            Instruction::Return,
+        ]);
+        assert_eq!(
+            heap.allocate_function_bytecode(bytecode(&code, callee_realm, Vec::new(), Vec::new(),)),
+            Err(HeapError::Invariant(
+                "non-async bytecode contains a suspension opcode"
+            ))
+        );
+        let mut malformed_async = bytecode(&code, callee_realm, Vec::new(), Vec::new());
+        malformed_async.metadata.function_kind = FunctionKind::Async;
+        malformed_async.metadata.has_prototype = true;
+        assert_eq!(
+            heap.allocate_function_bytecode(malformed_async),
+            Err(HeapError::Invariant(
+                "async bytecode has invalid execution metadata"
+            ))
+        );
+        let mut async_bytecode = bytecode(&code, callee_realm, Vec::new(), Vec::new());
+        async_bytecode.metadata.function_kind = FunctionKind::Async;
+        let bytecode = heap.allocate_function_bytecode(async_bytecode).unwrap();
+        let function = heap
+            .allocate_object(ObjectData::bytecode_function(
+                function_shape,
+                Vec::new(),
+                bytecode,
+                None,
+                false,
+            ))
+            .unwrap();
+        let awaited_atom = Atom::from_raw(8_071);
+        let activation = GeneratorActivationData {
+            bytecode,
+            vm: GeneratorVmActivation {
+                stack: vec![RawValue::Symbol(awaited_atom)],
+                regions: Vec::new(),
+                pc: 2,
+                callee_realm,
+                current_function: function,
+                this_value: RawValue::Undefined,
+                normalized_this: None,
+                new_target: RawValue::Undefined,
+                strict: false,
+                callee_global: prototype,
+            },
+            actual_argument_count: 0,
+            arguments: Vec::new(),
+            locals: Vec::new(),
+            reusable_captured_locals: Vec::new(),
+        };
+
+        let mut invalid_activation = activation.clone();
+        invalid_activation.vm.pc = 1;
+        assert_eq!(
+            heap.suspend_async_function(state, invalid_activation),
+            Err(HeapError::Invariant(
+                "AsyncFunction activation is not parked after its await opcode"
+            ))
+        );
+        assert_eq!(
+            heap.async_function_state_snapshot(state).unwrap().phase,
+            AsyncFunctionPhase::Executing
+        );
+
+        heap.suspend_async_function(state, activation.clone())
+            .unwrap();
+        assert_eq!(
+            heap.async_function_state_snapshot(state).unwrap().phase,
+            AsyncFunctionPhase::Awaiting
+        );
+        assert_eq!(
+            object_atoms(heap.object(state).unwrap()).collect::<Vec<_>>(),
+            [awaited_atom]
+        );
+        assert_eq!(
+            heap.suspend_async_function(state, activation.clone()),
+            Err(HeapError::Invariant(
+                "AsyncFunction suspension did not follow an executing phase"
+            ))
+        );
+        let (resumed, cleanup) = heap.begin_async_function_resume(state).unwrap();
+        assert_eq!(resumed, activation);
+        assert_eq!(cleanup.atoms, [awaited_atom]);
+        assert_eq!(
+            heap.async_function_state_snapshot(state).unwrap().phase,
+            AsyncFunctionPhase::Executing
+        );
+        assert_eq!(
+            heap.complete_async_function(state),
+            Ok(HeapCleanup::default())
+        );
+        assert_eq!(
+            heap.complete_async_function(state),
+            Err(HeapError::Invariant(
+                "AsyncFunction completion reached an inconsistent phase"
+            ))
+        );
+
+        let awaiting_state = heap
+            .allocate_object(ObjectData::async_function_state(
+                base_shape,
+                Vec::new(),
+                realm,
+                outer_resolve,
+                outer_reject,
+            ))
+            .unwrap();
+        heap.suspend_async_function(awaiting_state, activation.clone())
+            .unwrap();
+        assert_eq!(
+            heap.complete_async_function(awaiting_state).unwrap().atoms,
+            [awaited_atom]
+        );
+        assert_eq!(
+            heap.async_function_state_snapshot(awaiting_state)
+                .unwrap()
+                .phase,
+            AsyncFunctionPhase::Completed
+        );
+
+        let promise = heap
+            .allocate_object(ObjectData::promise(base_shape, Vec::new()))
+            .unwrap();
+        let callback_count = heap.object_strong_count(callback).unwrap();
+        heap.promise_add_reactions(
+            promise,
+            PromiseReaction {
+                kind: PromiseReactionKind::Fulfill,
+                handler: Some(callback),
+                capability: None,
+            },
+            PromiseReaction {
+                kind: PromiseReactionKind::Reject,
+                handler: Some(callback),
+                capability: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(heap.object_strong_count(callback), Ok(callback_count + 2));
+        heap.promise_settle(promise, PromiseState::Fulfilled, RawValue::Undefined)
+            .unwrap();
+        assert_eq!(heap.object_strong_count(callback), Ok(callback_count));
+
+        assert_eq!(
+            heap.complete_async_function(ordinary),
+            Err(HeapError::Invariant(
+                "AsyncFunction completion reached an object with the wrong class"
+            ))
+        );
+
+        heap.release_object(promise).unwrap();
+        heap.release_object(callback).unwrap();
+        heap.release_object(awaiting_state).unwrap();
+        heap.release_object(state).unwrap();
+        heap.release_object(function).unwrap();
+        heap.release_object(outer_reject).unwrap();
+        heap.release_object(outer_resolve).unwrap();
+        heap.release_object(ordinary).unwrap();
+        heap.release_function_bytecode(bytecode).unwrap();
+        heap.release_context(callee_realm).unwrap();
+        heap.release_context(realm).unwrap();
+        heap.release_shape(function_shape).unwrap();
+        heap.release_object(prototype).unwrap();
+        heap.release_shape(base_shape).unwrap();
         assert_eq!(heap.counts().live, 0);
     }
 

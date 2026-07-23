@@ -473,6 +473,9 @@ impl Runtime {
             NativeFunctionId::MapIteratorNext => self.call_map_iterator_next(realm, invocation),
             NativeFunctionId::Set(kind) => self.call_set_native(realm, kind, invocation, arguments),
             NativeFunctionId::SetIteratorNext => self.call_set_iterator_next(realm, invocation),
+            NativeFunctionId::AsyncFunctionResume(kind) => {
+                self.call_async_function_resume(realm, kind, invocation, arguments)
+            }
             NativeFunctionId::Promise(kind) => {
                 self.call_promise_native(realm, kind, invocation, arguments)
             }

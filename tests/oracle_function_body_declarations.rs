@@ -76,6 +76,10 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "direct body generator declaration hoists and resumes through completion",
         "(function(){function* bodyGenerator(){yield 1;return 2}var iterator=bodyGenerator();return iterator.next().value+'|'+iterator.next().value+'|'+iterator.next().done})()",
     ),
+    (
+        "direct body async declaration hoists with async function shape",
+        "(function(){var before=Object.prototype.toString.call(bodyAsync)+'|'+bodyAsync.name+'|'+bodyAsync.length+'|'+('prototype' in bodyAsync);async function bodyAsync(value){return value}return before})()",
+    ),
 ];
 
 const ERROR_OBSERVATION_CASES: &[(&str, &str)] = &[(
@@ -124,11 +128,6 @@ const SYNTAX_ERROR_CASES: &[(&str, &str)] = &[
         "(function(){\n  function child(a,a){ 'use strict'; }\n})",
     ),
 ];
-
-const UNSUPPORTED_BOUNDARY_CASES: &[(&str, &str)] = &[(
-    "async direct body function declaration",
-    "(function(){ async function unsupportedAsync(){return 1} return typeof unsupportedAsync })()",
-)];
 
 #[test]
 fn direct_function_body_declaration_values_match_pinned_quickjs() {
@@ -221,30 +220,6 @@ fn function_body_declaration_parser_diagnostics_match_pinned_quickjs() {
 
     for &(description, source) in SYNTAX_ERROR_CASES {
         compare_cli(&oracle, &[], source, description);
-    }
-}
-
-#[test]
-fn unsupported_function_body_declaration_boundaries_remain_explicit() {
-    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
-        eprintln!("SKIP function-body declaration boundaries: set QJS_ORACLE to upstream qjs");
-        return;
-    };
-
-    for &(description, source) in UNSUPPORTED_BOUNDARY_CASES {
-        let quickjs = observe_oracle_sequence(&oracle, &[source], description);
-        assert!(
-            quickjs.starts_with("return|"),
-            "pinned QuickJS unexpectedly rejected {description}: {quickjs}"
-        );
-
-        let runtime = Runtime::new();
-        let mut context = runtime.new_context();
-        let rust = observe_rust_eval(&runtime, &mut context, source, description);
-        assert!(
-            rust.starts_with("throw|object|SyntaxError|"),
-            "unsupported {description} was not rejected explicitly: {rust}"
-        );
     }
 }
 

@@ -8,8 +8,10 @@
 
 use super::*;
 use crate::heap::{GeneratorState, ObjectData, ObjectPayload};
-use crate::runtime::vm_host::{EncodedGeneratorActivation, GeneratorVmRunOutcome, RuntimeVmHost};
-use crate::vm::{VmResume, VmSuspension};
+use crate::runtime::vm_host::{
+    EncodedVmActivation, RuntimeVmHost, VmActivationResume, VmRunOutcome,
+};
+use crate::vm::{VmResume, VmSuspendKind, VmSuspension};
 
 impl Runtime {
     pub(super) fn initialize_generator_intrinsic(
@@ -145,8 +147,8 @@ impl Runtime {
             NativeConversion::Value(prototype) => prototype,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let activation = host.encode_generator_activation(suspension)?;
-        if activation.state != GeneratorState::SuspendedStart {
+        let activation = host.encode_vm_activation(suspension)?;
+        if activation.kind != VmSuspendKind::Initial {
             return Err(RuntimeError::Invariant(
                 "new generator activation is not suspended at start",
             ));
@@ -190,7 +192,7 @@ impl Runtime {
     fn allocate_generator_object(
         &self,
         prototype: &ObjectRef,
-        activation: EncodedGeneratorActivation,
+        activation: EncodedVmActivation,
     ) -> Result<ObjectRef, RuntimeError> {
         let atoms = activation.atoms();
         let mut state = self.0.state.borrow_mut();
@@ -314,11 +316,18 @@ impl Runtime {
         // Root the cloned snapshot before detaching the generator object's raw
         // occurrences. `begin_generator_resume` may otherwise finalize its
         // function, VarRefs, values, or callee realm immediately.
-        let rooted = RuntimeVmHost::decode_generator_activation(
+        let suspend_kind = match previous_state {
+            GeneratorState::SuspendedStart => VmSuspendKind::Initial,
+            GeneratorState::SuspendedYield => VmSuspendKind::Yield,
+            GeneratorState::SuspendedYieldStar => VmSuspendKind::YieldStar,
+            GeneratorState::Executing | GeneratorState::Completed => unreachable!(),
+        };
+        let rooted = RuntimeVmHost::decode_vm_activation(
             self.clone(),
-            previous_state,
+            suspend_kind,
             realm,
             &activation,
+            FunctionKind::Generator,
         )?;
         {
             let mut state = self.0.state.borrow_mut();
@@ -352,9 +361,9 @@ impl Runtime {
         }
 
         let resume = match previous_state {
-            GeneratorState::SuspendedStart => None,
+            GeneratorState::SuspendedStart => VmActivationResume::Initial,
             GeneratorState::SuspendedYield | GeneratorState::SuspendedYieldStar => {
-                Some(match kind {
+                VmActivationResume::Generator(match kind {
                     GeneratorResumeKind::Next => VmResume::Next(argument),
                     GeneratorResumeKind::Return => VmResume::Return(argument),
                     GeneratorResumeKind::Throw => VmResume::Throw(argument),
@@ -370,7 +379,7 @@ impl Runtime {
             }
         };
         match outcome {
-            GeneratorVmRunOutcome::Complete(completion) => {
+            VmRunOutcome::Complete(completion) => {
                 self.complete_executing_generator(&generator)?;
                 Ok(match completion {
                     Completion::Return(value) => {
@@ -381,11 +390,20 @@ impl Runtime {
                     }
                 })
             }
-            GeneratorVmRunOutcome::Suspend {
-                yielded,
+            VmRunOutcome::Suspend {
+                value: yielded,
                 activation,
             } => {
-                let state = activation.state;
+                let state = match activation.kind {
+                    VmSuspendKind::Yield => GeneratorState::SuspendedYield,
+                    VmSuspendKind::YieldStar => GeneratorState::SuspendedYieldStar,
+                    VmSuspendKind::Initial | VmSuspendKind::Await => {
+                        self.complete_executing_generator(&generator)?;
+                        return Err(RuntimeError::Invariant(
+                            "resumed generator stopped at a non-generator suspension",
+                        ));
+                    }
+                };
                 if state == GeneratorState::SuspendedYieldStar
                     && !matches!(yielded, Value::Object(_))
                 {
@@ -442,8 +460,18 @@ impl Runtime {
     fn store_generator_suspension(
         &self,
         generator: &ObjectRef,
-        activation: &EncodedGeneratorActivation,
+        activation: &EncodedVmActivation,
     ) -> Result<(), RuntimeError> {
+        let generator_state = match activation.kind {
+            VmSuspendKind::Yield => GeneratorState::SuspendedYield,
+            VmSuspendKind::YieldStar => GeneratorState::SuspendedYieldStar,
+            VmSuspendKind::Initial => GeneratorState::SuspendedStart,
+            VmSuspendKind::Await => {
+                return Err(RuntimeError::Invariant(
+                    "generator suspension reached an await opcode",
+                ));
+            }
+        };
         let atoms = activation.atoms();
         let mut state = self.0.state.borrow_mut();
         let mut retained_atoms = Vec::with_capacity(atoms.len());
@@ -456,7 +484,7 @@ impl Runtime {
         }
         if let Err(error) = state.heap.suspend_generator(
             generator.object_id(),
-            activation.state,
+            generator_state,
             activation.data.clone(),
         ) {
             state.release_atoms(retained_atoms)?;

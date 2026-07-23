@@ -577,6 +577,11 @@ pub enum Instruction {
     /// compiler-owned delegation loop consumes the same two resume operands as
     /// ordinary `Yield`.
     YieldStar,
+    /// QuickJS `OP_await`: consume the value which the async-function driver
+    /// resolves through the realm's intrinsic Promise constructor. Fulfilment
+    /// resumes by replacing the retained slot with the resolution value;
+    /// rejection is raised through the activation's ordinary unwind path.
+    Await,
     /// Terminal TypeError used by `yield*` when the delegate has no `throw`
     /// method. A present `return` method has already been called for close.
     ThrowIteratorMissingThrow,
@@ -781,6 +786,7 @@ impl Instruction {
             // the active handler's recorded entry depth.
             Self::NipCatch | Self::IteratorClosePreserve | Self::IteratorDropPreserve => (1, 1),
             Self::IteratorClose => (3, 0),
+            Self::Await => (1, 1),
             Self::Yield | Self::YieldStar => (1, 2),
             Self::SetLocal(_) | Self::SetLocalCheck(_) | Self::SetArg(_) | Self::SetVarRef(_) => {
                 (1, 1)
@@ -1634,6 +1640,34 @@ mod tests {
             constants: vec![],
             local_count: 0,
             max_stack: 2,
+        };
+        assert_eq!(
+            underflow.verify().unwrap_err().message(),
+            "bytecode stack underflow"
+        );
+    }
+
+    #[test]
+    fn verifier_models_await_as_a_value_preserving_suspension() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(42),
+                Instruction::Await,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        assert_eq!(function.verify().unwrap().max_stack, 1);
+
+        let underflow = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::Await, Instruction::Return],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
         };
         assert_eq!(
             underflow.verify().unwrap_err().message(),

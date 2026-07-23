@@ -15,14 +15,14 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 43,585 passes and 45,140 runnable variants: 42.71% raw, a 52.16% lower
-  bound after the 18,475 pinned QuickJS target exclusions, or 96.71% among the
-  45,069 variants with a non-unsupported observed outcome. It records 97
-  parse failures and 1,284 runtime failures; current full TSV/JSONL SHA-256
+  has 43,643 passes and 45,140 runnable variants: 42.77% raw, a 52.23% lower
+  bound after the 18,475 pinned QuickJS target exclusions, or 96.90% among the
+  45,041 variants with a non-unsupported observed outcome. It records 18
+  parse failures and 1,277 runtime failures; current full TSV/JSONL SHA-256
   values are
-  `0f43b6e164c0954a02f911774c34871ea67e6255f28ffa65419ea15d3f4b73fd`
+  `8d47c7d70de9d1049cded9b4fe4aec3459313e374421ab99e1c36eb5730531f6`
   and
-  `f24e92ad54c4c59651206db66bfd7a4ed9dea4f3543311a990def0fc16e66be8`.
+  `14295f172893540d703e02aa4c9ba3e5bdee02d866131479680b5c33b2ddfabd`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -2291,6 +2291,52 @@ claim full parity.
   This is scoped semantic evidence, not a scoreboard increase: the global
   profile and conservative 43,585/102,037 vector remain byte-identical.
 
+  R3z ports ordinary async function declarations/expressions and `await`
+  through the final bytecode/VM path. `Instruction::Await` has an authenticated
+  1-to-1 stack effect; fulfill resumes the parked slot, while rejection enters
+  the ordinary VM unwind machinery used by catch/finally. A hidden,
+  GC-visible `AsyncFunctionState` owns dormant activations and the outer
+  resolving pair. Its driver Promise and continuation jobs belong to the
+  caller realm, while the resumed body, globals, and constructed errors retain
+  the bytecode's defining realm. Await uses the cached intrinsic
+  PromiseResolve and capability-free internal reactions, so replacing global
+  `Promise`, `Promise.resolve`, or `Promise.prototype.then` cannot intercept
+  it. The same activation path preserves direct-eval variable objects before
+  and after suspension.
+
+  The dependency-audited scoped cohort starts from 207 paths in the pinned
+  AsyncFunction/async-function/await roots. Sixty-five explicit exclusions
+  keep complex parameters, eval/with adjacencies, async arrows, async
+  generators/for-await, and host/cross-realm dependencies outside this first
+  core. The clean manifest contains 142 paths / 259 variants: 95 positive and
+  47 exact parse/SyntaxError paths, with 65 async-harness and 77 synchronous
+  paths. Oxide passes 259/259 and pinned QuickJS passes all 142 paths. The
+  manifest, scoped-profile, variant-key, TSV, and JSONL SHA-256 values are
+  `fdd1679242195cb32508b7976a1b0b3508fe96a2e77483808d3bf5c9c554ff52`,
+  `05634144cdc2e64874ffda721b429181ac8b7a8f82b1ba253f2b8d8a29a4332e`,
+  `a5249ce3625e80f41ea2464e00fcf19804913d49556e680ad6624fd6bf71d391`,
+  `d0d3933d5cc4114b60a55bd6040d4350cba890b7d8a29a4e41e372eb4291cfaa`,
+  and
+  `9259b27b167856e5e3a2428530d1943d74fc967a659759568b5068ce2a74c4c3`.
+  The complete 102,037-key R3y/R3z join has no missing, extra, duplicate, or
+  previous-pass row. It records 54 `fail-parse -> pass`, four
+  `fail-runtime -> pass`, four `fail-parse -> fail-runtime`, 19
+  `fail-parse -> unsupported-parser`, two
+  `fail-parse -> unsupported-runtime`, and seven
+  `fail-runtime -> unsupported-runtime` transitions, plus two detail-only
+  diagnostic refinements. Passes rise from 43,585 to 43,643. Final full
+  TSV/JSONL SHA-256 values are
+  `8d47c7d70de9d1049cded9b4fe4aec3459313e374421ab99e1c36eb5730531f6`
+  and
+  `14295f172893540d703e02aa4c9ba3e5bdee02d866131479680b5c33b2ddfabd`.
+  Thirteen Rust integration tests lock job checkpoints, abrupt thenables,
+  return assimilation, mutable-Promise resistance, dynamic construction,
+  direct eval, GC, contextual `await` names, host-stack preflight, and
+  caller/callee realm separation. A checksum-pinned transcript separately
+  compares the identical fixture in both engines.
+  Async arrows, object/class async methods, async generators, for-await, and
+  modules remain explicit later frontiers.
+
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -2304,8 +2350,8 @@ claim full parity.
   reached, unrecognized ASCII is retained as a raw token, and directive probes
   seek back before strict-context rescanning. This matches the pinned
   malformed-escape commitment and tested reserved/parser/lexer error priority,
-  including line and column. Module/async contextual-word behavior remains
-  with those unimplemented grammar surfaces.
+  including line and column. Module contextual words and the remaining async
+  arrow/method/generator forms stay with those unimplemented grammar surfaces.
 - The first runtime-independent RegExp kernel follows pinned
   `libregexp.c`/`libregexp-opcode.h` rather than a host regex library.
   `src/regexp/` owns exact QuickJS flag bits, a UTF-16 pattern parser, typed IR,
@@ -5124,7 +5170,7 @@ The complete pinned Test262 vector is now recorded conservatively. Remaining
 parser frontiers with generic syntax diagnostics cannot contribute negative
 test passes until they gain typed `Unsupported` provenance or are individually
 audited as genuine early errors. The remaining native `$262` host hooks, module
-parse/link/evaluate, async-function integration, the
+parse/link/evaluate, remaining async arrow/method/generator forms, the
 ES5.1 suite, and a separate QuickJS-runner-quirk profile remain future
 milestones. Unsupported and host-missing outcomes are failures, not additional
 feature skips.
@@ -5145,10 +5191,11 @@ parser/compiler work still uses host recursion. A complete execution
 trampoline plus explicit compiler work storage is required to recover
 upstream's substantially deeper platform-dependent limits throughout.
 
-The language slice remains incomplete. Async declarations, `for-await`, other
-general assignment targets, module resolution, async methods and parameter
-forms, async class methods/generators, non-simple ObjectLiteral accessor forms
-outside the covered
+The language slice remains incomplete. Ordinary async function
+declarations/expressions and simple parameters are implemented; async arrows,
+`for-await`, other general assignment targets, module resolution, async
+methods and non-simple parameter forms, async class methods/generators, and
+non-simple ObjectLiteral accessor forms outside the covered
 synchronous setter slice, and callable Proxy classes are not yet implemented.
 Unsupported declaration contexts are rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` supports
@@ -5176,9 +5223,10 @@ failure today; matching the allocation order safely requires a provisional
 two-phase bytecode-function reservation plus failure-injection coverage, rather
 than attempting to roll back migrated VarRefs after the fact.
 
-Dynamic Async/AsyncGenerator Function constructors, other native builtin
-constructor families, and Proxy construct dispatch remain. The hidden dynamic
-GeneratorFunction constructor and base/derived class construction,
+The dynamic AsyncFunction constructor is implemented; dynamic
+AsyncGeneratorFunction, other native builtin constructor families, and Proxy
+construct dispatch remain. The hidden dynamic GeneratorFunction constructor
+and base/derived class construction,
 construct-only guards, constructor return validation, `super()`, `new.target`,
 and `Reflect.construct` are active. Typed
 target/cproto, data-bearing Error selector, realm, arity padding, production
@@ -5196,9 +5244,10 @@ surface, but complete embedding-API parity must eventually reproduce it.
 Explicit `throw`, nested propagation, VM-generated native errors, eager Error
 backtraces, synchronous catch/finally regions, and synchronous iterator cleanup
 share the implemented completion path. Synchronous generator suspension and
-resumption now use that completion path; async/Promise frame integration,
-recoverable OOM and backtrace-allocation fallback, interrupt/termination, and
-the remaining abrupt-completion surfaces are still open. The `JS_STRIP_DEBUG` /
+resumption and ordinary async `await` rejection now use that completion path;
+async-generator/`for-await` frame integration, recoverable OOM and
+backtrace-allocation fallback, interrupt/termination, and the remaining
+abrupt-completion surfaces are still open. The `JS_STRIP_DEBUG` /
 `JS_STRIP_SOURCE` debug/source-stripping decision is implemented as a
 runtime-wide three-state policy sampled by subsequent compilation: strip-source
 retains filename/PC metadata but removes authored source, while strip-debug
@@ -5219,17 +5268,18 @@ expressions and the same Parameter Environment semantics as authored ordinary
 functions. Bodies remain limited to the current statement, expression, and
 simple body/block/switch/classic-for and for-in/of-head lexical-declaration
 grammar.
-Async kinds and Proxy new-target realms remain pending.
+AsyncGenerator kinds and Proxy new-target realms remain pending.
 Compiler input is still UTF-8,
 so dynamic source containing an unpaired UTF-16 surrogate throws an explicit
 implementation-gap `InternalError` instead of being silently rewritten. The
 parser now requests tokens through fallible advances, and directive probes
 seek back before strict-context rescanning, so current-token grammar errors no
 longer lose to untouched later lexical failures. Contextual word reparsing for
-module/async grammar remains with those unimplemented surfaces. The parser now
-produces synchronous generator bytecode; async and async-generator bytecode
-remain fail-closed, while function-kind metadata and `toString` fallback
-distinguish all four QuickJS kinds. Bound dispatch is iterative and therefore
+modules and remaining async arrow/method/generator grammar stays with those
+unimplemented surfaces. The parser now produces synchronous generator and
+ordinary async-function bytecode; async-generator bytecode remains fail-closed,
+while function-kind metadata and `toString` fallback distinguish all four
+QuickJS kinds. Bound dispatch is iterative and therefore
 does not consume the Rust host
 stack, but exact QuickJS runtime-stack accounting and its deep-bound-chain
 overflow threshold are not yet reproduced. VM object coercion is wired through
@@ -5624,6 +5674,15 @@ to the facade. `runtime.rs` moves from 9,764 to 9,824 lines; the main Iterator
 owner moves from 1,871 to 1,902 lines, with `Iterator.concat` isolated in a
 375-line submodule. Generated Test262 bookkeeping remains outside all three
 product modules.
+R3z keeps the async driver in the new 395-line
+`runtime/async_function.rs`; `runtime.rs` reaches 9,856 lines, a 32-line
+module/initialization/dispatch seam rather than another inline state machine.
+The generator-specific VM snapshot bridge is generalized once for generator
+and await activations in `runtime/vm_host.rs`. `heap.rs` reaches 19,676 lines
+because the hidden async state, GC edge/atom ownership, transactional
+phase checks, and adversarial lifecycle tests live at the arena trust
+boundary. That file remains extraction debt, but async behavior does not
+return to the runtime facade.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.
@@ -5925,9 +5984,11 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-generator-destructuring.sh
 ./scripts/test-test262-iterator-helpers.sh
 ./scripts/test-test262-iterator-sequencing.sh
+./scripts/test-test262-async-function-core.sh
 cargo build --bin qjs
 ./scripts/test-r3l-class-private-generators-oracle.sh --oxide ./target/debug/qjs
 ./scripts/test-r3s-regexp-escape-control-oracle.sh --oxide ./target/debug/qjs
+./scripts/test-r3z-async-function-core-oracle.sh --oxide ./target/debug/qjs
 ./scripts/test-test262-full.sh
 ```
 

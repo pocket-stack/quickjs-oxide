@@ -8,10 +8,12 @@ The `unsafe`-free engine is runnable but incomplete. R3v/R3w add the synchronous
 pinned QuickJS pass both frozen gates (1,046/1,046 and 64/64 variants). R3x
 globally admits the clean sequencing cohort, moving the conservative full
 vector to 43,585/102,037. R3y authenticates the existing synchronous class
-matrix at 7,735/7,735 variants without widening the global profile. Iterator
-Helpers remain scoped because of Proxy/host adjacencies. Modules, async
-functions/generators, Proxy, and broad built-in coverage remain incomplete.
-Pinned QuickJS is the test oracle, never a product dependency.
+matrix at 7,735/7,735 variants. R3z adds ordinary async functions and `await`;
+its dependency-audited gate passes 259/259 variants, and the conservative full
+vector reaches 43,643/102,037 with no previous-pass regression. The R3y/R3z
+gates remain scoped, as do Iterator Helpers. Modules, async
+arrows/methods/generators, Proxy, and broad built-in coverage remain
+incomplete. Pinned QuickJS is the test oracle, never a product dependency.
 
 ## Try it
 
@@ -47,6 +49,8 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-generator-destructuring.sh
 ./scripts/test-test262-iterator-helpers.sh
 ./scripts/test-test262-iterator-sequencing.sh
+./scripts/test-test262-async-function-core.sh
+./scripts/test-r3z-async-function-core-oracle.sh --oxide ./target/debug/qjs
 ```
 
 ## License

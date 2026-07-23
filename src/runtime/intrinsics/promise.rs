@@ -53,10 +53,10 @@ impl PromiseRejectionEvent {
     }
 }
 
-struct RootedPromiseCapability {
-    promise: ObjectRef,
-    resolve: CallableRef,
-    reject: CallableRef,
+pub(in crate::runtime) struct RootedPromiseCapability {
+    pub(in crate::runtime) promise: ObjectRef,
+    pub(in crate::runtime) resolve: CallableRef,
+    pub(in crate::runtime) reject: CallableRef,
 }
 
 impl RootedPromiseCapability {
@@ -263,7 +263,7 @@ impl Runtime {
         Ok(ObjectRef::from_owned_handle(self.clone(), object))
     }
 
-    fn new_internal_promise_function(
+    pub(in crate::runtime) fn new_internal_promise_function(
         &self,
         realm: ContextId,
         target: NativeFunctionId,
@@ -359,7 +359,7 @@ impl Runtime {
         Ok((resolve, reject))
     }
 
-    fn new_default_promise_capability(
+    pub(in crate::runtime) fn new_default_promise_capability(
         &self,
         realm: ContextId,
     ) -> Result<RootedPromiseCapability, RuntimeError> {
@@ -372,6 +372,24 @@ impl Runtime {
             resolve,
             reject,
         })
+    }
+
+    /// Allocate the realm's intrinsic Promise capability and reject it without
+    /// re-entering the native-call dispatcher.
+    ///
+    /// Async bytecode uses this at the host-stack preflight boundary: the VM
+    /// body cannot safely start, but an async call must still return its
+    /// caller-realm Promise. Calling the ordinary reject function here would
+    /// repeat the same host-stack check before reaching Promise settlement.
+    pub(in crate::runtime) fn new_rejected_default_promise(
+        &self,
+        realm: ContextId,
+        reason: Value,
+    ) -> Result<ObjectRef, RuntimeError> {
+        let capability = self.new_default_promise_capability(realm)?;
+        let promise = capability.promise.clone();
+        self.settle_promise(realm, &promise, PromiseState::Rejected, reason)?;
+        Ok(promise)
     }
 
     fn new_promise_capability(
@@ -860,9 +878,16 @@ impl Runtime {
         } else {
             Completion::Return(argument)
         };
+        let Some(capability) = reaction.capability else {
+            // QuickJS's await extension installs `undefined` resolving
+            // functions. The continuation's completion (including a throw)
+            // is intentionally consumed instead of creating and settling an
+            // unobservable Promise.
+            return Ok(Completion::Return(Value::Undefined));
+        };
         let (target, value) = match handler_completion {
-            Completion::Return(value) => (reaction.capability.resolve, value),
-            Completion::Throw(value) => (reaction.capability.reject, value),
+            Completion::Return(value) => (capability.resolve, value),
+            Completion::Throw(value) => (capability.reject, value),
         };
         let target = ObjectRef::from_borrowed_handle(self.clone(), target)?;
         let target = self.as_callable(&target)?.ok_or(RuntimeError::Invariant(
@@ -958,14 +983,14 @@ impl Runtime {
             handler: handler_id(arguments.readable.first().ok_or(RuntimeError::Invariant(
                 "Promise.then fulfill argv was not padded",
             ))?)?,
-            capability: capability.raw(),
+            capability: Some(capability.raw()),
         };
         let reject = PromiseReaction {
             kind: PromiseReactionKind::Reject,
             handler: handler_id(arguments.readable.get(1).ok_or(RuntimeError::Invariant(
                 "Promise.then reject argv was not padded",
             ))?)?,
-            capability: capability.raw(),
+            capability: Some(capability.raw()),
         };
         let snapshot = self
             .0
@@ -1060,13 +1085,6 @@ impl Runtime {
                 "Promise resolve/reject received a constructor invocation",
             ));
         };
-        let Value::Object(constructor_object) = this_value.clone() else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not an object",
-            )?));
-        };
         let argument = arguments
             .readable
             .first()
@@ -1074,6 +1092,23 @@ impl Runtime {
             .ok_or(RuntimeError::Invariant(
                 "Promise resolve/reject argv was not padded",
             ))?;
+        self.promise_static_resolve_core(realm, kind, this_value, argument)
+    }
+
+    fn promise_static_resolve_core(
+        &self,
+        realm: ContextId,
+        kind: PromiseNativeKind,
+        this_value: Value,
+        argument: Value,
+    ) -> Result<Completion, RuntimeError> {
+        let Value::Object(constructor_object) = this_value.clone() else {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "not an object",
+            )?));
+        };
         if kind == PromiseNativeKind::Resolve
             && let Value::Object(promise) = &argument
             && matches!(
@@ -1114,5 +1149,94 @@ impl Runtime {
             Completion::Return(_) => Ok(Completion::Return(Value::Object(capability.promise))),
             Completion::Throw(value) => Ok(Completion::Throw(value)),
         }
+    }
+
+    /// QuickJS's `js_promise_resolve(ctx, ctx->promise_ctor, ...)` boundary
+    /// used by `await`. The cached realm constructor is selected directly:
+    /// replacing global `Promise` or its public `resolve` property cannot
+    /// intercept async-function suspension.
+    pub(in crate::runtime) fn promise_resolve_intrinsic(
+        &self,
+        realm: ContextId,
+        value: Value,
+    ) -> Result<Completion, RuntimeError> {
+        let constructor = self.promise_realm_data(realm)?.constructor;
+        let constructor = ObjectRef::from_borrowed_handle(self.clone(), constructor)?;
+        self.promise_static_resolve_core(
+            realm,
+            PromiseNativeKind::Resolve,
+            Value::Object(constructor),
+            value,
+        )
+    }
+
+    /// Register the two private await continuations without allocating the
+    /// spec's unobservable thrown-away capability. Pinned QuickJS deliberately
+    /// represents that capability as two `undefined` resolving functions; a
+    /// continuation completion is therefore consumed by the reaction job.
+    pub(in crate::runtime) fn perform_promise_then_without_capability(
+        &self,
+        realm: ContextId,
+        promise: &ObjectRef,
+        fulfill: &CallableRef,
+        reject: &CallableRef,
+    ) -> Result<(), RuntimeError> {
+        if !matches!(
+            self.0
+                .state
+                .borrow()
+                .heap
+                .object(promise.object_id())?
+                .payload,
+            ObjectPayload::Promise(_)
+        ) {
+            return Err(RuntimeError::Invariant(
+                "internal await continuation target is not a Promise",
+            ));
+        }
+        let fulfill = PromiseReaction {
+            kind: PromiseReactionKind::Fulfill,
+            handler: Some(fulfill.as_object().object_id()),
+            capability: None,
+        };
+        let reject = PromiseReaction {
+            kind: PromiseReactionKind::Reject,
+            handler: Some(reject.as_object().object_id()),
+            capability: None,
+        };
+        let snapshot = self
+            .0
+            .state
+            .borrow()
+            .heap
+            .promise_snapshot(promise.object_id())?;
+        match snapshot.state {
+            PromiseState::Pending => self.0.state.borrow_mut().heap.promise_add_reactions(
+                promise.object_id(),
+                fulfill,
+                reject,
+            )?,
+            PromiseState::Fulfilled => {
+                self.enqueue_promise_reaction_job(realm, fulfill, snapshot.result)?;
+            }
+            PromiseState::Rejected => {
+                if !snapshot.is_handled {
+                    let reason = self.root_raw_value(&snapshot.result)?;
+                    self.notify_host_promise_rejection_tracker(
+                        realm,
+                        promise.clone(),
+                        reason,
+                        true,
+                    );
+                }
+                self.enqueue_promise_reaction_job(realm, reject, snapshot.result)?;
+            }
+        }
+        self.0
+            .state
+            .borrow_mut()
+            .heap
+            .promise_mark_handled(promise.object_id())?;
+        Ok(())
     }
 }

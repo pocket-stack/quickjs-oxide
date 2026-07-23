@@ -10,7 +10,7 @@ use crate::bytecode::{
 };
 use crate::heap::{
     EvalBinding, EvalBindingSource, EvalVariableEnvironment, GeneratorActivationData,
-    GeneratorFrameBinding, GeneratorState, GeneratorVmActivation,
+    GeneratorFrameBinding, GeneratorVmActivation,
 };
 use crate::object::PrivateNameRef;
 use crate::vm::{
@@ -395,18 +395,18 @@ pub(super) struct RuntimeVmHost {
     reusable_captured_locals: Vec<bool>,
 }
 
-/// Raw activation plus every transient root from which it was encoded.  The
-/// wrapper must outlive heap publication: raw object/VarRef/bytecode/context
-/// identities are non-owning until `ObjectData::generator` or
-/// `Heap::suspend_generator` retains them.
-pub(super) struct EncodedGeneratorActivation {
-    pub(super) state: GeneratorState,
+/// Raw resumable activation plus every transient root from which it was
+/// encoded. The wrapper must outlive heap publication: raw
+/// object/VarRef/bytecode/context identities are non-owning until a generator
+/// object or hidden async-function state retains them.
+pub(super) struct EncodedVmActivation {
+    pub(super) kind: VmSuspendKind,
     pub(super) data: GeneratorActivationData,
     _host: RuntimeVmHost,
     _parts: VmActivationParts,
 }
 
-impl EncodedGeneratorActivation {
+impl EncodedVmActivation {
     pub(super) fn atoms(&self) -> Vec<Atom> {
         let vm = &self.data.vm;
         vm.stack
@@ -448,12 +448,11 @@ fn generator_raw_value_atom(value: &RawValue) -> Option<Atom> {
     }
 }
 
-/// Fully rooted execution state reconstructed before the generator object's
-/// dormant edges are detached. `host.active_frame_token` remains a sentinel
-/// until the short-lived bytecode active frame is pushed for the actual
-/// resume.
-pub(super) struct RootedGeneratorActivation {
-    pub(super) previous_state: GeneratorState,
+/// Fully rooted execution state reconstructed before its dormant heap edges
+/// are detached. `host.active_frame_token` remains a sentinel until the
+/// short-lived bytecode active frame is pushed for the actual resume.
+pub(super) struct RootedVmActivation {
+    pub(super) suspend_kind: VmSuspendKind,
     pub(super) suspension: VmSuspension,
     pub(super) host: RuntimeVmHost,
     pub(super) bytecode: FunctionBytecodeRef,
@@ -462,22 +461,29 @@ pub(super) struct RootedGeneratorActivation {
     saved_pc: usize,
 }
 
-pub(super) enum GeneratorVmRunOutcome {
+pub(super) enum VmActivationResume {
+    Initial,
+    Generator(VmResume),
+    AwaitFulfill(Value),
+    AwaitReject(Value),
+}
+
+pub(super) enum VmRunOutcome {
     Complete(Completion),
     Suspend {
-        yielded: Value,
-        activation: Box<EncodedGeneratorActivation>,
+        value: Value,
+        activation: Box<EncodedVmActivation>,
     },
 }
 
-impl RootedGeneratorActivation {
+impl RootedVmActivation {
     pub(super) fn run(
         self,
         runtime: &Runtime,
-        resume: Option<VmResume>,
-    ) -> Result<GeneratorVmRunOutcome, RuntimeError> {
+        resume: VmActivationResume,
+    ) -> Result<VmRunOutcome, RuntimeError> {
         let Self {
-            previous_state,
+            suspend_kind,
             suspension,
             mut host,
             bytecode,
@@ -489,7 +495,7 @@ impl RootedGeneratorActivation {
             .current_function
             .as_ref()
             .ok_or(RuntimeError::Invariant(
-                "generator host has no current function root",
+                "resumable host has no current function root",
             ))?
             .clone();
         let active_frame = runtime.push_bytecode_active_frame(
@@ -498,34 +504,51 @@ impl RootedGeneratorActivation {
             host.current_realm,
             metadata.strict,
         )?;
-        host.set_generator_active_frame_token(active_frame.token());
+        host.set_resumable_active_frame_token(active_frame.token());
         runtime.update_active_bytecode_pc(
             active_frame.token(),
             BytecodePc::new(saved_pc.saturating_sub(1)),
         )?;
-        let result = match (previous_state, resume) {
-            (GeneratorState::SuspendedStart, None) => {
+        let result = match (suspend_kind, resume) {
+            (VmSuspendKind::Initial, VmActivationResume::Initial) => {
                 Vm::new().resume_published_initial(suspension, &code, &mut host)
             }
-            (GeneratorState::SuspendedYield | GeneratorState::SuspendedYieldStar, Some(resume)) => {
-                Vm::new().resume_published(suspension, &code, &mut host, resume)
+            (
+                VmSuspendKind::Yield | VmSuspendKind::YieldStar,
+                VmActivationResume::Generator(resume),
+            ) => Vm::new().resume_published(suspension, &code, &mut host, resume),
+            (VmSuspendKind::Await, VmActivationResume::AwaitFulfill(value)) => {
+                suspension.resume_await_fulfill(&code, &mut host, value)
             }
-            (GeneratorState::SuspendedStart, Some(_))
-            | (GeneratorState::SuspendedYield | GeneratorState::SuspendedYieldStar, None)
-            | (GeneratorState::Executing | GeneratorState::Completed, _) => {
+            (VmSuspendKind::Await, VmActivationResume::AwaitReject(reason)) => {
+                suspension.resume_await_reject(&code, &mut host, reason)
+            }
+            _ => {
                 return Err(RuntimeError::Invariant(
-                    "generator resume kind disagrees with its suspended state",
+                    "resume operation disagrees with the suspended VM state",
                 ));
             }
         };
         active_frame.finish()?;
         match result.map_err(RuntimeError::Engine)? {
-            VmExit::Complete(completion) => Ok(GeneratorVmRunOutcome::Complete(completion)),
+            VmExit::Complete(completion) => Ok(VmRunOutcome::Complete(completion)),
             VmExit::Suspend(mut suspension) => {
-                let yielded = suspension.take_yielded().map_err(RuntimeError::Engine)?;
-                let activation = host.encode_generator_activation(suspension)?;
-                Ok(GeneratorVmRunOutcome::Suspend {
-                    yielded,
+                let value = match suspension.kind() {
+                    VmSuspendKind::Initial => {
+                        return Err(RuntimeError::Invariant(
+                            "resumed activation reached an initial suspension",
+                        ));
+                    }
+                    VmSuspendKind::Yield | VmSuspendKind::YieldStar => {
+                        suspension.take_yielded().map_err(RuntimeError::Engine)?
+                    }
+                    VmSuspendKind::Await => {
+                        suspension.take_awaited().map_err(RuntimeError::Engine)?
+                    }
+                };
+                let activation = host.encode_vm_activation(suspension)?;
+                Ok(VmRunOutcome::Suspend {
+                    value,
                     activation: Box::new(activation),
                 })
             }
@@ -637,36 +660,31 @@ impl RuntimeVmHost {
         }
     }
 
-    pub(super) fn encode_generator_activation(
+    pub(super) fn encode_vm_activation(
         self,
         suspension: VmSuspension,
-    ) -> Result<EncodedGeneratorActivation, RuntimeError> {
+    ) -> Result<EncodedVmActivation, RuntimeError> {
         let (kind, parts) = suspension.into_parts().map_err(RuntimeError::Engine)?;
-        let state = match kind {
-            VmSuspendKind::Initial => GeneratorState::SuspendedStart,
-            VmSuspendKind::Yield => GeneratorState::SuspendedYield,
-            VmSuspendKind::YieldStar => GeneratorState::SuspendedYieldStar,
-        };
         let bytecode = self
             .current_bytecode
             .as_ref()
             .ok_or(RuntimeError::Invariant(
-                "generator host has no current bytecode root",
+                "resumable host has no current bytecode root",
             ))?;
         let caller_realm = parts.caller_realm.ok_or(RuntimeError::Invariant(
-            "generator VM activation has no caller realm",
+            "resumable VM activation has no caller realm",
         ))?;
         let callee_realm = parts.callee_realm.ok_or(RuntimeError::Invariant(
-            "generator VM activation has no callee realm",
+            "resumable VM activation has no callee realm",
         ))?;
         let current_function = parts
             .current_function
             .as_ref()
             .ok_or(RuntimeError::Invariant(
-                "generator VM activation has no current function",
+                "resumable VM activation has no current function",
             ))?;
         let callee_global = parts.callee_global.as_ref().ok_or(RuntimeError::Invariant(
-            "generator VM activation has no callee global",
+            "resumable VM activation has no callee global",
         ))?;
         if caller_realm != self.caller_realm
             || callee_realm != self.current_realm
@@ -677,7 +695,7 @@ impl RuntimeVmHost {
             || self.actual_argument_count > self.arguments.len()
         {
             return Err(RuntimeError::Invariant(
-                "generator VM activation disagrees with its runtime host",
+                "resumable VM activation disagrees with its runtime host",
             ));
         }
         let arguments = self
@@ -710,8 +728,8 @@ impl RuntimeVmHost {
             strict: parts.strict,
             callee_global: callee_global.object_id(),
         };
-        Ok(EncodedGeneratorActivation {
-            state,
+        Ok(EncodedVmActivation {
+            kind,
             data: GeneratorActivationData {
                 bytecode: bytecode.bytecode_id(),
                 vm,
@@ -725,22 +743,13 @@ impl RuntimeVmHost {
         })
     }
 
-    pub(super) fn decode_generator_activation(
+    pub(super) fn decode_vm_activation(
         runtime: Runtime,
-        previous_state: GeneratorState,
+        kind: VmSuspendKind,
         resume_caller_realm: ContextId,
         data: &GeneratorActivationData,
-    ) -> Result<RootedGeneratorActivation, RuntimeError> {
-        let kind = match previous_state {
-            GeneratorState::SuspendedStart => VmSuspendKind::Initial,
-            GeneratorState::SuspendedYield => VmSuspendKind::Yield,
-            GeneratorState::SuspendedYieldStar => VmSuspendKind::YieldStar,
-            GeneratorState::Executing | GeneratorState::Completed => {
-                return Err(RuntimeError::Invariant(
-                    "generator activation decoded outside a suspended state",
-                ));
-            }
-        };
+        expected_function_kind: FunctionKind,
+    ) -> Result<RootedVmActivation, RuntimeError> {
         runtime.0.state.borrow().heap.context(resume_caller_realm)?;
         let bytecode_probe =
             FunctionBytecodeRef::from_borrowed_handle(runtime.clone(), data.bytecode)?;
@@ -757,7 +766,7 @@ impl RuntimeVmHost {
             realm,
         } = runtime.snapshot_function_bytecode(&bytecode_probe)?;
         drop(bytecode_probe);
-        if metadata.function_kind != FunctionKind::Generator
+        if metadata.function_kind != expected_function_kind
             || realm != data.vm.callee_realm
             || metadata.strict != data.vm.strict
             || data.arguments.len() < argument_definitions.len()
@@ -766,7 +775,7 @@ impl RuntimeVmHost {
             || data.actual_argument_count > data.arguments.len()
         {
             return Err(RuntimeError::Invariant(
-                "raw generator activation disagrees with published bytecode",
+                "raw resumable activation disagrees with published bytecode",
             ));
         }
         let current_function =
@@ -774,7 +783,7 @@ impl RuntimeVmHost {
         let callable = runtime
             .as_callable(&current_function)?
             .ok_or(RuntimeError::Invariant(
-                "generator activation current function is not callable",
+                "resumable activation current function is not callable",
             ))?;
         let closure_slots = match runtime.bytecode_for_callable(&callable)? {
             CallableExecution::Bytecode {
@@ -785,13 +794,13 @@ impl RuntimeVmHost {
             | CallableExecution::Native { .. }
             | CallableExecution::Bound { .. } => {
                 return Err(RuntimeError::Invariant(
-                    "generator activation current function changed bytecode identity",
+                    "resumable activation current function changed bytecode identity",
                 ));
             }
         };
         if closure_slots.len() != closure_variables.len() {
             return Err(RuntimeError::Invariant(
-                "generator closure slot count disagrees with bytecode metadata",
+                "resumable closure slot count disagrees with bytecode metadata",
             ));
         }
         let arguments = data
@@ -856,8 +865,8 @@ impl RuntimeVmHost {
             locals,
             reusable_captured_locals: data.reusable_captured_locals.clone(),
         };
-        Ok(RootedGeneratorActivation {
-            previous_state,
+        Ok(RootedVmActivation {
+            suspend_kind: kind,
             suspension,
             host,
             bytecode: root,
@@ -867,7 +876,7 @@ impl RuntimeVmHost {
         })
     }
 
-    pub(super) fn set_generator_active_frame_token(&mut self, token: ActiveFrameToken) {
+    pub(super) fn set_resumable_active_frame_token(&mut self, token: ActiveFrameToken) {
         self.active_frame_token = token;
     }
 
@@ -2012,11 +2021,7 @@ impl Runtime {
         closure_slots: Vec<VarRefRoot>,
     ) -> Result<Completion, RuntimeError> {
         if self.bytecode_call_would_overflow() {
-            return Ok(Completion::Throw(self.new_native_error(
-                caller_realm,
-                NativeErrorKind::Internal,
-                "stack overflow",
-            )?));
+            return self.bytecode_stack_overflow_completion(caller_realm, &bytecode);
         }
         let PublishedFunctionSnapshot {
             root,
@@ -2091,14 +2096,26 @@ impl Runtime {
             new_target,
             callee_global,
         };
-        if metadata.function_kind == FunctionKind::Generator {
-            return self.start_generator_bytecode_callable(
-                caller_realm,
-                callable,
-                host,
-                input,
-                active_frame,
-            );
+        match metadata.function_kind {
+            FunctionKind::Generator => {
+                return self.start_generator_bytecode_callable(
+                    caller_realm,
+                    callable,
+                    host,
+                    input,
+                    active_frame,
+                );
+            }
+            FunctionKind::Async => {
+                return self.start_async_bytecode_callable(caller_realm, host, input, active_frame);
+            }
+            FunctionKind::AsyncGenerator => {
+                active_frame.finish()?;
+                return Err(RuntimeError::Invariant(
+                    "async-generator bytecode execution is not implemented",
+                ));
+            }
+            FunctionKind::Normal => {}
         }
         let result = Vm::new().execute_published(input, &mut host);
         active_frame.finish()?;
@@ -2445,6 +2462,7 @@ impl VmHost for RuntimeVmHost {
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. } => "function",
             ObjectPayload::Ordinary
+            | ObjectPayload::AsyncFunctionState(_)
             | ObjectPayload::RawJson
             | ObjectPayload::Promise(_)
             | ObjectPayload::Date(_)

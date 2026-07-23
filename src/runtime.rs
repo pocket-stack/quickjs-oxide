@@ -5,6 +5,7 @@
 //! intrinsics extend this boundary; they are not hidden in the compiler or VM.
 
 mod arguments;
+mod async_function;
 mod bytecode_publish;
 mod class;
 mod class_fields;
@@ -975,6 +976,8 @@ impl Runtime {
         .expect("Symbol intrinsic initialization must succeed");
         self.initialize_generator_intrinsic(realm, &function_prototype, &iterator_prototype)
             .expect("Generator intrinsic initialization must succeed");
+        self.initialize_async_function_intrinsic(realm, &function_prototype)
+            .expect("AsyncFunction intrinsic initialization must succeed");
         // Upstream installs `globalThis` after String/Math/Reflect/Symbol and
         // generator setup, then installs BigInt. The remaining intervening
         // intrinsics are absent here, but this boundary preserves the
@@ -3429,10 +3432,18 @@ impl Runtime {
                     ))?
                     .function_prototype
             }
-            // Source parsing still keeps async callables fail-closed. Preserve
-            // the existing embedding path for explicitly published bytecode
-            // until their dedicated intrinsic prototypes land.
-            FunctionKind::Async | FunctionKind::AsyncGenerator => context.function_prototype,
+            FunctionKind::Async => {
+                context
+                    .async_function
+                    .ok_or(RuntimeError::Invariant(
+                        "async closure realm has no AsyncFunction intrinsics",
+                    ))?
+                    .function_prototype
+            }
+            // Source parsing remains fail-closed for async generators. Keep
+            // the existing explicit-bytecode embedding path on
+            // Function.prototype until its own intrinsic graph lands.
+            FunctionKind::AsyncGenerator => context.function_prototype,
         };
         let shape = state.get_or_create_shape(Some(function_prototype), &[])?;
         let object = match state
@@ -4815,6 +4826,7 @@ impl Runtime {
                     ..
                 } => (*bytecode, closure_slots.clone()),
                 ObjectPayload::Ordinary
+                | ObjectPayload::AsyncFunctionState(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
                 | ObjectPayload::Date(_)
@@ -4880,6 +4892,7 @@ impl Runtime {
                 Ok(None)
             }
             ObjectPayload::Ordinary
+            | ObjectPayload::AsyncFunctionState(_)
             | ObjectPayload::RawJson
             | ObjectPayload::Promise(_)
             | ObjectPayload::Date(_)
@@ -5245,6 +5258,7 @@ impl Runtime {
                     ));
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::AsyncFunctionState(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
                 | ObjectPayload::Date(_)
@@ -6341,6 +6355,7 @@ impl Runtime {
                                 && metadata.has_prototype
                         }
                         ObjectPayload::Ordinary
+                        | ObjectPayload::AsyncFunctionState(_)
                         | ObjectPayload::RawJson
                         | ObjectPayload::Promise(_)
                         | ObjectPayload::Date(_)
@@ -6498,9 +6513,21 @@ impl Runtime {
                             ))?
                             .function_prototype
                     }
-                    DynamicFunctionKind::Async | DynamicFunctionKind::AsyncGenerator => {
+                    DynamicFunctionKind::Async => {
+                        self.0
+                            .state
+                            .borrow()
+                            .heap
+                            .context(fallback_realm)?
+                            .async_function
+                            .ok_or(RuntimeError::Invariant(
+                                "dynamic AsyncFunction realm has no AsyncFunction intrinsics",
+                            ))?
+                            .function_prototype
+                    }
+                    DynamicFunctionKind::AsyncGenerator => {
                         return Err(RuntimeError::Invariant(
-                            "dynamic Function kind has no intrinsic prototype yet",
+                            "dynamic AsyncGeneratorFunction has no intrinsic prototype yet",
                         ));
                     }
                 };
@@ -6664,6 +6691,7 @@ impl Runtime {
                     (true, None, FunctionKind::Normal)
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::AsyncFunctionState(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
                 | ObjectPayload::Date(_)
@@ -6886,6 +6914,7 @@ impl Runtime {
                         ObjectPayload::NativeFunction { .. }
                         | ObjectPayload::BytecodeFunction { .. } => None,
                         ObjectPayload::Ordinary
+                        | ObjectPayload::AsyncFunctionState(_)
                         | ObjectPayload::RawJson
                         | ObjectPayload::Promise(_)
                         | ObjectPayload::Date(_)
@@ -6997,6 +7026,7 @@ impl Runtime {
                             ))
                         }
                         ObjectPayload::Ordinary
+                        | ObjectPayload::AsyncFunctionState(_)
                         | ObjectPayload::RawJson
                         | ObjectPayload::Promise(_)
                         | ObjectPayload::Date(_)
@@ -7375,6 +7405,7 @@ impl Runtime {
                         Some(Ok(Value::BigInt(value.clone())))
                     }
                     ObjectPayload::Ordinary
+                    | ObjectPayload::AsyncFunctionState(_)
                     | ObjectPayload::RawJson
                     | ObjectPayload::Promise(_)
                     | ObjectPayload::Date(_)
@@ -8301,6 +8332,7 @@ impl Runtime {
             match state.heap.object(object.object_id())?.payload {
                 ObjectPayload::GlobalObject { uninitialized_vars } => Some(uninitialized_vars),
                 ObjectPayload::Ordinary
+                | ObjectPayload::AsyncFunctionState(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
                 | ObjectPayload::Date(_)

@@ -39,6 +39,30 @@ impl Runtime {
         self.host_stack_would_overflow()
     }
 
+    /// Keep the cold overflow materialization path out of every ordinary
+    /// bytecode-call frame. Async calls must still return a rejected Promise,
+    /// while normal calls throw the same catchable InternalError directly.
+    #[inline(never)]
+    pub(super) fn bytecode_stack_overflow_completion(
+        &self,
+        caller_realm: ContextId,
+        bytecode: &FunctionBytecodeRef,
+    ) -> Result<Completion, RuntimeError> {
+        let function_kind = {
+            let state = self.0.state.borrow();
+            let bytecode = state.heap.function_bytecode(bytecode.bytecode_id())?;
+            bytecode.metadata.function_kind
+        };
+        if function_kind == FunctionKind::Async {
+            return self.reject_async_bytecode_stack_overflow(caller_realm);
+        }
+        Ok(Completion::Throw(self.new_native_error(
+            caller_realm,
+            NativeErrorKind::Internal,
+            "stack overflow",
+        )?))
+    }
+
     pub(super) fn native_call_would_overflow(&self, target: NativeFunctionId) -> bool {
         if self.host_stack_would_overflow() {
             return true;

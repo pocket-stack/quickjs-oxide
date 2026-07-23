@@ -32,17 +32,20 @@ pub(crate) enum Completion {
     Throw(Value),
 }
 
-/// The three suspension sites used by QuickJS generator bytecode.
+/// The suspension sites used by QuickJS generator and async-function bytecode.
 ///
 /// `Initial` is the hidden prologue barrier reached while constructing a
 /// generator and has no yielded operand. `Yield` and `YieldStar` both preserve
-/// their output in the activation's top stack slot until the runtime driver
-/// extracts it.
+/// their output in the activation's top stack slot until the generator driver
+/// extracts it. `Await` retains the awaited operand in the same owned
+/// activation, but its resume protocol is deliberately separate from the
+/// generator value-plus-magic ABI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum VmSuspendKind {
     Initial,
     Yield,
     YieldStar,
+    Await,
 }
 
 /// A caller-supplied completion used to resume a suspended generator.
@@ -1962,7 +1965,7 @@ impl Vm {
     }
 
     /// Start an immutable published bytecode activation and allow it to
-    /// transfer ownership at a generator suspension point.
+    /// transfer ownership at a generator or async-function suspension point.
     pub(crate) fn start_published(
         &mut self,
         input: CallInput<'_>,
@@ -2088,7 +2091,7 @@ pub(crate) struct VmActivationParts {
 pub(crate) struct VmSuspension {
     kind: VmSuspendKind,
     activation: VmActivation,
-    yielded_taken: bool,
+    output_taken: bool,
 }
 
 /// Internal interpreter exit. JavaScript completion remains intentionally
@@ -2108,13 +2111,13 @@ impl VmSuspension {
     fn new(kind: VmSuspendKind, activation: VmActivation) -> Result<Self, Error> {
         if kind != VmSuspendKind::Initial && activation.stack.is_empty() {
             return Err(Error::internal(
-                "generator yield has no retained output stack slot",
+                "VM suspension has no retained output stack slot",
             ));
         }
         Ok(Self {
             kind,
             activation,
-            yielded_taken: kind == VmSuspendKind::Initial,
+            output_taken: kind == VmSuspendKind::Initial,
         })
     }
 
@@ -2126,33 +2129,47 @@ impl VmSuspension {
     /// Extract the visible value of `yield`/`yield*` and leave the retained
     /// operand slot ready for QuickJS-compatible resume injection.
     pub(crate) fn take_yielded(&mut self) -> Result<Value, Error> {
-        if self.kind == VmSuspendKind::Initial {
+        if !matches!(self.kind, VmSuspendKind::Yield | VmSuspendKind::YieldStar) {
             return Err(Error::internal(
-                "initial generator suspension has no yielded value",
+                "non-generator suspension has no yielded value",
             ));
         }
-        if self.yielded_taken {
-            return Err(Error::internal(
-                "generator suspension output was already extracted",
-            ));
+        self.take_output("generator suspension output")
+    }
+
+    /// Extract the operand retained by `OP_await`. The dormant activation
+    /// keeps an `undefined` placeholder in that exact slot until the Promise
+    /// reaction explicitly fulfils or rejects the AwaitExpression.
+    pub(crate) fn take_awaited(&mut self) -> Result<Value, Error> {
+        if self.kind != VmSuspendKind::Await {
+            return Err(Error::internal("non-await suspension has no awaited value"));
+        }
+        self.take_output("async suspension output")
+    }
+
+    fn take_output(&mut self, operation: &'static str) -> Result<Value, Error> {
+        if self.output_taken {
+            return Err(Error::internal(format!(
+                "{operation} was already extracted"
+            )));
         }
         let slot = self
             .activation
             .stack
             .last_mut()
-            .ok_or_else(|| Error::internal("generator yielded stack slot is missing"))?;
-        let yielded = std::mem::replace(slot, Value::Undefined);
-        self.yielded_taken = true;
-        Ok(yielded)
+            .ok_or_else(|| Error::internal(format!("{operation} stack slot is missing")))?;
+        let output = std::mem::replace(slot, Value::Undefined);
+        self.output_taken = true;
+        Ok(output)
     }
 
-    /// Convert a suspension to the transient rooted state consumed by the
-    /// runtime's raw heap encoder. Visible yields must have been extracted
-    /// first so dormant frames never retain the result object/value twice.
+    /// Convert a suspension to transient rooted state consumed by the
+    /// runtime's raw heap encoder. Every visible suspension operand must have
+    /// been extracted first so dormant frames never retain it twice.
     pub(crate) fn into_parts(self) -> Result<(VmSuspendKind, VmActivationParts), Error> {
-        if !self.yielded_taken {
+        if !self.output_taken {
             return Err(Error::internal(
-                "generator suspension must be extracted before snapshot",
+                "VM suspension must be extracted before snapshot",
             ));
         }
         Ok((self.kind, self.activation.into_parts()))
@@ -2164,13 +2181,13 @@ impl VmSuspension {
         let activation = VmActivation::from_parts(parts);
         if kind != VmSuspendKind::Initial && activation.stack.is_empty() {
             return Err(Error::internal(
-                "restored generator suspension has no resume operand slot",
+                "restored VM suspension has no resume operand slot",
             ));
         }
         Ok(Self {
             kind,
             activation,
-            yielded_taken: true,
+            output_taken: true,
         })
     }
 
@@ -2203,9 +2220,14 @@ impl VmSuspension {
                 "initial generator suspension requires parameterless resume",
             ));
         }
-        if !self.yielded_taken {
+        if !self.output_taken {
             return Err(Error::internal(
                 "generator suspension must be extracted before resume",
+            ));
+        }
+        if self.kind == VmSuspendKind::Await {
+            return Err(Error::internal(
+                "await suspension requires an async-function resume",
             ));
         }
 
@@ -2235,6 +2257,73 @@ impl VmSuspension {
         }
         *slot = value;
         activation.stack.push(Value::Int(magic));
+        activation.run(code, host)
+    }
+
+    /// Resume a fulfilled AwaitExpression with one ordinary expression value.
+    /// No generator discriminator is injected: `Await` has a verified 1-to-1
+    /// stack shape.
+    pub(crate) fn resume_await_fulfill(
+        self,
+        code: &[Instruction],
+        host: &mut impl VmHost,
+        value: Value,
+    ) -> Result<VmExit, Error> {
+        self.resume_await(code, host, Ok(value))
+    }
+
+    /// Resume a rejected AwaitExpression through the activation's ordinary
+    /// exception unwinder. This is intentionally not encoded as generator
+    /// magic, so authored catch/finally regions see the rejection directly.
+    pub(crate) fn resume_await_reject(
+        self,
+        code: &[Instruction],
+        host: &mut impl VmHost,
+        reason: Value,
+    ) -> Result<VmExit, Error> {
+        self.resume_await(code, host, Err(reason))
+    }
+
+    fn resume_await(
+        self,
+        code: &[Instruction],
+        host: &mut impl VmHost,
+        resolution: Result<Value, Value>,
+    ) -> Result<VmExit, Error> {
+        if self.kind != VmSuspendKind::Await {
+            return Err(Error::internal(
+                "non-await suspension used async-function resume",
+            ));
+        }
+        if !self.output_taken {
+            return Err(Error::internal(
+                "async suspension must be extracted before resume",
+            ));
+        }
+
+        let mut activation = self.activation;
+        let slot = activation
+            .stack
+            .last()
+            .ok_or_else(|| Error::internal("await resume stack slot is missing"))?;
+        if !matches!(slot, Value::Undefined) {
+            return Err(Error::internal(
+                "await resume stack slot was not cleared after suspension",
+            ));
+        }
+        match resolution {
+            Ok(value) => {
+                *activation
+                    .stack
+                    .last_mut()
+                    .ok_or_else(|| Error::internal("await resume stack slot is missing"))? = value;
+            }
+            Err(reason) => {
+                if let Some(completion) = activation.raise(reason, host, code.len())? {
+                    return Ok(VmExit::Complete(completion));
+                }
+            }
+        }
         activation.run(code, host)
     }
 }
@@ -2329,7 +2418,7 @@ impl VmActivation {
                 Ok(InterpreterExit::Complete(Completion::Throw(value))) => value,
                 Ok(InterpreterExit::Suspend(_)) => {
                     return Err(Error::internal(
-                        "generator suspension reached execute-to-completion VM entry",
+                        "VM suspension reached execute-to-completion entry",
                     ));
                 }
                 Err(error) if NativeErrorKind::from_javascript_error(error.kind()).is_some() => {
@@ -3033,6 +3122,7 @@ impl VmActivation {
                 Instruction::InitialYield => Some(VmSuspendKind::Initial),
                 Instruction::Yield => Some(VmSuspendKind::Yield),
                 Instruction::YieldStar => Some(VmSuspendKind::YieldStar),
+                Instruction::Await => Some(VmSuspendKind::Await),
                 _ => None,
             };
             if let Some(kind) = suspension {
@@ -3156,8 +3246,11 @@ impl VmActivation {
     ) -> Result<Option<Completion>, Error> {
         match instruction {
             Instruction::Nop => {}
-            Instruction::InitialYield | Instruction::Yield | Instruction::YieldStar => {
-                unreachable!("generator suspension dispatch was bypassed")
+            Instruction::InitialYield
+            | Instruction::Yield
+            | Instruction::YieldStar
+            | Instruction::Await => {
+                unreachable!("VM suspension dispatch was bypassed")
             }
             Instruction::IteratorStart
             | Instruction::IteratorNext
@@ -4840,6 +4933,73 @@ mod tests {
         assert_eq!(
             suspension
                 .resume(&function.code, &mut host, VmResume::Throw(Value::Int(55)),)
+                .unwrap(),
+            VmExit::Complete(Completion::Return(Value::Int(55)))
+        );
+    }
+
+    #[test]
+    fn await_fulfilment_restores_one_expression_value_without_generator_magic() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(7),
+                Instruction::Await,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        let mut host = DetachedHost::new(&function);
+        let VmExit::Suspend(mut suspension) =
+            CallFrame::new(1).run(&function.code, &mut host).unwrap()
+        else {
+            panic!("await did not suspend");
+        };
+        assert_eq!(suspension.kind(), VmSuspendKind::Await);
+        assert_eq!(suspension.take_awaited().unwrap(), Value::Int(7));
+
+        let (kind, parts) = suspension.into_parts().unwrap();
+        assert_eq!(kind, VmSuspendKind::Await);
+        assert_eq!(parts.pc, 2);
+        assert_eq!(parts.stack, vec![Value::Undefined]);
+        let suspension = VmSuspension::from_parts(kind, parts).unwrap();
+
+        assert_eq!(
+            suspension
+                .resume_await_fulfill(&function.code, &mut host, Value::Int(42))
+                .unwrap(),
+            VmExit::Complete(Completion::Return(Value::Int(42)))
+        );
+    }
+
+    #[test]
+    fn await_rejection_enters_existing_unwind_path() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(4),
+                Instruction::PushI32(7),
+                Instruction::Await,
+                Instruction::Return,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        let mut host = DetachedHost::new(&function);
+        let VmExit::Suspend(mut suspension) =
+            CallFrame::new(2).run(&function.code, &mut host).unwrap()
+        else {
+            panic!("await did not suspend");
+        };
+        assert_eq!(suspension.take_awaited().unwrap(), Value::Int(7));
+
+        assert_eq!(
+            suspension
+                .resume_await_reject(&function.code, &mut host, Value::Int(55))
                 .unwrap(),
             VmExit::Complete(Completion::Return(Value::Int(55)))
         );

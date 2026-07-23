@@ -122,6 +122,7 @@ impl Runtime {
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }
                 | ObjectPayload::RegExpStringIterator { .. }
+                | ObjectPayload::AsyncFunctionState(_)
                 | ObjectPayload::Generator { .. } => None,
             }
         };

@@ -1884,11 +1884,11 @@ fn verify_unlinked_tree_with_root(
                 || function.metadata().eval_kind != EvalKind::None
                 || !matches!(
                     function.metadata().function_kind,
-                    FunctionKind::Normal | FunctionKind::Generator
+                    FunctionKind::Normal | FunctionKind::Generator | FunctionKind::Async
                 ))
         {
             return Err(RuntimeError::Engine(Error::internal(
-                "eval variable-object local escaped a sloppy ordinary or generator function",
+                "eval variable-object local escaped a sloppy ordinary, generator, or async function",
             )));
         }
         if arg_eval_variable_object_local.is_some()
@@ -1896,7 +1896,7 @@ fn verify_unlinked_tree_with_root(
                 || function.metadata().eval_kind != EvalKind::None
                 || !matches!(
                     function.metadata().function_kind,
-                    FunctionKind::Normal | FunctionKind::Generator
+                    FunctionKind::Normal | FunctionKind::Generator | FunctionKind::Async
                 )
                 || function.metadata().eval_variable_object_local.is_none())
         {

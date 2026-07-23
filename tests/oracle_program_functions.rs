@@ -71,6 +71,10 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "Program generator declaration hoists and resumes through completion",
         "function* programGenerator(){yield 1;return 2}var iterator=programGenerator();iterator.next().value+'|'+iterator.next().value+'|'+iterator.next().done",
     ),
+    (
+        "async Program declaration hoists with async function shape",
+        "typeof asyncProgram+'|'+Object.prototype.toString.call(asyncProgram)+'|'+asyncProgram.name+'|'+asyncProgram.length+'|'+('prototype' in asyncProgram);async function asyncProgram(value){return value}",
+    ),
 ];
 
 const ERROR_CASES: &[(&str, &str)] = &[
@@ -102,11 +106,6 @@ const SYNTAX_ERROR_CASES: &[(&str, &str)] = &[
         "'use strict';\nfunction arguments(){}",
     ),
 ];
-
-const UNSUPPORTED_BOUNDARY_CASES: &[(&str, &str)] = &[(
-    "async Program function declaration",
-    "async function unsupportedAsync(){}",
-)];
 
 const ORACLE_PROPERTY_PROBE: &str = r#"
 (function () {
@@ -367,29 +366,6 @@ fn program_function_parser_diagnostics_match_pinned_quickjs() {
 
     for &(description, source) in SYNTAX_ERROR_CASES {
         compare_cli(&oracle, &[], source, description);
-    }
-}
-
-#[test]
-fn unsupported_program_function_boundaries_remain_explicit() {
-    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
-        eprintln!("SKIP Program function boundaries: set QJS_ORACLE to upstream qjs");
-        return;
-    };
-
-    for &(description, source) in UNSUPPORTED_BOUNDARY_CASES {
-        let quickjs = observe_oracle_sequence(&oracle, &[source], description);
-        assert!(
-            quickjs.starts_with("return|"),
-            "pinned QuickJS unexpectedly rejected {description}: {quickjs}"
-        );
-        let runtime = Runtime::new();
-        let mut context = runtime.new_context();
-        let rust = observe_rust_eval(&runtime, &mut context, source, description);
-        assert!(
-            rust.starts_with("throw|object|SyntaxError|"),
-            "unsupported {description} was not rejected explicitly: {rust}"
-        );
     }
 }
 

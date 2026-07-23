@@ -114,10 +114,30 @@ impl<'source> Parser<'source> {
     ) -> Result<FunctionDefinitionHeader<'source>, Error> {
         let parent_context = self.lexer.context();
         let span = self.current().span;
+        let async_function = self.async_function_ahead();
+        if async_function {
+            self.advance()?;
+            if self.current().line_terminator_before
+                || !matches!(
+                    self.current().kind,
+                    TokenKind::Keyword(crate::lexer::Keyword::Function)
+                )
+            {
+                return Err(Error::internal(
+                    "async function lookahead disagreed with committed tokens",
+                ));
+            }
+        }
         self.advance()?;
         let execution_kind = if self.is_punctuator(Punctuator::Multiply) {
             self.advance()?;
-            BytecodeFunctionKind::Generator
+            if async_function {
+                BytecodeFunctionKind::AsyncGenerator
+            } else {
+                BytecodeFunctionKind::Generator
+            }
+        } else if async_function {
+            BytecodeFunctionKind::Async
         } else {
             BytecodeFunctionKind::Normal
         };
@@ -147,6 +167,25 @@ impl<'source> Parser<'source> {
                 self.advance()?;
                 Some((identifier, span))
             }
+            // QuickJS has the same token-sensitive FunctionExpression escape
+            // hatch for TOK_AWAIT when the enclosing script is not a module.
+            // An async parent lexes this spelling as TOK_AWAIT and therefore
+            // admits it, while top-level `await` arrives as TOK_IDENT and the
+            // async-expression early error below still rejects it.
+            TokenKind::Keyword(crate::lexer::Keyword::Await)
+                if !require_name && !parent_context.module =>
+            {
+                let span = self.current().span;
+                let identifier = Identifier {
+                    raw: "await",
+                    value: "await".to_owned(),
+                    has_escape: false,
+                    keyword_hint: Some(crate::lexer::Keyword::Await),
+                    escaped_reserved_word: false,
+                };
+                self.advance()?;
+                Some((identifier, span))
+            }
             _ => None,
         };
         if require_name && name.is_none() {
@@ -165,6 +204,12 @@ impl<'source> Parser<'source> {
         header: FunctionDefinitionHeader<'source>,
         private_name_binding: bool,
     ) -> Result<ParsedFunctionDefinition, Error> {
+        if header.execution_kind == BytecodeFunctionKind::AsyncGenerator {
+            return Err(Error::unsupported(
+                "async generator functions are not implemented yet",
+                source_span(header.span),
+            ));
+        }
         // Preserve QuickJS's token-sensitive declaration/expression asymmetry.
         // A top-level generator-expression name arrives as TOK_IDENT and is
         // reserved, while contextual TOK_YIELD from an outer sloppy generator
@@ -180,6 +225,23 @@ impl<'source> Parser<'source> {
         {
             return Err(Error::syntax(
                 "'yield' is a reserved identifier",
+                source_span(*span),
+            ));
+        }
+        // Pinned QuickJS rejects an identifier-token `await` as an async
+        // FunctionExpression name. The contextual TOK_AWAIT admitted above is
+        // a separate legacy path and must survive this early error.
+        if private_name_binding
+            && header.execution_kind == BytecodeFunctionKind::Async
+            && let Some((identifier, span)) = &header.name
+            && identifier.value == "await"
+            && !(header.parent_context.async_function
+                && !header.parent_context.module
+                && !identifier.has_escape
+                && identifier.keyword_hint == Some(crate::lexer::Keyword::Await))
+        {
+            return Err(Error::syntax(
+                "'await' is a reserved identifier",
                 source_span(*span),
             ));
         }
@@ -324,8 +386,14 @@ impl<'source> Parser<'source> {
         self.current_function = child;
         let mut child_context = parent_context;
         child_context.strict = parent_strict;
-        child_context.generator = options.execution_kind == BytecodeFunctionKind::Generator;
-        child_context.async_function = false;
+        child_context.generator = matches!(
+            options.execution_kind,
+            BytecodeFunctionKind::Generator | BytecodeFunctionKind::AsyncGenerator
+        );
+        child_context.async_function = matches!(
+            options.execution_kind,
+            BytecodeFunctionKind::Async | BytecodeFunctionKind::AsyncGenerator
+        );
         self.relex_current_with_context(child_context)?;
         let parameter_scan = self.parenthesized_parameter_scan();
         if parameter_scan.is_some_and(|scan| scan.has_assignment) {

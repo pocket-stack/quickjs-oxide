@@ -144,6 +144,146 @@ fn generator_execution_kind_is_orthogonal_to_function_grammar_role() {
 }
 
 #[test]
+fn ordinary_async_functions_publish_async_kind_and_await_bytecode() {
+    let source = r#"
+        async function declaration(value) { return await value; }
+        (async function expression() {
+            try {
+                return await 41;
+            } catch (error) {
+                return error;
+            }
+        });
+        { async function blockLocal() { return 42; } }
+    "#;
+    let tree = Parser::parse(source, JsString::from_static("<async-kind-test>")).unwrap();
+    let async_functions = tree
+        .functions
+        .iter()
+        .filter(|function| function.execution_kind == BytecodeFunctionKind::Async)
+        .collect::<Vec<_>>();
+    assert_eq!(async_functions.len(), 3);
+    assert!(async_functions.iter().all(|function| {
+        function.kind == FunctionKind::Ordinary
+            && function.in_function_body
+            && function.ops.iter().all(|operation| {
+                !matches!(
+                    operation.op,
+                    super::IrOp::Bytecode(
+                        Instruction::InitialYield | Instruction::Yield | Instruction::YieldStar
+                    )
+                )
+            })
+    }));
+    assert_eq!(
+        async_functions
+            .iter()
+            .flat_map(|function| &function.ops)
+            .filter(|operation| matches!(operation.op, super::IrOp::Bytecode(Instruction::Await)))
+            .count(),
+        2
+    );
+
+    let script = compile_unlinked_script(source).unwrap();
+    fn collect_async<'a>(
+        function: &'a crate::function::UnlinkedFunction,
+        output: &mut Vec<&'a crate::function::UnlinkedFunction>,
+    ) {
+        for constant in function.constants() {
+            let Some(child) = constant.as_child() else {
+                continue;
+            };
+            if child.metadata().function_kind == BytecodeFunctionKind::Async {
+                output.push(child);
+            }
+            collect_async(child, output);
+        }
+    }
+    let mut published = Vec::new();
+    collect_async(&script, &mut published);
+    assert_eq!(published.len(), 3);
+    assert!(published.iter().all(|function| {
+        !function.metadata().has_prototype
+            && function.metadata().constructor_kind == ConstructorKind::None
+    }));
+}
+
+#[test]
+fn async_function_lexical_context_and_fail_closed_neighbors_match_quickjs() {
+    for source in [
+        "async function await(){}",
+        "async function outer(){ function inner(){ var await=1; return await; } return await inner(); }",
+        "async\nfunction ordinary(){}",
+        "(async function(){ return await -1; })",
+        "(async function(){ return (await 2) ** 3; })",
+    ] {
+        compile_unlinked_script(source)
+            .unwrap_or_else(|error| panic!("async source rejected {source:?}: {error}"));
+    }
+
+    for (source, message) in [
+        (
+            "(async function await(){})",
+            "'await' is a reserved identifier",
+        ),
+        (
+            "async function f(value = await 1){}",
+            "await in default expression",
+        ),
+        (
+            "async function f(){ return await value ** 2; }",
+            "unparenthesized unary expression can't appear on the left-hand side of '**'",
+        ),
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source:?}");
+        assert_eq!(error.message(), message, "{source:?}");
+    }
+
+    for source in [
+        "async function* generator(){}",
+        "(async function*(){})",
+        "const arrow = async value => value;",
+        "({ async method(){} });",
+        "class C { async method(){} }",
+    ] {
+        assert_eq!(
+            compile_unlinked_script(source).unwrap_err().kind(),
+            ErrorKind::Unsupported,
+            "{source:?}"
+        );
+    }
+}
+
+#[test]
+fn function_expression_await_name_preserves_quickjs_parent_token_asymmetry() {
+    for source in [
+        "async function outer(){ return function await(){}; }",
+        "async function outer(){ return function* await(){}; }",
+        "async function outer(){ return async function await(){}; }",
+        "async function outer(value = function await(){}) { return value; }",
+        "async function outer(){ 'use strict'; return async function await(){}; }",
+        "async function await(){}",
+    ] {
+        compile_unlinked_script(source)
+            .unwrap_or_else(|error| panic!("contextual await name rejected {source:?}: {error}"));
+    }
+
+    for source in [
+        "(async function await(){})",
+        "async function outer(){ function await(){} }",
+        "async function outer(){ function* await(){} }",
+        "async function outer(){ async function await(){} }",
+    ] {
+        assert_eq!(
+            compile_unlinked_script(source).unwrap_err().kind(),
+            ErrorKind::Syntax,
+            "{source:?}"
+        );
+    }
+}
+
+#[test]
 fn generator_initial_yield_separates_parameters_from_body_instantiation() {
     let script = compile_unlinked_script(
         "(function* g(value = 1) { function bodyHoist() {} yield value; })",

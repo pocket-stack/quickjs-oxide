@@ -89,8 +89,10 @@ impl PendingJob {
                 if let Some(handler) = reaction.handler {
                     roots.push(PendingJobRoot::Object(handler));
                 }
-                roots.push(PendingJobRoot::Object(reaction.capability.resolve));
-                roots.push(PendingJobRoot::Object(reaction.capability.reject));
+                if let Some(capability) = reaction.capability {
+                    roots.push(PendingJobRoot::Object(capability.resolve));
+                    roots.push(PendingJobRoot::Object(capability.reject));
+                }
                 roots.push(PendingJobRoot::Value(argument.clone()));
                 roots
             }

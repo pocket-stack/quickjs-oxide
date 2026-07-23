@@ -170,6 +170,7 @@ impl Runtime {
             | ObjectPayload::NativeFunction { .. }
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. }
+            | ObjectPayload::AsyncFunctionState(_)
             | ObjectPayload::Generator { .. } => return Ok(None),
         };
         let shape = state.heap.shape(object_data.shape)?;

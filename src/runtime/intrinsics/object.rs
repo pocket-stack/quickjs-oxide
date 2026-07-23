@@ -834,6 +834,7 @@ impl Runtime {
                 | ObjectPayload::SetIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::GlobalObject { .. }
+                | ObjectPayload::AsyncFunctionState(_)
                 // Pinned QuickJS's Object.prototype.toString class switch
                 // deliberately excludes JS_CLASS_GENERATOR. The standard
                 // "Generator" tag comes from the inherited @@toStringTag;

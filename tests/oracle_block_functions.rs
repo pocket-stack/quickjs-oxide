@@ -72,6 +72,10 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "strict block generator declaration resumes through completion",
         "(function(){'use strict';var saved;{function* blockGenerator(){yield 4}saved=blockGenerator}var iterator=saved();return iterator.next().value+'|'+iterator.next().done})()",
     ),
+    (
+        "async block function stays lexical and has async function shape",
+        "(function(){var saved;{async function asyncBlock(){return 3}saved=asyncBlock}return typeof asyncBlock+'|'+Object.prototype.toString.call(saved)+'|'+('prototype' in saved)})()",
+    ),
 ];
 
 const ERROR_CASES: &[(&str, &str)] = &[
@@ -130,11 +134,6 @@ const SYNTAX_ERROR_CASES: &[(&str, &str)] = &[
         "(function(){\n  { function eval(){ 'use strict'; } }\n})",
     ),
 ];
-
-const UNSUPPORTED_BOUNDARY_CASES: &[(&str, &str)] = &[(
-    "async block function declaration",
-    "(function(){{async function asyncBlock(){return 3}}return typeof asyncBlock})()",
-)];
 
 #[test]
 fn block_function_values_match_pinned_quickjs() {
@@ -247,29 +246,6 @@ fn block_function_parser_diagnostics_match_pinned_quickjs() {
 
     for &(description, source) in SYNTAX_ERROR_CASES {
         compare_cli(&oracle, &[], source, description);
-    }
-}
-
-#[test]
-fn unsupported_block_function_boundaries_remain_explicit() {
-    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
-        eprintln!("SKIP block-function boundaries: set QJS_ORACLE to upstream qjs");
-        return;
-    };
-
-    for &(description, source) in UNSUPPORTED_BOUNDARY_CASES {
-        let quickjs = observe_oracle_sequence(&oracle, &[source], description);
-        assert!(
-            quickjs.starts_with("return|"),
-            "pinned QuickJS unexpectedly rejected {description}: {quickjs}"
-        );
-        let runtime = Runtime::new();
-        let mut context = runtime.new_context();
-        let rust = observe_rust_eval(&runtime, &mut context, source, description);
-        assert!(
-            rust.starts_with("throw|object|SyntaxError|"),
-            "unsupported {description} was not rejected explicitly: {rust}"
-        );
     }
 }
 

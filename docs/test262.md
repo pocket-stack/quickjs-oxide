@@ -33,10 +33,11 @@ intended early `SyntaxError`, rather than because class parsing is absent.
 
 This 193/193 result is a runner smoke baseline, not a project-wide 100%
 estimate. The sample was selected from already implemented synchronous
-surfaces. Module, async/jobs, most `$262` host hooks, advanced RegExp pattern
-grammar, async class forms, TypedArrays, and many other broad layers remain
-absent. Public fields, static blocks, private elements, and public/private
-synchronous generator methods are measured separately by the scoped
+surfaces. Modules, remaining async arrows/methods/generators, most `$262` host
+hooks, advanced RegExp pattern grammar, TypedArrays, and many other broad
+layers remain absent. Ordinary async functions/jobs are measured separately by
+the scoped R3z gate; public fields, static blocks, private elements, and
+public/private synchronous generator methods are measured by the scoped
 R3g/R3h/R3i/R3j/R3k/R3l gates below.
 
 Nineteen additional provenance variants guard the result: eight audited negative
@@ -50,12 +51,12 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 43,585 pass;
+- 43,643 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 38,493 are classified as unsupported because of a feature, mode, host
+- 38,521 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 97 fail to parse, 1,284 fail at runtime, 97 fail in the harness, and six
+- 18 fail to parse, 1,277 fail at runtime, 97 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 45,140 variants to execution. That count includes variants
@@ -64,14 +65,14 @@ than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 42.71% (`43,585 / 102,037`);
-- conservative target-scope lower bound: 52.16%
-  (`43,585 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 96.71%
-  (`43,585 / 45,069`).
+- raw suite pass rate: 42.77% (`43,643 / 102,037`);
+- conservative target-scope lower bound: 52.23%
+  (`43,643 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 96.90%
+  (`43,643 / 45,041`).
 
-The 52.16% figure is the useful whole-project progress floor, not a claim that
-the engine is 52.16% conformant. The 96.71% conditional rate measures quality
+The 52.23% figure is the useful whole-project progress floor, not a claim that
+the engine is 52.23% conformant. The 96.90% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -126,9 +127,9 @@ parallel defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`0f43b6e164c0954a02f911774c34871ea67e6255f28ffa65419ea15d3f4b73fd`
+`8d47c7d70de9d1049cded9b4fe4aec3459313e374421ab99e1c36eb5730531f6`
 and
-`f24e92ad54c4c59651206db66bfd7a4ed9dea4f3543311a990def0fc16e66be8`.
+`14295f172893540d703e02aa4c9ba3e5bdee02d866131479680b5c33b2ddfabd`.
 
 ## Milestone policy
 
@@ -3903,6 +3904,55 @@ Reproduce R3y with:
 ./scripts/test-test262-class-sync-matrix.sh
 ```
 
+## R3z ordinary async function core
+
+R3z opens the first checksum-bound async execution profile without promoting
+the broad `async-functions` feature or `[execution] async=true` into the global
+scoreboard. The static universe is the 207 pinned paths directly under
+`built-ins/AsyncFunction` or recursively within the expression/declaration
+`async-function` and expression `await` trees. A checked exclusion ledger
+assigns 65 paths to five
+independent frontiers: 40 complex-parameter cases, 11 eval/with adjacencies,
+ten async-arrow cases, two async-generator/for-await cases, and two
+host/cross-realm cases.
+
+The clean cohort contains 142 paths / 259 variants. It has 95 positive paths,
+47 audited parse/SyntaxError paths, 65 async-harness paths, and 77 synchronous
+paths; 117 paths run in both modes, 17 are `noStrict`, and eight are
+`onlyStrict`. Pinned QuickJS 2026-06-04 passes all 142 paths. The canonical
+Oxide report has 259/259 passes with no unsupported, skipped, failed, timed
+out, crashed, or infrastructure outcomes.
+
+The manifest, scoped profile, variant keys, canonical TSV, and JSONL SHA-256
+values are
+`fdd1679242195cb32508b7976a1b0b3508fe96a2e77483808d3bf5c9c554ff52`,
+`05634144cdc2e64874ffda721b429181ac8b7a8f82b1ba253f2b8d8a29a4332e`,
+`a5249ce3625e80f41ea2464e00fcf19804913d49556e680ad6624fd6bf71d391`,
+`d0d3933d5cc4114b60a55bd6040d4350cba890b7d8a29a4e41e372eb4291cfaa`,
+and
+`9259b27b167856e5e3a2428530d1943d74fc967a659759568b5068ce2a74c4c3`.
+The profile admits only four exact feature tags, the 47 frozen negative paths,
+and the async host. The global profile remains fail-closed because opening it
+would expose thousands of unrelated async/module/host combinations.
+
+The complete R3y/R3z join retains all 102,037 keys and every previous pass.
+Fifty-four parse failures and four runtime failures become passes; 32 other
+variants advance to explicit downstream runtime or typed async
+arrow/generator frontiers, and two rows refine only their diagnostic detail.
+The conservative score therefore rises from 43,585 to 43,643. Full TSV/JSONL
+SHA-256 values are
+`8d47c7d70de9d1049cded9b4fe4aec3459313e374421ab99e1c36eb5730531f6`
+and
+`14295f172893540d703e02aa4c9ba3e5bdee02d866131479680b5c33b2ddfabd`.
+
+Reproduce R3z with:
+
+```sh
+cargo build --bin qjs
+./scripts/test-r3z-async-function-core-oracle.sh --oxide ./target/debug/qjs
+./scripts/test-test262-async-function-core.sh
+```
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -4216,7 +4266,13 @@ gate passes 64/64 in both engines. R3x globally admits that exact clean cohort,
 moving only those 64 variants to pass and bringing the full vector to
 43,585/102,037. R3y then freezes the synchronous class generated matrix at
 7,735/7,735 in both engines, leaving the 28 async/Proxy adjacencies and the
-global scoreboard unchanged.
+global scoreboard unchanged. R3z adds ordinary async functions and `await`
+through a separately authenticated 142-path/259-variant profile; Oxide passes
+259/259 and pinned QuickJS passes every path, while async arrows/methods,
+async generators, for-await, modules, and broad async execution remain
+fail-closed. Untagged and intrinsic consumers add 58 conservative full-vector
+passes without regressing a previous pass, bringing the current score to
+43,643/102,037.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS
