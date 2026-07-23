@@ -1,0 +1,12 @@
+instance-resume=1|40|1|2|42|true
+static-brand=C|42|true|true|true|false|false
+static-extracted-call=X|false|42|true
+reflection=#instance|1|true|true:false:false|true|true|true|40|true|TypeError:#instance is not a constructor
+brand-errors=TypeError:invalid brand on object|0|TypeError:'#instance' is read-only|TypeError:invalid 'in' operand
+super=40|52|41|42
+capture=40|41|42|true
+yield-star=40|41||true
+reevaluation=false|true|false|false|true
+static-subclass=false|TypeError:invalid brand on object
+outer-resume=key|false|42|true
+r3l-class-private-generators-oracle=ok

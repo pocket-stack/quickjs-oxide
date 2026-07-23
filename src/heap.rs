@@ -3772,11 +3772,19 @@ fn validate_published_private_callable_initializer(
             }
         })
     })?;
+    let callable_shape_valid = match kind {
+        PrivateCallableInitializerKind::Method => matches!(
+            (child.metadata.function_kind, child.metadata.has_prototype),
+            (FunctionKind::Normal, false) | (FunctionKind::Generator, true)
+        ),
+        PrivateCallableInitializerKind::Accessor => {
+            child.metadata.function_kind == FunctionKind::Normal && !child.metadata.has_prototype
+        }
+    };
     if !child.metadata.needs_home_object
         || !child.metadata.strict
         || child.metadata.eval_kind != EvalKind::None
-        || child.metadata.function_kind != FunctionKind::Normal
-        || child.metadata.has_prototype
+        || !callable_shape_valid
         || child.metadata.constructor_kind != ConstructorKind::None
         || child.metadata.class_initializer_kind.is_some()
     {
@@ -13941,19 +13949,31 @@ mod tests {
         .unwrap()
     }
 
-    fn allocate_private_accessor_child(
+    fn allocate_private_callable_child(
         heap: &mut Heap,
         realm: ContextId,
         argument_count: u16,
         valid_home_object_metadata: bool,
         func_name: Option<JsString>,
+        function_kind: FunctionKind,
+        has_prototype: bool,
     ) -> FunctionBytecodeId {
-        let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
+        let code: Rc<[Instruction]> = if function_kind == FunctionKind::Generator {
+            Rc::from([
+                Instruction::InitialYield,
+                Instruction::Undefined,
+                Instruction::Return,
+            ])
+        } else {
+            Rc::from([Instruction::Undefined, Instruction::Return])
+        };
         let mut child = bytecode(&code, realm, Vec::new(), Vec::new());
         child.metadata.argument_count = argument_count;
         child.metadata.defined_argument_count = argument_count;
         child.metadata.strict = true;
         child.metadata.needs_home_object = valid_home_object_metadata;
+        child.metadata.function_kind = function_kind;
+        child.metadata.has_prototype = has_prototype;
         child.func_name = func_name;
         child.argument_definitions = (0..argument_count)
             .map(|_| VariableDefinition {
@@ -13966,6 +13986,24 @@ mod tests {
             .collect::<Vec<_>>()
             .into();
         heap.allocate_function_bytecode(child).unwrap()
+    }
+
+    fn allocate_private_accessor_child(
+        heap: &mut Heap,
+        realm: ContextId,
+        argument_count: u16,
+        valid_home_object_metadata: bool,
+        func_name: Option<JsString>,
+    ) -> FunctionBytecodeId {
+        allocate_private_callable_child(
+            heap,
+            realm,
+            argument_count,
+            valid_home_object_metadata,
+            func_name,
+            FunctionKind::Normal,
+            false,
+        )
     }
 
     fn allocate_private_brand_child(heap: &mut Heap, realm: ContextId) -> FunctionBytecodeId {
@@ -14124,6 +14162,120 @@ mod tests {
         parent.local_definitions = definitions.into();
         parent.private_bindings = PublishedPrivateBindings::authenticated(roles, Vec::new());
         parent
+    }
+
+    fn linked_private_method_bytecode(
+        heap: &mut Heap,
+        realm: ContextId,
+        function_kind: FunctionKind,
+        has_prototype: bool,
+    ) -> FunctionBytecodeData {
+        let name = Atom::from_raw(604);
+        let method = allocate_private_callable_child(
+            heap,
+            realm,
+            0,
+            true,
+            None,
+            function_kind,
+            has_prototype,
+        );
+        let brand = allocate_private_brand_child(heap, realm);
+        let code: Rc<[Instruction]> = Rc::from([
+            Instruction::SetLocalUninitialized(0),
+            Instruction::Undefined,
+            Instruction::FClosure(0),
+            Instruction::InitializePrivateMethod(0),
+            Instruction::Drop,
+            Instruction::CloseLocal(0),
+            Instruction::Undefined,
+            Instruction::Return,
+        ]);
+        let mut parent = bytecode(
+            &code,
+            realm,
+            vec![
+                BytecodeConstant::Function(method),
+                BytecodeConstant::Function(brand),
+            ],
+            vec![name],
+        );
+        parent.metadata.local_count = 1;
+        parent.metadata.max_stack = 2;
+        parent.local_definitions = Rc::from([VariableDefinition {
+            name: Some(name),
+            is_lexical: true,
+            is_const: true,
+            is_parameter_initializer: false,
+            kind: ClosureVariableKind::PrivateMethod,
+        }]);
+        parent.private_bindings = PublishedPrivateBindings::authenticated(
+            vec![Some(PublishedPrivateBinding::primary(name, None))],
+            Vec::new(),
+        );
+        parent
+    }
+
+    #[test]
+    fn linked_private_methods_accept_generator_callable_shape() {
+        for (function_kind, has_prototype) in [
+            (FunctionKind::Normal, false),
+            (FunctionKind::Generator, true),
+        ] {
+            let mut heap = Heap::new();
+            let realm = bytecode_test_realm(&mut heap);
+            let candidate =
+                linked_private_method_bytecode(&mut heap, realm, function_kind, has_prototype);
+            assert!(
+                heap.allocate_function_bytecode(candidate).is_ok(),
+                "{function_kind:?}/{has_prototype}"
+            );
+        }
+    }
+
+    #[test]
+    fn linked_private_callables_reject_cross_role_execution_shapes() {
+        for (function_kind, has_prototype) in [
+            (FunctionKind::Normal, true),
+            (FunctionKind::Async, false),
+            (FunctionKind::AsyncGenerator, true),
+        ] {
+            let mut heap = Heap::new();
+            let realm = bytecode_test_realm(&mut heap);
+            let candidate =
+                linked_private_method_bytecode(&mut heap, realm, function_kind, has_prototype);
+            assert_eq!(
+                heap.allocate_function_bytecode(candidate),
+                Err(HeapError::Invariant(
+                    "private-method child has invalid HomeObject metadata"
+                )),
+                "{function_kind:?}/{has_prototype}"
+            );
+        }
+
+        let mut heap = Heap::new();
+        let realm = bytecode_test_realm(&mut heap);
+        let generator = allocate_private_callable_child(
+            &mut heap,
+            realm,
+            0,
+            true,
+            None,
+            FunctionKind::Generator,
+            true,
+        );
+        let mut getter =
+            linked_private_accessor_bytecode(&mut heap, realm, LinkedPrivateAccessorShape::Getter);
+        getter.constants = Rc::from([
+            BytecodeConstant::Function(generator),
+            getter.constants[1].clone(),
+        ]);
+        assert_eq!(
+            heap.allocate_function_bytecode(getter),
+            Err(HeapError::Invariant(
+                "private-accessor child has invalid HomeObject metadata"
+            ))
+        );
     }
 
     #[test]

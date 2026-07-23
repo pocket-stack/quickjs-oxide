@@ -412,18 +412,19 @@ impl RuntimeVmHost {
     fn branded_private_receiver(
         &self,
         callable: &CallableRef,
+        kind: ClosureVariableKind,
         base: Value,
     ) -> Result<ObjectRef, Error> {
         // QuickJS resolves the callable's HomeObject brand before converting
         // the receiver. This ordering is observable for partially evaluated
         // classes and primitive receivers.
         self.runtime
-            .require_private_method_brand(callable)
+            .require_private_method_brand(callable, kind)
             .map_err(runtime_error_to_vm_error)?;
         let receiver = Self::private_receiver(base, false)?;
         if !self
             .runtime
-            .check_private_method_brand(callable, &receiver)
+            .check_private_method_brand(callable, &receiver, kind)
             .map_err(runtime_error_to_vm_error)?
         {
             return Err(Error::new(ErrorKind::Type, "invalid brand on object"));
@@ -449,7 +450,7 @@ impl RuntimeVmHost {
                 let Some(method) = self.optional_private_callable(source, kind)? else {
                     return Err(Error::new(ErrorKind::Type, "not an object"));
                 };
-                self.branded_private_receiver(&method, base)?;
+                self.branded_private_receiver(&method, kind, base)?;
                 Ok(Completion::Return(Value::Object(
                     method.as_object().clone(),
                 )))
@@ -459,7 +460,7 @@ impl RuntimeVmHost {
                 let Some(getter) = self.optional_private_callable(source, kind)? else {
                     return Err(Error::new(ErrorKind::Type, "not an object"));
                 };
-                let receiver = self.branded_private_receiver(&getter, base)?;
+                let receiver = self.branded_private_receiver(&getter, kind, base)?;
                 self.runtime
                     .call_internal(self.current_realm, &getter, Value::Object(receiver), &[])
                     .map_err(runtime_error_to_vm_error)
@@ -492,7 +493,7 @@ impl RuntimeVmHost {
                 let Some(setter) = self.optional_private_callable(source, kind)? else {
                     return Err(Error::new(ErrorKind::Type, "not an object"));
                 };
-                let receiver = self.branded_private_receiver(&setter, base)?;
+                let receiver = self.branded_private_receiver(&setter, kind, base)?;
                 match self
                     .runtime
                     .call_internal(
@@ -563,7 +564,7 @@ impl RuntimeVmHost {
                         .map(|present| Completion::Return(Value::Bool(present)));
                 };
                 self.runtime
-                    .check_private_method_brand(&method, &receiver)
+                    .check_private_method_brand(&method, &receiver, kind)
                     .map_err(runtime_error_to_vm_error)?
             }
             kind @ ClosureVariableKind::PrivateSetter => {

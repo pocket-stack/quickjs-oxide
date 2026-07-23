@@ -18,7 +18,12 @@ fn generator_execution_kind_is_orthogonal_to_function_grammar_role() {
         function* declaration(value = 1) { yield value; }
         (function* expression() { yield; });
         ({ *fixed() { yield 2; }, *["computed"]() { yield* source; } });
-        class C { *instance() { yield 3; } static *staticMethod() { yield 4; } }
+        class C {
+            *instance() { yield 3; }
+            static *staticMethod() { yield 4; }
+            *#privateInstance() { yield 5; }
+            static *#privateStatic() { yield 6; }
+        }
     "#;
     let tree = Parser::parse(source, JsString::from_static("<generator-kind-test>")).unwrap();
     let generators = tree
@@ -26,7 +31,7 @@ fn generator_execution_kind_is_orthogonal_to_function_grammar_role() {
         .iter()
         .filter(|function| function.execution_kind == BytecodeFunctionKind::Generator)
         .collect::<Vec<_>>();
-    assert_eq!(generators.len(), 6);
+    assert_eq!(generators.len(), 8);
     assert_eq!(
         generators
             .iter()
@@ -39,7 +44,7 @@ fn generator_execution_kind_is_orthogonal_to_function_grammar_role() {
             .iter()
             .filter(|function| function.kind == FunctionKind::Method)
             .count(),
-        4
+        6
     );
     assert!(generators.iter().all(|function| {
         function
@@ -56,6 +61,22 @@ fn generator_execution_kind_is_orthogonal_to_function_grammar_role() {
     }));
 
     let script = compile_unlinked_script(source).unwrap();
+    assert_eq!(
+        script
+            .local_definitions()
+            .iter()
+            .filter(|definition| definition.kind == ClosureVariableKind::PrivateMethod)
+            .count(),
+        2
+    );
+    assert_eq!(
+        script
+            .code()
+            .iter()
+            .filter(|instruction| matches!(instruction, Instruction::InitializePrivateMethod(_)))
+            .count(),
+        2
+    );
     fn collect_generators<'a>(
         function: &'a crate::function::UnlinkedFunction,
         output: &mut Vec<&'a crate::function::UnlinkedFunction>,
@@ -72,7 +93,7 @@ fn generator_execution_kind_is_orthogonal_to_function_grammar_role() {
     }
     let mut published = Vec::new();
     collect_generators(&script, &mut published);
-    assert_eq!(published.len(), 6);
+    assert_eq!(published.len(), 8);
     assert!(published.iter().all(|function| {
         function.metadata().has_prototype
             && function.metadata().constructor_kind == ConstructorKind::None
@@ -196,7 +217,7 @@ fn generator_lexical_context_matches_nested_function_and_arrow_boundaries() {
 }
 
 #[test]
-fn public_generator_method_frontier_keeps_private_and_async_explicit() {
+fn synchronous_generator_methods_keep_async_frontier_explicit() {
     for source in [
         "class C { *constructor(){} }",
         "class C { static *prototype(){} }",
@@ -219,8 +240,8 @@ fn public_generator_method_frontier_keeps_private_and_async_explicit() {
     );
 
     for source in [
-        "class C { *#private(){} }",
         "class C { async *method(){} }",
+        "class C { async *#method(){} }",
         "({ async *method(){} })",
     ] {
         assert_eq!(

@@ -1680,9 +1680,61 @@ claim full parity.
   This supplemental audit measures breadth; the smaller checked-in gate remains
   the reproducible acceptance vector.
 
-  Async functions/generators, private generator methods, destructuring eval
-  declarations, unsupported class
-  elements, and ill-formed UTF-16 source stay explicit frontiers.
+  R3l adds synchronous private instance/static class generator methods by
+  composing the R3i private-method authority with the R3k generator execution
+  kind. The compiler retains `BindingKind::PrivateMethod`, forces HomeObject,
+  and emits the existing `InitializePrivateMethod`; no new opcode, private cell,
+  callable class, or GC edge is introduced. The unlinked publisher, linked heap
+  verifier, and runtime typed-cell reader independently admit only
+  `(Normal, no prototype)` or `(Generator, own prototype)` for a private method,
+  while private accessors remain ordinary-only. Suspended private generators
+  preserve their callable/HomeObject/brand/private-field cycle and defining
+  realm across GC without retaining the realm that invoked them.
+
+  The direct pinned QuickJS anchors are `quickjs.c` 638-650 and 678-693
+  (private-method and generator metadata), 24485-24615 and 25309-25519 (class
+  element parsing/publication), 36517-36547 and 36759-36762 (method HomeObject
+  and initial yield), 8462-8550 and 33368-33464 (brands/private access),
+  17388-17433 and 21042-21070 (generator callable/prototype/call startup), plus
+  `quickjs-opcode.h` 70, 114-115, 147-150, and 212-215.
+
+  The authenticated R3l gate starts from 90 candidates, excludes eight
+  object-spread-dependent paths, and freezes 82 paths / 160 variants: 16
+  positive and 66 parse-negative paths. Oxide passes 160/160 and pinned
+  QuickJS 2026-06-04 passes 82/82. Manifest, profile, variant-key, TSV, JSONL,
+  and empty non-pass SHA-256 values are
+  `b7b2c71cab374f9bcc6754bd9a80506d273d2e135e3f66eb373f325c94d33685`,
+  `e3732db0b47608265f4f950c1c72929e782eb507597c5f0b336896e51874133e`,
+  `74f827bf644507c0f0101d6597a8c5560de82b8d2303ef236beef1f3ac9de22d`,
+  `13e751e511245db9f2ed3db749dbb58cc107161684b62bc7d9806431b79ccf94`,
+  `c4fcd1c4b3cdfeffaddd633a6f5676286fa99266ba103ec64c86a718b4ec27be`,
+  and
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+  Its pinned differential covers parameter timing, brand/error ordering,
+  extracted calls, reflection/source, dynamic `super`, private capture,
+  `yield*`, reevaluation, static subclass separation, and outer-generator class
+  evaluation. Source and transcript SHA-256 values are
+  `5af87d8181536da15ba5458ab97698e40d5df953955751bb74656a95a5dd382f`
+  and
+  `ff79f3ed6798a77b04e1baec6a6e022a46538f0e463707298cee894487c1a2dc`.
+  A supplemental 714-path / 1,420-variant primary inventory passes all 1,388
+  runnable synchronous variants. Its remaining 32 variants are 16
+  async-adjacency paths rejected at selection as `unsupported-async`; there is
+  no engine fault, crash, timeout, or skip. Pinned QuickJS passes all 714
+  paths. Inventory, variant-key, normalized-report, and non-pass-stream
+  SHA-256 values are
+  `84434292de9506822d95c5afef5590d78db2cbb4d0bddeeb3acb9e9e7d1399b1`,
+  `5fbee112b9ea46b5ba4002b0398e5b7045e97c9d2120a23e524f971a907b0c6c`,
+  `f48961f1d6223eccabaa2a17726898f8abd76081bf91769a8f9503e4851d3355`,
+  and
+  `867ef271b2a97d5de723276b22ce7ec50f36c01f2cddc05aeab19eb515ec6658`.
+  This supplemental audit is breadth evidence rather than a second acceptance
+  gate.
+  The global profile remains fail-closed for `generators`; this focused result
+  does not change the complete-vector percentage.
+
+  Async functions/generators, destructuring eval declarations, unsupported
+  class elements, and ill-formed UTF-16 source stay explicit frontiers.
   QuickJS also allocates the callable and VarRef
   array before capturing caller cells, while this Rust slice materializes the
   roots first and then allocates the callable; only successful-compilation
@@ -4543,8 +4595,8 @@ upstream's substantially deeper platform-dependent limits throughout.
 
 The language slice remains incomplete. Async declarations, `for-await`, other
 general assignment targets, module resolution, async methods and parameter
-forms, private generator methods, async class methods, non-simple ObjectLiteral
-accessor forms outside the covered
+forms, async class methods/generators, non-simple ObjectLiteral accessor forms
+outside the covered
 synchronous setter slice, and callable Proxy classes are not yet implemented.
 Unsupported declaration contexts are rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` supports
@@ -4709,7 +4761,7 @@ still pending. Uncatchable termination state is also pending. Other iterator
 classes and helpers, the remaining RegExp
 grammar/static surface and Unicode-backed String methods, non-simple
 ObjectLiteral setter forms outside the covered synchronous slice, async and
-private generator class methods,
+async-generator class methods,
 exotic-source spread, and the rest of the builtin table build on those layers.
 
 The remaining parity surface also includes the full grammar/opcode set, the
@@ -4976,6 +5028,12 @@ state machine and intrinsics live in the dedicated 875-line
 heap ownership and tracing in `heap.rs`, and resumable execution in `vm.rs`.
 The facade gained only dispatch/publication seams instead of absorbing the
 generator kernel.
+R3l composes those existing generator and private-element seams: lowering stays
+under `compiler/class/`, private callable/brand storage stays in
+`runtime/private_elements.rs`, VM access stays in
+`runtime/vm_host/private_elements.rs`, and both publication defenses retain
+their dedicated owners. `runtime.rs` remains the 9,748-line facade; this slice
+adds no product code to that monolith or a second generator state machine.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -5273,6 +5331,9 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-class-private-methods.sh
 ./scripts/test-test262-class-private-accessors.sh
 ./scripts/test-test262-class-generator-methods.sh
+./scripts/test-test262-class-private-generator-methods.sh
+cargo build --bin qjs
+./scripts/test-r3l-class-private-generators-oracle.sh --oxide ./target/debug/qjs
 ./scripts/test-test262-full.sh
 ```
 

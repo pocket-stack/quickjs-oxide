@@ -2,9 +2,9 @@
 //!
 //! This is the first vertical slice of QuickJS `js_parse_class`: class name
 //! scopes, heritage, base/derived constructors, `super()` and synchronous
-//! methods/accessors, fields, ordinary private methods/accessors, and static
-//! blocks. Public synchronous generator methods are supported; private
-//! generator methods and async forms remain explicit typed frontiers.
+//! methods/accessors, fields, private methods/accessors, and static blocks.
+//! Public and private synchronous generator methods are supported; async
+//! forms remain explicit typed frontiers.
 
 use super::function::ParsedFunctionDefinition;
 use super::*;
@@ -275,14 +275,15 @@ impl<'source> Parser<'source> {
         }
 
         if let ClassPropertyKey::Private { name, span } = &key {
-            if generator {
-                return Err(Error::unsupported(
-                    "private class generator methods are not implemented yet",
-                    source_span(*span),
-                ));
-            }
             if method_kind == DefineMethodKind::Method {
-                self.parse_private_class_method(elements, is_static, name.clone(), *span)?;
+                self.parse_private_class_method(
+                    elements,
+                    is_static,
+                    name.clone(),
+                    *span,
+                    function_span,
+                    generator,
+                )?;
             } else {
                 self.parse_private_class_accessor(
                     elements,

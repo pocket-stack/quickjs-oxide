@@ -347,7 +347,7 @@ impl Runtime {
                 "private-callable VarRef received a non-callable binding kind",
             ));
         }
-        let (callable_id, home_object) = self.private_callable_parts(callable)?;
+        let (callable_id, home_object) = self.private_callable_parts(callable, kind)?;
         if home_object.is_none() {
             return Err(RuntimeError::Invariant(
                 "private callable has no HomeObject",
@@ -387,7 +387,7 @@ impl Runtime {
                 "private-callable initialization received a non-callable binding kind",
             ));
         }
-        let (callable_id, home_object) = self.private_callable_parts(callable)?;
+        let (callable_id, home_object) = self.private_callable_parts(callable, kind)?;
         if home_object.is_none() {
             return Err(RuntimeError::Invariant(
                 "private callable has no HomeObject",
@@ -455,7 +455,7 @@ impl Runtime {
         };
         let object = ObjectRef::from_borrowed_handle(self.clone(), method_id)?;
         let method = CallableRef::from_validated_object(object);
-        let (_, home_object) = self.private_callable_parts(&method)?;
+        let (_, home_object) = self.private_callable_parts(&method, kind)?;
         if home_object.is_none() {
             return Err(RuntimeError::Invariant(
                 "private callable lost its HomeObject",
@@ -586,12 +586,13 @@ impl Runtime {
         &self,
         method: &CallableRef,
         receiver: &ObjectRef,
+        kind: ClosureVariableKind,
     ) -> Result<bool, RuntimeError> {
         let _operation = self.operation();
         if !receiver.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("private-method brand receiver"));
         }
-        let brand = self.private_method_brand_atom(method)?;
+        let brand = self.private_method_brand_atom(method, kind)?;
         let state = self.0.state.borrow();
         let object = state.heap.object(receiver.object_id())?;
         Ok(state.heap.shape(object.shape)?.find(brand).is_some())
@@ -603,13 +604,18 @@ impl Runtime {
     pub(in crate::runtime) fn require_private_method_brand(
         &self,
         method: &CallableRef,
+        kind: ClosureVariableKind,
     ) -> Result<(), RuntimeError> {
         let _operation = self.operation();
-        self.private_method_brand_atom(method).map(|_| ())
+        self.private_method_brand_atom(method, kind).map(|_| ())
     }
 
-    fn private_method_brand_atom(&self, method: &CallableRef) -> Result<Atom, RuntimeError> {
-        let (_, home_object) = self.private_callable_parts(method)?;
+    fn private_method_brand_atom(
+        &self,
+        method: &CallableRef,
+        kind: ClosureVariableKind,
+    ) -> Result<Atom, RuntimeError> {
+        let (_, home_object) = self.private_callable_parts(method, kind)?;
         let Some(home_object) = home_object else {
             return Err(Self::missing_private_brand_error());
         };
@@ -620,6 +626,7 @@ impl Runtime {
     fn private_callable_parts(
         &self,
         method: &CallableRef,
+        kind: ClosureVariableKind,
     ) -> Result<(ObjectId, Option<ObjectId>), RuntimeError> {
         if !method.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("private callable"));
@@ -638,13 +645,24 @@ impl Runtime {
             ));
         };
         let metadata = state.heap.function_bytecode(*bytecode)?.metadata;
+        let callable_shape_valid = match kind {
+            ClosureVariableKind::PrivateMethod => matches!(
+                (metadata.function_kind, metadata.has_prototype),
+                (FunctionKind::Normal, false) | (FunctionKind::Generator, true)
+            ),
+            ClosureVariableKind::PrivateGetter
+            | ClosureVariableKind::PrivateSetter
+            | ClosureVariableKind::PrivateGetterSetter => {
+                metadata.function_kind == FunctionKind::Normal && !metadata.has_prototype
+            }
+            _ => false,
+        };
         if object.is_constructor
-            || metadata.has_prototype
+            || !callable_shape_valid
             || metadata.constructor_kind != ConstructorKind::None
             || metadata.class_initializer_kind.is_some()
             || !metadata.strict
             || metadata.eval_kind != EvalKind::None
-            || metadata.function_kind != FunctionKind::Normal
             || !metadata.needs_home_object
         {
             return Err(RuntimeError::Invariant(
@@ -755,18 +773,32 @@ mod tests {
         );
     }
 
-    fn private_method_callable(runtime: &Runtime) -> (CallableRef, ObjectRef) {
+    fn private_callable(
+        runtime: &Runtime,
+        function_kind: FunctionKind,
+    ) -> (CallableRef, ObjectRef) {
         let context = runtime.new_context();
+        let code = if function_kind == FunctionKind::Generator {
+            vec![
+                Instruction::InitialYield,
+                Instruction::Undefined,
+                Instruction::Return,
+            ]
+        } else {
+            vec![Instruction::Undefined, Instruction::Return]
+        };
         let function = runtime
             .publish_unlinked_function(
                 context.realm,
                 UnlinkedFunction::new(
-                    vec![Instruction::Undefined, Instruction::Return],
+                    code,
                     Vec::new(),
                     FunctionMetadata {
                         max_stack: 1,
                         strict: true,
                         needs_home_object: true,
+                        function_kind,
+                        has_prototype: function_kind == FunctionKind::Generator,
                         ..FunctionMetadata::default()
                     },
                 ),
@@ -780,6 +812,10 @@ mod tests {
             .install_object_literal_home_object(&method, &home_object)
             .unwrap();
         (method, home_object)
+    }
+
+    fn private_method_callable(runtime: &Runtime) -> (CallableRef, ObjectRef) {
+        private_callable(runtime, FunctionKind::Normal)
     }
 
     #[test]
@@ -1044,6 +1080,54 @@ mod tests {
     }
 
     #[test]
+    fn private_callable_var_refs_admit_generators_only_as_methods() {
+        let runtime = Runtime::new();
+        let (generator, _) = private_callable(&runtime, FunctionKind::Generator);
+
+        let method = runtime
+            .new_private_callable_var_ref(&generator, ClosureVariableKind::PrivateMethod)
+            .unwrap();
+        assert_eq!(
+            runtime
+                .private_callable_from_raw_var_ref(&method, ClosureVariableKind::PrivateMethod,)
+                .unwrap(),
+            generator
+        );
+        let uninitialized_method = runtime
+            .new_uninitialized_captured_var_ref(true, true, ClosureVariableKind::PrivateMethod)
+            .unwrap();
+        runtime
+            .initialize_private_callable_var_ref(
+                &uninitialized_method,
+                &generator,
+                ClosureVariableKind::PrivateMethod,
+            )
+            .unwrap();
+
+        for kind in [
+            ClosureVariableKind::PrivateGetter,
+            ClosureVariableKind::PrivateSetter,
+            ClosureVariableKind::PrivateGetterSetter,
+        ] {
+            assert!(matches!(
+                runtime.new_private_callable_var_ref(&generator, kind),
+                Err(RuntimeError::Invariant(
+                    "private-callable cell has invalid bytecode metadata"
+                ))
+            ));
+            let uninitialized = runtime
+                .new_uninitialized_captured_var_ref(true, true, kind)
+                .unwrap();
+            assert!(matches!(
+                runtime.initialize_private_callable_var_ref(&uninitialized, &generator, kind),
+                Err(RuntimeError::Invariant(
+                    "private-callable cell has invalid bytecode metadata"
+                ))
+            ));
+        }
+    }
+
+    #[test]
     fn private_method_brands_are_hidden_own_only_and_ignore_extensibility() {
         let runtime = Runtime::new();
         let (method, home_object) = private_method_callable(&runtime);
@@ -1052,7 +1136,7 @@ mod tests {
 
         assert_type_error(
             runtime
-                .check_private_method_brand(&method, &receiver)
+                .check_private_method_brand(&method, &receiver, ClosureVariableKind::PrivateMethod)
                 .unwrap_err(),
             "expecting <brand> private field",
         );
@@ -1083,12 +1167,16 @@ mod tests {
             .unwrap();
         assert!(
             runtime
-                .check_private_method_brand(&method, &receiver)
+                .check_private_method_brand(&method, &receiver, ClosureVariableKind::PrivateMethod,)
                 .unwrap()
         );
         assert!(
             !runtime
-                .check_private_method_brand(&method, &inherited)
+                .check_private_method_brand(
+                    &method,
+                    &inherited,
+                    ClosureVariableKind::PrivateMethod,
+                )
                 .unwrap()
         );
         assert!(runtime.own_property_keys(&receiver).unwrap().is_empty());

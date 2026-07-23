@@ -187,9 +187,9 @@ impl<'source> Parser<'source> {
         Ok(parsed.child)
     }
 
-    /// Parse one public synchronous generator method after its property name
-    /// has been consumed. Grammar role remains `Method`; only callable
-    /// execution metadata changes to `Generator`.
+    /// Parse one public or private synchronous generator method after its
+    /// property name has been consumed. Grammar role remains `Method`; only
+    /// callable execution metadata changes to `Generator`.
     pub(super) fn parse_generator_method_definition(
         &mut self,
         function_span: Span,

@@ -7,7 +7,7 @@ use quickjs_oxide::{ErrorKind, Runtime, Value};
 // `OP_define_class`. Heritage is covered by the derived-class oracle and gate;
 // field initialization and static blocks have their own later oracles. Private
 // elements and synchronous generator methods have dedicated later oracles;
-// private generator and async methods remain later feature slices.
+// async methods remain a later feature slice.
 const PROBE: &str = r#"
 (function () {
     var out = [];
@@ -195,18 +195,11 @@ fn base_class_observation_matches_pinned_quickjs() {
 }
 
 #[test]
-fn remaining_unsupported_class_families_stay_typed_frontiers() {
-    for (source, expected) in [
-        (
-            "class C { *#method() {} }",
-            "private class generator methods",
-        ),
-        ("class C { async method() {} }", "async class methods"),
-    ] {
-        let error = quickjs_oxide::compiler::compile_script(source).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Unsupported, "{source}");
-        assert!(error.message().contains(expected), "{source}: {error}");
-    }
+fn remaining_async_class_family_stays_a_typed_frontier() {
+    let source = "class C { async method() {} }";
+    let error = quickjs_oxide::compiler::compile_script(source).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(error.message().contains("async class methods"), "{error}");
 }
 
 #[test]

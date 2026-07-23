@@ -398,11 +398,23 @@ fn verify_private_callable_initializer(
                 "{label} initializer did not reference child bytecode"
             )))
         })?;
+    let callable_shape_valid = match accessor_role {
+        None => matches!(
+            (
+                child.metadata().function_kind,
+                child.metadata().has_prototype
+            ),
+            (FunctionKind::Normal, false) | (FunctionKind::Generator, true)
+        ),
+        Some(_) => {
+            child.metadata().function_kind == FunctionKind::Normal
+                && !child.metadata().has_prototype
+        }
+    };
     if !child.metadata().needs_home_object
         || !child.metadata().strict
         || child.metadata().eval_kind != EvalKind::None
-        || child.metadata().function_kind != FunctionKind::Normal
-        || child.metadata().has_prototype
+        || !callable_shape_valid
         || child.metadata().constructor_kind != ConstructorKind::None
         || child.metadata().class_initializer_kind.is_some()
     {
@@ -816,17 +828,40 @@ mod tests {
         )
     }
 
-    fn private_method_function(code: Vec<Instruction>, include_brand: bool) -> UnlinkedFunction {
-        let method = UnlinkedFunction::new(
-            vec![Instruction::Undefined, Instruction::Return],
+    fn private_callable_child(
+        function_kind: FunctionKind,
+        has_prototype: bool,
+    ) -> UnlinkedFunction {
+        let code = if function_kind == FunctionKind::Generator {
+            vec![
+                Instruction::InitialYield,
+                Instruction::Undefined,
+                Instruction::Return,
+            ]
+        } else {
+            vec![Instruction::Undefined, Instruction::Return]
+        };
+        UnlinkedFunction::new(
+            code,
             Vec::new(),
             FunctionMetadata {
                 max_stack: 1,
                 strict: true,
                 needs_home_object: true,
+                function_kind,
+                has_prototype,
                 ..FunctionMetadata::default()
             },
-        );
+        )
+    }
+
+    fn private_method_function_with_shape(
+        code: Vec<Instruction>,
+        include_brand: bool,
+        function_kind: FunctionKind,
+        has_prototype: bool,
+    ) -> UnlinkedFunction {
+        let method = private_callable_child(function_kind, has_prototype);
         let mut constants = vec![UnlinkedConstant::child(method)];
         if include_brand {
             constants.push(UnlinkedConstant::child(UnlinkedFunction::new(
@@ -861,6 +896,10 @@ mod tests {
                 kind: ClosureVariableKind::PrivateMethod,
             }],
         )
+    }
+
+    fn private_method_function(code: Vec<Instruction>, include_brand: bool) -> UnlinkedFunction {
+        private_method_function_with_shape(code, include_brand, FunctionKind::Normal, false)
     }
 
     fn private_accessor_definition(
@@ -1071,6 +1110,59 @@ mod tests {
             true,
         );
         assert!(verify_unlinked(&new_lifetime).is_ok());
+    }
+
+    #[test]
+    fn private_callable_initializer_accepts_only_generator_method_shape() {
+        let code = vec![
+            Instruction::SetLocalUninitialized(0),
+            Instruction::FClosure(0),
+            Instruction::InitializePrivateMethod(0),
+            Instruction::CloseLocal(0),
+        ];
+        for (function_kind, has_prototype, accepted) in [
+            (FunctionKind::Normal, false, true),
+            (FunctionKind::Generator, true, true),
+            (FunctionKind::Normal, true, false),
+            (FunctionKind::Generator, false, false),
+            (FunctionKind::Async, false, false),
+            (FunctionKind::AsyncGenerator, true, false),
+        ] {
+            let function = private_method_function_with_shape(
+                code.clone(),
+                true,
+                function_kind,
+                has_prototype,
+            );
+            assert_eq!(
+                verify_private_callable_initializer(
+                    &function,
+                    2,
+                    0,
+                    None,
+                    &HashSet::new(),
+                    "private-method",
+                )
+                .is_ok(),
+                accepted,
+                "{function_kind:?}/{has_prototype}"
+            );
+        }
+
+        let generator =
+            private_method_function_with_shape(code, true, FunctionKind::Generator, true);
+        assert!(
+            verify_private_callable_initializer(
+                &generator,
+                2,
+                0,
+                Some(PrivateBindingRole::Primary),
+                &HashSet::new(),
+                "private-accessor",
+            )
+            .is_err()
+        );
+        assert!(verify_unlinked(&generator).is_ok());
     }
 
     #[test]

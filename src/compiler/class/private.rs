@@ -191,8 +191,8 @@ impl<'source> Parser<'source> {
         self.consume_statement_terminator()
     }
 
-    /// Parse and publish an ordinary synchronous private method. The method
-    /// body is parsed before the namespace binding is registered, matching
+    /// Parse and publish an ordinary or generator synchronous private method.
+    /// The body is parsed before the namespace binding is registered, matching
     /// QuickJS's diagnostic priority when a malformed body and a duplicate
     /// private spelling coexist.
     pub(super) fn parse_private_class_method(
@@ -201,12 +201,18 @@ impl<'source> Parser<'source> {
         is_static: bool,
         name: String,
         span: Span,
+        function_span: Span,
+        generator: bool,
     ) -> Result<(), Error> {
         if name == "#constructor" {
             return Err(Error::syntax("invalid method name", source_span(span)));
         }
 
-        let method = self.parse_object_method_definition(span, DefineMethodKind::Method)?;
+        let method = if generator {
+            self.parse_generator_method_definition(function_span)?
+        } else {
+            self.parse_object_method_definition(function_span, DefineMethodKind::Method)?
+        };
         // A private method needs HomeObject even when its authored body never
         // mentions `super`: the runtime derives its unforgeable brand from the
         // callable's HomeObject, as pinned QuickJS does.

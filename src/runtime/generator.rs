@@ -681,34 +681,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn dormant_generator_roots_survive_gc_and_release_after_completion() {
+    fn assert_dormant_generator_survives_gc(expression: &str) {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
-        let Value::Object(generator) = context
-            .eval(
-                "globalThis.__gcGenerator = (function(){ \
-                     let capturedOuter = { value: 2 }; \
-                     return (function*(){ \
-                         let directObject = { value: 1 }; \
-                         let directSymbol = Symbol('kept'); \
-                         let capturedLocal = { value: 3 }; \
-                         let readCaptured = () => capturedOuter.value + capturedLocal.value; \
-                         class C { \
-                             #field = 30; \
-                             #method() { return 5 } \
-                             value() { return this.#field + this.#method() } \
-                         } \
-                         let instance = new C; \
-                         yield 0; \
-                         return directObject.value + \
-                             (directSymbol.description === 'kept' ? 4 : 0) + \
-                             readCaptured() + instance.value(); \
-                     })(); \
-                 })(); __gcGenerator",
-            )
-            .unwrap()
-        else {
+        let source = format!("globalThis.__gcGenerator = {expression}; __gcGenerator");
+        let Value::Object(generator) = context.eval(&source).unwrap() else {
             panic!("GC probe did not return a generator");
         };
         assert_eq!(
@@ -738,14 +715,54 @@ mod tests {
     }
 
     #[test]
-    fn dormant_generator_does_not_keep_its_creation_caller_realm_alive() {
+    fn dormant_generator_roots_survive_gc_and_release_after_completion() {
+        assert_dormant_generator_survives_gc(
+            "(function(){ \
+                     let capturedOuter = { value: 2 }; \
+                     return (function*(){ \
+                         let directObject = { value: 1 }; \
+                         let directSymbol = Symbol('kept'); \
+                         let capturedLocal = { value: 3 }; \
+                         let readCaptured = () => capturedOuter.value + capturedLocal.value; \
+                         class C { \
+                             #field = 30; \
+                             #method() { return 5 } \
+                             value() { return this.#field + this.#method() } \
+                         } \
+                         let instance = new C; \
+                         yield 0; \
+                         return directObject.value + \
+                             (directSymbol.description === 'kept' ? 4 : 0) + \
+                             readCaptured() + instance.value(); \
+                     })(); \
+                 })()",
+        );
+    }
+
+    #[test]
+    fn dormant_private_generator_roots_survive_gc_and_release_after_completion() {
+        assert_dormant_generator_survives_gc(
+            "(function(){ \
+                 class C { \
+                     #field = 40; \
+                     *#method(delta) { \
+                         let local = { value: 2 }; \
+                         yield 0; \
+                         return this.#field + local.value + delta + \
+                             (this.#method === this.#method ? 0 : 100); \
+                     } \
+                     start() { return this.#method(3); } \
+                 } \
+                 return new C().start(); \
+             })()",
+        );
+    }
+
+    fn assert_dormant_generator_realm_lifetime(function_source: &str) {
         let runtime = Runtime::new();
         let mut defining = runtime.new_context();
         let mut caller = runtime.new_context();
-        let Value::Object(function_object) = defining
-            .eval("(function* crossRealmGenerator() { yield 1; return 2; })")
-            .unwrap()
-        else {
+        let Value::Object(function_object) = defining.eval(function_source).unwrap() else {
             panic!("cross-realm generator function was not an object");
         };
         let function_callable = runtime.as_callable(&function_object).unwrap().unwrap();
@@ -755,6 +772,17 @@ mod tests {
         else {
             panic!("cross-realm generator call did not return an object");
         };
+        let prototype_key = runtime.intern_property_key("prototype").unwrap();
+        let Value::Object(function_prototype) = defining
+            .get_property(&function_object, &prototype_key)
+            .unwrap()
+        else {
+            panic!("generator function prototype was not an object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&generator).unwrap(),
+            Some(function_prototype.clone())
+        );
         assert_eq!(runtime.heap_counts().context_nodes, 2);
 
         drop(caller);
@@ -765,35 +793,58 @@ mod tests {
             "a dormant generator must not retain the realm which called it"
         );
 
+        drop(function_callable);
+        drop(function_object);
+        drop(function_prototype);
+        drop(defining);
+        runtime.run_gc().unwrap();
+        assert_eq!(
+            runtime.heap_counts().context_nodes,
+            1,
+            "a dormant generator must retain its defining realm"
+        );
+
+        let mut observer = runtime.new_context();
         let next_key = runtime.intern_property_key("next").unwrap();
-        let Value::Object(next_object) = defining.get_property(&generator, &next_key).unwrap()
+        let Value::Object(next_object) = observer.get_property(&generator, &next_key).unwrap()
         else {
             panic!("cross-realm generator next method was not an object");
         };
         let next_callable = runtime.as_callable(&next_object).unwrap().unwrap();
         let value_key = runtime.intern_property_key("value").unwrap();
         for expected in [1, 2] {
-            let Value::Object(result) = defining
+            let Value::Object(result) = observer
                 .call(&next_callable, Value::Object(generator.clone()), &[])
                 .unwrap()
             else {
                 panic!("cross-realm generator next result was not an object");
             };
             assert_eq!(
-                defining.get_property(&result, &value_key).unwrap(),
+                observer.get_property(&result, &value_key).unwrap(),
                 Value::Int(expected)
             );
         }
-        assert_eq!(runtime.heap_counts().context_nodes, 1);
+        assert_eq!(runtime.heap_counts().context_nodes, 2);
 
         drop(next_callable);
         drop(next_object);
-        drop(function_callable);
-        drop(function_object);
         drop(generator);
-        drop(defining);
+        drop(observer);
         runtime.run_gc().unwrap();
         assert_eq!(runtime.heap_counts().live, 0);
+    }
+
+    #[test]
+    fn dormant_generator_does_not_keep_its_creation_caller_realm_alive() {
+        for source in [
+            "(function* crossRealmGenerator() { yield 1; return 2; })",
+            "new (class { \
+                 *#generator() { yield 1; return 2; } \
+                 expose() { return this.#generator; } \
+             })().expose()",
+        ] {
+            assert_dormant_generator_realm_lifetime(source);
+        }
     }
 
     #[test]
