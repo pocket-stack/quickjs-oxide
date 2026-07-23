@@ -9,6 +9,7 @@ mod bytecode_publish;
 mod class;
 mod class_fields;
 mod for_in;
+mod generator;
 mod home_object;
 mod intrinsics;
 mod native_dispatch;
@@ -46,12 +47,13 @@ use crate::heap::{
     ContextId, DateGetFieldKind, DateNativeKind, DateSetFieldKind, DateStringMethod,
     DynamicFunctionKind, ErrorConstructorKind, EvalEnvironment, ForInCandidate, ForInIteratorData,
     ForInProperty, FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo,
-    FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, GlobalNumberPredicateKind,
-    GlobalUriCodecKind, Heap, HeapCleanup, HeapCounts, HeapError, JsonNativeKind, MathBinaryKind,
-    MathMinMaxKind, MathUnaryKind, NativeCProto, NativeFunctionId, NumberFormatKind,
-    NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData, ObjectExtensibilityKind,
-    ObjectId, ObjectIntegrityKind, ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind,
-    ObjectPayload, ParameterEnvironmentLayout, PrimitiveKind, PrimitiveObjectData, PropertySlot,
+    FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, GeneratorRealmData,
+    GeneratorResumeKind, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup,
+    HeapCounts, HeapError, JsonNativeKind, MathBinaryKind, MathMinMaxKind, MathUnaryKind,
+    NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
+    ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind,
+    ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload,
+    ParameterEnvironmentLayout, PrimitiveKind, PrimitiveObjectData, PropertySlot,
     PublishedPrivateBindings, RawValue, ReflectKind, RegExpNativeKind, ShapeId, StringCaseKind,
     StringCharAtKind, StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind,
     StringReplaceKind, StringStaticKind, StringSubrangeKind, StringTrimKind, StringWellFormedKind,
@@ -952,6 +954,8 @@ impl Runtime {
             &global_object,
         )
         .expect("Symbol intrinsic initialization must succeed");
+        self.initialize_generator_intrinsic(realm, &function_prototype, &iterator_prototype)
+            .expect("Generator intrinsic initialization must succeed");
         // Upstream installs `globalThis` after String/Math/Reflect/Symbol and
         // generator setup, then installs BigInt. The remaining intervening
         // intrinsics are absent here, but this boundary preserves the
@@ -3451,10 +3455,25 @@ impl Runtime {
         }
 
         let mut state = self.0.state.borrow_mut();
-        let function_prototype = state.heap.context(caller_realm)?.function_prototype;
         let (metadata, func_name) = {
             let bytecode = state.heap.function_bytecode(function.bytecode_id())?;
             (bytecode.metadata, bytecode.func_name.clone())
+        };
+        let context = state.heap.context(caller_realm)?;
+        let function_prototype = match metadata.function_kind {
+            FunctionKind::Normal => context.function_prototype,
+            FunctionKind::Generator => {
+                context
+                    .generator
+                    .ok_or(RuntimeError::Invariant(
+                        "generator closure realm has no Generator intrinsics",
+                    ))?
+                    .function_prototype
+            }
+            // Source parsing still keeps async callables fail-closed. Preserve
+            // the existing embedding path for explicitly published bytecode
+            // until their dedicated intrinsic prototypes land.
+            FunctionKind::Async | FunctionKind::AsyncGenerator => context.function_prototype,
         };
         let shape = state.get_or_create_shape(Some(function_prototype), &[])?;
         let object = match state
@@ -3504,10 +3523,46 @@ impl Runtime {
             false,
             true,
         )?;
+        if metadata.function_kind == FunctionKind::Generator {
+            if !metadata.has_prototype || metadata.constructor_kind != ConstructorKind::None {
+                return Err(RuntimeError::Invariant(
+                    "generator bytecode has invalid prototype/constructor metadata",
+                ));
+            }
+            return self.define_generator_function_prototype(callable.as_object(), realm);
+        }
         if !metadata.has_prototype {
             return Ok(());
         }
         self.define_function_auto_init_prototype(callable.as_object(), realm)
+    }
+
+    fn define_generator_function_prototype(
+        &self,
+        function: &ObjectRef,
+        realm: ContextId,
+    ) -> Result<(), RuntimeError> {
+        let generator_prototype = self
+            .0
+            .state
+            .borrow()
+            .heap
+            .context(realm)?
+            .generator
+            .ok_or(RuntimeError::Invariant(
+                "generator function realm has no Generator intrinsics",
+            ))?
+            .prototype;
+        let generator_prototype =
+            ObjectRef::from_borrowed_handle(self.clone(), generator_prototype)?;
+        let prototype = self.new_object(Some(&generator_prototype))?;
+        self.define_function_data_property(
+            function,
+            "prototype",
+            Value::Object(prototype),
+            true,
+            false,
+        )
     }
 
     fn define_function_auto_init_prototype(
@@ -4783,7 +4838,8 @@ impl Runtime {
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }
-                | ObjectPayload::RegExpStringIterator { .. } => {
+                | ObjectPayload::RegExpStringIterator { .. }
+                | ObjectPayload::Generator { .. } => {
                     return Err(RuntimeError::Engine(Error::new(
                         ErrorKind::Type,
                         "not a function",
@@ -4843,7 +4899,8 @@ impl Runtime {
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }
-            | ObjectPayload::RegExpStringIterator { .. } => Err(RuntimeError::Invariant(
+            | ObjectPayload::RegExpStringIterator { .. }
+            | ObjectPayload::Generator { .. } => Err(RuntimeError::Invariant(
                 "validated callable no longer has a callable payload",
             )),
         }
@@ -5200,7 +5257,8 @@ impl Runtime {
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }
-                | ObjectPayload::RegExpStringIterator { .. } => {
+                | ObjectPayload::RegExpStringIterator { .. }
+                | ObjectPayload::Generator { .. } => {
                     return Err(RuntimeError::Engine(Error::new(
                         ErrorKind::Type,
                         "not a function",
@@ -6258,7 +6316,8 @@ impl Runtime {
                         | ObjectPayload::StringIterator { .. }
                         | ObjectPayload::RegExpStringIterator { .. }
                         | ObjectPayload::BoundFunction { .. }
-                        | ObjectPayload::NativeFunction { .. } => false,
+                        | ObjectPayload::NativeFunction { .. }
+                        | ObjectPayload::Generator { .. } => false,
                     }
                 }
                 Value::Undefined
@@ -6381,9 +6440,19 @@ impl Runtime {
                             .context(fallback_realm)?
                             .function_prototype
                     }
-                    DynamicFunctionKind::Generator
-                    | DynamicFunctionKind::Async
-                    | DynamicFunctionKind::AsyncGenerator => {
+                    DynamicFunctionKind::Generator => {
+                        self.0
+                            .state
+                            .borrow()
+                            .heap
+                            .context(fallback_realm)?
+                            .generator
+                            .ok_or(RuntimeError::Invariant(
+                                "dynamic GeneratorFunction realm has no Generator intrinsics",
+                            ))?
+                            .function_prototype
+                    }
+                    DynamicFunctionKind::Async | DynamicFunctionKind::AsyncGenerator => {
                         return Err(RuntimeError::Invariant(
                             "dynamic Function kind has no intrinsic prototype yet",
                         ));
@@ -6564,7 +6633,8 @@ impl Runtime {
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }
-                | ObjectPayload::RegExpStringIterator { .. } => (false, None, FunctionKind::Normal),
+                | ObjectPayload::RegExpStringIterator { .. }
+                | ObjectPayload::Generator { .. } => (false, None, FunctionKind::Normal),
             }
         };
         if !is_callable {
@@ -6781,7 +6851,8 @@ impl Runtime {
                         | ObjectPayload::GlobalObject { .. }
                         | ObjectPayload::Error
                         | ObjectPayload::StringIterator { .. }
-                        | ObjectPayload::RegExpStringIterator { .. } => {
+                        | ObjectPayload::RegExpStringIterator { .. }
+                        | ObjectPayload::Generator { .. } => {
                             return Err(RuntimeError::Invariant(
                                 "ordinary instanceof received a non-callable target",
                             ));
@@ -6890,7 +6961,8 @@ impl Runtime {
                         | ObjectPayload::RegExpStringIterator { .. }
                         | ObjectPayload::NativeFunction { .. }
                         | ObjectPayload::BoundFunction { .. }
-                        | ObjectPayload::BytecodeFunction { .. } => None,
+                        | ObjectPayload::BytecodeFunction { .. }
+                        | ObjectPayload::Generator { .. } => None,
                     }
                 };
                 if let Some((method_realm, min_readable_args)) = standard_method {
@@ -7263,7 +7335,8 @@ impl Runtime {
                     | ObjectPayload::RegExpStringIterator { .. }
                     | ObjectPayload::NativeFunction { .. }
                     | ObjectPayload::BoundFunction { .. }
-                    | ObjectPayload::BytecodeFunction { .. } => None,
+                    | ObjectPayload::BytecodeFunction { .. }
+                    | ObjectPayload::Generator { .. } => None,
                 }
             };
             if let Some(payload) = payload {
@@ -8183,7 +8256,8 @@ impl Runtime {
                 | ObjectPayload::RegExpStringIterator { .. }
                 | ObjectPayload::NativeFunction { .. }
                 | ObjectPayload::BoundFunction { .. }
-                | ObjectPayload::BytecodeFunction { .. } => None,
+                | ObjectPayload::BytecodeFunction { .. }
+                | ObjectPayload::Generator { .. } => None,
             }
         };
         if let Some(hidden) = global_hidden {

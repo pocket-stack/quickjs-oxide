@@ -1,7 +1,8 @@
 # R2b preserves the complete synchronous cohort which reached the old `with`
-# frontier. The implementation makes 198 variants pass; the remaining seven
-# expose independent arrow-function or generator syntax gaps after `with`
-# itself succeeds. No row remains at a `with` parser/runtime frontier.
+# frontier. The current implementation makes 204 variants pass; the remaining
+# fixture reaches the explicit async-function syntax frontier after `with` and
+# synchronous generator syntax both succeed. No row remains at a `with`
+# parser/runtime frontier.
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
@@ -17,7 +18,7 @@ runnable=205
 passes=204
 manifest_sha256=8f43b8f924d127814ea157637acebbb4e37fc89f97e6a76789e5e329d10250d6
 keys_sha256=1c04aebebd7c6e575113ca1466832c92096fef90af088aa1f3d317561aed0d4e
-nonpass_sha256=d187b8656374eaa41290b97f6a3f9c349e2cdc87af20e06398f0d0b01dfab0f2
-tsv_sha256=11ccda5be6fbb0031e230b48310c30b4cc24b5401d4b7f1334ede43b3935c7f2
-jsonl_sha256=cc133369a259d8032bf4f3a958344ca4e9cc6ebdd9d1190fc4adc68b14749253
+nonpass_sha256=ef035e64c3e4babf7a320d576769057ab510707456b0f4c6291da84828fd011d
+tsv_sha256=76c0be5f3828223da27d16f8bb6a738803814d1884018d0b968979648439432d
+jsonl_sha256=02e82c559d5fb3676772184f053ec65f3dea5e51e8cf681d7011d169e6115173
 summary=fail-runtime=1 pass=204

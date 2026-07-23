@@ -1388,8 +1388,8 @@ claim full parity.
   copied from the original Array without advancing or brand-checking that
   second iterator.
 
-  The focused gate freezes 67 paths / 134 variants: 122 pass, while ten runtime
-  and two parse failures form the exact adjacent-feature frontier. Fifteen
+  The focused gate freezes 67 paths / 134 variants: 122 pass, while twelve
+  runtime failures form the exact adjacent-feature frontier. Fifteen
   automated Oxide/QuickJS semantic differentials all pass. Three dense 65K
   Oxide stress vectors are ignored in routine automation and run manually
   because the current immutable-shape model makes construction O(n²); their
@@ -1633,7 +1633,55 @@ claim full parity.
   Admission remains manifest-scoped; async/generator class forms and the
   other explicitly excluded source frontiers stay fail-closed.
 
-  Generator/async and destructuring eval declarations, unsupported class
+  R3k ports synchronous generator declarations/expressions, public object and
+  class generator methods, `yield`, and the complete synchronous `yield*`
+  delegation protocol. Generator activations are heap-visible resumable VM
+  snapshots rather than host-side iterators: arguments, locals, operand stack,
+  private environments, callable/VarRef edges, atoms, current realm, and saved
+  bytecode PC survive suspension and participate in GC. `next`, `return`, and
+  `throw` share the QuickJS state machine across suspended-start,
+  suspended-yield, executing, and completed states. The implementation also
+  publishes the reciprocal GeneratorFunction/Generator prototypes with pinned
+  descriptor flags and keeps generator callables non-constructible.
+  The direct QuickJS 2026-06-04 anchors are `quickjs.c` 20478-20491
+  (VM suspension), 20929-21075 (state/GC/call), 27888-28024 (`yield`/`yield*`
+  lowering), 36757-36768 (initial yield), 53094-53103 and 56463-56488
+  (prototype/intrinsic graph), plus `quickjs-opcode.h` 210-215 (stack ABI).
+
+  The authenticated bootstrap gate freezes 82 public synchronous class-
+  generator paths / 160 variants: 44 positive paths and 38 audited parse-
+  negative `SyntaxError` paths. Oxide passes 160/160 and pinned QuickJS
+  2026-06-04 passes 82/82, with no failure, unsupported, skip, timeout, crash,
+  or runner fault. Manifest, profile, variant-key, TSV, JSONL, and empty
+  non-pass SHA-256 values are
+  `30857ac44aa29bf86925b72b14da28c9215fb3bc29f81fc6b950694fa0d70b0f`,
+  `eab79cc5f8ba041e93b7ea04bc391bed8fa249eaf5cbb11857d533fe27028c52`,
+  `184f80aeb39690da69a802db371fe30cd1678726797181b4a660bf25a9996256`,
+  `b51f9551d8cc50c1daf1db6f919605c759e13ce57cdfa532b870105eafca89f3`,
+  `24634a50a1587b22631d09570a562421885137059857beaf9980e961847a340c`,
+  and
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+  The global capability profile deliberately remains fail-closed for the
+  `generators` tag; this focused result does not claim full-suite admission.
+
+  A supplemental fresh-tree dependency audit widens the selection to 1,203
+  paths / 2,378 variants. It passes 2,376, has zero engine faults or skips, and
+  leaves only the sloppy/strict variants of
+  `test/language/statements/class/static-init-arguments-methods.js` at the
+  explicit async-class-method parser frontier; every generator-dependent row
+  in that selection passes. Path, variant-key, profile, TSV, and JSONL SHA-256
+  values are
+  `8aaa256a04dd6b8b4d0ebfb6c49f70fa21efe0abdff9f8dfc591858539891c80`,
+  `cdf4ec0a992ec3d034111871945f14f0c488c2d114610d48174565a0d890a360`,
+  `d3cc7178cf10be7166ec3dcb8d690ce487fa85dd697c74ad0b7cecfa5663f0fa`,
+  `42d06dde909a48d6f961697c68d32a4809a01778075be79a4a15bde599412d93`,
+  and
+  `50108d91e551c71c9659487aaec997324099e13f8c6422e8302b549c588a5378`.
+  This supplemental audit measures breadth; the smaller checked-in gate remains
+  the reproducible acceptance vector.
+
+  Async functions/generators, private generator methods, destructuring eval
+  declarations, unsupported class
   elements, and ill-formed UTF-16 source stay explicit frontiers.
   QuickJS also allocates the callable and VarRef
   array before capturing caller cells, while this Rust slice materializes the
@@ -1653,8 +1701,8 @@ claim full parity.
   reached, unrecognized ASCII is retained as a raw token, and directive probes
   seek back before strict-context rescanning. This matches the pinned
   malformed-escape commitment and tested reserved/parser/lexer error priority,
-  including line and column. Module/generator/async contextual-word behavior
-  remains with those unimplemented grammar surfaces.
+  including line and column. Module/async contextual-word behavior remains
+  with those unimplemented grammar surfaces.
 - The first runtime-independent RegExp kernel follows pinned
   `libregexp.c`/`libregexp-opcode.h` rather than a host regex library.
   `src/regexp/` owns exact QuickJS flag bits, a UTF-16 pattern parser, typed IR,
@@ -2682,9 +2730,9 @@ claim full parity.
   property retains its cell identity. Compile-in-A/execute-in-B instantiates
   the property and reports preflight errors in B, while the hoisted function
   object and authored-body errors retain A's function realm. Direct Program
-  declarations are covered by a pinned differential matrix; async and
-  generator declarations remain explicit boundaries, while the ordinary Annex
-  B statement forms are described below.
+  declarations are covered by a pinned differential matrix; async declarations
+  remain an explicit boundary, while R3k adds synchronous generator
+  declarations and the ordinary Annex B statement forms are described below.
 
   Direct ordinary FunctionBody declarations now use QuickJS's separate local
   hoist path. Each named child is parsed immediately but emits no closure at its
@@ -2731,8 +2779,8 @@ claim full parity.
   Environment and forced-unmapped path in R2y. R2z/R3a add synchronous
   recursive parameter BindingPatterns, including terminal rest patterns and
   standalone parameter expressions; R3b adds direct eval in and below that
-  Parameter Environment. Async/generator function forms remain separate
-  slices.
+  Parameter Environment. Async function forms remain a separate slice; R3k
+  later adds synchronous generator forms over the same parameter substrate.
 
   Ordinary declarations in brace blocks and a switch CaseBlock use QuickJS's
   distinct scoped-function path. The binding is registered immediately after
@@ -2887,7 +2935,7 @@ claim full parity.
   (`add_global_variables`), plus 36383-36942 (function declaration parsing,
   scoped lexical creation, Annex source writes, and argument/local hoist
   attachment)
-  in QuickJS 2026-06-04. Async/generator eval declarations, `for-await`,
+  in QuickJS 2026-06-04. Async eval declarations, `for-await`,
   single-statement lexical declarations, and the remaining
   private/static-block/class-element scopes remain explicit boundaries rather
   than falling back to local or ordinary global storage.
@@ -3118,8 +3166,9 @@ claim full parity.
   ordinary own data property. Synchronous getters and simple-parameter setters
   use the same fixed/computed define-method path, including one-time computed
   key conversion, descriptor-half pairing/replacement, data/accessor
-  conversion, inferred names, and non-constructability. Async/generator
-  methods and non-simple parameters remain explicit frontiers. Synchronous
+  conversion, inferred names, and non-constructability. Public synchronous
+  generator methods reuse the define-method, HomeObject, and shared parameter
+  machinery; async methods remain an explicit frontier. Synchronous
   methods/accessors that directly reference `super` carry a retained
   HomeObject and use its live prototype with the current method receiver. The
   pinned getter-call exception first invokes an accessor with the frozen super
@@ -3132,8 +3181,8 @@ claim full parity.
   authored or eval-created Arrow relays; ordinary functions, global code, and
   indirect eval cut that capability off. Base-class methods now reuse this
   HomeObject/SuperProperty path, and R3f extends the authenticated capability
-  through heritage, derived construction, and `super()`; async/generator
-  methods and Proxy/exotic-source spread remain explicit frontiers. The pinned
+  through heritage, derived construction, and `super()`; async methods and
+  Proxy/exotic-source spread remain explicit frontiers. The pinned
   anchors are
   `quickjs.c` 24485-24621 and
   24850-24965 plus the matching object/define/name/proto/copy opcodes in
@@ -3697,10 +3746,10 @@ claim full parity.
   getter/call failures cannot replace the original throw. Normal exhaustion
   does not close. A four-active-call guard plus the shared weighted budget keeps
   direct and interleaved getter/key-coercion recursion catchable. Strong Map
-  entry iteration and Set values which are themselves entry objects now run in
-  the pinned differential. Proxy entry traps, generators/finally, TypedArrays
-  and module namespace entries remain explicit boundaries until those object
-  kinds exist.
+  entry iteration, Set values which are themselves entry objects, and generator
+  `finally` during IteratorClose now run in the pinned differential. Proxy entry
+  traps, TypedArrays and module namespace entries remain explicit boundaries
+  until those object kinds exist.
   `hasOwn` converts and boxes its target in the defining realm before converting
   its property key, deliberately reversing the legacy prototype method's
   observable conversion order. It probes only the resulting object's own
@@ -4097,11 +4146,11 @@ claim full parity.
   own property whose value is that realm's global object. It uses the same
   global `VarRef` substrate as unresolved identifiers, so assignment, deletion,
   accessor conversion, reconnection, defining-realm lookup and the self-cycle's
-  trial-deletion GC behavior remain coherent. Upstream places this property
-  after String/Math/Reflect, Symbol and the generator intrinsics; the current
-  bootstrap preserves the exact relative order of all implemented entries:
-  Math, Reflect, Symbol, `globalThis`, then BigInt. The remaining intervening
-  generator intrinsics must be inserted before `globalThis` when they land.
+  trial-deletion GC behavior remain coherent. Upstream initializes the hidden
+  generator intrinsics after Symbol and before defining this property; the
+  current bootstrap does the same. Because no generator constructor is exposed
+  as a global binding, the observable string-key order remains Math, Reflect,
+  Symbol, `globalThis`, then BigInt.
 - Unresolved identifiers no longer use a string-key global opcode. Resolution
   installs one root `Global` closure descriptor and `ParentGlobal` relays on
   every nested function path; declared Program lexicals and vars instead start
@@ -4397,8 +4446,9 @@ claim full parity.
   The `oracle_function_body_declarations` target locks direct local/argument
   hoisting, duplicate and `var` ordering (including the `arguments` name),
   captured later lexicals and failed initializers, normal `%Function%` bodies,
-  exact full/StripDebug stacks and parser errors, explicit unsupported
-  declaration boundaries, and the pinned cross-realm regression.
+  synchronous generator declarations, exact full/StripDebug stacks and parser
+  errors, the explicit async-declaration boundary, and the pinned cross-realm
+  regression.
   The `oracle_arguments` target locks 33 pinned QuickJS value observations over
   lazy binding selection, actual argc, mapped/unmapped aliases, duplicate and
   shadowing rules, body hoists, escaped cells, descriptor and integrity
@@ -4413,8 +4463,9 @@ claim full parity.
   behavior, strict and source-ordered conflicts, parameter/`arguments` Annex
   suppression, mutation before the authored declaration, captured-cell loop
   re-entry, failed initializers, Program Annex/global-lexical ordering, normal
-  `%Function%` bodies, exact full/StripDebug stacks, realm splitting, and the
-  remaining explicit async/generator boundaries.
+  `%Function%` bodies, synchronous generator declarations, exact
+  full/StripDebug stacks, realm splitting, and the remaining explicit async
+  boundary.
   The `oracle_annex_b_statements` target separately locks declaration-mask
   propagation, shared `if` scope entry, first-Annex/last-lexical duplicate
   behavior, skipped and repeated control-flow paths, labelled scope identity,
@@ -4490,10 +4541,9 @@ parser/compiler work still uses host recursion. A complete execution
 trampoline plus explicit compiler work storage is required to recover
 upstream's substantially deeper platform-dependent limits throughout.
 
-The language slice remains incomplete. Async/generator declarations,
-`for-await`, other general assignment targets, module resolution,
-async/generator methods and parameter forms,
-generator/async class methods, non-simple ObjectLiteral
+The language slice remains incomplete. Async declarations, `for-await`, other
+general assignment targets, module resolution, async methods and parameter
+forms, private generator methods, async class methods, non-simple ObjectLiteral
 accessor forms outside the covered
 synchronous setter slice, and callable Proxy classes are not yet implemented.
 Unsupported declaration contexts are rejected instead of being
@@ -4522,10 +4572,11 @@ failure today; matching the allocation order safely requires a provisional
 two-phase bytecode-function reservation plus failure-injection coverage, rather
 than attempting to roll back migrated VarRefs after the fact.
 
-Dynamic Generator/Async/AsyncGenerator Function constructors, other native
-builtin constructor families, and Proxy construct dispatch remain. Base and
-derived class construction, construct-only guards, constructor return
-validation, `super()`, `new.target`, and `Reflect.construct` are active. Typed
+Dynamic Async/AsyncGenerator Function constructors, other native builtin
+constructor families, and Proxy construct dispatch remain. The hidden dynamic
+GeneratorFunction constructor and base/derived class construction,
+construct-only guards, constructor return validation, `super()`, `new.target`,
+and `Reflect.construct` are active. Typed
 target/cproto, data-bearing Error selector, realm, arity padding, production
 BoundFunction allocation and frame foundations exist. Generic setter and raw
 iterator-next cproto adapters are active; specialized F64 adapters and the
@@ -4540,7 +4591,8 @@ surface, but complete embedding-API parity must eventually reproduce it.
 
 Explicit `throw`, nested propagation, VM-generated native errors, eager Error
 backtraces, synchronous catch/finally regions, and synchronous iterator cleanup
-share the implemented completion path. Async/generator/Promise frame integration,
+share the implemented completion path. Synchronous generator suspension and
+resumption now use that completion path; async/Promise frame integration,
 recoverable OOM and backtrace-allocation fallback, interrupt/termination, and
 the remaining abrupt-completion surfaces are still open. The `JS_STRIP_DEBUG` /
 `JS_STRIP_SOURCE` debug/source-stripping decision is implemented as a
@@ -4559,17 +4611,18 @@ expressions and the same Parameter Environment semantics as authored ordinary
 functions. Bodies remain limited to the current statement, expression, and
 simple body/block/switch/classic-for and for-in/of-head lexical-declaration
 grammar.
-Generator/async kinds and Proxy new-target realms remain pending.
+Async kinds and Proxy new-target realms remain pending.
 Compiler input is still UTF-8,
 so dynamic source containing an unpaired UTF-16 surrogate throws an explicit
 implementation-gap `InternalError` instead of being silently rewritten. The
 parser now requests tokens through fallible advances, and directive probes
 seek back before strict-context rescanning, so current-token grammar errors no
 longer lose to untouched later lexical failures. Contextual word reparsing for
-module/generator/async grammar remains with those unimplemented surfaces. The
-current parser does not yet produce generator or async bytecode, although the
-function-kind metadata and `toString` fallback distinguish all four QuickJS
-kinds. Bound dispatch is iterative and therefore does not consume the Rust host
+module/async grammar remains with those unimplemented surfaces. The parser now
+produces synchronous generator bytecode; async and async-generator bytecode
+remain fail-closed, while function-kind metadata and `toString` fallback
+distinguish all four QuickJS kinds. Bound dispatch is iterative and therefore
+does not consume the Rust host
 stack, but exact QuickJS runtime-stack accounting and its deep-bound-chain
 overflow threshold are not yet reproduced. VM object coercion is wired through
 the implemented unary, arithmetic, exponentiation, bitwise, shift, relational,
@@ -4655,15 +4708,15 @@ Proxy/exotic internal methods, and the full `function_accessors.js` fixture are
 still pending. Uncatchable termination state is also pending. Other iterator
 classes and helpers, the remaining RegExp
 grammar/static surface and Unicode-backed String methods, non-simple
-ObjectLiteral setter forms outside the covered synchronous slice,
-async/generator class methods,
+ObjectLiteral setter forms outside the covered synchronous slice, async and
+private generator class methods,
 exotic-source spread, and the rest of the builtin table build on those layers.
 
 The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
 identifier, case-conversion, `Cased` and `Case_Ignorable` data, the advanced
-RegExp grammar, modules, jobs/Promises/async,
-generators, TypedArrays/Atomics, WeakRef/finalization, bytecode version 5 and
+RegExp grammar, modules, jobs/Promises/async, remaining generator surfaces,
+TypedArrays/Atomics, WeakRef/finalization, bytecode version 5 and
 BJSON interoperability, `std`/`os`, workers, REPL/qjsc, and the complete Rust
 and C embedding APIs.
 
@@ -4917,6 +4970,12 @@ private-element/compiler/VM-host modules rather than returning to the
 monolith. R3j extends those same typed private-element cells and publication/
 VM-host seams for getter/setter pairs; `runtime.rs` remains the 9,674-line
 facade rather than absorbing the accessor implementation.
+R3k keeps the same boundary: `runtime.rs` is 9,748 lines, while the generator
+state machine and intrinsics live in the dedicated 875-line
+`runtime/generator.rs`; VM snapshot encode/decode stays in `runtime/vm_host.rs`,
+heap ownership and tracing in `heap.rs`, and resumable execution in `vm.rs`.
+The facade gained only dispatch/publication seams instead of absorbing the
+generator kernel.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -5211,6 +5270,9 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-class-derived.sh
 ./scripts/test-test262-class-public-init.sh
 ./scripts/test-test262-class-private-fields.sh
+./scripts/test-test262-class-private-methods.sh
+./scripts/test-test262-class-private-accessors.sh
+./scripts/test-test262-class-generator-methods.sh
 ./scripts/test-test262-full.sh
 ```
 

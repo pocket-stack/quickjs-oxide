@@ -1882,16 +1882,22 @@ fn verify_unlinked_tree_with_root(
             && (is_root
                 || function.metadata().strict
                 || function.metadata().eval_kind != EvalKind::None
-                || function.metadata().function_kind != FunctionKind::Normal)
+                || !matches!(
+                    function.metadata().function_kind,
+                    FunctionKind::Normal | FunctionKind::Generator
+                ))
         {
             return Err(RuntimeError::Engine(Error::internal(
-                "eval variable-object local escaped a sloppy ordinary function",
+                "eval variable-object local escaped a sloppy ordinary or generator function",
             )));
         }
         if arg_eval_variable_object_local.is_some()
             && (function.metadata().strict
                 || function.metadata().eval_kind != EvalKind::None
-                || function.metadata().function_kind != FunctionKind::Normal
+                || !matches!(
+                    function.metadata().function_kind,
+                    FunctionKind::Normal | FunctionKind::Generator
+                )
                 || function.metadata().eval_variable_object_local.is_none())
         {
             return Err(RuntimeError::Engine(Error::internal(

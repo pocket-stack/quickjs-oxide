@@ -11,6 +11,7 @@ impl<'source> Parser<'source> {
         let function_span = self.current().span;
         let parent = self.current_function;
         let parent_strict = self.functions[parent].strict;
+        let parent_context = self.lexer.context();
         let mut parameter_tokens = Vec::new();
         let child = self.functions.len();
         let parent_scope = self.functions[parent].current_scope;
@@ -65,11 +66,11 @@ impl<'source> Parser<'source> {
                 self.advance()?;
             }
             ArrowHead::Parenthesized => {
-                let has_parameter_expressions = self
-                    .parenthesized_parameter_has_assignment()
-                    .unwrap_or(false);
-                if has_parameter_expressions {
-                    self.activate_parameter_environment_from_scan()?;
+                let parameter_scan = self.parenthesized_parameter_scan();
+                if parameter_scan.is_some_and(|scan| scan.has_assignment) {
+                    self.activate_parameter_environment_from_scan(
+                        parameter_scan.and_then(|scan| scan.bound_name_count),
+                    )?;
                 }
                 self.expect_punctuator(Punctuator::LeftParen)?;
                 if !self.consume_punctuator(Punctuator::RightParen)? {
@@ -158,6 +159,11 @@ impl<'source> Parser<'source> {
             return Err(self.syntax_here("expecting '=>'"));
         }
         self.advance_expression_start()?;
+        let mut child_context = parent_context;
+        child_context.strict = parent_strict;
+        child_context.generator = false;
+        child_context.async_function = false;
+        self.relex_current_with_context(child_context)?;
         self.functions[child].await_forbidden = false;
         self.functions[child].await_binding_forbidden = false;
         let block_body = self.is_punctuator(Punctuator::LeftBrace);
@@ -171,7 +177,8 @@ impl<'source> Parser<'source> {
         };
         let strict = parent_strict || has_use_strict;
         if block_body {
-            self.relex_current_with_strict(strict)?;
+            child_context.strict = strict;
+            self.relex_current_with_context(child_context)?;
         }
         let has_simple_parameter_list = self.functions[child].has_simple_parameter_list;
         if has_use_strict && !has_simple_parameter_list {
@@ -201,19 +208,20 @@ impl<'source> Parser<'source> {
         let range_end = if block_body {
             self.parse_function_body()?;
             let closing_brace = self.current().span;
-            let mut parent_context = self.lexer.context();
-            parent_context.strict = parent_strict;
-            self.lexer.set_context(parent_context);
+            self.relex_current_with_context(parent_context)?;
             self.expect_punctuator(Punctuator::RightBrace)?;
             closing_brace.end.byte_offset
         } else {
             self.parse_assignment()?;
             self.emit_instruction(Instruction::Return)?;
-            self.tokens
+            let range_end = self
+                .tokens
                 .get(self.cursor.saturating_sub(1))
                 .map_or(self.current().span.start.byte_offset, |token| {
                     token.span.end.byte_offset
-                })
+                });
+            self.relex_current_with_context(parent_context)?;
+            range_end
         };
         self.functions[child].source.range = Some(
             source_offset(function_span)?

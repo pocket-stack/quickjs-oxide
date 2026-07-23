@@ -3,13 +3,14 @@
 An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
-The `unsafe`-free engine is runnable but incomplete; synchronous classes cover
-public/private fields, static blocks, private-`in`, and ordinary private
-methods/accessors with per-class-side brands. R3g/R3h/R3i/R3j pass 767/767,
-1,260/1,260, 534/534, and 610/610 focused Test262 variants. That is not
-full-suite parity: modules, async/generators, async/generator class forms, and
-broad built-in coverage remain incomplete. Unsupported paths fail
-explicitly, and pinned QuickJS is used only as a test oracle.
+The `unsafe`-free engine is runnable but incomplete. Synchronous classes cover
+fields, static blocks, private elements, and public generator methods;
+generator declarations/expressions and methods share resumable `yield`/`yield*`
+execution. The latest R3k gate passes 160/160 focused Test262 variants. This is
+not full-suite parity:
+modules, async functions/generators, private generator methods, and broad
+built-in coverage remain incomplete. Unsupported paths fail explicitly, and
+pinned QuickJS is used only as a test oracle.
 
 ## Try it
 
@@ -37,6 +38,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-class-public-init.sh
 ./scripts/test-test262-class-private-fields.sh
 ./scripts/test-test262-class-private-{methods,accessors}.sh
+./scripts/test-test262-class-generator-methods.sh
 ```
 
 ## License

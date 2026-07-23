@@ -827,7 +827,12 @@ impl Runtime {
                 | ObjectPayload::Set { .. }
                 | ObjectPayload::SetIterator { .. }
                 | ObjectPayload::ForInIterator(_)
-                | ObjectPayload::GlobalObject { .. } => JsString::from_static("Object"),
+                | ObjectPayload::GlobalObject { .. }
+                // Pinned QuickJS's Object.prototype.toString class switch
+                // deliberately excludes JS_CLASS_GENERATOR. The standard
+                // "Generator" tag comes from the inherited @@toStringTag;
+                // deleting it therefore falls back to "Object".
+                | ObjectPayload::Generator { .. } => JsString::from_static("Object"),
                 ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::StringIterator { .. }
                 | ObjectPayload::RegExpStringIterator { .. } => JsString::from_static("Object"),

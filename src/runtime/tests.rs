@@ -7359,19 +7359,35 @@ fn function_bind_and_to_string_use_quickjs_payload_and_source_paths() {
             "async function *fallback() {\n    [native code]\n}",
         ),
     ] {
+        let (code, metadata) = if function_kind == crate::heap::FunctionKind::Generator {
+            (
+                vec![
+                    Instruction::InitialYield,
+                    Instruction::Undefined,
+                    Instruction::Return,
+                ],
+                FunctionMetadata {
+                    max_stack: 1,
+                    function_kind,
+                    has_prototype: true,
+                    ..FunctionMetadata::default()
+                },
+            )
+        } else {
+            (
+                vec![Instruction::Undefined, Instruction::Return],
+                FunctionMetadata {
+                    max_stack: 1,
+                    function_kind,
+                    ..FunctionMetadata::default()
+                },
+            )
+        };
         let function = runtime
             .publish_unlinked_function(
                 context.realm,
-                UnlinkedFunction::new(
-                    vec![Instruction::Undefined, Instruction::Return],
-                    Vec::new(),
-                    FunctionMetadata {
-                        max_stack: 1,
-                        function_kind,
-                        ..FunctionMetadata::default()
-                    },
-                )
-                .with_name(Some(JsString::from_static("fallback"))),
+                UnlinkedFunction::new(code, Vec::new(), metadata)
+                    .with_name(Some(JsString::from_static("fallback"))),
             )
             .unwrap();
         let callable = runtime

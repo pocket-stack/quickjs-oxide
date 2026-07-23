@@ -1,7 +1,7 @@
 use crate::bigint::{BigIntError, JsBigInt};
 use crate::bytecode::{
     ApplyKind, ArgumentsKind, BytecodeFunction, DefineMethodKind, DynamicEnvironmentSource,
-    EvalVariableSource, Instruction, PrivateNameSource,
+    EvalVariableSource, Instruction, IteratorCallKind, PrivateNameSource,
 };
 use crate::error::{Error, ErrorKind, NativeErrorKind};
 use crate::heap::{ContextId, FunctionMetadata};
@@ -16,9 +16,10 @@ use std::collections::VecDeque;
 /// independent from parsing so the compiler and decoder can share it.
 ///
 /// Operand roots belong to one invocation, just like a QuickJS stack frame.
-/// Keeping them in a local [`CallFrame`] makes every normal and exceptional
-/// exit release the frame immediately instead of retaining values until the
-/// next call into the VM.
+/// Keeping them in a local [`VmActivation`] makes every normal and exceptional
+/// exit release the frame immediately. Generator execution transfers the same
+/// activation into a [`VmSuspension`] instead, so no Rust interpreter frame is
+/// retained between calls.
 #[derive(Default)]
 pub struct Vm;
 
@@ -29,6 +30,41 @@ pub struct Vm;
 pub(crate) enum Completion {
     Return(Value),
     Throw(Value),
+}
+
+/// The three suspension sites used by QuickJS generator bytecode.
+///
+/// `Initial` is the hidden prologue barrier reached while constructing a
+/// generator and has no yielded operand. `Yield` and `YieldStar` both preserve
+/// their output in the activation's top stack slot until the runtime driver
+/// extracts it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VmSuspendKind {
+    Initial,
+    Yield,
+    YieldStar,
+}
+
+/// A caller-supplied completion used to resume a suspended generator.
+///
+/// The VM translates this typed boundary back to QuickJS's private stack ABI:
+/// next/return/throw are magic integers 0/1/2. A plain `yield` throw is the one
+/// exception: it is raised through the activation's normal unwind machinery,
+/// while `yield*` receives value + magic 2 so the compiled delegation loop can
+/// invoke the delegate's `throw` method.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum VmResume {
+    Next(Value),
+    Return(Value),
+    Throw(Value),
+}
+
+/// A resumable VM run either completes normally/abruptly or transfers its
+/// owned activation to the generator driver.
+#[derive(Debug, PartialEq)]
+pub(crate) enum VmExit {
+    Complete(Completion),
+    Suspend(VmSuspension),
 }
 
 /// Result of QuickJS `OP_define_class` at the VM/runtime boundary.
@@ -776,6 +812,10 @@ struct DetachedHost<'a> {
     call_results: VecDeque<Result<Completion, Error>>,
     #[cfg(test)]
     call_inputs: Vec<(Value, Value, Vec<Value>)>,
+    #[cfg(test)]
+    get_property_results: VecDeque<Completion>,
+    #[cfg(test)]
+    get_property_inputs: Vec<(Value, Value)>,
 }
 
 impl<'a> DetachedHost<'a> {
@@ -867,6 +907,10 @@ impl<'a> DetachedHost<'a> {
             call_results: VecDeque::new(),
             #[cfg(test)]
             call_inputs: Vec::new(),
+            #[cfg(test)]
+            get_property_results: VecDeque::new(),
+            #[cfg(test)]
+            get_property_inputs: Vec::new(),
         }
     }
 
@@ -1567,6 +1611,11 @@ impl VmHost for DetachedHost<'_> {
     }
 
     fn get_property(&mut self, _base: Value, _key: Value) -> Result<Completion, Error> {
+        #[cfg(test)]
+        if let Some(result) = self.get_property_results.pop_front() {
+            self.get_property_inputs.push((_base, _key));
+            return Ok(result);
+        }
         Err(Error::internal(
             "detached VM cannot access runtime-owned properties",
         ))
@@ -1863,7 +1912,9 @@ impl Vm {
     pub fn execute(&mut self, function: &BytecodeFunction) -> Result<Value, Error> {
         let verified = function.verify()?;
         let mut host = DetachedHost::new(function);
-        match CallFrame::new(usize::from(verified.max_stack)).execute(&function.code, &mut host)? {
+        match VmActivation::new(usize::from(verified.max_stack))
+            .execute(&function.code, &mut host)?
+        {
             Completion::Return(value) => Ok(value),
             Completion::Throw(_) => Err(Error::internal(
                 "detached VM execution cannot publish a JavaScript exception",
@@ -1871,12 +1922,13 @@ impl Vm {
         }
     }
 
-    /// Execute an immutable function which was verified before runtime
-    /// publication.
+    /// Execute an immutable non-generator function which was verified before
+    /// runtime publication.
     ///
-    /// This is intentionally crate-private: safe public callers cannot bypass
-    /// [`BytecodeFunction::verify`], while a runtime-owned
-    /// `FunctionBytecodeData` does not pay the verifier cost on every call.
+    /// Keep this driver separate from [`Self::start_published`]. Returning the
+    /// generator-capable [`VmExit`] from every ordinary recursive call would
+    /// reserve space for a complete suspended activation in each native stack
+    /// frame, regressing the proven two-MiB recursion boundary.
     pub(crate) fn execute_published(
         &mut self,
         input: CallInput<'_>,
@@ -1897,7 +1949,7 @@ impl Vm {
                 "function object closure slot count does not match bytecode metadata",
             ));
         }
-        CallFrame::new_in_realm(
+        VmActivation::new_in_realm(
             metadata,
             caller_realm,
             callee_realm,
@@ -1908,13 +1960,69 @@ impl Vm {
         )
         .execute(code, host)
     }
+
+    /// Start an immutable published bytecode activation and allow it to
+    /// transfer ownership at a generator suspension point.
+    pub(crate) fn start_published(
+        &mut self,
+        input: CallInput<'_>,
+        host: &mut impl VmHost,
+    ) -> Result<VmExit, Error> {
+        let CallInput {
+            code,
+            metadata,
+            caller_realm,
+            callee_realm,
+            current_function,
+            this_value,
+            new_target,
+            callee_global,
+        } = input;
+        if host.closure_count() != usize::from(metadata.closure_count) {
+            return Err(Error::internal(
+                "function object closure slot count does not match bytecode metadata",
+            ));
+        }
+        VmActivation::new_in_realm(
+            metadata,
+            caller_realm,
+            callee_realm,
+            current_function,
+            this_value,
+            new_target,
+            callee_global,
+        )
+        .run(code, host)
+    }
+
+    /// Continue past a generator's hidden initial-yield barrier. No resume
+    /// value is accepted because the first `next` argument is ignored.
+    pub(crate) fn resume_published_initial(
+        &mut self,
+        suspension: VmSuspension,
+        code: &[Instruction],
+        host: &mut impl VmHost,
+    ) -> Result<VmExit, Error> {
+        suspension.resume_initial(code, host)
+    }
+
+    /// Resume a visible `yield` or `yield*` suspension.
+    pub(crate) fn resume_published(
+        &mut self,
+        suspension: VmSuspension,
+        code: &[Instruction],
+        host: &mut impl VmHost,
+        resume: VmResume,
+    ) -> Result<VmExit, Error> {
+        suspension.resume(code, host, resume)
+    }
 }
 
 /// Per-invocation value stack. This will later grow the remaining
 /// `JSStackFrame` fields (arguments, locals, closure variables and realm), but
 /// its ownership boundary is already the final one.
-#[derive(Clone, Copy, Debug)]
-enum UnwindRegion {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VmUnwindRegion {
     Catch {
         target: usize,
         /// Runtime operand depth before the private catch marker was
@@ -1930,13 +2038,20 @@ enum UnwindRegion {
     },
 }
 
-struct CallFrame {
+/// Owned, Rust-stack-independent state of one bytecode invocation.
+///
+/// This type is deliberately runtime-agnostic. While it is actively executing
+/// its rooted values are ordinary [`Value`]s; [`VmActivationParts`] is the
+/// conversion boundary used by the runtime to encode/decode its own raw heap
+/// representation while a generator is dormant.
+#[derive(Debug, PartialEq)]
+pub(crate) struct VmActivation {
     stack: Vec<Value>,
-    regions: Vec<UnwindRegion>,
+    regions: Vec<VmUnwindRegion>,
     pc: usize,
-    _caller_realm: Option<ContextId>,
+    caller_realm: Option<ContextId>,
     /// The realm captured by the executing bytecode.
-    _callee_realm: Option<ContextId>,
+    callee_realm: Option<ContextId>,
     current_function: Option<ObjectRef>,
     this_value: Value,
     normalized_this: Option<Value>,
@@ -1945,14 +2060,193 @@ struct CallFrame {
     callee_global: Option<ObjectRef>,
 }
 
-impl CallFrame {
+/// Serializable-shaped activation fields exposed to the runtime bridge.
+///
+/// The fields still contain rooted VM handles, and therefore must only exist
+/// transiently. Long-lived generator heap state maps every `Value` and
+/// `ObjectRef` here to the heap's raw representation before returning control
+/// to JavaScript.
+#[derive(Debug, PartialEq)]
+pub(crate) struct VmActivationParts {
+    pub(crate) stack: Vec<Value>,
+    pub(crate) regions: Vec<VmUnwindRegion>,
+    pub(crate) pc: usize,
+    pub(crate) caller_realm: Option<ContextId>,
+    pub(crate) callee_realm: Option<ContextId>,
+    pub(crate) current_function: Option<ObjectRef>,
+    pub(crate) this_value: Value,
+    pub(crate) normalized_this: Option<Value>,
+    pub(crate) new_target: Value,
+    pub(crate) strict: bool,
+    pub(crate) callee_global: Option<ObjectRef>,
+}
+
+/// A generator suspension owns the complete interpreter activation. For a
+/// visible yield, `take_yielded` must be called exactly once before snapshot or
+/// resume; it replaces QuickJS's retained output slot with `undefined`.
+#[derive(Debug, PartialEq)]
+pub(crate) struct VmSuspension {
+    kind: VmSuspendKind,
+    activation: VmActivation,
+    yielded_taken: bool,
+}
+
+/// Internal interpreter exit. JavaScript completion remains intentionally
+/// limited to [`Completion::Return`] and [`Completion::Throw`].
+enum InterpreterExit {
+    Complete(Completion),
+    Suspend(VmSuspendKind),
+}
+
+// Existing detached tests exercise the historical execute-to-completion
+// helper directly. Keep their local name while the production ownership
+// boundary is now explicitly a resumable activation.
+#[cfg(test)]
+type CallFrame = VmActivation;
+
+impl VmSuspension {
+    fn new(kind: VmSuspendKind, activation: VmActivation) -> Result<Self, Error> {
+        if kind != VmSuspendKind::Initial && activation.stack.is_empty() {
+            return Err(Error::internal(
+                "generator yield has no retained output stack slot",
+            ));
+        }
+        Ok(Self {
+            kind,
+            activation,
+            yielded_taken: kind == VmSuspendKind::Initial,
+        })
+    }
+
+    #[must_use]
+    pub(crate) const fn kind(&self) -> VmSuspendKind {
+        self.kind
+    }
+
+    /// Extract the visible value of `yield`/`yield*` and leave the retained
+    /// operand slot ready for QuickJS-compatible resume injection.
+    pub(crate) fn take_yielded(&mut self) -> Result<Value, Error> {
+        if self.kind == VmSuspendKind::Initial {
+            return Err(Error::internal(
+                "initial generator suspension has no yielded value",
+            ));
+        }
+        if self.yielded_taken {
+            return Err(Error::internal(
+                "generator suspension output was already extracted",
+            ));
+        }
+        let slot = self
+            .activation
+            .stack
+            .last_mut()
+            .ok_or_else(|| Error::internal("generator yielded stack slot is missing"))?;
+        let yielded = std::mem::replace(slot, Value::Undefined);
+        self.yielded_taken = true;
+        Ok(yielded)
+    }
+
+    /// Convert a suspension to the transient rooted state consumed by the
+    /// runtime's raw heap encoder. Visible yields must have been extracted
+    /// first so dormant frames never retain the result object/value twice.
+    pub(crate) fn into_parts(self) -> Result<(VmSuspendKind, VmActivationParts), Error> {
+        if !self.yielded_taken {
+            return Err(Error::internal(
+                "generator suspension must be extracted before snapshot",
+            ));
+        }
+        Ok((self.kind, self.activation.into_parts()))
+    }
+
+    /// Restore a suspension whose visible yielded slot was already replaced
+    /// with `undefined` before it entered long-lived heap state.
+    pub(crate) fn from_parts(kind: VmSuspendKind, parts: VmActivationParts) -> Result<Self, Error> {
+        let activation = VmActivation::from_parts(parts);
+        if kind != VmSuspendKind::Initial && activation.stack.is_empty() {
+            return Err(Error::internal(
+                "restored generator suspension has no resume operand slot",
+            ));
+        }
+        Ok(Self {
+            kind,
+            activation,
+            yielded_taken: true,
+        })
+    }
+
+    /// Continue past the hidden 0-to-0 initial-yield barrier. The first
+    /// user-visible `next(argument)` intentionally supplies no operand here;
+    /// ECMAScript ignores that argument for a suspended-start generator.
+    pub(crate) fn resume_initial(
+        self,
+        code: &[Instruction],
+        host: &mut impl VmHost,
+    ) -> Result<VmExit, Error> {
+        if self.kind != VmSuspendKind::Initial {
+            return Err(Error::internal(
+                "non-initial generator suspension used initial resume",
+            ));
+        }
+        self.activation.run(code, host)
+    }
+
+    /// Resume a visible generator suspension using QuickJS's private
+    /// value-plus-magic ABI.
+    pub(crate) fn resume(
+        self,
+        code: &[Instruction],
+        host: &mut impl VmHost,
+        resume: VmResume,
+    ) -> Result<VmExit, Error> {
+        if self.kind == VmSuspendKind::Initial {
+            return Err(Error::internal(
+                "initial generator suspension requires parameterless resume",
+            ));
+        }
+        if !self.yielded_taken {
+            return Err(Error::internal(
+                "generator suspension must be extracted before resume",
+            ));
+        }
+
+        let mut activation = self.activation;
+        if self.kind == VmSuspendKind::Yield {
+            if let VmResume::Throw(value) = resume {
+                if let Some(completion) = activation.raise(value, host, code.len())? {
+                    return Ok(VmExit::Complete(completion));
+                }
+                return activation.run(code, host);
+            }
+        }
+
+        let (value, magic) = match resume {
+            VmResume::Next(value) => (value, 0),
+            VmResume::Return(value) => (value, 1),
+            VmResume::Throw(value) => (value, 2),
+        };
+        let slot = activation
+            .stack
+            .last_mut()
+            .ok_or_else(|| Error::internal("generator resume stack slot is missing"))?;
+        if !matches!(slot, Value::Undefined) {
+            return Err(Error::internal(
+                "generator resume stack slot was not cleared after yield",
+            ));
+        }
+        *slot = value;
+        activation.stack.push(Value::Int(magic));
+        activation.run(code, host)
+    }
+}
+
+impl VmActivation {
     fn new(max_stack: usize) -> Self {
         Self {
             stack: Vec::with_capacity(max_stack),
             regions: Vec::new(),
             pc: 0,
-            _caller_realm: None,
-            _callee_realm: None,
+            caller_realm: None,
+            callee_realm: None,
             current_function: None,
             this_value: Value::Undefined,
             normalized_this: None,
@@ -1975,14 +2269,50 @@ impl CallFrame {
             stack: Vec::with_capacity(usize::from(metadata.max_stack)),
             regions: Vec::new(),
             pc: 0,
-            _caller_realm: Some(caller_realm),
-            _callee_realm: Some(callee_realm),
+            caller_realm: Some(caller_realm),
+            callee_realm: Some(callee_realm),
             current_function: Some(current_function),
             this_value,
             normalized_this: None,
             new_target,
             strict: metadata.strict,
             callee_global: Some(callee_global),
+        }
+    }
+
+    /// Split an inactive VM activation into fields the runtime can map to its
+    /// raw generator-frame representation.
+    pub(crate) fn into_parts(self) -> VmActivationParts {
+        VmActivationParts {
+            stack: self.stack,
+            regions: self.regions,
+            pc: self.pc,
+            caller_realm: self.caller_realm,
+            callee_realm: self.callee_realm,
+            current_function: self.current_function,
+            this_value: self.this_value,
+            normalized_this: self.normalized_this,
+            new_target: self.new_target,
+            strict: self.strict,
+            callee_global: self.callee_global,
+        }
+    }
+
+    /// Rebuild an inactive activation after the runtime has rooted its raw
+    /// generator-frame values for an individual resume operation.
+    pub(crate) fn from_parts(parts: VmActivationParts) -> Self {
+        Self {
+            stack: parts.stack,
+            regions: parts.regions,
+            pc: parts.pc,
+            caller_realm: parts.caller_realm,
+            callee_realm: parts.callee_realm,
+            current_function: parts.current_function,
+            this_value: parts.this_value,
+            normalized_this: parts.normalized_this,
+            new_target: parts.new_target,
+            strict: parts.strict,
+            callee_global: parts.callee_global,
         }
     }
 
@@ -1993,8 +2323,15 @@ impl CallFrame {
     ) -> Result<Completion, Error> {
         loop {
             let raised = match self.execute_inner(code, host) {
-                Ok(Completion::Return(value)) => return Ok(Completion::Return(value)),
-                Ok(Completion::Throw(value)) => value,
+                Ok(InterpreterExit::Complete(Completion::Return(value))) => {
+                    return Ok(Completion::Return(value));
+                }
+                Ok(InterpreterExit::Complete(Completion::Throw(value))) => value,
+                Ok(InterpreterExit::Suspend(_)) => {
+                    return Err(Error::internal(
+                        "generator suspension reached execute-to-completion VM entry",
+                    ));
+                }
                 Err(error) if NativeErrorKind::from_javascript_error(error.kind()).is_some() => {
                     host.materialize_error(error)?
                 }
@@ -2002,6 +2339,27 @@ impl CallFrame {
             };
             if let Some(completion) = self.raise(raised, host, code.len())? {
                 return Ok(completion);
+            }
+        }
+    }
+
+    fn run(mut self, code: &[Instruction], host: &mut impl VmHost) -> Result<VmExit, Error> {
+        loop {
+            let raised = match self.execute_inner(code, host) {
+                Ok(InterpreterExit::Complete(Completion::Return(value))) => {
+                    return Ok(VmExit::Complete(Completion::Return(value)));
+                }
+                Ok(InterpreterExit::Complete(Completion::Throw(value))) => value,
+                Ok(InterpreterExit::Suspend(kind)) => {
+                    return VmSuspension::new(kind, self).map(VmExit::Suspend);
+                }
+                Err(error) if NativeErrorKind::from_javascript_error(error.kind()).is_some() => {
+                    host.materialize_error(error)?
+                }
+                Err(error) => return Err(error),
+            };
+            if let Some(completion) = self.raise(raised, host, code.len())? {
+                return Ok(VmExit::Complete(completion));
             }
         }
     }
@@ -2216,6 +2574,82 @@ impl CallFrame {
                     host.copy_data_properties_excluded(target, source, excluded)?
                 {
                     return Ok(Some(Completion::Throw(value)));
+                }
+            }
+            Instruction::IteratorStart => {
+                let iterable = self.pop()?;
+                match host.for_of_start(iterable)? {
+                    ForOfStartOutcome::Record {
+                        iterator,
+                        next_method,
+                    } => {
+                        // Unlike ForOfStart this yield*-private record is made
+                        // entirely of ordinary operands. In particular, it
+                        // must not create an unwind region which would call
+                        // the delegate's `return` method on a propagated
+                        // next/return/throw completion.
+                        self.stack.push(iterator);
+                        self.stack.push(next_method);
+                        self.stack.push(Value::Undefined);
+                    }
+                    ForOfStartOutcome::Throw(value) => {
+                        return Ok(Some(Completion::Throw(value)));
+                    }
+                }
+            }
+            Instruction::IteratorNext => {
+                // iter, cached-next, placeholder, argument ->
+                // iter, cached-next, placeholder, result-object
+                let iterator = self.clone_at_depth(3)?;
+                let next_method = self.clone_at_depth(2)?;
+                let argument = self.pop()?;
+                match host.call(next_method, iterator, vec![argument])? {
+                    Completion::Return(result) => self.stack.push(result),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::IteratorCall(kind) => {
+                // QuickJS looks up the method before touching the retained
+                // input value. A missing/nullish method leaves that value in
+                // place and appends true; a present method replaces it with
+                // the call result and appends false.
+                let iterator = self.clone_at_depth(3)?;
+                let method_name = match kind {
+                    IteratorCallKind::ThrowWithValue => "throw",
+                    IteratorCallKind::ReturnWithValue | IteratorCallKind::ReturnWithoutValue => {
+                        "return"
+                    }
+                };
+                let method = match host.get_property(
+                    iterator.clone(),
+                    Value::String(JsString::from_static(method_name)),
+                )? {
+                    Completion::Return(method) => method,
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                };
+                if matches!(method, Value::Undefined | Value::Null) {
+                    self.stack.push(Value::Bool(true));
+                } else {
+                    let arguments = match kind {
+                        IteratorCallKind::ReturnWithoutValue => Vec::new(),
+                        IteratorCallKind::ReturnWithValue | IteratorCallKind::ThrowWithValue => {
+                            vec![self.stack.last().cloned().ok_or_else(|| {
+                                Error::internal("iterator call has no input value")
+                            })?]
+                        }
+                    };
+                    match host.call(method, iterator, arguments)? {
+                        Completion::Return(result) => {
+                            let input = self.stack.last_mut().ok_or_else(|| {
+                                Error::internal("iterator call lost its input value")
+                            })?;
+                            *input = result;
+                            self.stack.push(Value::Bool(false));
+                        }
+                        Completion::Throw(value) => {
+                            return Ok(Some(Completion::Throw(value)));
+                        }
+                    }
                 }
             }
             Instruction::ForInStart => {
@@ -2584,7 +3018,7 @@ impl CallFrame {
         &mut self,
         code: &[Instruction],
         host: &mut impl VmHost,
-    ) -> Result<Completion, Error> {
+    ) -> Result<InterpreterExit, Error> {
         loop {
             let instruction = code
                 .get(self.pc)
@@ -2594,6 +3028,16 @@ impl CallFrame {
                 .pc
                 .checked_add(1)
                 .ok_or_else(|| Error::internal("program counter overflow"))?;
+
+            let suspension = match instruction {
+                Instruction::InitialYield => Some(VmSuspendKind::Initial),
+                Instruction::Yield => Some(VmSuspendKind::Yield),
+                Instruction::YieldStar => Some(VmSuspendKind::YieldStar),
+                _ => None,
+            };
+            if let Some(kind) = suspension {
+                return Ok(InterpreterExit::Suspend(kind));
+            }
 
             if matches!(
                 instruction,
@@ -2624,11 +3068,14 @@ impl CallFrame {
                     | Instruction::SetProto
                     | Instruction::CopyDataProperties
                     | Instruction::CopyDataPropertiesExcluded { .. }
+                    | Instruction::IteratorStart
+                    | Instruction::IteratorNext
+                    | Instruction::IteratorCall(_)
                     | Instruction::ForInStart
                     | Instruction::ForInNext
             ) {
                 if let Some(completion) = self.execute_cold_instruction(instruction, host)? {
-                    return Ok(completion);
+                    return Ok(InterpreterExit::Complete(completion));
                 }
                 continue;
             }
@@ -2646,7 +3093,7 @@ impl CallFrame {
                     | Instruction::ApplyEval { .. }
             ) {
                 if let Some(completion) = self.execute_call_instruction(instruction, host)? {
-                    return Ok(completion);
+                    return Ok(InterpreterExit::Complete(completion));
                 }
                 continue;
             }
@@ -2685,13 +3132,13 @@ impl CallFrame {
                     | Instruction::Gte
             ) {
                 if let Some(completion) = self.execute_numeric_instruction(instruction, host)? {
-                    return Ok(completion);
+                    return Ok(InterpreterExit::Complete(completion));
                 }
                 continue;
             }
 
             if let Some(completion) = self.execute_hot_instruction(code, instruction, host)? {
-                return Ok(completion);
+                return Ok(InterpreterExit::Complete(completion));
             }
         }
     }
@@ -2709,6 +3156,14 @@ impl CallFrame {
     ) -> Result<Option<Completion>, Error> {
         match instruction {
             Instruction::Nop => {}
+            Instruction::InitialYield | Instruction::Yield | Instruction::YieldStar => {
+                unreachable!("generator suspension dispatch was bypassed")
+            }
+            Instruction::IteratorStart
+            | Instruction::IteratorNext
+            | Instruction::IteratorCall(_) => {
+                unreachable!("yield-star iterator dispatch was bypassed")
+            }
             Instruction::PushI32(value) => self.stack.push(Value::Int(*value)),
             Instruction::PushConst(index) => {
                 self.stack.push(host.load_constant(*index)?);
@@ -2826,6 +3281,20 @@ impl CallFrame {
                         "class constructors must be invoked with 'new'",
                     ));
                 }
+            }
+            Instruction::IteratorCheckObject => {
+                if !matches!(self.stack.last(), Some(Value::Object(_))) {
+                    return Err(Error::new(
+                        ErrorKind::Type,
+                        "iterator must return an object",
+                    ));
+                }
+            }
+            Instruction::ThrowIteratorMissingThrow => {
+                return Err(Error::new(
+                    ErrorKind::Type,
+                    "iterator does not have a throw method",
+                ));
             }
             Instruction::MarkSuperCall => {}
             Instruction::ThrowReadOnly(index) => {
@@ -3370,7 +3839,7 @@ impl CallFrame {
                 self.pc = checked_target(*target, code.len())?;
             }
             Instruction::Catch(target) => {
-                self.regions.push(UnwindRegion::Catch {
+                self.regions.push(VmUnwindRegion::Catch {
                     target: checked_target(*target, code.len())?,
                     stack_depth: self.stack.len(),
                 });
@@ -3380,7 +3849,7 @@ impl CallFrame {
                     .regions
                     .pop()
                     .ok_or_else(|| Error::internal("DropCatch has no active catch handler"))?;
-                let UnwindRegion::Catch { stack_depth, .. } = region else {
+                let VmUnwindRegion::Catch { stack_depth, .. } = region else {
                     return Err(Error::internal(
                         "DropCatch did not target the innermost unwind region",
                     ));
@@ -3396,7 +3865,7 @@ impl CallFrame {
                     .regions
                     .last()
                     .ok_or_else(|| Error::internal("NipCatch has no active catch handler"))?;
-                let UnwindRegion::Catch { stack_depth, .. } = region else {
+                let VmUnwindRegion::Catch { stack_depth, .. } = region else {
                     return Err(Error::internal(
                         "NipCatch did not target the innermost unwind region",
                     ));
@@ -3449,7 +3918,7 @@ impl CallFrame {
                         let record_base = self.stack.len();
                         self.stack.push(iterator);
                         self.stack.push(next_method);
-                        self.regions.push(UnwindRegion::Iterator {
+                        self.regions.push(VmUnwindRegion::Iterator {
                             record_base,
                             enabled: true,
                         });
@@ -3461,7 +3930,7 @@ impl CallFrame {
             }
             Instruction::ForOfNext(offset) => {
                 let (record_base, enabled) = match self.regions.last() {
-                    Some(UnwindRegion::Iterator {
+                    Some(VmUnwindRegion::Iterator {
                         record_base,
                         enabled,
                     }) => (*record_base, *enabled),
@@ -3654,7 +4123,7 @@ impl CallFrame {
                 return Ok(Some(Completion::Throw(value)));
             };
             match region {
-                UnwindRegion::Catch {
+                VmUnwindRegion::Catch {
                     target,
                     stack_depth,
                 } => {
@@ -3673,7 +4142,7 @@ impl CallFrame {
                     )?;
                     return Ok(None);
                 }
-                UnwindRegion::Iterator {
+                VmUnwindRegion::Iterator {
                     record_base,
                     enabled,
                 } => {
@@ -3702,7 +4171,7 @@ impl CallFrame {
     }
 
     fn disable_iterator_region(&mut self, record_base: usize) -> Result<(), Error> {
-        let Some(UnwindRegion::Iterator {
+        let Some(VmUnwindRegion::Iterator {
             record_base: active_base,
             enabled,
         }) = self.regions.last_mut()
@@ -3736,7 +4205,7 @@ impl CallFrame {
                 "IteratorClose has no iterator region"
             })
         })?;
-        let UnwindRegion::Iterator {
+        let VmUnwindRegion::Iterator {
             record_base,
             enabled,
         } = region
@@ -4208,15 +4677,15 @@ fn bigint_error(error: BigIntError) -> Error {
 mod tests {
     use crate::bytecode::{
         ArgumentsKind, BytecodeFunction, DefineMethodKind, DynamicEnvironmentSource,
-        EvalVariableSource, Instruction, WithObjectSource,
+        EvalVariableSource, Instruction, IteratorCallKind, WithObjectSource,
     };
     use crate::error::ErrorKind;
     use crate::value::{JsString, Value};
 
     use super::{
         CallFrame, Completion, DefineClassOutcome, DetachedDynamicEnvironmentOperation,
-        DetachedEvalVariableOperation, DetachedHost, DirectEvalInvocation, Vm, VmHost,
-        number_to_int32, number_to_uint32,
+        DetachedEvalVariableOperation, DetachedHost, DirectEvalInvocation, Vm, VmExit, VmHost,
+        VmResume, VmSuspendKind, VmSuspension, number_to_int32, number_to_uint32,
     };
 
     #[test]
@@ -4235,6 +4704,372 @@ mod tests {
         };
 
         assert_eq!(Vm::new().execute(&function).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn generator_initial_yield_resumes_without_an_input_operand() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::InitialYield,
+                Instruction::PushI32(42),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        let mut host = DetachedHost::new(&function);
+
+        let VmExit::Suspend(suspension) = CallFrame::new(1).run(&function.code, &mut host).unwrap()
+        else {
+            panic!("initial_yield did not suspend");
+        };
+        assert_eq!(suspension.kind(), VmSuspendKind::Initial);
+
+        assert_eq!(
+            suspension
+                .resume_initial(&function.code, &mut host)
+                .unwrap(),
+            VmExit::Complete(Completion::Return(Value::Int(42)))
+        );
+    }
+
+    #[test]
+    fn generator_yield_snapshot_and_next_resume_preserve_quickjs_stack_abi() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(7),
+                Instruction::Yield,
+                Instruction::PushI32(0),
+                Instruction::StrictEq,
+                Instruction::IfFalse(6),
+                Instruction::Return,
+                Instruction::PushI32(-1),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 3,
+        };
+        let mut host = DetachedHost::new(&function);
+        let VmExit::Suspend(mut suspension) =
+            CallFrame::new(3).run(&function.code, &mut host).unwrap()
+        else {
+            panic!("yield did not suspend");
+        };
+        assert_eq!(suspension.kind(), VmSuspendKind::Yield);
+        assert_eq!(suspension.take_yielded().unwrap(), Value::Int(7));
+
+        let (kind, parts) = suspension.into_parts().unwrap();
+        assert_eq!(kind, VmSuspendKind::Yield);
+        assert_eq!(parts.pc, 2);
+        assert_eq!(parts.stack, vec![Value::Undefined]);
+        assert!(parts.regions.is_empty());
+        let suspension = VmSuspension::from_parts(kind, parts).unwrap();
+
+        assert_eq!(
+            suspension
+                .resume(&function.code, &mut host, VmResume::Next(Value::Int(42)))
+                .unwrap(),
+            VmExit::Complete(Completion::Return(Value::Int(42)))
+        );
+    }
+
+    #[test]
+    fn generator_yield_return_resume_pushes_magic_one() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(7),
+                Instruction::Yield,
+                Instruction::PushI32(1),
+                Instruction::StrictEq,
+                Instruction::IfFalse(6),
+                Instruction::Return,
+                Instruction::PushI32(-1),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 3,
+        };
+        let mut host = DetachedHost::new(&function);
+        let VmExit::Suspend(mut suspension) =
+            CallFrame::new(3).run(&function.code, &mut host).unwrap()
+        else {
+            panic!("yield did not suspend");
+        };
+        assert_eq!(suspension.take_yielded().unwrap(), Value::Int(7));
+
+        assert_eq!(
+            suspension
+                .resume(&function.code, &mut host, VmResume::Return(Value::Int(42)),)
+                .unwrap(),
+            VmExit::Complete(Completion::Return(Value::Int(42)))
+        );
+    }
+
+    #[test]
+    fn generator_plain_yield_throw_enters_existing_unwind_path() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(4),
+                Instruction::PushI32(7),
+                Instruction::Yield,
+                Instruction::Return,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        let mut host = DetachedHost::new(&function);
+        let VmExit::Suspend(mut suspension) =
+            CallFrame::new(2).run(&function.code, &mut host).unwrap()
+        else {
+            panic!("yield did not suspend");
+        };
+        assert_eq!(suspension.take_yielded().unwrap(), Value::Int(7));
+
+        assert_eq!(
+            suspension
+                .resume(&function.code, &mut host, VmResume::Throw(Value::Int(55)),)
+                .unwrap(),
+            VmExit::Complete(Completion::Return(Value::Int(55)))
+        );
+    }
+
+    #[test]
+    fn generator_yield_return_runs_compiled_finally_unwind_path() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(7),
+                Instruction::PushI32(7),
+                Instruction::Yield,
+                Instruction::IfFalse(7),
+                Instruction::NipCatch,
+                Instruction::Gosub(8),
+                Instruction::Return,
+                Instruction::Return,
+                Instruction::PushI32(77),
+                Instruction::Throw,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 3,
+        };
+        let mut host = DetachedHost::new(&function);
+        let VmExit::Suspend(mut suspension) =
+            CallFrame::new(3).run(&function.code, &mut host).unwrap()
+        else {
+            panic!("yield did not suspend");
+        };
+        assert_eq!(suspension.take_yielded().unwrap(), Value::Int(7));
+
+        assert_eq!(
+            suspension
+                .resume(&function.code, &mut host, VmResume::Return(Value::Int(42)),)
+                .unwrap(),
+            VmExit::Complete(Completion::Throw(Value::Int(77)))
+        );
+        assert_eq!(host.captured_local_reuse_preparations, 1);
+    }
+
+    #[test]
+    fn generator_yield_star_throw_resume_injects_magic_two() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(7),
+                Instruction::YieldStar,
+                Instruction::PushI32(2),
+                Instruction::StrictEq,
+                Instruction::IfFalse(6),
+                Instruction::Return,
+                Instruction::PushI32(-1),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 3,
+        };
+        let mut host = DetachedHost::new(&function);
+        let VmExit::Suspend(mut suspension) =
+            CallFrame::new(3).run(&function.code, &mut host).unwrap()
+        else {
+            panic!("yield_star did not suspend");
+        };
+        assert_eq!(suspension.kind(), VmSuspendKind::YieldStar);
+        assert_eq!(suspension.take_yielded().unwrap(), Value::Int(7));
+
+        assert_eq!(
+            suspension
+                .resume(&function.code, &mut host, VmResume::Throw(Value::Int(55)),)
+                .unwrap(),
+            VmExit::Complete(Completion::Return(Value::Int(55)))
+        );
+    }
+
+    #[test]
+    fn yield_star_iterator_start_and_next_keep_an_ordinary_four_slot_record() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(10),
+                Instruction::IteratorStart,
+                Instruction::PushI32(42),
+                Instruction::IteratorNext,
+                Instruction::YieldStar,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        let mut host = DetachedHost::new(&function);
+        host.iterator_start_record = Some((Value::Int(1), Value::Int(2)));
+        host.call_results
+            .push_back(Ok(Completion::Return(Value::Int(99))));
+
+        let VmExit::Suspend(mut suspension) =
+            CallFrame::new(4).run(&function.code, &mut host).unwrap()
+        else {
+            panic!("yield_star iterator result did not suspend");
+        };
+        assert_eq!(suspension.kind(), VmSuspendKind::YieldStar);
+        assert_eq!(suspension.take_yielded().unwrap(), Value::Int(99));
+        let (_, parts) = suspension.into_parts().unwrap();
+        assert_eq!(
+            parts.stack,
+            vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Undefined,
+                Value::Undefined,
+            ]
+        );
+        assert!(parts.regions.is_empty());
+        assert_eq!(
+            host.call_inputs,
+            [(Value::Int(2), Value::Int(1), vec![Value::Int(42)])]
+        );
+    }
+
+    #[test]
+    fn yield_star_iterator_call_uses_typed_method_and_argument_modes() {
+        for (kind, method_name, arguments, result) in [
+            (
+                IteratorCallKind::ReturnWithValue,
+                "return",
+                vec![Value::Int(42)],
+                90,
+            ),
+            (
+                IteratorCallKind::ThrowWithValue,
+                "throw",
+                vec![Value::Int(42)],
+                91,
+            ),
+            (IteratorCallKind::ReturnWithoutValue, "return", vec![], 92),
+        ] {
+            let function = BytecodeFunction {
+                name: None,
+                code: vec![
+                    Instruction::PushI32(1),
+                    Instruction::PushI32(2),
+                    Instruction::Undefined,
+                    Instruction::PushI32(42),
+                    Instruction::IteratorCall(kind),
+                    Instruction::IfTrue(7),
+                    Instruction::Return,
+                    Instruction::Return,
+                ],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 5,
+            };
+            let mut host = DetachedHost::new(&function);
+            host.get_property_results
+                .push_back(Completion::Return(Value::Int(7)));
+            host.call_results
+                .push_back(Ok(Completion::Return(Value::Int(result))));
+
+            assert_eq!(
+                CallFrame::new(5)
+                    .execute(&function.code, &mut host)
+                    .unwrap(),
+                Completion::Return(Value::Int(result))
+            );
+            assert_eq!(
+                host.get_property_inputs,
+                [(
+                    Value::Int(1),
+                    Value::String(JsString::from_static(method_name)),
+                )]
+            );
+            assert_eq!(
+                host.call_inputs,
+                [(Value::Int(7), Value::Int(1), arguments)]
+            );
+        }
+
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::PushI32(2),
+                Instruction::Undefined,
+                Instruction::PushI32(42),
+                Instruction::IteratorCall(IteratorCallKind::ThrowWithValue),
+                Instruction::IfTrue(7),
+                Instruction::Return,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 5,
+        };
+        let mut host = DetachedHost::new(&function);
+        host.get_property_results
+            .push_back(Completion::Return(Value::Undefined));
+        assert_eq!(
+            CallFrame::new(5)
+                .execute(&function.code, &mut host)
+                .unwrap(),
+            Completion::Return(Value::Int(42))
+        );
+        assert!(host.call_inputs.is_empty());
+    }
+
+    #[test]
+    fn yield_star_iterator_protocol_errors_match_quickjs() {
+        for (instruction, message) in [
+            (
+                Instruction::IteratorCheckObject,
+                "iterator must return an object",
+            ),
+            (
+                Instruction::ThrowIteratorMissingThrow,
+                "iterator does not have a throw method",
+            ),
+        ] {
+            let function = BytecodeFunction {
+                name: None,
+                code: vec![Instruction::PushI32(1), instruction, Instruction::Return],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 1,
+            };
+            let mut host = DetachedHost::new(&function);
+            let error = CallFrame::new(1)
+                .execute(&function.code, &mut host)
+                .unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Type);
+            assert_eq!(error.message(), message);
+        }
     }
 
     #[test]

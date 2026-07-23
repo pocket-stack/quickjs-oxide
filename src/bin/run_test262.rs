@@ -78,6 +78,10 @@ const TEST262_CLASS_PRIVATE_ACCESSORS_PROFILE_SHA256: &str =
     "1040d156877d88f6aae651f90b8fae472a8a4054d21f49bbbf2162d280afd884";
 const TEST262_CLASS_PRIVATE_ACCESSORS_MANIFEST_SHA256: &str =
     "f8d7b7cb065cf15bae4066ec0790d1c7f0da513b83c8166aef20b3ad7e024cf4";
+const TEST262_CLASS_GENERATOR_METHODS_PROFILE_SHA256: &str =
+    "eab79cc5f8ba041e93b7ea04bc391bed8fa249eaf5cbb11857d533fe27028c52";
+const TEST262_CLASS_GENERATOR_METHODS_MANIFEST_SHA256: &str =
+    "30857ac44aa29bf86925b72b14da28c9215fb3bc29f81fc6b950694fa0d70b0f";
 const TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256: &str =
     "8232e2c11e908f7cbf5a9e0f34fbd5223a9551b49ae64647f2a72b2314bcaf84";
 const TEST262_ARRAY_BINDING_FLAT_MANIFEST_SHA256: &str =
@@ -650,6 +654,7 @@ enum OxideProfileKind {
     ClassPrivateFields,
     ClassPrivateMethods,
     ClassPrivateAccessors,
+    ClassGeneratorMethods,
     ArrayBindingFlat,
     ArrayBindingNested,
     ArrayAssignmentFlat,
@@ -713,6 +718,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-class-private-accessors.conf"),
             OxideProfileKind::ClassPrivateAccessors,
+        ),
+        (
+            root.join("tests/test262-class-generator-methods.conf"),
+            OxideProfileKind::ClassGeneratorMethods,
         ),
         (
             root.join("tests/test262-array-binding-flat.conf"),
@@ -789,7 +798,7 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         }
     }
     Err(format!(
-        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-aggregate-error.conf, tests/test262-argument-spread.conf, tests/test262-class-base.conf, tests/test262-class-derived.conf, tests/test262-class-public-init.conf, tests/test262-class-private-fields.conf, tests/test262-class-private-methods.conf, tests/test262-class-private-accessors.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-direct-eval.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-parameter-expression-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-aggregate-error.conf, tests/test262-argument-spread.conf, tests/test262-class-base.conf, tests/test262-class-derived.conf, tests/test262-class-public-init.conf, tests/test262-class-private-fields.conf, tests/test262-class-private-methods.conf, tests/test262-class-private-accessors.conf, tests/test262-class-generator-methods.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-direct-eval.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-parameter-expression-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
         path.display()
     ))
 }
@@ -947,6 +956,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             TEST262_CLASS_PRIVATE_ACCESSORS_PROFILE_SHA256,
             "tests/test262-class-private-accessors.txt",
             TEST262_CLASS_PRIVATE_ACCESSORS_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::ClassGeneratorMethods => verify_scoped_pinned_profile(
+            options,
+            "class generator methods",
+            TEST262_CLASS_GENERATOR_METHODS_PROFILE_SHA256,
+            "tests/test262-class-generator-methods.txt",
+            TEST262_CLASS_GENERATOR_METHODS_MANIFEST_SHA256,
         ),
         OxideProfileKind::ArrayBindingFlat => {
             verify_sha256(
@@ -1665,7 +1681,8 @@ mod cli_tests {
         TEST262_ARGUMENT_SPREAD_PROFILE_SHA256, TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256, TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256,
         TEST262_CATCH_BINDING_PROFILE_SHA256, TEST262_CLASS_BASE_PROFILE_SHA256,
-        TEST262_CLASS_DERIVED_PROFILE_SHA256, TEST262_CLASS_PRIVATE_ACCESSORS_PROFILE_SHA256,
+        TEST262_CLASS_DERIVED_PROFILE_SHA256, TEST262_CLASS_GENERATOR_METHODS_PROFILE_SHA256,
+        TEST262_CLASS_PRIVATE_ACCESSORS_PROFILE_SHA256,
         TEST262_CLASS_PRIVATE_FIELDS_PROFILE_SHA256, TEST262_CLASS_PRIVATE_METHODS_PROFILE_SHA256,
         TEST262_CLASS_PUBLIC_INIT_PROFILE_SHA256, TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256,
         TEST262_IDENTIFIER_REST_PROFILE_SHA256, TEST262_MAP_PROFILE_SHA256,
@@ -1800,6 +1817,11 @@ mod cli_tests {
             identify_oxide_profile(Path::new("tests/test262-class-private-accessors.conf"))
                 .unwrap(),
             OxideProfileKind::ClassPrivateAccessors
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-class-generator-methods.conf"))
+                .unwrap(),
+            OxideProfileKind::ClassGeneratorMethods
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-array-binding-flat.conf")).unwrap(),
@@ -2482,6 +2504,84 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-class-private-accessors.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_class_generator_methods_profile_is_bound_to_its_audited_partition() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-class-generator-methods.conf",
+            "--manifest",
+            "tests/test262-class-generator-methods.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_CLASS_GENERATOR_METHODS_PROFILE_SHA256
+        );
+
+        let profile =
+            super::OxideProfile::load(Path::new("tests/test262-class-generator-methods.conf"))
+                .unwrap();
+        let positive = Path::new(
+            "test/language/statements/class/definition/methods-gen-yield-star-before-newline.js",
+        );
+        assert_eq!(
+            profile.classify(positive, &["generators".to_owned()], false),
+            None
+        );
+        let audited_negative = Path::new(
+            "test/language/statements/class/definition/methods-gen-yield-star-after-newline.js",
+        );
+        assert_eq!(
+            profile.classify(audited_negative, &["generators".to_owned()], true),
+            None
+        );
+        assert_eq!(
+            profile
+                .classify(positive, &["generators".to_owned()], true)
+                .unwrap()
+                .outcome,
+            "unsupported-negative-provenance"
+        );
+
+        let global = super::OxideProfile::load(Path::new("compat/test262-oxide.conf")).unwrap();
+        assert_eq!(
+            global
+                .classify(positive, &["generators".to_owned()], false)
+                .unwrap()
+                .outcome,
+            "unsupported-feature"
+        );
+
+        for selection in [
+            ["--all", ""],
+            ["--test", positive.to_str().unwrap()],
+            ["--manifest", "tests/test262-class-private-accessors.txt"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-class-generator-methods.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

@@ -117,7 +117,8 @@ impl Runtime {
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }
-                | ObjectPayload::RegExpStringIterator { .. } => None,
+                | ObjectPayload::RegExpStringIterator { .. }
+                | ObjectPayload::Generator { .. } => None,
             }
         };
         let Some(value) = value else {

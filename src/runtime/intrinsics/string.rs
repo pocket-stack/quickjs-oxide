@@ -748,7 +748,8 @@ impl Runtime {
             | ObjectPayload::RegExpStringIterator { .. }
             | ObjectPayload::NativeFunction { .. }
             | ObjectPayload::BoundFunction { .. }
-            | ObjectPayload::BytecodeFunction { .. } => false,
+            | ObjectPayload::BytecodeFunction { .. }
+            | ObjectPayload::Generator { .. } => false,
         })
     }
 

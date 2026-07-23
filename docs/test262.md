@@ -34,10 +34,10 @@ intended early `SyntaxError`, rather than because class parsing is absent.
 This 193/193 result is a runner smoke baseline, not a project-wide 100%
 estimate. The sample was selected from already implemented synchronous
 surfaces. Module, async/jobs, most `$262` host hooks, advanced RegExp pattern
-grammar, async/generator class forms, generators,
-TypedArrays and many other broad layers remain absent. Public fields and static
-blocks, private data fields, and ordinary synchronous private methods/accessors
-are measured separately by the scoped R3g/R3h/R3i/R3j gates below.
+grammar, async class forms, private generator methods, TypedArrays, and many
+other broad layers remain absent. Public fields, static blocks, private
+elements, and public synchronous generator methods are measured separately by
+the scoped R3g/R3h/R3i/R3j/R3k gates below.
 
 Nineteen additional provenance variants guard the result: four audited negative
 variants pass for the intended parse error, while 15 unsupported grammar
@@ -2620,8 +2620,8 @@ Array iterator-next function, values are copied from the original Array
 without advancing or brand-checking that second iterator.
 
 The dependency-audited focused gate freezes 67 paths / 134 variants. It records
-122 passes and an exact adjacent-feature frontier of ten runtime failures and
-two parse failures. Fifteen automated Oxide/QuickJS semantic differentials all
+122 passes and an exact adjacent-feature frontier of twelve runtime failures.
+Fifteen automated Oxide/QuickJS semantic differentials all
 pass. Three dense 65K Oxide stress vectors remain ignored for routine
 automation and are run manually because immutable shape growth is currently
 O(n²); their pinned QuickJS expectations are self-checked, while the shared
@@ -3006,6 +3006,70 @@ cargo build --bin qjs
 
 Use `--check` on either script to authenticate only the frozen inputs.
 
+## R3k synchronous generators
+
+R3k implements synchronous generator declarations and expressions, public
+object/class generator methods, `yield`, and synchronous `yield*`. The first
+authenticated Test262 gate deliberately freezes the smallest directly audited
+public class-generator inventory before widening feature admission: 82 paths /
+160 sloppy/strict variants, comprising 44 positive paths and 38 parse-negative
+`SyntaxError` paths. Four `onlyStrict` paths account for the two-variant
+difference from a full 164-row expansion.
+
+Oxide passes 160/160 variants and pinned QuickJS 2026-06-04 passes all 82
+paths. There are no failures, unsupported results, skips, timeouts, crashes, or
+runner faults, and the non-pass vector is empty. The gate includes instance and
+static class generator methods, definition/name behavior, parameter/body var
+scope, early errors, and two direct `yield*` paths. Runtime Rust tests and the
+pinned differential separately cover function and object forms, every
+`next`/`return`/`throw` state, catch/finally and reentry, delegation forwarding
+and close behavior, first-`next` arguments, closures/direct eval,
+`this`/`arguments`/`super`, multiple instances, GC, dynamic GeneratorFunction
+calls, prototype selection, descriptors, binding, and non-constructibility.
+
+The manifest, profile, variant-key stream, TSV, JSONL, and empty non-pass
+SHA-256 values are
+`30857ac44aa29bf86925b72b14da28c9215fb3bc29f81fc6b950694fa0d70b0f`,
+`eab79cc5f8ba041e93b7ea04bc391bed8fa249eaf5cbb11857d533fe27028c52`,
+`184f80aeb39690da69a802db371fe30cd1678726797181b4a660bf25a9996256`,
+`b51f9551d8cc50c1daf1db6f919605c759e13ce57cdfa532b870105eafca89f3`,
+`24634a50a1587b22631d09570a562421885137059857beaf9980e961847a340c`,
+and
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+The checked-in baseline also authenticates the pinned Test262 patch/config/
+metadata and the global fail-closed profile.
+
+The global profile intentionally does not admit the `generators` feature tag.
+Async functions/generators, private class generator methods, Proxy-dependent
+paths, and unrelated unsupported dependencies remain separate frontiers, so
+this focused gate is not a whole-Test262 percentage or a full generator-parity
+claim.
+
+A supplemental fresh-tree dependency audit broadens the selection to 1,203
+paths / 2,378 variants. Oxide passes 2,376 with zero engine faults or skips.
+The only two non-passes are the sloppy/strict variants of
+`test/language/statements/class/static-init-arguments-methods.js`: that file's
+unrelated ordinary async method reaches the explicit
+`async class methods are not implemented yet` parser frontier. Every
+generator-dependent row in the expanded selection passes. Its path stream,
+variant-key stream, profile, TSV, and JSONL SHA-256 values are
+`8aaa256a04dd6b8b4d0ebfb6c49f70fa21efe0abdff9f8dfc591858539891c80`,
+`cdf4ec0a992ec3d034111871945f14f0c488c2d114610d48174565a0d890a360`,
+`d3cc7178cf10be7166ec3dcb8d690ce487fa85dd697c74ad0b7cecfa5663f0fa`,
+`42d06dde909a48d6f961697c68d32a4809a01778075be79a4a15bde599412d93`,
+and
+`50108d91e551c71c9659487aaec997324099e13f8c6422e8302b549c588a5378`.
+This is breadth evidence rather than a second checked-in acceptance gate.
+
+Reproduce the authenticated gate with:
+
+```sh
+./scripts/test-test262-class-generator-methods.sh
+```
+
+Use `--check` to authenticate only the frozen manifest/profile and pinned
+QuickJS oracle.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -3100,6 +3164,12 @@ canonical progress report.
 ./scripts/test-test262-aggregate-error.sh
 ./scripts/test-test262-argument-spread.sh
 ./scripts/test-test262-class-base.sh
+./scripts/test-test262-class-derived.sh
+./scripts/test-test262-class-public-init.sh
+./scripts/test-test262-class-private-fields.sh
+./scripts/test-test262-class-private-methods.sh
+./scripts/test-test262-class-private-accessors.sh
+./scripts/test-test262-class-generator-methods.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -3266,8 +3336,11 @@ R3i adds ordinary synchronous private instance/static methods with independent
 class-side brands. Its hash-authenticated 267-path/534-variant focused gate
 passes 534/534; pinned QuickJS passes 267/267. R3j adds the disjoint
 305-path/610-variant synchronous private-accessor target: Oxide passes 610/610
-and pinned QuickJS passes 305/305. Async/generator class forms remain later
-frontiers, and the global profile stays closed.
+and pinned QuickJS passes 305/305. R3k adds synchronous generator
+declarations/expressions and public object/class generator methods. Its first
+authenticated 82-path/160-variant class-generator gate passes 160/160; pinned
+QuickJS passes 82/82. Async forms and private generator methods remain later
+frontiers, and the global profile stays closed for `generators`.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

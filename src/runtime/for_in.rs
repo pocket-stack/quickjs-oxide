@@ -165,7 +165,8 @@ impl Runtime {
             | ObjectPayload::RegExpStringIterator { .. }
             | ObjectPayload::NativeFunction { .. }
             | ObjectPayload::BoundFunction { .. }
-            | ObjectPayload::BytecodeFunction { .. } => return Ok(None),
+            | ObjectPayload::BytecodeFunction { .. }
+            | ObjectPayload::Generator { .. } => return Ok(None),
         };
         let shape = state.heap.shape(object_data.shape)?;
         for entry in shape.entries() {

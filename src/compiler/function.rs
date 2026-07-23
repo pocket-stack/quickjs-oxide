@@ -1,8 +1,9 @@
 use super::{
-    AnonymousFunctionDefinition, Error, FunctionId, FunctionIr, FunctionIrOptions, FunctionKind,
-    FunctionSourceInfo, Identifier, IdentifierContext, IrConstant, IrOp, ParentLink, Parser,
-    Punctuator, SourceOffset, Span, SpannedIrOp, SuperCapabilities, TokenKind,
-    insert_hoist_fragment, source_offset, source_span, validate_identifier,
+    AnonymousFunctionDefinition, BytecodeFunctionKind, Error, FunctionId, FunctionIr,
+    FunctionIrOptions, FunctionKind, FunctionSourceInfo, Identifier, IdentifierContext, IrConstant,
+    IrOp, LexContext, ParentLink, Parser, Punctuator, SourceOffset, Span, SpannedIrOp,
+    SuperCapabilities, TokenKind, insert_hoist_fragment, source_offset, source_span,
+    validate_identifier,
 };
 use crate::bytecode::{DefineMethodKind, Instruction};
 
@@ -15,11 +16,14 @@ pub(super) struct ParsedFunctionDefinition {
 pub(super) struct FunctionDefinitionHeader<'source> {
     pub(super) span: Span,
     pub(super) name: Option<(Identifier<'source>, Span)>,
+    execution_kind: BytecodeFunctionKind,
+    parent_context: LexContext,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FunctionDefinitionOptions {
     kind: FunctionKind,
+    execution_kind: BytecodeFunctionKind,
     private_name_binding: bool,
     class_constructor: bool,
     derived_class_constructor: bool,
@@ -33,6 +37,7 @@ impl FunctionDefinitionOptions {
     const fn ordinary(private_name_binding: bool) -> Self {
         Self {
             kind: FunctionKind::Ordinary,
+            execution_kind: BytecodeFunctionKind::Normal,
             private_name_binding,
             class_constructor: false,
             derived_class_constructor: false,
@@ -46,6 +51,7 @@ impl FunctionDefinitionOptions {
     const fn object_method(method_kind: DefineMethodKind) -> Self {
         Self {
             kind: FunctionKind::Method,
+            execution_kind: BytecodeFunctionKind::Normal,
             private_name_binding: false,
             class_constructor: false,
             derived_class_constructor: false,
@@ -60,6 +66,20 @@ impl FunctionDefinitionOptions {
                 DefineMethodKind::Getter => Some(0),
                 DefineMethodKind::Setter => Some(1),
             },
+        }
+    }
+
+    const fn generator_method() -> Self {
+        Self {
+            kind: FunctionKind::Method,
+            execution_kind: BytecodeFunctionKind::Generator,
+            private_name_binding: false,
+            class_constructor: false,
+            derived_class_constructor: false,
+            reject_duplicate_parameters: true,
+            allow_trailing_parameter_comma: true,
+            object_method_kind: Some(DefineMethodKind::Method),
+            accessor_parameter_count: None,
         }
     }
 }
@@ -92,8 +112,15 @@ impl<'source> Parser<'source> {
         &mut self,
         require_name: bool,
     ) -> Result<FunctionDefinitionHeader<'source>, Error> {
+        let parent_context = self.lexer.context();
         let span = self.current().span;
         self.advance()?;
+        let execution_kind = if self.is_punctuator(Punctuator::Multiply) {
+            self.advance()?;
+            BytecodeFunctionKind::Generator
+        } else {
+            BytecodeFunctionKind::Normal
+        };
         let name = if let TokenKind::Identifier(identifier) = self.current().kind.clone() {
             let span = self.current().span;
             validate_identifier(&identifier, span, false, IdentifierContext::FunctionName)?;
@@ -105,7 +132,12 @@ impl<'source> Parser<'source> {
         if require_name && name.is_none() {
             return Err(self.syntax_here("function name expected"));
         }
-        Ok(FunctionDefinitionHeader { span, name })
+        Ok(FunctionDefinitionHeader {
+            span,
+            name,
+            execution_kind,
+            parent_context,
+        })
     }
 
     pub(super) fn parse_function_definition_tail(
@@ -113,10 +145,23 @@ impl<'source> Parser<'source> {
         header: FunctionDefinitionHeader<'source>,
         private_name_binding: bool,
     ) -> Result<ParsedFunctionDefinition, Error> {
-        self.parse_function_definition_tail_with_options(
-            header,
-            FunctionDefinitionOptions::ordinary(private_name_binding),
-        )
+        // Preserve QuickJS's declaration/expression asymmetry. Sloppy
+        // `function* yield(){}` is accepted as a declaration, but a named
+        // generator expression creates a private self binding and rejects the
+        // same spelling as a reserved identifier.
+        if private_name_binding
+            && header.execution_kind == BytecodeFunctionKind::Generator
+            && let Some((identifier, span)) = &header.name
+            && identifier.value == "yield"
+        {
+            return Err(Error::syntax(
+                "'yield' is a reserved identifier",
+                source_span(*span),
+            ));
+        }
+        let mut options = FunctionDefinitionOptions::ordinary(private_name_binding);
+        options.execution_kind = header.execution_kind;
+        self.parse_function_definition_tail_with_options(header, options)
     }
 
     /// Parse a synchronous object-literal method or accessor after its property
@@ -132,8 +177,34 @@ impl<'source> Parser<'source> {
             FunctionDefinitionHeader {
                 span: function_span,
                 name: None,
+                execution_kind: BytecodeFunctionKind::Normal,
+                parent_context: self.lexer.context(),
             },
             FunctionDefinitionOptions::object_method(method_kind),
+        )?;
+        self.emit(IrOp::MakeClosure(parsed.constant))?;
+        self.anonymous_function_definition = None;
+        Ok(parsed.child)
+    }
+
+    /// Parse one public synchronous generator method after its property name
+    /// has been consumed. Grammar role remains `Method`; only callable
+    /// execution metadata changes to `Generator`.
+    pub(super) fn parse_generator_method_definition(
+        &mut self,
+        function_span: Span,
+    ) -> Result<FunctionId, Error> {
+        if !self.is_punctuator(Punctuator::LeftParen) {
+            return Err(self.syntax_here("invalid property name"));
+        }
+        let parsed = self.parse_function_definition_tail_with_options(
+            FunctionDefinitionHeader {
+                span: function_span,
+                name: None,
+                execution_kind: BytecodeFunctionKind::Generator,
+                parent_context: self.lexer.context(),
+            },
+            FunctionDefinitionOptions::generator_method(),
         )?;
         self.emit(IrOp::MakeClosure(parsed.constant))?;
         self.anonymous_function_definition = None;
@@ -156,6 +227,8 @@ impl<'source> Parser<'source> {
             FunctionDefinitionHeader {
                 span: function_span,
                 name: None,
+                execution_kind: BytecodeFunctionKind::Normal,
+                parent_context: self.lexer.context(),
             },
             options,
         )
@@ -169,7 +242,14 @@ impl<'source> Parser<'source> {
         let FunctionDefinitionHeader {
             span: function_span,
             name: function_name_token,
+            execution_kind,
+            parent_context,
         } = header;
+        if execution_kind != options.execution_kind {
+            return Err(Error::internal(
+                "function header and definition execution kinds disagree",
+            ));
+        }
         let parent = self.current_function;
         let parent_strict = self.functions[parent].strict;
         let function_name = function_name_token
@@ -216,12 +296,18 @@ impl<'source> Parser<'source> {
                 super_capabilities,
             },
         )?);
+        self.functions[child].execution_kind = options.execution_kind;
         self.current_function = child;
-        let has_parameter_expressions = self
-            .parenthesized_parameter_has_assignment()
-            .unwrap_or(false);
-        if has_parameter_expressions {
-            self.activate_parameter_environment_from_scan()?;
+        let mut child_context = parent_context;
+        child_context.strict = parent_strict;
+        child_context.generator = options.execution_kind == BytecodeFunctionKind::Generator;
+        child_context.async_function = false;
+        self.relex_current_with_context(child_context)?;
+        let parameter_scan = self.parenthesized_parameter_scan();
+        if parameter_scan.is_some_and(|scan| scan.has_assignment) {
+            self.activate_parameter_environment_from_scan(
+                parameter_scan.and_then(|scan| scan.bound_name_count),
+            )?;
         }
         self.expect_punctuator(Punctuator::LeftParen)?;
 
@@ -352,7 +438,8 @@ impl<'source> Parser<'source> {
 
         let has_use_strict = self.directive_prologue_has_use_strict(self.cursor, parent_strict)?;
         let strict = parent_strict || has_use_strict;
-        self.relex_current_with_strict(strict)?;
+        child_context.strict = strict;
+        self.relex_current_with_context(child_context)?;
         let has_simple_parameter_list = self.functions[child].has_simple_parameter_list;
         if has_use_strict && !has_simple_parameter_list {
             return Err(Error::syntax(
@@ -441,11 +528,13 @@ impl<'source> Parser<'source> {
             insert_hoist_fragment(&mut self.functions[child], guard_at, guard)?;
         }
         self.finish_identifier_parameter_environment()?;
+        if options.execution_kind == BytecodeFunctionKind::Generator {
+            self.insert_generator_initial_yield()?;
+        }
+        self.functions[child].in_function_body = true;
         self.parse_function_body()?;
         let closing_brace = self.current().span;
-        let mut parent_context = self.lexer.context();
-        parent_context.strict = self.functions[parent].strict;
-        self.lexer.set_context(parent_context);
+        self.relex_current_with_context(parent_context)?;
         self.expect_punctuator(Punctuator::RightBrace)?;
         self.functions[child].source.range = Some(
             source_offset(function_span)?

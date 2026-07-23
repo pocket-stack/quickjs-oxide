@@ -46,7 +46,8 @@ impl Runtime {
             | ObjectPayload::RegExpStringIterator { .. }
             | ObjectPayload::NativeFunction { .. }
             | ObjectPayload::BoundFunction { .. }
-            | ObjectPayload::BytecodeFunction { .. } => None,
+            | ObjectPayload::BytecodeFunction { .. }
+            | ObjectPayload::Generator { .. } => None,
         })
     }
 
@@ -1199,7 +1200,8 @@ impl Runtime {
                 | ObjectPayload::RegExpStringIterator { .. }
                 | ObjectPayload::NativeFunction { .. }
                 | ObjectPayload::BoundFunction { .. }
-                | ObjectPayload::BytecodeFunction { .. } => None,
+                | ObjectPayload::BytecodeFunction { .. }
+                | ObjectPayload::Generator { .. } => None,
             }
         };
         if let Some((hidden, var_ref, configurable)) = global_var_ref {

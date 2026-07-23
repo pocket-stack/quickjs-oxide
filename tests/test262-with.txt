@@ -3,7 +3,7 @@
 # This is the complete bytewise-sorted set of paths whose pre-R2b full-vector
 # result stopped at the typed `with statements are not implemented yet`
 # compiler/runtime boundary. R2b keeps the cohort stable as a progress gate:
-# 198 variants pass and seven expose independent arrow/generator grammar gaps.
+# 204 variants pass and one reaches the independent async-function grammar gap.
 # All rows are positive, synchronous script cases; module, async, host-only,
 # and negative-provenance cohorts are absent.
 #

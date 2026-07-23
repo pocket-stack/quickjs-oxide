@@ -31,8 +31,8 @@ use crate::heap::{
     quickjs_copies_defined_argument_count,
 };
 use crate::lexer::{
-    Identifier, Keyword, LexError, LexErrorKind, Lexer, LexicalGoal, NumberKind, NumericRadix,
-    Punctuator, Span, TemplatePartKind, Token, TokenKind,
+    Identifier, Keyword, LexContext, LexError, LexErrorKind, Lexer, LexicalGoal, NumberKind,
+    NumericRadix, Punctuator, Span, TemplatePartKind, Token, TokenKind,
 };
 use crate::value::{JsString, JsStringError, Value};
 use num_bigint::BigUint;
@@ -45,6 +45,7 @@ mod arrow;
 mod class;
 mod destructuring;
 mod function;
+mod generator;
 mod object_literal;
 mod private_reference;
 mod pseudo_binding;
@@ -1012,6 +1013,13 @@ struct FunctionIr {
     /// invariant-preserving typed link.
     parent: Option<ParentLink>,
     kind: FunctionKind,
+    /// Callable execution semantics are independent from the grammar role.
+    /// A class or object generator remains a concise `Method` for bindings
+    /// and HomeObject purposes while publishing generator bytecode.
+    execution_kind: BytecodeFunctionKind,
+    /// YieldExpression is disabled while generator formal initializers parse
+    /// and becomes active only after the InitialYield boundary is installed.
+    in_function_body: bool,
     /// Base/derived class constructors share the compiler's concise-method
     /// binding model but publish constructor bytecode without an ordinary
     /// function's eagerly visible `.prototype` shape. `DefineClass` owns that
@@ -1115,6 +1123,11 @@ struct FunctionIr {
     /// FormalParameters BoundName order. Identifier formals contribute one
     /// cell while a BindingPattern contributes one cell per leaf.
     parameter_locals: Vec<u16>,
+    /// Exact whole-list pre-scan reservation for authored parameter cells.
+    /// Reserving this leading local prefix before parsing any initializer
+    /// prevents nested class/function compilation from interleaving scratch
+    /// locals with the heap-visible Parameter Environment ABI.
+    parameter_local_reservation_count: Option<usize>,
     /// Parameter-scope cell selected by each physical named argument. An
     /// anonymous BindingPattern slot has no direct cell because destructuring
     /// initializes its individual BoundNames instead.
@@ -1330,6 +1343,8 @@ impl FunctionIr {
         let mut function = Self {
             parent,
             kind,
+            execution_kind: BytecodeFunctionKind::Normal,
+            in_function_body: false,
             class_constructor: options.class_constructor,
             derived_class_constructor: options.derived_class_constructor,
             class_initializer_kind: None,
@@ -1360,6 +1375,7 @@ impl FunctionIr {
             rest_pattern_start: None,
             parameter_scope: None,
             parameter_locals: Vec::new(),
+            parameter_local_reservation_count: None,
             parameter_argument_locals: vec![None; parameter_count],
             parameter_pattern_bindings: Vec::new(),
             parameter_default_sources: Vec::new(),
@@ -3465,6 +3481,19 @@ impl<'source> Parser<'source> {
                 *pc_site = Some(source_offset(return_span)?);
             }
         }
+        self.emit_return_completion(return_span)?;
+        self.consume_statement_terminator()?;
+        // Parsing continues through unreachable source. Retain the enclosing
+        // statement's marker/discriminant shape just as break/continue do.
+        self.current_ir_mut().stack_depth = statement_depth;
+        Ok(())
+    }
+
+    /// Emit QuickJS's shared return path for an already-evaluated value at
+    /// TOS. Generator resumption uses this same path when `.return(value)` is
+    /// injected at a `yield`, so iterator/finally unwinding remains identical
+    /// to an authored ReturnStatement.
+    fn emit_return_completion(&mut self, return_span: Span) -> Result<(), Error> {
         // QuickJS walks BlockEnv entries from inner to outer and interleaves
         // iterator closing with finally execution. Keeping that order is
         // observable when either an iterator `return` method or a finally body
@@ -3527,10 +3556,6 @@ impl<'source> Parser<'source> {
             Instruction::Return
         };
         self.emit_instruction_at(instruction, source_offset(return_span)?)?;
-        self.consume_statement_terminator()?;
-        // Parsing continues through unreachable source. Retain the enclosing
-        // statement's marker/discriminant shape just as break/continue do.
-        self.current_ir_mut().stack_depth = statement_depth;
         Ok(())
     }
 
@@ -4294,6 +4319,9 @@ impl<'source> Parser<'source> {
     /// local, closure, global and private-function-name behavior after the
     /// complete nested scope tree is known.
     fn parse_assignment(&mut self) -> Result<(), Error> {
+        if matches!(self.current().kind, TokenKind::Keyword(Keyword::Yield)) {
+            return self.parse_yield_expression();
+        }
         if self.async_arrow_ahead() {
             return Err(self.unsupported_here("async arrow functions are not implemented yet"));
         }
@@ -7445,12 +7473,20 @@ impl<'source> Parser<'source> {
     }
 
     fn relex_current_with_strict(&mut self, strict: bool) -> Result<(), Error> {
+        let mut context = self.lexer.context();
+        context.strict = strict;
+        self.relex_current_with_context(context)
+    }
+
+    /// Rescan the current token and all future tokens under one complete
+    /// function lexical context. Function nesting must restore all of strict,
+    /// module, generator and async state; changing only `strict` leaks a
+    /// parent's contextual `yield`/`await` classification into its child.
+    fn relex_current_with_context(&mut self, context: LexContext) -> Result<(), Error> {
         let position = self.current().span.start;
         let line_terminator_before = self.current().line_terminator_before;
         self.tokens.truncate(self.cursor);
         self.lexer.seek(position);
-        let mut context = self.lexer.context();
-        context.strict = strict;
         self.lexer.set_context(context);
         self.ensure_token(self.cursor)?;
         self.tokens[self.cursor].line_terminator_before = line_terminator_before;
@@ -7675,15 +7711,28 @@ impl<'source> Parser<'source> {
         let parameter_scope = function
             .parameter_scope
             .ok_or_else(|| Error::internal("parameter local has no parameter scope"))?;
-        if function.locals.len() >= MAX_LOCAL_VARIABLES {
-            return Err(
-                Error::new(ErrorKind::JsInternal, "too many local variables")
-                    .with_span(source_span(span)),
-            );
-        }
-        let local = u16::try_from(function.locals.len())
-            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
-        function.locals.push(name.clone());
+        let local = if let Some(reserved) = function.parameter_local_reservation_count {
+            let cell = function.parameter_locals.len();
+            if cell >= reserved || function.locals.get(cell).is_none() {
+                return Err(Error::internal(
+                    "parameter binding exceeded its pre-scan reservation",
+                ));
+            }
+            function.locals[cell] = name.clone();
+            u16::try_from(cell)
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?
+        } else {
+            if function.locals.len() >= MAX_LOCAL_VARIABLES {
+                return Err(
+                    Error::new(ErrorKind::JsInternal, "too many local variables")
+                        .with_span(source_span(span)),
+                );
+            }
+            let local = u16::try_from(function.locals.len())
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many local variables"))?;
+            function.locals.push(name.clone());
+            local
+        };
         function.parameter_locals.push(local);
         function.add_binding(
             parameter_scope,
@@ -7723,10 +7772,14 @@ impl<'source> Parser<'source> {
     /// from the whole-list standalone-`=` pre-scan, before the first formal is
     /// parsed; the lazy caller remains as a defensive fallback for malformed
     /// or scanner-limit input which later exposes an identifier default.
-    fn activate_parameter_environment_from_scan(&mut self) -> Result<(), Error> {
+    fn activate_parameter_environment_from_scan(
+        &mut self,
+        bound_name_count: Option<usize>,
+    ) -> Result<(), Error> {
         if self.current_ir().parameter_scope.is_some() {
             return Ok(());
         }
+        let scan_span = self.current().span;
         let function = self.current_ir_mut();
         if !matches!(
             function.kind,
@@ -7746,6 +7799,21 @@ impl<'source> Parser<'source> {
             return Err(Error::internal(
                 "parameter environment pre-scan ran after formal parsing",
             ));
+        }
+        if let Some(bound_name_count) = bound_name_count {
+            if !function.locals.is_empty()
+                || bound_name_count > MAX_LOCAL_VARIABLES
+                || function.parameter_local_reservation_count.is_some()
+            {
+                return Err(
+                    Error::new(ErrorKind::JsInternal, "too many local variables")
+                        .with_span(source_span(scan_span)),
+                );
+            }
+            function
+                .locals
+                .resize(bound_name_count, "<parameter-reserved>".to_owned());
+            function.parameter_local_reservation_count = Some(bound_name_count);
         }
         function.ops.clear();
         let parameter_scope = ScopeId(function.scopes.len());
@@ -8298,6 +8366,69 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         if function.scopes[function.body_scope.0].kind != expected_body {
             return Err(Error::internal("function body scope kind is malformed"));
         }
+        let initial_yields = function
+            .ops
+            .iter()
+            .filter(|operation| matches!(operation.op, IrOp::Bytecode(Instruction::InitialYield)))
+            .count();
+        let suspension_ops = function
+            .ops
+            .iter()
+            .filter(|operation| {
+                matches!(
+                    operation.op,
+                    IrOp::Bytecode(
+                        Instruction::Yield
+                            | Instruction::YieldStar
+                            | Instruction::IteratorStart
+                            | Instruction::IteratorNext
+                            | Instruction::IteratorCall(_)
+                            | Instruction::IteratorCheckObject
+                            | Instruction::ThrowIteratorMissingThrow
+                    )
+                )
+            })
+            .count();
+        match function.execution_kind {
+            BytecodeFunctionKind::Normal if initial_yields == 0 && suspension_ops == 0 => {}
+            BytecodeFunctionKind::Generator
+                if matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method)
+                    && !function.class_constructor
+                    && function.class_initializer_kind.is_none()
+                    && function.in_function_body
+                    && initial_yields == 1 =>
+            {
+                let initial = function
+                    .ops
+                    .iter()
+                    .position(|operation| {
+                        matches!(operation.op, IrOp::Bytecode(Instruction::InitialYield))
+                    })
+                    .ok_or_else(|| Error::internal("generator lost its initial yield"))?;
+                let body = function
+                    .ops
+                    .iter()
+                    .position(|operation| {
+                        matches!(operation.op, IrOp::EnterScope(scope) if scope == function.body_scope)
+                    })
+                    .ok_or_else(|| Error::internal("generator lost its body entry"))?;
+                if initial >= body {
+                    return Err(Error::internal(
+                        "generator initial yield did not precede its body scope",
+                    ));
+                }
+            }
+            BytecodeFunctionKind::Async | BytecodeFunctionKind::AsyncGenerator => {
+                return Err(Error::internal(
+                    "compiler published an unsupported async execution kind",
+                ));
+            }
+            _ => {
+                return Err(Error::internal(
+                    "function execution kind and suspension bytecode disagree",
+                ));
+            }
+        }
         match function.parameter_scope {
             Some(scope)
                 if scope != function.var_scope
@@ -8379,10 +8510,14 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             })
             || has_parameter_environment
                 && (function.has_simple_parameter_list
-                    || function.parameter_locals.len() != function.parameter_names.len())
+                    || function.parameter_locals.len() != function.parameter_names.len()
+                    || function
+                        .parameter_local_reservation_count
+                        .is_some_and(|reserved| reserved != function.parameter_locals.len()))
             || function.parameter_argument_locals.len() != function.parameters.len()
             || !has_parameter_environment
                 && (!function.parameter_locals.is_empty()
+                    || function.parameter_local_reservation_count.is_some()
                     || function
                         .parameter_argument_locals
                         .iter()
@@ -13756,9 +13891,15 @@ fn lower_unlinked_tree(
                 | FunctionKind::Method
                 | FunctionKind::Arrow => EvalKind::None,
             },
-            function_kind: BytecodeFunctionKind::Normal,
-            has_prototype: matches!(function.kind, FunctionKind::Ordinary),
-            constructor_kind: if function.derived_class_constructor {
+            function_kind: function.execution_kind,
+            has_prototype: matches!(
+                (function.kind, function.execution_kind),
+                (FunctionKind::Ordinary, BytecodeFunctionKind::Normal)
+                    | (_, BytecodeFunctionKind::Generator)
+            ),
+            constructor_kind: if function.execution_kind != BytecodeFunctionKind::Normal {
+                ConstructorKind::None
+            } else if function.derived_class_constructor {
                 ConstructorKind::Derived
             } else if matches!(function.kind, FunctionKind::Ordinary) || function.class_constructor
             {

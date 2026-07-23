@@ -68,6 +68,10 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "prior enclosing lexical suppresses the sloppy Annex outer update",
         "(function(){let shadow=12;{function shadow(){return 13}}return shadow})()",
     ),
+    (
+        "strict block generator declaration resumes through completion",
+        "(function(){'use strict';var saved;{function* blockGenerator(){yield 4}saved=blockGenerator}var iterator=saved();return iterator.next().value+'|'+iterator.next().done})()",
+    ),
 ];
 
 const ERROR_CASES: &[(&str, &str)] = &[
@@ -127,16 +131,10 @@ const SYNTAX_ERROR_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-const UNSUPPORTED_BOUNDARY_CASES: &[(&str, &str)] = &[
-    (
-        "async block function declaration",
-        "(function(){{async function asyncBlock(){return 3}}return typeof asyncBlock})()",
-    ),
-    (
-        "generator block function declaration",
-        "(function(){{function* generatorBlock(){yield 4}}return typeof generatorBlock})()",
-    ),
-];
+const UNSUPPORTED_BOUNDARY_CASES: &[(&str, &str)] = &[(
+    "async block function declaration",
+    "(function(){{async function asyncBlock(){return 3}}return typeof asyncBlock})()",
+)];
 
 #[test]
 fn block_function_values_match_pinned_quickjs() {

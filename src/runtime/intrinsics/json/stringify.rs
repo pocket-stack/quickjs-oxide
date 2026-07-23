@@ -313,7 +313,8 @@ impl Runtime {
             | ObjectPayload::RegExpStringIterator { .. }
             | ObjectPayload::NativeFunction { .. }
             | ObjectPayload::BoundFunction { .. }
-            | ObjectPayload::BytecodeFunction { .. } => JsonWrapperKind::Other,
+            | ObjectPayload::BytecodeFunction { .. }
+            | ObjectPayload::Generator { .. } => JsonWrapperKind::Other,
         })
     }
 }

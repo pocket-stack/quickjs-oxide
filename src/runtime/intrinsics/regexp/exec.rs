@@ -139,7 +139,8 @@ impl Runtime {
                 | ObjectPayload::RegExpStringIterator { .. }
                 | ObjectPayload::NativeFunction { .. }
                 | ObjectPayload::BoundFunction { .. }
-                | ObjectPayload::BytecodeFunction { .. } => None,
+                | ObjectPayload::BytecodeFunction { .. }
+                | ObjectPayload::Generator { .. } => None,
             }
         };
         let Some((program, flags)) = compiled else {

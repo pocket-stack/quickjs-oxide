@@ -316,8 +316,8 @@ test/staging/sm/Array/shift-no-has-trap.js	sloppy	fail-runtime	runtime	Reference
 test/staging/sm/Array/shift-no-has-trap.js	strict	fail-runtime	runtime	ReferenceError	'Proxy' is not defined
 test/staging/sm/Function/invalid-parameter-list.js	sloppy	fail-runtime	runtime	Test262Error	Expected a SyntaxError to be thrown but no exception was thrown at all
 test/staging/sm/Function/invalid-parameter-list.js	strict	fail-runtime	runtime	Test262Error	Expected a SyntaxError to be thrown but no exception was thrown at all
-test/staging/sm/generators/iterator-next-non-object.js	sloppy	fail-parse	parse	SyntaxError	expecting '('
-test/staging/sm/generators/iterator-next-non-object.js	strict	fail-parse	parse	SyntaxError	expecting '('
+test/staging/sm/generators/iterator-next-non-object.js	sloppy	fail-runtime	runtime	Test262Error	Expected a TypeError but got a ReferenceError
+test/staging/sm/generators/iterator-next-non-object.js	strict	fail-runtime	runtime	Test262Error	Expected a TypeError but got a ReferenceError
 EOF
 )
 actual_frontier=$(awk -F'\t' '

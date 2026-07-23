@@ -1,16 +1,235 @@
 use crate::bigint::JsBigInt;
 use crate::bytecode::{
     ApplyKind, ArgumentsKind, DefineMethodKind, DynamicEnvironmentSource, EvalVariableSource,
-    Instruction,
+    Instruction, IteratorCallKind,
 };
 use crate::debug::DebugInfoMode;
 use crate::error::ErrorKind;
 use crate::heap::{
     ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
     EvalBindingSource, EvalCallerProfile, EvalCallerVariableTarget, EvalKind, EvalRootBinding,
-    EvalScopeKind, EvalVariableEnvironment, ParameterDefaultSource,
-    validate_parameter_bytecode_layout,
+    EvalScopeKind, EvalVariableEnvironment, FunctionKind as BytecodeFunctionKind,
+    ParameterDefaultSource, validate_parameter_bytecode_layout,
 };
+
+#[test]
+fn generator_execution_kind_is_orthogonal_to_function_grammar_role() {
+    let source = r#"
+        function* declaration(value = 1) { yield value; }
+        (function* expression() { yield; });
+        ({ *fixed() { yield 2; }, *["computed"]() { yield* source; } });
+        class C { *instance() { yield 3; } static *staticMethod() { yield 4; } }
+    "#;
+    let tree = Parser::parse(source, JsString::from_static("<generator-kind-test>")).unwrap();
+    let generators = tree
+        .functions
+        .iter()
+        .filter(|function| function.execution_kind == BytecodeFunctionKind::Generator)
+        .collect::<Vec<_>>();
+    assert_eq!(generators.len(), 6);
+    assert_eq!(
+        generators
+            .iter()
+            .filter(|function| function.kind == FunctionKind::Ordinary)
+            .count(),
+        2
+    );
+    assert_eq!(
+        generators
+            .iter()
+            .filter(|function| function.kind == FunctionKind::Method)
+            .count(),
+        4
+    );
+    assert!(generators.iter().all(|function| {
+        function
+            .ops
+            .iter()
+            .filter(|operation| {
+                matches!(
+                    operation.op,
+                    super::IrOp::Bytecode(Instruction::InitialYield)
+                )
+            })
+            .count()
+            == 1
+    }));
+
+    let script = compile_unlinked_script(source).unwrap();
+    fn collect_generators<'a>(
+        function: &'a crate::function::UnlinkedFunction,
+        output: &mut Vec<&'a crate::function::UnlinkedFunction>,
+    ) {
+        for constant in function.constants() {
+            let Some(child) = constant.as_child() else {
+                continue;
+            };
+            if child.metadata().function_kind == BytecodeFunctionKind::Generator {
+                output.push(child);
+            }
+            collect_generators(child, output);
+        }
+    }
+    let mut published = Vec::new();
+    collect_generators(&script, &mut published);
+    assert_eq!(published.len(), 6);
+    assert!(published.iter().all(|function| {
+        function.metadata().has_prototype
+            && function.metadata().constructor_kind == ConstructorKind::None
+            && function
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::InitialYield))
+    }));
+    let delegated = published
+        .iter()
+        .find(|function| {
+            function
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::YieldStar))
+        })
+        .expect("delegated generator");
+    for expected in [
+        Instruction::IteratorStart,
+        Instruction::IteratorNext,
+        Instruction::IteratorCheckObject,
+        Instruction::ThrowIteratorMissingThrow,
+    ] {
+        assert!(
+            delegated
+                .code()
+                .iter()
+                .any(|instruction| std::mem::discriminant(instruction)
+                    == std::mem::discriminant(&expected)),
+            "delegation lowering omitted {expected:?}"
+        );
+    }
+    assert_eq!(
+        delegated
+            .code()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::IteratorCall(kind) => Some(*kind),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        [
+            IteratorCallKind::ReturnWithValue,
+            IteratorCallKind::ThrowWithValue,
+            IteratorCallKind::ReturnWithoutValue,
+        ]
+    );
+}
+
+#[test]
+fn generator_initial_yield_separates_parameters_from_body_instantiation() {
+    let script = compile_unlinked_script(
+        "(function* g(value = 1) { function bodyHoist() {} yield value; })",
+    )
+    .unwrap();
+    let generator = script.constants()[0].as_child().unwrap();
+    let initial = generator
+        .code()
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::InitialYield))
+        .expect("generator initial yield");
+    let parameter_read = generator
+        .code()
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::GetArg(0)))
+        .expect("default parameter read");
+    let body_hoist = generator
+        .code()
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::FClosure(_)))
+        .expect("body function hoist");
+    let authored_yield = generator
+        .code()
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::Yield))
+        .expect("authored yield");
+    assert!(parameter_read < initial);
+    assert!(initial < body_hoist);
+    assert!(body_hoist < authored_yield);
+}
+
+#[test]
+fn generator_lexical_context_matches_nested_function_and_arrow_boundaries() {
+    for source in [
+        "function* yield(){ yield 1; }",
+        "function* await(){ yield 1; }",
+        "(function* await(){ yield 1; })",
+        "function* outer(){ function ordinary(){ var yield=1; return yield; } (()=>yield); yield 2; }",
+    ] {
+        compile_unlinked_script(source).unwrap_or_else(|error| {
+            panic!("generator lexical context rejected {source:?}: {error}")
+        });
+    }
+
+    for source in [
+        "function* g(value = yield 1){}",
+        "function* g(){ (yield)=>0; }",
+    ] {
+        assert_eq!(
+            compile_unlinked_script(source).unwrap_err().kind(),
+            ErrorKind::Syntax,
+            "{source:?}"
+        );
+    }
+
+    let strict_declaration = compile_unlinked_script("'use strict'; function* yield(){}")
+        .expect_err("strict outer context must reserve a generator declaration named yield");
+    assert_eq!(strict_declaration.kind(), ErrorKind::Syntax);
+    assert_eq!(strict_declaration.message(), "function name expected");
+
+    for source in ["(function* yield(){})", "(function* \\u0079ield(){})"] {
+        let error = compile_unlinked_script(source)
+            .expect_err("named generator expression must reserve a yield self binding");
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(
+            error.message(),
+            "'yield' is a reserved identifier",
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn public_generator_method_frontier_keeps_private_and_async_explicit() {
+    for source in [
+        "class C { *constructor(){} }",
+        "class C { static *prototype(){} }",
+    ] {
+        assert_eq!(
+            compile_unlinked_script(source).unwrap_err().kind(),
+            ErrorKind::Syntax,
+            "{source:?}"
+        );
+    }
+    let generator_named_async = compile_unlinked_script("class C { *async foo(){} }")
+        .expect_err("generator property name must not trigger the contextual async-method path");
+    assert_eq!(generator_named_async.kind(), ErrorKind::Syntax);
+    assert_eq!(generator_named_async.message(), "invalid property name");
+    assert_eq!(
+        compile_unlinked_script("({ *async foo(){} })")
+            .unwrap_err()
+            .message(),
+        "invalid property name"
+    );
+
+    for source in [
+        "class C { *#private(){} }",
+        "class C { async *method(){} }",
+        "({ async *method(){} })",
+    ] {
+        assert_eq!(
+            compile_unlinked_script(source).unwrap_err().kind(),
+            ErrorKind::Unsupported,
+            "{source:?}"
+        );
+    }
+}
 use crate::lexer::{LexError, LexErrorKind, Lexer, Position, Span};
 use crate::object::{
     AccessorValue, CompleteOrdinaryPropertyDescriptor, DescriptorField, OrdinaryPropertyDescriptor,
@@ -20,6 +239,7 @@ use crate::runtime::{Context, Runtime, RuntimeError};
 use crate::value::{JsString, Value};
 use crate::vm::Vm;
 
+use super::destructuring::ParenthesizedParameterScan;
 use super::{
     ACTIVE_FUNCTION_LOCAL_NAME, BindingKind, BindingStorage, EVAL_VARIABLE_OBJECT_LOCAL_NAME,
     EvalCompileContext, FunctionIr, FunctionIrOptions, FunctionKind, FunctionSourceInfo,
@@ -7532,8 +7752,51 @@ fn parameter_binding_pattern_assignment_prescan_matches_quickjs_token_rule() {
 }
 
 #[test]
+fn parameter_assignment_prescan_reserves_every_bound_name_before_initializers() {
+    let script = compile_unlinked_script(
+        "(function(left,[a,{b:[c=class Nested{},...d]},...e],{[(()=>`key,${1}`)()]:f=/,/.test(',')?class Named{}:1,g},right=class Right{}){})",
+    )
+    .unwrap();
+    let function = script.constants()[0].as_child().unwrap();
+    assert_eq!(function.metadata().parameter_environment_local_count, 8);
+
+    assert_eq!(
+        evaluate_in_context(
+            r#"(function(){
+                function ordinary([x=class Ordinary{},y=40],z=2){return y+z}
+                function* generator([x=class Generator{},y=40],z=2){return y+z}
+                var arrow=([x=class Arrow{},y=40],z=2)=>y+z;
+                var object={
+                    method([x=class ObjectMethod{},y=40],z=2){return y+z},
+                    *generator([x=class ObjectGenerator{},y=40],z=2){return y+z}
+                };
+                class Holder {
+                    method([x=class ClassMethod{},y=40],z=2){return y+z}
+                    *generator([x=class ClassGenerator{},y=40],z=2){return y+z}
+                }
+                var holder=new Holder;
+                return [
+                    ordinary([undefined]),
+                    generator([undefined]).next().value,
+                    arrow([undefined]),
+                    object.method([undefined]),
+                    object.generator([undefined]).next().value,
+                    holder.method([undefined]),
+                    holder.generator([undefined]).next().value
+                ].join('|');
+            })()"#,
+        ),
+        Value::String(JsString::from_static("42|42|42|42|42|42|42"))
+    );
+}
+
+#[test]
 fn parameter_assignment_prescan_retains_quickjs_bits_at_the_depth_bound() {
-    let source = format!("(a=1,{}0{})", "(".repeat(260), ")".repeat(260));
+    let source = format!(
+        "(a={}class Nested{{}}{},b=1)",
+        "(".repeat(260),
+        ")".repeat(260)
+    );
     let mut lexer = Lexer::new(&source);
     let first = lexer.next_token().unwrap();
     let source_span = first.span;
@@ -7571,6 +7834,13 @@ fn parameter_assignment_prescan_retains_quickjs_bits_at_the_depth_bound() {
     };
 
     assert_eq!(parser.parenthesized_parameter_has_assignment(), Some(true));
+    assert_eq!(
+        parser.parenthesized_parameter_scan(),
+        Some(ParenthesizedParameterScan {
+            has_assignment: true,
+            bound_name_count: Some(2),
+        })
+    );
 }
 
 #[test]
@@ -9574,6 +9844,7 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
         "({set [1](value,){}})",
         "({get get(){}})",
         "({set set(value){}})",
+        "({*a(){}})",
         "({get\nlineBreak(){},set\nlineBreak(value){}})",
         "({g\\u0065t(){},s\\u0065t(value){}})",
     ] {
@@ -9581,15 +9852,14 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
             .unwrap_or_else(|error| panic!("valid Object literal {source:?}: {error}"));
     }
 
-    for source in ["({*a(){}})", "({async a(){}})"] {
-        assert!(
-            compile_unlinked_script(source)
-                .unwrap_err()
-                .message()
-                .contains("not implemented yet"),
-            "method frontier was not explicit for {source}"
-        );
-    }
+    let source = "({async a(){}})";
+    assert!(
+        compile_unlinked_script(source)
+            .unwrap_err()
+            .message()
+            .contains("not implemented yet"),
+        "method frontier was not explicit for {source}"
+    );
     for source in [
         "({get a(value){}})",
         "({get a(value=1){}})",

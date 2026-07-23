@@ -3,8 +3,8 @@
 //! This is the first vertical slice of QuickJS `js_parse_class`: class name
 //! scopes, heritage, base/derived constructors, `super()` and synchronous
 //! methods/accessors, fields, ordinary private methods/accessors, and static
-//! blocks. Generator/async methods remain explicit typed frontiers rather than
-//! being accepted with partial semantics.
+//! blocks. Public synchronous generator methods are supported; private
+//! generator methods and async forms remain explicit typed frontiers.
 
 use super::function::ParsedFunctionDefinition;
 use super::*;
@@ -226,15 +226,17 @@ impl<'source> Parser<'source> {
         }
 
         let function_span = self.current().span;
-        if self.is_punctuator(Punctuator::Multiply) {
-            return Err(self.unsupported_here("class generator methods are not implemented yet"));
+        let generator = self.is_punctuator(Punctuator::Multiply);
+        if generator {
+            self.advance()?;
         }
-        if self.contextual_class_async_method_ahead()? {
+        if !generator && self.contextual_class_async_method_ahead()? {
             return Err(self.unsupported_here("async class methods are not implemented yet"));
         }
 
         let mut method_kind = DefineMethodKind::Method;
-        if let TokenKind::Identifier(identifier) = &self.current().kind
+        if !generator
+            && let TokenKind::Identifier(identifier) = &self.current().kind
             && !identifier.has_escape
             && matches!(identifier.value.as_str(), "get" | "set")
         {
@@ -254,6 +256,9 @@ impl<'source> Parser<'source> {
         }
         let key = self.parse_class_property_key()?;
         if !self.is_punctuator(Punctuator::LeftParen) {
+            if generator {
+                return Err(self.syntax_here("invalid property name"));
+            }
             if method_kind != DefineMethodKind::Method {
                 return Err(self.syntax_here("invalid class field"));
             }
@@ -270,6 +275,12 @@ impl<'source> Parser<'source> {
         }
 
         if let ClassPropertyKey::Private { name, span } = &key {
+            if generator {
+                return Err(Error::unsupported(
+                    "private class generator methods are not implemented yet",
+                    source_span(*span),
+                ));
+            }
             if method_kind == DefineMethodKind::Method {
                 self.parse_private_class_method(elements, is_static, name.clone(), *span)?;
             } else {
@@ -295,7 +306,10 @@ impl<'source> Parser<'source> {
         };
         let is_constructor_name =
             fixed.is_some_and(|name| *name == JsString::from_static("constructor"));
-        if !is_static && is_constructor_name && method_kind != DefineMethodKind::Method {
+        if !is_static
+            && is_constructor_name
+            && (method_kind != DefineMethodKind::Method || generator)
+        {
             return Err(Error::syntax(
                 "invalid method name",
                 source_span(function_span),
@@ -308,7 +322,11 @@ impl<'source> Parser<'source> {
             ));
         }
 
-        if !is_static && method_kind == DefineMethodKind::Method && is_constructor_name {
+        if !is_static
+            && !generator
+            && method_kind == DefineMethodKind::Method
+            && is_constructor_name
+        {
             if constructor.is_some() {
                 return Err(Error::syntax(
                     "property constructor appears more than once",
@@ -319,7 +337,11 @@ impl<'source> Parser<'source> {
                 Some(self.parse_class_constructor_definition(function_span, has_heritage)?);
             self.anonymous_function_definition = None;
         } else {
-            self.parse_object_method_definition(function_span, method_kind)?;
+            if generator {
+                self.parse_generator_method_definition(function_span)?;
+            } else {
+                self.parse_object_method_definition(function_span, method_kind)?;
+            }
             match key {
                 ClassPropertyKey::Fixed { value } => {
                     let key = self.add_constant(IrConstant::Primitive(Value::String(value)))?;

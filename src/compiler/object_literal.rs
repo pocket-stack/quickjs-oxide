@@ -39,8 +39,27 @@ impl<'source> Parser<'source> {
                 )?;
                 self.anonymous_function_definition = None;
             } else if self.is_punctuator(Punctuator::Multiply) {
-                return Err(self
-                    .unsupported_here("object literal generator methods are not implemented yet"));
+                let function_span = self.current().span;
+                self.advance()?;
+                let property_key = self.parse_object_method_property_name()?;
+                self.parse_generator_method_definition(function_span)?;
+                match property_key {
+                    ObjectMethodPropertyKey::Fixed(key) => {
+                        let key = self.add_constant(IrConstant::Primitive(Value::String(key)))?;
+                        self.emit_instruction(Instruction::DefineMethod {
+                            key,
+                            kind: DefineMethodKind::Method,
+                            enumerable: true,
+                        })?;
+                    }
+                    ObjectMethodPropertyKey::Computed => {
+                        self.emit_instruction(Instruction::DefineMethodComputed {
+                            kind: DefineMethodKind::Method,
+                            enumerable: true,
+                        })?;
+                    }
+                }
+                self.anonymous_function_definition = None;
             } else if self.is_punctuator(Punctuator::LeftBracket) {
                 let property_span = self.current().span;
                 self.advance_expression_start()?;

@@ -395,6 +395,19 @@ pub struct SetRealmData {
     pub iterator_prototype: ObjectId,
 }
 
+/// Realm-owned identities required by synchronous generator functions and
+/// generator instances.
+///
+/// QuickJS roots both class prototypes independently: generator function
+/// objects inherit from `function_prototype`, while generator instances use
+/// `prototype` as the cross-realm fallback when a callable's public
+/// `.prototype` is not an object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GeneratorRealmData {
+    pub prototype: ObjectId,
+    pub function_prototype: ObjectId,
+}
+
 /// Realm-owned roots which participate in QuickJS's cycle graph.
 ///
 /// The bootstrap roots needed by ordinary script evaluation are explicit;
@@ -445,6 +458,10 @@ pub struct ContextData {
     /// Realm-local Set ordinary prototype and Set Iterator prototype,
     /// attached atomically after the cyclic Context is published.
     pub set: Option<SetRealmData>,
+    /// Realm-local `%GeneratorPrototype%` and
+    /// `%GeneratorFunction.prototype%`, attached after their reciprocal
+    /// constructor/prototype graph has been initialized.
+    pub generator: Option<GeneratorRealmData>,
     /// `%Function%`, published after the cyclic realm bootstrap has created
     /// `%Function.prototype%` and the global object.
     pub function_constructor: Option<ObjectId>,
@@ -501,6 +518,7 @@ impl ContextData {
             regexp: None,
             map: None,
             set: None,
+            generator: None,
             function_constructor: None,
             throw_type_error: None,
             eval_function: None,
@@ -4226,6 +4244,54 @@ pub struct MapRecord {
     pub value: RawValue,
 }
 
+/// ECMAScript-visible lifecycle of a branded synchronous generator object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GeneratorState {
+    SuspendedStart,
+    SuspendedYield,
+    SuspendedYieldStar,
+    Executing,
+    Completed,
+}
+
+/// Heap-native representation of one argument or local binding retained by a
+/// dormant generator frame. Runtime-owning root wrappers must never enter this
+/// structure: every GC identity is stored as a raw arena edge instead.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GeneratorFrameBinding {
+    Direct(RawValue),
+    Private(Atom),
+    PrivateCallable(ObjectId),
+    Uninitialized,
+    Captured(VarRefId),
+}
+
+/// Raw VM fields retained across a synchronous-generator suspension.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GeneratorVmActivation {
+    pub stack: Vec<RawValue>,
+    pub regions: Vec<crate::vm::VmUnwindRegion>,
+    pub pc: usize,
+    pub callee_realm: ContextId,
+    pub current_function: ObjectId,
+    pub this_value: RawValue,
+    pub normalized_this: Option<RawValue>,
+    pub new_target: RawValue,
+    pub strict: bool,
+    pub callee_global: ObjectId,
+}
+
+/// Complete dormant execution state owned by one generator object.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GeneratorActivationData {
+    pub bytecode: FunctionBytecodeId,
+    pub vm: GeneratorVmActivation,
+    pub actual_argument_count: usize,
+    pub arguments: Vec<GeneratorFrameBinding>,
+    pub locals: Vec<GeneratorFrameBinding>,
+    pub reusable_captured_locals: Vec<bool>,
+}
+
 /// Class-specific edges stored alongside an object's ordinary properties.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ObjectPayload {
@@ -4349,6 +4415,14 @@ pub enum ObjectPayload {
         /// `JSObject.u.func.var_refs[]` ownership.
         closure_slots: Vec<VarRefId>,
     },
+    /// `JS_CLASS_GENERATOR`: the branded result object owns the complete
+    /// dormant frame while suspended. `Executing` temporarily moves that
+    /// activation into rooted Rust values so reentrant calls can observe the
+    /// state without creating an invisible side-table root.
+    Generator {
+        state: GeneratorState,
+        activation: Option<Box<GeneratorActivationData>>,
+    },
 }
 
 /// Object storage category.  Additional QuickJS classes will extend this enum
@@ -4374,6 +4448,7 @@ pub enum ObjectKind {
     NativeFunction,
     BoundFunction,
     BytecodeFunction,
+    Generator,
 }
 
 /// One string-key entry captured by QuickJS's `JS_GPN_SET_ENUM` enumeration.
@@ -5095,6 +5170,7 @@ pub enum SetNativeKind {
 pub enum NativeFunctionId {
     FunctionPrototype,
     FunctionConstructor(DynamicFunctionKind),
+    GeneratorPrototypeResume(GeneratorResumeKind),
     ArrayConstructor,
     ArrayIsArray,
     ArrayFrom,
@@ -5233,6 +5309,15 @@ pub enum DynamicFunctionKind {
     Generator,
     Async,
     AsyncGenerator,
+}
+
+/// Typed replacement for QuickJS's `GEN_MAGIC_*` selector shared by
+/// `%GeneratorPrototype%.next`, `.return`, and `.throw`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GeneratorResumeKind {
+    Next,
+    Return,
+    Throw,
 }
 
 /// QuickJS primitive wrapper classes which own one realm-local prototype root.
@@ -5722,7 +5807,8 @@ impl NativeFunctionId {
             | Self::RegExpStringIteratorNext
             | Self::ArrayIteratorNext
             | Self::MapIteratorNext
-            | Self::SetIteratorNext => NativeFunctionDescriptor {
+            | Self::SetIteratorNext
+            | Self::GeneratorPrototypeResume(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::IteratorNext,
             },
             Self::FunctionPrototypePosition(_) | Self::RegExp(RegExpNativeKind::Flag(_)) => {
@@ -5777,7 +5863,7 @@ pub struct NativeFunctionData {
 ///
 /// The shape entries and slots are parallel arrays and must have identical
 /// lengths and storage kinds.  Allocation validates that invariant.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ObjectData {
     pub shape: ShapeId,
     pub slots: Vec<PropertySlot>,
@@ -6295,6 +6381,29 @@ impl ObjectData {
             },
         }
     }
+
+    /// Construct a branded synchronous generator in its initial suspended
+    /// state. The complete activation is retained as heap-visible raw edges.
+    #[must_use]
+    pub fn generator(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        activation: GeneratorActivationData,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::Generator,
+            payload: ObjectPayload::Generator {
+                state: GeneratorState::SuspendedStart,
+                activation: Some(Box::new(activation)),
+            },
+        }
+    }
 }
 
 /// Resources finalized by a release, mutation, or collection operation.
@@ -6654,7 +6763,8 @@ impl Heap {
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }
             | ObjectPayload::BoundFunction { .. }
-            | ObjectPayload::BytecodeFunction { .. } => {
+            | ObjectPayload::BytecodeFunction { .. }
+            | ObjectPayload::Generator { .. } => {
                 return Err(HeapError::Invariant(
                     "attempted to attach a native realm to a non-native function",
                 ));
@@ -7069,6 +7179,60 @@ impl Heap {
         Ok(())
     }
 
+    /// Atomically publish the two realm-local synchronous-generator class
+    /// prototypes after their property graph has been initialized.
+    pub(crate) fn attach_generator_intrinsics(
+        &mut self,
+        realm: ContextId,
+        generator: GeneratorRealmData,
+    ) -> Result<(), HeapError> {
+        let context = self.context(realm)?;
+        if context.generator.is_some() {
+            return Err(HeapError::Invariant(
+                "context already has Generator intrinsic roots",
+            ));
+        }
+        let iterator_prototype = context.iterator_prototype;
+        let function_prototype = context.function_prototype;
+
+        let prototype = self.object(generator.prototype)?;
+        if prototype.kind != ObjectKind::Ordinary
+            || !matches!(prototype.payload, ObjectPayload::Ordinary)
+            || self.shape(prototype.shape)?.prototype() != Some(iterator_prototype)
+        {
+            return Err(HeapError::Invariant(
+                "Generator prototype does not inherit from the realm's Iterator prototype",
+            ));
+        }
+
+        let generator_function_prototype = self.object(generator.function_prototype)?;
+        if generator_function_prototype.kind != ObjectKind::Ordinary
+            || !matches!(
+                generator_function_prototype.payload,
+                ObjectPayload::Ordinary
+            )
+            || self.shape(generator_function_prototype.shape)?.prototype()
+                != Some(function_prototype)
+        {
+            return Err(HeapError::Invariant(
+                "GeneratorFunction prototype does not inherit from Function.prototype",
+            ));
+        }
+
+        let edges = [
+            RawId::Object(generator.prototype),
+            RawId::Object(generator.function_prototype),
+        ];
+        self.retain_edges_transactionally(&edges)?;
+
+        let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(realm))?.data
+        else {
+            unreachable!("context identity was validated before retaining Generator roots")
+        };
+        context.generator = Some(generator);
+        Ok(())
+    }
+
     /// Allocate and publish immutable function bytecode, retaining its realm
     /// and every GC edge in its constant pool. `auxiliary_atoms` and symbol
     /// constants transfer to the node on success. No arena slot is reserved
@@ -7104,6 +7268,47 @@ impl Heap {
             bytecode.parameter_environment.as_ref(),
         )
         .map_err(HeapError::Invariant)?;
+        let initial_yields = bytecode
+            .code
+            .iter()
+            .enumerate()
+            .filter_map(|(pc, instruction)| {
+                matches!(instruction, Instruction::InitialYield).then_some(pc)
+            })
+            .collect::<Vec<_>>();
+        let has_generator_only_instruction = bytecode.code.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::Yield
+                    | Instruction::YieldStar
+                    | Instruction::IteratorStart
+                    | Instruction::IteratorNext
+                    | Instruction::IteratorCall(_)
+                    | Instruction::IteratorCheckObject
+                    | Instruction::ThrowIteratorMissingThrow
+            )
+        });
+        match bytecode.metadata.function_kind {
+            FunctionKind::Generator => {
+                if initial_yields.len() != 1
+                    || !bytecode.metadata.has_prototype
+                    || bytecode.metadata.constructor_kind != ConstructorKind::None
+                    || bytecode.metadata.class_initializer_kind.is_some()
+                    || parameter_body_pc.is_some_and(|body_pc| initial_yields[0] < body_pc)
+                {
+                    return Err(HeapError::Invariant(
+                        "generator bytecode has invalid suspension metadata",
+                    ));
+                }
+            }
+            FunctionKind::Normal | FunctionKind::Async | FunctionKind::AsyncGenerator => {
+                if !initial_yields.is_empty() || has_generator_only_instruction {
+                    return Err(HeapError::Invariant(
+                        "non-generator bytecode contains a generator suspension opcode",
+                    ));
+                }
+            }
+        }
         if bytecode
             .metadata
             .function_name_local
@@ -8947,6 +9152,137 @@ impl Heap {
         Ok(())
     }
 
+    /// Clone one generator's raw dormant activation while its object still
+    /// owns every referenced edge. The runtime immediately maps this snapshot
+    /// to rooted handles before beginning the destructive resume transition.
+    pub fn generator_snapshot(
+        &self,
+        id: ObjectId,
+    ) -> Result<(GeneratorState, Option<GeneratorActivationData>), HeapError> {
+        let ObjectPayload::Generator { state, activation } = &self.object(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "Generator state requested for an object with the wrong class",
+            ));
+        };
+        Ok((*state, activation.as_deref().cloned()))
+    }
+
+    /// Move a suspended generator to `Executing` and detach the heap-owned
+    /// activation edges. The caller must already have rooted a snapshot of the
+    /// returned activation so releasing these occurrences cannot invalidate
+    /// the active Rust representation.
+    pub fn begin_generator_resume(
+        &mut self,
+        id: ObjectId,
+    ) -> Result<(GeneratorState, GeneratorActivationData, HeapCleanup), HeapError> {
+        let (state, activation) = {
+            let ObjectPayload::Generator { state, activation } = &mut self.object_mut(id)?.payload
+            else {
+                return Err(HeapError::Invariant(
+                    "Generator resume reached an object with the wrong class",
+                ));
+            };
+            if !matches!(
+                state,
+                GeneratorState::SuspendedStart
+                    | GeneratorState::SuspendedYield
+                    | GeneratorState::SuspendedYieldStar
+            ) {
+                return Err(HeapError::Invariant(
+                    "Generator resume began outside a suspended state",
+                ));
+            }
+            let previous = *state;
+            let activation = activation.take().ok_or(HeapError::Invariant(
+                "suspended Generator has no activation",
+            ))?;
+            *state = GeneratorState::Executing;
+            (previous, *activation)
+        };
+        let edges = generator_activation_edges(&activation);
+        let atoms = generator_activation_atoms(&activation);
+        for edge in edges {
+            self.release_raw_no_drain(edge)?;
+        }
+        let mut cleanup = self.drain_zero_queue()?;
+        cleanup.atoms.extend(atoms);
+        Ok((state, activation, cleanup))
+    }
+
+    /// Reattach a fully encoded dormant frame after an executing generator
+    /// reaches its next suspension point. Atom occurrences are retained by the
+    /// runtime before this call; arena edges are retained transactionally here.
+    pub fn suspend_generator(
+        &mut self,
+        id: ObjectId,
+        state: GeneratorState,
+        activation: GeneratorActivationData,
+    ) -> Result<(), HeapError> {
+        if !matches!(
+            state,
+            GeneratorState::SuspendedStart
+                | GeneratorState::SuspendedYield
+                | GeneratorState::SuspendedYieldStar
+        ) {
+            return Err(HeapError::Invariant(
+                "Generator suspended with a non-suspended state",
+            ));
+        }
+        match &self.object(id)?.payload {
+            ObjectPayload::Generator {
+                state: GeneratorState::Executing,
+                activation: None,
+            } => {}
+            ObjectPayload::Generator { .. } => {
+                return Err(HeapError::Invariant(
+                    "Generator suspension did not follow an executing state",
+                ));
+            }
+            _ => {
+                return Err(HeapError::Invariant(
+                    "Generator suspension reached an object with the wrong class",
+                ));
+            }
+        }
+        let mut candidate = self.object(id)?.clone();
+        candidate.payload = ObjectPayload::Generator {
+            state,
+            activation: Some(Box::new(activation.clone())),
+        };
+        self.validate_object_layout(&candidate)?;
+        let edges = generator_activation_edges(&activation);
+        self.retain_edges_transactionally(&edges)?;
+        let ObjectPayload::Generator {
+            state: current,
+            activation: current_activation,
+        } = &mut self.object_mut(id)?.payload
+        else {
+            unreachable!("Generator payload was validated before suspension")
+        };
+        *current = state;
+        *current_activation = Some(Box::new(activation));
+        Ok(())
+    }
+
+    /// Permanently finish an executing generator after return, throw, or an
+    /// abrupt resume failure. Its dormant edges were already detached by
+    /// [`Self::begin_generator_resume`].
+    pub fn complete_generator(&mut self, id: ObjectId) -> Result<(), HeapError> {
+        let ObjectPayload::Generator { state, activation } = &mut self.object_mut(id)?.payload
+        else {
+            return Err(HeapError::Invariant(
+                "Generator completion reached an object with the wrong class",
+            ));
+        };
+        if *state != GeneratorState::Executing || activation.is_some() {
+            return Err(HeapError::Invariant(
+                "Generator completion did not follow an executing state",
+            ));
+        }
+        *state = GeneratorState::Completed;
+        Ok(())
+    }
+
     /// Advance within one snapshotted level without cloning the complete key
     /// vector or visited set. Non-enumerable and duplicate prototype keys are
     /// consumed internally because neither can be yielded.
@@ -9645,6 +9981,7 @@ impl Heap {
                     ObjectKind::BytecodeFunction,
                     ObjectPayload::BytecodeFunction { .. }
                 )
+                | (ObjectKind::Generator, ObjectPayload::Generator { .. })
         ) {
             return Err(HeapError::Invariant(
                 "object kind does not match its class payload",
@@ -9724,6 +10061,129 @@ impl Heap {
                     return Err(HeapError::Invariant(
                         "class instance initializer edge has malformed ownership metadata",
                     ));
+                }
+            }
+        }
+        if let ObjectPayload::Generator { state, activation } = &object.payload {
+            if object.is_constructor
+                || matches!(state, GeneratorState::Executing | GeneratorState::Completed)
+                    != activation.is_none()
+            {
+                return Err(HeapError::Invariant(
+                    "generator object has inconsistent state and activation",
+                ));
+            }
+            if let Some(activation) = activation.as_deref() {
+                let bytecode = self.function_bytecode(activation.bytecode)?;
+                let vm = &activation.vm;
+                let function = self.object(vm.current_function)?;
+                if bytecode.metadata.function_kind != FunctionKind::Generator
+                    || bytecode.metadata.constructor_kind != ConstructorKind::None
+                    || !bytecode.metadata.has_prototype
+                    || bytecode.realm != vm.callee_realm
+                    || vm.strict != bytecode.metadata.strict
+                    || self.context(vm.callee_realm)?.global_object != vm.callee_global
+                    || !matches!(
+                        function.payload,
+                        ObjectPayload::BytecodeFunction {
+                            bytecode: owner,
+                            ..
+                        } if owner == activation.bytecode
+                    )
+                    || function.is_constructor
+                    || activation.arguments.len() < usize::from(bytecode.metadata.argument_count)
+                    || activation.locals.len() != usize::from(bytecode.metadata.local_count)
+                    || activation.reusable_captured_locals.len() != activation.locals.len()
+                    || vm.stack.len() > usize::from(bytecode.metadata.max_stack)
+                    || vm.pc == 0
+                    || vm.pc > bytecode.code.len()
+                {
+                    return Err(HeapError::Invariant(
+                        "generator activation has invalid frame metadata",
+                    ));
+                }
+                let suspension_matches = matches!(
+                    (state, bytecode.code.get(vm.pc - 1)),
+                    (
+                        GeneratorState::SuspendedStart,
+                        Some(Instruction::InitialYield)
+                    ) | (GeneratorState::SuspendedYield, Some(Instruction::Yield))
+                        | (
+                            GeneratorState::SuspendedYieldStar,
+                            Some(Instruction::YieldStar)
+                        )
+                );
+                if !suspension_matches {
+                    return Err(HeapError::Invariant(
+                        "generator activation is not parked after its suspension opcode",
+                    ));
+                }
+                for value in vm
+                    .stack
+                    .iter()
+                    .chain(std::iter::once(&vm.this_value))
+                    .chain(vm.normalized_this.iter())
+                    .chain(std::iter::once(&vm.new_target))
+                {
+                    if !is_map_storable_value(value) {
+                        return Err(HeapError::Invariant(
+                            "generator activation contains an internal-only value",
+                        ));
+                    }
+                }
+                for binding in activation.arguments.iter().chain(activation.locals.iter()) {
+                    match binding {
+                        GeneratorFrameBinding::Direct(value) if !is_map_storable_value(value) => {
+                            return Err(HeapError::Invariant(
+                                "generator frame binding contains an internal-only value",
+                            ));
+                        }
+                        GeneratorFrameBinding::Private(atom) if atom.is_null() => {
+                            return Err(HeapError::Invariant(
+                                "generator private binding contains the null atom",
+                            ));
+                        }
+                        GeneratorFrameBinding::PrivateCallable(callable) => {
+                            let callable = self.object(*callable)?;
+                            if !matches!(
+                                callable.payload,
+                                ObjectPayload::NativeFunction { .. }
+                                    | ObjectPayload::BoundFunction { .. }
+                                    | ObjectPayload::BytecodeFunction { .. }
+                            ) {
+                                return Err(HeapError::Invariant(
+                                    "generator private callable binding is not callable",
+                                ));
+                            }
+                        }
+                        GeneratorFrameBinding::Captured(var_ref) => {
+                            self.var_ref(*var_ref)?;
+                        }
+                        GeneratorFrameBinding::Direct(_)
+                        | GeneratorFrameBinding::Private(_)
+                        | GeneratorFrameBinding::Uninitialized => {}
+                    }
+                }
+                for region in &vm.regions {
+                    match *region {
+                        crate::vm::VmUnwindRegion::Catch {
+                            target,
+                            stack_depth,
+                        } if target >= bytecode.code.len() || stack_depth > vm.stack.len() => {
+                            return Err(HeapError::Invariant(
+                                "generator catch region is outside its saved frame",
+                            ));
+                        }
+                        crate::vm::VmUnwindRegion::Iterator { record_base, .. }
+                            if record_base.saturating_add(1) >= vm.stack.len() =>
+                        {
+                            return Err(HeapError::Invariant(
+                                "generator iterator region is outside its saved frame",
+                            ));
+                        }
+                        crate::vm::VmUnwindRegion::Catch { .. }
+                        | crate::vm::VmUnwindRegion::Iterator { .. } => {}
+                    }
                 }
             }
         }
@@ -10219,7 +10679,8 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::GlobalObject { .. }
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
-        | ObjectPayload::NativeFunction { .. } => 0,
+        | ObjectPayload::NativeFunction { .. }
+        | ObjectPayload::Generator { .. } => 0,
         ObjectPayload::RegExpStringIterator { .. } => 1,
         ObjectPayload::Map { records, .. } => records
             .iter()
@@ -10325,6 +10786,48 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
             edges.push(RawId::FunctionBytecode(*bytecode));
             edges.extend(closure_slots.iter().copied().map(RawId::VarRef));
         }
+        ObjectPayload::Generator { activation, .. } => {
+            if let Some(activation) = activation.as_deref() {
+                edges.extend(generator_activation_edges(activation));
+            }
+        }
+    }
+    edges
+}
+
+fn generator_activation_edges(activation: &GeneratorActivationData) -> Vec<RawId> {
+    let vm = &activation.vm;
+    let mut edges = Vec::with_capacity(
+        vm.stack
+            .len()
+            .saturating_add(activation.arguments.len())
+            .saturating_add(activation.locals.len())
+            .saturating_add(8),
+    );
+    edges.push(RawId::FunctionBytecode(activation.bytecode));
+    edges.push(RawId::Context(vm.callee_realm));
+    edges.push(RawId::Object(vm.current_function));
+    edges.push(RawId::Object(vm.callee_global));
+    for value in vm
+        .stack
+        .iter()
+        .chain(std::iter::once(&vm.this_value))
+        .chain(vm.normalized_this.iter())
+        .chain(std::iter::once(&vm.new_target))
+    {
+        edges.extend(raw_value_edges(value));
+    }
+    for binding in activation.arguments.iter().chain(activation.locals.iter()) {
+        match binding {
+            GeneratorFrameBinding::Direct(value) => edges.extend(raw_value_edges(value)),
+            GeneratorFrameBinding::PrivateCallable(object) => {
+                edges.push(RawId::Object(*object));
+            }
+            GeneratorFrameBinding::Captured(var_ref) => {
+                edges.push(RawId::VarRef(*var_ref));
+            }
+            GeneratorFrameBinding::Private(_) | GeneratorFrameBinding::Uninitialized => {}
+        }
     }
     edges
 }
@@ -10391,6 +10894,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
             .saturating_add(context.regexp.map_or(0, |_| 4))
             .saturating_add(context.map.map_or(0, |_| 2))
             .saturating_add(context.set.map_or(0, |_| 2))
+            .saturating_add(context.generator.map_or(0, |_| 2))
             .saturating_add(context.global_objects.len())
             .saturating_add(context.intrinsics.len())
             .saturating_add(context.initial_shapes.len()),
@@ -10423,6 +10927,10 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     if let Some(set) = context.set {
         edges.push(RawId::Object(set.prototype));
         edges.push(RawId::Object(set.iterator_prototype));
+    }
+    if let Some(generator) = context.generator {
+        edges.push(RawId::Object(generator.prototype));
+        edges.push(RawId::Object(generator.function_prototype));
     }
     edges.extend(context.function_constructor.map(RawId::Object));
     edges.extend(context.array_constructor.map(RawId::Object));
@@ -10510,6 +11018,10 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
             .iter()
             .filter_map(|record| record.key.as_ref().and_then(raw_value_atom))
             .collect::<Vec<_>>(),
+        ObjectPayload::Generator { activation, .. } => activation
+            .as_deref()
+            .map(generator_activation_atoms)
+            .unwrap_or_default(),
         ObjectPayload::Ordinary
         | ObjectPayload::RawJson
         | ObjectPayload::Array { .. }
@@ -10530,6 +11042,30 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
     object_slot_atoms(object)
         .chain(payload)
         .chain(object.private_brand_home)
+}
+
+fn generator_activation_atoms(activation: &GeneratorActivationData) -> Vec<Atom> {
+    let vm = &activation.vm;
+    vm.stack
+        .iter()
+        .chain(std::iter::once(&vm.this_value))
+        .chain(vm.normalized_this.iter())
+        .chain(std::iter::once(&vm.new_target))
+        .filter_map(raw_value_atom)
+        .chain(
+            activation
+                .arguments
+                .iter()
+                .chain(activation.locals.iter())
+                .filter_map(|binding| match binding {
+                    GeneratorFrameBinding::Direct(value) => raw_value_atom(value),
+                    GeneratorFrameBinding::Private(atom) => Some(*atom),
+                    GeneratorFrameBinding::PrivateCallable(_)
+                    | GeneratorFrameBinding::Uninitialized
+                    | GeneratorFrameBinding::Captured(_) => None,
+                }),
+        )
+        .collect()
 }
 
 fn raw_value_atom(value: &RawValue) -> Option<Atom> {

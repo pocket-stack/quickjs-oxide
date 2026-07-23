@@ -67,6 +67,10 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "Program function prologue preserves authored branch targets",
         "if(false){missingFunctionBranch}else{Function.functionBranch=1}function branchFunction(){return 4}Function.functionBranch+'|'+branchFunction()",
     ),
+    (
+        "Program generator declaration hoists and resumes through completion",
+        "function* programGenerator(){yield 1;return 2}var iterator=programGenerator();iterator.next().value+'|'+iterator.next().value+'|'+iterator.next().done",
+    ),
 ];
 
 const ERROR_CASES: &[(&str, &str)] = &[
@@ -99,16 +103,10 @@ const SYNTAX_ERROR_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-const UNSUPPORTED_BOUNDARY_CASES: &[(&str, &str)] = &[
-    (
-        "async Program function declaration",
-        "async function unsupportedAsync(){}",
-    ),
-    (
-        "generator Program function declaration",
-        "function* unsupportedGenerator(){}",
-    ),
-];
+const UNSUPPORTED_BOUNDARY_CASES: &[(&str, &str)] = &[(
+    "async Program function declaration",
+    "async function unsupportedAsync(){}",
+)];
 
 const ORACLE_PROPERTY_PROBE: &str = r#"
 (function () {

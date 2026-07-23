@@ -72,6 +72,10 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "Function constructor body uses the direct declaration hoist path",
         "Function('return dynamicTarget();function dynamicTarget(){return 12}')()",
     ),
+    (
+        "direct body generator declaration hoists and resumes through completion",
+        "(function(){function* bodyGenerator(){yield 1;return 2}var iterator=bodyGenerator();return iterator.next().value+'|'+iterator.next().value+'|'+iterator.next().done})()",
+    ),
 ];
 
 const ERROR_OBSERVATION_CASES: &[(&str, &str)] = &[(
@@ -121,16 +125,10 @@ const SYNTAX_ERROR_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-const UNSUPPORTED_BOUNDARY_CASES: &[(&str, &str)] = &[
-    (
-        "async direct body function declaration",
-        "(function(){ async function unsupportedAsync(){return 1} return typeof unsupportedAsync })()",
-    ),
-    (
-        "generator direct body function declaration",
-        "(function(){ function* unsupportedGenerator(){yield 1} return typeof unsupportedGenerator })()",
-    ),
-];
+const UNSUPPORTED_BOUNDARY_CASES: &[(&str, &str)] = &[(
+    "async direct body function declaration",
+    "(function(){ async function unsupportedAsync(){return 1} return typeof unsupportedAsync })()",
+)];
 
 #[test]
 fn direct_function_body_declaration_values_match_pinned_quickjs() {

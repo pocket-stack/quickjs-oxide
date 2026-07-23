@@ -83,6 +83,17 @@ pub enum DefineMethodKind {
     Setter,
 }
 
+/// Typed flags for QuickJS `OP_iterator_call` in a `yield*` delegation loop.
+/// The method lookup always targets the retained iterator object. Missing or
+/// nullish methods preserve the input value and return a true missing flag;
+/// present methods replace that value with their result and return false.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum IteratorCallKind {
+    ReturnWithValue,
+    ThrowWithValue,
+    ReturnWithoutValue,
+}
+
 /// Typed form of QuickJS's `OP_apply` magic operand.
 ///
 /// Both forms consume `function, this-or-new-target, argument-array`; the
@@ -532,6 +543,37 @@ pub enum Instruction {
     /// typed equivalent of QuickJS's `nip_catch; rot3r; undefined;
     /// iterator_close` return-unwind sequence.
     IteratorClosePreserve,
+    /// `yield*`-specific GetIterator. Unlike [`Instruction::ForOfStart`], its
+    /// three outputs are ordinary retained operands (`iterator`, cached
+    /// `next`, placeholder) and do not install an automatic unwind region.
+    IteratorStart,
+    /// QuickJS `OP_iterator_next`: call the cached `next` method with the top
+    /// resume value and replace that value with the materialized result object
+    /// (`iterator, next, placeholder, value -> ... result`).
+    IteratorNext,
+    /// QuickJS `OP_iterator_call`: look up `return` or `throw` on the retained
+    /// iterator and append a Boolean indicating that the method was missing.
+    IteratorCall(IteratorCallKind),
+    /// Reject a non-Object iterator-result while preserving it at TOS.
+    IteratorCheckObject,
+    /// QuickJS `OP_initial_yield`: suspend a freshly invoked generator after
+    /// parameter initialization and before entering its authored body. It has
+    /// no JavaScript-visible operand; resumption continues at the next PC.
+    InitialYield,
+    /// QuickJS `OP_yield`: consume the value exposed to the caller. Resumption
+    /// replaces it with the injected resume value and appends the authenticated
+    /// next/return discriminator (`value -> resume-value, resume-kind`). A
+    /// throw resumption enters through the VM exception path instead.
+    Yield,
+    /// QuickJS `OP_yield_star`: the suspension half of delegated yield. The
+    /// operand is an already-materialized iterator-result object, which the
+    /// generator driver must return without re-wrapping (`pdone == 2`). The
+    /// compiler-owned delegation loop consumes the same two resume operands as
+    /// ordinary `Yield`.
+    YieldStar,
+    /// Terminal TypeError used by `yield*` when the delegate has no `throw`
+    /// method. A present `return` method has already been called for close.
+    ThrowIteratorMissingThrow,
     Call(u16),
     /// QuickJS `OP_eval`: a syntactic direct-eval call site. The runtime first
     /// compares the resolved callee with the executing realm's original
@@ -591,13 +633,18 @@ impl Instruction {
             | Self::Goto(_)
             | Self::Gosub(_)
             | Self::ThrowRedeclaration(_)
+            | Self::ThrowIteratorMissingThrow
             | Self::SetLocalUninitialized(_)
-            | Self::CloseLocal(_) => (0, 0),
+            | Self::CloseLocal(_)
+            | Self::InitialYield => (0, 0),
             // The verifier models this marker in its conceptual stack even
             // though runtime execution stores it in private handler metadata.
             Self::Catch(_) => (0, 1),
             Self::ForOfStart => (1, 3),
+            Self::IteratorStart => (1, 3),
             Self::ForOfNext(_) => (3, 5),
+            Self::IteratorNext => (4, 4),
+            Self::IteratorCall(_) => (4, 5),
             Self::ForInStart => (1, 1),
             Self::ForInNext => (1, 3),
             Self::PushI32(_)
@@ -634,7 +681,7 @@ impl Instruction {
             | Self::DeleteVar(_) => (0, 1),
             Self::InitializePrivateName(_) => (0, 0),
             Self::InitializePrivateMethod(_) | Self::InitializePrivateAccessor(_) => (2, 1),
-            Self::SetName(_) | Self::ToObject => (1, 1),
+            Self::SetName(_) | Self::ToObject | Self::IteratorCheckObject => (1, 1),
             Self::MarkSuperCall => (2, 2),
             Self::GetRefValue(_) | Self::GetRefValueUndef(_) => (1, 2),
             Self::GetField(_) | Self::GetPrivateField(_) | Self::PrivateIn(_) => (1, 1),
@@ -728,6 +775,7 @@ impl Instruction {
             // the active handler's recorded entry depth.
             Self::NipCatch | Self::IteratorClosePreserve => (1, 1),
             Self::IteratorClose => (3, 0),
+            Self::Yield | Self::YieldStar => (1, 2),
             Self::SetLocal(_) | Self::SetLocalCheck(_) | Self::SetArg(_) | Self::SetVarRef(_) => {
                 (1, 1)
             }
@@ -1283,7 +1331,8 @@ pub(crate) fn verify_parts(
             // resolution replaces that write with this instruction.
             Instruction::ThrowReadOnly(_)
             | Instruction::ThrowRedeclaration(_)
-            | Instruction::ThrowDeleteSuper => {}
+            | Instruction::ThrowDeleteSuper
+            | Instruction::ThrowIteratorMissingThrow => {}
             Instruction::Goto(target) => {
                 enqueue_target(
                     &mut worklist,
@@ -1546,6 +1595,39 @@ mod tests {
             max_stack: 1,
         };
         assert_eq!(function.verify().unwrap().max_stack, 1);
+    }
+
+    #[test]
+    fn verifier_models_generator_suspension_resume_stack_shapes() {
+        for suspension in [Instruction::Yield, Instruction::YieldStar] {
+            let function = BytecodeFunction {
+                name: None,
+                code: vec![
+                    Instruction::InitialYield,
+                    Instruction::PushI32(42),
+                    suspension,
+                    Instruction::IfFalse(5),
+                    Instruction::Return,
+                    Instruction::Return,
+                ],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 2,
+            };
+            assert_eq!(function.verify().unwrap().max_stack, 2);
+        }
+
+        let underflow = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::Yield, Instruction::Return],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        assert_eq!(
+            underflow.verify().unwrap_err().message(),
+            "bytecode stack underflow"
+        );
     }
 
     #[test]

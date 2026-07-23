@@ -8,10 +8,14 @@ use crate::bytecode::{
     ApplyKind, ArgumentsKind, DefineMethodKind, DynamicEnvironmentSource, EvalVariableSource,
     PrivateNameSource,
 };
-use crate::heap::{EvalBinding, EvalBindingSource, EvalVariableEnvironment};
+use crate::heap::{
+    EvalBinding, EvalBindingSource, EvalVariableEnvironment, GeneratorActivationData,
+    GeneratorFrameBinding, GeneratorState, GeneratorVmActivation,
+};
 use crate::object::PrivateNameRef;
 use crate::vm::{
-    AppendStartOutcome, ArgumentListOutcome, CallInput, DirectEvalInvocation, Vm, VmHost,
+    AppendStartOutcome, ArgumentListOutcome, BytecodePc, CallInput, DirectEvalInvocation, Vm,
+    VmActivationParts, VmExit, VmHost, VmResume, VmSuspendKind, VmSuspension,
 };
 
 mod dynamic_environment;
@@ -224,6 +228,130 @@ fn close_frame_binding(
     Ok(())
 }
 
+fn encode_generator_frame_binding(
+    runtime: &Runtime,
+    binding: &FrameBinding,
+) -> Result<GeneratorFrameBinding, RuntimeError> {
+    Ok(match binding {
+        FrameBinding::Direct(value) => {
+            GeneratorFrameBinding::Direct(runtime.raw_property_value(value)?)
+        }
+        FrameBinding::Private(name) => {
+            if !name.belongs_to(runtime) {
+                return Err(RuntimeError::WrongRuntime("generator private binding"));
+            }
+            GeneratorFrameBinding::Private(name.atom())
+        }
+        FrameBinding::PrivateCallable(callable) => {
+            if !callable.belongs_to(runtime) {
+                return Err(RuntimeError::WrongRuntime(
+                    "generator private callable binding",
+                ));
+            }
+            GeneratorFrameBinding::PrivateCallable(callable.as_object().object_id())
+        }
+        FrameBinding::Uninitialized => GeneratorFrameBinding::Uninitialized,
+        FrameBinding::Captured(root) => {
+            if !root.belongs_to(runtime) {
+                return Err(RuntimeError::WrongRuntime("generator captured binding"));
+            }
+            GeneratorFrameBinding::Captured(root.id())
+        }
+    })
+}
+
+fn validate_decoded_generator_binding(
+    runtime: &Runtime,
+    binding: &FrameBinding,
+    definition: Option<&VariableDefinition>,
+) -> Result<(), RuntimeError> {
+    let Some(definition) = definition else {
+        if matches!(binding, FrameBinding::Direct(_)) {
+            return Ok(());
+        }
+        return Err(RuntimeError::Invariant(
+            "extra generator argument has a non-direct binding",
+        ));
+    };
+    match binding {
+        FrameBinding::Direct(_) if definition.kind.is_private() => Err(RuntimeError::Invariant(
+            "generator private definition decoded as an ordinary value",
+        )),
+        FrameBinding::Private(_)
+            if definition.kind != ClosureVariableKind::PrivateField
+                || !definition.is_lexical
+                || !definition.is_const =>
+        {
+            Err(RuntimeError::Invariant(
+                "generator private-name binding disagrees with its definition",
+            ))
+        }
+        FrameBinding::PrivateCallable(_)
+            if !is_private_callable_kind(definition.kind)
+                || !definition.is_lexical
+                || !definition.is_const =>
+        {
+            Err(RuntimeError::Invariant(
+                "generator private-callable binding disagrees with its definition",
+            ))
+        }
+        FrameBinding::Uninitialized if !definition.is_lexical => Err(RuntimeError::Invariant(
+            "generator non-lexical binding decoded as uninitialized",
+        )),
+        FrameBinding::Captured(root) => {
+            let state = runtime.0.state.borrow();
+            let cell = state.heap.var_ref(root.id())?;
+            if (cell.is_lexical, cell.is_const, cell.kind)
+                != (definition.is_lexical, definition.is_const, definition.kind)
+            {
+                return Err(RuntimeError::Invariant(
+                    "generator captured binding metadata disagrees with its definition",
+                ));
+            }
+            Ok(())
+        }
+        FrameBinding::Direct(_)
+        | FrameBinding::Private(_)
+        | FrameBinding::PrivateCallable(_)
+        | FrameBinding::Uninitialized => Ok(()),
+    }
+}
+
+fn decode_generator_frame_binding(
+    runtime: &Runtime,
+    binding: &GeneratorFrameBinding,
+    definition: Option<&VariableDefinition>,
+) -> Result<FrameBinding, RuntimeError> {
+    let binding = match binding {
+        GeneratorFrameBinding::Direct(value) => {
+            FrameBinding::Direct(runtime.root_raw_value(value)?)
+        }
+        GeneratorFrameBinding::Private(atom) => {
+            if runtime.0.state.borrow().atoms.kind(*atom)? != AtomKind::Private {
+                return Err(RuntimeError::Invariant(
+                    "generator private binding contains a non-private atom",
+                ));
+            }
+            FrameBinding::Private(PrivateNameRef::from_borrowed_atom(runtime.clone(), *atom)?)
+        }
+        GeneratorFrameBinding::PrivateCallable(object) => {
+            let object = ObjectRef::from_borrowed_handle(runtime.clone(), *object)?;
+            let callable = runtime
+                .as_callable(&object)?
+                .ok_or(RuntimeError::Invariant(
+                    "generator private callable binding lost callability",
+                ))?;
+            FrameBinding::PrivateCallable(callable)
+        }
+        GeneratorFrameBinding::Uninitialized => FrameBinding::Uninitialized,
+        GeneratorFrameBinding::Captured(var_ref) => {
+            FrameBinding::Captured(VarRefRoot::from_borrowed_handle(runtime.clone(), *var_ref)?)
+        }
+    };
+    validate_decoded_generator_binding(runtime, &binding, definition)?;
+    Ok(binding)
+}
+
 fn runtime_error_to_vm_error(error: RuntimeError) -> Error {
     match error {
         RuntimeError::Engine(error) => error,
@@ -265,6 +393,144 @@ pub(super) struct RuntimeVmHost {
     /// cells captured at one of those exact boundaries may be reset in place
     /// by the next lexical scope entry.
     reusable_captured_locals: Vec<bool>,
+}
+
+/// Raw activation plus every transient root from which it was encoded.  The
+/// wrapper must outlive heap publication: raw object/VarRef/bytecode/context
+/// identities are non-owning until `ObjectData::generator` or
+/// `Heap::suspend_generator` retains them.
+pub(super) struct EncodedGeneratorActivation {
+    pub(super) state: GeneratorState,
+    pub(super) data: GeneratorActivationData,
+    _host: RuntimeVmHost,
+    _parts: VmActivationParts,
+}
+
+impl EncodedGeneratorActivation {
+    pub(super) fn atoms(&self) -> Vec<Atom> {
+        let vm = &self.data.vm;
+        vm.stack
+            .iter()
+            .chain(std::iter::once(&vm.this_value))
+            .chain(vm.normalized_this.iter())
+            .chain(std::iter::once(&vm.new_target))
+            .filter_map(generator_raw_value_atom)
+            .chain(
+                self.data
+                    .arguments
+                    .iter()
+                    .chain(self.data.locals.iter())
+                    .filter_map(|binding| match binding {
+                        GeneratorFrameBinding::Direct(value) => generator_raw_value_atom(value),
+                        GeneratorFrameBinding::Private(atom) => Some(*atom),
+                        GeneratorFrameBinding::PrivateCallable(_)
+                        | GeneratorFrameBinding::Uninitialized
+                        | GeneratorFrameBinding::Captured(_) => None,
+                    }),
+            )
+            .collect()
+    }
+}
+
+fn generator_raw_value_atom(value: &RawValue) -> Option<Atom> {
+    match value {
+        RawValue::Symbol(atom) | RawValue::Private(atom) => Some(*atom),
+        RawValue::Undefined
+        | RawValue::Null
+        | RawValue::Bool(_)
+        | RawValue::Int(_)
+        | RawValue::Float(_)
+        | RawValue::BigInt(_)
+        | RawValue::String(_)
+        | RawValue::Object(_)
+        | RawValue::Uninitialized
+        | RawValue::Exception => None,
+    }
+}
+
+/// Fully rooted execution state reconstructed before the generator object's
+/// dormant edges are detached. `host.active_frame_token` remains a sentinel
+/// until the short-lived bytecode active frame is pushed for the actual
+/// resume.
+pub(super) struct RootedGeneratorActivation {
+    pub(super) previous_state: GeneratorState,
+    pub(super) suspension: VmSuspension,
+    pub(super) host: RuntimeVmHost,
+    pub(super) bytecode: FunctionBytecodeRef,
+    pub(super) code: Rc<[crate::bytecode::Instruction]>,
+    pub(super) metadata: FunctionMetadata,
+    saved_pc: usize,
+}
+
+pub(super) enum GeneratorVmRunOutcome {
+    Complete(Completion),
+    Suspend {
+        yielded: Value,
+        activation: Box<EncodedGeneratorActivation>,
+    },
+}
+
+impl RootedGeneratorActivation {
+    pub(super) fn run(
+        self,
+        runtime: &Runtime,
+        resume: Option<VmResume>,
+    ) -> Result<GeneratorVmRunOutcome, RuntimeError> {
+        let Self {
+            previous_state,
+            suspension,
+            mut host,
+            bytecode,
+            code,
+            metadata,
+            saved_pc,
+        } = self;
+        let function = host
+            .current_function
+            .as_ref()
+            .ok_or(RuntimeError::Invariant(
+                "generator host has no current function root",
+            ))?
+            .clone();
+        let active_frame = runtime.push_bytecode_active_frame(
+            function,
+            bytecode,
+            host.current_realm,
+            metadata.strict,
+        )?;
+        host.set_generator_active_frame_token(active_frame.token());
+        runtime.update_active_bytecode_pc(
+            active_frame.token(),
+            BytecodePc::new(saved_pc.saturating_sub(1)),
+        )?;
+        let result = match (previous_state, resume) {
+            (GeneratorState::SuspendedStart, None) => {
+                Vm::new().resume_published_initial(suspension, &code, &mut host)
+            }
+            (GeneratorState::SuspendedYield | GeneratorState::SuspendedYieldStar, Some(resume)) => {
+                Vm::new().resume_published(suspension, &code, &mut host, resume)
+            }
+            (GeneratorState::SuspendedStart, Some(_))
+            | (GeneratorState::SuspendedYield | GeneratorState::SuspendedYieldStar, None)
+            | (GeneratorState::Executing | GeneratorState::Completed, _) => {
+                return Err(RuntimeError::Invariant(
+                    "generator resume kind disagrees with its suspended state",
+                ));
+            }
+        };
+        active_frame.finish()?;
+        match result.map_err(RuntimeError::Engine)? {
+            VmExit::Complete(completion) => Ok(GeneratorVmRunOutcome::Complete(completion)),
+            VmExit::Suspend(mut suspension) => {
+                let yielded = suspension.take_yielded().map_err(RuntimeError::Engine)?;
+                let activation = host.encode_generator_activation(suspension)?;
+                Ok(GeneratorVmRunOutcome::Suspend {
+                    yielded,
+                    activation: Box::new(activation),
+                })
+            }
+        }
+    }
 }
 
 enum VmPropertyKeyConversion {
@@ -369,6 +635,240 @@ impl RuntimeVmHost {
                 self.closure_slots.get(usize::from(index)).is_some()
             }
         }
+    }
+
+    pub(super) fn encode_generator_activation(
+        self,
+        suspension: VmSuspension,
+    ) -> Result<EncodedGeneratorActivation, RuntimeError> {
+        let (kind, parts) = suspension.into_parts().map_err(RuntimeError::Engine)?;
+        let state = match kind {
+            VmSuspendKind::Initial => GeneratorState::SuspendedStart,
+            VmSuspendKind::Yield => GeneratorState::SuspendedYield,
+            VmSuspendKind::YieldStar => GeneratorState::SuspendedYieldStar,
+        };
+        let bytecode = self
+            .current_bytecode
+            .as_ref()
+            .ok_or(RuntimeError::Invariant(
+                "generator host has no current bytecode root",
+            ))?;
+        let caller_realm = parts.caller_realm.ok_or(RuntimeError::Invariant(
+            "generator VM activation has no caller realm",
+        ))?;
+        let callee_realm = parts.callee_realm.ok_or(RuntimeError::Invariant(
+            "generator VM activation has no callee realm",
+        ))?;
+        let current_function = parts
+            .current_function
+            .as_ref()
+            .ok_or(RuntimeError::Invariant(
+                "generator VM activation has no current function",
+            ))?;
+        let callee_global = parts.callee_global.as_ref().ok_or(RuntimeError::Invariant(
+            "generator VM activation has no callee global",
+        ))?;
+        if caller_realm != self.caller_realm
+            || callee_realm != self.current_realm
+            || self.current_function.as_ref() != Some(current_function)
+            || self.arguments.len() < self.argument_definitions.len()
+            || self.locals.len() != self.local_definitions.len()
+            || self.reusable_captured_locals.len() != self.locals.len()
+            || self.actual_argument_count > self.arguments.len()
+        {
+            return Err(RuntimeError::Invariant(
+                "generator VM activation disagrees with its runtime host",
+            ));
+        }
+        let arguments = self
+            .arguments
+            .iter()
+            .map(|binding| encode_generator_frame_binding(&self.runtime, binding))
+            .collect::<Result<Vec<_>, _>>()?;
+        let locals = self
+            .locals
+            .iter()
+            .map(|binding| encode_generator_frame_binding(&self.runtime, binding))
+            .collect::<Result<Vec<_>, _>>()?;
+        let vm = GeneratorVmActivation {
+            stack: parts
+                .stack
+                .iter()
+                .map(|value| self.runtime.raw_property_value(value))
+                .collect::<Result<Vec<_>, _>>()?,
+            regions: parts.regions.clone(),
+            pc: parts.pc,
+            callee_realm,
+            current_function: current_function.object_id(),
+            this_value: self.runtime.raw_property_value(&parts.this_value)?,
+            normalized_this: parts
+                .normalized_this
+                .as_ref()
+                .map(|value| self.runtime.raw_property_value(value))
+                .transpose()?,
+            new_target: self.runtime.raw_property_value(&parts.new_target)?,
+            strict: parts.strict,
+            callee_global: callee_global.object_id(),
+        };
+        Ok(EncodedGeneratorActivation {
+            state,
+            data: GeneratorActivationData {
+                bytecode: bytecode.bytecode_id(),
+                vm,
+                actual_argument_count: self.actual_argument_count,
+                arguments,
+                locals,
+                reusable_captured_locals: self.reusable_captured_locals.clone(),
+            },
+            _host: self,
+            _parts: parts,
+        })
+    }
+
+    pub(super) fn decode_generator_activation(
+        runtime: Runtime,
+        previous_state: GeneratorState,
+        resume_caller_realm: ContextId,
+        data: &GeneratorActivationData,
+    ) -> Result<RootedGeneratorActivation, RuntimeError> {
+        let kind = match previous_state {
+            GeneratorState::SuspendedStart => VmSuspendKind::Initial,
+            GeneratorState::SuspendedYield => VmSuspendKind::Yield,
+            GeneratorState::SuspendedYieldStar => VmSuspendKind::YieldStar,
+            GeneratorState::Executing | GeneratorState::Completed => {
+                return Err(RuntimeError::Invariant(
+                    "generator activation decoded outside a suspended state",
+                ));
+            }
+        };
+        runtime.0.state.borrow().heap.context(resume_caller_realm)?;
+        let bytecode_probe =
+            FunctionBytecodeRef::from_borrowed_handle(runtime.clone(), data.bytecode)?;
+        let PublishedFunctionSnapshot {
+            root,
+            code,
+            constants,
+            argument_definitions,
+            local_definitions,
+            closure_variables,
+            eval_environments,
+            arg_eval_variable_object_local,
+            metadata,
+            realm,
+        } = runtime.snapshot_function_bytecode(&bytecode_probe)?;
+        drop(bytecode_probe);
+        if metadata.function_kind != FunctionKind::Generator
+            || realm != data.vm.callee_realm
+            || metadata.strict != data.vm.strict
+            || data.arguments.len() < argument_definitions.len()
+            || data.locals.len() != local_definitions.len()
+            || data.reusable_captured_locals.len() != data.locals.len()
+            || data.actual_argument_count > data.arguments.len()
+        {
+            return Err(RuntimeError::Invariant(
+                "raw generator activation disagrees with published bytecode",
+            ));
+        }
+        let current_function =
+            ObjectRef::from_borrowed_handle(runtime.clone(), data.vm.current_function)?;
+        let callable = runtime
+            .as_callable(&current_function)?
+            .ok_or(RuntimeError::Invariant(
+                "generator activation current function is not callable",
+            ))?;
+        let closure_slots = match runtime.bytecode_for_callable(&callable)? {
+            CallableExecution::Bytecode {
+                bytecode,
+                closure_slots,
+            } if bytecode.bytecode_id() == data.bytecode => closure_slots,
+            CallableExecution::Bytecode { .. }
+            | CallableExecution::Native { .. }
+            | CallableExecution::Bound { .. } => {
+                return Err(RuntimeError::Invariant(
+                    "generator activation current function changed bytecode identity",
+                ));
+            }
+        };
+        if closure_slots.len() != closure_variables.len() {
+            return Err(RuntimeError::Invariant(
+                "generator closure slot count disagrees with bytecode metadata",
+            ));
+        }
+        let arguments = data
+            .arguments
+            .iter()
+            .enumerate()
+            .map(|(index, binding)| {
+                decode_generator_frame_binding(&runtime, binding, argument_definitions.get(index))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let locals = data
+            .locals
+            .iter()
+            .zip(local_definitions.iter())
+            .map(|(binding, definition)| {
+                decode_generator_frame_binding(&runtime, binding, Some(definition))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let callee_global =
+            ObjectRef::from_borrowed_handle(runtime.clone(), data.vm.callee_global)?;
+        let parts = VmActivationParts {
+            stack: data
+                .vm
+                .stack
+                .iter()
+                .map(|value| runtime.root_raw_value(value))
+                .collect::<Result<Vec<_>, _>>()?,
+            regions: data.vm.regions.clone(),
+            pc: data.vm.pc,
+            caller_realm: Some(resume_caller_realm),
+            callee_realm: Some(data.vm.callee_realm),
+            current_function: Some(current_function.clone()),
+            this_value: runtime.root_raw_value(&data.vm.this_value)?,
+            normalized_this: data
+                .vm
+                .normalized_this
+                .as_ref()
+                .map(|value| runtime.root_raw_value(value))
+                .transpose()?,
+            new_target: runtime.root_raw_value(&data.vm.new_target)?,
+            strict: data.vm.strict,
+            callee_global: Some(callee_global),
+        };
+        let suspension = VmSuspension::from_parts(kind, parts).map_err(RuntimeError::Engine)?;
+        let host = RuntimeVmHost {
+            runtime,
+            active_frame_token: ActiveFrameToken(0),
+            current_realm: data.vm.callee_realm,
+            caller_realm: resume_caller_realm,
+            current_bytecode: Some(root.clone()),
+            current_function: Some(current_function),
+            actual_argument_count: data.actual_argument_count,
+            constants,
+            argument_definitions,
+            local_definitions,
+            closure_variables,
+            eval_environments,
+            eval_variable_object_local: metadata.eval_variable_object_local,
+            arg_eval_variable_object_local,
+            closure_slots,
+            arguments,
+            locals,
+            reusable_captured_locals: data.reusable_captured_locals.clone(),
+        };
+        Ok(RootedGeneratorActivation {
+            previous_state,
+            suspension,
+            host,
+            bytecode: root,
+            code,
+            metadata,
+            saved_pc: data.vm.pc,
+        })
+    }
+
+    pub(super) fn set_generator_active_frame_token(&mut self, token: ActiveFrameToken) {
+        self.active_frame_token = token;
     }
 
     fn finish_property_define(
@@ -1470,6 +1970,36 @@ impl RuntimeVmHost {
 }
 
 impl Runtime {
+    /// Keep generator-only suspension payloads and match temporaries out of
+    /// every ordinary bytecode call's native frame. Debug ARM64 stack budgets
+    /// are intentionally measured on recursive ordinary calls, so this
+    /// resumable tail must remain an outlined ownership boundary.
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn start_generator_bytecode_callable(
+        &self,
+        caller_realm: ContextId,
+        callable: &CallableRef,
+        mut host: RuntimeVmHost,
+        input: CallInput<'_>,
+        active_frame: ActiveFrameGuard,
+    ) -> Result<Completion, RuntimeError> {
+        let result = Vm::new().start_published(input, &mut host);
+        active_frame.finish()?;
+        match result.map_err(RuntimeError::Engine)? {
+            VmExit::Suspend(suspension) if suspension.kind() == VmSuspendKind::Initial => {
+                self.finish_generator_function_call(caller_realm, callable, host, suspension)
+            }
+            VmExit::Suspend(_) => Err(RuntimeError::Invariant(
+                "generator call did not stop at its initial-yield barrier",
+            )),
+            VmExit::Complete(Completion::Throw(value)) => Ok(Completion::Throw(value)),
+            VmExit::Complete(Completion::Return(_)) => Err(RuntimeError::Invariant(
+                "generator call completed before its initial-yield barrier",
+            )),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn execute_bytecode_callable(
         &self,
@@ -1551,19 +2081,26 @@ impl Runtime {
             locals: frame_locals,
             reusable_captured_locals: vec![false; frame_local_count],
         };
-        let result = Vm::new().execute_published(
-            CallInput {
-                code: &code,
-                metadata,
+        let input = CallInput {
+            code: &code,
+            metadata,
+            caller_realm,
+            callee_realm: realm,
+            current_function: callable.as_object().clone(),
+            this_value,
+            new_target,
+            callee_global,
+        };
+        if metadata.function_kind == FunctionKind::Generator {
+            return self.start_generator_bytecode_callable(
                 caller_realm,
-                callee_realm: realm,
-                current_function: callable.as_object().clone(),
-                this_value,
-                new_target,
-                callee_global,
-            },
-            &mut host,
-        );
+                callable,
+                host,
+                input,
+                active_frame,
+            );
+        }
+        let result = Vm::new().execute_published(input, &mut host);
         active_frame.finish()?;
         result.map_err(RuntimeError::Engine)
     }
@@ -1923,7 +2460,8 @@ impl VmHost for RuntimeVmHost {
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }
-            | ObjectPayload::RegExpStringIterator { .. } => "object",
+            | ObjectPayload::RegExpStringIterator { .. }
+            | ObjectPayload::Generator { .. } => "object",
         })
     }
 

@@ -31,6 +31,226 @@ struct BindingPatternScan<'source> {
     has_assignment: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ParenthesizedParameterScan {
+    pub(super) has_assignment: bool,
+    pub(super) bound_name_count: Option<usize>,
+}
+
+struct FormalParameterBoundNameCounter<'tokens, 'source> {
+    tokens: &'tokens [Token<'source>],
+    cursor: usize,
+}
+
+impl<'tokens, 'source> FormalParameterBoundNameCounter<'tokens, 'source> {
+    fn new(tokens: &'tokens [Token<'source>]) -> Self {
+        Self { tokens, cursor: 0 }
+    }
+
+    fn count(mut self) -> Option<usize> {
+        let mut count = 0usize;
+        while self.cursor < self.tokens.len() {
+            let is_rest = self.consume_punctuator(Punctuator::Ellipsis);
+            count = count.checked_add(self.count_binding_target()?)?;
+            if self.consume_punctuator(Punctuator::Equal) {
+                if is_rest {
+                    return None;
+                }
+                self.skip_expression_until(Punctuator::RightParen)?;
+            }
+            if self.cursor == self.tokens.len() {
+                break;
+            }
+            if !self.consume_punctuator(Punctuator::Comma) {
+                return None;
+            }
+            if is_rest || self.cursor == self.tokens.len() {
+                break;
+            }
+        }
+        (self.cursor == self.tokens.len()).then_some(count)
+    }
+
+    fn count_binding_target(&mut self) -> Option<usize> {
+        match self.current_kind()? {
+            TokenKind::Identifier(_) => {
+                self.cursor += 1;
+                Some(1)
+            }
+            TokenKind::Punctuator(Punctuator::LeftBracket) => self.count_array_pattern(),
+            TokenKind::Punctuator(Punctuator::LeftBrace) => self.count_object_pattern(),
+            _ => None,
+        }
+    }
+
+    fn count_array_pattern(&mut self) -> Option<usize> {
+        self.expect_punctuator(Punctuator::LeftBracket)?;
+        let mut count = 0usize;
+        while !self.consume_punctuator(Punctuator::RightBracket) {
+            if self.consume_punctuator(Punctuator::Comma) {
+                continue;
+            }
+            let is_rest = self.consume_punctuator(Punctuator::Ellipsis);
+            count = count.checked_add(self.count_binding_target()?)?;
+            if self.consume_punctuator(Punctuator::Equal) {
+                if is_rest {
+                    return None;
+                }
+                self.skip_expression_until(Punctuator::RightBracket)?;
+            }
+            if self.consume_punctuator(Punctuator::RightBracket) {
+                break;
+            }
+            if !self.consume_punctuator(Punctuator::Comma) || is_rest {
+                return None;
+            }
+        }
+        Some(count)
+    }
+
+    fn count_object_pattern(&mut self) -> Option<usize> {
+        self.expect_punctuator(Punctuator::LeftBrace)?;
+        let mut count = 0usize;
+        while !self.consume_punctuator(Punctuator::RightBrace) {
+            if self.consume_punctuator(Punctuator::Ellipsis) {
+                count = count.checked_add(self.count_binding_target()?)?;
+                if !self.consume_punctuator(Punctuator::RightBrace) {
+                    return None;
+                }
+                break;
+            }
+
+            let shorthand = match self.current_kind()? {
+                TokenKind::Identifier(_) => {
+                    self.cursor += 1;
+                    true
+                }
+                TokenKind::Keyword(_) | TokenKind::String(_) | TokenKind::Number(_) => {
+                    self.cursor += 1;
+                    false
+                }
+                TokenKind::Punctuator(Punctuator::LeftBracket) => {
+                    self.skip_balanced(Punctuator::LeftBracket)?;
+                    false
+                }
+                _ => return None,
+            };
+
+            if self.consume_punctuator(Punctuator::Colon) {
+                count = count.checked_add(self.count_binding_target()?)?;
+            } else if shorthand {
+                count = count.checked_add(1)?;
+            } else {
+                return None;
+            }
+
+            if self.consume_punctuator(Punctuator::Equal) {
+                self.skip_expression_until(Punctuator::RightBrace)?;
+            }
+            if self.consume_punctuator(Punctuator::RightBrace) {
+                break;
+            }
+            if !self.consume_punctuator(Punctuator::Comma) {
+                return None;
+            }
+        }
+        Some(count)
+    }
+
+    fn skip_expression_until(&mut self, closing: Punctuator) -> Option<()> {
+        let mut delimiters = Vec::new();
+        while let Some(kind) = self.current_kind() {
+            if delimiters.is_empty() && matches!(kind, TokenKind::Punctuator(Punctuator::Comma)) {
+                return Some(());
+            }
+            if delimiters.is_empty()
+                && matches!(kind, TokenKind::Punctuator(punctuator) if *punctuator == closing)
+            {
+                return Some(());
+            }
+            Self::update_delimiters(kind, &mut delimiters)?;
+            self.cursor += 1;
+        }
+        (closing == Punctuator::RightParen && delimiters.is_empty()).then_some(())
+    }
+
+    fn skip_balanced(&mut self, opening: Punctuator) -> Option<()> {
+        if !matches!(
+            self.current_kind(),
+            Some(TokenKind::Punctuator(current)) if *current == opening
+        ) {
+            return None;
+        }
+        let mut delimiters = Vec::new();
+        while let Some(kind) = self.current_kind() {
+            Self::update_delimiters(kind, &mut delimiters)?;
+            self.cursor += 1;
+            if delimiters.is_empty() {
+                return Some(());
+            }
+        }
+        None
+    }
+
+    fn update_delimiters(
+        kind: &TokenKind<'source>,
+        delimiters: &mut Vec<ForHeadDelimiter>,
+    ) -> Option<()> {
+        match kind {
+            TokenKind::Punctuator(Punctuator::LeftParen) => {
+                delimiters.push(ForHeadDelimiter::Parenthesis)
+            }
+            TokenKind::Punctuator(Punctuator::LeftBracket) => {
+                delimiters.push(ForHeadDelimiter::Bracket)
+            }
+            TokenKind::Punctuator(Punctuator::LeftBrace) => {
+                delimiters.push(ForHeadDelimiter::Brace)
+            }
+            TokenKind::Punctuator(Punctuator::RightParen) => {
+                (delimiters.pop() == Some(ForHeadDelimiter::Parenthesis)).then_some(())?;
+            }
+            TokenKind::Punctuator(Punctuator::RightBracket) => {
+                (delimiters.pop() == Some(ForHeadDelimiter::Bracket)).then_some(())?;
+            }
+            TokenKind::Punctuator(Punctuator::RightBrace) => {
+                if delimiters.last() != Some(&ForHeadDelimiter::Template) {
+                    (delimiters.pop() == Some(ForHeadDelimiter::Brace)).then_some(())?;
+                }
+            }
+            TokenKind::Template(part) => match part.kind {
+                TemplatePartKind::Head => delimiters.push(ForHeadDelimiter::Template),
+                TemplatePartKind::Middle => {
+                    (delimiters.last() == Some(&ForHeadDelimiter::Template)).then_some(())?;
+                }
+                TemplatePartKind::Tail => {
+                    (delimiters.pop() == Some(ForHeadDelimiter::Template)).then_some(())?;
+                }
+                TemplatePartKind::NoSubstitution => {}
+            },
+            _ => {}
+        }
+        Some(())
+    }
+
+    fn current_kind(&self) -> Option<&TokenKind<'source>> {
+        self.tokens.get(self.cursor).map(|token| &token.kind)
+    }
+
+    fn consume_punctuator(&mut self, punctuator: Punctuator) -> bool {
+        if matches!(self.current_kind(), Some(TokenKind::Punctuator(current)) if *current == punctuator)
+        {
+            self.cursor += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn expect_punctuator(&mut self, punctuator: Punctuator) -> Option<()> {
+        self.consume_punctuator(punctuator).then_some(())
+    }
+}
+
 /// Prepared DestructuringAssignmentTarget.  The operands represented here
 /// stay above the active iterator record until its next value has been
 /// produced; the final write deliberately uses QuickJS's NOKEEP shape.
@@ -355,15 +575,124 @@ impl<'source> Parser<'source> {
     /// QuickJS pre-scans the complete parenthesized FormalParameters before
     /// parsing the first binding. Any standalone `=` token at any delimiter
     /// depth selects the independent parentless argument scope.
+    #[cfg(test)]
     pub(super) fn parenthesized_parameter_has_assignment(&self) -> Option<bool> {
+        self.parenthesized_parameter_scan()
+            .map(|scan| scan.has_assignment)
+    }
+
+    pub(super) fn parenthesized_parameter_scan(&self) -> Option<ParenthesizedParameterScan> {
         let mut assignment_seen = false;
-        self.binding_pattern_scan_recording_assignment(Punctuator::LeftParen, &mut assignment_seen)
+        let scan = self
+            .binding_pattern_scan_recording_assignment(Punctuator::LeftParen, &mut assignment_seen);
+        let has_assignment = scan
+            .as_ref()
             .map(|scan| scan.has_assignment)
             // QuickJS stops its skip scan at the 256-level delimiter bound but
             // still publishes bits accumulated before that point. In particular,
             // an earlier `=` must create the argument scope even when the suffix is
             // too deep for the lookahead scanner to finish.
-            .or_else(|| assignment_seen.then_some(true))
+            .or_else(|| assignment_seen.then_some(true))?;
+        let bound_name_count = has_assignment
+            .then(|| self.parenthesized_parameter_tokens())
+            .flatten()
+            .and_then(|tokens| FormalParameterBoundNameCounter::new(&tokens).count());
+        Some(ParenthesizedParameterScan {
+            has_assignment,
+            bound_name_count,
+        })
+    }
+
+    fn parenthesized_parameter_tokens(&self) -> Option<Vec<Token<'source>>> {
+        if !self.is_punctuator(Punctuator::LeftParen) {
+            return None;
+        }
+        let mut lexer = self.lexer.clone();
+        lexer.seek(self.current().span.start);
+        if !matches!(
+            lexer.next_token().ok()?.kind,
+            TokenKind::Punctuator(Punctuator::LeftParen)
+        ) {
+            return None;
+        }
+
+        let mut tokens = Vec::new();
+        let mut delimiters = vec![ForHeadDelimiter::Parenthesis];
+        let mut goal = LexicalGoal::Div;
+        let mut regexp_allowed = true;
+        loop {
+            let requested_goal = goal;
+            goal = LexicalGoal::Div;
+            let mut token = lexer.next_token_with_goal(requested_goal).ok()?;
+            if requested_goal == LexicalGoal::Div
+                && regexp_allowed
+                && matches!(
+                    token.kind,
+                    TokenKind::Punctuator(Punctuator::Divide | Punctuator::DivideAssign)
+                )
+            {
+                lexer.seek(token.span.start);
+                token = lexer.next_token_with_goal(LexicalGoal::RegExp).ok()?;
+            }
+
+            let root_close = matches!(token.kind, TokenKind::Punctuator(Punctuator::RightParen))
+                && delimiters.as_slice() == [ForHeadDelimiter::Parenthesis];
+            if root_close {
+                return Some(tokens);
+            }
+            tokens.push(token.clone());
+
+            match &token.kind {
+                TokenKind::Punctuator(Punctuator::LeftParen) => {
+                    delimiters.push(ForHeadDelimiter::Parenthesis);
+                }
+                TokenKind::Punctuator(Punctuator::LeftBracket) => {
+                    delimiters.push(ForHeadDelimiter::Bracket);
+                }
+                TokenKind::Punctuator(Punctuator::LeftBrace) => {
+                    delimiters.push(ForHeadDelimiter::Brace);
+                }
+                TokenKind::Punctuator(Punctuator::RightParen) => {
+                    if delimiters.pop() != Some(ForHeadDelimiter::Parenthesis) {
+                        return None;
+                    }
+                }
+                TokenKind::Punctuator(Punctuator::RightBracket) => {
+                    if delimiters.pop() != Some(ForHeadDelimiter::Bracket) {
+                        return None;
+                    }
+                }
+                TokenKind::Punctuator(Punctuator::RightBrace) => {
+                    if delimiters.last() == Some(&ForHeadDelimiter::Template) {
+                        goal = LexicalGoal::TemplateContinuation;
+                        regexp_allowed = true;
+                        continue;
+                    }
+                    if delimiters.pop() != Some(ForHeadDelimiter::Brace) {
+                        return None;
+                    }
+                }
+                TokenKind::Template(part) => match part.kind {
+                    TemplatePartKind::Head => {
+                        delimiters.push(ForHeadDelimiter::Template);
+                    }
+                    TemplatePartKind::Middle => {
+                        if delimiters.last() != Some(&ForHeadDelimiter::Template) {
+                            return None;
+                        }
+                    }
+                    TemplatePartKind::Tail => {
+                        if delimiters.pop() != Some(ForHeadDelimiter::Template) {
+                            return None;
+                        }
+                    }
+                    TemplatePartKind::NoSubstitution => {}
+                },
+                TokenKind::Eof => return None,
+                _ => {}
+            }
+            regexp_allowed = for_head_regexp_allowed_after(&token.kind);
+        }
     }
 
     fn binding_pattern_following_token(&self, opening: Punctuator) -> Option<Token<'source>> {

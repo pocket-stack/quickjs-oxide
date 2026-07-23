@@ -12,10 +12,11 @@ use quickjs_oxide::{
 // both reads, and routes every abrupt completion after iterator acquisition
 // through `JS_IteratorClose(..., TRUE)`.
 //
-// Proxy, TypedArray, generator and module-namespace integration are recorded
+// Proxy, TypedArray, and module-namespace integration are recorded
 // as explicit boundaries below; they do not silently weaken the ordinary
 // iterator differential while those intrinsics remain unpublished. Strong
-// Map/Set iterators are part of the active value differential.
+// Map/Set iterators and generator IteratorClose are part of the active
+// differential.
 
 const VALUE_CASES: &[(&str, &str)] = &[
     (
@@ -223,6 +224,15 @@ const ORDER_CASES: &[(&str, &str)] = &[
             return run(0)+"|"+run(1)+"|"+run(2)+"|"+run(3)+"|"+run(4);
         })()"#,
     ),
+    (
+        "generator finally runs when a non-object entry triggers IteratorClose",
+        r#"(function(){
+            var log="";
+            function* entries(){try{yield ["a",1];yield 2}finally{log+="finally;"}}
+            try{Object.fromEntries(entries())}catch(error){return log+error.name+":"+error.message}
+            return "missing";
+        })()"#,
+    ),
 ];
 
 const ERROR_CASES: &[(&str, &str)] = &[
@@ -273,10 +283,9 @@ const ERROR_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-const EXOTIC_ORACLE_ONLY_CASES: &[(&str, &str)] = &[
-    (
-        "Proxy entries expose zero and one Get trap ordering",
-        r#"(function(){
+const EXOTIC_ORACLE_ONLY_CASES: &[(&str, &str)] = &[(
+    "Proxy entries expose zero and one Get trap ordering",
+    r#"(function(){
             var log="",base=["x",7];
             var entry=new Proxy(base,{get:function(target,key,receiver){
                 log+="get:"+String(key)+";";return Reflect.get(target,key,receiver);
@@ -284,17 +293,7 @@ const EXOTIC_ORACLE_ONLY_CASES: &[(&str, &str)] = &[
             var result=Object.fromEntries([entry]);
             return log+result.x;
         })()"#,
-    ),
-    (
-        "generator finally runs when a non-object entry triggers IteratorClose",
-        r#"(function(){
-            var log="";
-            function* entries(){try{yield ["a",1];yield 2}finally{log+="finally;"}}
-            try{Object.fromEntries(entries())}catch(error){return log+error.name+":"+error.message}
-            return "missing";
-        })()"#,
-    ),
-];
+)];
 
 const GRAPH_ORACLE: &str = r#"
 function bit(value){return value?1:0}
@@ -594,7 +593,7 @@ fn object_from_entries_method_and_result_retain_then_release_their_realm() {
 }
 
 #[test]
-fn object_from_entries_records_current_proxy_typed_array_and_generator_gap() {
+fn object_from_entries_records_current_proxy_and_typed_array_gap() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     assert_eq!(
@@ -608,9 +607,6 @@ fn object_from_entries_records_current_proxy_typed_array_and_generator_gap() {
         ),
         "activate the remaining exotic Object.fromEntries vectors as those intrinsics are published",
     );
-    // The lexer recognizes generator context, but the current compiler does
-    // not publish generator bytecode. The generator/finally oracle vector must
-    // join the differential when that boundary moves.
 }
 
 fn compare_cases(group: &str, cases: &[(&str, &str)]) {

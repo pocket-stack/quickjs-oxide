@@ -59,7 +59,8 @@ impl Runtime {
             | ObjectPayload::RegExpStringIterator { .. }
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
-            | ObjectPayload::StringIterator { .. } => {
+            | ObjectPayload::StringIterator { .. }
+            | ObjectPayload::Generator { .. } => {
                 return Err(RuntimeError::Invariant(
                     "validated method callable no longer has a callable payload",
                 ));

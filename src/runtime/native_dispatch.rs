@@ -361,6 +361,9 @@ impl Runtime {
             NativeFunctionId::RegExpStringIteratorNext => {
                 self.call_regexp_string_iterator_next_raw(realm, invocation)
             }
+            NativeFunctionId::GeneratorPrototypeResume(kind) => {
+                self.call_generator_prototype_resume_raw(realm, kind, invocation, arguments)
+            }
             _ => Err(RuntimeError::Invariant(
                 "IteratorNext cproto has no raw native dispatcher",
             )),
@@ -382,6 +385,9 @@ impl Runtime {
             NativeFunctionId::FunctionPrototype => Ok(Completion::Return(Value::Undefined)),
             NativeFunctionId::FunctionConstructor(kind) => {
                 self.call_function_constructor(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::GeneratorPrototypeResume(kind) => {
+                self.call_generator_prototype_resume(realm, kind, invocation, arguments)
             }
             NativeFunctionId::ArrayConstructor => {
                 self.call_array_constructor(realm, invocation, arguments)
