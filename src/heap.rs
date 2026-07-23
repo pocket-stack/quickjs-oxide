@@ -5237,6 +5237,7 @@ pub enum RegExpFlagKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RegExpNativeKind {
     Constructor,
+    Escape,
     Species,
     Exec,
     Compile,
@@ -5804,7 +5805,8 @@ impl NativeFunctionId {
                 | DateNativeKind::ToJson,
             )
             | Self::RegExp(
-                RegExpNativeKind::Exec
+                RegExpNativeKind::Escape
+                | RegExpNativeKind::Exec
                 | RegExpNativeKind::Compile
                 | RegExpNativeKind::Test
                 | RegExpNativeKind::ToString
@@ -13923,6 +13925,7 @@ mod tests {
         assert!(constructor.descriptor().cproto.default_is_constructor());
 
         for target in [
+            NativeFunctionId::RegExp(RegExpNativeKind::Escape),
             NativeFunctionId::RegExp(RegExpNativeKind::Exec),
             NativeFunctionId::RegExp(RegExpNativeKind::Compile),
             NativeFunctionId::RegExp(RegExpNativeKind::Test),

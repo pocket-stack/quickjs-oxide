@@ -178,6 +178,10 @@ const TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256: &str =
     "ff674aafc4b1b61b0c40042f831b44c600b1f741e06b8c8c35863b876919aa7b";
 const TEST262_SYMBOL_PROTOCOLS_MANIFEST_SHA256: &str =
     "6147636f7950b899f7c0eea25078e2f4c9c4c7fda2977181dd7c9671aa0bcde2";
+const TEST262_REGEXP_BUILTINS_PROFILE_SHA256: &str =
+    "0214f6789a3276c4755fadde19477b70620184a6137d29eefef0975cfb379c15";
+const TEST262_REGEXP_BUILTINS_MANIFEST_SHA256: &str =
+    "db6201093f57412de0d0cf16d4ff06f74512af3bc76d6f83c337474c7b982ab3";
 const QUICKJS_VERSION: &str = "2026-06-04";
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
@@ -722,6 +726,7 @@ enum OxideProfileKind {
     Map,
     Set,
     SymbolProtocols,
+    RegExpBuiltins,
 }
 
 fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
@@ -863,6 +868,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
             root.join("tests/test262-symbol-protocols.conf"),
             OxideProfileKind::SymbolProtocols,
         ),
+        (
+            root.join("tests/test262-regexp-builtins.conf"),
+            OxideProfileKind::RegExpBuiltins,
+        ),
     ];
     for (candidate, kind) in profiles {
         let candidate = fs::canonicalize(&candidate).map_err(|error| {
@@ -876,7 +885,7 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         }
     }
     Err(format!(
-        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-aggregate-error.conf, tests/test262-argument-spread.conf, tests/test262-class-base.conf, tests/test262-class-derived.conf, tests/test262-class-public-init.conf, tests/test262-class-private-fields.conf, tests/test262-class-private-methods.conf, tests/test262-class-private-accessors.conf, tests/test262-class-generator-methods.conf, tests/test262-class-private-generator-methods.conf, tests/test262-promise-constructor-jobs.conf, tests/test262-promise-race-try-with-resolvers.conf, tests/test262-promise-finally.conf, tests/test262-promise-all.conf, tests/test262-promise-all-settled.conf, tests/test262-promise-any.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-direct-eval.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-parameter-expression-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-aggregate-error.conf, tests/test262-argument-spread.conf, tests/test262-class-base.conf, tests/test262-class-derived.conf, tests/test262-class-public-init.conf, tests/test262-class-private-fields.conf, tests/test262-class-private-methods.conf, tests/test262-class-private-accessors.conf, tests/test262-class-generator-methods.conf, tests/test262-class-private-generator-methods.conf, tests/test262-promise-constructor-jobs.conf, tests/test262-promise-race-try-with-resolvers.conf, tests/test262-promise-finally.conf, tests/test262-promise-all.conf, tests/test262-promise-all-settled.conf, tests/test262-promise-any.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-direct-eval.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-parameter-expression-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, tests/test262-symbol-protocols.conf, or tests/test262-regexp-builtins.conf",
         path.display()
     ))
 }
@@ -1537,6 +1546,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             )?;
             Ok(TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256)
         }
+        OxideProfileKind::RegExpBuiltins => verify_scoped_pinned_profile(
+            options,
+            "RegExp built-ins",
+            TEST262_REGEXP_BUILTINS_PROFILE_SHA256,
+            "tests/test262-regexp-builtins.txt",
+            TEST262_REGEXP_BUILTINS_MANIFEST_SHA256,
+        ),
     }
 }
 
@@ -1823,7 +1839,8 @@ mod cli_tests {
         TEST262_PARAMETER_EXPRESSION_BINDING_PATTERNS_PROFILE_SHA256,
         TEST262_PROMISE_ALL_PROFILE_SHA256, TEST262_PROMISE_ALL_SETTLED_PROFILE_SHA256,
         TEST262_PROMISE_ANY_PROFILE_SHA256, TEST262_PROMISE_FINALLY_PROFILE_SHA256,
-        TEST262_PROMISE_RACE_TRY_WITH_RESOLVERS_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
+        TEST262_PROMISE_RACE_TRY_WITH_RESOLVERS_PROFILE_SHA256,
+        TEST262_REGEXP_BUILTINS_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
         TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, default_worker_count, identify_oxide_profile,
         parse_args, verify_oxide_profile,
     };
@@ -2095,6 +2112,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-symbol-protocols.conf")).unwrap(),
             OxideProfileKind::SymbolProtocols
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-regexp-builtins.conf")).unwrap(),
+            OxideProfileKind::RegExpBuiltins
         );
 
         let error = identify_oxide_profile(Path::new("Cargo.toml")).unwrap_err();
@@ -3822,6 +3843,50 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-symbol-protocols.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_regexp_builtins_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-regexp-builtins.conf",
+            "--manifest",
+            "tests/test262-regexp-builtins.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_REGEXP_BUILTINS_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            ["--test", "test/built-ins/RegExp/escape/length.js"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-regexp-builtins.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

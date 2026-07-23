@@ -15,14 +15,14 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 36,923 passes and 38,483 runnable variants: 36.19% raw, a 44.19% lower
+  has 36,927 passes and 38,483 runnable variants: 36.19% raw, a 44.19% lower
   bound after the 18,475 pinned QuickJS target exclusions, or 96.13% among the
-  38,408 variants with a non-unsupported observed outcome. It records 98
+  38,412 variants with a non-unsupported observed outcome. It records 98
   parse failures and 1,284 runtime failures; current full TSV/JSONL SHA-256
   values are
-  `87b1adf3234e6625dd95c96c11357e347447438d412b4007ec2236cb0fd18c7c`
+  `8f6401e033c8a58d0886ee6453015ca5f289022b90f3f32471e43f7022b2307b`
   and
-  `90726c1feee169bf923c857101d73c4f95ffc002de378dfe1f637451ce4fa906`.
+  `80055a2278a54aa97f5d0dc8e07bcaefa641cc15ef26ddcc53f35f4095d704e5`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -2086,6 +2086,50 @@ claim full parity.
   roots first and then allocates the callable; only successful-compilation
   OOM/GC priority is affected, but exact allocation-order parity remains a
   later generic closure-instantiation task.
+
+  R3s publishes pinned QuickJS's strict static `RegExp.escape` and completes
+  Annex B legacy control escapes. The two-pass UTF-16 implementation linearizes
+  ropes, preserves narrow/wide storage, checks the expanded length before an
+  exact fallible reservation, and reproduces QuickJS's character classifier,
+  lone-surrogate handling, lowercase hexadecimal output, property order, and
+  non-constructability. The RegExp parser now accepts ASCII control letters,
+  permits Annex B digits and `_` only inside non-Unicode character classes, and
+  rewinds every other non-Unicode `\c` form to the original backslash exactly as
+  `libregexp.c` does.
+
+  The new static RegExp built-ins gate starts from all 1,879 pinned
+  `test/built-ins/RegExp` paths. It excludes the union of 182 metadata-`v`
+  paths (one also uses `createRealm`), 12 source-audited literal-`v` paths whose
+  metadata omits that feature, and 12 `createRealm` paths: 205 exclusions leave
+  1,674 paths and 3,346 sloppy/strict variants. Oxide and pinned QuickJS both
+  pass 3,346/3,346. The manifest/profile hashes are
+  `db6201093f57412de0d0cf16d4ff06f74512af3bc76d6f83c337474c7b982ab3`
+  and
+  `0214f6789a3276c4755fadde19477b70620184a6137d29eefef0975cfb379c15`;
+  the canonical focused TSV/JSONL hashes are
+  `c2bf334ddcc255048c778095db5bc85e7bacde63ec66049feead47478e66742d`
+  and
+  `9a3ec4c6e5d2c894d22c9e930a74c793dcbf5a691d5e85da34aa024585fac8d0`.
+
+  `RegExp.escape` remains admitted only by that checksum-bound scoped profile,
+  so the global profile is still fail-closed. The complete 102,037-key join
+  therefore records only the untagged control-escape movement: two
+  `unsupported-parser -> pass` and two `unsupported-runtime -> pass`
+  transitions, plus eight detail-only rows that proceed to the existing
+  ill-formed UTF-16 eval frontier. There are no missing/extra keys, duplicate
+  keys, or previous-pass regressions. The vector reaches 36,927 passes; its
+  TSV/JSONL hashes are
+  `8f6401e033c8a58d0886ee6453015ca5f289022b90f3f32471e43f7022b2307b`
+  and
+  `80055a2278a54aa97f5d0dc8e07bcaefa641cc15ef26ddcc53f35f4095d704e5`.
+  Additional exhaustive QuickJS differential probes cover every BMP initial
+  unit, every non-initial BMP unit, all ASCII `\c` followers and class-range
+  endpoint pairs, surrogate boundaries, and long ropes. The checked-in
+  representative fixture/transcript hashes are
+  `babb9f0e94a7f4e3cf62ad25faf923dc86adb9248db36f081b4b2e7667c6f784`
+  and
+  `c6226637ca00cfcef2c436cb64442d8264ba18553aba31baffe70a34d48f480f`.
+
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -2175,12 +2219,12 @@ claim full parity.
   The current focused literal vector therefore passes all 96 variants.
 
   Forty-four original matcher cases and 35 targeted observable intrinsic vectors match
-  pinned QuickJS, including cross-realm construction/results/errors. The frozen
-  225-path/450-variant Test262 RegExp-core vector now has 448 passes. R1x
-  executes the five eval consumers; only two typed legacy-control frontiers
-  remain.
-  `RegExp.escape` and the remaining advanced
-  literal grammar remain intentionally unpublished rather than stubbed. The
+  pinned QuickJS, including cross-realm construction/results/errors. At R1x the
+  frozen 225-path/450-variant Test262 RegExp-core vector had 448 passes after
+  executing its five eval consumers; R3s resolves both remaining typed
+  legacy-control frontiers, bringing that older gate to 450/450.
+  `RegExp.escape` is now published; Unicode-sets (`v`) grammar and cross-realm
+  Test262 host execution remain explicit boundaries rather than stubs. The
   R1a complete join recorded only 669
   `fail-runtime -> pass` and
   ten `fail-runtime -> unsupported-runtime` transitions. The R1b join matches
@@ -2337,8 +2381,8 @@ claim full parity.
   `unicode_restricted_octal_escape.js` variants to pass while preserving typed
   Unsupported results until the reference executor landed. R1k completes that
   path, so the R1k RegExp-core gate moved from 430 at R1a to 434, with six
-  typed frontier outcomes. Later RegExp slices and R1x lead to the 448-pass current
-  vector summarized above.
+  typed frontier outcomes. Later RegExp slices and R1x lead to the 448-pass
+  R3r vector; R3s completes the current 450/450 vector summarized above.
 
   The exact R1e-to-R1f full join matches all 102,037 keys with no missing,
   extra, or duplicate rows and no previous-pass regression. Its only changes
@@ -5106,11 +5150,11 @@ for the current static scope tree and defining-realm global object. Sloppy
 direct-eval object-environment lookup/deletion is implemented for the current
 synchronous script/function and Parameter-Environment surfaces;
 `with`-introduced dynamic object environments, the remaining two entries of
-String's 53-key prototype surface, `RegExp.escape`, advanced RegExp grammar,
+String's 53-key prototype surface, Unicode-sets RegExp grammar,
 Proxy/exotic internal methods, and the full `function_accessors.js` fixture are
 still pending. Uncatchable termination state is also pending. Other iterator
 classes and helpers, the remaining RegExp
-grammar/static surface and Unicode-backed String methods, non-simple
+grammar and cross-realm host surface, Unicode-backed String methods, non-simple
 ObjectLiteral setter forms outside the covered synchronous slice, async and
 async-generator class methods,
 exotic-source spread, and the rest of the builtin table build on those layers.
@@ -5394,6 +5438,9 @@ the initially 240-line `runtime/intrinsics/promise/all.rs` modules. R3q extends
 the latter shared aggregate owner to 496 lines for `allSettled` and `any`. The
 current `runtime.rs` facade is still 9,803 lines rather than absorbing those
 algorithms.
+R3s keeps that boundary: `runtime.rs` remains 9,803 lines, while the
+QuickJS-shaped `RegExp.escape` algorithm and its focused allocation/UTF-16 tests
+live in the dedicated 281-line `runtime/intrinsics/regexp/escape.rs` module.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
@@ -5634,6 +5681,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-date.sh
 ./scripts/test-test262-string-split.sh
 ./scripts/test-test262-regexp-core.sh
+./scripts/test-test262-regexp-builtins.sh
 ./scripts/run-test262-regexp-literals.sh
 ./scripts/run-test262-regexp-search.sh
 ./scripts/run-test262-regexp-match.sh
@@ -5694,6 +5742,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-class-private-generator-methods.sh
 cargo build --bin qjs
 ./scripts/test-r3l-class-private-generators-oracle.sh --oxide ./target/debug/qjs
+./scripts/test-r3s-regexp-escape-control-oracle.sh --oxide ./target/debug/qjs
 ./scripts/test-test262-full.sh
 ```
 

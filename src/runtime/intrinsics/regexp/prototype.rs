@@ -22,6 +22,7 @@ impl Runtime {
             RegExpNativeKind::Flags => self.call_regexp_flags(realm, &this_value),
             RegExpNativeKind::Flag(flag) => self.call_regexp_flag(realm, &this_value, flag),
             RegExpNativeKind::Constructor
+            | RegExpNativeKind::Escape
             | RegExpNativeKind::Species
             | RegExpNativeKind::Exec
             | RegExpNativeKind::Compile

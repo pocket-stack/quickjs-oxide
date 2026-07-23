@@ -33,6 +33,7 @@ impl Runtime {
                 }
             }
             RegExpNativeKind::Constructor
+            | RegExpNativeKind::Escape
             | RegExpNativeKind::Species
             | RegExpNativeKind::Compile
             | RegExpNativeKind::Source

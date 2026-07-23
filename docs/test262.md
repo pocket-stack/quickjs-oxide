@@ -50,9 +50,9 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 36,923 pass;
+- 36,927 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 45,154 are classified as unsupported because of a feature, mode, host
+- 45,150 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
 - 98 fail to parse, 1,284 fail at runtime, 97 fail in the harness, and six
@@ -64,11 +64,11 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 36.19% (`36,923 / 102,037`);
+- raw suite pass rate: 36.19% (`36,927 / 102,037`);
 - conservative target-scope lower bound: 44.19%
-  (`36,923 / (102,037 - 18,475)`);
+  (`36,927 / (102,037 - 18,475)`);
 - pass rate among variants with a non-unsupported observed outcome: 96.13%
-  (`36,923 / 38,408`).
+  (`36,927 / 38,412`).
 
 The 44.19% figure is the useful whole-project progress floor, not a claim that
 the engine is 44.19% conformant. The 96.13% conditional rate measures quality
@@ -106,6 +106,9 @@ negative-provenance cases fail closed. Expanding that profile as implementation
 lands can only make the measurement more representative. Focused QuickJS
 differential tests remain the semantic judge.
 
+R3s separately admits `RegExp.escape` only in its checksum-bound complete
+RegExp built-ins profile; the global profile remains fail-closed for that tag.
+
 The complete TSV/JSONL reports are generated under `target/` rather than
 committed (together they are tens of megabytes). Their complete hashes and
 outcome summary are pinned in `tests/test262-full-baseline.txt`. Runner ordering
@@ -119,9 +122,9 @@ parallel defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`87b1adf3234e6625dd95c96c11357e347447438d412b4007ec2236cb0fd18c7c`
+`8f6401e033c8a58d0886ee6453015ca5f289022b90f3f32471e43f7022b2307b`
 and
-`90726c1feee169bf923c857101d73c4f95ffc002de378dfe1f637451ce4fa906`.
+`80055a2278a54aa97f5d0dc8e07bcaefa641cc15ef26ddcc53f35f4095d704e5`.
 
 ## Milestone policy
 
@@ -288,11 +291,11 @@ literal or staging variants; those collateral groups construct or consume
 regular expressions rather than representing unrelated feature work.
 Subsequent RegExp grammar slices moved the same core gate to 436 passes; R1p's
 Unicode bare-`\k` diagnostic resolves two more, and R1x executes the five eval
-consumers. The current core vector has 448 passes and two typed legacy-control
-frontiers. Its TSV/JSONL hashes are
-`c1585d1dabe0b1facf238b17765e3d73109809b5525354c0d37ef2a797d61b09`
+consumers. R3s resolves the final two typed legacy-control frontiers, so the
+current core vector passes all 450 variants. Its TSV/JSONL hashes are
+`ec6298bec9cd1f268a5e36ef725ea196d44a13a6d7ed0e3b53791edb853c1021`
 and
-`cd45efdeddf54a7896ca9c2738ae181b8bbe5bd9da9884c6c48f0dfda1d68c51`.
+`7702a505d3ad53624cd6f7975bb55973c89eac5b1b6edcc9fdb0d6dc1fd693e9`.
 The frozen core vector is reproduced by
 `scripts/test-test262-regexp-core.sh`.
 
@@ -3543,6 +3546,53 @@ Reproduce R3r with:
 ./scripts/test-test262-full.sh
 ```
 
+## R3s complete non-v RegExp built-ins
+
+R3s publishes QuickJS's strict static `RegExp.escape` and completes Annex B
+legacy control escapes. The static gate derives all 1,879 pinned
+`test/built-ins/RegExp` paths, then excludes a 205-path union: 182
+`regexp-v-flag` paths (one also uses `createRealm`), 12 source-audited literal
+`/v` paths missing that metadata tag, and 12 `createRealm` paths. The remaining
+1,674 paths expand to 3,346 variants; Oxide and pinned QuickJS both pass
+3,346/3,346.
+
+The manifest and scoped profile SHA-256 values are
+`db6201093f57412de0d0cf16d4ff06f74512af3bc76d6f83c337474c7b982ab3`
+and
+`0214f6789a3276c4755fadde19477b70620184a6137d29eefef0975cfb379c15`.
+The variant-key, TSV, and JSONL hashes are
+`98daa9a51c3c4a3067ce293351a4ac9c4cdf0530f67d5bc6ea193c3eb5cbcb26`,
+`c2bf334ddcc255048c778095db5bc85e7bacde63ec66049feead47478e66742d`,
+and
+`9a3ec4c6e5d2c894d22c9e930a74c793dcbf5a691d5e85da34aa024585fac8d0`.
+That scoped admission does not widen the global profile.
+
+The complete 102,037-key join has no missing, extra, or duplicate key and no
+previous-pass regression. Exactly two `unsupported-parser -> pass` and two
+`unsupported-runtime -> pass` transitions raise the total to 36,927. Eight
+same-outcome rows proceed past legacy `\c` classification to the existing
+ill-formed UTF-16 eval-source frontier. The full TSV/JSONL hashes are
+`8f6401e033c8a58d0886ee6453015ca5f289022b90f3f32471e43f7022b2307b`
+and
+`80055a2278a54aa97f5d0dc8e07bcaefa641cc15ef26ddcc53f35f4095d704e5`.
+
+The independent fixture exercises every `RegExp.escape` classifier category,
+strict input behavior, property order and descriptors, lone and paired
+surrogates, long ropes, and Annex B `\c` rollback/class behavior. Its fixture
+and pinned transcript hashes are
+`babb9f0e94a7f4e3cf62ad25faf923dc86adb9248db36f081b4b2e7667c6f784`
+and
+`c6226637ca00cfcef2c436cb64442d8264ba18553aba31baffe70a34d48f480f`.
+
+Reproduce R3s with:
+
+```sh
+./scripts/test-r3s-regexp-escape-control-oracle.sh --oxide target/debug/qjs
+./scripts/test-test262-regexp-builtins.sh
+./scripts/test-test262-regexp-core.sh
+./scripts/test-test262-full.sh
+```
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -3587,6 +3637,8 @@ canonical progress report.
 ./scripts/test-test262-date.sh
 ./scripts/test-test262-string-split.sh
 ./scripts/test-test262-regexp-core.sh
+./scripts/test-test262-regexp-builtins.sh
+./scripts/test-r3s-regexp-escape-control-oracle.sh --oxide target/debug/qjs
 ./scripts/run-test262-regexp-literals.sh
 ./scripts/run-test262-regexp-search.sh
 ./scripts/run-test262-regexp-match.sh
@@ -3829,6 +3881,11 @@ passes 112/112. R3o implements `Promise.prototype.finally`; its complete
 variants failing, while pinned QuickJS passes 29/29. R3p implements
 `Promise.all`; its complete 98-path/196-variant gate passes 196/196, and the
 unchanged R3n inventory now passes 224/224.
+R3q adds `Promise.allSettled` and `Promise.any`; their complete gates pass
+208/208 and 188/188. R3r removes the complete vector's final two engine faults
+through generator-destructuring iterator unwind. R3s then completes the pinned
+non-`v`, non-`createRealm` RegExp built-ins cohort at 3,346/3,346 and raises the
+full vector to 36,927 passes without a previous-pass regression.
 The global profile remains async- and Promise-feature-fail-closed.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.

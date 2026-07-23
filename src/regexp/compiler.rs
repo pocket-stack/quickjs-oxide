@@ -118,6 +118,8 @@ pub enum UnsupportedFeature {
     Lookaround,
     InlineModifier,
     LegacyOctalEscape,
+    /// Retained for source compatibility; Annex B control escapes no longer
+    /// produce this classification.
     LegacyControlEscape,
 }
 
@@ -751,7 +753,7 @@ impl<'a> Parser<'a> {
             0x76 => Ok(Atom::Literal(0x0b)),
             0x62 if in_class => Ok(Atom::Literal(0x08)),
             0x63 => self
-                .parse_control_escape(escape_position)
+                .parse_control_escape(escape_position, in_class)
                 .map(Atom::Literal),
             0x78 => self
                 .parse_fixed_hex_escape(escape_position, 2)
@@ -949,19 +951,35 @@ impl<'a> Parser<'a> {
         (value << 3) | u32::from(third - u16::from(b'0'))
     }
 
-    fn parse_control_escape(&mut self, position: usize) -> Result<u32, CompileError> {
+    /// Parse pinned QuickJS's `\c` CharacterEscape, including Annex B.1.4.
+    ///
+    /// ASCII letters are accepted everywhere. Decimal digits and `_` are
+    /// additional control letters only inside a non-Unicode character class.
+    /// Every other non-Unicode form is not a partial `\c` escape: QuickJS
+    /// rewinds to the `c` and emits the original backslash as a literal so the
+    /// remaining source is parsed normally.
+    fn parse_control_escape(
+        &mut self,
+        position: usize,
+        in_class: bool,
+    ) -> Result<u32, CompileError> {
         match self.peek() {
-            Some(unit) if is_ascii_letter(unit) => {
+            Some(unit)
+                if is_ascii_letter(unit)
+                    || (in_class
+                        && !self.flags.is_unicode()
+                        && (is_ascii_digit(unit) || unit == u16::from(b'_'))) =>
+            {
                 self.position += 1;
                 Ok(u32::from(unit & 0x1f))
             }
             _ if self.flags.is_unicode() => {
                 Err(CompileError::syntax(position, "invalid control escape"))
             }
-            _ => Err(CompileError::unsupported(
-                position,
-                UnsupportedFeature::LegacyControlEscape,
-            )),
+            _ => {
+                self.position = position + 1;
+                Ok(u32::from(b'\\'))
+            }
         }
     }
 
@@ -1197,7 +1215,7 @@ impl<'a> Parser<'a> {
             0x74 => Ok(ClassAtom::Single(0x09)),
             0x76 => Ok(ClassAtom::Single(0x0b)),
             0x63 => self
-                .parse_control_escape(escaped_position)
+                .parse_control_escape(escaped_position, true)
                 .map(ClassAtom::Single),
             0x78 => self
                 .parse_fixed_hex_escape(escaped_position, 2)
@@ -2526,14 +2544,80 @@ mod tests {
             error.kind(),
             &CompileErrorKind::Unsupported(UnsupportedFeature::UnicodeSetOperation),
         );
+    }
 
-        for pattern in [r"\c0", r"[\c0]"] {
-            let error = compile_ascii(pattern, "").unwrap_err();
-            assert_eq!(
-                error.kind(),
-                &CompileErrorKind::Unsupported(UnsupportedFeature::LegacyControlEscape),
+    #[test]
+    fn annex_b_control_escape_accepts_class_extensions_and_rewinds_other_forms() {
+        for (pattern, literal) in [
+            (r"[\c0]", 0x10),
+            (r"[\c9]", 0x19),
+            (r"[\c_]", 0x1f),
+            (r"\cA", 0x01),
+            (r"[\cz]", 0x1a),
+        ] {
+            let compiled = compile_ascii(pattern, "").unwrap();
+            assert!(
+                compiled.instructions().iter().any(
+                    |instruction| matches!(instruction, Instruction::Char { value, .. } if *value == literal)
+                        || matches!(instruction, Instruction::Range { ranges, .. } if ranges.iter().any(|range| range.start == literal && range.end == literal))
+                ),
                 "{pattern}",
             );
+        }
+
+        for (pattern, expected) in [
+            (r"\c", vec![u32::from(b'\\'), u32::from(b'c')]),
+            (
+                r"\c0",
+                vec![u32::from(b'\\'), u32::from(b'c'), u32::from(b'0')],
+            ),
+            (
+                r"\c_",
+                vec![u32::from(b'\\'), u32::from(b'c'), u32::from(b'_')],
+            ),
+            (
+                r"\c@",
+                vec![u32::from(b'\\'), u32::from(b'c'), u32::from(b'@')],
+            ),
+        ] {
+            let actual = compile_ascii(pattern, "")
+                .unwrap()
+                .instructions()
+                .iter()
+                .filter_map(|instruction| match instruction {
+                    Instruction::Char { value, .. } => Some(*value),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "{pattern}");
+        }
+        let class = compile_ascii(r"[\c?]", "").unwrap();
+        assert!(class.instructions().iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::Range { ranges, inverted: false, .. }
+                    if ranges.as_ref()
+                        == [
+                            CharacterRange::new(u32::from(b'?'), u32::from(b'?')),
+                            CharacterRange::new(u32::from(b'\\'), u32::from(b'\\')),
+                            CharacterRange::new(u32::from(b'c'), u32::from(b'c')),
+                        ]
+            )
+        }));
+
+        let range_error = compile_ascii(r"[\c0001d-G]", "").unwrap_err();
+        assert_eq!(range_error.kind(), &CompileErrorKind::Syntax);
+        assert_eq!(range_error.message(), "invalid class range");
+
+        for pattern in [r"\c", r"\c0", r"\c_", r"\c@", r"[\c]", r"[\c0]", r"[\c_]"] {
+            assert_eq!(
+                compile_ascii(pattern, "u").unwrap_err().kind(),
+                &CompileErrorKind::Syntax,
+                "{pattern}",
+            );
+        }
+        for pattern in [r"\cA", r"[\cz]"] {
+            assert!(compile_ascii(pattern, "u").is_ok(), "{pattern}");
         }
     }
 

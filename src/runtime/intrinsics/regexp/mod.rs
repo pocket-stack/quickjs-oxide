@@ -3,12 +3,13 @@
 //! The pure matcher lives in [`crate::regexp`].  This module owns the
 //! observable ECMAScript shell around it: realm-local constructor/prototype
 //! identities, derived allocation, accessors, `lastIndex`, and match result
-//! objects. RegExp literals, the legacy `compile` method, `@@replace`,
-//! `@@match`, `@@search`, and `@@split` are linked; `RegExp.escape` and the
-//! remaining Symbol protocols stay separate parity slices.
+//! objects. RegExp literals, the legacy `compile` method, `RegExp.escape`,
+//! and the standard RegExp Symbol protocols are linked; Unicode-sets (`v`)
+//! syntax remains a separate parity slice.
 
 mod compile;
 mod constructor;
+mod escape;
 mod exec;
 mod match_all;
 mod match_protocol;
@@ -181,6 +182,14 @@ impl Runtime {
             "RegExp",
             2,
         )?;
+        self.define_native_builtin_auto_init(
+            constructor.as_object(),
+            realm,
+            NativeFunctionId::RegExp(RegExpNativeKind::Escape),
+            "escape",
+            1,
+            1,
+        )?;
 
         let species_kind = RegExpNativeKind::Species;
         let species_getter = self.new_native_builtin(
@@ -264,6 +273,7 @@ impl Runtime {
             RegExpNativeKind::Constructor => {
                 self.call_regexp_constructor(realm, invocation, arguments)
             }
+            RegExpNativeKind::Escape => self.call_regexp_escape(realm, invocation, arguments),
             RegExpNativeKind::Species => self.call_regexp_species(invocation),
             RegExpNativeKind::Source | RegExpNativeKind::Flags | RegExpNativeKind::Flag(_) => {
                 self.call_regexp_accessor(realm, kind, invocation)
