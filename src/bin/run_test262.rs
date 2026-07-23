@@ -59,7 +59,11 @@ const TEST262_ARGUMENT_SPREAD_MANIFEST_SHA256: &str =
 const TEST262_ASYNC_FUNCTION_CORE_PROFILE_SHA256: &str =
     "7fb94b8e350b5a270ab5f685f0a223e32c7d12fedf0ac3e0c1e157b03f4f0b33";
 const TEST262_ASYNC_FUNCTION_CORE_MANIFEST_SHA256: &str =
-    "a0fa7acd444257ca7cbfffc40c61eb3b85867c81df04f1d1691100a72c97b0dc";
+    "97930e30959d8bdbdd1b030e4f4e94fe9657791951f48e58a6790e73a7191390";
+const TEST262_ASYNC_ARROW_CORE_PROFILE_SHA256: &str =
+    "f6634c6298e3d3fb740c0f55e8932ddc402ca8e120d8f0d2d9326f552186af2c";
+const TEST262_ASYNC_ARROW_CORE_MANIFEST_SHA256: &str =
+    "d4bc4b286b2da1b19949d56b614e1d1af110437285827fa4f4c6cb00dae1d969";
 const TEST262_CLASS_BASE_PROFILE_SHA256: &str =
     "df73a1ac299cce6ade0b0638f0a4c3322310aa2db8e15a28039f483328e69f00";
 const TEST262_CLASS_BASE_MANIFEST_SHA256: &str =
@@ -727,6 +731,7 @@ enum OxideProfileKind {
     AggregateError,
     ArgumentSpread,
     AsyncFunctionCore,
+    AsyncArrowCore,
     ClassBase,
     ClassDerived,
     ClassSyncMatrix,
@@ -789,6 +794,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-async-function-core.conf"),
             OxideProfileKind::AsyncFunctionCore,
+        ),
+        (
+            root.join("tests/test262-async-arrow-core.conf"),
+            OxideProfileKind::AsyncArrowCore,
         ),
         (
             root.join("tests/test262-class-base.conf"),
@@ -1064,6 +1073,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             TEST262_ASYNC_FUNCTION_CORE_PROFILE_SHA256,
             "tests/test262-async-function-core.txt",
             TEST262_ASYNC_FUNCTION_CORE_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::AsyncArrowCore => verify_scoped_pinned_profile(
+            options,
+            "async arrow core",
+            TEST262_ASYNC_ARROW_CORE_PROFILE_SHA256,
+            "tests/test262-async-arrow-core.txt",
+            TEST262_ASYNC_ARROW_CORE_MANIFEST_SHA256,
         ),
         OxideProfileKind::ClassBase => verify_scoped_pinned_profile(
             options,
@@ -1914,9 +1930,9 @@ mod cli_tests {
         Invocation, OxideProfileKind, TEST262_AGGREGATE_ERROR_PROFILE_SHA256,
         TEST262_ARGUMENT_SPREAD_PROFILE_SHA256, TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256, TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256,
-        TEST262_ASYNC_FUNCTION_CORE_PROFILE_SHA256, TEST262_CATCH_BINDING_PROFILE_SHA256,
-        TEST262_CLASS_BASE_PROFILE_SHA256, TEST262_CLASS_DERIVED_PROFILE_SHA256,
-        TEST262_CLASS_GENERATOR_METHODS_PROFILE_SHA256,
+        TEST262_ASYNC_ARROW_CORE_PROFILE_SHA256, TEST262_ASYNC_FUNCTION_CORE_PROFILE_SHA256,
+        TEST262_CATCH_BINDING_PROFILE_SHA256, TEST262_CLASS_BASE_PROFILE_SHA256,
+        TEST262_CLASS_DERIVED_PROFILE_SHA256, TEST262_CLASS_GENERATOR_METHODS_PROFILE_SHA256,
         TEST262_CLASS_PRIVATE_ACCESSORS_PROFILE_SHA256,
         TEST262_CLASS_PRIVATE_FIELDS_PROFILE_SHA256,
         TEST262_CLASS_PRIVATE_GENERATOR_METHODS_PROFILE_SHA256,
@@ -2072,6 +2088,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-async-function-core.conf")).unwrap(),
             OxideProfileKind::AsyncFunctionCore
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-async-arrow-core.conf")).unwrap(),
+            OxideProfileKind::AsyncArrowCore
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-class-base.conf")).unwrap(),
@@ -2371,6 +2391,65 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-async-function-core.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_async_arrow_core_profile_is_bound_and_detects_manifest_tampering() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-async-arrow-core.conf",
+            "--manifest",
+            "tests/test262-async-arrow-core.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_ASYNC_ARROW_CORE_PROFILE_SHA256
+        );
+
+        let tamper_error = verify_scoped_pinned_profile(
+            &options,
+            "async arrow core",
+            TEST262_ASYNC_ARROW_CORE_PROFILE_SHA256,
+            "tests/test262-async-arrow-core.txt",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap_err();
+        assert!(
+            tamper_error.contains("manifest checksum mismatch"),
+            "unexpected manifest tamper error: {tamper_error}"
+        );
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/language/expressions/async-arrow-function/arrow-returns-promise.js",
+            ],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-async-arrow-core.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

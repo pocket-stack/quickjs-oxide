@@ -8,13 +8,52 @@ pub(super) enum ArrowHead {
 
 impl<'source> Parser<'source> {
     pub(super) fn parse_arrow_function(&mut self, head: ArrowHead) -> Result<(), Error> {
+        self.parse_arrow_function_with_kind(
+            head,
+            self.current().span,
+            self.lexer.context(),
+            BytecodeFunctionKind::Normal,
+        )
+    }
+
+    pub(super) fn parse_async_arrow_function(&mut self, head: ArrowHead) -> Result<(), Error> {
         let function_span = self.current().span;
+        let parent_context = self.lexer.context();
+        // Pinned QuickJS commits the token immediately after `async` in the
+        // parent function before creating the async arrow. Keep that token
+        // intact so the single-parameter `async await =>` asymmetry survives.
+        self.advance()?;
+        self.parse_arrow_function_with_kind(
+            head,
+            function_span,
+            parent_context,
+            BytecodeFunctionKind::Async,
+        )
+    }
+
+    fn parse_arrow_function_with_kind(
+        &mut self,
+        head: ArrowHead,
+        function_span: Span,
+        parent_context: LexContext,
+        execution_kind: BytecodeFunctionKind,
+    ) -> Result<(), Error> {
+        if !matches!(
+            execution_kind,
+            BytecodeFunctionKind::Normal | BytecodeFunctionKind::Async
+        ) {
+            return Err(Error::internal(
+                "arrow parser received an invalid execution kind",
+            ));
+        }
         let parent = self.current_function;
         let parent_strict = self.functions[parent].strict;
-        let parent_context = self.lexer.context();
         let mut parameter_tokens = Vec::new();
         let child = self.functions.len();
         let parent_scope = self.functions[parent].current_scope;
+        let parent_execution_kind = self.functions[parent].execution_kind;
+        let parent_is_class_static_block = self.functions[parent].class_initializer_kind
+            == Some(ClassInitializerKind::StaticBlock);
         let super_capabilities = SuperCapabilities {
             super_call_allowed: self.functions[parent].super_call_allowed,
             super_allowed: self.functions[parent].super_allowed,
@@ -43,14 +82,34 @@ impl<'source> Parser<'source> {
                 super_capabilities,
             },
         )?);
+        self.functions[child].execution_kind = execution_kind;
         self.functions[child].arguments_forbidden = self.functions[parent].arguments_forbidden;
         // ClassStaticBlock ContainsAwait includes immediate arrow parameter
-        // initializer expressions, but the arrow's BindingIdentifiers and
-        // ConciseBody establish their own non-async function boundary.
-        self.functions[child].await_forbidden = self.functions[parent].await_forbidden;
-        self.functions[child].await_binding_forbidden =
-            self.functions[parent].await_binding_forbidden;
+        // initializer expressions. A nested arrow is another function
+        // boundary, so this authority comes from the immediate static-block
+        // parent rather than being copied transitively through arrows.
+        self.functions[child].await_forbidden = parent_is_class_static_block;
+        self.functions[child].await_binding_forbidden = parent_is_class_static_block;
         self.current_function = child;
+
+        let mut parameter_context = parent_context;
+        parameter_context.strict = parent_strict;
+        // QuickJS classifies arrow formal parameters from the new arrow plus
+        // its immediate parse parent, not from a flattened lexer context.
+        // Preserve the already-read current token for its single-parameter
+        // quirk, but reset future yield/await classification at every arrow
+        // boundary before parsing parenthesized parameters and defaults.
+        parameter_context.generator = matches!(
+            parent_execution_kind,
+            BytecodeFunctionKind::Generator | BytecodeFunctionKind::AsyncGenerator
+        );
+        parameter_context.async_function = execution_kind == BytecodeFunctionKind::Async
+            || matches!(
+                parent_execution_kind,
+                BytecodeFunctionKind::Async | BytecodeFunctionKind::AsyncGenerator
+            )
+            || parent_is_class_static_block;
+        self.set_future_lex_context(parameter_context);
 
         match head {
             ArrowHead::Identifier => {
@@ -162,7 +221,7 @@ impl<'source> Parser<'source> {
         let mut child_context = parent_context;
         child_context.strict = parent_strict;
         child_context.generator = false;
-        child_context.async_function = false;
+        child_context.async_function = execution_kind == BytecodeFunctionKind::Async;
         self.relex_current_with_context(child_context)?;
         self.functions[child].await_forbidden = false;
         self.functions[child].await_binding_forbidden = false;
@@ -204,6 +263,7 @@ impl<'source> Parser<'source> {
 
         self.functions[child].strict = strict;
         self.finish_identifier_parameter_environment()?;
+        self.functions[child].in_function_body = true;
 
         let range_end = if block_body {
             self.parse_function_body()?;
@@ -380,33 +440,34 @@ impl<'source> Parser<'source> {
             && matches!(arrow.kind, TokenKind::Punctuator(Punctuator::Arrow))
     }
 
-    pub(super) fn async_arrow_ahead(&self) -> bool {
+    pub(super) fn async_arrow_ahead(&self) -> Option<ArrowHead> {
         let TokenKind::Identifier(identifier) = &self.current().kind else {
-            return false;
+            return None;
         };
         if identifier.value != "async" || identifier.has_escape {
-            return false;
+            return None;
         }
         let mut lexer = self.lexer.clone();
         lexer.seek(self.current().span.end);
         let Ok(parameter) = lexer.next_token_with_goal(LexicalGoal::Div) else {
-            return false;
+            return None;
         };
         if parameter.line_terminator_before {
-            return false;
+            return None;
         }
         match parameter.kind {
-            TokenKind::Identifier(_) => {
+            TokenKind::Identifier(identifier) if !identifier.escaped_reserved_word => {
                 let Ok(arrow) = lexer.next_token_with_goal(LexicalGoal::Div) else {
-                    return false;
+                    return None;
                 };
-                !arrow.line_terminator_before
-                    && matches!(arrow.kind, TokenKind::Punctuator(Punctuator::Arrow))
+                (!arrow.line_terminator_before
+                    && matches!(arrow.kind, TokenKind::Punctuator(Punctuator::Arrow)))
+                .then_some(ArrowHead::Identifier)
             }
-            TokenKind::Punctuator(Punctuator::LeftParen) => {
-                self.parenthesized_arrow_ahead(parameter.span)
-            }
-            _ => false,
+            TokenKind::Punctuator(Punctuator::LeftParen) => self
+                .parenthesized_arrow_ahead(parameter.span)
+                .then_some(ArrowHead::Parenthesized),
+            _ => None,
         }
     }
 }

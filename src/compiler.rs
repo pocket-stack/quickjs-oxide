@@ -4459,8 +4459,8 @@ impl<'source> Parser<'source> {
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Yield)) {
             return self.parse_yield_expression();
         }
-        if self.async_arrow_ahead() {
-            return Err(self.unsupported_here("async arrow functions are not implemented yet"));
+        if let Some(head) = self.async_arrow_ahead() {
+            return self.parse_async_arrow_function(head);
         }
         if self.reserved_arrow_head_ahead() {
             return Err(self.syntax_here("invalid arrow function parameter"));
@@ -7686,6 +7686,16 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
+    /// Change how tokens after the current token are classified without
+    /// reparsing the current token. QuickJS relies on this distinction when an
+    /// async arrow's unparenthesized parameter was already read in its parent.
+    fn set_future_lex_context(&mut self, context: LexContext) {
+        let position = self.current().span.end;
+        self.tokens.truncate(self.cursor + 1);
+        self.lexer.seek(position);
+        self.lexer.set_context(context);
+    }
+
     fn directive_prologue_has_use_strict(
         &self,
         start: usize,
@@ -8619,7 +8629,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 }
             }
             BytecodeFunctionKind::Async
-                if function.kind == FunctionKind::Ordinary
+                if matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Arrow)
                     && !function.class_constructor
                     && function.class_initializer_kind.is_none()
                     && function.in_function_body

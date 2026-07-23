@@ -1,16 +1,4 @@
 host_or_cross_realm	test/built-ins/AsyncFunction/is-a-constructor.js
 host_or_cross_realm	test/built-ins/AsyncFunction/proto-from-ctor-realm.js
-async_arrow	test/language/expressions/async-function/named-reassign-fn-name-in-body-in-arrow.js
-eval_or_with	test/language/expressions/async-function/named-reassign-fn-name-in-body-in-eval.js
-async_arrow	test/language/expressions/async-function/named-reassign-fn-name-in-body.js
-async_arrow	test/language/expressions/async-function/named-returns-async-arrow-returns-arguments-from-parent-function.js
-async_arrow	test/language/expressions/async-function/named-returns-async-arrow-returns-newtarget.js
-async_arrow	test/language/expressions/async-function/named-returns-async-arrow.js
-async_arrow	test/language/expressions/async-function/named-strict-error-reassign-fn-name-in-body-in-arrow.js
-eval_or_with	test/language/expressions/async-function/named-strict-error-reassign-fn-name-in-body-in-eval.js
-async_arrow	test/language/expressions/async-function/named-strict-error-reassign-fn-name-in-body.js
 async_generator_or_for_await	test/language/expressions/await/async-generator-interleaved.js
 async_generator_or_for_await	test/language/expressions/await/for-await-of-interleaved.js
-async_arrow	test/language/statements/async-function/returns-async-arrow-returns-arguments-from-parent-function.js
-async_arrow	test/language/statements/async-function/returns-async-arrow-returns-newtarget.js
-async_arrow	test/language/statements/async-function/returns-async-arrow.js

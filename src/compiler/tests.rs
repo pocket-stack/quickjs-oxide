@@ -209,6 +209,152 @@ fn ordinary_async_functions_publish_async_kind_and_await_bytecode() {
 }
 
 #[test]
+fn async_arrows_publish_arrow_grammar_async_execution_and_full_source_ranges() {
+    let source = concat!(
+        "const first = async value => await value;\n",
+        "const second = async (value) => { return await value; };",
+    );
+    let tree = Parser::parse(source, JsString::from_static("<async-arrow-kind-test>")).unwrap();
+    let arrows = tree
+        .functions
+        .iter()
+        .filter(|function| function.kind == FunctionKind::Arrow)
+        .collect::<Vec<_>>();
+    assert_eq!(arrows.len(), 2);
+    assert!(arrows.iter().all(|function| {
+        function.execution_kind == BytecodeFunctionKind::Async
+            && function.in_function_body
+            && function
+                .ops
+                .iter()
+                .filter(|operation| {
+                    matches!(operation.op, super::IrOp::Bytecode(Instruction::Await))
+                })
+                .count()
+                == 1
+    }));
+
+    for (function, authored) in arrows.iter().zip([
+        "async value => await value",
+        "async (value) => { return await value; }",
+    ]) {
+        let start = source.find(authored).expect("authored async arrow");
+        let range = function
+            .source
+            .range
+            .as_ref()
+            .expect("async arrow source range");
+        assert_eq!(
+            &source[function.source.span.start.byte_offset..function.source.span.end.byte_offset],
+            "async"
+        );
+        assert_eq!(function.source.definition.as_usize(), start);
+        assert_eq!(range.start.as_usize(), start);
+        assert_eq!(range.end.as_usize(), start + authored.len());
+    }
+
+    let script = compile_unlinked_script(source).unwrap();
+    let published = script
+        .constants()
+        .iter()
+        .filter_map(|constant| constant.as_child())
+        .collect::<Vec<_>>();
+    assert_eq!(published.len(), 2);
+    assert!(published.iter().all(|function| {
+        function.metadata().function_kind == BytecodeFunctionKind::Async
+            && !function.metadata().has_prototype
+            && function.metadata().constructor_kind == ConstructorKind::None
+    }));
+}
+
+#[test]
+fn async_arrow_lexical_context_matches_quickjs_token_timing() {
+    for source in [
+        "const arrow = async value => await value;",
+        "const arrow = async await => 42;",
+        "'use strict'; const arrow = async await => 42;",
+        r"const arrow = async \u0061wait => 42;",
+        "const arrow = async yield => 42;",
+        "const arrow = async () => { function nested(){ var await=1; return await; } return await 42; }; var await=1;",
+        "function* outer(){ return async (value) => await value; }",
+        "function* outer(){ return async () => yield; }",
+        "function* outer(){ return async (value = (yield) => yield) => value; }",
+        "function* outer(){ return async (value = (nested = (yield) => yield) => nested) => value; }",
+        "async function outer(){ return (value = (await) => await) => value; }",
+        "async function outer(){ return async (value = (nested = (await) => await) => nested) => value; }",
+        "class C { static { (value = (await) => await) => value; } }",
+        "class C { static { async (value = (nested = (await) => await) => nested) => value; } }",
+        "function* outer(){ return (value = (nested = async yield => 1) => nested) => value; }",
+        "async function outer(){ return (value = (nested = async await => 1) => nested) => value; }",
+        "class C { static { (value = (nested = async await => 1) => nested) => value; } }",
+        "async\nvalue => value",
+    ] {
+        compile_unlinked_script(source)
+            .unwrap_or_else(|error| panic!("async arrow source rejected {source:?}: {error}"));
+    }
+
+    let newline_tree = Parser::parse(
+        "async\nvalue => value",
+        JsString::from_static("<async-arrow-newline-test>"),
+    )
+    .unwrap();
+    let newline_arrow = newline_tree
+        .functions
+        .iter()
+        .find(|function| function.kind == FunctionKind::Arrow)
+        .expect("newline-separated ordinary arrow");
+    assert_eq!(newline_arrow.execution_kind, BytecodeFunctionKind::Normal);
+    assert_eq!(newline_arrow.source.span.start.byte_offset, "async\n".len());
+
+    for (source, message) in [
+        (
+            "const arrow = async (await) => 42;",
+            "missing formal parameter",
+        ),
+        (
+            "const arrow = async (value = await 1) => value;",
+            "await in default expression",
+        ),
+        (
+            r"const arrow = async (\u0061wait) => 42;",
+            "'await' is a reserved identifier",
+        ),
+        (
+            "function* outer(){ return async (yield) => 42; }",
+            "missing formal parameter",
+        ),
+        (
+            "function* outer(){ return async yield => 0; }",
+            "expecting ';'",
+        ),
+        (
+            "function* outer(){ return (value = async yield => 1) => value; }",
+            "expecting ','",
+        ),
+        (
+            "function outer(){ 'use strict'; return async yield => 0; }",
+            "expecting ';'",
+        ),
+        (
+            "async function outer(){ return async await => 42; }",
+            "expecting ';'",
+        ),
+        (
+            "async function outer(){ return (value = async await => 1) => value; }",
+            "expecting ','",
+        ),
+        (
+            "class C { static { (value = async await => 1) => value; } }",
+            "expecting ','",
+        ),
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source:?}");
+        assert_eq!(error.message(), message, "{source:?}");
+    }
+}
+
+#[test]
 fn async_function_lexical_context_and_fail_closed_neighbors_match_quickjs() {
     for source in [
         "async function await(){}",
@@ -243,7 +389,6 @@ fn async_function_lexical_context_and_fail_closed_neighbors_match_quickjs() {
     for source in [
         "async function* generator(){}",
         "(async function*(){})",
-        "const arrow = async value => value;",
         "({ async method(){} });",
         "class C { async method(){} }",
     ] {

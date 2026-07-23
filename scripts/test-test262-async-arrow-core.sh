@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Reproduce the R3ab-expanded ordinary async-function and await core Test262 gate.
+# Reproduce the R3ab async-arrow core Test262 gate.
 
 set -euo pipefail
 export TZ=America/Los_Angeles
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$script_dir/.." && pwd)
-baseline=tests/test262-async-function-core-baseline.txt
-manifest=tests/test262-async-function-core.txt
-admission_profile=tests/test262-async-function-core.conf
-exclusions=tests/test262-async-function-core-exclusions.tsv
+baseline=tests/test262-async-arrow-core-baseline.txt
+manifest=tests/test262-async-arrow-core.txt
+admission_profile=tests/test262-async-arrow-core.conf
+exclusions=tests/test262-async-arrow-core-exclusions.tsv
 global_profile=compat/test262-oxide.conf
-report=target/test262-async-function-core.tsv
-json_report=target/test262-async-function-core.jsonl
-quickjs_log=target/test262-async-function-core-quickjs.log
+report=target/test262-async-arrow-core.tsv
+json_report=target/test262-async-arrow-core.jsonl
+quickjs_log=target/test262-async-arrow-core-quickjs.log
 workers=${TEST262_WORKERS:-8}
 
 usage() {
@@ -82,7 +82,7 @@ verify_inventory() {
     local name=$1 inventory=$2
     if [[ "$(inventory_count "$inventory")" != "$(read_value "${name}_paths")" \
         || "$(sha256_file "$inventory")" != "$(read_value "${name}_sha256")" ]]; then
-        echo "error: async-function core $name inventory drifted" >&2
+        echo "error: async-arrow core $name inventory drifted" >&2
         exit 1
     fi
 }
@@ -93,7 +93,7 @@ verify_quickjs_oracle() {
     [[ -x "$runner" ]] || "${MAKE:-make}" -C "$source_dir" run-test262 >&2
     while IFS= read -r test_path; do
         files+=("test262/$test_path")
-    done < "$manifest"
+    done < "$candidate"
 
     # The pinned config's default mode executes exactly one representative
     # sloppy/strict variant per path; Oxide's canonical gate below runs both.
@@ -101,7 +101,7 @@ verify_quickjs_oracle() {
         && ./run-test262 -m -c test262.conf -f "${files[@]}") \
         >"$quickjs_log" 2>&1; then
         cat "$quickjs_log" >&2
-        echo "error: pinned QuickJS could not execute the async-function core cohort" >&2
+        echo "error: pinned QuickJS could not execute the async-arrow core cohort" >&2
         exit 1
     fi
     if grep -Eq '(^|[[:space:]])FAILED($|[[:space:]])' "$quickjs_log" \
@@ -109,7 +109,33 @@ verify_quickjs_oracle() {
             "Average memory statistics for $(read_value quickjs_passes) tests:" \
             "$quickjs_log"; then
         cat "$quickjs_log" >&2
-        echo "error: pinned QuickJS no longer passes the async-function core cohort" >&2
+        echo "error: pinned QuickJS no longer passes the async-arrow core cohort" >&2
+        exit 1
+    fi
+}
+
+verify_quickjs_token_quirk() {
+    local quirk_path quirk_file
+    quirk_path=$(read_value token_quirk_test262_path)
+    quirk_file=$suite/$quirk_path
+    if [[ "$quirk_path" != \
+            "test/staging/sm/async-functions/async-contains-unicode-escape.js" \
+        || "$(sha256_file "$quirk_file")" != \
+            "$(read_value token_quirk_test262_sha256)" \
+        || -n "$(grep -Fx "$quirk_path" "$candidate" || true)" ]]; then
+        echo "error: async-arrow QuickJS/Test262 token-quirk audit drifted" >&2
+        exit 1
+    fi
+
+    # QuickJS 2026-06-04 accepts the single-binding forms while Test262's
+    # staging test requires SyntaxError. Keep this differential outside the
+    # canonical async-arrow candidate universe instead of hiding it as a pass.
+    "$source_dir/qjs" -e 'async await => 1;' >/dev/null 2>&1 \
+        || { echo "error: pinned QuickJS plain-await token quirk drifted" >&2; exit 1; }
+    "$source_dir/qjs" -e 'async aw\u0061it => 1;' >/dev/null 2>&1 \
+        || { echo "error: pinned QuickJS escaped-await token quirk drifted" >&2; exit 1; }
+    if "$source_dir/qjs" -e 'async (await) => 1;' >/dev/null 2>&1; then
+        echo "error: pinned QuickJS parenthesized-await boundary drifted" >&2
         exit 1
     fi
 }
@@ -117,7 +143,7 @@ verify_quickjs_oracle() {
 cd -- "$root"
 suite=$("$script_dir/prepare-test262.sh")
 source_dir=$(dirname -- "$suite")
-tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-r3ab-ordinary.XXXXXX")
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-r3ab.XXXXXX")
 trap 'rm -rf -- "$tmp_dir"' EXIT HUP INT TERM
 
 candidate=$tmp_dir/candidate.txt
@@ -144,84 +170,97 @@ feature_inventory=$tmp_dir/features.txt
 include_inventory=$tmp_dir/includes.txt
 flag_inventory=$tmp_dir/flags.txt
 
+touch "$positive" "$negative" "$async_paths" "$sync_paths" \
+    "$double_mode" "$no_strict" "$only_strict" "$variant_keys_raw" \
+    "$sloppy_paths" "$strict_paths" "$feature_occurrences" \
+    "$include_occurrences" "$flag_occurrences"
+
 if [[ "$(read_value quickjs)" != "2026-06-04" \
     || "$(read_value test262)" != "5c8206929d81b2d3d727ca6aac56c18358c8d790" \
     || "$(read_value test262_patch_sha256)" != "f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3" \
     || "$(read_value test262_config_sha256)" != "79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b" \
     || "$(read_value test262_metadata_sha256)" != "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a" \
     || "$(read_value global_oxide_profile_sha256)" != "6a4d3dc37da05f6e63d7b8564483159c383ed66c665a2b5530624e628f73b908" \
-    || "$(read_value oxide_profile_sha256)" != "7fb94b8e350b5a270ab5f685f0a223e32c7d12fedf0ac3e0c1e157b03f4f0b33" \
     || "$(read_value schema)" != "test262-canonical-classified-v2" \
     || "$(read_value mode)" != "both" \
     || "$(read_value timeout_ms)" != "30000" \
-    || "$(read_value candidate_builtins_paths)" != "18" \
-    || "$(read_value candidate_expression_async_function_paths)" != "93" \
-    || "$(read_value candidate_expression_await_paths)" != "22" \
-    || "$(read_value candidate_statement_async_function_paths)" != "74" \
-    || "$(read_value candidate_paths)" != "207" \
-    || "$(read_value excluded_paths)" != "4" \
-    || "$(read_value complex_parameters_paths)" != "0" \
-    || "$(read_value eval_or_with_paths)" != "0" \
-    || "$(read_value async_arrow_paths)" != "0" \
-    || "$(read_value async_generator_or_for_await_paths)" != "2" \
-    || "$(read_value host_or_cross_realm_paths)" != "2" \
-    || "$(read_value paths)" != "203" \
-    || "$(read_value quickjs_passes)" != "203" \
-    || "$(read_value positive_paths)" != "138" \
-    || "$(read_value negative_paths)" != "65" \
-    || "$(read_value async_paths)" != "108" \
-    || "$(read_value sync_paths)" != "95" \
-    || "$(read_value double_mode_paths)" != "163" \
-    || "$(read_value no_strict_paths)" != "29" \
-    || "$(read_value only_strict_paths)" != "11" \
-    || "$(read_value variants)" != "366" \
-    || "$(read_value sloppy_variants)" != "192" \
-    || "$(read_value strict_variants)" != "174" \
-    || "$(read_value features)" != "8" \
+    || "$(read_value candidate_paths)" != "61" \
+    || "$(read_value candidate_function_to_string_paths)" != "1" \
+    || "$(read_value candidate_complex_parameters_paths)" != "3" \
+    || "$(read_value candidate_eval_or_with_paths)" != "3" \
+    || "$(read_value candidate_forbidden_extensions_paths)" != "5" \
+    || "$(read_value candidate_async_method_or_generator_paths)" != "0" \
+    || "$(read_value candidate_host_or_cross_realm_paths)" != "0" \
+    || "$(read_value excluded_paths)" != "0" \
+    || "$(read_value excluded_complex_parameters_paths)" != "0" \
+    || "$(read_value excluded_eval_or_with_paths)" != "0" \
+    || "$(read_value excluded_forbidden_extensions_paths)" != "0" \
+    || "$(read_value admitted_complex_parameters_paths)" != "3" \
+    || "$(read_value admitted_eval_or_with_paths)" != "3" \
+    || "$(read_value admitted_forbidden_extensions_paths)" != "5" \
+    || "$(read_value token_quirk_candidate_paths)" != "0" \
+    || "$(read_value paths)" != "61" \
+    || "$(read_value quickjs_passes)" != "61" \
+    || "$(read_value positive_paths)" != "32" \
+    || "$(read_value negative_paths)" != "29" \
+    || "$(read_value async_paths)" != "27" \
+    || "$(read_value sync_paths)" != "34" \
+    || "$(read_value double_mode_paths)" != "51" \
+    || "$(read_value no_strict_paths)" != "8" \
+    || "$(read_value only_strict_paths)" != "2" \
+    || "$(read_value variants)" != "112" \
+    || "$(read_value sloppy_variants)" != "59" \
+    || "$(read_value strict_variants)" != "53" \
+    || "$(read_value features)" != "6" \
     || "$(read_value includes)" != "3" \
     || "$(read_value flags)" != "4" \
-    || "$(read_value runnable)" != "366" \
-    || "$(read_value passes)" != "366" \
+    || "$(read_value runnable)" != "112" \
+    || "$(read_value passes)" != "112" \
     || "$(read_value failures)" != "0" \
     || "$(read_value unsupported)" != "0" \
     || "$(read_value skipped)" != "0" ]]; then
-    echo "error: async-function core baseline identity drifted" >&2
+    echo "error: async-arrow core baseline identity drifted" >&2
     exit 1
 fi
 
 [[ "$(sha256_file "$global_profile")" == "$(read_value global_oxide_profile_sha256)" \
     && "$(sha256_file "$admission_profile")" == "$(read_value oxide_profile_sha256)" \
     && "$(sha256_file "$exclusions")" == "$(read_value exclusions_file_sha256)" ]] \
-    || { echo "error: async-function core pinned profile or exclusions drifted" >&2; exit 1; }
+    || { echo "error: async-arrow core pinned profile or exclusions drifted" >&2; exit 1; }
 if grep -Fq '[execution]' "$global_profile"; then
     echo "error: global Test262 profile must remain fail-closed for async execution" >&2
     exit 1
 fi
 
 git -C "$suite" ls-files \
-    'test/built-ins/AsyncFunction/*.js' \
-    'test/language/expressions/async-function/*.js' \
-    'test/language/expressions/await/*.js' \
-    'test/language/statements/async-function/*.js' \
+    'test/built-ins/Function/prototype/toString/async-arrow-function.js' \
+    'test/language/expressions/async-arrow-function/*.js' \
     | LC_ALL=C sort -u > "$candidate"
 LC_ALL=C sort -c "$candidate"
 if [[ "$(inventory_count "$candidate")" != "$(read_value candidate_paths)" \
     || "$(sha256_file "$candidate")" != "$(read_value candidate_sha256)" \
-    || "$(awk 'index($0, "test/built-ins/AsyncFunction/") == 1 { count++ } END { print count + 0 }' "$candidate")" \
-        != "$(read_value candidate_builtins_paths)" \
-    || "$(awk 'index($0, "test/language/expressions/async-function/") == 1 { count++ } END { print count + 0 }' "$candidate")" \
-        != "$(read_value candidate_expression_async_function_paths)" \
-    || "$(awk 'index($0, "test/language/expressions/await/") == 1 { count++ } END { print count + 0 }' "$candidate")" \
-        != "$(read_value candidate_expression_await_paths)" \
-    || "$(awk 'index($0, "test/language/statements/async-function/") == 1 { count++ } END { print count + 0 }' "$candidate")" \
-        != "$(read_value candidate_statement_async_function_paths)" ]]; then
-    echo "error: async-function core candidate universe drifted" >&2
+    || "$(grep -Fxc \
+        'test/built-ins/Function/prototype/toString/async-arrow-function.js' \
+        "$candidate")" != "$(read_value candidate_function_to_string_paths)" \
+    || "$(awk '
+        /\/(array|object)-destructuring-param-strict-body\.js$/ \
+            || /\/rest-param-strict-body\.js$/ { count++ }
+        END { print count + 0 }
+    ' "$candidate")" != "$(read_value candidate_complex_parameters_paths)" \
+    || "$(awk '
+        /\/eval-var-scope-syntax-err\.js$/ \
+            || /\/unscopables-with(-in-nested-fn)?\.js$/ { count++ }
+        END { print count + 0 }
+    ' "$candidate")" != "$(read_value candidate_eval_or_with_paths)" \
+    || "$(awk 'index($0, "/forbidden-ext/") { count++ } END { print count + 0 }' "$candidate")" \
+        != "$(read_value candidate_forbidden_extensions_paths)" ]]; then
+    echo "error: async-arrow core candidate universe drifted" >&2
     exit 1
 fi
 
 if awk -F'\t' 'NF != 2 || $1 == "" || $2 == "" { print NR ":" $0; bad=1 } END { exit bad ? 0 : 1 }' \
     "$exclusions" >&2; then
-    echo "error: async-function core exclusions must have exactly two populated TSV columns" >&2
+    echo "error: async-arrow core exclusions must have exactly two populated TSV columns" >&2
     exit 1
 fi
 awk -F'\t' '{ print $2 }' "$exclusions" > "$excluded_paths"
@@ -230,29 +269,25 @@ if [[ "$(inventory_count "$excluded_paths")" != "$(read_value excluded_paths)" \
     || "$(LC_ALL=C sort -u "$excluded_paths" | inventory_count /dev/stdin)" \
         != "$(read_value excluded_paths)" \
     || "$(sha256_file "$excluded_paths")" != "$(read_value excluded_paths_sha256)" ]]; then
-    echo "error: async-function core excluded-path inventory drifted" >&2
+    echo "error: async-arrow core excluded-path inventory drifted" >&2
     exit 1
 fi
 if [[ "$(awk -F'\t' '$1 == "complex_parameters" { count++ } END { print count + 0 }' "$exclusions")" \
-        != "$(read_value complex_parameters_paths)" \
+        != "$(read_value excluded_complex_parameters_paths)" \
     || "$(awk -F'\t' '$1 == "eval_or_with" { count++ } END { print count + 0 }' "$exclusions")" \
-        != "$(read_value eval_or_with_paths)" \
-    || "$(awk -F'\t' '$1 == "async_arrow" { count++ } END { print count + 0 }' "$exclusions")" \
-        != "$(read_value async_arrow_paths)" \
-    || "$(awk -F'\t' '$1 == "async_generator_or_for_await" { count++ } END { print count + 0 }' "$exclusions")" \
-        != "$(read_value async_generator_or_for_await_paths)" \
-    || "$(awk -F'\t' '$1 == "host_or_cross_realm" { count++ } END { print count + 0 }' "$exclusions")" \
-        != "$(read_value host_or_cross_realm_paths)" \
+        != "$(read_value excluded_eval_or_with_paths)" \
+    || "$(awk -F'\t' '$1 == "forbidden_extensions" { count++ } END { print count + 0 }' "$exclusions")" \
+        != "$(read_value excluded_forbidden_extensions_paths)" \
     || "$(awk -F'\t' \
-        '$1 != "complex_parameters" && $1 != "eval_or_with" && $1 != "async_arrow" \
-            && $1 != "async_generator_or_for_await" && $1 != "host_or_cross_realm" { count++ } \
+        '$1 != "complex_parameters" && $1 != "eval_or_with" \
+            && $1 != "forbidden_extensions" { count++ } \
         END { print count + 0 }' "$exclusions")" != "0" ]]; then
-    echo "error: async-function core exclusion categories drifted" >&2
+    echo "error: async-arrow core exclusion categories drifted" >&2
     exit 1
 fi
 
 if [[ -n "$(comm -23 "$excluded_paths" "$candidate")" ]]; then
-    echo "error: async-function core exclusion escaped the candidate universe" >&2
+    echo "error: async-arrow core exclusion escaped the candidate universe" >&2
     exit 1
 fi
 comm -23 "$candidate" "$excluded_paths" > "$derived_manifest"
@@ -260,14 +295,26 @@ diff -u "$manifest" "$derived_manifest"
 LC_ALL=C sort -u "$manifest" "$excluded_paths" > "$partition_union"
 diff -u "$candidate" "$partition_union"
 if [[ -n "$(comm -12 "$manifest" "$excluded_paths")" ]]; then
-    echo "error: async-function core manifest and exclusions overlap" >&2
+    echo "error: async-arrow core manifest and exclusions overlap" >&2
     exit 1
 fi
 LC_ALL=C sort -c "$manifest"
 if [[ "$(inventory_count "$manifest")" != "$(read_value paths)" \
     || "$(sha256_file "$manifest")" != "$(read_value manifest_sha256)" \
-    || "$(sha256_file "$manifest")" != "$(read_value manifest_file_sha256)" ]]; then
-    echo "error: async-function core manifest drifted" >&2
+    || "$(sha256_file "$manifest")" != "$(read_value manifest_file_sha256)" \
+    || "$(awk '
+        /\/(array|object)-destructuring-param-strict-body\.js$/ \
+            || /\/rest-param-strict-body\.js$/ { count++ }
+        END { print count + 0 }
+    ' "$manifest")" != "$(read_value admitted_complex_parameters_paths)" \
+    || "$(awk '
+        /\/eval-var-scope-syntax-err\.js$/ \
+            || /\/unscopables-with(-in-nested-fn)?\.js$/ { count++ }
+        END { print count + 0 }
+    ' "$manifest")" != "$(read_value admitted_eval_or_with_paths)" \
+    || "$(awk 'index($0, "/forbidden-ext/") { count++ } END { print count + 0 }' "$manifest")" \
+        != "$(read_value admitted_forbidden_extensions_paths)" ]]; then
+    echo "error: async-arrow core manifest drifted" >&2
     exit 1
 fi
 
@@ -347,7 +394,7 @@ awk -F'\t' \
         }
     }
     END {
-        if (seen != 203) {
+        if (seen != 61) {
             print "selected metadata rows: " seen > "/dev/stderr"
             exit 2
         }
@@ -376,18 +423,19 @@ if [[ "$(inventory_count "$variant_keys")" != "$(read_value variants)" \
     || "$(sha256_file "$include_inventory")" != "$(read_value includes_sha256)" \
     || "$(inventory_count "$flag_inventory")" != "$(read_value flags)" \
     || "$(sha256_file "$flag_inventory")" != "$(read_value flags_sha256)" ]]; then
-    echo "error: async-function core metadata composition drifted" >&2
+    echo "error: async-arrow core metadata composition drifted" >&2
     exit 1
 fi
 
 diff -u <(profile_section features | LC_ALL=C sort) "$feature_inventory"
 diff -u <(profile_section audited-negative-tests | LC_ALL=C sort) "$negative"
 [[ "$(profile_section execution)" == "async=true" ]] \
-    || { echo "error: async-function core profile must opt into only the async host" >&2; exit 1; }
+    || { echo "error: async-arrow core profile must opt into only the async host" >&2; exit 1; }
 
 verify_quickjs_oracle
+verify_quickjs_token_quirk
 if "$check_only"; then
-    printf 'async-function core inputs verified: %s candidates - %s explicit exclusions = %s paths; QuickJS %s passes all; Oxide gate covers %s variants\n' \
+    printf 'async-arrow core inputs verified: %s candidates - %s explicit exclusions = %s paths; QuickJS %s passes all; Oxide gate covers %s variants\n' \
         "$(read_value candidate_paths)" \
         "$(read_value excluded_paths)" \
         "$(read_value paths)" \
@@ -450,7 +498,7 @@ if [[ "$(read_header quickjs)" != "$expected_quickjs" \
     || "$(read_header mode)" != "$expected_mode" \
     || "$actual_variants" != "$expected_variants" \
     || "$actual_runnable" != "$expected_runnable" ]]; then
-    echo "error: async-function core report metadata drifted" >&2
+    echo "error: async-arrow core report metadata drifted" >&2
     exit 1
 fi
 
@@ -505,7 +553,7 @@ if [[ "$runner_summary" != "$expected_runner_summary" \
     || "$actual_summary" != "$expected_summary" \
     || "$(sha256_file "$report")" != "$expected_tsv" \
     || "$(sha256_file "$json_report")" != "$expected_jsonl" ]]; then
-    echo "error: async-function core all-pass vector drifted" >&2
+    echo "error: async-arrow core all-pass vector drifted" >&2
     awk -F'\t' '
         !/^#/ && !($1 == "path" && $2 == "variant") && $7 != "pass" {
             print $1 "\t" $2 "\t" $7 "\t" $8 "\t" $9 "\t" $10
@@ -514,5 +562,5 @@ if [[ "$runner_summary" != "$expected_runner_summary" \
     exit 1
 fi
 
-printf 'async-function core Test262 gate passes: %s/%s variants across %s audited paths\n' \
+printf 'async-arrow core Test262 gate passes: %s/%s variants across %s audited paths\n' \
     "$actual_passes" "$actual_variants" "$(read_value paths)"
