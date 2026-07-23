@@ -4386,6 +4386,15 @@ pub enum InternalCallableData {
         kind: PromiseResolvingKind,
     },
     PromiseCapabilityExecutor(PromiseCapabilityExecutorData),
+    PromiseFinallyHandler {
+        /// `None` preserves QuickJS's `JS_UNDEFINED` default-constructor
+        /// sentinel instead of eagerly materializing the intrinsic Promise.
+        constructor: Option<ObjectId>,
+        on_finally: ObjectId,
+    },
+    PromiseFinallyThunk {
+        value: RawValue,
+    },
 }
 
 /// Class-specific edges stored alongside an object's ordinary properties.
@@ -5272,6 +5281,7 @@ pub enum PromiseNativeKind {
     Species,
     Then,
     Catch,
+    Finally,
     Resolve,
     Reject,
     Try,
@@ -5366,6 +5376,8 @@ pub enum NativeFunctionId {
     Promise(PromiseNativeKind),
     PromiseResolving(PromiseResolvingKind),
     PromiseCapabilityExecutor,
+    PromiseFinallyHandler(PromiseReactionKind),
+    PromiseFinallyThunk(PromiseReactionKind),
     PrimitiveConstructor(PrimitiveKind),
     StringStatic(StringStaticKind),
     /// QuickJS's test262-only `js_string_codePointRange` helper.
@@ -5705,6 +5717,23 @@ pub struct NativeFunctionDescriptor {
 }
 
 impl NativeFunctionId {
+    /// QuickJS invokes class-call handlers and `JS_NewCFunctionData`
+    /// callbacks with the `JSContext` supplied by the caller. Ordinary C
+    /// functions instead switch to the function object's defining realm.
+    ///
+    /// The Promise resolving pair uses class-call handlers; its capability
+    /// executor and finally callbacks use `JS_NewCFunctionData`.
+    #[must_use]
+    pub const fn uses_calling_realm(self) -> bool {
+        matches!(
+            self,
+            Self::PromiseResolving(_)
+                | Self::PromiseCapabilityExecutor
+                | Self::PromiseFinallyHandler(_)
+                | Self::PromiseFinallyThunk(_)
+        )
+    }
+
     #[must_use]
     pub const fn descriptor(self) -> NativeFunctionDescriptor {
         match self {
@@ -5784,6 +5813,7 @@ impl NativeFunctionId {
             | Self::Promise(
                 PromiseNativeKind::Then
                 | PromiseNativeKind::Catch
+                | PromiseNativeKind::Finally
                 | PromiseNativeKind::Resolve
                 | PromiseNativeKind::Reject
                 | PromiseNativeKind::Try
@@ -5792,6 +5822,8 @@ impl NativeFunctionId {
             )
             | Self::PromiseResolving(_)
             | Self::PromiseCapabilityExecutor
+            | Self::PromiseFinallyHandler(_)
+            | Self::PromiseFinallyThunk(_)
             | Self::Reflect(
                 ReflectKind::Apply
                 | ReflectKind::Construct
@@ -10533,8 +10565,49 @@ impl Heap {
                         ));
                     }
                 }
+                (
+                    NativeFunctionId::PromiseFinallyHandler(_),
+                    Some(InternalCallableData::PromiseFinallyHandler {
+                        constructor,
+                        on_finally,
+                    }),
+                ) => {
+                    let constructor_is_valid = constructor
+                        .map(|constructor| {
+                            self.object(constructor)
+                                .map(|constructor| constructor.is_constructor)
+                        })
+                        .transpose()?
+                        .unwrap_or(true);
+                    let on_finally = self.object(*on_finally)?;
+                    let on_finally_is_callable = {
+                        matches!(
+                            on_finally.kind,
+                            ObjectKind::NativeFunction
+                                | ObjectKind::BoundFunction
+                                | ObjectKind::BytecodeFunction
+                        )
+                    };
+                    if object.is_constructor || !constructor_is_valid || !on_finally_is_callable {
+                        return Err(HeapError::Invariant(
+                            "Promise finally handler has invalid hidden state",
+                        ));
+                    }
+                }
+                (
+                    NativeFunctionId::PromiseFinallyThunk(_),
+                    Some(InternalCallableData::PromiseFinallyThunk { value }),
+                ) => {
+                    if object.is_constructor || !is_promise_storable_value(value) {
+                        return Err(HeapError::Invariant(
+                            "Promise finally thunk has invalid hidden state",
+                        ));
+                    }
+                }
                 (NativeFunctionId::PromiseResolving(_), _)
                 | (NativeFunctionId::PromiseCapabilityExecutor, _)
+                | (NativeFunctionId::PromiseFinallyHandler(_), _)
+                | (NativeFunctionId::PromiseFinallyThunk(_), _)
                 | (_, Some(_)) => {
                     return Err(HeapError::Invariant(
                         "native target does not match its internal callable capture",
@@ -11396,6 +11469,15 @@ fn internal_callable_edges(internal: &InternalCallableData) -> Vec<RawId> {
             .chain(capture.reject.iter())
             .flat_map(raw_value_edges)
             .collect(),
+        InternalCallableData::PromiseFinallyHandler {
+            constructor,
+            on_finally,
+        } => constructor
+            .map(RawId::Object)
+            .into_iter()
+            .chain(std::iter::once(RawId::Object(*on_finally)))
+            .collect(),
+        InternalCallableData::PromiseFinallyThunk { value } => raw_value_edges(value),
     }
 }
 
@@ -11595,6 +11677,22 @@ fn object_slot_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
     object.slots.iter().flat_map(property_slot_atoms)
 }
 
+fn internal_callable_atoms(internal: &InternalCallableData) -> Vec<Atom> {
+    match internal {
+        InternalCallableData::PromiseCapabilityExecutor(capture) => capture
+            .resolve
+            .iter()
+            .chain(capture.reject.iter())
+            .filter_map(raw_value_atom)
+            .collect(),
+        InternalCallableData::PromiseFinallyThunk { value } => {
+            raw_value_atom(value).into_iter().collect()
+        }
+        InternalCallableData::PromiseResolving { .. }
+        | InternalCallableData::PromiseFinallyHandler { .. } => Vec::new(),
+    }
+}
+
 fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
     let payload = match &object.payload {
         ObjectPayload::Primitive(PrimitiveObjectData::Symbol(atom)) => vec![*atom],
@@ -11633,14 +11731,9 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
             .unwrap_or_default(),
         ObjectPayload::Promise(data) => raw_value_atom(&data.result).into_iter().collect(),
         ObjectPayload::NativeFunction {
-            internal: Some(InternalCallableData::PromiseCapabilityExecutor(capture)),
+            internal: Some(internal),
             ..
-        } => capture
-            .resolve
-            .iter()
-            .chain(capture.reject.iter())
-            .filter_map(raw_value_atom)
-            .collect(),
+        } => internal_callable_atoms(internal),
         ObjectPayload::Ordinary
         | ObjectPayload::RawJson
         | ObjectPayload::Array { .. }

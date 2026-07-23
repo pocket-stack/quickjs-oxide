@@ -142,9 +142,14 @@ impl Runtime {
                             "stack overflow",
                         )?));
                     }
+                    let execution_realm = if target.uses_calling_realm() {
+                        caller_realm
+                    } else {
+                        realm
+                    };
                     return self.call_native_function(
                         &callable,
-                        realm,
+                        execution_realm,
                         target,
                         min_readable_args,
                         this_value,
@@ -472,6 +477,12 @@ impl Runtime {
             }
             NativeFunctionId::PromiseCapabilityExecutor => {
                 self.call_promise_capability_executor(realm, invocation, arguments)
+            }
+            NativeFunctionId::PromiseFinallyHandler(kind) => {
+                self.call_promise_finally_handler(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::PromiseFinallyThunk(kind) => {
+                self.call_promise_finally_thunk(kind, invocation)
             }
             NativeFunctionId::ThrowTypeError => {
                 self.call_throw_type_error(realm, invocation, arguments)

@@ -293,7 +293,7 @@ impl Runtime {
         Ok(NativeConversion::Value((iterator, next_method)))
     }
 
-    fn invoke_promise_then(
+    pub(super) fn invoke_promise_then(
         &self,
         realm: ContextId,
         receiver: Value,

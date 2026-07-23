@@ -94,6 +94,10 @@ const TEST262_PROMISE_RACE_TRY_WITH_RESOLVERS_PROFILE_SHA256: &str =
     "8548d12a4d7f3141583b986c8e3ffcae4e1afb93476ae8a444f64b940bb44654";
 const TEST262_PROMISE_RACE_TRY_WITH_RESOLVERS_MANIFEST_SHA256: &str =
     "be545aefd5f2029faae9745d859a43de176ec9865599a916f15ec465bf84d340";
+const TEST262_PROMISE_FINALLY_PROFILE_SHA256: &str =
+    "fa10d45a7ddd3924e9124cfc42239e296847223c6c9686beb2a8435e9c83bf04";
+const TEST262_PROMISE_FINALLY_MANIFEST_SHA256: &str =
+    "9c24a81143fc4d3dcaa8251a2ed98e381f07cb7969f30427a60e9ca931941464";
 const TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256: &str =
     "8232e2c11e908f7cbf5a9e0f34fbd5223a9551b49ae64647f2a72b2314bcaf84";
 const TEST262_ARRAY_BINDING_FLAT_MANIFEST_SHA256: &str =
@@ -685,6 +689,7 @@ enum OxideProfileKind {
     ClassPrivateGeneratorMethods,
     PromiseConstructorJobs,
     PromiseRaceTryWithResolvers,
+    PromiseFinally,
     ArrayBindingFlat,
     ArrayBindingNested,
     ArrayAssignmentFlat,
@@ -766,6 +771,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
             OxideProfileKind::PromiseRaceTryWithResolvers,
         ),
         (
+            root.join("tests/test262-promise-finally.conf"),
+            OxideProfileKind::PromiseFinally,
+        ),
+        (
             root.join("tests/test262-array-binding-flat.conf"),
             OxideProfileKind::ArrayBindingFlat,
         ),
@@ -840,7 +849,7 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         }
     }
     Err(format!(
-        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-aggregate-error.conf, tests/test262-argument-spread.conf, tests/test262-class-base.conf, tests/test262-class-derived.conf, tests/test262-class-public-init.conf, tests/test262-class-private-fields.conf, tests/test262-class-private-methods.conf, tests/test262-class-private-accessors.conf, tests/test262-class-generator-methods.conf, tests/test262-class-private-generator-methods.conf, tests/test262-promise-constructor-jobs.conf, tests/test262-promise-race-try-with-resolvers.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-direct-eval.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-parameter-expression-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-aggregate-error.conf, tests/test262-argument-spread.conf, tests/test262-class-base.conf, tests/test262-class-derived.conf, tests/test262-class-public-init.conf, tests/test262-class-private-fields.conf, tests/test262-class-private-methods.conf, tests/test262-class-private-accessors.conf, tests/test262-class-generator-methods.conf, tests/test262-class-private-generator-methods.conf, tests/test262-promise-constructor-jobs.conf, tests/test262-promise-race-try-with-resolvers.conf, tests/test262-promise-finally.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-direct-eval.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-parameter-expression-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, or tests/test262-symbol-protocols.conf",
         path.display()
     ))
 }
@@ -1026,6 +1035,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             TEST262_PROMISE_RACE_TRY_WITH_RESOLVERS_PROFILE_SHA256,
             "tests/test262-promise-race-try-with-resolvers.txt",
             TEST262_PROMISE_RACE_TRY_WITH_RESOLVERS_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::PromiseFinally => verify_scoped_pinned_profile(
+            options,
+            "Promise finally",
+            TEST262_PROMISE_FINALLY_PROFILE_SHA256,
+            "tests/test262-promise-finally.txt",
+            TEST262_PROMISE_FINALLY_MANIFEST_SHA256,
         ),
         OxideProfileKind::ArrayBindingFlat => {
             verify_sha256(
@@ -1757,6 +1773,7 @@ mod cli_tests {
         TEST262_PARAMETER_BINDING_PATTERNS_PROFILE_SHA256,
         TEST262_PARAMETER_DIRECT_EVAL_PROFILE_SHA256,
         TEST262_PARAMETER_EXPRESSION_BINDING_PATTERNS_PROFILE_SHA256,
+        TEST262_PROMISE_FINALLY_PROFILE_SHA256,
         TEST262_PROMISE_RACE_TRY_WITH_RESOLVERS_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
         TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, default_worker_count, identify_oxide_profile,
         parse_args, verify_oxide_profile,
@@ -1940,6 +1957,10 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::PromiseRaceTryWithResolvers
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-promise-finally.conf")).unwrap(),
+            OxideProfileKind::PromiseFinally
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-array-binding-flat.conf")).unwrap(),
@@ -2865,6 +2886,56 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-promise-race-try-with-resolvers.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_promise_finally_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-promise-finally.conf",
+            "--manifest",
+            "tests/test262-promise-finally.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_PROMISE_FINALLY_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/built-ins/Promise/prototype/finally/length.js",
+            ],
+            [
+                "--manifest",
+                "tests/test262-promise-race-try-with-resolvers.txt",
+            ],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-promise-finally.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

@@ -1762,8 +1762,9 @@ claim full parity.
   `withResolvers`, and `Promise.prototype.finally` remain explicit next
   frontiers at the R3m checkpoint rather than false parity claims.
 
-  R3n adds `Promise.try`, `Promise.withResolvers`, and `Promise.race` without
-  claiming the still-absent `all`/`allSettled`/`any`/`finally` surfaces.
+  At its landing checkpoint, R3n adds `Promise.try`,
+  `Promise.withResolvers`, and `Promise.race` without claiming the then-absent
+  `all`/`allSettled`/`any`/`finally` surfaces.
   `try` creates the custom capability before synchronously calling its callback
   with `undefined` receiver and all trailing arguments, then routes return or
   throw through the captured resolve/reject callable. `withResolvers` returns
@@ -1779,7 +1780,7 @@ claim full parity.
   Direct upstream anchors are `quickjs.c` 53592-53655, 53895-53962, and
   16512-16675.
 
-  The complete authenticated R3n inventory contains 112 paths / 224
+  At R3n landing, the complete authenticated inventory contains 112 paths / 224
   sloppy/strict variants: 94 race paths, 12 try paths, six withResolvers
   paths, 66 async paths, and 46 synchronous paths. Oxide records 214 passes and
   ten `fail-runtime` results, with zero unsupported or skipped variants;
@@ -1812,10 +1813,107 @@ claim full parity.
   (`1860224ce1e828406f4869b66b3f1964f96fad85e4eab6ba7fecb256b4b6c2f2`)
   remains fail-closed with no `[execution]` section.
 
-  R3n leaves the facade bounded at 9,794 lines in `runtime.rs`; the new
+  After R3o, the same R3n inventory currently records 216/224 passes and eight
+  `fail-runtime` results, with zero unsupported or skipped variants.
+  `resolved-then-catch-finally.js` now passes in both modes; the current
+  non-passes are exactly the sloppy and strict variants of the four
+  `Promise.all` consumers:
+
+  - `test/built-ins/Promise/race/resolved-sequence-extra-ticks.js`
+  - `test/built-ins/Promise/race/resolved-sequence-mixed.js`
+  - `test/built-ins/Promise/race/resolved-sequence-with-rejections.js`
+  - `test/built-ins/Promise/race/resolved-sequence.js`
+
+  The current R3n non-pass, TSV, and JSONL SHA-256 values are
+  `0865a76b4a9760298b3725c3b1e46559dabeb69e097b07cd9098882f595e64ba`,
+  `b37787f5024f9132fb4148e6b87a247c05e9439302dd19069c18e44dd1858469`,
+  and
+  `21dd45dcc42d79af81e1ff9c979690cbacca86fe1e24e2728edffc104bc300a0`.
+  This current result does not rewrite the authenticated 214/224 R3n landing
+  checkpoint above.
+
+  R3o completes the `Promise.prototype.finally` algorithm against pinned
+  QuickJS `quickjs.c` 54057-54135. The receiver is first required to be an
+  object, then `SpeciesConstructor` runs before `onFinally` callability is
+  tested. QuickJS's `undefined` default-constructor sentinel remains
+  `undefined`, rather than being eagerly replaced by the intrinsic Promise;
+  this preserves the later observable TypeError from
+  `PromiseResolve(undefined, result)`. A non-callable `onFinally` is forwarded
+  twice to the receiver's dynamic `then`.
+
+  Callable cleanup uses typed
+  `PromiseFinallyHandler(Fulfill|Reject)` functions with
+  `InternalCallableData::PromiseFinallyHandler { constructor, on_finally }`
+  captures. Each calls `onFinally` with an `undefined` receiver and no
+  arguments, propagates a cleanup throw, runs `PromiseResolve` with the
+  captured constructor and cleanup result, then dynamically calls `then` with
+  a typed `PromiseFinallyThunk(Fulfill|Reject)`. The thunk's
+  `InternalCallableData::PromiseFinallyThunk { value }` returns the original
+  fulfillment or throws the original rejection. This locks the QuickJS order
+  of species lookup, callback, resolve, and dynamic `then`: cleanup failure
+  overrides the original settlement, while successful cleanup preserves it.
+  Heap validation pairs each native ID with its typed payload and verifies
+  constructor/callable/storable captures.
+
+  QuickJS invokes Promise resolving class callbacks and its
+  `JS_NewCFunctionData` capability/finally callbacks with the calling Context,
+  unlike ordinary C built-ins that switch to their defining realm. Oxide
+  records that distinction as a typed native-dispatch policy for the resolving
+  pair, capability executor, finally handlers, and finally thunks. A two-Context
+  regression verifies that an internal finally handler materializes its
+  observable TypeError from the caller's `TypeError.prototype`. Direct pinned
+  anchors are `quickjs.c` 6025-6044, 17588-17612, 17742-17750,
+  53352-53357, 53508-53515, and 54070-54121.
+
+  The handler traces its constructor and callback object edges; the thunk
+  traces raw settlement object/value edges. Symbol settlements additionally
+  retain their atom at internal-function allocation, expose it through heap
+  atom enumeration, and release the shape on allocation failure. The pinned
+  forced-GC transcript records
+  `symbol-thunk-thrower-gc=value:true|thrower:true` and `finally-gc=42`, so both
+  typed thunks and the complete finally graph are covered.
+
+  The complete R3o inventory contains 29 paths / 58 sloppy and strict variants:
+  12 async paths / 24 variants, 17 synchronous paths / 34 variants, and one
+  Proxy path / two variants. Oxide passes 56; the only two `fail-runtime`
+  results are `test/built-ins/Promise/prototype/finally/this-value-proxy.js`
+  in both modes because `Proxy` is not yet defined. There are zero unsupported
+  results and zero skips; pinned QuickJS passes all 29/29 paths. The scoped
+  profile admits `Promise`, `Promise.prototype.finally`, `Reflect.construct`,
+  `Symbol`, `arrow-function`, and `class`, plus `[execution] async=true`.
+
+  The R3o manifest, scoped-profile, variant-key, async, synchronous, Proxy,
+  feature, include, non-pass, TSV, and JSONL SHA-256 values are, respectively,
+  `9c24a81143fc4d3dcaa8251a2ed98e381f07cb7969f30427a60e9ca931941464`,
+  `fa10d45a7ddd3924e9124cfc42239e296847223c6c9686beb2a8435e9c83bf04`,
+  `d468c957b3132cb0dcfb0f9ab2d76237cbefc2b5b86a8ba387c072345be70a9f`,
+  `72cf44a63ba76996ec5950307c6d79cbac4eeb917389399cdece903bc96f028b`,
+  `e4a96c0de4f8bda904c8c84868d3f4c51227526290f88cf8ff26961f9a8df6c3`,
+  `115c53865f31eb747b22e877e8e41154b0e1276618467c595250cf42d730ac8d`,
+  `38ad367b90ca8661fef8c0ba91e8dd308ddb8aa9afca2301ed6e7e22e9212fed`,
+  `0df478d04b840824e8f175d0e7fbb2e4a29afecce716f6ca7728163d406b0ea2`,
+  `f8155380318e12c8fcf6fef09db3b7628f8934c761279a066a772f6c675a9400`,
+  `80beabb219bb0a04830f7c2b40e47549234e20b458bd04e27998df7b64cb335d`,
+  and
+  `0375fb338a4fe87345f0406c5ce2ff05cb27c2779d2a7260989521cf44444cf8`.
+  The pinned Test262 patch/config/metadata hashes are
+  `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`,
+  `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`,
+  and
+  `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`.
+  The differential fixture/transcript hashes are
+  `720b53338045bd65c70337c3d43678b52e8c7d3e0ce0b0ef1210f512b7d7a53a`
+  and
+  `9b30fc689ebac8bb116d18a87460fb9bd987f5c7b40dfabe508f787c249c10fe`.
+  The unchanged global profile hash remains
+  `1860224ce1e828406f4869b66b3f1964f96fad85e4eab6ba7fecb256b4b6c2f2`.
+
+  R3n and R3o leave the facade bounded at 9,803 lines in `runtime.rs`; the new
   capability/convenience/race algorithms live in the dedicated 327-line
-  `runtime/intrinsics/promise/convenience.rs` module rather than extending the
-  monolith.
+  `runtime/intrinsics/promise/convenience.rs` module and the finally algorithm
+  lives in the dedicated 203-line `runtime/intrinsics/promise/finally.rs`
+  module rather than extending the monolith. The remaining explicit Promise
+  frontiers are `Promise.all`, `Promise.allSettled`, and `Promise.any`.
 
   Async functions/generators, destructuring eval declarations, unsupported
   class elements, and ill-formed UTF-16 source stay explicit frontiers.

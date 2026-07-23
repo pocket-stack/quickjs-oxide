@@ -4566,7 +4566,9 @@ impl Runtime {
                     ObjectPayload::NativeFunction { data, .. },
                     None,
                 ) if data.target == target
-                    && data.realm == Some(realm)
+                    && data.realm.is_some_and(|defining_realm| {
+                        target.uses_calling_realm() || defining_realm == realm
+                    })
                     && readable_arg_count
                         == actual_arg_count.max(usize::from(data.min_readable_args)) => {}
                 (ActiveFrameKind::Bytecode { .. }, _, _) => {
@@ -5365,6 +5367,9 @@ impl Runtime {
         // The callable root held by the caller owns the native payload and its
         // defining-realm edge for the whole invocation. Revalidate the
         // detached snapshot before recording raw identities in the frame.
+        // Class-call and CFunctionData-style internal functions deliberately
+        // execute in `realm`, which is the calling realm rather than the
+        // separately retained defining realm.
         {
             let state = self.0.state.borrow();
             let object = state.heap.object(callable.as_object().object_id())?;
@@ -5373,14 +5378,18 @@ impl Runtime {
                     "native invocation target was not a native function",
                 ));
             };
+            let defining_realm = data.realm.ok_or(RuntimeError::Invariant(
+                "native function lost its defining realm",
+            ))?;
             if data.target != target
-                || data.realm != Some(realm)
+                || (!target.uses_calling_realm() && defining_realm != realm)
                 || data.min_readable_args != min_readable_args
             {
                 return Err(RuntimeError::Invariant(
                     "native invocation metadata changed after snapshot",
                 ));
             }
+            state.heap.context(defining_realm)?;
         }
 
         let actual_arg_count = arguments.len();
@@ -5400,11 +5409,11 @@ impl Runtime {
             available_arg_count,
         )?;
 
-        // JavaScript-style engine errors are materialized in the native
-        // function's defining realm while its frame is still visible. A
-        // pre-existing Error returned as an ordinary Throw completion is not
-        // captured here: QuickJS pops the C frame first and lets the enclosing
-        // bytecode exception boundary add any missing stack.
+        // JavaScript-style engine errors are materialized in the selected
+        // execution realm while its frame is still visible. A pre-existing
+        // Error returned as an ordinary Throw completion is not captured here:
+        // QuickJS pops the C frame first and lets the enclosing bytecode
+        // exception boundary add any missing stack.
         let result = (|| {
             let result = match mode {
                 NativeInvokeMode::Ordinary => self

@@ -12,6 +12,7 @@ use crate::heap::{
 use super::super::*;
 
 mod convenience;
+mod finally;
 
 /// One notification from QuickJS's host Promise rejection tracker boundary.
 ///
@@ -106,6 +107,14 @@ impl Runtime {
             realm,
             NativeFunctionId::Promise(PromiseNativeKind::Catch),
             "catch",
+            1,
+            1,
+        )?;
+        self.define_native_builtin_auto_init(
+            &promise_prototype,
+            realm,
+            NativeFunctionId::Promise(PromiseNativeKind::Finally),
+            "finally",
             1,
             1,
         )?;
@@ -269,6 +278,19 @@ impl Runtime {
         let function_prototype = ObjectRef::from_borrowed_handle(self.clone(), function_prototype)?;
         let mut state = self.0.state.borrow_mut();
         let shape = state.get_or_create_shape(Some(function_prototype.object_id()), &[])?;
+        let retained_atoms = match &internal {
+            InternalCallableData::PromiseFinallyThunk { value } => {
+                match state.retain_raw_value_atoms(std::iter::once(value)) {
+                    Ok(atoms) => atoms,
+                    Err(error) => {
+                        let cleanup = state.heap.release_shape(shape)?;
+                        state.apply_cleanup(cleanup)?;
+                        return Err(error);
+                    }
+                }
+            }
+            _ => Vec::new(),
+        };
         let object = match state
             .heap
             .allocate_object(ObjectData::bound_internal_native_function(
@@ -281,6 +303,7 @@ impl Runtime {
             )) {
             Ok(object) => object,
             Err(error) => {
+                state.release_atoms(retained_atoms)?;
                 let cleanup = state.heap.release_shape(shape)?;
                 state.apply_cleanup(cleanup)?;
                 return Err(error.into());
@@ -483,6 +506,7 @@ impl Runtime {
             PromiseNativeKind::Species => self.call_promise_species(invocation),
             PromiseNativeKind::Then => self.call_promise_then(realm, invocation, arguments),
             PromiseNativeKind::Catch => self.call_promise_catch(realm, invocation, arguments),
+            PromiseNativeKind::Finally => self.call_promise_finally(realm, invocation, arguments),
             PromiseNativeKind::Resolve | PromiseNativeKind::Reject => {
                 self.call_promise_static_resolve(realm, kind, invocation, arguments)
             }

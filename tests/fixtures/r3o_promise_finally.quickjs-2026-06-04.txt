@@ -1,0 +1,12 @@
+descriptor-generic=finally:1:truefalsetrue||then|after:42||function:1:||function:1:
+species-abrupt=constructor-get|species-get|callback:0
+non-callable=fulfilled:true|rejected:true
+undefined-constructor=after-register|onFinally|rejected:TypeError
+species-resolve=true|2|0|after-register|onFinally|42
+receiver-args-return=after-register|fulfilled-cleanup|rejected-cleanup|fulfilled:40|rejected:true
+thenable-order=after-register|onFinally|then-get|then-call|result:original
+reject-throw=return-rejected|cleanup-rejected:true|throw-cleanup|throw-overrode:true
+then-abrupt=construct:1|after-register|onFinally|construct:2|resolve:2:7|then-get|reject:1:true
+symbol-thunk-thrower-gc=value:true|thrower:true
+finally-gc=42
+r3o-promise-finally-oracle=ok

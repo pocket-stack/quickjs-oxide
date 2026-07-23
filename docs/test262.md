@@ -3182,14 +3182,15 @@ QuickJS oracle.
 
 ## R3n Promise.try, Promise.withResolvers, and Promise.race
 
-R3n freezes every file directly under the pinned Test262
-`built-ins/Promise/race`, `Promise/try`, and `Promise/withResolvers`
-directories: 112 complete paths / 224 sloppy and strict variants. The inventory
-contains 94 race paths, 12 try paths, six withResolvers paths, 66 async paths,
-and 46 synchronous paths. No negative test or unrelated Promise directory is
-admitted.
+At its landing checkpoint, R3n freezes every file directly under the pinned
+Test262 `built-ins/Promise/race`, `Promise/try`, and
+`Promise/withResolvers` directories: 112 complete paths / 224 sloppy and
+strict variants. The inventory contains 94 race paths, 12 try paths, six
+withResolvers paths, 66 async paths, and 46 synchronous paths. No negative test
+or unrelated Promise directory is admitted.
 
-Oxide passes 214 variants. The remaining ten are `fail-runtime`; there are zero
+At R3n landing, Oxide passes 214 variants. The remaining ten are
+`fail-runtime`; there are zero
 unsupported results and zero skips. Pinned QuickJS 2026-06-04 passes all
 112/112 paths. Every failure is the sloppy and strict mode of one of these five
 explicit `Promise.all`/`Promise.prototype.finally` adjacency consumers:
@@ -3238,6 +3239,131 @@ Reproduce both locks with:
 
 Use `--check` on the Test262 command to authenticate only its frozen
 manifest/profile and pinned QuickJS result.
+
+After R3o, this same frozen R3n inventory currently passes 216/224 variants.
+The eight remaining `fail-runtime` rows, with zero unsupported results and zero
+skips, are the sloppy and strict variants of these four `Promise.all`
+consumers:
+
+- `test/built-ins/Promise/race/resolved-sequence-extra-ticks.js`
+- `test/built-ins/Promise/race/resolved-sequence-mixed.js`
+- `test/built-ins/Promise/race/resolved-sequence-with-rejections.js`
+- `test/built-ins/Promise/race/resolved-sequence.js`
+
+Both variants of `resolved-then-catch-finally.js` now pass. The current
+non-pass, TSV, and JSONL SHA-256 values are
+`0865a76b4a9760298b3725c3b1e46559dabeb69e097b07cd9098882f595e64ba`,
+`b37787f5024f9132fb4148e6b87a247c05e9439302dd19069c18e44dd1858469`,
+and
+`21dd45dcc42d79af81e1ff9c979690cbacca86fe1e24e2728edffc104bc300a0`.
+The manifest, scoped profile, variant keys, adjacency inventory, and
+static-method fixture/transcript remain byte-identical. This is the current
+cross-milestone result, not a rewrite of the 214/224 authenticated R3n landing
+checkpoint and its hashes above.
+
+## R3o Promise.prototype.finally
+
+R3o freezes all 29 files directly under the pinned Test262
+`built-ins/Promise/prototype/finally` directory, producing 58 sloppy and strict
+variants. The complete cohort contains 12 async paths / 24 variants and 17
+synchronous paths / 34 variants. It has no negative tests or unrelated Promise
+directories; its sole Proxy path contributes two variants.
+
+Oxide passes 56/58 variants. The only failures are the sloppy and strict modes
+of `test/built-ins/Promise/prototype/finally/this-value-proxy.js`, both
+classified `fail-runtime` because `Proxy` is not yet defined. There are zero
+unsupported results and zero skips. Pinned QuickJS 2026-06-04 passes all 29/29
+paths. The scoped profile admits exactly the observed feature tags `Promise`,
+`Promise.prototype.finally`, `Reflect.construct`, `Symbol`, `arrow-function`,
+and `class`, plus `[execution] async=true`; the global profile remains
+fail-closed.
+
+The implementation follows pinned QuickJS `quickjs.c` 54057-54135. It requires
+an object receiver, performs `SpeciesConstructor` before testing whether
+`onFinally` is callable, and preserves QuickJS's `undefined`
+default-constructor sentinel instead of eagerly substituting the intrinsic
+Promise. That sentinel makes the later
+`PromiseResolve(undefined, cleanupResult)` TypeError observable. A
+non-callable argument is forwarded twice to the receiver's dynamic `then`.
+
+Callable cleanup is represented by typed
+`PromiseFinallyHandler(Fulfill|Reject)` native functions carrying
+`InternalCallableData::PromiseFinallyHandler { constructor, on_finally }`.
+Each handler invokes `onFinally` with an `undefined` receiver and no arguments,
+routes a thrown cleanup error directly, performs `PromiseResolve` with the
+captured constructor and cleanup result, then attaches a typed
+`PromiseFinallyThunk(Fulfill|Reject)` through a dynamic `then`. Its
+`InternalCallableData::PromiseFinallyThunk { value }` returns the original
+fulfillment value or throws the original rejection reason. This locks the
+QuickJS sequence of species lookup, callback, resolve, and dynamic `then`, as
+well as the rule that failed cleanup overrides the original settlement while
+successful cleanup preserves it. Heap validation checks that each native ID
+has the matching typed capture, a constructible constructor when present, a
+callable cleanup function, and a storable thunk value.
+
+Pinned QuickJS runs Promise resolving class callbacks and its
+`JS_NewCFunctionData` capability/finally callbacks in the calling Context,
+while ordinary C built-ins switch to their defining realm. Oxide models this
+as a typed dispatch policy covering the resolving pair, capability executor,
+finally handlers, and finally thunks. A two-Context regression exposes a
+finally handler from one Context, calls it from another, and verifies that its
+TypeError uses the caller's `TypeError.prototype`. The pinned context-routing
+anchors are `quickjs.c` 6025-6044, 17588-17612, 17742-17750,
+53352-53357, 53508-53515, and 54070-54121.
+
+GC tracing follows those typed captures: the handler owns constructor and
+callback object edges, while the thunk owns raw settlement edges. A Symbol
+settlement additionally goes through `retain_raw_value_atoms` during internal
+function allocation and through the heap's raw-value atom enumerator;
+allocation failure releases the acquired shape. The differential transcript's
+`symbol-thunk-thrower-gc=value:true|thrower:true` and `finally-gc=42` rows lock
+both value/thrower thunks and the complete finally graph across forced GC.
+
+The manifest and manifest-file hash are both
+`9c24a81143fc4d3dcaa8251a2ed98e381f07cb7969f30427a60e9ca931941464`.
+The scoped-profile and global-profile SHA-256 values are
+`fa10d45a7ddd3924e9124cfc42239e296847223c6c9686beb2a8435e9c83bf04`
+and
+`1860224ce1e828406f4869b66b3f1964f96fad85e4eab6ba7fecb256b4b6c2f2`.
+The variant-key, async, synchronous, Proxy, feature, and include inventory
+hashes are
+`d468c957b3132cb0dcfb0f9ab2d76237cbefc2b5b86a8ba387c072345be70a9f`,
+`72cf44a63ba76996ec5950307c6d79cbac4eeb917389399cdece903bc96f028b`,
+`e4a96c0de4f8bda904c8c84868d3f4c51227526290f88cf8ff26961f9a8df6c3`,
+`115c53865f31eb747b22e877e8e41154b0e1276618467c595250cf42d730ac8d`,
+`38ad367b90ca8661fef8c0ba91e8dd308ddb8aa9afca2301ed6e7e22e9212fed`,
+and
+`0df478d04b840824e8f175d0e7fbb2e4a29afecce716f6ca7728163d406b0ea2`.
+The non-pass, TSV, and JSONL hashes are
+`f8155380318e12c8fcf6fef09db3b7628f8934c761279a066a772f6c675a9400`,
+`80beabb219bb0a04830f7c2b40e47549234e20b458bd04e27998df7b64cb335d`,
+and
+`0375fb338a4fe87345f0406c5ce2ff05cb27c2779d2a7260989521cf44444cf8`.
+The pinned Test262 patch, config, and metadata hashes are
+`f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`,
+`79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`,
+and
+`a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`.
+The independent pinned QuickJS differential fixture/transcript hashes are
+`720b53338045bd65c70337c3d43678b52e8c7d3e0ce0b0ef1210f512b7d7a53a`
+and
+`9b30fc689ebac8bb116d18a87460fb9bd987f5c7b40dfabe508f787c249c10fe`.
+
+The Promise facade remains 9,803 lines in `runtime.rs`; the finally algorithm
+lives in the dedicated 203-line
+`runtime/intrinsics/promise/finally.rs` module. The remaining explicit Promise
+frontiers are `Promise.all`, `Promise.allSettled`, and `Promise.any`.
+
+Reproduce both locks with:
+
+```sh
+./scripts/test-r3o-promise-finally-oracle.sh --check
+./scripts/test-test262-promise-finally.sh
+```
+
+Pass `--oxide target/debug/qjs` to the oracle script for the byte-for-byte
+QuickJS/Oxide transcript comparison. Use `--check` on the Test262 command to
+authenticate only its frozen manifest/profile and pinned QuickJS result.
 
 ## Runner contract
 
@@ -3517,8 +3643,12 @@ and pinned QuickJS passes 82/82. Async forms remain later frontiers, and the
 global profile stays closed for `generators`. R3m establishes the Promise
 constructor/reaction/job boundary with 112/112 focused variants and QuickJS
 57/57 paths. R3n adds `try`, `withResolvers`, and `race`; its complete
-112-path/224-variant inventory records 214 passes and the ten explicitly
-listed `all`/`finally` adjacency failures, while pinned QuickJS passes 112/112.
+112-path/224-variant landing inventory records 214 passes and the ten
+explicitly listed `all`/`finally` adjacency failures, while pinned QuickJS
+passes 112/112. After R3o it currently records 216 passes, with only eight
+`Promise.all`-adjacent failures. R3o implements `Promise.prototype.finally`;
+its complete 29-path/58-variant gate passes 56 variants, with only the two
+Proxy-dependent variants failing, while pinned QuickJS passes 29/29.
 The global profile remains async- and Promise-feature-fail-closed.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
