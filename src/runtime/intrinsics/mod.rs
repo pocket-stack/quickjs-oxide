@@ -4,6 +4,7 @@ mod array;
 pub(super) mod date;
 mod error;
 mod eval;
+mod iterator;
 mod json;
 mod map;
 mod math;

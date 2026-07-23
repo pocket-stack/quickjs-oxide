@@ -2196,6 +2196,36 @@ claim full parity.
   also refreshes two stale R3k/R3l report hashes for R3t's ten/eight
   detail-only `yield` diagnostic refinements; both gates remain 160/160.
 
+  R3v adds the realm-local synchronous `Iterator` intrinsic and the core
+  Iterator Helpers surface: `Iterator.from`; lazy `drop`, `filter`, `flatMap`,
+  `map`, and `take`; and eager `every`, `find`, `forEach`, `reduce`, `some`,
+  and `toArray`. QuickJS-shaped heap payloads own helper and wrapper state,
+  traced sources/callbacks/inner iterators, completion and reentry flags, and
+  close behavior. Pinned-QuickJS differentials cover huge finite limit
+  conversion, primitive String fallback, dynamic wrapper `return`, and nested
+  `flatMap` close-error priority; a two-context Rust probe separately locks
+  cross-realm constructor identity.
+
+  The dependency-audited Test262 gate starts from all 567
+  `iterator-helpers` paths. It removes the exact 44-path union of 25 direct
+  Proxy dependencies, three harness-level Proxy dependencies, 11
+  `$262.createRealm` paths, four `$262.IsHTMLDDA` paths, and one pinned-config
+  exclusion. Oxide and pinned QuickJS both pass all 1,046 sloppy/strict
+  variants from the remaining 523 paths. Its scoped-profile, key, TSV, and
+  JSONL hashes are
+  `d9e6f4fcf8cb6f20fb0ebba012451abbaad52bbe676430f2433b9398174e3c83`,
+  `43be68340124e844c5e456899a084460ad87edd2c279c3ac1ca4057726b3697a`,
+  `bae5e4dcda2676e56818925f5571f09c96ada891224d88ffe4f8fc7404d983de`,
+  and
+  `d24d0e5812b0a8e1ec87c86c2c98d5e8ed9ca3baa5670ae2960fa90cd5f004fc`.
+  The safe `--bless` path requires every frozen variant to pass.
+
+  This milestone remains scoped because Proxy and the required host hooks are
+  separate implementation frontiers. The conservative global vector therefore
+  remains byte-identical at 43,521/102,037 passes. `Iterator.concat` is excluded
+  from this core-helper gate and remains the next `iterator-sequencing`
+  milestone.
+
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -5517,6 +5547,11 @@ R3t moves `runtime.rs` only from 9,803 to 9,808 lines. Mapped-arguments logic
 remains in `runtime/vm_host.rs`, generator regressions in
 `runtime/generator.rs`, and declaration/parser work in compiler modules. It
 does not introduce a second generator state machine.
+R3v moves Iterator algorithms into
+`runtime/intrinsics/iterator.rs`; `runtime.rs` is 9,764 lines after the new
+realm hooks and extraction of adjacent Iterator plumbing. The 1,871-line
+module is still substantial, but it is a cohesive intrinsic owner rather than
+another expansion of the runtime facade.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.
@@ -5529,6 +5564,8 @@ in these dedicated status and Test262 documents.
 ```sh
 cargo test --locked --workspace --all-targets
 
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_iterator_helpers -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_boolean_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -5811,6 +5848,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-class-generator-methods.sh
 ./scripts/test-test262-class-private-generator-methods.sh
 ./scripts/test-test262-generator-destructuring.sh
+./scripts/test-test262-iterator-helpers.sh
 cargo build --bin qjs
 ./scripts/test-r3l-class-private-generators-oracle.sh --oxide ./target/debug/qjs
 ./scripts/test-r3s-regexp-escape-control-oracle.sh --oxide ./target/debug/qjs

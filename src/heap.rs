@@ -420,6 +420,20 @@ pub struct PromiseRealmData {
     pub constructor: ObjectId,
 }
 
+/// Realm-owned identities used by the synchronous Iterator helpers proposal.
+///
+/// `%IteratorPrototype%` is already a mandatory [`ContextData`] root because
+/// concrete built-in iterators depend on it before the public `%Iterator%`
+/// constructor is installed. The three identities here are attached later as
+/// one transaction, matching QuickJS's `iterator_ctor` and class-prototype
+/// roots for `JS_CLASS_ITERATOR_HELPER` and `JS_CLASS_ITERATOR_WRAP`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IteratorRealmData {
+    pub constructor: ObjectId,
+    pub helper_prototype: ObjectId,
+    pub wrap_prototype: ObjectId,
+}
+
 /// Realm-owned roots which participate in QuickJS's cycle graph.
 ///
 /// The bootstrap roots needed by ordinary script evaluation are explicit;
@@ -477,6 +491,9 @@ pub struct ContextData {
     /// Realm-local `%Promise.prototype%` and `%Promise%`, attached atomically
     /// after their reciprocal public property graph is initialized.
     pub promise: Option<PromiseRealmData>,
+    /// Realm-local `%Iterator%` constructor plus the hidden Iterator Helper
+    /// and Iterator Wrap class prototypes.
+    pub iterator: Option<IteratorRealmData>,
     /// `%Function%`, published after the cyclic realm bootstrap has created
     /// `%Function.prototype%` and the global object.
     pub function_constructor: Option<ObjectId>,
@@ -535,6 +552,7 @@ impl ContextData {
             set: None,
             generator: None,
             promise: None,
+            iterator: None,
             function_constructor: None,
             throw_type_error: None,
             eval_function: None,
@@ -4316,6 +4334,78 @@ pub struct GeneratorActivationData {
     pub reusable_captured_locals: Vec<bool>,
 }
 
+/// Lazy operation retained by a genuine Iterator Helper object.
+///
+/// The eager consumers (`every`, `find`, `forEach`, and `some`) do not
+/// allocate a helper payload and therefore use [`IteratorConsumerKind`]
+/// instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum IteratorHelperKind {
+    Drop,
+    Filter,
+    FlatMap,
+    Map,
+    Take,
+}
+
+/// Eager operation selected by the shared Iterator consumer implementation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum IteratorConsumerKind {
+    Every,
+    Find,
+    ForEach,
+    Some,
+}
+
+/// Resume operation shared by Iterator Helper and Iterator Wrap prototypes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum IteratorResumeKind {
+    Next,
+    Return,
+}
+
+/// Complete hidden state of one genuine Iterator Helper.
+///
+/// Object-only fields use typed handles; the cached `next` and callback remain
+/// raw arena-owned values because property lookup can produce any ECMAScript
+/// value. QuickJS keeps all four edges alive until finalization even after
+/// `done` becomes true.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IteratorHelperData {
+    pub source: ObjectId,
+    pub next: RawValue,
+    pub callback: RawValue,
+    pub inner: Option<ObjectId>,
+    pub count: i64,
+    pub kind: IteratorHelperKind,
+    pub executing: bool,
+    pub done: bool,
+}
+
+/// Hidden state of an Iterator created by `Iterator.from`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IteratorWrapData {
+    pub source: RawValue,
+    pub next: RawValue,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IteratorHelperRawValueField {
+    Next,
+    Callback,
+}
+
+#[cfg(test)]
+impl IteratorHelperRawValueField {
+    fn get_mut(self, data: &mut IteratorHelperData) -> &mut RawValue {
+        match self {
+            Self::Next => &mut data.next,
+            Self::Callback => &mut data.callback,
+        }
+    }
+}
+
 /// ECMAScript-visible state of one genuine Promise object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PromiseState {
@@ -4517,6 +4607,14 @@ pub enum ObjectPayload {
         string: Option<JsString>,
         next_index: usize,
     },
+    /// `JS_CLASS_ITERATOR_HELPER`: lazy helper state with independently owned
+    /// source, cached-next, callback, and optional inner-iterator edges.
+    /// Completion changes only `done`; QuickJS retains all four values until
+    /// the helper object is finalized.
+    IteratorHelper(IteratorHelperData),
+    /// `JS_CLASS_ITERATOR_WRAP`: source iterator and cached `next` method
+    /// retained by the wrapper returned from `Iterator.from`.
+    IteratorWrap(IteratorWrapData),
     NativeFunction {
         data: NativeFunctionData,
         internal: Option<InternalCallableData>,
@@ -4576,6 +4674,8 @@ pub enum ObjectKind {
     GlobalObject,
     Error,
     StringIterator,
+    IteratorHelper,
+    IteratorWrap,
     NativeFunction,
     BoundFunction,
     BytecodeFunction,
@@ -5442,9 +5542,18 @@ pub enum NativeFunctionId {
     StringPrototypeTrim(StringTrimKind),
     StringPrototypeCase(StringCaseKind),
     StringPrototypeCreateHtml(StringCreateHtmlKind),
+    IteratorConstructor,
+    IteratorFrom,
+    IteratorConstructorAccessor,
+    IteratorPrototypeCreateHelper(IteratorHelperKind),
+    IteratorPrototypeConsume(IteratorConsumerKind),
+    IteratorPrototypeReduce,
+    IteratorPrototypeToArray,
     IteratorPrototypeIterator,
     IteratorPrototypeToStringTagGetter,
     IteratorPrototypeToStringTagSetter,
+    IteratorHelperResume(IteratorResumeKind),
+    IteratorWrapResume(IteratorResumeKind),
     StringPrototypeIterator,
     StringIteratorNext,
     RegExpStringIteratorNext,
@@ -5751,8 +5860,10 @@ impl NativeFunctionId {
     /// functions instead switch to the function object's defining realm.
     ///
     /// The Promise resolving pair uses class-call handlers; its capability
-    /// executor, finally callbacks, and `Promise.all` element callbacks use
-    /// `JS_NewCFunctionData`.
+    /// executor, finally callbacks, and aggregate element callbacks use
+    /// `JS_NewCFunctionData`. The shared `Iterator.prototype.constructor`
+    /// accessor is also a CFunctionData callback: it executes in the calling
+    /// realm while retaining its defining realm separately.
     #[must_use]
     pub const fn uses_calling_realm(self) -> bool {
         matches!(
@@ -5764,6 +5875,7 @@ impl NativeFunctionId {
                 | Self::PromiseAllResolveElement
                 | Self::PromiseAllSettledElement(_)
                 | Self::PromiseAnyRejectElement
+                | Self::IteratorConstructorAccessor
         )
     }
 
@@ -5891,7 +6003,15 @@ impl NativeFunctionId {
             | Self::MathSumPrecise
             | Self::StringPrototypeSubrange(_)
             | Self::StringPrototypeRepeat
+            | Self::IteratorFrom
+            | Self::IteratorConstructorAccessor
+            | Self::IteratorPrototypeCreateHelper(_)
+            | Self::IteratorPrototypeConsume(_)
+            | Self::IteratorPrototypeReduce
+            | Self::IteratorPrototypeToArray
             | Self::IteratorPrototypeIterator
+            | Self::IteratorHelperResume(_)
+            | Self::IteratorWrapResume(_)
             | Self::StringPrototypeIterator
             | Self::ArrayIsArray
             | Self::ArrayFrom
@@ -5983,6 +6103,7 @@ impl NativeFunctionId {
             }
             Self::ArrayConstructor
             | Self::ObjectConstructor
+            | Self::IteratorConstructor
             | Self::Date(DateNativeKind::Constructor)
             | Self::RegExp(RegExpNativeKind::Constructor) => NativeFunctionDescriptor {
                 cproto: NativeCProto::ConstructorOrFunction,
@@ -6454,6 +6575,49 @@ impl ObjectData {
                 string: Some(string),
                 next_index: 0,
             },
+        }
+    }
+
+    /// Construct one lazy synchronous Iterator Helper.
+    ///
+    /// Runtime creation passes `inner: None` (the internal `undefined` state);
+    /// `flatMap` later replaces it while traversing a mapped iterator. All
+    /// supplied edges transfer to the object when allocation succeeds.
+    #[must_use]
+    pub const fn iterator_helper(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        data: IteratorHelperData,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::IteratorHelper,
+            payload: ObjectPayload::IteratorHelper(data),
+        }
+    }
+
+    /// Construct the branded forwarding iterator used by `Iterator.from`.
+    #[must_use]
+    pub const fn iterator_wrap(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        source: RawValue,
+        next: RawValue,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::IteratorWrap,
+            payload: ObjectPayload::IteratorWrap(IteratorWrapData { source, next }),
         }
     }
 
@@ -7035,6 +7199,8 @@ impl Heap {
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }
+            | ObjectPayload::IteratorHelper(_)
+            | ObjectPayload::IteratorWrap(_)
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. }
             | ObjectPayload::Generator { .. }
@@ -7457,6 +7623,79 @@ impl Heap {
             unreachable!("context identity was validated before retaining Set roots")
         };
         context.set = Some(set);
+        Ok(())
+    }
+
+    /// Atomically publish the synchronous Iterator constructor and the hidden
+    /// Iterator Helper/Wrap class prototypes.
+    pub(crate) fn attach_iterator_intrinsics(
+        &mut self,
+        realm: ContextId,
+        iterator: IteratorRealmData,
+    ) -> Result<(), HeapError> {
+        let context = self.context(realm)?;
+        if context.iterator.is_some() {
+            return Err(HeapError::Invariant(
+                "context already has Iterator intrinsic roots",
+            ));
+        }
+        let iterator_prototype = context.iterator_prototype;
+
+        let constructor = self.object(iterator.constructor)?;
+        if !constructor.is_constructor
+            || !matches!(
+                constructor.payload,
+                ObjectPayload::NativeFunction {
+                    data: NativeFunctionData {
+                        target: NativeFunctionId::IteratorConstructor,
+                        realm: Some(target_realm),
+                        ..
+                    },
+                    internal: None,
+                } if target_realm == realm
+            )
+        {
+            return Err(HeapError::Invariant(
+                "Iterator constructor root is not the realm's Iterator native",
+            ));
+        }
+
+        if iterator.helper_prototype == iterator.wrap_prototype {
+            return Err(HeapError::Invariant(
+                "Iterator Helper and Wrap prototypes share one identity",
+            ));
+        }
+        for (prototype, message) in [
+            (
+                iterator.helper_prototype,
+                "Iterator Helper prototype is not an ordinary child of the realm's Iterator prototype",
+            ),
+            (
+                iterator.wrap_prototype,
+                "Iterator Wrap prototype is not an ordinary child of the realm's Iterator prototype",
+            ),
+        ] {
+            let object = self.object(prototype)?;
+            if object.kind != ObjectKind::Ordinary
+                || !matches!(object.payload, ObjectPayload::Ordinary)
+                || self.shape(object.shape)?.prototype() != Some(iterator_prototype)
+            {
+                return Err(HeapError::Invariant(message));
+            }
+        }
+
+        let edges = [
+            RawId::Object(iterator.constructor),
+            RawId::Object(iterator.helper_prototype),
+            RawId::Object(iterator.wrap_prototype),
+        ];
+        self.retain_edges_transactionally(&edges)?;
+
+        let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(realm))?.data
+        else {
+            unreachable!("context identity was validated before retaining Iterator roots")
+        };
+        context.iterator = Some(iterator);
         Ok(())
     }
 
@@ -9665,6 +9904,244 @@ impl Heap {
         self.drain_zero_queue()
     }
 
+    /// Snapshot one genuine Iterator Helper payload. Raw values in the clone
+    /// do not own additional arena or atom references.
+    pub(crate) fn iterator_helper_state(
+        &self,
+        id: ObjectId,
+    ) -> Result<IteratorHelperData, HeapError> {
+        let ObjectPayload::IteratorHelper(data) = &self.object(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "Iterator Helper snapshot reached an object with the wrong class",
+            ));
+        };
+        Ok(data.clone())
+    }
+
+    /// Snapshot one `Iterator.from` forwarding wrapper. Raw values in the
+    /// clone do not own additional arena or atom references.
+    pub(crate) fn iterator_wrap_state(
+        &self,
+        id: ObjectId,
+    ) -> Result<(RawValue, RawValue), HeapError> {
+        let ObjectPayload::IteratorWrap(data) = &self.object(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "Iterator Wrap snapshot reached an object with the wrong class",
+            ));
+        };
+        Ok((data.source.clone(), data.next.clone()))
+    }
+
+    /// Replace the source iterator edge retained by a helper. The new edge is
+    /// retained before the previous edge is detached.
+    #[cfg(test)]
+    pub(crate) fn set_iterator_helper_source(
+        &mut self,
+        id: ObjectId,
+        replacement: ObjectId,
+    ) -> Result<HeapCleanup, HeapError> {
+        self.object(replacement)?;
+        let previous = self.iterator_helper_state(id)?.source;
+        self.retain_raw(RawId::Object(replacement), 1)?;
+        let ObjectPayload::IteratorHelper(data) = &mut self.object_mut(id)?.payload else {
+            unreachable!("Iterator Helper was validated before retaining its source")
+        };
+        data.source = replacement;
+        self.release_raw_no_drain(RawId::Object(previous))?;
+        self.drain_zero_queue()
+    }
+
+    /// Replace the cached `next` value transactionally. A replacement Symbol
+    /// atom transfers on success; the previous Symbol atom is returned in the
+    /// cleanup.
+    #[cfg(test)]
+    pub(crate) fn set_iterator_helper_next(
+        &mut self,
+        id: ObjectId,
+        replacement: RawValue,
+    ) -> Result<HeapCleanup, HeapError> {
+        self.replace_iterator_helper_raw_value(id, IteratorHelperRawValueField::Next, replacement)
+    }
+
+    /// Replace the helper callback transactionally, preserving its callable
+    /// invariant and retaining the replacement edge before detaching the old
+    /// callback.
+    #[cfg(test)]
+    pub(crate) fn set_iterator_helper_callback(
+        &mut self,
+        id: ObjectId,
+        replacement: RawValue,
+    ) -> Result<HeapCleanup, HeapError> {
+        self.replace_iterator_helper_raw_value(
+            id,
+            IteratorHelperRawValueField::Callback,
+            replacement,
+        )
+    }
+
+    /// Replace the optional inner iterator used by `flatMap`.
+    pub(crate) fn set_iterator_helper_inner(
+        &mut self,
+        id: ObjectId,
+        replacement: Option<ObjectId>,
+    ) -> Result<HeapCleanup, HeapError> {
+        if let Some(replacement) = replacement {
+            self.object(replacement)?;
+        }
+        let current = self.iterator_helper_state(id)?;
+        if current.kind != IteratorHelperKind::FlatMap && replacement.is_some() {
+            return Err(HeapError::Invariant(
+                "only a flatMap Iterator Helper may retain an inner iterator",
+            ));
+        }
+        let new_edges: Vec<_> = replacement.into_iter().map(RawId::Object).collect();
+        self.retain_edges_transactionally(&new_edges)?;
+        let previous = {
+            let ObjectPayload::IteratorHelper(data) = &mut self.object_mut(id)?.payload else {
+                unreachable!("Iterator Helper was validated before retaining its inner iterator")
+            };
+            std::mem::replace(&mut data.inner, replacement)
+        };
+        if let Some(previous) = previous {
+            self.release_raw_no_drain(RawId::Object(previous))?;
+        }
+        self.drain_zero_queue()
+    }
+
+    #[cfg(test)]
+    fn replace_iterator_helper_raw_value(
+        &mut self,
+        id: ObjectId,
+        field: IteratorHelperRawValueField,
+        replacement: RawValue,
+    ) -> Result<HeapCleanup, HeapError> {
+        let mut candidate = self.iterator_helper_state(id)?;
+        *field.get_mut(&mut candidate) = replacement.clone();
+        validate_iterator_helper_data(self, &candidate)?;
+
+        let new_edges = raw_value_edges(&replacement);
+        self.retain_edges_transactionally(&new_edges)?;
+        let previous = {
+            let ObjectPayload::IteratorHelper(data) = &mut self.object_mut(id)?.payload else {
+                unreachable!("Iterator Helper was validated before retaining replacement edges")
+            };
+            std::mem::replace(field.get_mut(data), replacement)
+        };
+        self.release_replaced_raw_value(previous)
+    }
+
+    /// Replace the source iterator retained by an Iterator Wrap.
+    #[cfg(test)]
+    pub(crate) fn set_iterator_wrap_source(
+        &mut self,
+        id: ObjectId,
+        replacement: RawValue,
+    ) -> Result<HeapCleanup, HeapError> {
+        let (_, next) = self.iterator_wrap_state(id)?;
+        let candidate = IteratorWrapData {
+            source: replacement.clone(),
+            next,
+        };
+        validate_iterator_wrap_data(self, &candidate)?;
+
+        let new_edges = raw_value_edges(&replacement);
+        self.retain_edges_transactionally(&new_edges)?;
+        let previous = {
+            let ObjectPayload::IteratorWrap(data) = &mut self.object_mut(id)?.payload else {
+                unreachable!("Iterator Wrap was validated before retaining replacement edges")
+            };
+            std::mem::replace(&mut data.source, replacement)
+        };
+        self.release_replaced_raw_value(previous)
+    }
+
+    /// Replace the cached `next` value retained by an Iterator Wrap.
+    #[cfg(test)]
+    pub(crate) fn set_iterator_wrap_next(
+        &mut self,
+        id: ObjectId,
+        replacement: RawValue,
+    ) -> Result<HeapCleanup, HeapError> {
+        let (source, _) = self.iterator_wrap_state(id)?;
+        let candidate = IteratorWrapData {
+            source,
+            next: replacement.clone(),
+        };
+        validate_iterator_wrap_data(self, &candidate)?;
+
+        let new_edges = raw_value_edges(&replacement);
+        self.retain_edges_transactionally(&new_edges)?;
+        let previous = {
+            let ObjectPayload::IteratorWrap(data) = &mut self.object_mut(id)?.payload else {
+                unreachable!("Iterator Wrap was validated before retaining replacement edges")
+            };
+            std::mem::replace(&mut data.next, replacement)
+        };
+        self.release_replaced_raw_value(previous)
+    }
+
+    #[cfg(test)]
+    fn release_replaced_raw_value(&mut self, previous: RawValue) -> Result<HeapCleanup, HeapError> {
+        let mut cleanup = HeapCleanup::default();
+        cleanup.atoms.extend(raw_value_atom(&previous));
+        for edge in raw_value_edges(&previous) {
+            self.release_raw_no_drain(edge)?;
+        }
+        cleanup.merge(self.drain_zero_queue()?);
+        Ok(cleanup)
+    }
+
+    /// Update the helper's signed 64-bit limit/callback index.
+    pub(crate) fn set_iterator_helper_count(
+        &mut self,
+        id: ObjectId,
+        count: i64,
+    ) -> Result<(), HeapError> {
+        let mut candidate = self.iterator_helper_state(id)?;
+        candidate.count = count;
+        validate_iterator_helper_data(self, &candidate)?;
+        let ObjectPayload::IteratorHelper(data) = &mut self.object_mut(id)?.payload else {
+            unreachable!("Iterator Helper was validated before updating its count")
+        };
+        data.count = count;
+        Ok(())
+    }
+
+    /// Set or clear QuickJS's reentrancy guard.
+    pub(crate) fn set_iterator_helper_running(
+        &mut self,
+        id: ObjectId,
+        running: bool,
+    ) -> Result<(), HeapError> {
+        let ObjectPayload::IteratorHelper(data) = &mut self.object_mut(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "Iterator Helper execution update reached an object with the wrong class",
+            ));
+        };
+        data.executing = running;
+        Ok(())
+    }
+
+    /// Update completion and reentrancy flags together. Marking a helper done
+    /// preserves every payload-owned value until object finalization.
+    pub(crate) fn set_iterator_helper_done_and_running(
+        &mut self,
+        id: ObjectId,
+        done: bool,
+        running: bool,
+    ) -> Result<(), HeapError> {
+        let mut candidate = self.iterator_helper_state(id)?;
+        candidate.done = done;
+        candidate.executing = running;
+        validate_iterator_helper_data(self, &candidate)?;
+        let ObjectPayload::IteratorHelper(data) = &mut self.object_mut(id)?.payload else {
+            unreachable!("Iterator Helper was validated before completing its resume")
+        };
+        data.done = done;
+        data.executing = running;
+        Ok(())
+    }
+
     /// Read the representation-sensitive dense prefix tracked for a genuine
     /// QuickJS Array. `None` means the Array has converted to slow properties.
     pub fn array_fast_len(&self, id: ObjectId) -> Result<Option<u32>, HeapError> {
@@ -10538,6 +11015,8 @@ impl Heap {
                     ObjectKind::StringIterator,
                     ObjectPayload::StringIterator { .. }
                 )
+                | (ObjectKind::IteratorHelper, ObjectPayload::IteratorHelper(_))
+                | (ObjectKind::IteratorWrap, ObjectPayload::IteratorWrap(_))
                 | (
                     ObjectKind::NativeFunction,
                     ObjectPayload::NativeFunction { .. }
@@ -10941,6 +11420,22 @@ impl Heap {
                     }
                 }
             }
+        }
+        if let ObjectPayload::IteratorHelper(data) = &object.payload {
+            if object.is_constructor {
+                return Err(HeapError::Invariant(
+                    "Iterator Helper object is constructable",
+                ));
+            }
+            validate_iterator_helper_data(self, data)?;
+        }
+        if let ObjectPayload::IteratorWrap(data) = &object.payload {
+            if object.is_constructor {
+                return Err(HeapError::Invariant(
+                    "Iterator Wrap object is constructable",
+                ));
+            }
+            validate_iterator_wrap_data(self, data)?;
         }
         if let ObjectPayload::BoundFunction {
             target,
@@ -11435,6 +11930,13 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
         | ObjectPayload::Generator { .. } => 0,
+        ObjectPayload::IteratorHelper(data) => 1usize
+            .saturating_add(raw_value_edges(&data.next).len())
+            .saturating_add(raw_value_edges(&data.callback).len())
+            .saturating_add(usize::from(data.inner.is_some())),
+        ObjectPayload::IteratorWrap(data) => raw_value_edges(&data.source)
+            .len()
+            .saturating_add(raw_value_edges(&data.next).len()),
         ObjectPayload::NativeFunction { internal, .. } => internal
             .as_ref()
             .map_or(0, |internal| internal_callable_edges(internal).len()),
@@ -11486,6 +11988,16 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::RegExp(_)
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. } => {}
+        ObjectPayload::IteratorHelper(data) => {
+            edges.push(RawId::Object(data.source));
+            edges.extend(raw_value_edges(&data.next));
+            edges.extend(raw_value_edges(&data.callback));
+            edges.extend(data.inner.map(RawId::Object));
+        }
+        ObjectPayload::IteratorWrap(data) => {
+            edges.extend(raw_value_edges(&data.source));
+            edges.extend(raw_value_edges(&data.next));
+        }
         ObjectPayload::RegExpStringIterator { regexp, .. } => {
             edges.push(RawId::Object(*regexp));
         }
@@ -11716,6 +12228,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
             .saturating_add(context.set.map_or(0, |_| 2))
             .saturating_add(context.generator.map_or(0, |_| 2))
             .saturating_add(context.promise.map_or(0, |_| 2))
+            .saturating_add(context.iterator.map_or(0, |_| 3))
             .saturating_add(context.global_objects.len())
             .saturating_add(context.intrinsics.len())
             .saturating_add(context.initial_shapes.len()),
@@ -11756,6 +12269,11 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     if let Some(promise) = context.promise {
         edges.push(RawId::Object(promise.prototype));
         edges.push(RawId::Object(promise.constructor));
+    }
+    if let Some(iterator) = context.iterator {
+        edges.push(RawId::Object(iterator.constructor));
+        edges.push(RawId::Object(iterator.helper_prototype));
+        edges.push(RawId::Object(iterator.wrap_prototype));
     }
     edges.extend(context.function_constructor.map(RawId::Object));
     edges.extend(context.array_constructor.map(RawId::Object));
@@ -11867,6 +12385,14 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
             .map(generator_activation_atoms)
             .unwrap_or_default(),
         ObjectPayload::Promise(data) => raw_value_atom(&data.result).into_iter().collect(),
+        ObjectPayload::IteratorHelper(data) => raw_value_atom(&data.next)
+            .into_iter()
+            .chain(raw_value_atom(&data.callback))
+            .collect(),
+        ObjectPayload::IteratorWrap(data) => raw_value_atom(&data.source)
+            .into_iter()
+            .chain(raw_value_atom(&data.next))
+            .collect(),
         ObjectPayload::NativeFunction {
             internal: Some(internal),
             ..
@@ -11945,6 +12471,67 @@ const fn is_promise_storable_value(value: &RawValue) -> bool {
         value,
         RawValue::Private(_) | RawValue::Uninitialized | RawValue::Exception
     )
+}
+
+fn validate_iterator_helper_data(heap: &Heap, data: &IteratorHelperData) -> Result<(), HeapError> {
+    heap.object(data.source)?;
+    if let Some(inner) = data.inner {
+        heap.object(inner)?;
+    }
+    if !is_map_storable_value(&data.next)
+        || !is_map_storable_value(&data.callback)
+        || data.count < 0
+        || (data.kind != IteratorHelperKind::FlatMap && data.inner.is_some())
+    {
+        return Err(HeapError::Invariant(
+            "Iterator Helper payload has invalid hidden state",
+        ));
+    }
+    match data.kind {
+        IteratorHelperKind::Drop | IteratorHelperKind::Take => {
+            if !matches!(data.callback, RawValue::Undefined) {
+                return Err(HeapError::Invariant(
+                    "limit Iterator Helper unexpectedly retains a callback",
+                ));
+            }
+        }
+        IteratorHelperKind::Filter | IteratorHelperKind::FlatMap | IteratorHelperKind::Map => {
+            let RawValue::Object(callback) = data.callback else {
+                return Err(HeapError::Invariant(
+                    "callback Iterator Helper does not retain a callable",
+                ));
+            };
+            if !matches!(
+                heap.object(callback)?.payload,
+                ObjectPayload::NativeFunction { .. }
+                    | ObjectPayload::BoundFunction { .. }
+                    | ObjectPayload::BytecodeFunction { .. }
+            ) {
+                return Err(HeapError::Invariant(
+                    "callback Iterator Helper does not retain a callable",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_iterator_wrap_data(heap: &Heap, data: &IteratorWrapData) -> Result<(), HeapError> {
+    if !is_map_storable_value(&data.source) || !is_map_storable_value(&data.next) {
+        return Err(HeapError::Invariant(
+            "Iterator Wrap payload contains an internal value sentinel",
+        ));
+    }
+    for edge in raw_value_edges(&data.source)
+        .into_iter()
+        .chain(raw_value_edges(&data.next))
+    {
+        let RawId::Object(object) = edge else {
+            unreachable!("RawValue only owns object edges")
+        };
+        heap.object(object)?;
+    }
+    Ok(())
 }
 
 fn validate_var_ref_payload(var_ref: &VarRefData) -> Result<(), HeapError> {
@@ -13981,6 +14568,337 @@ mod tests {
     fn leaf(heap: &mut Heap, shape: ShapeId) -> ObjectId {
         heap.allocate_object(ObjectData::ordinary(shape, Vec::new()))
             .unwrap()
+    }
+
+    #[test]
+    fn iterator_payload_mutations_retain_replacements_and_completion_keeps_edges() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let root = leaf(&mut heap, shape);
+        let realm = heap
+            .allocate_context(ContextData::new(
+                root, root, root, root, root, root, root, root,
+            ))
+            .unwrap();
+        let source = leaf(&mut heap, shape);
+        let replacement_source = leaf(&mut heap, shape);
+        let next = leaf(&mut heap, shape);
+        let replacement_next = leaf(&mut heap, shape);
+        let inner = leaf(&mut heap, shape);
+        let replacement_inner = leaf(&mut heap, shape);
+        let callback = heap
+            .allocate_object(ObjectData::bound_native_function(
+                shape,
+                Vec::new(),
+                NativeFunctionId::ErrorIsError,
+                realm,
+                1,
+            ))
+            .unwrap();
+        let replacement_callback = heap
+            .allocate_object(ObjectData::bound_native_function(
+                shape,
+                Vec::new(),
+                NativeFunctionId::ErrorIsError,
+                realm,
+                1,
+            ))
+            .unwrap();
+
+        let helper = heap
+            .allocate_object(ObjectData::iterator_helper(
+                shape,
+                Vec::new(),
+                IteratorHelperData {
+                    source,
+                    next: RawValue::Object(next),
+                    callback: RawValue::Object(callback),
+                    inner: Some(inner),
+                    count: 0,
+                    kind: IteratorHelperKind::FlatMap,
+                    executing: false,
+                    done: false,
+                },
+            ))
+            .unwrap();
+        for edge in [source, next, callback, inner] {
+            assert_eq!(heap.object_strong_count(edge), Ok(2));
+        }
+
+        heap.set_iterator_helper_source(helper, replacement_source)
+            .unwrap();
+        heap.set_iterator_helper_next(helper, RawValue::Object(replacement_next))
+            .unwrap();
+        heap.set_iterator_helper_callback(helper, RawValue::Object(replacement_callback))
+            .unwrap();
+        heap.set_iterator_helper_inner(helper, Some(replacement_inner))
+            .unwrap();
+        for edge in [source, next, callback, inner] {
+            assert_eq!(heap.object_strong_count(edge), Ok(1));
+        }
+        for edge in [
+            replacement_source,
+            replacement_next,
+            replacement_callback,
+            replacement_inner,
+        ] {
+            assert_eq!(heap.object_strong_count(edge), Ok(2));
+        }
+
+        heap.set_iterator_helper_count(helper, 7).unwrap();
+        heap.set_iterator_helper_running(helper, true).unwrap();
+        heap.set_iterator_helper_done_and_running(helper, true, false)
+            .unwrap();
+        assert_eq!(
+            heap.iterator_helper_state(helper).unwrap(),
+            IteratorHelperData {
+                source: replacement_source,
+                next: RawValue::Object(replacement_next),
+                callback: RawValue::Object(replacement_callback),
+                inner: Some(replacement_inner),
+                count: 7,
+                kind: IteratorHelperKind::FlatMap,
+                executing: false,
+                done: true,
+            }
+        );
+        for edge in [
+            replacement_source,
+            replacement_next,
+            replacement_callback,
+            replacement_inner,
+        ] {
+            assert_eq!(heap.object_strong_count(edge), Ok(2));
+        }
+
+        heap.release_object(helper).unwrap();
+        for edge in [
+            replacement_source,
+            replacement_next,
+            replacement_callback,
+            replacement_inner,
+        ] {
+            assert_eq!(heap.object_strong_count(edge), Ok(1));
+        }
+
+        for object in [
+            source,
+            replacement_source,
+            next,
+            replacement_next,
+            inner,
+            replacement_inner,
+            callback,
+            replacement_callback,
+        ] {
+            heap.release_object(object).unwrap();
+        }
+        heap.release_context(realm).unwrap();
+        heap.release_object(root).unwrap();
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn iterator_wrap_source_and_cached_next_are_owned_edges() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let source = leaf(&mut heap, shape);
+        let next = leaf(&mut heap, shape);
+        let replacement_source = leaf(&mut heap, shape);
+        let replacement_next = leaf(&mut heap, shape);
+        let wrapper = heap
+            .allocate_object(ObjectData::iterator_wrap(
+                shape,
+                Vec::new(),
+                RawValue::Object(source),
+                RawValue::Object(next),
+            ))
+            .unwrap();
+
+        assert_eq!(heap.object_strong_count(source), Ok(2));
+        assert_eq!(heap.object_strong_count(next), Ok(2));
+        heap.set_iterator_wrap_source(wrapper, RawValue::Object(replacement_source))
+            .unwrap();
+        heap.set_iterator_wrap_next(wrapper, RawValue::Object(replacement_next))
+            .unwrap();
+        assert_eq!(
+            heap.iterator_wrap_state(wrapper),
+            Ok((
+                RawValue::Object(replacement_source),
+                RawValue::Object(replacement_next)
+            ))
+        );
+        assert_eq!(heap.object_strong_count(source), Ok(1));
+        assert_eq!(heap.object_strong_count(next), Ok(1));
+        assert_eq!(heap.object_strong_count(replacement_source), Ok(2));
+        assert_eq!(heap.object_strong_count(replacement_next), Ok(2));
+
+        heap.release_object(wrapper).unwrap();
+        assert_eq!(heap.object_strong_count(replacement_source), Ok(1));
+        assert_eq!(heap.object_strong_count(replacement_next), Ok(1));
+
+        let symbol = Atom::from_immediate_integer(17).unwrap();
+        let symbol_wrapper = heap
+            .allocate_object(ObjectData::iterator_wrap(
+                shape,
+                Vec::new(),
+                RawValue::Object(source),
+                RawValue::Symbol(symbol),
+            ))
+            .unwrap();
+        let cleanup = heap
+            .set_iterator_wrap_next(symbol_wrapper, RawValue::Undefined)
+            .unwrap();
+        assert_eq!(cleanup.atoms, vec![symbol]);
+        heap.release_object(symbol_wrapper).unwrap();
+
+        let source_symbol = Atom::from_immediate_integer(19).unwrap();
+        let primitive_wrapper = heap
+            .allocate_object(ObjectData::iterator_wrap(
+                shape,
+                Vec::new(),
+                RawValue::Symbol(source_symbol),
+                RawValue::Undefined,
+            ))
+            .unwrap();
+        assert_eq!(
+            heap.iterator_wrap_state(primitive_wrapper),
+            Ok((RawValue::Symbol(source_symbol), RawValue::Undefined))
+        );
+        let cleanup = heap.release_object(primitive_wrapper).unwrap();
+        assert_eq!(cleanup.atoms, vec![source_symbol]);
+
+        for object in [source, next, replacement_source, replacement_next] {
+            heap.release_object(object).unwrap();
+        }
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn iterator_intrinsics_attach_transactionally_and_form_a_collectable_realm_cycle() {
+        let mut heap = Heap::new();
+        let empty = empty_shape(&mut heap);
+        let root = leaf(&mut heap, empty);
+        let realm = heap
+            .allocate_context(ContextData::new(
+                root, root, root, root, root, root, root, root,
+            ))
+            .unwrap();
+        let intrinsic_shape = heap
+            .allocate_shape(Shape::new(Some(root), []).unwrap())
+            .unwrap();
+        let constructor = heap
+            .allocate_object(ObjectData::bound_native_function(
+                intrinsic_shape,
+                Vec::new(),
+                NativeFunctionId::IteratorConstructor,
+                realm,
+                0,
+            ))
+            .unwrap();
+        let helper_prototype = leaf(&mut heap, intrinsic_shape);
+        let wrap_prototype = leaf(&mut heap, intrinsic_shape);
+        let iterator = IteratorRealmData {
+            constructor,
+            helper_prototype,
+            wrap_prototype,
+        };
+        let constructor_strong = heap.object_strong_count(constructor).unwrap();
+        let helper_strong = heap.object_strong_count(helper_prototype).unwrap();
+        let wrap_strong = heap.object_strong_count(wrap_prototype).unwrap();
+
+        assert_eq!(
+            heap.attach_iterator_intrinsics(
+                realm,
+                IteratorRealmData {
+                    helper_prototype: root,
+                    ..iterator
+                },
+            ),
+            Err(HeapError::Invariant(
+                "Iterator Helper prototype is not an ordinary child of the realm's Iterator prototype",
+            ))
+        );
+        assert_eq!(heap.context(realm).unwrap().iterator, None);
+
+        heap.live_node_mut(RawId::Object(wrap_prototype))
+            .unwrap()
+            .strong = u32::MAX;
+        assert_eq!(
+            heap.attach_iterator_intrinsics(realm, iterator),
+            Err(HeapError::Overflow {
+                operation: "retaining outgoing heap edges",
+            })
+        );
+        assert_eq!(heap.context(realm).unwrap().iterator, None);
+        assert_eq!(
+            heap.object_strong_count(constructor),
+            Ok(constructor_strong)
+        );
+        assert_eq!(
+            heap.object_strong_count(helper_prototype),
+            Ok(helper_strong)
+        );
+        heap.live_node_mut(RawId::Object(wrap_prototype))
+            .unwrap()
+            .strong = wrap_strong;
+
+        heap.attach_iterator_intrinsics(realm, iterator).unwrap();
+        assert_eq!(heap.context(realm).unwrap().iterator, Some(iterator));
+        assert_eq!(
+            heap.object_strong_count(constructor),
+            Ok(constructor_strong + 1)
+        );
+        assert_eq!(
+            heap.object_strong_count(helper_prototype),
+            Ok(helper_strong + 1)
+        );
+        assert_eq!(
+            heap.object_strong_count(wrap_prototype),
+            Ok(wrap_strong + 1)
+        );
+        assert!(matches!(
+            heap.attach_iterator_intrinsics(realm, iterator),
+            Err(HeapError::Invariant(
+                "context already has Iterator intrinsic roots"
+            ))
+        ));
+
+        heap.release_object(constructor).unwrap();
+        heap.release_object(helper_prototype).unwrap();
+        heap.release_object(wrap_prototype).unwrap();
+        heap.release_context(realm).unwrap();
+        let stats = heap.run_gc().unwrap();
+        assert_eq!(stats.cleanup.finalized_contexts, 1);
+        assert_eq!(stats.cleanup.finalized_objects, 3);
+
+        heap.release_shape(intrinsic_shape).unwrap();
+        heap.release_object(root).unwrap();
+        heap.release_shape(empty).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn iterator_native_descriptors_match_quickjs_protocols() {
+        assert_eq!(
+            NativeFunctionId::IteratorConstructor.descriptor().cproto,
+            NativeCProto::ConstructorOrFunction
+        );
+        for target in [
+            NativeFunctionId::IteratorFrom,
+            NativeFunctionId::IteratorConstructorAccessor,
+            NativeFunctionId::IteratorPrototypeCreateHelper(IteratorHelperKind::Drop),
+            NativeFunctionId::IteratorPrototypeConsume(IteratorConsumerKind::Every),
+            NativeFunctionId::IteratorPrototypeReduce,
+            NativeFunctionId::IteratorPrototypeToArray,
+            NativeFunctionId::IteratorHelperResume(IteratorResumeKind::Next),
+            NativeFunctionId::IteratorWrapResume(IteratorResumeKind::Return),
+        ] {
+            assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
     }
 
     struct RegExpFixture {

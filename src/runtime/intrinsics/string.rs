@@ -737,6 +737,8 @@ impl Runtime {
             | ObjectPayload::Array { .. }
             | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }
+            | ObjectPayload::IteratorHelper(_)
+            | ObjectPayload::IteratorWrap(_)
             | ObjectPayload::Map { .. }
             | ObjectPayload::MapIterator { .. }
             | ObjectPayload::Set { .. }

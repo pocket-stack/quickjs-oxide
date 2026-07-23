@@ -3729,6 +3729,58 @@ Reproduce R3u with:
 TEST262_WORKERS=2 ./scripts/test-test262-full.sh
 ```
 
+## R3v synchronous Iterator helpers
+
+R3v ports the QuickJS 2026-06-04 synchronous `Iterator` intrinsic and the core
+Iterator Helpers algorithms. The realm-local graph includes the abstract
+constructor, `Iterator.from`, `%Iterator.prototype%`, lazy `drop`, `filter`,
+`flatMap`, `map`, and `take`, and eager `every`, `find`, `forEach`, `reduce`,
+`some`, and `toArray`. Dedicated heap payloads preserve lazy helper and wrapper
+state, GC edges, completion, reentry, dynamic `return` lookup, and iterator
+close ordering. The implementation also follows QuickJS's low-64-bit
+`JS_ToInt64Free` behavior for huge finite limits, primitive String fallback,
+cross-realm native-constructor identity, and nested `flatMap` close-error
+priority.
+
+The pinned Test262 metadata names `iterator-helpers` on 567 paths. The
+dependency audit removes 25 paths that execute `Proxy` directly, three whose
+included harness files execute `Proxy`, 11 that require `$262.createRealm`,
+four that require `$262.IsHTMLDDA`, and one excluded by the pinned QuickJS
+configuration. That exact union contains 44 paths, leaving 523 paths and 1,046
+sloppy/strict variants. Oxide and pinned QuickJS both pass 1,046/1,046 with no
+failure, unsupported result, skip, duplicate key, or engine fault.
+
+The manifest path-stream and complete-file SHA-256 values are
+`9d01f0a6846feac8b6c9b555d95fd1eb4942262f51d4602e4c395f5f45b76443`
+and
+`ce8dd5bfebd79924090ff4a628607009d11ff116ffeb38720808b585335a91e5`.
+The scoped profile and `(path, variant)` key hashes are
+`d9e6f4fcf8cb6f20fb0ebba012451abbaad52bbe676430f2433b9398174e3c83`
+and
+`43be68340124e844c5e456899a084460ad87edd2c279c3ac1ca4057726b3697a`.
+The canonical focused TSV/JSONL hashes are
+`bae5e4dcda2676e56818925f5571f09c96ada891224d88ffe4f8fc7404d983de`
+and
+`d24d0e5812b0a8e1ec87c86c2c98d5e8ed9ca3baa5670ae2960fa90cd5f004fc`.
+
+This remains a checksum-bound scoped admission. The global capability profile
+stays fail-closed for `iterator-helpers` because the excluded Proxy and host
+dependencies are not implemented; the complete vector therefore remains
+43,521/102,037 passes and byte-identical to R3u. The gate's explicit `--bless`
+mode refuses to write a baseline unless all 1,046 frozen variants pass, while
+`--check` authenticates the inventory, dependencies, scoped profile, and both
+pinned QuickJS modes without running Oxide. `Iterator.concat` belongs to the
+separate `iterator-sequencing` cohort and is intentionally the next milestone.
+
+Reproduce R3v with:
+
+```sh
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_iterator_helpers -- --nocapture
+./scripts/test-test262-iterator-helpers.sh
+./scripts/test-test262-full.sh
+```
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -3834,6 +3886,7 @@ canonical progress report.
 ./scripts/test-test262-class-generator-methods.sh
 ./scripts/test-test262-class-private-generator-methods.sh
 ./scripts/test-test262-generator-destructuring.sh
+./scripts/test-test262-iterator-helpers.sh
 ./scripts/test-r3r-generator-destructuring-return-oracle.sh --oxide target/debug/qjs
 ./scripts/test-test262-full.sh
 ```
@@ -4030,6 +4083,11 @@ score. R3u then admits that synchronous cohort globally: 6,593 variants move
 to pass, six async adjacencies remain fail-closed, and the vector reaches
 43,521 passes. The global profile remains fail-closed for async execution and
 Promise features.
+R3v adds the synchronous `Iterator` intrinsic and core Iterator Helpers. Its
+dependency-audited 523-path/1,046-variant scoped gate passes 1,046/1,046 in
+both Oxide and pinned QuickJS. The global score remains 43,521 because Proxy
+and host-dependent adjacencies remain fail-closed; `Iterator.concat` is the
+next separate sequencing slice.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

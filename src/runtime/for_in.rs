@@ -154,6 +154,8 @@ impl Runtime {
             | ObjectPayload::Array { fast_len: None }
             | ObjectPayload::Arguments { fast_len: None, .. }
             | ObjectPayload::ArrayIterator { .. }
+            | ObjectPayload::IteratorHelper(_)
+            | ObjectPayload::IteratorWrap(_)
             | ObjectPayload::Map { .. }
             | ObjectPayload::MapIterator { .. }
             | ObjectPayload::Set { .. }

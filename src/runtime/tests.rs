@@ -4400,11 +4400,34 @@ fn iterator_to_string_tag_accessor_matches_quickjs_metadata_and_setter_semantics
     }
 
     let iterator_global = runtime.intern_property_key("Iterator").unwrap();
+    let Some(CompleteOrdinaryPropertyDescriptor::Data {
+        value: Value::Object(iterator_constructor),
+        writable: true,
+        enumerable: false,
+        configurable: true,
+    }) = runtime
+        .get_own_property(&first.global_object().unwrap(), &iterator_global)
+        .unwrap()
+    else {
+        panic!("global Iterator did not match the QuickJS property descriptor");
+    };
     assert!(
-        !runtime
-            .has_own_property(&first.global_object().unwrap(), &iterator_global)
+        runtime
+            .as_callable(&iterator_constructor)
+            .unwrap()
+            .is_some()
+    );
+    assert!(runtime.is_constructor(&iterator_constructor).unwrap());
+    assert_eq!(
+        runtime
+            .get_own_property(&iterator_constructor, &prototype)
             .unwrap(),
-        "this intrinsic slice must not publish the global Iterator constructor"
+        Some(CompleteOrdinaryPropertyDescriptor::Data {
+            value: Value::Object(iterator_prototype.clone()),
+            writable: false,
+            enumerable: false,
+            configurable: false,
+        })
     );
 
     let inherited = runtime.new_object(Some(&iterator_prototype)).unwrap();
@@ -4586,7 +4609,22 @@ fn string_iterator_inherits_iterator_tag_after_own_tag_is_deleted() {
     let tag = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::ToStringTag));
     assert_eq!(
         own_key_names(&runtime, &iterator_prototype),
-        ["Symbol.iterator", "Symbol.toStringTag"]
+        [
+            "drop",
+            "filter",
+            "flatMap",
+            "map",
+            "take",
+            "every",
+            "find",
+            "forEach",
+            "some",
+            "reduce",
+            "toArray",
+            "constructor",
+            "Symbol.iterator",
+            "Symbol.toStringTag",
+        ]
     );
 
     let Value::Object(method) = context.get_property(&string_prototype, &iterator).unwrap() else {
@@ -4627,6 +4665,74 @@ fn string_iterator_inherits_iterator_tag_after_own_tag_is_deleted() {
             .unwrap(),
         Value::String(JsString::from_static("[object Iterator]"))
     );
+}
+
+#[test]
+fn iterator_from_wraps_a_string_when_its_iterator_method_is_missing() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let result = context
+        .eval(
+            r#"
+            (function () {
+                var originalIterator = String.prototype[Symbol.iterator];
+                var originalNext = String.prototype.next;
+                var originalReturn = String.prototype.return;
+                try {
+                    String.prototype[Symbol.iterator] = null;
+                    var missingNext = Iterator.from("abc");
+                    var missingNextThrows = false;
+                    try {
+                        missingNext.next();
+                    } catch (error) {
+                        missingNextThrows = error instanceof TypeError;
+                    }
+
+                    var nextThis;
+                    var returnThis;
+                    var returnArgc = -1;
+                    var returnResult = { done: true, value: 42 };
+                    String.prototype.next = function () {
+                        "use strict";
+                        nextThis = this;
+                        return { done: false, value: 7 };
+                    };
+                    String.prototype.return = function () {
+                        "use strict";
+                        returnThis = this;
+                        returnArgc = arguments.length;
+                        return returnResult;
+                    };
+                    delete String.prototype[Symbol.iterator];
+
+                    var wrapped = Iterator.from("abc");
+                    var nextResult = wrapped.next();
+                    var actualReturn = wrapped.return("ignored");
+                    return missingNextThrows
+                        && nextResult.done === false
+                        && nextResult.value === 7
+                        && nextThis === "abc"
+                        && returnThis === "abc"
+                        && returnArgc === 0
+                        && actualReturn === returnResult;
+                } finally {
+                    String.prototype[Symbol.iterator] = originalIterator;
+                    if (originalNext === undefined) {
+                        delete String.prototype.next;
+                    } else {
+                        String.prototype.next = originalNext;
+                    }
+                    if (originalReturn === undefined) {
+                        delete String.prototype.return;
+                    } else {
+                        String.prototype.return = originalReturn;
+                    }
+                }
+            })()
+            "#,
+        )
+        .unwrap();
+    assert_eq!(result, Value::Bool(true));
 }
 
 #[test]

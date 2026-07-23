@@ -377,6 +377,7 @@ impl Runtime {
 
     pub(in crate::runtime) fn dispatch_native_function(
         &self,
+        callable: &CallableRef,
         target: NativeFunctionId,
         realm: ContextId,
         invocation: NativeInvocation,
@@ -689,6 +690,31 @@ impl Runtime {
             }
             NativeFunctionId::StringPrototypeCreateHtml(selector) => {
                 self.call_string_prototype_create_html(realm, selector, invocation, arguments)
+            }
+            NativeFunctionId::IteratorConstructor => {
+                self.call_iterator_constructor(realm, invocation)
+            }
+            NativeFunctionId::IteratorFrom => self.call_iterator_from(realm, invocation, arguments),
+            NativeFunctionId::IteratorConstructorAccessor => {
+                self.call_iterator_constructor_accessor(callable, realm, invocation, arguments)
+            }
+            NativeFunctionId::IteratorPrototypeCreateHelper(kind) => {
+                self.call_iterator_create_helper(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::IteratorPrototypeConsume(kind) => {
+                self.call_iterator_consumer(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::IteratorPrototypeReduce => {
+                self.call_iterator_reduce(realm, invocation, arguments)
+            }
+            NativeFunctionId::IteratorPrototypeToArray => {
+                self.call_iterator_to_array(realm, invocation)
+            }
+            NativeFunctionId::IteratorHelperResume(kind) => {
+                self.call_iterator_helper_resume(realm, kind, invocation)
+            }
+            NativeFunctionId::IteratorWrapResume(kind) => {
+                self.call_iterator_wrap_resume(realm, kind, invocation)
             }
             NativeFunctionId::IteratorPrototypeIterator => {
                 self.call_iterator_prototype_iterator(invocation)

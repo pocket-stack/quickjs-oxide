@@ -881,8 +881,13 @@ impl Runtime {
             .expect("Object.prototype intrinsic initialization must succeed");
         self.initialize_function_prototype_methods(realm, &function_prototype)
             .expect("Function.prototype method initialization must succeed");
-        self.initialize_iterator_prototype(realm, &iterator_prototype)
-            .expect("Iterator.prototype intrinsic initialization must succeed");
+        self.initialize_iterator_intrinsic(
+            realm,
+            &function_prototype,
+            &iterator_prototype,
+            &global_object,
+        )
+        .expect("Iterator intrinsic initialization must succeed");
         self.initialize_error_intrinsics(
             realm,
             &function_prototype,
@@ -1926,73 +1931,6 @@ impl Runtime {
             0,
             0,
         )
-    }
-
-    /// Install the intrinsic iterator identity method without exposing the
-    /// still-out-of-scope global `Iterator` constructor or Iterator Helpers.
-    fn initialize_iterator_prototype(
-        &self,
-        realm: ContextId,
-        iterator_prototype: &ObjectRef,
-    ) -> Result<(), RuntimeError> {
-        let key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Iterator));
-        self.define_native_builtin_auto_init_with_key(
-            iterator_prototype,
-            realm,
-            &key,
-            NativeFunctionId::IteratorPrototypeIterator,
-            "[Symbol.iterator]",
-            0,
-            0,
-            PropertyFlags::data(true, false, true),
-        )?;
-
-        // QuickJS installs @@toStringTag as a genuine C getter/setter pair,
-        // not as the data property used by concrete iterator prototypes. The
-        // setter deliberately gives inheriting iterator objects a writable,
-        // enumerable and configurable own tag while keeping this intrinsic's
-        // inherited value protected.
-        let function_prototype = self
-            .0
-            .state
-            .borrow()
-            .heap
-            .context(realm)?
-            .function_prototype;
-        let function_prototype = ObjectRef::from_borrowed_handle(self.clone(), function_prototype)?;
-        let getter = self.new_native_builtin(
-            &function_prototype,
-            realm,
-            NativeFunctionId::IteratorPrototypeToStringTagGetter,
-            0,
-            "get [Symbol.toStringTag]",
-            0,
-        )?;
-        let setter = self.new_native_builtin(
-            &function_prototype,
-            realm,
-            NativeFunctionId::IteratorPrototypeToStringTagSetter,
-            1,
-            "set [Symbol.toStringTag]",
-            1,
-        )?;
-        let key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));
-        if !self.define_own_property(
-            iterator_prototype,
-            &key,
-            &OrdinaryPropertyDescriptor {
-                get: DescriptorField::Present(AccessorValue::Callable(getter)),
-                set: DescriptorField::Present(AccessorValue::Callable(setter)),
-                enumerable: DescriptorField::Present(false),
-                configurable: DescriptorField::Present(true),
-                ..OrdinaryPropertyDescriptor::new()
-            },
-        )? {
-            return Err(RuntimeError::Invariant(
-                "Iterator.prototype toStringTag definition was rejected",
-            ));
-        }
-        Ok(())
     }
 
     /// Complete the String iterator class slice: the generic String method,
@@ -4850,6 +4788,8 @@ impl Runtime {
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
+                | ObjectPayload::IteratorHelper(_)
+                | ObjectPayload::IteratorWrap(_)
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::Set { .. }
@@ -4912,6 +4852,8 @@ impl Runtime {
             | ObjectPayload::Array { .. }
             | ObjectPayload::Arguments { .. }
             | ObjectPayload::ArrayIterator { .. }
+            | ObjectPayload::IteratorHelper(_)
+            | ObjectPayload::IteratorWrap(_)
             | ObjectPayload::Map { .. }
             | ObjectPayload::MapIterator { .. }
             | ObjectPayload::Set { .. }
@@ -5271,6 +5213,8 @@ impl Runtime {
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
+                | ObjectPayload::IteratorHelper(_)
+                | ObjectPayload::IteratorWrap(_)
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::Set { .. }
@@ -5417,7 +5361,7 @@ impl Runtime {
         let result = (|| {
             let result = match mode {
                 NativeInvokeMode::Ordinary => self
-                    .dispatch_native_function(target, realm, invocation, &arguments)
+                    .dispatch_native_function(callable, target, realm, invocation, &arguments)
                     .map(NativeInvokeOutcome::Completion),
                 NativeInvokeMode::IteratorNextRaw => {
                     if target.descriptor().cproto != NativeCProto::IteratorNext {
@@ -6350,6 +6294,8 @@ impl Runtime {
                         | ObjectPayload::Array { .. }
                         | ObjectPayload::Arguments { .. }
                         | ObjectPayload::ArrayIterator { .. }
+                        | ObjectPayload::IteratorHelper(_)
+                        | ObjectPayload::IteratorWrap(_)
                         | ObjectPayload::Map { .. }
                         | ObjectPayload::MapIterator { .. }
                         | ObjectPayload::Set { .. }
@@ -6670,6 +6616,8 @@ impl Runtime {
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
+                | ObjectPayload::IteratorHelper(_)
+                | ObjectPayload::IteratorWrap(_)
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::Set { .. }
@@ -6889,6 +6837,8 @@ impl Runtime {
                         | ObjectPayload::Array { .. }
                         | ObjectPayload::Arguments { .. }
                         | ObjectPayload::ArrayIterator { .. }
+                        | ObjectPayload::IteratorHelper(_)
+                        | ObjectPayload::IteratorWrap(_)
                         | ObjectPayload::Map { .. }
                         | ObjectPayload::MapIterator { .. }
                         | ObjectPayload::Set { .. }
@@ -6997,6 +6947,8 @@ impl Runtime {
                         | ObjectPayload::Array { .. }
                         | ObjectPayload::Arguments { .. }
                         | ObjectPayload::ArrayIterator { .. }
+                        | ObjectPayload::IteratorHelper(_)
+                        | ObjectPayload::IteratorWrap(_)
                         | ObjectPayload::Map { .. }
                         | ObjectPayload::MapIterator { .. }
                         | ObjectPayload::Set { .. }
@@ -7372,6 +7324,8 @@ impl Runtime {
                     | ObjectPayload::Array { .. }
                     | ObjectPayload::Arguments { .. }
                     | ObjectPayload::ArrayIterator { .. }
+                    | ObjectPayload::IteratorHelper(_)
+                    | ObjectPayload::IteratorWrap(_)
                     | ObjectPayload::Map { .. }
                     | ObjectPayload::MapIterator { .. }
                     | ObjectPayload::Set { .. }
@@ -8295,6 +8249,8 @@ impl Runtime {
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
+                | ObjectPayload::IteratorHelper(_)
+                | ObjectPayload::IteratorWrap(_)
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::Set { .. }
