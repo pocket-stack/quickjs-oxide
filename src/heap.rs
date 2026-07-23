@@ -4395,6 +4395,13 @@ pub enum InternalCallableData {
     PromiseFinallyThunk {
         value: RawValue,
     },
+    PromiseAllResolveElement {
+        values: ObjectId,
+        resolve: ObjectId,
+        remaining: Rc<Cell<u32>>,
+        already_called: Rc<Cell<bool>>,
+        index: u32,
+    },
 }
 
 /// Class-specific edges stored alongside an object's ordinary properties.
@@ -5284,6 +5291,7 @@ pub enum PromiseNativeKind {
     Finally,
     Resolve,
     Reject,
+    All,
     Try,
     Race,
     WithResolvers,
@@ -5378,6 +5386,7 @@ pub enum NativeFunctionId {
     PromiseCapabilityExecutor,
     PromiseFinallyHandler(PromiseReactionKind),
     PromiseFinallyThunk(PromiseReactionKind),
+    PromiseAllResolveElement,
     PrimitiveConstructor(PrimitiveKind),
     StringStatic(StringStaticKind),
     /// QuickJS's test262-only `js_string_codePointRange` helper.
@@ -5722,7 +5731,8 @@ impl NativeFunctionId {
     /// functions instead switch to the function object's defining realm.
     ///
     /// The Promise resolving pair uses class-call handlers; its capability
-    /// executor and finally callbacks use `JS_NewCFunctionData`.
+    /// executor, finally callbacks, and `Promise.all` element callbacks use
+    /// `JS_NewCFunctionData`.
     #[must_use]
     pub const fn uses_calling_realm(self) -> bool {
         matches!(
@@ -5731,6 +5741,7 @@ impl NativeFunctionId {
                 | Self::PromiseCapabilityExecutor
                 | Self::PromiseFinallyHandler(_)
                 | Self::PromiseFinallyThunk(_)
+                | Self::PromiseAllResolveElement
         )
     }
 
@@ -5816,6 +5827,7 @@ impl NativeFunctionId {
                 | PromiseNativeKind::Finally
                 | PromiseNativeKind::Resolve
                 | PromiseNativeKind::Reject
+                | PromiseNativeKind::All
                 | PromiseNativeKind::Try
                 | PromiseNativeKind::Race
                 | PromiseNativeKind::WithResolvers,
@@ -5824,6 +5836,7 @@ impl NativeFunctionId {
             | Self::PromiseCapabilityExecutor
             | Self::PromiseFinallyHandler(_)
             | Self::PromiseFinallyThunk(_)
+            | Self::PromiseAllResolveElement
             | Self::Reflect(
                 ReflectKind::Apply
                 | ReflectKind::Construct
@@ -10604,10 +10617,38 @@ impl Heap {
                         ));
                     }
                 }
+                (
+                    NativeFunctionId::PromiseAllResolveElement,
+                    Some(InternalCallableData::PromiseAllResolveElement {
+                        values,
+                        resolve,
+                        index,
+                        ..
+                    }),
+                ) => {
+                    let values = self.object(*values)?;
+                    let resolve = self.object(*resolve)?;
+                    let resolve_is_callable = matches!(
+                        resolve.kind,
+                        ObjectKind::NativeFunction
+                            | ObjectKind::BoundFunction
+                            | ObjectKind::BytecodeFunction
+                    );
+                    if object.is_constructor
+                        || !matches!(values.payload, ObjectPayload::Array { .. })
+                        || !resolve_is_callable
+                        || *index == u32::MAX
+                    {
+                        return Err(HeapError::Invariant(
+                            "Promise.all resolve-element callable has invalid hidden state",
+                        ));
+                    }
+                }
                 (NativeFunctionId::PromiseResolving(_), _)
                 | (NativeFunctionId::PromiseCapabilityExecutor, _)
                 | (NativeFunctionId::PromiseFinallyHandler(_), _)
                 | (NativeFunctionId::PromiseFinallyThunk(_), _)
+                | (NativeFunctionId::PromiseAllResolveElement, _)
                 | (_, Some(_)) => {
                     return Err(HeapError::Invariant(
                         "native target does not match its internal callable capture",
@@ -11478,6 +11519,9 @@ fn internal_callable_edges(internal: &InternalCallableData) -> Vec<RawId> {
             .chain(std::iter::once(RawId::Object(*on_finally)))
             .collect(),
         InternalCallableData::PromiseFinallyThunk { value } => raw_value_edges(value),
+        InternalCallableData::PromiseAllResolveElement {
+            values, resolve, ..
+        } => vec![RawId::Object(*values), RawId::Object(*resolve)],
     }
 }
 
@@ -11689,7 +11733,8 @@ fn internal_callable_atoms(internal: &InternalCallableData) -> Vec<Atom> {
             raw_value_atom(value).into_iter().collect()
         }
         InternalCallableData::PromiseResolving { .. }
-        | InternalCallableData::PromiseFinallyHandler { .. } => Vec::new(),
+        | InternalCallableData::PromiseFinallyHandler { .. }
+        | InternalCallableData::PromiseAllResolveElement { .. } => Vec::new(),
     }
 }
 

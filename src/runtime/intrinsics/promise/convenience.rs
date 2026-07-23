@@ -231,7 +231,7 @@ impl Runtime {
         }
     }
 
-    fn promise_callable(
+    pub(super) fn promise_callable(
         &self,
         realm: ContextId,
         value: Value,
@@ -253,7 +253,7 @@ impl Runtime {
         }
     }
 
-    fn promise_iterator_record(
+    pub(super) fn promise_iterator_record(
         &self,
         realm: ContextId,
         iterable: Value,
@@ -311,7 +311,7 @@ impl Runtime {
         self.call_internal(realm, &then, receiver, arguments)
     }
 
-    fn reject_promise_capability(
+    pub(super) fn reject_promise_capability(
         &self,
         realm: ContextId,
         capability: &RootedPromiseCapability,

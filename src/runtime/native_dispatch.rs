@@ -484,6 +484,9 @@ impl Runtime {
             NativeFunctionId::PromiseFinallyThunk(kind) => {
                 self.call_promise_finally_thunk(kind, invocation)
             }
+            NativeFunctionId::PromiseAllResolveElement => {
+                self.call_promise_all_resolve_element(realm, invocation, arguments)
+            }
             NativeFunctionId::ThrowTypeError => {
                 self.call_throw_type_error(realm, invocation, arguments)
             }

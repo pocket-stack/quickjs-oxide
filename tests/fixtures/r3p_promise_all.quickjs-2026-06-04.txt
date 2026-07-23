@@ -1,0 +1,11 @@
+descriptor-generic=all:1:truefalsetrue|TypeError|TypeError
+custom-shape=fulfilled:20,22||:1||false||true||resolve:20|then:20|resolve:22|then:22|final-resolve
+empty-order=after-call|fulfilled:0||0,1,2
+sync-sentinel=next:0|resolve:40|then:40|next:1|resolve:42|then:42|done|final:40,42
+resolve-once=resolve-get|iterator|resolve-call:1|resolve-call:2
+iterator-no-close=next-get:next-get||next-call:next-call
+iterator-close=resolve-throw:next|resolve|close:original||then-get-throw:next|resolve|then-get|close:original
+reject-continues=next:0|resolve:0|then:0|next:1|resolve:1|then:1|next:2|resolve:2|then:2|done
+thenable-identities=object:true|symbol:true|poison:true
+callback-gc=state:fulfilled|object:true|symbol:true
+r3p-promise-all-oracle=ok

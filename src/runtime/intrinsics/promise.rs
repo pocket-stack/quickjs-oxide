@@ -11,6 +11,7 @@ use crate::heap::{
 
 use super::super::*;
 
+mod all;
 mod convenience;
 mod finally;
 
@@ -131,6 +132,7 @@ impl Runtime {
         for (kind, name, length) in [
             (PromiseNativeKind::Resolve, "resolve", 1),
             (PromiseNativeKind::Reject, "reject", 1),
+            (PromiseNativeKind::All, "all", 1),
             (PromiseNativeKind::Try, "try", 1),
             (PromiseNativeKind::Race, "race", 1),
             (PromiseNativeKind::WithResolvers, "withResolvers", 0),
@@ -510,6 +512,7 @@ impl Runtime {
             PromiseNativeKind::Resolve | PromiseNativeKind::Reject => {
                 self.call_promise_static_resolve(realm, kind, invocation, arguments)
             }
+            PromiseNativeKind::All => self.call_promise_all(realm, invocation, arguments),
             PromiseNativeKind::Try => self.call_promise_try(realm, invocation, arguments),
             PromiseNativeKind::Race => self.call_promise_race(realm, invocation, arguments),
             PromiseNativeKind::WithResolvers => self.call_promise_with_resolvers(realm, invocation),

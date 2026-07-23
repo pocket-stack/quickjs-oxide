@@ -3240,9 +3240,9 @@ Reproduce both locks with:
 Use `--check` on the Test262 command to authenticate only its frozen
 manifest/profile and pinned QuickJS result.
 
-After R3o, this same frozen R3n inventory currently passes 216/224 variants.
-The eight remaining `fail-runtime` rows, with zero unsupported results and zero
-skips, are the sloppy and strict variants of these four `Promise.all`
+At the R3o checkpoint, this same frozen R3n inventory passed 216/224 variants.
+Its eight `fail-runtime` rows, with zero unsupported results and zero skips,
+were the sloppy and strict variants of these four `Promise.all`
 consumers:
 
 - `test/built-ins/Promise/race/resolved-sequence-extra-ticks.js`
@@ -3250,16 +3250,16 @@ consumers:
 - `test/built-ins/Promise/race/resolved-sequence-with-rejections.js`
 - `test/built-ins/Promise/race/resolved-sequence.js`
 
-Both variants of `resolved-then-catch-finally.js` now pass. The current
-non-pass, TSV, and JSONL SHA-256 values are
+Both variants of `resolved-then-catch-finally.js` passed at that checkpoint.
+The R3o-checkpoint non-pass, TSV, and JSONL SHA-256 values are
 `0865a76b4a9760298b3725c3b1e46559dabeb69e097b07cd9098882f595e64ba`,
 `b37787f5024f9132fb4148e6b87a247c05e9439302dd19069c18e44dd1858469`,
 and
 `21dd45dcc42d79af81e1ff9c979690cbacca86fe1e24e2728edffc104bc300a0`.
 The manifest, scoped profile, variant keys, adjacency inventory, and
-static-method fixture/transcript remain byte-identical. This is the current
+static-method fixture/transcript remained byte-identical. This was an R3o
 cross-milestone result, not a rewrite of the 214/224 authenticated R3n landing
-checkpoint and its hashes above.
+checkpoint and its hashes above. R3p's current result is recorded below.
 
 ## R3o Promise.prototype.finally
 
@@ -3351,8 +3351,9 @@ and
 
 The Promise facade remains 9,803 lines in `runtime.rs`; the finally algorithm
 lives in the dedicated 203-line
-`runtime/intrinsics/promise/finally.rs` module. The remaining explicit Promise
-frontiers are `Promise.all`, `Promise.allSettled`, and `Promise.any`.
+`runtime/intrinsics/promise/finally.rs` module. At the R3o checkpoint, the
+remaining explicit Promise frontiers were `Promise.all`,
+`Promise.allSettled`, and `Promise.any`.
 
 Reproduce both locks with:
 
@@ -3364,6 +3365,68 @@ Reproduce both locks with:
 Pass `--oxide target/debug/qjs` to the oracle script for the byte-for-byte
 QuickJS/Oxide transcript comparison. Use `--check` on the Test262 command to
 authenticate only its frozen manifest/profile and pinned QuickJS result.
+
+## R3p Promise.all
+
+R3p freezes all 98 files directly under the pinned Test262
+`built-ins/Promise/all` directory, producing 196 sloppy and strict variants.
+The complete cohort contains 57 async paths / 114 variants and 41 synchronous
+paths / 82 variants. It has no negative, Proxy, or `$262` host tests. Oxide
+passes 196/196 with zero failures, unsupported results, or skips; pinned
+QuickJS 2026-06-04 passes all 98/98 paths.
+
+The scoped profile admits exactly `Reflect.construct`, `Symbol`,
+`Symbol.iterator`, `Symbol.species`, `arrow-function`, and `class`, plus
+`[execution] async=true`. The global profile remains byte-identical and has no
+execution section. The manifest and manifest-file SHA-256 values are both
+`293639a6d0e3f1937535997a4f61613fd40b2b10267d1d27cc5faa231865c1e5`;
+the scoped profile and global profile hashes are
+`83b69f80efbe0aa1c1273c646595424d4e3cda01f65ccc1e7400495a6779bb21`
+and
+`1860224ce1e828406f4869b66b3f1964f96fad85e4eab6ba7fecb256b4b6c2f2`.
+
+The variant-key, async, synchronous, feature, and include inventory hashes are
+`be2fbe56f4e095c9ebc5ad7a2dc611ec3ca0fcf3878cac552b9b08c3bb0442c7`,
+`291bd0ed5b12d2e857bbbfcae3ff967cdb885d1863c10f1a611ac91f68833bf4`,
+`160a6566ad05a90da034c1e0be2bafbbc341dd38743dd271592a83443521b81a`,
+`ae2f5435de250ebddbc91135bf5847caa09e5150e199aa79061898380c8d180c`,
+and
+`0df478d04b840824e8f175d0e7fbb2e4a29afecce716f6ca7728163d406b0ea2`.
+Both empty Proxy/host inventories and the empty non-pass vector hash to
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+The canonical TSV and JSONL hashes are
+`a71f0e04b81bed11d3760296a40753ed18f0572d25145857b5bcee434f6fa2c9`
+and
+`3c895f2876be7ceabb12e6e85af5f1bc9d9b1eab2f5cb3a884f5f340d871c22a`.
+
+The independent differential locks descriptor/generic behavior, custom
+capabilities, fresh element callbacks and shared reject identity, empty and
+out-of-order fulfillment, the synchronous-thenable sentinel, first-call
+guards, one-time constructor resolve lookup, pinned IteratorClose boundaries,
+thenable and identity behavior, forced-GC capture lifetime, and cross-Context
+realm routing. Its fixture and pinned transcript hashes are
+`e43406b9de7de5a88034ec5321486d7b352f2c6f43986fddba1b36fe79074835`
+and
+`efb2fd9cfdd1db42291295e0b313dbf271b0007d30f3823e0377cb7196ab6b54`.
+
+R3p also moves the unchanged R3n inventory from its R3o checkpoint of 216/224
+to the current 224/224. The empty non-pass, TSV, and JSONL hashes are
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`,
+`350e8f80d30a1942e44595c1e771b5e0008fd33aa2f93d6d2345e219d5bb6968`,
+and
+`4058a876e0f05e0ff0b07d6ae6a5b4886ea9dca3ebbe178c758221aa371df6ca`.
+The authenticated 214/224 R3n landing result and 216/224 R3o checkpoint above
+remain historical records; their inventory identities did not change.
+
+Reproduce both R3p locks with:
+
+```sh
+./scripts/test-r3p-promise-all-oracle.sh --oxide target/debug/qjs
+./scripts/test-test262-promise-all.sh
+```
+
+Use `--check` on either script to authenticate pinned inputs without comparing
+an Oxide oracle transcript or executing the Oxide Test262 cohort.
 
 ## Runner contract
 
@@ -3645,10 +3708,11 @@ constructor/reaction/job boundary with 112/112 focused variants and QuickJS
 57/57 paths. R3n adds `try`, `withResolvers`, and `race`; its complete
 112-path/224-variant landing inventory records 214 passes and the ten
 explicitly listed `all`/`finally` adjacency failures, while pinned QuickJS
-passes 112/112. After R3o it currently records 216 passes, with only eight
-`Promise.all`-adjacent failures. R3o implements `Promise.prototype.finally`;
-its complete 29-path/58-variant gate passes 56 variants, with only the two
-Proxy-dependent variants failing, while pinned QuickJS passes 29/29.
+passes 112/112. R3o implements `Promise.prototype.finally`; its complete
+29-path/58-variant gate passes 56 variants, with only the two Proxy-dependent
+variants failing, while pinned QuickJS passes 29/29. R3p implements
+`Promise.all`; its complete 98-path/196-variant gate passes 196/196, and the
+unchanged R3n inventory now passes 224/224.
 The global profile remains async- and Promise-feature-fail-closed.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.

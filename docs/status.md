@@ -1813,10 +1813,10 @@ claim full parity.
   (`1860224ce1e828406f4869b66b3f1964f96fad85e4eab6ba7fecb256b4b6c2f2`)
   remains fail-closed with no `[execution]` section.
 
-  After R3o, the same R3n inventory currently records 216/224 passes and eight
-  `fail-runtime` results, with zero unsupported or skipped variants.
-  `resolved-then-catch-finally.js` now passes in both modes; the current
-  non-passes are exactly the sloppy and strict variants of the four
+  At the R3o checkpoint, the same R3n inventory recorded 216/224 passes and
+  eight `fail-runtime` results, with zero unsupported or skipped variants.
+  `resolved-then-catch-finally.js` passed in both modes; the R3o-checkpoint
+  non-passes were exactly the sloppy and strict variants of the four
   `Promise.all` consumers:
 
   - `test/built-ins/Promise/race/resolved-sequence-extra-ticks.js`
@@ -1824,13 +1824,13 @@ claim full parity.
   - `test/built-ins/Promise/race/resolved-sequence-with-rejections.js`
   - `test/built-ins/Promise/race/resolved-sequence.js`
 
-  The current R3n non-pass, TSV, and JSONL SHA-256 values are
+  The R3o-checkpoint R3n non-pass, TSV, and JSONL SHA-256 values are
   `0865a76b4a9760298b3725c3b1e46559dabeb69e097b07cd9098882f595e64ba`,
   `b37787f5024f9132fb4148e6b87a247c05e9439302dd19069c18e44dd1858469`,
   and
   `21dd45dcc42d79af81e1ff9c979690cbacca86fe1e24e2728edffc104bc300a0`.
-  This current result does not rewrite the authenticated 214/224 R3n landing
-  checkpoint above.
+  This R3o-checkpoint result does not rewrite the authenticated 214/224 R3n
+  landing checkpoint above.
 
   R3o completes the `Promise.prototype.finally` algorithm against pinned
   QuickJS `quickjs.c` 54057-54135. The receiver is first required to be an
@@ -1912,8 +1912,79 @@ claim full parity.
   capability/convenience/race algorithms live in the dedicated 327-line
   `runtime/intrinsics/promise/convenience.rs` module and the finally algorithm
   lives in the dedicated 203-line `runtime/intrinsics/promise/finally.rs`
-  module rather than extending the monolith. The remaining explicit Promise
-  frontiers are `Promise.all`, `Promise.allSettled`, and `Promise.any`.
+  module rather than extending the monolith. At the R3o checkpoint, the
+  remaining explicit Promise frontiers are `Promise.all`,
+  `Promise.allSettled`, and `Promise.any`.
+
+  R3p implements `Promise.all` against pinned QuickJS `quickjs.c`
+  53656-53893 and the constructor table at 54137. It creates the custom
+  capability before reading `C.resolve`, caches that callable once, acquires
+  the iterator and its `next` method, then creates a realm-local empty values
+  Array and a shared remaining-elements counter initialized with the sentinel
+  value one. Every yielded item calls the cached resolve with `C` as receiver,
+  allocates a fresh typed element callback, increments the counter before the
+  dynamic `then`, and passes the same captured reject function.
+
+  Iterator step/done/value failures reject without closing. Abrupt
+  constructor-resolve or dynamic-then paths perform preserving-throw
+  `IteratorClose` before rejection. A synchronous custom `then` can call its
+  handler immediately, but the sentinel prevents final resolution before the
+  iterator reports done. Each element callback has an independent first-call
+  bit and input index; it uses CreateDataProperty semantics to write the
+  values Array without invoking inherited setters, decrements the shared
+  counter, and calls the final resolve only when the last reference is gone.
+  Synchronous rejection does not stop the main iteration when `then` itself
+  returns normally.
+
+  The heap representation is
+  `InternalCallableData::PromiseAllResolveElement { values, resolve,
+  remaining, already_called, index }`. GC traces the values Array and outer
+  resolve from every escaped callback; the shared/per-element counters contain
+  only scalars, and ordinary Array slots own stored object and Symbol edges.
+  The values Array and callbacks use the `Promise.all` builtin's defining
+  realm, while the CFunctionData-shaped element callback body executes in its
+  calling Context. Heap validation pairs the typed native target with an
+  Array, callable resolve, non-constructor callback, and valid index.
+
+  The complete authenticated R3p inventory contains 98 paths / 196 sloppy and
+  strict variants: 57 async paths / 114 variants and 41 synchronous paths /
+  82 variants. It contains no negative, Proxy, or `$262` host test. Oxide
+  passes 196/196 with zero failures, unsupported results, or skips; pinned
+  QuickJS 2026-06-04 passes 98/98. Manifest, profile, variant-key, empty
+  non-pass, TSV, and JSONL SHA-256 values are
+  `293639a6d0e3f1937535997a4f61613fd40b2b10267d1d27cc5faa231865c1e5`,
+  `83b69f80efbe0aa1c1273c646595424d4e3cda01f65ccc1e7400495a6779bb21`,
+  `be2fbe56f4e095c9ebc5ad7a2dc611ec3ca0fcf3878cac552b9b08c3bb0442c7`,
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`,
+  `a71f0e04b81bed11d3760296a40753ed18f0572d25145857b5bcee434f6fa2c9`,
+  and
+  `3c895f2876be7ceabb12e6e85af5f1bc9d9b1eab2f5cb3a884f5f340d871c22a`.
+  The scoped profile admits its six observed feature tags and async execution;
+  the global profile remains byte-identical and fail-closed.
+
+  The pinned differential covers descriptors, generic/custom capabilities,
+  fresh handlers and shared reject identity, empty/out-of-order completion,
+  synchronous sentinel ordering, duplicate callbacks, resolve lookup,
+  IteratorClose boundaries, thenable/identity behavior, forced GC, and
+  cross-Context realm routing. Its fixture and transcript SHA-256 values are
+  `e43406b9de7de5a88034ec5321486d7b352f2c6f43986fddba1b36fe79074835`
+  and
+  `efb2fd9cfdd1db42291295e0b313dbf271b0007d30f3823e0377cb7196ab6b54`.
+  The unchanged R3n inventory now passes 224/224; its current empty non-pass,
+  TSV, and JSONL hashes are
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`,
+  `350e8f80d30a1942e44595c1e771b5e0008fd33aa2f93d6d2345e219d5bb6968`,
+  and
+  `4058a876e0f05e0ff0b07d6ae6a5b4886ea9dca3ebbe178c758221aa371df6ca`.
+
+  R3p leaves `runtime.rs` at 9,803 lines. The complete algorithm lives in the
+  dedicated 240-line `runtime/intrinsics/promise/all.rs` module. Ordinary
+  JavaScript-observable behavior is locked; exact allocation-failure routing
+  remains narrower than QuickJS because values-Array or element-handler OOM
+  currently returns a runtime error instead of capability rejection (and, for
+  the latter, close-then-reject). The checked `u32` overflow path is likewise
+  a theoretical multi-billion-element boundary. The remaining explicit
+  aggregate Promise frontiers are `Promise.allSettled` and `Promise.any`.
 
   Async functions/generators, destructuring eval declarations, unsupported
   class elements, and ill-formed UTF-16 source stay explicit frontiers.
@@ -5221,11 +5292,13 @@ under `compiler/class/`, private callable/brand storage stays in
 `runtime/vm_host/private_elements.rs`, and both publication defenses retain
 their dedicated owners. `runtime.rs` remains the 9,748-line facade; this slice
 adds no product code to that monolith or a second generator state machine.
-R3m/R3n preserve that boundary for Promise work: the Promise object/reaction
+R3m-R3p preserve that boundary for Promise work: the Promise object/reaction
 owner remains `runtime/intrinsics/promise.rs`, the runtime FIFO remains
 `runtime/jobs.rs`, and R3n places its new static-method and race algorithms in
-the 327-line `runtime/intrinsics/promise/convenience.rs`. The current
-`runtime.rs` facade is 9,794 lines rather than absorbing those algorithms.
+the 327-line `runtime/intrinsics/promise/convenience.rs`; R3o and R3p place
+their algorithms in the 203-line `runtime/intrinsics/promise/finally.rs` and
+240-line `runtime/intrinsics/promise/all.rs` modules. The current `runtime.rs`
+facade is 9,803 lines rather than absorbing those algorithms.
 The RegExp kernel itself is isolated in
 `src/regexp/` as flags, typed opcodes, compiler and executor modules rather than
 growing the runtime facade. Realm-aware property completion wrappers and storage
