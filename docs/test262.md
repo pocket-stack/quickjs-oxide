@@ -36,9 +36,9 @@ estimate. The sample was selected from already implemented synchronous
 surfaces. Modules, remaining async arrows/methods/generators, most `$262` host
 hooks, advanced RegExp pattern grammar, TypedArrays, and many other broad
 layers remain absent. Ordinary async functions/jobs are measured separately by
-the scoped R3z gate; public fields, static blocks, private elements, and
-public/private synchronous generator methods are measured by the scoped
-R3g/R3h/R3i/R3j/R3k/R3l gates below.
+the scoped R3aa-expanded R3z gate; public fields, static blocks, private
+elements, and public/private synchronous generator methods are measured by the
+scoped R3g/R3h/R3i/R3j/R3k/R3l gates below.
 
 Nineteen additional provenance variants guard the result: eight audited negative
 variants pass for the intended parse error, while 11 unsupported grammar
@@ -3906,34 +3906,34 @@ Reproduce R3y with:
 
 ## R3z ordinary async function core
 
-R3z opens the first checksum-bound async execution profile without promoting
+R3z opened the first checksum-bound async execution profile without promoting
 the broad `async-functions` feature or `[execution] async=true` into the global
-scoreboard. The static universe is the 207 pinned paths directly under
+scoreboard. The static universe was the 207 pinned paths directly under
 `built-ins/AsyncFunction` or recursively within the expression/declaration
-`async-function` and expression `await` trees. A checked exclusion ledger
-assigns 65 paths to five
-independent frontiers: 40 complex-parameter cases, 11 eval/with adjacencies,
-ten async-arrow cases, two async-generator/for-await cases, and two
-host/cross-realm cases.
+`async-function` and expression `await` trees. At the R3z landing, a checked
+exclusion ledger assigned 65 paths to five independent frontiers: 40
+complex-parameter cases, 11 eval/with adjacencies, ten async-arrow cases, two
+async-generator/for-await cases, and two host/cross-realm cases.
 
-The clean cohort contains 142 paths / 259 variants. It has 95 positive paths,
+The clean cohort contained 142 paths / 259 variants. It had 95 positive paths,
 47 audited parse/SyntaxError paths, 65 async-harness paths, and 77 synchronous
 paths; 117 paths run in both modes, 17 are `noStrict`, and eight are
-`onlyStrict`. Pinned QuickJS 2026-06-04 passes all 142 paths. The canonical
-Oxide report has 259/259 passes with no unsupported, skipped, failed, timed
+`onlyStrict`. Pinned QuickJS 2026-06-04 passed all 142 paths. The canonical
+Oxide report had 259/259 passes with no unsupported, skipped, failed, timed
 out, crashed, or infrastructure outcomes.
 
 The manifest, scoped profile, variant keys, canonical TSV, and JSONL SHA-256
-values are
+values were
 `fdd1679242195cb32508b7976a1b0b3508fe96a2e77483808d3bf5c9c554ff52`,
 `05634144cdc2e64874ffda721b429181ac8b7a8f82b1ba253f2b8d8a29a4332e`,
 `a5249ce3625e80f41ea2464e00fcf19804913d49556e680ad6624fd6bf71d391`,
 `d0d3933d5cc4114b60a55bd6040d4350cba890b7d8a29a4e41e372eb4291cfaa`,
 and
 `9259b27b167856e5e3a2428530d1943d74fc967a659759568b5068ce2a74c4c3`.
-The profile admits only four exact feature tags, the 47 frozen negative paths,
-and the async host. The global profile remains fail-closed because opening it
+The profile admitted only four exact feature tags, the 47 frozen negative
+paths, and the async host. The global profile remained fail-closed because opening it
 would expose thousands of unrelated async/module/host combinations.
+These counts and hashes preserve the historical R3z landing snapshot.
 
 The complete R3y/R3z join retains all 102,037 keys and every previous pass.
 Fifty-four parse failures and four runtime failures become passes; 32 other
@@ -3945,11 +3945,51 @@ SHA-256 values are
 and
 `14295f172893540d703e02aa4c9ba3e5bdee02d866131479680b5c33b2ddfabd`.
 
-Reproduce R3z with:
+Reproduce the R3z runtime oracle with:
 
 ```sh
 cargo build --bin qjs
 ./scripts/test-r3z-async-function-core-oracle.sh --oxide ./target/debug/qjs
+```
+
+## R3aa ordinary async gate expansion
+
+R3aa changes only the authenticated scoped evidence. It admits all 40
+complex-parameter paths and nine of the 11 eval/with adjacencies from the
+original ledger. The two remaining eval/with paths contain async arrows, so
+the current 16 exclusions consist of ten async-arrow paths, those two
+async-arrow-dependent eval paths, two async-generator/for-await paths, and two
+host/cross-realm paths.
+
+The current clean cohort contains 191 paths / 348 variants: 126 positive and
+65 audited parse/SyntaxError paths, 96 async-harness and 95 synchronous paths.
+There are 157 double-mode paths, 26 `noStrict` paths, and eight `onlyStrict`
+paths, producing 183 sloppy and 165 strict variants. Pinned QuickJS
+2026-06-04 passes all 191 paths; the canonical Oxide report passes 348/348
+with no unsupported, skipped, failed, timed-out, crashed, or infrastructure
+outcomes.
+
+The scoped profile now authenticates eight exact feature tags:
+`Symbol.toStringTag`, `Symbol.unscopables`, `arrow-function`,
+`async-functions`, `default-parameters`, `generators`, `globalThis`, and
+`rest-parameters`. It also freezes all 65 negative paths and opts into only
+the async host. The global profile remains fail-closed.
+
+The current exclusion-ledger, manifest, scoped-profile, variant-key, canonical
+TSV, and JSONL SHA-256 values are
+`7c29c59cc107d74da4a5fcfba4571947195003a2f551bb82f9fc2dd8b3fb42ac`,
+`a0fa7acd444257ca7cbfffc40c61eb3b85867c81df04f1d1691100a72c97b0dc`,
+`7fb94b8e350b5a270ab5f685f0a223e32c7d12fedf0ac3e0c1e157b03f4f0b33`,
+`25e87df8047ce67fb30a570f9e211540b689dc00c9a4b7e29de20b528f77a077`,
+`ba690597d3ca1d9f6604106b0d54d37a7d1215b4a832c0a72a4ccdde8c28e913`,
+and
+`fe4be77b96c8af7b8bda137d8377818ab04450f340beaa2e172f290eadcb264f`.
+This expansion adds no global keys or passes: the conservative
+43,643/102,037 vector and its R3z full-vector hashes remain unchanged.
+
+Reproduce the current R3aa gate with:
+
+```sh
 ./scripts/test-test262-async-function-core.sh
 ```
 
@@ -4273,6 +4313,12 @@ async generators, for-await, modules, and broad async execution remain
 fail-closed. Untagged and intrinsic consumers add 58 conservative full-vector
 passes without regressing a previous pass, bringing the current score to
 43,643/102,037.
+R3aa subsequently expands the authenticated ordinary-async gate to 191 paths /
+348 variants by admitting all 40 complex-parameter paths and nine eval/with
+adjacencies. Oxide passes 348/348 and pinned QuickJS passes 191/191; the 16
+remaining exclusions are async-arrow, async-generator/for-await, or
+host/cross-realm dependencies. Because this is a scoped bookkeeping
+expansion, the conservative full-vector score and hashes do not change.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

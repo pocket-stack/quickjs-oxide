@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproduce the R3z ordinary async-function and await core Test262 gate.
+# Reproduce the R3aa-expanded ordinary async-function and await core Test262 gate.
 
 set -euo pipefail
 export TZ=America/Los_Angeles
@@ -117,7 +117,7 @@ verify_quickjs_oracle() {
 cd -- "$root"
 suite=$("$script_dir/prepare-test262.sh")
 source_dir=$(dirname -- "$suite")
-tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-r3z.XXXXXX")
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-r3aa.XXXXXX")
 trap 'rm -rf -- "$tmp_dir"' EXIT HUP INT TERM
 
 candidate=$tmp_dir/candidate.txt
@@ -150,7 +150,7 @@ if [[ "$(read_value quickjs)" != "2026-06-04" \
     || "$(read_value test262_config_sha256)" != "79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b" \
     || "$(read_value test262_metadata_sha256)" != "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a" \
     || "$(read_value global_oxide_profile_sha256)" != "6a4d3dc37da05f6e63d7b8564483159c383ed66c665a2b5530624e628f73b908" \
-    || "$(read_value oxide_profile_sha256)" != "05634144cdc2e64874ffda721b429181ac8b7a8f82b1ba253f2b8d8a29a4332e" \
+    || "$(read_value oxide_profile_sha256)" != "7fb94b8e350b5a270ab5f685f0a223e32c7d12fedf0ac3e0c1e157b03f4f0b33" \
     || "$(read_value schema)" != "test262-canonical-classified-v2" \
     || "$(read_value mode)" != "both" \
     || "$(read_value timeout_ms)" != "30000" \
@@ -159,29 +159,29 @@ if [[ "$(read_value quickjs)" != "2026-06-04" \
     || "$(read_value candidate_expression_await_paths)" != "22" \
     || "$(read_value candidate_statement_async_function_paths)" != "74" \
     || "$(read_value candidate_paths)" != "207" \
-    || "$(read_value excluded_paths)" != "65" \
-    || "$(read_value complex_parameters_paths)" != "40" \
-    || "$(read_value eval_or_with_paths)" != "11" \
+    || "$(read_value excluded_paths)" != "16" \
+    || "$(read_value complex_parameters_paths)" != "0" \
+    || "$(read_value eval_or_with_paths)" != "2" \
     || "$(read_value async_arrow_paths)" != "10" \
     || "$(read_value async_generator_or_for_await_paths)" != "2" \
     || "$(read_value host_or_cross_realm_paths)" != "2" \
-    || "$(read_value paths)" != "142" \
-    || "$(read_value quickjs_passes)" != "142" \
-    || "$(read_value positive_paths)" != "95" \
-    || "$(read_value negative_paths)" != "47" \
-    || "$(read_value async_paths)" != "65" \
-    || "$(read_value sync_paths)" != "77" \
-    || "$(read_value double_mode_paths)" != "117" \
-    || "$(read_value no_strict_paths)" != "17" \
+    || "$(read_value paths)" != "191" \
+    || "$(read_value quickjs_passes)" != "191" \
+    || "$(read_value positive_paths)" != "126" \
+    || "$(read_value negative_paths)" != "65" \
+    || "$(read_value async_paths)" != "96" \
+    || "$(read_value sync_paths)" != "95" \
+    || "$(read_value double_mode_paths)" != "157" \
+    || "$(read_value no_strict_paths)" != "26" \
     || "$(read_value only_strict_paths)" != "8" \
-    || "$(read_value variants)" != "259" \
-    || "$(read_value sloppy_variants)" != "134" \
-    || "$(read_value strict_variants)" != "125" \
-    || "$(read_value features)" != "4" \
+    || "$(read_value variants)" != "348" \
+    || "$(read_value sloppy_variants)" != "183" \
+    || "$(read_value strict_variants)" != "165" \
+    || "$(read_value features)" != "8" \
     || "$(read_value includes)" != "3" \
     || "$(read_value flags)" != "4" \
-    || "$(read_value runnable)" != "259" \
-    || "$(read_value passes)" != "259" \
+    || "$(read_value runnable)" != "348" \
+    || "$(read_value passes)" != "348" \
     || "$(read_value failures)" != "0" \
     || "$(read_value unsupported)" != "0" \
     || "$(read_value skipped)" != "0" ]]; then
@@ -347,7 +347,7 @@ awk -F'\t' \
         }
     }
     END {
-        if (seen != 142) {
+        if (seen != 191) {
             print "selected metadata rows: " seen > "/dev/stderr"
             exit 2
         }

@@ -9,10 +9,10 @@ pinned QuickJS pass both frozen gates (1,046/1,046 and 64/64 variants). R3x
 globally admits the clean sequencing cohort, moving the conservative full
 vector to 43,585/102,037. R3y authenticates the existing synchronous class
 matrix at 7,735/7,735 variants. R3z adds ordinary async functions and `await`;
-its dependency-audited gate passes 259/259 variants, and the conservative full
-vector reaches 43,643/102,037 with no previous-pass regression. The R3y/R3z
-gates remain scoped, as do Iterator Helpers. Modules, async
-arrows/methods/generators, Proxy, and broad built-in coverage remain
+R3aa expands its dependency-audited gate to 348/348 variants, while the
+conservative full vector remains 43,643/102,037 with no previous-pass
+regression. The R3y/R3aa gates remain scoped, as do Iterator Helpers. Modules,
+async arrows/methods/generators, Proxy, and broad built-in coverage remain
 incomplete. Pinned QuickJS is the test oracle, never a product dependency.
 
 ## Try it

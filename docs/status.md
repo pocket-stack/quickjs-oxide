@@ -2304,20 +2304,22 @@ claim full parity.
   it. The same activation path preserves direct-eval variable objects before
   and after suspension.
 
-  The dependency-audited scoped cohort starts from 207 paths in the pinned
-  AsyncFunction/async-function/await roots. Sixty-five explicit exclusions
-  keep complex parameters, eval/with adjacencies, async arrows, async
-  generators/for-await, and host/cross-realm dependencies outside this first
-  core. The clean manifest contains 142 paths / 259 variants: 95 positive and
+  The original R3z dependency-audited scoped cohort started from 207 paths in
+  the pinned AsyncFunction/async-function/await roots. At that landing,
+  sixty-five explicit exclusions kept complex parameters, eval/with
+  adjacencies, async arrows, async generators/for-await, and host/cross-realm
+  dependencies outside the first core. Its clean manifest contained 142 paths /
+  259 variants: 95 positive and
   47 exact parse/SyntaxError paths, with 65 async-harness and 77 synchronous
-  paths. Oxide passes 259/259 and pinned QuickJS passes all 142 paths. The
-  manifest, scoped-profile, variant-key, TSV, and JSONL SHA-256 values are
+  paths. Oxide passed 259/259 and pinned QuickJS passed all 142 paths. The
+  manifest, scoped-profile, variant-key, TSV, and JSONL SHA-256 values were
   `fdd1679242195cb32508b7976a1b0b3508fe96a2e77483808d3bf5c9c554ff52`,
   `05634144cdc2e64874ffda721b429181ac8b7a8f82b1ba253f2b8d8a29a4332e`,
   `a5249ce3625e80f41ea2464e00fcf19804913d49556e680ad6624fd6bf71d391`,
   `d0d3933d5cc4114b60a55bd6040d4350cba890b7d8a29a4e41e372eb4291cfaa`,
   and
   `9259b27b167856e5e3a2428530d1943d74fc967a659759568b5068ce2a74c4c3`.
+  Those values preserve the historical R3z landing snapshot.
   The complete 102,037-key R3y/R3z join has no missing, extra, duplicate, or
   previous-pass row. It records 54 `fail-parse -> pass`, four
   `fail-runtime -> pass`, four `fail-parse -> fail-runtime`, 19
@@ -2336,6 +2338,30 @@ claim full parity.
   compares the identical fixture in both engines.
   Async arrows, object/class async methods, async generators, for-await, and
   modules remain explicit later frontiers.
+
+  R3aa expands only the authenticated bookkeeping around that implementation.
+  It admits all 40 complex-parameter paths and nine of the 11 eval/with
+  adjacencies from the original R3z exclusion ledger. The two remaining
+  eval/with paths contain async arrows, so the current 16-path ledger consists
+  of ten async-arrow paths, those two async-arrow-dependent eval paths, two
+  async-generator/for-await paths, and two host/cross-realm paths. The current
+  clean manifest contains 191 paths / 348 variants: 126 positive and 65 exact
+  parse/SyntaxError paths, with 96 async-harness and 95 synchronous paths; 157
+  paths run in both modes, 26 are `noStrict`, and eight are `onlyStrict`.
+  Oxide passes 348/348, and pinned QuickJS passes all 191 paths.
+
+  The current exclusion-ledger, manifest, scoped-profile, variant-key, TSV,
+  and JSONL SHA-256 values are
+  `7c29c59cc107d74da4a5fcfba4571947195003a2f551bb82f9fc2dd8b3fb42ac`,
+  `a0fa7acd444257ca7cbfffc40c61eb3b85867c81df04f1d1691100a72c97b0dc`,
+  `7fb94b8e350b5a270ab5f685f0a223e32c7d12fedf0ac3e0c1e157b03f4f0b33`,
+  `25e87df8047ce67fb30a570f9e211540b689dc00c9a4b7e29de20b528f77a077`,
+  `ba690597d3ca1d9f6604106b0d54d37a7d1215b4a832c0a72a4ccdde8c28e913`,
+  and
+  `fe4be77b96c8af7b8bda137d8377818ab04450f340beaa2e172f290eadcb264f`.
+  This is a scoped-evidence expansion, not a new semantic or scoreboard
+  landing: the global profile, 43,643/102,037 vector, and full-vector hashes
+  remain unchanged.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
@@ -5192,11 +5218,13 @@ trampoline plus explicit compiler work storage is required to recover
 upstream's substantially deeper platform-dependent limits throughout.
 
 The language slice remains incomplete. Ordinary async function
-declarations/expressions and simple parameters are implemented; async arrows,
-`for-await`, other general assignment targets, module resolution, async
-methods and non-simple parameter forms, async class methods/generators, and
-non-simple ObjectLiteral accessor forms outside the covered
-synchronous setter slice, and callable Proxy classes are not yet implemented.
+declarations/expressions, `await`, simple parameters, and the audited
+default/rest/destructuring parameter plus eval/with forms are implemented.
+Async arrows, `for-await`, other general assignment targets, module
+resolution, async methods, remaining non-simple parameter combinations, async
+class methods/generators, non-simple ObjectLiteral accessor forms outside the
+covered synchronous setter slice, and callable Proxy classes are not yet
+implemented.
 Unsupported declaration contexts are rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` supports
 simple identifiers and recursive array/object/rest patterns in direct Program
