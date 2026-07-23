@@ -4883,6 +4883,21 @@ fn native_iterator_next_wraps_public_calls_but_for_of_consumes_raw_outcomes() {
         "direct Array Iterator next must use the raw native ABI"
     );
 
+    let before_concat_raw = runtime.0.state.borrow().iterator_result_allocations;
+    assert_eq!(
+        context
+            .eval(
+                "(function(){var sum=0;for(var value of Iterator.concat([20],[22]))sum+=value;return sum})()",
+            )
+            .unwrap(),
+        Value::Int(42)
+    );
+    assert_eq!(
+        runtime.0.state.borrow().iterator_result_allocations,
+        before_concat_raw,
+        "direct Iterator Concat next and its inner built-ins must use the raw native ABI"
+    );
+
     let before_bound = runtime.0.state.borrow().iterator_result_allocations;
     assert_eq!(
         context
@@ -4901,7 +4916,7 @@ fn native_iterator_next_wraps_public_calls_but_for_of_consumes_raw_outcomes() {
 }
 
 #[test]
-fn native_iterator_next_raw_dispatch_keeps_the_function_defining_realm() {
+fn native_iterator_next_raw_dispatch_keeps_the_outer_operation_realm() {
     let runtime = Runtime::new();
     let mut defining = runtime.new_context();
     let mut caller = runtime.new_context();
@@ -4975,18 +4990,18 @@ fn native_iterator_next_raw_dispatch_keeps_the_function_defining_realm() {
     else {
         panic!("wrong-brand raw iterator-next call did not return its caught Error");
     };
-    let type_error = global_callable(&runtime, &mut defining, "TypeError");
+    let type_error = global_callable(&runtime, &mut caller, "TypeError");
     let prototype_key = runtime.intern_property_key("prototype").unwrap();
-    let Value::Object(type_error_prototype) = defining
+    let Value::Object(type_error_prototype) = caller
         .get_property(type_error.as_object(), &prototype_key)
         .unwrap()
     else {
-        panic!("defining TypeError.prototype was not an object");
+        panic!("caller TypeError.prototype was not an object");
     };
     assert_eq!(
         runtime.get_prototype_of(&error).unwrap(),
         Some(type_error_prototype),
-        "raw iterator-next errors must use the native function's defining realm"
+        "QuickJS's direct native iterator-next path keeps the outer operation realm"
     );
     assert_eq!(
         runtime.0.state.borrow().iterator_result_allocations,

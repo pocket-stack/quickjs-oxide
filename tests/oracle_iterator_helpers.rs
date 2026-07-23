@@ -13,8 +13,8 @@ struct Case {
 // Differential lock for the synchronous Iterator helpers surface in pinned
 // QuickJS 2026-06-04. Every case catches its own JavaScript failures and
 // returns an ASCII-only observation, so host-side differences cannot mask a
-// semantic mismatch. Iterator.concat is intentionally omitted until that
-// separately gated feature lands.
+// semantic mismatch. Iterator.concat has its own deeper differential suite,
+// but its static constructor slot remains part of this shared intrinsic graph.
 const CASES: &[Case] = &[
     Case {
         group: "intrinsic graph",
@@ -31,11 +31,10 @@ const CASES: &[Case] = &[
                     if(key===Symbol.toStringTag)return "@@toStringTag";
                     return String(key);
                 }
-                function keys(object,ignoreConcat){
+                function keys(object){
                     var own=Reflect.ownKeys(object),result=[],index,key;
                     for(index=0;index<own.length;index++){
                         key=own[index];
-                        if(ignoreConcat&&key==="concat")continue;
                         result.push(keyName(key));
                     }
                     return result.join(",");
@@ -59,9 +58,9 @@ const CASES: &[Case] = &[
                     "ctor="+typeof Iterator+":"+Iterator.name+":"+Iterator.length,
                     "links="+(Object.getPrototypeOf(Iterator)===Function.prototype)+":"+
                         (Object.getPrototypeOf(Iterator.prototype)===Object.prototype),
-                    "static="+keys(Iterator,true),
+                    "static="+keys(Iterator),
                     "prototype="+bits(Object.getOwnPropertyDescriptor(Iterator,"prototype"))+
-                        ":"+keys(Iterator.prototype,false),
+                        ":"+keys(Iterator.prototype),
                     "methods="+methods.join(";"),
                     "constructor-accessor="+bit(!("value" in constructorDescriptor))+
                         bit(constructorDescriptor.enumerable)+
@@ -88,7 +87,7 @@ const CASES: &[Case] = &[
         })()"#,
         expected: concat!(
             "global=101:true|ctor=function:Iterator:0|links=true:true|",
-            "static=length,name,from,prototype|",
+            "static=length,name,concat,from,prototype|",
             "prototype=000:drop,filter,flatMap,map,take,every,find,forEach,some,",
             "reduce,toArray,constructor,@@iterator,@@toStringTag|",
             "methods=drop:drop:1:101;filter:filter:1:101;flatMap:flatMap:1:101;",

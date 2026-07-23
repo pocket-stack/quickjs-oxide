@@ -165,15 +165,16 @@ struct ActiveFrameRecord {
 struct ActiveFrameToken(u64);
 
 /// Flags which belong to a QuickJS stack frame rather than to the callable
-/// heap object. Async execution and backtrace barriers are reserved here for
-/// the later stack/debug-info slice even though this first infrastructure step
-/// only populates `strict`.
+/// heap object. Raw IteratorNext dispatch keeps a rooted validation frame but
+/// hides it from JavaScript backtraces because QuickJS calls that native
+/// function pointer without pushing a visible `JSStackFrame`.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct ActiveFrameFlags {
     strict: bool,
     is_async: bool,
     backtrace_barrier: bool,
+    backtrace_hidden: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -881,13 +882,6 @@ impl Runtime {
             .expect("Object.prototype intrinsic initialization must succeed");
         self.initialize_function_prototype_methods(realm, &function_prototype)
             .expect("Function.prototype method initialization must succeed");
-        self.initialize_iterator_intrinsic(
-            realm,
-            &function_prototype,
-            &iterator_prototype,
-            &global_object,
-        )
-        .expect("Iterator intrinsic initialization must succeed");
         self.initialize_error_intrinsics(
             realm,
             &function_prototype,
@@ -913,6 +907,15 @@ impl Runtime {
         .expect("Object intrinsic initialization must succeed");
         self.initialize_function_constructor(realm, &function_prototype, &global_object)
             .expect("Function constructor initialization must succeed");
+        // QuickJS installs `%Iterator%` after Function and before the global
+        // function-list prefix. This is observable in global own-key order.
+        self.initialize_iterator_intrinsic(
+            realm,
+            &function_prototype,
+            &iterator_prototype,
+            &global_object,
+        )
+        .expect("Iterator intrinsic initialization must succeed");
         self.initialize_global_functions_prefix(realm, &function_prototype, &global_object)
             .expect("global function-list prefix initialization must succeed");
         // QuickJS's `js_global_funcs` table places these constants immediately
@@ -4465,6 +4468,7 @@ impl Runtime {
         realm: ContextId,
         flags: ActiveFrameFlags,
         kind: ActiveFrameKind,
+        native_iterator_next_fast_path: bool,
     ) -> Result<ActiveFrameGuard, RuntimeError> {
         if !function_root.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("active-frame function"));
@@ -4505,7 +4509,10 @@ impl Runtime {
                     None,
                 ) if data.target == target
                     && data.realm.is_some_and(|defining_realm| {
-                        target.uses_calling_realm() || defining_realm == realm
+                        target.uses_calling_realm()
+                            || defining_realm == realm
+                            || (native_iterator_next_fast_path
+                                && target.descriptor().cproto == NativeCProto::IteratorNext)
                     })
                     && readable_arg_count
                         == actual_arg_count.max(usize::from(data.min_readable_args)) => {}
@@ -4567,6 +4574,7 @@ impl Runtime {
                 ..ActiveFrameFlags::default()
             },
             ActiveFrameKind::Bytecode { bytecode, pc: None },
+            false,
         )
     }
 
@@ -4588,6 +4596,32 @@ impl Runtime {
                 actual_arg_count,
                 readable_arg_count,
             },
+            false,
+        )
+    }
+
+    fn push_native_iterator_next_active_frame(
+        &self,
+        function_root: ObjectRef,
+        realm: ContextId,
+        target: NativeFunctionId,
+        actual_arg_count: usize,
+        readable_arg_count: usize,
+    ) -> Result<ActiveFrameGuard, RuntimeError> {
+        self.push_active_frame(
+            function_root,
+            None,
+            realm,
+            ActiveFrameFlags {
+                backtrace_hidden: true,
+                ..ActiveFrameFlags::default()
+            },
+            ActiveFrameKind::Native {
+                target,
+                actual_arg_count,
+                readable_arg_count,
+            },
+            true,
         )
     }
 
@@ -4790,6 +4824,7 @@ impl Runtime {
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::IteratorHelper(_)
                 | ObjectPayload::IteratorWrap(_)
+                | ObjectPayload::IteratorConcat(_)
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::Set { .. }
@@ -4854,6 +4889,7 @@ impl Runtime {
             | ObjectPayload::ArrayIterator { .. }
             | ObjectPayload::IteratorHelper(_)
             | ObjectPayload::IteratorWrap(_)
+            | ObjectPayload::IteratorConcat(_)
             | ObjectPayload::Map { .. }
             | ObjectPayload::MapIterator { .. }
             | ObjectPayload::Set { .. }
@@ -4870,17 +4906,20 @@ impl Runtime {
         }
     }
 
-    /// Invoke a direct `NativeCProto::IteratorNext` method through the same
-    /// defining-realm native frame used by an ordinary call, but retain its raw
-    /// value/done result for the VM. All other callable shapes use the generic
-    /// JavaScript call and iterator-result parsing path.
+    /// Invoke a direct `NativeCProto::IteratorNext` method in the outer
+    /// iterator operation's current realm while retaining its raw value/done
+    /// result for the VM. Pinned QuickJS calls the C iterator-next pointer
+    /// directly in `JS_IteratorNext2`, bypassing the ordinary C-function realm
+    /// switch. All other callable shapes use the generic JavaScript call and
+    /// iterator-result parsing path.
     fn try_call_native_iterator_next_raw(
         &self,
+        realm: ContextId,
         callable: &CallableRef,
         iterator: Value,
     ) -> Result<Option<NativeInvokeOutcome>, RuntimeError> {
         self.validate_value_domain(&iterator, "iterator-next receiver")?;
-        let Some((target, realm, min_readable_args)) =
+        let Some((target, _defining_realm, min_readable_args)) =
             self.direct_native_callable_metadata(callable)?
         else {
             return Ok(None);
@@ -5215,6 +5254,7 @@ impl Runtime {
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::IteratorHelper(_)
                 | ObjectPayload::IteratorWrap(_)
+                | ObjectPayload::IteratorConcat(_)
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::Set { .. }
@@ -5326,7 +5366,9 @@ impl Runtime {
                 "native function lost its defining realm",
             ))?;
             if data.target != target
-                || (!target.uses_calling_realm() && defining_realm != realm)
+                || (matches!(mode, NativeInvokeMode::Ordinary)
+                    && !target.uses_calling_realm()
+                    && defining_realm != realm)
                 || data.min_readable_args != min_readable_args
             {
                 return Err(RuntimeError::Invariant(
@@ -5345,13 +5387,22 @@ impl Runtime {
             actual_arg_count,
             readable,
         };
-        let active_frame = self.push_native_active_frame(
-            callable.as_object().clone(),
-            realm,
-            target,
-            actual_arg_count,
-            available_arg_count,
-        )?;
+        let active_frame = match mode {
+            NativeInvokeMode::Ordinary => self.push_native_active_frame(
+                callable.as_object().clone(),
+                realm,
+                target,
+                actual_arg_count,
+                available_arg_count,
+            )?,
+            NativeInvokeMode::IteratorNextRaw => self.push_native_iterator_next_active_frame(
+                callable.as_object().clone(),
+                realm,
+                target,
+                actual_arg_count,
+                available_arg_count,
+            )?,
+        };
 
         // JavaScript-style engine errors are materialized in the selected
         // execution realm while its frame is still visible. A pre-existing
@@ -5536,6 +5587,9 @@ impl Runtime {
         for frame in state.active_frames.iter().rev() {
             if frame.flags.backtrace_barrier {
                 break;
+            }
+            if frame.flags.backtrace_hidden {
+                continue;
             }
             if skip_first_frame {
                 skip_first_frame = false;
@@ -6296,6 +6350,7 @@ impl Runtime {
                         | ObjectPayload::ArrayIterator { .. }
                         | ObjectPayload::IteratorHelper(_)
                         | ObjectPayload::IteratorWrap(_)
+                        | ObjectPayload::IteratorConcat(_)
                         | ObjectPayload::Map { .. }
                         | ObjectPayload::MapIterator { .. }
                         | ObjectPayload::Set { .. }
@@ -6618,6 +6673,7 @@ impl Runtime {
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::IteratorHelper(_)
                 | ObjectPayload::IteratorWrap(_)
+                | ObjectPayload::IteratorConcat(_)
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::Set { .. }
@@ -6839,6 +6895,7 @@ impl Runtime {
                         | ObjectPayload::ArrayIterator { .. }
                         | ObjectPayload::IteratorHelper(_)
                         | ObjectPayload::IteratorWrap(_)
+                        | ObjectPayload::IteratorConcat(_)
                         | ObjectPayload::Map { .. }
                         | ObjectPayload::MapIterator { .. }
                         | ObjectPayload::Set { .. }
@@ -6949,6 +7006,7 @@ impl Runtime {
                         | ObjectPayload::ArrayIterator { .. }
                         | ObjectPayload::IteratorHelper(_)
                         | ObjectPayload::IteratorWrap(_)
+                        | ObjectPayload::IteratorConcat(_)
                         | ObjectPayload::Map { .. }
                         | ObjectPayload::MapIterator { .. }
                         | ObjectPayload::Set { .. }
@@ -7326,6 +7384,7 @@ impl Runtime {
                     | ObjectPayload::ArrayIterator { .. }
                     | ObjectPayload::IteratorHelper(_)
                     | ObjectPayload::IteratorWrap(_)
+                    | ObjectPayload::IteratorConcat(_)
                     | ObjectPayload::Map { .. }
                     | ObjectPayload::MapIterator { .. }
                     | ObjectPayload::Set { .. }
@@ -8251,6 +8310,7 @@ impl Runtime {
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::IteratorHelper(_)
                 | ObjectPayload::IteratorWrap(_)
+                | ObjectPayload::IteratorConcat(_)
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::Set { .. }
@@ -9258,8 +9318,8 @@ impl Context {
         )?)
     }
 
-    /// Return this realm's `%IteratorPrototype%` root. The global `Iterator`
-    /// constructor and Iterator Helpers are intentionally not exposed yet.
+    /// Return this realm's `%IteratorPrototype%` root beneath the public
+    /// `Iterator`, Iterator Helpers, and `Iterator.concat` intrinsic graph.
     pub fn iterator_prototype(&self) -> Result<ObjectRef, RuntimeError> {
         let object = self
             .runtime

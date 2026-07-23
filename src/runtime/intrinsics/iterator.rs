@@ -1,4 +1,5 @@
-//! `%Iterator%`, `Iterator.from`, and synchronous Iterator Helpers.
+//! `%Iterator%`, `Iterator.from`, `Iterator.concat`, and synchronous Iterator
+//! Helpers.
 //!
 //! The implementation follows the pinned QuickJS iterator slice rather than
 //! treating the proposal methods as Array conveniences.  In particular,
@@ -13,6 +14,8 @@ use crate::heap::{
 
 use super::super::*;
 use super::object::ObjectIteratorStep;
+
+mod concat;
 
 enum IteratorClose {
     Closed,
@@ -65,6 +68,7 @@ impl Runtime {
         iterator_prototype: &ObjectRef,
         global_object: &ObjectRef,
     ) -> Result<(), RuntimeError> {
+        let concat_prototype = self.new_object(Some(iterator_prototype))?;
         let helper_prototype = self.new_object(Some(iterator_prototype))?;
         let wrap_prototype = self.new_object(Some(iterator_prototype))?;
 
@@ -124,6 +128,14 @@ impl Runtime {
             NativeFunctionId::IteratorConstructor,
             0,
             "Iterator",
+            0,
+        )?;
+        self.define_native_builtin_auto_init(
+            constructor.as_object(),
+            realm,
+            NativeFunctionId::IteratorConcat,
+            "concat",
+            0,
             0,
         )?;
         self.define_native_builtin_auto_init(
@@ -218,6 +230,24 @@ impl Runtime {
             ));
         }
 
+        self.define_native_builtin_auto_init(
+            &concat_prototype,
+            realm,
+            NativeFunctionId::IteratorConcatNext,
+            "next",
+            0,
+            0,
+        )?;
+        self.define_native_builtin_auto_init(
+            &concat_prototype,
+            realm,
+            NativeFunctionId::IteratorConcatReturn,
+            "return",
+            0,
+            0,
+        )?;
+        self.define_iterator_data_tag(&concat_prototype, "Iterator Concat")?;
+
         for (kind, name) in [
             (IteratorResumeKind::Next, "next"),
             (IteratorResumeKind::Return, "return"),
@@ -258,6 +288,7 @@ impl Runtime {
             realm,
             IteratorRealmData {
                 constructor: constructor.as_object().object_id(),
+                concat_prototype: concat_prototype.object_id(),
                 helper_prototype: helper_prototype.object_id(),
                 wrap_prototype: wrap_prototype.object_id(),
             },

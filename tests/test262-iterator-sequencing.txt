@@ -1,0 +1,37 @@
+# Iterator.concat sequencing gate for QuickJS 2026-06-04.
+#
+# This is every path in the pinned Test262 checkout whose metadata names the
+# iterator-sequencing feature. The 32 paths have no exclusions and are all run
+# in sloppy and strict mode (64 variants). Keep this list bytewise sorted.
+test/built-ins/Iterator/concat/arguments-checked-in-order.js
+test/built-ins/Iterator/concat/fresh-iterator-result.js
+test/built-ins/Iterator/concat/get-iterator-method-only-once.js
+test/built-ins/Iterator/concat/get-iterator-method-throws.js
+test/built-ins/Iterator/concat/get-value-after-done.js
+test/built-ins/Iterator/concat/inner-iterator-created-in-order.js
+test/built-ins/Iterator/concat/is-function.js
+test/built-ins/Iterator/concat/iterable-primitive-wrapper-objects.js
+test/built-ins/Iterator/concat/length.js
+test/built-ins/Iterator/concat/many-arguments.js
+test/built-ins/Iterator/concat/name.js
+test/built-ins/Iterator/concat/next-method-called-with-zero-arguments.js
+test/built-ins/Iterator/concat/next-method-returns-non-object.js
+test/built-ins/Iterator/concat/next-method-returns-throwing-done.js
+test/built-ins/Iterator/concat/next-method-returns-throwing-value-done.js
+test/built-ins/Iterator/concat/next-method-returns-throwing-value.js
+test/built-ins/Iterator/concat/next-method-throws.js
+test/built-ins/Iterator/concat/non-constructible.js
+test/built-ins/Iterator/concat/prop-desc.js
+test/built-ins/Iterator/concat/proto.js
+test/built-ins/Iterator/concat/result-is-iterator.js
+test/built-ins/Iterator/concat/return-is-forwarded.js
+test/built-ins/Iterator/concat/return-is-not-forwarded-after-exhaustion.js
+test/built-ins/Iterator/concat/return-is-not-forwarded-before-initial-start.js
+test/built-ins/Iterator/concat/return-method-called-with-zero-arguments.js
+test/built-ins/Iterator/concat/single-argument.js
+test/built-ins/Iterator/concat/throws-typeerror-when-generator-is-running-next.js
+test/built-ins/Iterator/concat/throws-typeerror-when-generator-is-running-return.js
+test/built-ins/Iterator/concat/throws-typeerror-when-iterable-not-an-object.js
+test/built-ins/Iterator/concat/throws-typeerror-when-iterator-method-not-callable.js
+test/built-ins/Iterator/concat/throws-typeerror-when-iterator-not-an-object.js
+test/built-ins/Iterator/concat/zero-arguments.js

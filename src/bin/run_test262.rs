@@ -188,6 +188,10 @@ const TEST262_ITERATOR_HELPERS_PROFILE_SHA256: &str =
     "d9e6f4fcf8cb6f20fb0ebba012451abbaad52bbe676430f2433b9398174e3c83";
 const TEST262_ITERATOR_HELPERS_MANIFEST_SHA256: &str =
     "ce8dd5bfebd79924090ff4a628607009d11ff116ffeb38720808b585335a91e5";
+const TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256: &str =
+    "ee7e5626b6c27a9f4a8257984439ca2641d31258521e060fce24101cf1d1e0f0";
+const TEST262_ITERATOR_SEQUENCING_MANIFEST_SHA256: &str =
+    "74eebb8c63a2606e54e1d0023c5244b8a0538ac51d1ca0a105fe56a04fa74af2";
 const TEST262_REGEXP_BUILTINS_PROFILE_SHA256: &str =
     "0214f6789a3276c4755fadde19477b70620184a6137d29eefef0975cfb379c15";
 const TEST262_REGEXP_BUILTINS_MANIFEST_SHA256: &str =
@@ -747,6 +751,7 @@ enum OxideProfileKind {
     SymbolProtocols,
     GeneratorDestructuring,
     IteratorHelpers,
+    IteratorSequencing,
     RegExpBuiltins,
 }
 
@@ -896,6 +901,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-iterator-helpers.conf"),
             OxideProfileKind::IteratorHelpers,
+        ),
+        (
+            root.join("tests/test262-iterator-sequencing.conf"),
+            OxideProfileKind::IteratorSequencing,
         ),
         (
             root.join("tests/test262-regexp-builtins.conf"),
@@ -1596,6 +1605,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "tests/test262-iterator-helpers.txt",
             TEST262_ITERATOR_HELPERS_MANIFEST_SHA256,
         ),
+        OxideProfileKind::IteratorSequencing => verify_scoped_pinned_profile(
+            options,
+            "Iterator.concat sequencing",
+            TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256,
+            "tests/test262-iterator-sequencing.txt",
+            TEST262_ITERATOR_SEQUENCING_MANIFEST_SHA256,
+        ),
     }
 }
 
@@ -1874,7 +1890,8 @@ mod cli_tests {
         TEST262_CLASS_PRIVATE_METHODS_PROFILE_SHA256, TEST262_CLASS_PUBLIC_INIT_PROFILE_SHA256,
         TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256, TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256,
         TEST262_IDENTIFIER_REST_PROFILE_SHA256, TEST262_ITERATOR_HELPERS_PROFILE_SHA256,
-        TEST262_MAP_PROFILE_SHA256, TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
+        TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256, TEST262_MAP_PROFILE_SHA256,
+        TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_NESTED_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_REST_PROFILE_SHA256, TEST262_OBJECT_BINDING_PROFILE_SHA256,
         TEST262_OBJECT_REST_BINDING_PROFILE_SHA256,
@@ -2165,6 +2182,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-iterator-helpers.conf")).unwrap(),
             OxideProfileKind::IteratorHelpers
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-iterator-sequencing.conf")).unwrap(),
+            OxideProfileKind::IteratorSequencing
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-regexp-builtins.conf")).unwrap(),
@@ -4033,6 +4054,53 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-iterator-helpers.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_iterator_sequencing_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-iterator-sequencing.conf",
+            "--manifest",
+            "tests/test262-iterator-sequencing.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/built-ins/Iterator/concat/single-argument.js",
+            ],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-iterator-sequencing.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

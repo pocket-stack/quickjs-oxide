@@ -369,6 +369,9 @@ impl Runtime {
             NativeFunctionId::GeneratorPrototypeResume(kind) => {
                 self.call_generator_prototype_resume_raw(realm, kind, invocation, arguments)
             }
+            NativeFunctionId::IteratorConcatNext => {
+                self.call_iterator_concat_next_raw(realm, invocation)
+            }
             _ => Err(RuntimeError::Invariant(
                 "IteratorNext cproto has no raw native dispatcher",
             )),
@@ -694,6 +697,9 @@ impl Runtime {
             NativeFunctionId::IteratorConstructor => {
                 self.call_iterator_constructor(realm, invocation)
             }
+            NativeFunctionId::IteratorConcat => {
+                self.call_iterator_concat(realm, invocation, arguments)
+            }
             NativeFunctionId::IteratorFrom => self.call_iterator_from(realm, invocation, arguments),
             NativeFunctionId::IteratorConstructorAccessor => {
                 self.call_iterator_constructor_accessor(callable, realm, invocation, arguments)
@@ -715,6 +721,12 @@ impl Runtime {
             }
             NativeFunctionId::IteratorWrapResume(kind) => {
                 self.call_iterator_wrap_resume(realm, kind, invocation)
+            }
+            NativeFunctionId::IteratorConcatNext => {
+                self.call_iterator_concat_next(realm, invocation)
+            }
+            NativeFunctionId::IteratorConcatReturn => {
+                self.call_iterator_concat_return(realm, invocation)
             }
             NativeFunctionId::IteratorPrototypeIterator => {
                 self.call_iterator_prototype_iterator(invocation)

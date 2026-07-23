@@ -470,9 +470,11 @@ impl Runtime {
             )?));
         };
 
-        let result = match self
-            .try_call_native_iterator_next_raw(&next_method, Value::Object(iterator.clone()))?
-        {
+        let result = match self.try_call_native_iterator_next_raw(
+            realm,
+            &next_method,
+            Value::Object(iterator.clone()),
+        )? {
             Some(NativeInvokeOutcome::IteratorNextRaw { value, done }) => {
                 return Ok(if done {
                     ObjectIteratorStep::Done
@@ -825,6 +827,7 @@ impl Runtime {
                 | ObjectPayload::Promise(_)
                 | ObjectPayload::IteratorHelper(_)
                 | ObjectPayload::IteratorWrap(_)
+                | ObjectPayload::IteratorConcat(_)
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::Set { .. }

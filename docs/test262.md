@@ -3770,7 +3770,7 @@ dependencies are not implemented; the complete vector therefore remains
 mode refuses to write a baseline unless all 1,046 frozen variants pass, while
 `--check` authenticates the inventory, dependencies, scoped profile, and both
 pinned QuickJS modes without running Oxide. `Iterator.concat` belongs to the
-separate `iterator-sequencing` cohort and is intentionally the next milestone.
+separate R3w `iterator-sequencing` cohort documented immediately below.
 
 Reproduce R3v with:
 
@@ -3778,6 +3778,57 @@ Reproduce R3v with:
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_iterator_helpers -- --nocapture
 ./scripts/test-test262-iterator-helpers.sh
+./scripts/test-test262-full.sh
+```
+
+## R3w Iterator.concat sequencing
+
+R3w ports pinned QuickJS's independent `JS_CLASS_ITERATOR_CONCAT` payload,
+hidden prototype, `Iterator.concat`, `next`, and `return` algorithms. It keeps
+the upstream eager/lazy boundary: input objects and their `@@iterator` methods
+are validated and captured left-to-right at construction, while each iterator
+and cached `next` method is created only when reached. Abrupt open, step,
+`done`, or `value` operations retain retryable state and never close the inner
+iterator. A throwing `return` getter also preserves state; once that getter
+succeeds, the call result or error is forwarded exactly and all remaining
+state is drained.
+
+The pinned Test262 feature inventory is exact and unusually clean: all 32
+`iterator-sequencing` paths live under `test/built-ins/Iterator/concat`, every
+path has both ordinary variants, and none uses Proxy, a host hook, a negative
+phase, a special flag, or a pinned-config exclusion. Oxide and QuickJS
+2026-06-04 both pass all 64 sloppy/strict variants with zero failure,
+unsupported result, skip, duplicate key, timeout, crash, or engine fault.
+
+The manifest path-stream and complete-file hashes are
+`4a2613c71099c481cf16a9ca087c2c6db92112341008f785ce1363cd6794e18d`
+and
+`74eebb8c63a2606e54e1d0023c5244b8a0538ac51d1ca0a105fe56a04fa74af2`.
+The scoped profile and `(path, variant)` key hashes are
+`ee7e5626b6c27a9f4a8257984439ca2641d31258521e060fce24101cf1d1e0f0`
+and
+`eab38e1c6d7f22397e7c8521ec934476b2472406db5d83cfea23d0fbe7b17d5b`.
+The canonical TSV/JSONL hashes are
+`8bfddd2cc4d09e2f634da3cbba2c3007a77883ec3b38404e22e863b8e64f0fa6`
+and
+`679dd372cf6dcaf288af3578f8b3f5afb4dd0b19ad6e81fb7d7da95bf8b5e44c`;
+the non-pass stream is empty.
+
+Test262 has no cross-realm rows here and only shallow coverage of getter
+caching, retry state, return error priority, and reentry. The separate pinned
+QuickJS differential and Rust heap/runtime tests lock those boundaries. A
+pinned same-runtime libquickjs C probe plus the two-context Rust regression
+lock the `JS_IteratorNext2` native fast path retaining the outer operation's
+current realm. This remains a scoped admission: the global profile does not
+claim `iterator-sequencing`, and the conservative full vector remains
+43,521/102,037 until a separately audited global admission is justified.
+
+Reproduce R3w with:
+
+```sh
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_iterator_concat -- --nocapture
+./scripts/test-test262-iterator-sequencing.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -3887,6 +3938,7 @@ canonical progress report.
 ./scripts/test-test262-class-private-generator-methods.sh
 ./scripts/test-test262-generator-destructuring.sh
 ./scripts/test-test262-iterator-helpers.sh
+./scripts/test-test262-iterator-sequencing.sh
 ./scripts/test-r3r-generator-destructuring-return-oracle.sh --oxide target/debug/qjs
 ./scripts/test-test262-full.sh
 ```
@@ -4086,8 +4138,10 @@ Promise features.
 R3v adds the synchronous `Iterator` intrinsic and core Iterator Helpers. Its
 dependency-audited 523-path/1,046-variant scoped gate passes 1,046/1,046 in
 both Oxide and pinned QuickJS. The global score remains 43,521 because Proxy
-and host-dependent adjacencies remain fail-closed; `Iterator.concat` is the
-next separate sequencing slice.
+and host-dependent adjacencies remain fail-closed. R3w adds the independent
+`Iterator.concat` sequencing state machine; its clean 32-path/64-variant scoped
+gate passes 64/64 in both engines. That cohort remains deliberately unadmitted
+globally, so the full vector is still 43,521/102,037.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

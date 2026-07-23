@@ -2277,7 +2277,7 @@ impl VmHost for RuntimeVmHost {
         };
         let result = match self
             .runtime
-            .try_call_native_iterator_next_raw(&next_method, iterator.clone())
+            .try_call_native_iterator_next_raw(self.current_realm, &next_method, iterator.clone())
             .map_err(runtime_error_to_vm_error)?
         {
             Some(NativeInvokeOutcome::IteratorNextRaw { value, done }) => {
@@ -2454,6 +2454,7 @@ impl VmHost for RuntimeVmHost {
             | ObjectPayload::ArrayIterator { .. }
             | ObjectPayload::IteratorHelper(_)
             | ObjectPayload::IteratorWrap(_)
+            | ObjectPayload::IteratorConcat(_)
             | ObjectPayload::Map { .. }
             | ObjectPayload::MapIterator { .. }
             | ObjectPayload::Set { .. }

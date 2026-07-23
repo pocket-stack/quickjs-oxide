@@ -116,6 +116,8 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/test-test262-class-derived.sh
 ./scripts/test-test262-class-public-init.sh
 ./scripts/test-test262-generator-destructuring.sh
+./scripts/test-test262-iterator-helpers.sh
+./scripts/test-test262-iterator-sequencing.sh
 ./scripts/test-test262-full.sh
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ./scripts/check-rust-only.sh

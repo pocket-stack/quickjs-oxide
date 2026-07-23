@@ -424,12 +424,14 @@ pub struct PromiseRealmData {
 ///
 /// `%IteratorPrototype%` is already a mandatory [`ContextData`] root because
 /// concrete built-in iterators depend on it before the public `%Iterator%`
-/// constructor is installed. The three identities here are attached later as
+/// constructor is installed. The four identities here are attached later as
 /// one transaction, matching QuickJS's `iterator_ctor` and class-prototype
-/// roots for `JS_CLASS_ITERATOR_HELPER` and `JS_CLASS_ITERATOR_WRAP`.
+/// roots for `JS_CLASS_ITERATOR_CONCAT`, `JS_CLASS_ITERATOR_HELPER`, and
+/// `JS_CLASS_ITERATOR_WRAP`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IteratorRealmData {
     pub constructor: ObjectId,
+    pub concat_prototype: ObjectId,
     pub helper_prototype: ObjectId,
     pub wrap_prototype: ObjectId,
 }
@@ -491,8 +493,8 @@ pub struct ContextData {
     /// Realm-local `%Promise.prototype%` and `%Promise%`, attached atomically
     /// after their reciprocal public property graph is initialized.
     pub promise: Option<PromiseRealmData>,
-    /// Realm-local `%Iterator%` constructor plus the hidden Iterator Helper
-    /// and Iterator Wrap class prototypes.
+    /// Realm-local `%Iterator%` constructor plus the hidden Iterator Concat,
+    /// Iterator Helper, and Iterator Wrap class prototypes.
     pub iterator: Option<IteratorRealmData>,
     /// `%Function%`, published after the cyclic realm bootstrap has created
     /// `%Function.prototype%` and the global object.
@@ -4389,6 +4391,27 @@ pub struct IteratorWrapData {
     pub next: RawValue,
 }
 
+/// One eagerly validated iterable/method pair retained by `Iterator.concat`.
+///
+/// Consumed slots become `None` so their edges can be released immediately,
+/// matching QuickJS's advancing finalizer boundary without shifting the
+/// remaining vector.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IteratorConcatItem {
+    pub iterable: ObjectId,
+    pub method: RawValue,
+}
+
+/// Hidden state of the lazy iterator returned by `Iterator.concat`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IteratorConcatData {
+    pub items: Vec<Option<IteratorConcatItem>>,
+    pub index: usize,
+    pub iterator: Option<ObjectId>,
+    pub next: RawValue,
+    pub running: bool,
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IteratorHelperRawValueField {
@@ -4615,6 +4638,9 @@ pub enum ObjectPayload {
     /// `JS_CLASS_ITERATOR_WRAP`: source iterator and cached `next` method
     /// retained by the wrapper returned from `Iterator.from`.
     IteratorWrap(IteratorWrapData),
+    /// `JS_CLASS_ITERATOR_CONCAT`: remaining iterable/method pairs plus the
+    /// lazily created current iterator and cached `next` method.
+    IteratorConcat(IteratorConcatData),
     NativeFunction {
         data: NativeFunctionData,
         internal: Option<InternalCallableData>,
@@ -4676,6 +4702,7 @@ pub enum ObjectKind {
     StringIterator,
     IteratorHelper,
     IteratorWrap,
+    IteratorConcat,
     NativeFunction,
     BoundFunction,
     BytecodeFunction,
@@ -5543,6 +5570,7 @@ pub enum NativeFunctionId {
     StringPrototypeCase(StringCaseKind),
     StringPrototypeCreateHtml(StringCreateHtmlKind),
     IteratorConstructor,
+    IteratorConcat,
     IteratorFrom,
     IteratorConstructorAccessor,
     IteratorPrototypeCreateHelper(IteratorHelperKind),
@@ -5554,6 +5582,8 @@ pub enum NativeFunctionId {
     IteratorPrototypeToStringTagSetter,
     IteratorHelperResume(IteratorResumeKind),
     IteratorWrapResume(IteratorResumeKind),
+    IteratorConcatNext,
+    IteratorConcatReturn,
     StringPrototypeIterator,
     StringIteratorNext,
     RegExpStringIteratorNext,
@@ -6003,6 +6033,7 @@ impl NativeFunctionId {
             | Self::MathSumPrecise
             | Self::StringPrototypeSubrange(_)
             | Self::StringPrototypeRepeat
+            | Self::IteratorConcat
             | Self::IteratorFrom
             | Self::IteratorConstructorAccessor
             | Self::IteratorPrototypeCreateHelper(_)
@@ -6012,6 +6043,7 @@ impl NativeFunctionId {
             | Self::IteratorPrototypeIterator
             | Self::IteratorHelperResume(_)
             | Self::IteratorWrapResume(_)
+            | Self::IteratorConcatReturn
             | Self::StringPrototypeIterator
             | Self::ArrayIsArray
             | Self::ArrayFrom
@@ -6142,6 +6174,7 @@ impl NativeFunctionId {
             | Self::ArrayIteratorNext
             | Self::MapIteratorNext
             | Self::SetIteratorNext
+            | Self::IteratorConcatNext
             | Self::GeneratorPrototypeResume(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::IteratorNext,
             },
@@ -6618,6 +6651,31 @@ impl ObjectData {
             is_constructor: false,
             kind: ObjectKind::IteratorWrap,
             payload: ObjectPayload::IteratorWrap(IteratorWrapData { source, next }),
+        }
+    }
+
+    /// Construct the lazy sequencing iterator returned by `Iterator.concat`.
+    #[must_use]
+    pub const fn iterator_concat(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        items: Vec<Option<IteratorConcatItem>>,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::IteratorConcat,
+            payload: ObjectPayload::IteratorConcat(IteratorConcatData {
+                items,
+                index: 0,
+                iterator: None,
+                next: RawValue::Undefined,
+                running: false,
+            }),
         }
     }
 
@@ -7201,6 +7259,7 @@ impl Heap {
             | ObjectPayload::StringIterator { .. }
             | ObjectPayload::IteratorHelper(_)
             | ObjectPayload::IteratorWrap(_)
+            | ObjectPayload::IteratorConcat(_)
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. }
             | ObjectPayload::Generator { .. }
@@ -7627,7 +7686,7 @@ impl Heap {
     }
 
     /// Atomically publish the synchronous Iterator constructor and the hidden
-    /// Iterator Helper/Wrap class prototypes.
+    /// Iterator Concat/Helper/Wrap class prototypes.
     pub(crate) fn attach_iterator_intrinsics(
         &mut self,
         realm: ContextId,
@@ -7660,12 +7719,19 @@ impl Heap {
             ));
         }
 
-        if iterator.helper_prototype == iterator.wrap_prototype {
+        if iterator.concat_prototype == iterator.helper_prototype
+            || iterator.concat_prototype == iterator.wrap_prototype
+            || iterator.helper_prototype == iterator.wrap_prototype
+        {
             return Err(HeapError::Invariant(
-                "Iterator Helper and Wrap prototypes share one identity",
+                "Iterator hidden prototypes share an identity",
             ));
         }
         for (prototype, message) in [
+            (
+                iterator.concat_prototype,
+                "Iterator Concat prototype is not an ordinary child of the realm's Iterator prototype",
+            ),
             (
                 iterator.helper_prototype,
                 "Iterator Helper prototype is not an ordinary child of the realm's Iterator prototype",
@@ -7686,6 +7752,7 @@ impl Heap {
 
         let edges = [
             RawId::Object(iterator.constructor),
+            RawId::Object(iterator.concat_prototype),
             RawId::Object(iterator.helper_prototype),
             RawId::Object(iterator.wrap_prototype),
         ];
@@ -9932,6 +9999,169 @@ impl Heap {
         Ok((data.source.clone(), data.next.clone()))
     }
 
+    /// Snapshot one `Iterator.concat` state machine. Raw values in the clone
+    /// do not own additional arena or atom references.
+    pub(crate) fn iterator_concat_state(
+        &self,
+        id: ObjectId,
+    ) -> Result<IteratorConcatData, HeapError> {
+        let ObjectPayload::IteratorConcat(data) = &self.object(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "Iterator Concat snapshot reached an object with the wrong class",
+            ));
+        };
+        Ok(data.clone())
+    }
+
+    /// Set or clear the `Iterator.concat` reentrancy guard.
+    pub(crate) fn set_iterator_concat_running(
+        &mut self,
+        id: ObjectId,
+        running: bool,
+    ) -> Result<(), HeapError> {
+        let ObjectPayload::IteratorConcat(data) = &mut self.object_mut(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "Iterator Concat execution update reached an object with the wrong class",
+            ));
+        };
+        data.running = running;
+        Ok(())
+    }
+
+    /// Replace the lazily created current iterator.
+    pub(crate) fn set_iterator_concat_iterator(
+        &mut self,
+        id: ObjectId,
+        replacement: Option<ObjectId>,
+    ) -> Result<HeapCleanup, HeapError> {
+        self.iterator_concat_state(id)?;
+        if let Some(replacement) = replacement {
+            self.object(replacement)?;
+        }
+        let new_edges: Vec<_> = replacement.into_iter().map(RawId::Object).collect();
+        self.retain_edges_transactionally(&new_edges)?;
+        let previous = {
+            let ObjectPayload::IteratorConcat(data) = &mut self.object_mut(id)?.payload else {
+                return Err(HeapError::Invariant(
+                    "Iterator Concat iterator update reached an object with the wrong class",
+                ));
+            };
+            std::mem::replace(&mut data.iterator, replacement)
+        };
+        if let Some(previous) = previous {
+            self.release_raw_no_drain(RawId::Object(previous))?;
+        }
+        self.drain_zero_queue()
+    }
+
+    /// Cache the current iterator's `next` property. Symbol atom ownership is
+    /// transferred separately by the runtime before this mutation.
+    pub(crate) fn set_iterator_concat_next(
+        &mut self,
+        id: ObjectId,
+        replacement: RawValue,
+    ) -> Result<HeapCleanup, HeapError> {
+        self.iterator_concat_state(id)?;
+        if !is_map_storable_value(&replacement) {
+            return Err(HeapError::Invariant(
+                "Iterator Concat next cache contains an internal value sentinel",
+            ));
+        }
+        let new_edges = raw_value_edges(&replacement);
+        self.retain_edges_transactionally(&new_edges)?;
+        let previous = {
+            let ObjectPayload::IteratorConcat(data) = &mut self.object_mut(id)?.payload else {
+                return Err(HeapError::Invariant(
+                    "Iterator Concat next update reached an object with the wrong class",
+                ));
+            };
+            std::mem::replace(&mut data.next, replacement)
+        };
+        self.release_replaced_raw_value(previous)
+    }
+
+    /// Finish the current iterable and advance to the next retained pair.
+    pub(crate) fn advance_iterator_concat(
+        &mut self,
+        id: ObjectId,
+    ) -> Result<HeapCleanup, HeapError> {
+        let (item, iterator, next) = {
+            let ObjectPayload::IteratorConcat(data) = &mut self.object_mut(id)?.payload else {
+                return Err(HeapError::Invariant(
+                    "Iterator Concat advance reached an object with the wrong class",
+                ));
+            };
+            if data.index >= data.items.len() {
+                return Err(HeapError::Invariant(
+                    "Iterator Concat advanced past its retained inputs",
+                ));
+            }
+            let item = data.items[data.index].take().ok_or(HeapError::Invariant(
+                "Iterator Concat current input was already released",
+            ))?;
+            let iterator = data.iterator.take().ok_or(HeapError::Invariant(
+                "Iterator Concat advanced without a current iterator",
+            ))?;
+            let next = std::mem::replace(&mut data.next, RawValue::Undefined);
+            data.index += 1;
+            (item, iterator, next)
+        };
+        // Pinned QuickJS releases a normally exhausted input in this order:
+        // active iterator, cached next, captured open method, iterable.
+        let mut cleanup = HeapCleanup::default();
+        self.release_raw_no_drain(RawId::Object(iterator))?;
+        cleanup.atoms.extend(raw_value_atom(&next));
+        for edge in raw_value_edges(&next) {
+            self.release_raw_no_drain(edge)?;
+        }
+        cleanup.atoms.extend(raw_value_atom(&item.method));
+        for edge in raw_value_edges(&item.method) {
+            self.release_raw_no_drain(edge)?;
+        }
+        self.release_raw_no_drain(RawId::Object(item.iterable))?;
+        cleanup.merge(self.drain_zero_queue()?);
+        Ok(cleanup)
+    }
+
+    /// Release the current iterator and every unvisited input after
+    /// `Iterator Concat.prototype.return` completes.
+    pub(crate) fn clear_iterator_concat(&mut self, id: ObjectId) -> Result<HeapCleanup, HeapError> {
+        let (items, iterator, next) = {
+            let ObjectPayload::IteratorConcat(data) = &mut self.object_mut(id)?.payload else {
+                return Err(HeapError::Invariant(
+                    "Iterator Concat clear reached an object with the wrong class",
+                ));
+            };
+            let items = data.items[data.index..]
+                .iter_mut()
+                .filter_map(Option::take)
+                .collect::<Vec<_>>();
+            data.index = data.items.len();
+            let iterator = data.iterator.take();
+            let next = std::mem::replace(&mut data.next, RawValue::Undefined);
+            (items, iterator, next)
+        };
+
+        let mut cleanup = HeapCleanup::default();
+        for item in items {
+            self.release_raw_no_drain(RawId::Object(item.iterable))?;
+            cleanup.atoms.extend(raw_value_atom(&item.method));
+            for edge in raw_value_edges(&item.method) {
+                self.release_raw_no_drain(edge)?;
+            }
+            cleanup.merge(self.drain_zero_queue()?);
+        }
+        if let Some(iterator) = iterator {
+            self.release_raw_no_drain(RawId::Object(iterator))?;
+        }
+        cleanup.atoms.extend(raw_value_atom(&next));
+        for edge in raw_value_edges(&next) {
+            self.release_raw_no_drain(edge)?;
+        }
+        cleanup.merge(self.drain_zero_queue()?);
+        Ok(cleanup)
+    }
+
     /// Replace the source iterator edge retained by a helper. The new edge is
     /// retained before the previous edge is detached.
     #[cfg(test)]
@@ -10080,7 +10310,6 @@ impl Heap {
         self.release_replaced_raw_value(previous)
     }
 
-    #[cfg(test)]
     fn release_replaced_raw_value(&mut self, previous: RawValue) -> Result<HeapCleanup, HeapError> {
         let mut cleanup = HeapCleanup::default();
         cleanup.atoms.extend(raw_value_atom(&previous));
@@ -11017,6 +11246,7 @@ impl Heap {
                 )
                 | (ObjectKind::IteratorHelper, ObjectPayload::IteratorHelper(_))
                 | (ObjectKind::IteratorWrap, ObjectPayload::IteratorWrap(_))
+                | (ObjectKind::IteratorConcat, ObjectPayload::IteratorConcat(_))
                 | (
                     ObjectKind::NativeFunction,
                     ObjectPayload::NativeFunction { .. }
@@ -11436,6 +11666,14 @@ impl Heap {
                 ));
             }
             validate_iterator_wrap_data(self, data)?;
+        }
+        if let ObjectPayload::IteratorConcat(data) = &object.payload {
+            if object.is_constructor {
+                return Err(HeapError::Invariant(
+                    "Iterator Concat object is constructable",
+                ));
+            }
+            validate_iterator_concat_data(self, data)?;
         }
         if let ObjectPayload::BoundFunction {
             target,
@@ -11937,6 +12175,17 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         ObjectPayload::IteratorWrap(data) => raw_value_edges(&data.source)
             .len()
             .saturating_add(raw_value_edges(&data.next).len()),
+        ObjectPayload::IteratorConcat(data) => data
+            .items
+            .iter()
+            .flatten()
+            .fold(0_usize, |count, item| {
+                count
+                    .saturating_add(1)
+                    .saturating_add(raw_value_edges(&item.method).len())
+            })
+            .saturating_add(usize::from(data.iterator.is_some()))
+            .saturating_add(raw_value_edges(&data.next).len()),
         ObjectPayload::NativeFunction { internal, .. } => internal
             .as_ref()
             .map_or(0, |internal| internal_callable_edges(internal).len()),
@@ -11997,6 +12246,16 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         ObjectPayload::IteratorWrap(data) => {
             edges.extend(raw_value_edges(&data.source));
             edges.extend(raw_value_edges(&data.next));
+        }
+        ObjectPayload::IteratorConcat(data) => {
+            // This order mirrors the class finalizer: active iterator, cached
+            // next, then the unconsumed captured pairs.
+            edges.extend(data.iterator.map(RawId::Object));
+            edges.extend(raw_value_edges(&data.next));
+            for item in data.items.iter().flatten() {
+                edges.push(RawId::Object(item.iterable));
+                edges.extend(raw_value_edges(&item.method));
+            }
         }
         ObjectPayload::RegExpStringIterator { regexp, .. } => {
             edges.push(RawId::Object(*regexp));
@@ -12228,7 +12487,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
             .saturating_add(context.set.map_or(0, |_| 2))
             .saturating_add(context.generator.map_or(0, |_| 2))
             .saturating_add(context.promise.map_or(0, |_| 2))
-            .saturating_add(context.iterator.map_or(0, |_| 3))
+            .saturating_add(context.iterator.map_or(0, |_| 4))
             .saturating_add(context.global_objects.len())
             .saturating_add(context.intrinsics.len())
             .saturating_add(context.initial_shapes.len()),
@@ -12272,6 +12531,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     }
     if let Some(iterator) = context.iterator {
         edges.push(RawId::Object(iterator.constructor));
+        edges.push(RawId::Object(iterator.concat_prototype));
         edges.push(RawId::Object(iterator.helper_prototype));
         edges.push(RawId::Object(iterator.wrap_prototype));
     }
@@ -12392,6 +12652,15 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
         ObjectPayload::IteratorWrap(data) => raw_value_atom(&data.source)
             .into_iter()
             .chain(raw_value_atom(&data.next))
+            .collect(),
+        ObjectPayload::IteratorConcat(data) => raw_value_atom(&data.next)
+            .into_iter()
+            .chain(
+                data.items
+                    .iter()
+                    .flatten()
+                    .filter_map(|item| raw_value_atom(&item.method)),
+            )
             .collect(),
         ObjectPayload::NativeFunction {
             internal: Some(internal),
@@ -12526,6 +12795,59 @@ fn validate_iterator_wrap_data(heap: &Heap, data: &IteratorWrapData) -> Result<(
         .into_iter()
         .chain(raw_value_edges(&data.next))
     {
+        let RawId::Object(object) = edge else {
+            unreachable!("RawValue only owns object edges")
+        };
+        heap.object(object)?;
+    }
+    Ok(())
+}
+
+fn validate_iterator_concat_data(heap: &Heap, data: &IteratorConcatData) -> Result<(), HeapError> {
+    if data.index > data.items.len() || !is_map_storable_value(&data.next) {
+        return Err(HeapError::Invariant(
+            "Iterator Concat payload has invalid hidden state",
+        ));
+    }
+    for (index, item) in data.items.iter().enumerate() {
+        if (index < data.index) != item.is_none() {
+            return Err(HeapError::Invariant(
+                "Iterator Concat released-input boundary is inconsistent",
+            ));
+        }
+        let Some(item) = item else {
+            continue;
+        };
+        heap.object(item.iterable)?;
+        let RawValue::Object(method) = item.method else {
+            return Err(HeapError::Invariant(
+                "Iterator Concat input method is not callable",
+            ));
+        };
+        if !matches!(
+            heap.object(method)?.payload,
+            ObjectPayload::NativeFunction { .. }
+                | ObjectPayload::BoundFunction { .. }
+                | ObjectPayload::BytecodeFunction { .. }
+        ) {
+            return Err(HeapError::Invariant(
+                "Iterator Concat input method is not callable",
+            ));
+        }
+    }
+    if let Some(iterator) = data.iterator {
+        heap.object(iterator)?;
+        if data.index >= data.items.len() {
+            return Err(HeapError::Invariant(
+                "Iterator Concat retains an iterator after exhaustion",
+            ));
+        }
+    } else if !matches!(data.next, RawValue::Undefined) {
+        return Err(HeapError::Invariant(
+            "Iterator Concat caches next without a current iterator",
+        ));
+    }
+    for edge in raw_value_edges(&data.next) {
         let RawId::Object(object) = edge else {
             unreachable!("RawValue only owns object edges")
         };
@@ -14777,6 +15099,138 @@ mod tests {
     }
 
     #[test]
+    fn iterator_concat_releases_consumed_and_drained_edges_at_quickjs_boundaries() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let root = leaf(&mut heap, shape);
+        let realm = heap
+            .allocate_context(ContextData::new(
+                root, root, root, root, root, root, root, root,
+            ))
+            .unwrap();
+        let iterable_a = leaf(&mut heap, shape);
+        let iterable_b = leaf(&mut heap, shape);
+        let method_a = heap
+            .allocate_object(ObjectData::bound_native_function(
+                shape,
+                Vec::new(),
+                NativeFunctionId::ErrorIsError,
+                realm,
+                1,
+            ))
+            .unwrap();
+        let method_b = heap
+            .allocate_object(ObjectData::bound_native_function(
+                shape,
+                Vec::new(),
+                NativeFunctionId::ErrorIsError,
+                realm,
+                1,
+            ))
+            .unwrap();
+        let active_a = leaf(&mut heap, shape);
+        let next_a = heap
+            .allocate_object(ObjectData::bound_native_function(
+                shape,
+                Vec::new(),
+                NativeFunctionId::ErrorIsError,
+                realm,
+                1,
+            ))
+            .unwrap();
+        let active_b = leaf(&mut heap, shape);
+        let next_b = heap
+            .allocate_object(ObjectData::bound_native_function(
+                shape,
+                Vec::new(),
+                NativeFunctionId::ErrorIsError,
+                realm,
+                1,
+            ))
+            .unwrap();
+        let concat = heap
+            .allocate_object(ObjectData::iterator_concat(
+                shape,
+                Vec::new(),
+                vec![
+                    Some(IteratorConcatItem {
+                        iterable: iterable_a,
+                        method: RawValue::Object(method_a),
+                    }),
+                    Some(IteratorConcatItem {
+                        iterable: iterable_b,
+                        method: RawValue::Object(method_b),
+                    }),
+                ],
+            ))
+            .unwrap();
+
+        for edge in [iterable_a, method_a, iterable_b, method_b] {
+            assert_eq!(heap.object_strong_count(edge), Ok(2));
+        }
+        heap.set_iterator_concat_iterator(concat, Some(active_a))
+            .unwrap();
+        heap.set_iterator_concat_next(concat, RawValue::Object(next_a))
+            .unwrap();
+        assert_eq!(heap.object_strong_count(active_a), Ok(2));
+        assert_eq!(heap.object_strong_count(next_a), Ok(2));
+
+        heap.advance_iterator_concat(concat).unwrap();
+        for edge in [iterable_a, method_a, active_a, next_a] {
+            assert_eq!(heap.object_strong_count(edge), Ok(1));
+        }
+        for edge in [iterable_b, method_b] {
+            assert_eq!(heap.object_strong_count(edge), Ok(2));
+        }
+        assert_eq!(
+            heap.iterator_concat_state(concat).unwrap(),
+            IteratorConcatData {
+                items: vec![
+                    None,
+                    Some(IteratorConcatItem {
+                        iterable: iterable_b,
+                        method: RawValue::Object(method_b),
+                    }),
+                ],
+                index: 1,
+                iterator: None,
+                next: RawValue::Undefined,
+                running: false,
+            }
+        );
+
+        heap.set_iterator_concat_iterator(concat, Some(active_b))
+            .unwrap();
+        heap.set_iterator_concat_next(concat, RawValue::Object(next_b))
+            .unwrap();
+        heap.clear_iterator_concat(concat).unwrap();
+        for edge in [iterable_b, method_b, active_b, next_b] {
+            assert_eq!(heap.object_strong_count(edge), Ok(1));
+        }
+        assert_eq!(
+            heap.iterator_concat_state(concat).unwrap(),
+            IteratorConcatData {
+                items: vec![None, None],
+                index: 2,
+                iterator: None,
+                next: RawValue::Undefined,
+                running: false,
+            }
+        );
+
+        heap.release_object(concat).unwrap();
+        for object in [
+            iterable_a, method_a, active_a, next_a, iterable_b, method_b, active_b, next_b,
+        ] {
+            heap.release_object(object).unwrap();
+        }
+        heap.release_context(realm).unwrap();
+        heap.release_object(root).unwrap();
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
     fn iterator_intrinsics_attach_transactionally_and_form_a_collectable_realm_cycle() {
         let mut heap = Heap::new();
         let empty = empty_shape(&mut heap);
@@ -14798,14 +15252,17 @@ mod tests {
                 0,
             ))
             .unwrap();
+        let concat_prototype = leaf(&mut heap, intrinsic_shape);
         let helper_prototype = leaf(&mut heap, intrinsic_shape);
         let wrap_prototype = leaf(&mut heap, intrinsic_shape);
         let iterator = IteratorRealmData {
             constructor,
+            concat_prototype,
             helper_prototype,
             wrap_prototype,
         };
         let constructor_strong = heap.object_strong_count(constructor).unwrap();
+        let concat_strong = heap.object_strong_count(concat_prototype).unwrap();
         let helper_strong = heap.object_strong_count(helper_prototype).unwrap();
         let wrap_strong = heap.object_strong_count(wrap_prototype).unwrap();
 
@@ -14838,6 +15295,10 @@ mod tests {
             Ok(constructor_strong)
         );
         assert_eq!(
+            heap.object_strong_count(concat_prototype),
+            Ok(concat_strong)
+        );
+        assert_eq!(
             heap.object_strong_count(helper_prototype),
             Ok(helper_strong)
         );
@@ -14850,6 +15311,10 @@ mod tests {
         assert_eq!(
             heap.object_strong_count(constructor),
             Ok(constructor_strong + 1)
+        );
+        assert_eq!(
+            heap.object_strong_count(concat_prototype),
+            Ok(concat_strong + 1)
         );
         assert_eq!(
             heap.object_strong_count(helper_prototype),
@@ -14867,12 +15332,13 @@ mod tests {
         ));
 
         heap.release_object(constructor).unwrap();
+        heap.release_object(concat_prototype).unwrap();
         heap.release_object(helper_prototype).unwrap();
         heap.release_object(wrap_prototype).unwrap();
         heap.release_context(realm).unwrap();
         let stats = heap.run_gc().unwrap();
         assert_eq!(stats.cleanup.finalized_contexts, 1);
-        assert_eq!(stats.cleanup.finalized_objects, 3);
+        assert_eq!(stats.cleanup.finalized_objects, 4);
 
         heap.release_shape(intrinsic_shape).unwrap();
         heap.release_object(root).unwrap();
@@ -14887,6 +15353,7 @@ mod tests {
             NativeCProto::ConstructorOrFunction
         );
         for target in [
+            NativeFunctionId::IteratorConcat,
             NativeFunctionId::IteratorFrom,
             NativeFunctionId::IteratorConstructorAccessor,
             NativeFunctionId::IteratorPrototypeCreateHelper(IteratorHelperKind::Drop),
@@ -14895,10 +15362,21 @@ mod tests {
             NativeFunctionId::IteratorPrototypeToArray,
             NativeFunctionId::IteratorHelperResume(IteratorResumeKind::Next),
             NativeFunctionId::IteratorWrapResume(IteratorResumeKind::Return),
+            NativeFunctionId::IteratorConcatReturn,
         ] {
             assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
             assert!(!target.descriptor().cproto.default_is_constructor());
         }
+        assert_eq!(
+            NativeFunctionId::IteratorConcatNext.descriptor().cproto,
+            NativeCProto::IteratorNext
+        );
+        assert!(
+            !NativeFunctionId::IteratorConcatNext
+                .descriptor()
+                .cproto
+                .default_is_constructor()
+        );
     }
 
     struct RegExpFixture {

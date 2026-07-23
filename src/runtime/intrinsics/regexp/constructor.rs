@@ -240,6 +240,7 @@ impl Runtime {
             | ObjectPayload::ArrayIterator { .. }
             | ObjectPayload::IteratorHelper(_)
             | ObjectPayload::IteratorWrap(_)
+            | ObjectPayload::IteratorConcat(_)
             | ObjectPayload::Map { .. }
             | ObjectPayload::MapIterator { .. }
             | ObjectPayload::Set { .. }

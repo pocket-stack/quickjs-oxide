@@ -1,6 +1,6 @@
 # Implementation status
 
-Last audited: 2026-07-23. The completion definition remains
+Last audited: 2026-07-24. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
@@ -2223,8 +2223,42 @@ claim full parity.
   This milestone remains scoped because Proxy and the required host hooks are
   separate implementation frontiers. The conservative global vector therefore
   remains byte-identical at 43,521/102,037 passes. `Iterator.concat` is excluded
-  from this core-helper gate and remains the next `iterator-sequencing`
-  milestone.
+  from this core-helper gate; the separate R3w `iterator-sequencing` milestone
+  follows immediately below.
+
+  R3w adds QuickJS's independent `Iterator.concat` class and sequencing state
+  machine rather than folding it into Iterator Helpers. Construction eagerly
+  validates and captures each iterable's exact `@@iterator` method; `next`
+  lazily opens one iterator at a time, caches its `next`, skips empty inputs,
+  preserves retryable abrupt state without closing, and guards every
+  observable step against reentry. `return` preserves all state when its
+  getter throws, but drains every captured edge after a successful getter
+  whether the subsequent call returns or throws, forwarding that result
+  without IteratorClose-style normalization. The heap releases consumed and
+  drained edges at the pinned QuickJS boundaries.
+
+  The complete pinned `iterator-sequencing` inventory is 32 paths / 64
+  sloppy-and-strict variants with no Proxy, host-hook, config, mode, or
+  negative-test exclusions. Oxide and QuickJS 2026-06-04 both pass 64/64. The
+  manifest-file, scoped-profile, key-stream, TSV, and JSONL SHA-256 values are
+  `74eebb8c63a2606e54e1d0023c5244b8a0538ac51d1ca0a105fe56a04fa74af2`,
+  `ee7e5626b6c27a9f4a8257984439ca2641d31258521e060fce24101cf1d1e0f0`,
+  `eab38e1c6d7f22397e7c8521ec934476b2472406db5d83cfea23d0fbe7b17d5b`,
+  `8bfddd2cc4d09e2f634da3cbba2c3007a77883ec3b38404e22e863b8e64f0fa6`,
+  and
+  `679dd372cf6dcaf288af3578f8b3f5afb4dd0b19ad6e81fb7d7da95bf8b5e44c`.
+  Focused QuickJS differentials cover topology, evaluation order, retry
+  boundaries, return drain priority, and reentry beyond the Test262 cohort.
+  A two-context Rust regression plus a pinned same-runtime libquickjs C probe
+  separately lock the cross-realm behavior.
+
+  R3w also corrects the direct native IteratorNext fast path to retain the
+  outer iterator operation's current realm, matching `JS_IteratorNext2`
+  bypassing ordinary C-function realm switching. The final workspace audit
+  also moves the public `Iterator` global after `Function` and before
+  `parseInt`, matching pinned QuickJS's observable global own-key order.
+  `iterator-sequencing` remains scoped, so the conservative global capability
+  profile and full 43,521/102,037 outcome vector do not move.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
@@ -5552,6 +5586,13 @@ R3v moves Iterator algorithms into
 realm hooks and extraction of adjacent Iterator plumbing. The 1,871-line
 module is still substantial, but it is a cohesive intrinsic owner rather than
 another expansion of the runtime facade.
+R3w keeps the intrinsic graph in that owner but splits the sequencing state
+machine into the adjacent `runtime/intrinsics/iterator/concat.rs` module. It
+adds only the raw-fast-path realm plumbing plus ordinary payload classification
+to the facade. `runtime.rs` moves from 9,764 to 9,824 lines; the main Iterator
+owner moves from 1,871 to 1,902 lines, with `Iterator.concat` isolated in a
+375-line submodule. Generated Test262 bookkeeping remains outside all three
+product modules.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.
@@ -5566,6 +5607,8 @@ cargo test --locked --workspace --all-targets
 
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_iterator_helpers -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_iterator_concat -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_boolean_intrinsic -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -5849,6 +5892,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-class-private-generator-methods.sh
 ./scripts/test-test262-generator-destructuring.sh
 ./scripts/test-test262-iterator-helpers.sh
+./scripts/test-test262-iterator-sequencing.sh
 cargo build --bin qjs
 ./scripts/test-r3l-class-private-generators-oracle.sh --oxide ./target/debug/qjs
 ./scripts/test-r3s-regexp-escape-control-oracle.sh --oxide ./target/debug/qjs

@@ -3,12 +3,13 @@
 An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
-The `unsafe`-free engine is runnable but incomplete. R3v adds the synchronous
-`Iterator` intrinsic and core Iterator Helpers; Oxide and pinned QuickJS both
-pass the dependency-audited 1,046/1,046 scoped Test262 variants. The
-conservative full vector remains 43,521/102,037 because Proxy and host-dependent
-adjacencies keep the feature fail-closed globally. Modules, async
-functions/generators, Proxy, and broad built-in coverage remain incomplete.
+The `unsafe`-free engine is runnable but incomplete. R3v/R3w add the synchronous
+`Iterator` intrinsic, core Iterator Helpers, and `Iterator.concat`; Oxide and
+pinned QuickJS pass both frozen scoped gates (1,046/1,046 and 64/64 variants). The
+conservative full vector remains 43,521/102,037: the helper gate still has
+Proxy/host adjacencies, and the clean sequencing cohort remains scoped rather
+than globally admitted. Modules, async functions/generators, Proxy, and broad
+built-in coverage remain incomplete.
 Pinned QuickJS is the test oracle, never a product dependency.
 
 ## Try it
@@ -43,6 +44,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-regexp-builtins.sh
 ./scripts/test-test262-generator-destructuring.sh
 ./scripts/test-test262-iterator-helpers.sh
+./scripts/test-test262-iterator-sequencing.sh
 ```
 
 ## License
