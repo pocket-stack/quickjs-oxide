@@ -115,6 +115,7 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/test-test262-class-base.sh
 ./scripts/test-test262-class-derived.sh
 ./scripts/test-test262-class-public-init.sh
+./scripts/test-test262-class-sync-matrix.sh
 ./scripts/test-test262-generator-destructuring.sh
 ./scripts/test-test262-iterator-helpers.sh
 ./scripts/test-test262-iterator-sequencing.sh

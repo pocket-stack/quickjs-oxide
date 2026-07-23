@@ -2271,6 +2271,26 @@ claim full parity.
   focused gates also refreshes two stale tagged-template PrivateName staging
   rows that later private-name work had already moved to pass.
 
+  R3y authenticates the existing synchronous class implementation as one
+  generated-matrix closure rather than widening the global `class` feature.
+  Exact metadata allowlists derive 3,890 paths / 7,763 variants from the four
+  class `dstr`/`elements` roots. A frontmatter-stripped source audit assigns
+  eight async private method-name paths / 16 variants and six Proxy-dependent
+  paths / 12 variants to their separate frontiers; optional chaining adds no
+  hidden dependency. The resulting clean manifest contains 3,876 paths /
+  7,735 variants, including 680 audited parse/SyntaxError paths. Oxide and
+  pinned QuickJS both pass all 7,735.
+
+  The manifest, scoped-profile, key-stream, TSV, and JSONL SHA-256 values are
+  `40f038bdc52c762baf7f16ea885c98fc3d0afd033e56059717e8627086e14c78`,
+  `de71fc1d3c675ed25dc54d43222a10c4f3d607c14cb4d43628d7a4587827a7ef`,
+  `1095d6e01eb78c11ed9ff23f195ac909cd99381cb646973095b7cac9ad4676bc`,
+  `61e9a260c91e886bd65b2b148564ce861324b8a5b5343f85688d603bd3217b1e`,
+  and
+  `a258e37e13d99f3491e79db321172f3202800b526f8059ef5c8f3b1a77d9fee2`.
+  This is scoped semantic evidence, not a scoreboard increase: the global
+  profile and conservative 43,585/102,037 vector remain byte-identical.
+
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -5901,6 +5921,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-class-private-accessors.sh
 ./scripts/test-test262-class-generator-methods.sh
 ./scripts/test-test262-class-private-generator-methods.sh
+./scripts/test-test262-class-sync-matrix.sh
 ./scripts/test-test262-generator-destructuring.sh
 ./scripts/test-test262-iterator-helpers.sh
 ./scripts/test-test262-iterator-sequencing.sh

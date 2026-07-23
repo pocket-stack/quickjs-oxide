@@ -7,9 +7,10 @@ The `unsafe`-free engine is runnable but incomplete. R3v/R3w add the synchronous
 `Iterator` intrinsic, core Iterator Helpers, and `Iterator.concat`; Oxide and
 pinned QuickJS pass both frozen gates (1,046/1,046 and 64/64 variants). R3x
 globally admits the clean sequencing cohort, moving the conservative full
-vector to 43,585/102,037. The helper tag remains scoped because of Proxy/host
-adjacencies. Modules, async functions/generators, Proxy, and broad built-in
-coverage remain incomplete.
+vector to 43,585/102,037. R3y authenticates the existing synchronous class
+matrix at 7,735/7,735 variants without widening the global profile. Iterator
+Helpers remain scoped because of Proxy/host adjacencies. Modules, async
+functions/generators, Proxy, and broad built-in coverage remain incomplete.
 Pinned QuickJS is the test oracle, never a product dependency.
 
 ## Try it
@@ -40,6 +41,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-class-private-{methods,accessors}.sh
 ./scripts/test-test262-class-generator-methods.sh
 ./scripts/test-test262-class-private-generator-methods.sh
+./scripts/test-test262-class-sync-matrix.sh
 ./scripts/test-test262-promise-{race-try-with-resolvers,finally,all,all-settled,any}.sh
 ./scripts/test-test262-regexp-builtins.sh
 ./scripts/test-test262-generator-destructuring.sh

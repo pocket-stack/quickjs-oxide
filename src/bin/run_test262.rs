@@ -64,6 +64,10 @@ const TEST262_CLASS_DERIVED_PROFILE_SHA256: &str =
     "1aa167fef279273185060224bd8a65765283d95fe1e08986c5c4ea197657e160";
 const TEST262_CLASS_DERIVED_MANIFEST_SHA256: &str =
     "c9c477104d7f538c4b3fa58a108171be866273bedf19825bedf682afc9d00366";
+const TEST262_CLASS_SYNC_MATRIX_PROFILE_SHA256: &str =
+    "de71fc1d3c675ed25dc54d43222a10c4f3d607c14cb4d43628d7a4587827a7ef";
+const TEST262_CLASS_SYNC_MATRIX_MANIFEST_SHA256: &str =
+    "40f038bdc52c762baf7f16ea885c98fc3d0afd033e56059717e8627086e14c78";
 const TEST262_CLASS_PUBLIC_INIT_PROFILE_SHA256: &str =
     "f02524f9abedc00c6c84dc33367680bf31a30ae94604a5317a6690f603cbd7b1";
 const TEST262_CLASS_PUBLIC_INIT_MANIFEST_SHA256: &str =
@@ -720,6 +724,7 @@ enum OxideProfileKind {
     ArgumentSpread,
     ClassBase,
     ClassDerived,
+    ClassSyncMatrix,
     ClassPublicInit,
     ClassPrivateFields,
     ClassPrivateMethods,
@@ -783,6 +788,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-class-derived.conf"),
             OxideProfileKind::ClassDerived,
+        ),
+        (
+            root.join("tests/test262-class-sync-matrix.conf"),
+            OxideProfileKind::ClassSyncMatrix,
         ),
         (
             root.join("tests/test262-class-public-init.conf"),
@@ -1053,6 +1062,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             TEST262_CLASS_DERIVED_PROFILE_SHA256,
             "tests/test262-class-derived.txt",
             TEST262_CLASS_DERIVED_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::ClassSyncMatrix => verify_scoped_pinned_profile(
+            options,
+            "class sync matrix",
+            TEST262_CLASS_SYNC_MATRIX_PROFILE_SHA256,
+            "tests/test262-class-sync-matrix.txt",
+            TEST262_CLASS_SYNC_MATRIX_MANIFEST_SHA256,
         ),
         OxideProfileKind::ClassPublicInit => verify_scoped_pinned_profile(
             options,
@@ -1888,10 +1904,10 @@ mod cli_tests {
         TEST262_CLASS_PRIVATE_FIELDS_PROFILE_SHA256,
         TEST262_CLASS_PRIVATE_GENERATOR_METHODS_PROFILE_SHA256,
         TEST262_CLASS_PRIVATE_METHODS_PROFILE_SHA256, TEST262_CLASS_PUBLIC_INIT_PROFILE_SHA256,
-        TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256, TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256,
-        TEST262_IDENTIFIER_REST_PROFILE_SHA256, TEST262_ITERATOR_HELPERS_PROFILE_SHA256,
-        TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256, TEST262_MAP_PROFILE_SHA256,
-        TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
+        TEST262_CLASS_SYNC_MATRIX_PROFILE_SHA256, TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256,
+        TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256, TEST262_IDENTIFIER_REST_PROFILE_SHA256,
+        TEST262_ITERATOR_HELPERS_PROFILE_SHA256, TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256,
+        TEST262_MAP_PROFILE_SHA256, TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_NESTED_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_REST_PROFILE_SHA256, TEST262_OBJECT_BINDING_PROFILE_SHA256,
         TEST262_OBJECT_REST_BINDING_PROFILE_SHA256,
@@ -2043,6 +2059,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-class-derived.conf")).unwrap(),
             OxideProfileKind::ClassDerived
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-class-sync-matrix.conf")).unwrap(),
+            OxideProfileKind::ClassSyncMatrix
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-class-public-init.conf")).unwrap(),
@@ -2375,6 +2395,58 @@ mod cli_tests {
                 panic!("coordinator arguments selected another invocation");
             };
             assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_class_sync_matrix_profile_is_bound_to_its_pinned_manifest_and_fails_closed() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-class-sync-matrix.conf",
+            "--manifest",
+            "tests/test262-class-sync-matrix.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_CLASS_SYNC_MATRIX_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/language/statements/class/subclass/default-constructor.js",
+            ],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-class-sync-matrix.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            let error = verify_oxide_profile(&options).unwrap_err();
+            assert!(
+                error.contains("requires its pinned manifest")
+                    || error.contains("requires tests/test262-class-sync-matrix.txt"),
+                "unexpected fail-closed error: {error}"
+            );
         }
     }
 

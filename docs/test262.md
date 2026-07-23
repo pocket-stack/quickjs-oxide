@@ -3866,6 +3866,43 @@ Reproduce R3x with:
 TEST262_WORKERS=2 ./scripts/test-test262-full.sh
 ```
 
+## R3y synchronous class matrix closure
+
+R3y authenticates the already-implemented synchronous class surface as one
+generated-matrix closure; it does not add engine semantics or widen the global
+profile. The metadata-only inventory starts from the `dstr` and `elements`
+subtrees under class expressions and declarations. Requiring every feature to
+fit the exact 19-feature scoped profile, and at least one of its ten
+class/default/rest additions, derives 3,890 paths / 7,763 variants.
+
+A frontmatter-stripped source audit exposes 14 dependencies missing from that
+metadata: eight async private method-name paths / 16 variants and six
+Proxy-dependent paths / 12 variants. Optional chaining contributes no hidden
+path. Pinned QuickJS passes the full 7,763-variant upper closure; Oxide passes
+the remaining clean 3,876 paths / 7,735 variants while the 28 adjacencies stay
+assigned to the separate async and Proxy frontiers.
+
+The clean gate contains 3,196 positive paths / 6,383 variants and 680 exact
+`parse` / `SyntaxError` paths / 1,352 variants. Its 3,867 sloppy plus 3,868
+strict variants pass in both Oxide and QuickJS 2026-06-04. The manifest,
+scoped-profile, variant-key, TSV, and JSONL SHA-256 values are
+`40f038bdc52c762baf7f16ea885c98fc3d0afd033e56059717e8627086e14c78`,
+`de71fc1d3c675ed25dc54d43222a10c4f3d607c14cb4d43628d7a4587827a7ef`,
+`1095d6e01eb78c11ed9ff23f195ac909cd99381cb646973095b7cac9ad4676bc`,
+`61e9a260c91e886bd65b2b148564ce861324b8a5b5343f85688d603bd3217b1e`,
+and
+`a258e37e13d99f3491e79db321172f3202800b526f8059ef5c8f3b1a77d9fee2`.
+
+The conservative full vector therefore remains 43,585/102,037. Broad `class`,
+computed-name, default-parameter, and object-rest tags remain scoped because
+global admission would also expose unreviewed async and Proxy combinations.
+
+Reproduce R3y with:
+
+```sh
+./scripts/test-test262-class-sync-matrix.sh
+```
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -3970,6 +4007,7 @@ canonical progress report.
 ./scripts/test-test262-class-private-accessors.sh
 ./scripts/test-test262-class-generator-methods.sh
 ./scripts/test-test262-class-private-generator-methods.sh
+./scripts/test-test262-class-sync-matrix.sh
 ./scripts/test-test262-generator-destructuring.sh
 ./scripts/test-test262-iterator-helpers.sh
 ./scripts/test-test262-iterator-sequencing.sh
@@ -4176,7 +4214,9 @@ and host-dependent adjacencies remain fail-closed. R3w adds the independent
 `Iterator.concat` sequencing state machine; its clean 32-path/64-variant scoped
 gate passes 64/64 in both engines. R3x globally admits that exact clean cohort,
 moving only those 64 variants to pass and bringing the full vector to
-43,585/102,037.
+43,585/102,037. R3y then freezes the synchronous class generated matrix at
+7,735/7,735 in both engines, leaving the 28 async/Proxy adjacencies and the
+global scoreboard unchanged.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS
