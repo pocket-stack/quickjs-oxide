@@ -47,7 +47,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "d01f4f49fbd14b2cad610983624142b468587b2e0bd10ae6264641c39cffa05f";
+    "6a4d3dc37da05f6e63d7b8564483159c383ed66c665a2b5530624e628f73b908";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -185,11 +185,11 @@ const TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256: &str =
 const TEST262_GENERATOR_DESTRUCTURING_MANIFEST_SHA256: &str =
     "07ad2748c65763366ebdcb8c01893a13aa4fbbcca3e900a31042fc670593f3c5";
 const TEST262_ITERATOR_HELPERS_PROFILE_SHA256: &str =
-    "d9e6f4fcf8cb6f20fb0ebba012451abbaad52bbe676430f2433b9398174e3c83";
+    "a6ce2d6be97d7826cf20aeba7ab8946ad28ce134b0ad7165a8e591a986e6d22e";
 const TEST262_ITERATOR_HELPERS_MANIFEST_SHA256: &str =
     "ce8dd5bfebd79924090ff4a628607009d11ff116ffeb38720808b585335a91e5";
 const TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256: &str =
-    "ee7e5626b6c27a9f4a8257984439ca2641d31258521e060fce24101cf1d1e0f0";
+    "8284db009a398fb88b2d357d7d8255479943d963574392f7b718610ee12cb16a";
 const TEST262_ITERATOR_SEQUENCING_MANIFEST_SHA256: &str =
     "74eebb8c63a2606e54e1d0023c5244b8a0538ac51d1ca0a105fe56a04fa74af2";
 const TEST262_REGEXP_BUILTINS_PROFILE_SHA256: &str =
@@ -4087,13 +4087,17 @@ mod cli_tests {
             verify_oxide_profile(&options).unwrap(),
             TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256
         );
+        let positive = Path::new("test/built-ins/Iterator/concat/single-argument.js");
+        let global = super::OxideProfile::load(Path::new("compat/test262-oxide.conf")).unwrap();
+        assert_eq!(
+            global.classify(positive, &["iterator-sequencing".to_owned()], false),
+            None,
+            "global profile should admit authenticated Iterator sequencing"
+        );
 
         for selection in [
             ["--all", ""],
-            [
-                "--test",
-                "test/built-ins/Iterator/concat/single-argument.js",
-            ],
+            ["--test", positive.to_str().unwrap()],
             ["--manifest", "Cargo.toml"],
         ] {
             let mut arguments = vec![

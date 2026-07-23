@@ -10,19 +10,19 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 73 reviewed feature tags and 802 exact audited
+  capability profile now admits 74 reviewed feature tags and 802 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 43,521 passes and 45,076 runnable variants: 42.65% raw, a 52.08% lower
-  bound after the 18,475 pinned QuickJS target exclusions, or 96.70% among the
-  45,005 variants with a non-unsupported observed outcome. It records 97
+  has 43,585 passes and 45,140 runnable variants: 42.71% raw, a 52.16% lower
+  bound after the 18,475 pinned QuickJS target exclusions, or 96.71% among the
+  45,069 variants with a non-unsupported observed outcome. It records 97
   parse failures and 1,284 runtime failures; current full TSV/JSONL SHA-256
   values are
-  `202ab3480b39a6c7a68443bf9faba7bf9eb139b7c15baf2fde25c55c40c5d023`
+  `0f43b6e164c0954a02f911774c34871ea67e6255f28ffa65419ea15d3f4b73fd`
   and
-  `25df14d037d181bc82b70855a44e782cfbff3118603666dca6ec908cfd659387`.
+  `f24e92ad54c4c59651206db66bfd7a4ed9dea4f3543311a990def0fc16e66be8`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -553,19 +553,20 @@ claim full parity.
   vectors. A separate Rust lifecycle test locks site identity across StripDebug
   publication and cycle collection.
 
-  The focused gate freezes 48 paths and 89 variants. It executes 85: 83 pass
-  and two stop at the pre-existing PrivateName literal runtime frontier. Two
-  `create-realm` variants remain host-unsupported and two TCO variants remain
-  excluded by the pinned configuration. Its manifest/key-set/non-pass hashes
+  The focused gate freezes 48 paths and 89 variants. It executes 85 and all 85
+  pass; the later private-name work closed its two original staging
+  frontiers. Two `create-realm` variants remain host-unsupported and two TCO
+  variants remain excluded by the pinned configuration. Its
+  manifest/key-set/non-pass hashes
   are
   `d3a7e597a049e9a78830ee089a90db27c6b6b0b8b2d049cd76b30f5515e6d23a`,
   `91852cd5c970debac2ef05af2715198736757b1276a34e6a73722df86bd80356`,
   and
-  `981d8dba14c5cad2481e890d2dfc0925fd5ef03139aca7109d52891166a2c4aa`;
+  `cebe904ead643233ee754510a90cf53967525c4db1163281188b47aa56c80b50`;
   focused TSV/JSONL hashes are
-  `62322ceafcf309aedb8ee6a0b155fef9f24a67356a5408a496647a6f93ed353d`
+  `a132ee39e73f44d77348b544427045069bb112ece353009ac7d5b2651fe51089`
   and
-  `c91514b3d5b4500ec88d491e19719b139422bd7910876993fbb6a36a9cb70230`.
+  `c32ef91f30cb4646228aee7cb2cd8a2445f4d6afa04c0173e4673f68acbb36b0`.
 
   Declaring `template` moves the profile to 55 reviewed feature tags with
   SHA-256
@@ -2213,11 +2214,11 @@ claim full parity.
   exclusion. Oxide and pinned QuickJS both pass all 1,046 sloppy/strict
   variants from the remaining 523 paths. Its scoped-profile, key, TSV, and
   JSONL hashes are
-  `d9e6f4fcf8cb6f20fb0ebba012451abbaad52bbe676430f2433b9398174e3c83`,
+  `a6ce2d6be97d7826cf20aeba7ab8946ad28ce134b0ad7165a8e591a986e6d22e`,
   `43be68340124e844c5e456899a084460ad87edd2c279c3ac1ca4057726b3697a`,
-  `bae5e4dcda2676e56818925f5571f09c96ada891224d88ffe4f8fc7404d983de`,
+  `4746567453ed198096fd270e70f7c2c51975de837df0a1181645ceffd3cdefc9`,
   and
-  `d24d0e5812b0a8e1ec87c86c2c98d5e8ed9ca3baa5670ae2960fa90cd5f004fc`.
+  `a25b115582160d38acb534c0192f93db65f3c8473d3c9211adb39c8f40a1a02a`.
   The safe `--bless` path requires every frozen variant to pass.
 
   This milestone remains scoped because Proxy and the required host hooks are
@@ -2242,11 +2243,11 @@ claim full parity.
   negative-test exclusions. Oxide and QuickJS 2026-06-04 both pass 64/64. The
   manifest-file, scoped-profile, key-stream, TSV, and JSONL SHA-256 values are
   `74eebb8c63a2606e54e1d0023c5244b8a0538ac51d1ca0a105fe56a04fa74af2`,
-  `ee7e5626b6c27a9f4a8257984439ca2641d31258521e060fce24101cf1d1e0f0`,
+  `8284db009a398fb88b2d357d7d8255479943d963574392f7b718610ee12cb16a`,
   `eab38e1c6d7f22397e7c8521ec934476b2472406db5d83cfea23d0fbe7b17d5b`,
-  `8bfddd2cc4d09e2f634da3cbba2c3007a77883ec3b38404e22e863b8e64f0fa6`,
+  `716d98068f7f2b28ff142abca546e71ff7eee9224bad1cea52ac0830240b8560`,
   and
-  `679dd372cf6dcaf288af3578f8b3f5afb4dd0b19ad6e81fb7d7da95bf8b5e44c`.
+  `a184e7e80444282cc23015c5846052430c593eab93da358d4679859422f2e029`.
   Focused QuickJS differentials cover topology, evaluation order, retry
   boundaries, return drain priority, and reentry beyond the Test262 cohort.
   A two-context Rust regression plus a pinned same-runtime libquickjs C probe
@@ -2257,8 +2258,18 @@ claim full parity.
   bypassing ordinary C-function realm switching. The final workspace audit
   also moves the public `Iterator` global after `Function` and before
   `parseInt`, matching pinned QuickJS's observable global own-key order.
-  `iterator-sequencing` remains scoped, so the conservative global capability
-  profile and full 43,521/102,037 outcome vector do not move.
+  R3x then promotes the already-authenticated `iterator-sequencing` tag into
+  the global profile. The exact full-vector join changes only the same 64
+  frozen keys from `unsupported-feature` to `pass`: no other outcome, detail,
+  key, or failure moves. The conservative vector reaches 43,585 passes and
+  45,140 runnable variants. Its TSV/JSONL SHA-256 values are
+  `0f43b6e164c0954a02f911774c34871ea67e6255f28ffa65419ea15d3f4b73fd`
+  and
+  `f24e92ad54c4c59651206db66bfd7a4ed9dea4f3543311a990def0fc16e66be8`.
+  Core `iterator-helpers` remains scoped because its 44 Proxy/host/config
+  adjacencies are still independent frontiers. Re-running the profile-bound
+  focused gates also refreshes two stale tagged-template PrivateName staging
+  rows that later private-name work had already moved to pass.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/

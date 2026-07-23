@@ -254,7 +254,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 73] = [
+    const EXPECTED_FEATURES: [&str; 74] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -308,6 +308,7 @@ mod tests {
         "for-in-order",
         "generators",
         "hashbang",
+        "iterator-sequencing",
         "json-parse-with-source",
         "let",
         "logical-assignment-operators",

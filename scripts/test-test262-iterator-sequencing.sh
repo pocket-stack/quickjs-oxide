@@ -164,8 +164,8 @@ if [[ "$(read_value quickjs)" != "2026-06-04" \
     || "$(read_value test262_patch_sha256)" != "f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3" \
     || "$(read_value test262_config_sha256)" != "79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b" \
     || "$(read_value test262_metadata_sha256)" != "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a" \
-    || "$(read_value global_oxide_profile_sha256)" != "d01f4f49fbd14b2cad610983624142b468587b2e0bd10ae6264641c39cffa05f" \
-    || "$(read_value oxide_profile_sha256)" != "ee7e5626b6c27a9f4a8257984439ca2641d31258521e060fce24101cf1d1e0f0" \
+    || "$(read_value global_oxide_profile_sha256)" != "6a4d3dc37da05f6e63d7b8564483159c383ed66c665a2b5530624e628f73b908" \
+    || "$(read_value oxide_profile_sha256)" != "8284db009a398fb88b2d357d7d8255479943d963574392f7b718610ee12cb16a" \
     || "$(read_value profile_features)" != "74" \
     || "$(read_value profile_features_sha256)" != "35a65d9d6522e84627168c456a49a387561c7e087d51c616159aad304373006e" \
     || "$(read_value schema)" != "test262-canonical-classified-v2" \
@@ -327,9 +327,10 @@ profile_section "$global_profile" features | LC_ALL=C sort -c
 profile_section "$admission_profile" features | LC_ALL=C sort -c
 [[ -z "$(comm -23 <(printf '%s\n' "$global_features") <(printf '%s\n' "$admission_features"))" ]] \
     || { echo "error: Iterator sequencing profile removed a global capability" >&2; exit 1; }
-diff -u \
-    <(printf '%s\n' iterator-sequencing) \
-    <(comm -13 <(printf '%s\n' "$global_features") <(printf '%s\n' "$admission_features"))
+[[ -z "$(comm -13 \
+    <(printf '%s\n' "$global_features") \
+    <(printf '%s\n' "$admission_features"))" ]] \
+    || { echo "error: Iterator sequencing profile added a non-global capability" >&2; exit 1; }
 [[ "$(printf '%s\n' "$admission_features" | wc -l | tr -d '[:space:]')" == "$(read_value profile_features)" \
     && "$(printf '%s\n' "$admission_features" | sha256_stream)" == "$(read_value profile_features_sha256)" ]] \
     || { echo "error: Iterator sequencing profile feature inventory drifted" >&2; exit 1; }

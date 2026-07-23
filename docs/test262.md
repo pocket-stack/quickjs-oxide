@@ -10,7 +10,7 @@ differentials still decide exact behavior inside each implemented slice.
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
 - quickjs-oxide capability profile SHA-256:
-  `d01f4f49fbd14b2cad610983624142b468587b2e0bd10ae6264641c39cffa05f`
+  `6a4d3dc37da05f6e63d7b8564483159c383ed66c665a2b5530624e628f73b908`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -50,28 +50,28 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 43,521 pass;
+- 43,585 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 38,557 are classified as unsupported because of a feature, mode, host
+- 38,493 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
 - 97 fail to parse, 1,284 fail at runtime, 97 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 45,076 variants to execution. That count includes variants
+The runner admitted 45,140 variants to execution. That count includes variants
 which then report a typed parser/runtime frontier or harness failure rather
 than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 42.65% (`43,521 / 102,037`);
-- conservative target-scope lower bound: 52.08%
-  (`43,521 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 96.70%
-  (`43,521 / 45,005`).
+- raw suite pass rate: 42.71% (`43,585 / 102,037`);
+- conservative target-scope lower bound: 52.16%
+  (`43,585 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 96.71%
+  (`43,585 / 45,069`).
 
-The 52.08% figure is the useful whole-project progress floor, not a claim that
-the engine is 52.08% conformant. The 96.70% conditional rate measures quality
+The 52.16% figure is the useful whole-project progress floor, not a claim that
+the engine is 52.16% conformant. The 96.71% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -99,7 +99,7 @@ class slice, exposes adjacent derived/class-element and missing-intrinsic
 frontiers, and again keeps the runnable count fixed. R3f adds 545 passes by
 opening synchronous heritage/derived construction, while 88 adjacent variants
 move from parser/harness frontiers to honest missing-intrinsic, optional-chain,
-or pinned-target-error outcomes. The capability profile currently admits 73
+or pinned-target-error outcomes. The capability profile currently admits 74
 reviewed Test262 feature tags and 802 reviewed
 negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
@@ -126,9 +126,9 @@ parallel defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`202ab3480b39a6c7a68443bf9faba7bf9eb139b7c15baf2fde25c55c40c5d023`
+`0f43b6e164c0954a02f911774c34871ea67e6255f28ffa65419ea15d3f4b73fd`
 and
-`25df14d037d181bc82b70855a44e782cfbff3118603666dca6ec908cfd659387`.
+`f24e92ad54c4c59651206db66bfd7a4ed9dea4f3543311a990def0fc16e66be8`.
 
 ## Milestone policy
 
@@ -1531,19 +1531,19 @@ and receiver behavior are pinned by 16 QuickJS differential vectors. A
 separate Rust lifecycle test locks site identity across StripDebug publication
 and cycle collection.
 
-The focused manifest freezes 48 paths and 89 variants. Of its 85 executed
-variants, 83 pass and two stop at the existing PrivateName literal runtime
-frontier. Two `create-realm` variants remain host-unsupported and two TCO
+The focused manifest freezes 48 paths and 89 variants. All 85 executed
+variants pass; the later private-name work closed its two original staging
+frontiers. Two `create-realm` variants remain host-unsupported and two TCO
 variants remain excluded by the pinned QuickJS configuration. Manifest,
 key-set, and non-pass SHA-256 values are
 `d3a7e597a049e9a78830ee089a90db27c6b6b0b8b2d049cd76b30f5515e6d23a`,
 `91852cd5c970debac2ef05af2715198736757b1276a34e6a73722df86bd80356`,
 and
-`981d8dba14c5cad2481e890d2dfc0925fd5ef03139aca7109d52891166a2c4aa`.
+`cebe904ead643233ee754510a90cf53967525c4db1163281188b47aa56c80b50`.
 Focused TSV/JSONL SHA-256 values are
-`62322ceafcf309aedb8ee6a0b155fef9f24a67356a5408a496647a6f93ed353d`
+`a132ee39e73f44d77348b544427045069bb112ece353009ac7d5b2651fe51089`
 and
-`c91514b3d5b4500ec88d491e19719b139422bd7910876993fbb6a36a9cb70230`.
+`c32ef91f30cb4646228aee7cb2cd8a2445f4d6afa04c0173e4673f68acbb36b0`.
 Reproduce it with `scripts/test-test262-tagged-template.sh`.
 
 Declaring `template` moves the capability profile to 55 feature tags and 423
@@ -3755,13 +3755,13 @@ The manifest path-stream and complete-file SHA-256 values are
 and
 `ce8dd5bfebd79924090ff4a628607009d11ff116ffeb38720808b585335a91e5`.
 The scoped profile and `(path, variant)` key hashes are
-`d9e6f4fcf8cb6f20fb0ebba012451abbaad52bbe676430f2433b9398174e3c83`
+`a6ce2d6be97d7826cf20aeba7ab8946ad28ce134b0ad7165a8e591a986e6d22e`
 and
 `43be68340124e844c5e456899a084460ad87edd2c279c3ac1ca4057726b3697a`.
 The canonical focused TSV/JSONL hashes are
-`bae5e4dcda2676e56818925f5571f09c96ada891224d88ffe4f8fc7404d983de`
+`4746567453ed198096fd270e70f7c2c51975de837df0a1181645ceffd3cdefc9`
 and
-`d24d0e5812b0a8e1ec87c86c2c98d5e8ed9ca3baa5670ae2960fa90cd5f004fc`.
+`a25b115582160d38acb534c0192f93db65f3c8473d3c9211adb39c8f40a1a02a`.
 
 This remains a checksum-bound scoped admission. The global capability profile
 stays fail-closed for `iterator-helpers` because the excluded Proxy and host
@@ -3805,13 +3805,13 @@ The manifest path-stream and complete-file hashes are
 and
 `74eebb8c63a2606e54e1d0023c5244b8a0538ac51d1ca0a105fe56a04fa74af2`.
 The scoped profile and `(path, variant)` key hashes are
-`ee7e5626b6c27a9f4a8257984439ca2641d31258521e060fce24101cf1d1e0f0`
+`8284db009a398fb88b2d357d7d8255479943d963574392f7b718610ee12cb16a`
 and
 `eab38e1c6d7f22397e7c8521ec934476b2472406db5d83cfea23d0fbe7b17d5b`.
 The canonical TSV/JSONL hashes are
-`8bfddd2cc4d09e2f634da3cbba2c3007a77883ec3b38404e22e863b8e64f0fa6`
+`716d98068f7f2b28ff142abca546e71ff7eee9224bad1cea52ac0830240b8560`
 and
-`679dd372cf6dcaf288af3578f8b3f5afb4dd0b19ad6e81fb7d7da95bf8b5e44c`;
+`a184e7e80444282cc23015c5846052430c593eab93da358d4679859422f2e029`;
 the non-pass stream is empty.
 
 Test262 has no cross-realm rows here and only shallow coverage of getter
@@ -3819,9 +3819,8 @@ caching, retry state, return error priority, and reentry. The separate pinned
 QuickJS differential and Rust heap/runtime tests lock those boundaries. A
 pinned same-runtime libquickjs C probe plus the two-context Rust regression
 lock the `JS_IteratorNext2` native fast path retaining the outer operation's
-current realm. This remains a scoped admission: the global profile does not
-claim `iterator-sequencing`, and the conservative full vector remains
-43,521/102,037 until a separately audited global admission is justified.
+current realm. R3w originally kept this as a scoped admission; R3x performs
+the separately audited global promotion below.
 
 Reproduce R3w with:
 
@@ -3830,6 +3829,41 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_iterator_concat -- --nocapture
 ./scripts/test-test262-iterator-sequencing.sh
 ./scripts/test-test262-full.sh
+```
+
+## R3x global Iterator sequencing admission
+
+R3x changes only the conservative scoreboard. The global profile now contains
+74 bytewise-sorted feature tags, including `iterator-sequencing`, plus the
+unchanged 802 audited negative paths; it still has no execution opt-in. Its
+SHA-256 is
+`6a4d3dc37da05f6e63d7b8564483159c383ed66c665a2b5530624e628f73b908`.
+
+The 32-path R3w inventory is the tag's complete pinned Test262 surface. Joining
+the before/after full reports preserves all 102,037 keys and changes exactly
+64 variants from `unsupported-feature` to `pass`. No prior pass regresses and
+no failure, skip, timeout, host classification, or report detail outside those
+keys changes. Passes rise from 43,521 to 43,585, runnable variants from 45,076
+to 45,140, and `unsupported-feature` falls from 23,924 to 23,860.
+
+The final TSV/JSONL SHA-256 values are
+`0f43b6e164c0954a02f911774c34871ea67e6255f28ffa65419ea15d3f4b73fd`
+and
+`f24e92ad54c4c59651206db66bfd7a4ed9dea4f3543311a990def0fc16e66be8`.
+Thirty direct-global vectors, 14 unrelated scoped vectors, smoke/provenance
+canaries, and two Iterator gates are re-pinned only for authenticated profile
+metadata; their outcomes remain unchanged. Re-running the tagged-template gate
+also refreshes its two stale PrivateName staging rows, which later private-name
+work had already moved from `unsupported-runtime` to `pass`.
+
+Reproduce R3x with:
+
+```sh
+./scripts/test-test262-iterator-helpers.sh
+./scripts/test-test262-iterator-sequencing.sh
+./scripts/test-test262-smoke.sh
+./scripts/test-test262-provenance.sh
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
 ```
 
 ## Runner contract
@@ -4140,8 +4174,9 @@ dependency-audited 523-path/1,046-variant scoped gate passes 1,046/1,046 in
 both Oxide and pinned QuickJS. The global score remains 43,521 because Proxy
 and host-dependent adjacencies remain fail-closed. R3w adds the independent
 `Iterator.concat` sequencing state machine; its clean 32-path/64-variant scoped
-gate passes 64/64 in both engines. That cohort remains deliberately unadmitted
-globally, so the full vector is still 43,521/102,037.
+gate passes 64/64 in both engines. R3x globally admits that exact clean cohort,
+moving only those 64 variants to pass and bringing the full vector to
+43,585/102,037.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

@@ -5,11 +5,11 @@ the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
 The `unsafe`-free engine is runnable but incomplete. R3v/R3w add the synchronous
 `Iterator` intrinsic, core Iterator Helpers, and `Iterator.concat`; Oxide and
-pinned QuickJS pass both frozen scoped gates (1,046/1,046 and 64/64 variants). The
-conservative full vector remains 43,521/102,037: the helper gate still has
-Proxy/host adjacencies, and the clean sequencing cohort remains scoped rather
-than globally admitted. Modules, async functions/generators, Proxy, and broad
-built-in coverage remain incomplete.
+pinned QuickJS pass both frozen gates (1,046/1,046 and 64/64 variants). R3x
+globally admits the clean sequencing cohort, moving the conservative full
+vector to 43,585/102,037. The helper tag remains scoped because of Proxy/host
+adjacencies. Modules, async functions/generators, Proxy, and broad built-in
+coverage remain incomplete.
 Pinned QuickJS is the test oracle, never a product dependency.
 
 ## Try it
