@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Reproduce every gate for the currently implemented feature-parity slice.
+# Reproduce the broad aggregate gate for the implemented feature-parity slice.
+# Additional focused milestone gates remain independently reproducible.
 
 set -euo pipefail
 
@@ -114,6 +115,7 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/test-test262-class-base.sh
 ./scripts/test-test262-class-derived.sh
 ./scripts/test-test262-class-public-init.sh
+./scripts/test-test262-generator-destructuring.sh
 ./scripts/test-test262-full.sh
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ./scripts/check-rust-only.sh

@@ -2665,8 +2665,16 @@ impl VmHost for RuntimeVmHost {
                     .current_function
                     .clone()
                     .ok_or_else(|| Error::internal("arguments creation has no current function"))?;
-                let mut roots = Vec::with_capacity(self.arguments.len());
-                for (index, binding) in self.arguments.iter_mut().enumerate() {
+                let mapped_argument_count = self
+                    .actual_argument_count
+                    .min(self.argument_definitions.len());
+                let mut roots = Vec::with_capacity(self.actual_argument_count);
+                for (index, binding) in self
+                    .arguments
+                    .iter_mut()
+                    .take(mapped_argument_count)
+                    .enumerate()
+                {
                     let index = u16::try_from(index)
                         .map_err(|_| Error::internal("argument index exceeds u16::MAX"))?;
                     roots.push(capture_frame_binding(
@@ -2681,7 +2689,24 @@ impl VmHost for RuntimeVmHost {
                         },
                     )?);
                 }
-                roots.truncate(self.actual_argument_count);
+                // `quickjs.c::js_build_mapped_arguments` shares VarRefs only
+                // for `min(argc, b->arg_count)`. Extra actual arguments get
+                // detached cells: they are observable through `arguments`,
+                // but are not bytecode argument slots. Keeping that split is
+                // also essential when a generator parks this frame.
+                for binding in self
+                    .arguments
+                    .iter()
+                    .take(self.actual_argument_count)
+                    .skip(mapped_argument_count)
+                {
+                    let value = read_frame_binding(&self.runtime, binding)?;
+                    roots.push(
+                        self.runtime
+                            .new_var_ref(value, false, false, ClosureVariableKind::Normal)
+                            .map_err(runtime_error_to_vm_error)?,
+                    );
+                }
                 self.runtime.new_mapped_arguments_object(
                     self.current_realm,
                     &current_function,

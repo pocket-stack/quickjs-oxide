@@ -182,6 +182,8 @@ fn generator_lexical_context_matches_nested_function_and_arrow_boundaries() {
         "function* await(){ yield 1; }",
         "(function* await(){ yield 1; })",
         "function* outer(){ function ordinary(){ var yield=1; return yield; } (()=>yield); yield 2; }",
+        "function* outer(){ (function yield(){}); yield 1; }",
+        "function* outer(){ (function* yield(){}); yield 1; }",
     ] {
         compile_unlinked_script(source).unwrap_or_else(|error| {
             panic!("generator lexical context rejected {source:?}: {error}")
@@ -191,6 +193,12 @@ fn generator_lexical_context_matches_nested_function_and_arrow_boundaries() {
     for source in [
         "function* g(value = yield 1){}",
         "function* g(){ (yield)=>0; }",
+        "function* g(){ void yield; }",
+        "function* g(){ yield 3 + yield 4; }",
+        "function* g(){ function yield(){} }",
+        "function* g(){ 'use strict'; (function* yield(){}); }",
+        "function* g(){ for ({ yield } in [{}]); }",
+        "'use strict'; for ({ yield } in [{}]);",
     ] {
         assert_eq!(
             compile_unlinked_script(source).unwrap_err().kind(),
@@ -214,6 +222,48 @@ fn generator_lexical_context_matches_nested_function_and_arrow_boundaries() {
             "{source}"
         );
     }
+}
+
+#[test]
+fn scoped_generator_declarations_do_not_receive_annex_b_duplicate_exceptions() {
+    for source in [
+        "{ function f(){} function* f(){} }",
+        "{ function* f(){} function f(){} }",
+        "{ function* f(){} function* f(){} }",
+        "switch(0){case 0:function f(){} default:function* f(){}}",
+        "switch(0){case 0:function* f(){} default:function f(){}}",
+        "switch(0){case 0:function* f(){} default:function* f(){}}",
+    ] {
+        let error = compile_unlinked_script(source)
+            .expect_err("generator declaration duplicate must be an early error");
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(
+            error.message(),
+            "invalid redefinition of lexical identifier",
+            "{source}"
+        );
+    }
+
+    compile_unlinked_script("{ function f(){} function f(){} }")
+        .expect("sloppy ordinary block functions retain the Annex B exception");
+    compile_unlinked_script("switch(0){case 0:function f(){} default:function f(){}}")
+        .expect("sloppy ordinary switch functions retain the Annex B exception");
+
+    let mut tampered = Parser::parse(
+        "{ function* generator(){} }",
+        JsString::from_static("<generator-annex-verifier>"),
+    )
+    .unwrap();
+    assert!(
+        tampered.functions[0].scoped_functions[0]
+            .annex_binding
+            .is_none()
+    );
+    tampered.functions[0].scoped_functions[0].annex_binding = Some(super::IrAnnexBinding::Dynamic);
+    assert_eq!(
+        validate_scope_graph(&tampered).unwrap_err().message(),
+        "scoped generator retained an Annex B outer binding"
+    );
 }
 
 #[test]

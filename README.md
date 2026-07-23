@@ -3,14 +3,13 @@
 An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
-The `unsafe`-free engine is runnable but incomplete. R3s publishes
-`RegExp.escape`, ports Annex B legacy control escapes, and passes the complete
-pinned non-`v`, non-`$262.createRealm` RegExp built-ins cohort: 3,346/3,346
-variants, matching pinned QuickJS. This is not full-suite parity: modules,
-async functions/generators, Proxy, and broad built-in coverage remain
-incomplete. The complete Test262 vector currently records 36,927 passes with no
-engine fault. Unsupported paths fail explicitly; pinned QuickJS is only an
-oracle.
+The `unsafe`-free engine is runnable but incomplete. R3t authenticates a pinned
+synchronous 11-feature `generators` + `destructuring-binding` cohort: Oxide and
+pinned QuickJS both pass 6,593/6,593 variants. The result remains scoped; the
+conservative full Test262 vector records 36,928/102,037 passes with no engine
+fault. Modules, async functions/generators, Proxy, and broad built-in coverage
+remain incomplete. Unsupported paths fail explicitly; pinned QuickJS is the
+semantic oracle, not a product dependency.
 
 ## Try it
 
@@ -42,6 +41,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-class-private-generator-methods.sh
 ./scripts/test-test262-promise-{race-try-with-resolvers,finally,all,all-settled,any}.sh
 ./scripts/test-test262-regexp-builtins.sh
+./scripts/test-test262-generator-destructuring.sh
 ```
 
 ## License

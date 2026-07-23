@@ -15,14 +15,14 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 36,927 passes and 38,483 runnable variants: 36.19% raw, a 44.19% lower
-  bound after the 18,475 pinned QuickJS target exclusions, or 96.13% among the
-  38,412 variants with a non-unsupported observed outcome. It records 98
+  has 36,928 passes and 38,483 runnable variants: 36.19% raw, a 44.19% lower
+  bound after the 18,475 pinned QuickJS target exclusions, or 96.14% among the
+  38,412 variants with a non-unsupported observed outcome. It records 97
   parse failures and 1,284 runtime failures; current full TSV/JSONL SHA-256
   values are
-  `8f6401e033c8a58d0886ee6453015ca5f289022b90f3f32471e43f7022b2307b`
+  `6b2fb9219bad5f25bfcebc297ce9373798cd210140ebab0566a18e8dd83d052b`
   and
-  `80055a2278a54aa97f5d0dc8e07bcaefa641cc15ef26ddcc53f35f4095d704e5`.
+  `d2cf352f98f7d12b1ff734d7ff001c443c896be3c8adddd54951dd0a47f78eb2`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -2129,6 +2129,42 @@ claim full parity.
   `babb9f0e94a7f4e3cf62ad25faf923dc86adb9248db36f081b4b2e7667c6f784`
   and
   `c6226637ca00cfcef2c436cb64442d8264ba18553aba31baffe70a34d48f480f`.
+
+  R3t closes the pinned synchronous 11-feature generator/destructuring cohort.
+  Mapped `arguments` now follows QuickJS by sharing frame VarRefs only
+  for actual arguments backed by formal parameters and allocating detached
+  VarRefs for extras. Generator `.caller`/`.arguments` use poison accessors;
+  sloppy contextual `function yield(){}` is accepted only for an ordinary
+  FunctionExpression; and scoped generator declarations now preserve the
+  QuickJS lexical/Annex B duplicate-declaration boundary. Active-`yield` and
+  related `for-in` negatives retain genuine `SyntaxError` provenance.
+
+  The static metadata universe contains 3,418 paths/6,624 variants. Removing
+  25 module paths/variants and three source-audited metadata-missing async
+  paths/six variants leaves 3,390 synchronous paths and 6,593 variants:
+  3,011 positive paths/5,906 variants plus 379 parse-negative paths/687
+  variants. Oxide and pinned QuickJS both pass 6,593/6,593. The manifest,
+  scoped-profile, key, TSV, and JSONL hashes are
+  `07ad2748c65763366ebdcb8c01893a13aa4fbbcca3e900a31042fc670593f3c5`,
+  `8057ef347c07ffc80a66c5c83ff73873148a8813af49bcca1ced9863cfb9ac9e`,
+  `f5e729f4b439733ee900ce1d7d98163b9969aab6998b4a288cb4a6eea5c35f81`,
+  `f81c2f7b946360f44c1b2d5bdc40782d2e13f989af372329fb6582cb8ded8978`,
+  and
+  `eb1d82ad4d156880bc539d2bfc73e8203cd9dd8f70289e80560388ea07c11083`.
+
+  R3t intentionally keeps this as a checksum-bound scoped admission. The
+  global profile remains byte-identical and fail-closed for `generators` and
+  `destructuring-binding`, so none of the 6,593 scoped passes is counted as a
+  global admission. One untagged Annex B generator-declaration case moves from
+  `fail-runtime` to `pass`; one untagged staging case moves from `fail-parse`
+  to the deeper QuickJS-matching `fail-runtime`. The exact full join therefore
+  has one new pass, no previous-pass regression, and no engine fault:
+  36,928/102,037 with TSV/JSONL hashes
+  `6b2fb9219bad5f25bfcebc297ce9373798cd210140ebab0566a18e8dd83d052b`
+  and
+  `d2cf352f98f7d12b1ff734d7ff001c443c896be3c8adddd54951dd0a47f78eb2`.
+  A separate admission milestone will classify the three async adjacencies and
+  migrate the globally profile-bound baselines.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
@@ -4963,7 +4999,7 @@ The complete pinned Test262 vector is now recorded conservatively. Remaining
 parser frontiers with generic syntax diagnostics cannot contribute negative
 test passes until they gain typed `Unsupported` provenance or are individually
 audited as genuine early errors. The remaining native `$262` host hooks, module
-parse/link/evaluate, Promise combinators and async-function integration, the
+parse/link/evaluate, async-function integration, the
 ES5.1 suite, and a separate QuickJS-runner-quirk profile remain future
 milestones. Unsupported and host-missing outcomes are failures, not additional
 feature skips.
@@ -5447,6 +5483,10 @@ growing the runtime facade. Realm-aware property completion wrappers and storage
 helpers, bytecode publication linking and call dispatch, runtime/root lifecycle,
 and the remaining intrinsic families still share the file; `compiler.rs`
 similarly combines several compiler phases.
+R3t moves `runtime.rs` only from 9,803 to 9,808 lines. Mapped-arguments logic
+remains in `runtime/vm_host.rs`, generator regressions in
+`runtime/generator.rs`, and declaration/parser work in compiler modules. It
+does not introduce a second generator state machine.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.
@@ -5740,6 +5780,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-class-private-accessors.sh
 ./scripts/test-test262-class-generator-methods.sh
 ./scripts/test-test262-class-private-generator-methods.sh
+./scripts/test-test262-generator-destructuring.sh
 cargo build --bin qjs
 ./scripts/test-r3l-class-private-generators-oracle.sh --oxide ./target/debug/qjs
 ./scripts/test-r3s-regexp-escape-control-oracle.sh --oxide ./target/debug/qjs

@@ -6325,8 +6325,11 @@ impl Runtime {
 
         // QuickJS keeps the ES5-compatible sloppy ordinary-function getter
         // exception: reading `.caller`/`.arguments` returns undefined when
-        // the receiver has bytecode, is non-strict, has a prototype and the
-        // shared poison function was invoked without a setter argument.
+        // the receiver has normal-function bytecode, is non-strict, has a
+        // prototype and the shared poison function was invoked without a
+        // setter argument. Oxide separately uses `has_prototype` for generator
+        // callables' own prototype object, so the bytecode kind must remain an
+        // explicit part of QuickJS's `b->has_prototype` test.
         let sloppy_legacy_get = if arguments.actual_arg_count == 0 {
             match this_value {
                 Value::Object(object) => {
@@ -6335,7 +6338,9 @@ impl Runtime {
                     match object.payload {
                         ObjectPayload::BytecodeFunction { bytecode, .. } => {
                             let metadata = state.heap.function_bytecode(bytecode)?.metadata;
-                            !metadata.strict && metadata.has_prototype
+                            metadata.function_kind == FunctionKind::Normal
+                                && !metadata.strict
+                                && metadata.has_prototype
                         }
                         ObjectPayload::Ordinary
                         | ObjectPayload::RawJson

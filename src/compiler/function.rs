@@ -16,7 +16,7 @@ pub(super) struct ParsedFunctionDefinition {
 pub(super) struct FunctionDefinitionHeader<'source> {
     pub(super) span: Span,
     pub(super) name: Option<(Identifier<'source>, Span)>,
-    execution_kind: BytecodeFunctionKind,
+    pub(super) execution_kind: BytecodeFunctionKind,
     parent_context: LexContext,
 }
 
@@ -121,13 +121,33 @@ impl<'source> Parser<'source> {
         } else {
             BytecodeFunctionKind::Normal
         };
-        let name = if let TokenKind::Identifier(identifier) = self.current().kind.clone() {
-            let span = self.current().span;
-            validate_identifier(&identifier, span, false, IdentifierContext::FunctionName)?;
-            self.advance()?;
-            Some((identifier, span))
-        } else {
-            None
+        let name = match self.current().kind.clone() {
+            TokenKind::Identifier(identifier) => {
+                let span = self.current().span;
+                validate_identifier(&identifier, span, false, IdentifierContext::FunctionName)?;
+                self.advance()?;
+                Some((identifier, span))
+            }
+            // QuickJS consumes a contextual TOK_YIELD as the name of any
+            // sloppy FunctionExpression. This is deliberately token-sensitive:
+            // an outer generator produces TOK_YIELD and therefore permits
+            // `(function* yield(){})`, while the same spelling at top level is
+            // TOK_IDENT and is rejected below for a generator expression.
+            TokenKind::Keyword(crate::lexer::Keyword::Yield)
+                if !require_name && !parent_context.strict =>
+            {
+                let span = self.current().span;
+                let identifier = Identifier {
+                    raw: "yield",
+                    value: "yield".to_owned(),
+                    has_escape: false,
+                    keyword_hint: Some(crate::lexer::Keyword::Yield),
+                    escaped_reserved_word: false,
+                };
+                self.advance()?;
+                Some((identifier, span))
+            }
+            _ => None,
         };
         if require_name && name.is_none() {
             return Err(self.syntax_here("function name expected"));
@@ -145,14 +165,18 @@ impl<'source> Parser<'source> {
         header: FunctionDefinitionHeader<'source>,
         private_name_binding: bool,
     ) -> Result<ParsedFunctionDefinition, Error> {
-        // Preserve QuickJS's declaration/expression asymmetry. Sloppy
-        // `function* yield(){}` is accepted as a declaration, but a named
-        // generator expression creates a private self binding and rejects the
-        // same spelling as a reserved identifier.
+        // Preserve QuickJS's token-sensitive declaration/expression asymmetry.
+        // A top-level generator-expression name arrives as TOK_IDENT and is
+        // reserved, while contextual TOK_YIELD from an outer sloppy generator
+        // is admitted by quickjs.c:36419-36439.
         if private_name_binding
             && header.execution_kind == BytecodeFunctionKind::Generator
             && let Some((identifier, span)) = &header.name
             && identifier.value == "yield"
+            && !(header.parent_context.generator
+                && !header.parent_context.strict
+                && !identifier.has_escape
+                && identifier.keyword_hint == Some(crate::lexer::Keyword::Yield))
         {
             return Err(Error::syntax(
                 "'yield' is a reserved identifier",

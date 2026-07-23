@@ -552,6 +552,11 @@ struct IrBinding {
     /// Header-time marker for a block/switch FunctionDeclaration. The child
     /// constant is attached separately after its body parses successfully.
     is_scoped_function: bool,
+    /// Generator declarations are lexical declarations and never receive the
+    /// sloppy Annex B duplicate-function exception. Retain the grammar kind
+    /// on the binding until the child constant is attached so a later
+    /// declaration in the same block can apply QuickJS's early-error rule.
+    is_scoped_generator: bool,
     /// Catch parameters behave as mutable lexicals for resolution/lifetime,
     /// but `var` of the same name is explicitly permitted and resolves its
     /// initializer through this nearer cell.
@@ -1509,6 +1514,7 @@ impl FunctionIr {
             storage,
             kind,
             is_scoped_function: false,
+            is_scoped_generator: false,
             is_catch_parameter: false,
             declaration_span,
         });
@@ -6151,6 +6157,11 @@ impl<'source> Parser<'source> {
             TokenKind::Keyword(Keyword::Super) => {
                 self.parse_super_property(token.span)?;
             }
+            TokenKind::Keyword(Keyword::Yield)
+                if self.current_ir().execution_kind == BytecodeFunctionKind::Generator =>
+            {
+                return Err(self.syntax_here("unexpected 'yield' keyword"));
+            }
             TokenKind::Keyword(keyword)
                 if self.current_ir().strict && strict_reserved_identifier(keyword) =>
             {
@@ -6161,6 +6172,7 @@ impl<'source> Parser<'source> {
             }
             TokenKind::Keyword(
                 keyword @ (Keyword::Else
+                | Keyword::In
                 | Keyword::Case
                 | Keyword::Default
                 | Keyword::Catch
@@ -6660,7 +6672,8 @@ impl<'source> Parser<'source> {
             .as_ref()
             .map(|(identifier, span)| (identifier.value.clone(), *span))
             .ok_or_else(|| Error::internal("required scoped function lost its name"))?;
-        let prepared = self.prepare_scoped_function(&name, declaration_span)?;
+        let generator = header.execution_kind == BytecodeFunctionKind::Generator;
+        let prepared = self.prepare_scoped_function(&name, declaration_span, generator)?;
         let parsed = self.parse_function_definition_tail(header, false)?;
         if parsed.name.as_ref().map(|(parsed, _)| parsed.as_str()) != Some(name.as_str()) {
             return Err(Error::internal(
@@ -6700,6 +6713,7 @@ impl<'source> Parser<'source> {
         &mut self,
         name: &str,
         declaration_span: Span,
+        generator: bool,
     ) -> Result<PreparedScopedFunction, Error> {
         let function = self.current_ir();
         let scope_kind = function.scopes[function.current_scope.0].kind;
@@ -6715,10 +6729,16 @@ impl<'source> Parser<'source> {
                 "scoped function escaped an Annex B declaration scope",
             ));
         }
-        let create_annex_binding = self.scoped_function_is_annex_b_eligible(name);
+        // Annex B.3.2 applies only to ordinary FunctionDeclarations.
+        // GeneratorDeclarations remain lexical even in sloppy blocks.
+        let create_annex_binding = !generator && self.scoped_function_is_annex_b_eligible(name);
         let conflict_span = self.current().span;
-        let binding =
-            self.register_scoped_function_binding(name, declaration_span, conflict_span)?;
+        let binding = self.register_scoped_function_binding(
+            name,
+            declaration_span,
+            conflict_span,
+            generator,
+        )?;
         Ok(PreparedScopedFunction {
             binding,
             create_annex_binding,
@@ -6790,11 +6810,14 @@ impl<'source> Parser<'source> {
         name: &str,
         declaration_span: Span,
         conflict_span: Span,
+        generator: bool,
     ) -> Result<BindingId, Error> {
         let scope = self.current_ir().current_scope;
         if let Some(existing) = self.current_ir().binding_id_in_scope(scope, name) {
-            let duplicate_function = self.current_ir().bindings[existing.0].is_scoped_function;
-            if self.current_ir().strict || !duplicate_function {
+            let existing = &self.current_ir().bindings[existing.0];
+            let duplicate_ordinary_function =
+                existing.is_scoped_function && !existing.is_scoped_generator && !generator;
+            if self.current_ir().strict || !duplicate_ordinary_function {
                 return Err(Error::syntax(
                     "invalid redefinition of lexical identifier",
                     source_span(conflict_span),
@@ -6820,6 +6843,7 @@ impl<'source> Parser<'source> {
                 Some(declaration_span),
             );
             function.bindings[binding.0].is_scoped_function = true;
+            function.bindings[binding.0].is_scoped_generator = generator;
             return Ok(binding);
         }
 
@@ -6829,6 +6853,7 @@ impl<'source> Parser<'source> {
             .binding_id_in_scope(scope, name)
             .ok_or_else(|| Error::internal("scoped function binding was not registered"))?;
         self.current_ir_mut().bindings[binding.0].is_scoped_function = true;
+        self.current_ir_mut().bindings[binding.0].is_scoped_generator = generator;
         Ok(binding)
     }
 
@@ -9538,6 +9563,8 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 .get(*child_id)
                 .ok_or_else(|| Error::internal("scoped child function is out of bounds"))?;
             if child.function_name.as_deref() != Some(binding.name.as_str())
+                || (child.execution_kind == BytecodeFunctionKind::Generator)
+                    != binding.is_scoped_generator
                 || child.private_name_binding
                 || child.parent
                     != Some(ParentLink {
@@ -9561,6 +9588,11 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 ));
             }
             let drop_offset = if let Some(annex_binding) = scoped.annex_binding {
+                if binding.is_scoped_generator {
+                    return Err(Error::internal(
+                        "scoped generator retained an Annex B outer binding",
+                    ));
+                }
                 if function.strict
                     || !matches!(
                         function.ops.get(scoped.authored_closure + 1),
@@ -9694,7 +9726,8 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             .iter()
             .enumerate()
             .any(|(index, binding)| {
-                binding.is_scoped_function && !seen_scoped_function_bindings[index]
+                (binding.is_scoped_function && !seen_scoped_function_bindings[index])
+                    || (binding.is_scoped_generator && !binding.is_scoped_function)
             })
         {
             return Err(Error::internal(

@@ -50,12 +50,12 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 36,927 pass;
+- 36,928 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
 - 45,150 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 98 fail to parse, 1,284 fail at runtime, 97 fail in the harness, and six
+- 97 fail to parse, 1,284 fail at runtime, 97 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 38,483 variants to execution. That count includes variants
@@ -64,14 +64,14 @@ non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 36.19% (`36,927 / 102,037`);
+- raw suite pass rate: 36.19% (`36,928 / 102,037`);
 - conservative target-scope lower bound: 44.19%
-  (`36,927 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 96.13%
-  (`36,927 / 38,412`).
+  (`36,928 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 96.14%
+  (`36,928 / 38,412`).
 
 The 44.19% figure is the useful whole-project progress floor, not a claim that
-the engine is 44.19% conformant. The 96.13% conditional rate measures quality
+the engine is 44.19% conformant. The 96.14% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -108,6 +108,9 @@ differential tests remain the semantic judge.
 
 R3s separately admits `RegExp.escape` only in its checksum-bound complete
 RegExp built-ins profile; the global profile remains fail-closed for that tag.
+R3t likewise authenticates synchronous `generators` plus
+`destructuring-binding` in a checksum-bound scoped profile while leaving both
+tags fail-closed globally.
 
 The complete TSV/JSONL reports are generated under `target/` rather than
 committed (together they are tens of megabytes). Their complete hashes and
@@ -122,9 +125,9 @@ parallel defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`8f6401e033c8a58d0886ee6453015ca5f289022b90f3f32471e43f7022b2307b`
+`6b2fb9219bad5f25bfcebc297ce9373798cd210140ebab0566a18e8dd83d052b`
 and
-`80055a2278a54aa97f5d0dc8e07bcaefa641cc15ef26ddcc53f35f4095d704e5`.
+`d2cf352f98f7d12b1ff734d7ff001c443c896be3c8adddd54951dd0a47f78eb2`.
 
 ## Milestone policy
 
@@ -3593,6 +3596,74 @@ Reproduce R3s with:
 ./scripts/test-test262-full.sh
 ```
 
+## R3t synchronous generators + destructuring binding
+
+R3t derives its boundary from pinned metadata rather than current Oxide
+outcomes. A path enters the raw universe when it carries `generators` or
+`destructuring-binding` and all of its remaining feature tags belong to the
+exact 11-tag scoped profile. That yields 3,418 paths and 6,624 variants.
+Removing 25 module paths/variants leaves 3,393 paths and 6,599 variants. Three
+source-audited paths contain real async syntax despite omitting the `async`
+metadata flag; excluding their six variants freezes the synchronous gate at
+3,390 paths and 6,593 variants.
+
+The final inventory contains 3,011 positive paths/5,906 variants and 379
+parse-negative paths/687 variants. Its mode split is 3,313 sloppy and 3,280
+strict variants. Oxide and pinned QuickJS both pass all 6,593 variants, with an
+empty non-pass vector.
+
+The semantic fixes follow the pinned QuickJS implementation:
+
+- mapped `arguments` shares frame VarRefs only through
+  `min(actual_count, formal_count)`; extra actual arguments receive detached
+  VarRefs (`quickjs.c:16228-16275`);
+- generator `.caller` and `.arguments` keep the poison accessors used by
+  non-ordinary functions (`quickjs.c:16110-16117`, `17388-17434`, and
+  `36513-36516`);
+- contextual `yield` is accepted only as the name of a sloppy ordinary
+  FunctionExpression (`quickjs.c:36430-36444`);
+- scoped generator declarations use the lexical/Annex B duplicate-declaration
+  distinction from `quickjs.c:24186-24223` and `36487-36493`; active `yield`
+  and the associated `for-in` negatives now produce genuine `SyntaxError`
+  results instead of generic unsupported-parser classifications.
+
+The scoped profile, manifest, variant-key, TSV, and JSONL SHA-256 values are
+`8057ef347c07ffc80a66c5c83ff73873148a8813af49bcca1ced9863cfb9ac9e`,
+`07ad2748c65763366ebdcb8c01893a13aa4fbbcca3e900a31042fc670593f3c5`,
+`f5e729f4b439733ee900ce1d7d98163b9969aab6998b4a288cb4a6eea5c35f81`,
+`f81c2f7b946360f44c1b2d5bdc40782d2e13f989af372329fb6582cb8ded8978`,
+and
+`eb1d82ad4d156880bc539d2bfc73e8203cd9dd8f70289e80560388ea07c11083`.
+The complete derivation and remaining inventory hashes are frozen in
+`tests/test262-generator-destructuring-baseline.txt`.
+
+This is a checksum-bound scoped admission, not a global profile migration.
+The global profile remains byte-identical and fail-closed for `generators` and
+`destructuring-binding`, so the 6,593 scoped passes are not claimed as a global
+uplift. One untagged Annex B generator-declaration test does move from
+`fail-runtime` to `pass`. A second untagged staging test moves from
+`fail-parse` to the deeper `fail-runtime` expected from the pinned QuickJS
+behavior: QuickJS itself rejects that old SpiderMonkey assertion after
+accepting contextual `TOK_YIELD`. The exact 102,037-key join therefore has one
+new pass, no previous-pass regression, 97 parse failures, and 1,284 runtime
+failures. Its score is 36,928/102,037 and its TSV/JSONL hashes are
+`6b2fb9219bad5f25bfcebc297ce9373798cd210140ebab0566a18e8dd83d052b`
+and
+`d2cf352f98f7d12b1ff734d7ff001c443c896be3c8adddd54951dd0a47f78eb2`.
+A later, separate admission milestone can classify the three async
+adjacencies and refresh every globally profile-bound baseline without mixing
+that bookkeeping into the semantic implementation commit.
+
+Reproduce R3t with:
+
+```sh
+./scripts/test-test262-generator-destructuring.sh
+./scripts/test-test262-full.sh
+```
+
+Use `./scripts/test-test262-generator-destructuring.sh --check` to authenticate
+the static inventory, scoped profile, and QuickJS oracle without running Oxide.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -3697,6 +3768,7 @@ canonical progress report.
 ./scripts/test-test262-class-private-accessors.sh
 ./scripts/test-test262-class-generator-methods.sh
 ./scripts/test-test262-class-private-generator-methods.sh
+./scripts/test-test262-generator-destructuring.sh
 ./scripts/test-r3r-generator-destructuring-return-oracle.sh --oxide target/debug/qjs
 ./scripts/test-test262-full.sh
 ```
@@ -3886,7 +3958,11 @@ R3q adds `Promise.allSettled` and `Promise.any`; their complete gates pass
 through generator-destructuring iterator unwind. R3s then completes the pinned
 non-`v`, non-`createRealm` RegExp built-ins cohort at 3,346/3,346 and raises the
 full vector to 36,927 passes without a previous-pass regression.
-The global profile remains async- and Promise-feature-fail-closed.
+R3t closes the authenticated synchronous generator/destructuring cohort at
+6,593/6,593. Its untagged Annex B fix raises the conservative full vector by
+one to 36,928 passes; the scoped cohort itself remains outside that global
+score. The global profile remains fail-closed for async and Promise features
+and for `generators`/`destructuring-binding`.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

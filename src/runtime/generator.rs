@@ -590,6 +590,55 @@ mod tests {
     }
 
     #[test]
+    fn sloppy_generator_mapped_arguments_keep_extra_actuals_across_yields() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        assert_eq!(
+            context
+                .eval(
+                    "let iterator = (function* () { \
+                         yield arguments[0]; \
+                         yield arguments[1]; \
+                         return arguments[0] + arguments[1]; \
+                     })(20, 22); \
+                     let first = iterator.next(); \
+                     let second = iterator.next(); \
+                     let third = iterator.next(); \
+                     first.value === 20 && first.done === false && \
+                     second.value === 22 && second.done === false && \
+                     third.value === 42 && third.done === true",
+                )
+                .unwrap(),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn sloppy_generator_mapped_arguments_split_formal_and_extra_cells() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        assert_eq!(
+            context
+                .eval(
+                    "function* probe(formal) { \
+                         arguments[0] = 20; \
+                         arguments[1] = 22; \
+                         yield formal; \
+                         formal = 18; \
+                         return arguments[0] + arguments[1]; \
+                     } \
+                     let iterator = probe(1, 2); \
+                     let first = iterator.next(); \
+                     let second = iterator.next(); \
+                     first.value === 20 && first.done === false && \
+                     second.value === 40 && second.done === true",
+                )
+                .unwrap(),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
     fn thrown_resume_backtrace_stays_on_the_suspended_yield() {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();

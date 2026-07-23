@@ -178,6 +178,10 @@ const TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256: &str =
     "ff674aafc4b1b61b0c40042f831b44c600b1f741e06b8c8c35863b876919aa7b";
 const TEST262_SYMBOL_PROTOCOLS_MANIFEST_SHA256: &str =
     "6147636f7950b899f7c0eea25078e2f4c9c4c7fda2977181dd7c9671aa0bcde2";
+const TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256: &str =
+    "8057ef347c07ffc80a66c5c83ff73873148a8813af49bcca1ced9863cfb9ac9e";
+const TEST262_GENERATOR_DESTRUCTURING_MANIFEST_SHA256: &str =
+    "07ad2748c65763366ebdcb8c01893a13aa4fbbcca3e900a31042fc670593f3c5";
 const TEST262_REGEXP_BUILTINS_PROFILE_SHA256: &str =
     "0214f6789a3276c4755fadde19477b70620184a6137d29eefef0975cfb379c15";
 const TEST262_REGEXP_BUILTINS_MANIFEST_SHA256: &str =
@@ -726,6 +730,7 @@ enum OxideProfileKind {
     Map,
     Set,
     SymbolProtocols,
+    GeneratorDestructuring,
     RegExpBuiltins,
 }
 
@@ -869,6 +874,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
             OxideProfileKind::SymbolProtocols,
         ),
         (
+            root.join("tests/test262-generator-destructuring.conf"),
+            OxideProfileKind::GeneratorDestructuring,
+        ),
+        (
             root.join("tests/test262-regexp-builtins.conf"),
             OxideProfileKind::RegExpBuiltins,
         ),
@@ -885,7 +894,7 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         }
     }
     Err(format!(
-        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf, tests/test262-aggregate-error.conf, tests/test262-argument-spread.conf, tests/test262-class-base.conf, tests/test262-class-derived.conf, tests/test262-class-public-init.conf, tests/test262-class-private-fields.conf, tests/test262-class-private-methods.conf, tests/test262-class-private-accessors.conf, tests/test262-class-generator-methods.conf, tests/test262-class-private-generator-methods.conf, tests/test262-promise-constructor-jobs.conf, tests/test262-promise-race-try-with-resolvers.conf, tests/test262-promise-finally.conf, tests/test262-promise-all.conf, tests/test262-promise-all-settled.conf, tests/test262-promise-any.conf, tests/test262-array-binding-flat.conf, tests/test262-array-binding-nested.conf, tests/test262-array-assignment-flat.conf, tests/test262-catch-binding.conf, tests/test262-identifier-defaults.conf, tests/test262-parameter-direct-eval.conf, tests/test262-parameter-binding-patterns.conf, tests/test262-parameter-expression-binding-patterns.conf, tests/test262-identifier-rest.conf, tests/test262-object-assignment-flat.conf, tests/test262-object-assignment-nested.conf, tests/test262-object-assignment-rest.conf, tests/test262-object-binding.conf, tests/test262-object-rest-binding.conf, tests/test262-map.conf, tests/test262-set.conf, tests/test262-symbol-protocols.conf, or tests/test262-regexp-builtins.conf",
+        "unsupported Test262 capability profile: {}; expected compat/test262-oxide.conf or a pinned tests/test262-*.conf profile",
         path.display()
     ))
 }
@@ -1553,6 +1562,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "tests/test262-regexp-builtins.txt",
             TEST262_REGEXP_BUILTINS_MANIFEST_SHA256,
         ),
+        OxideProfileKind::GeneratorDestructuring => verify_scoped_pinned_profile(
+            options,
+            "synchronous generators and destructuring binding",
+            TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256,
+            "tests/test262-generator-destructuring.txt",
+            TEST262_GENERATOR_DESTRUCTURING_MANIFEST_SHA256,
+        ),
     }
 }
 
@@ -1829,8 +1845,9 @@ mod cli_tests {
         TEST262_CLASS_PRIVATE_FIELDS_PROFILE_SHA256,
         TEST262_CLASS_PRIVATE_GENERATOR_METHODS_PROFILE_SHA256,
         TEST262_CLASS_PRIVATE_METHODS_PROFILE_SHA256, TEST262_CLASS_PUBLIC_INIT_PROFILE_SHA256,
-        TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256, TEST262_IDENTIFIER_REST_PROFILE_SHA256,
-        TEST262_MAP_PROFILE_SHA256, TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
+        TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256, TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256,
+        TEST262_IDENTIFIER_REST_PROFILE_SHA256, TEST262_MAP_PROFILE_SHA256,
+        TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_NESTED_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_REST_PROFILE_SHA256, TEST262_OBJECT_BINDING_PROFILE_SHA256,
         TEST262_OBJECT_REST_BINDING_PROFILE_SHA256,
@@ -2112,6 +2129,11 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-symbol-protocols.conf")).unwrap(),
             OxideProfileKind::SymbolProtocols
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-generator-destructuring.conf"))
+                .unwrap(),
+            OxideProfileKind::GeneratorDestructuring
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-regexp-builtins.conf")).unwrap(),
@@ -3887,6 +3909,53 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-regexp-builtins.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_generator_destructuring_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-generator-destructuring.conf",
+            "--manifest",
+            "tests/test262-generator-destructuring.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/language/statements/generators/yield-as-literal.js",
+            ],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-generator-destructuring.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

@@ -52,6 +52,11 @@ console.log("thrower=length:" + throwerLength.value + "|" +
 console.log("legacy-sloppy=" + observe(() => caller.get.call(function sloppy() {})));
 console.log("legacy-strict=" + observe(() => caller.get.call(function strict() { "use strict"; })));
 console.log("legacy-set=" + observe(() => caller.set.call(function sloppy() {}, 1)));
+const syntaxGenerator = function* syntaxGenerator() {};
+const GeneratorFunction = Object.getPrototypeOf(syntaxGenerator).constructor;
+const dynamicGenerator = new GeneratorFunction();
+console.log("legacy-generator-syntax=" + observe(() => caller.get.call(syntaxGenerator)));
+console.log("legacy-generator-dynamic=" + observe(() => caller.get.call(dynamicGenerator)));
 
 const call = fp.call;
 console.log("call-zero=" + observe(() => call.call(function one(a) { return a; })));
@@ -140,6 +145,65 @@ fn function_prototype_prefix_matches_quickjs_oracle() {
     };
 
     assert_eq!(rust_observations(), oracle_observations(&oracle));
+}
+
+#[test]
+fn generator_callables_do_not_receive_the_ordinary_sloppy_restricted_property_exception() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let function_prototype = context.function_prototype().unwrap();
+    let restricted = ["caller", "arguments"].map(|name| {
+        let key = runtime.intern_property_key(name).unwrap();
+        let (get, set, _, _) = accessor_descriptor(&runtime, &function_prototype, &key);
+        (name, key, get, set)
+    });
+    let generators = [
+        (
+            "syntax",
+            function(&runtime, &mut context, "(function* syntaxGenerator(){})"),
+        ),
+        (
+            "dynamic",
+            function(
+                &runtime,
+                &mut context,
+                "new (Object.getPrototypeOf(function*(){}).constructor)()",
+            ),
+        ),
+    ];
+
+    for (generator_kind, generator) in generators {
+        for (property_name, key, get, set) in &restricted {
+            assert!(
+                !runtime
+                    .has_own_property(generator.as_object(), key)
+                    .unwrap(),
+                "{generator_kind} generator unexpectedly had an own {property_name} property"
+            );
+            assert_eq!(
+                observe_call(
+                    &runtime,
+                    &mut context,
+                    get,
+                    Value::Object(generator.as_object().clone()),
+                    &[],
+                ),
+                "throw:TypeError|invalid property access",
+                "{generator_kind} generator {property_name} getter did not use the poison accessor"
+            );
+            assert_eq!(
+                observe_call(
+                    &runtime,
+                    &mut context,
+                    set,
+                    Value::Object(generator.as_object().clone()),
+                    &[Value::Int(1)],
+                ),
+                "throw:TypeError|invalid property access",
+                "{generator_kind} generator {property_name} setter did not use the poison accessor"
+            );
+        }
+    }
 }
 
 #[test]
@@ -264,6 +328,26 @@ fn rust_observations() -> Vec<String> {
         &caller_set,
         Value::Object(sloppy.as_object().clone()),
         &[Value::Int(1)],
+    );
+    let syntax_generator = function(&runtime, &mut context, "(function* syntaxGenerator(){})");
+    let dynamic_generator = function(
+        &runtime,
+        &mut context,
+        "new (Object.getPrototypeOf(function*(){}).constructor)()",
+    );
+    let legacy_generator_syntax = observe_call(
+        &runtime,
+        &mut context,
+        &caller_get,
+        Value::Object(syntax_generator.as_object().clone()),
+        &[],
+    );
+    let legacy_generator_dynamic = observe_call(
+        &runtime,
+        &mut context,
+        &caller_get,
+        Value::Object(dynamic_generator.as_object().clone()),
+        &[],
     );
 
     let call_key = runtime.intern_property_key("call").unwrap();
@@ -451,6 +535,8 @@ fn rust_observations() -> Vec<String> {
         format!("legacy-sloppy={legacy_sloppy}"),
         format!("legacy-strict={legacy_strict}"),
         format!("legacy-set={legacy_set}"),
+        format!("legacy-generator-syntax={legacy_generator_syntax}"),
+        format!("legacy-generator-dynamic={legacy_generator_dynamic}"),
         format!("call-zero={call_zero}"),
         format!("call-this={call_this}"),
         format!("call-args={call_args}"),
