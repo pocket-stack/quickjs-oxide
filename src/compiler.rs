@@ -910,16 +910,17 @@ enum BreakControlKind {
     /// a `yield` inside the pattern must still close this iterator before the
     /// frame returns.
     DestructuringIterator,
-    /// QuickJS precompiles the assignment fragment of a for-of head before
-    /// the right-hand side installs the loop iterator record. At runtime that
-    /// fragment executes with the record active, but a generator return from
-    /// the fragment abandons it without calling the outer iterator's
-    /// `return` method.
+    /// QuickJS precompiles the assignment fragment of a for-of/for-await head
+    /// before the right-hand side installs the loop iterator record. At
+    /// runtime that fragment executes with the record active, but a generator
+    /// return from the fragment abandons it without calling the outer
+    /// iterator's `return` method.
     ForOfAssignmentFragment,
-    /// QuickJS's `has_iterator` BlockEnv. Its target depth retains the
-    /// conceptual `iterator`, `next`, and private unwind marker slots. A
-    /// same-loop continue keeps that record, a break reaches the shared close
-    /// tail, and an edge crossing the loop closes it immediately.
+    /// QuickJS's `has_iterator` BlockEnv, shared by for-of and for-await. Its
+    /// target depth retains the conceptual `iterator`, `next`, and private
+    /// unwind marker slots. A same-loop continue keeps that record, a break
+    /// reaches the shared close tail, and an edge crossing the loop closes it
+    /// immediately.
     ForOf,
     /// QuickJS for-in retains one hidden enumeration object. Same-loop
     /// continue keeps it, the shared break tail drops it, and a jump crossing
@@ -2350,16 +2351,24 @@ impl<'source> Parser<'source> {
         if matches!(completion, StatementCompletion::Eval) {
             self.set_eval_ret_undefined()?;
         }
-        if matches!(self.current().kind, TokenKind::Keyword(Keyword::Await))
-            || matches!(
-                &self.current().kind,
-                TokenKind::Identifier(identifier)
-                    if identifier.value == "await" && !identifier.has_escape
-            )
-        {
-            return Err(self.unsupported_here("for-await-of loops are not implemented yet"));
+        // QuickJS recognizes this contextual form only when the lexer has
+        // classified `await` as the real keyword. In an ordinary function or
+        // script the same source spelling remains an Identifier, so the
+        // ordinary `for (` expectation reports the syntax error instead.
+        let is_for_await = matches!(self.current().kind, TokenKind::Keyword(Keyword::Await));
+        if is_for_await {
+            if !matches!(
+                self.current_ir().execution_kind,
+                BytecodeFunctionKind::Async | BytecodeFunctionKind::AsyncGenerator
+            ) {
+                return Err(self.syntax_here("for await is only valid in asynchronous functions"));
+            }
+            self.advance()?;
         }
-        let classic_head = self.for_head_has_top_level_semicolon();
+        // `for await` always enters the for-in/of parser. A semicolon or `in`
+        // is rejected there rather than being reinterpreted as a classic for
+        // head.
+        let classic_head = !is_for_await && self.for_head_has_top_level_semicolon();
         self.expect_punctuator(Punctuator::LeftParen)?;
         let outer_scope = self.current_ir().current_scope;
         let scope = self.push_scope(ScopeKind::For);
@@ -2371,6 +2380,7 @@ impl<'source> Parser<'source> {
                 entry_depth,
                 outer_scope,
                 scope,
+                is_for_await,
             );
         }
 
@@ -2481,11 +2491,10 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    /// Lower the simple-binding synchronous half of QuickJS
-    /// `js_parse_for_in_of`. The assignment fragment is emitted before the
-    /// enumerated expression and skipped on first entry, just as upstream
-    /// does; each `done == false` edge jumps back with the yielded value above
-    /// the retained for-in object or for-of iterator record.
+    /// Lower QuickJS `js_parse_for_in_of`. The assignment fragment is emitted
+    /// before the enumerated expression and skipped on first entry, just as
+    /// upstream does; each `done == false` edge jumps back with the yielded
+    /// value above the retained for-in object or three-slot iterator record.
     fn parse_for_in_of_statement(
         &mut self,
         completion: StatementCompletion,
@@ -2493,10 +2502,14 @@ impl<'source> Parser<'source> {
         entry_depth: usize,
         outer_scope: ScopeId,
         scope: ScopeId,
+        is_for_await: bool,
     ) -> Result<(), Error> {
         let iteration_hint = self
             .for_iteration_kind_ahead()
             .ok_or_else(|| self.syntax_here("expected 'of' or 'in' in for control expression"))?;
+        if is_for_await && iteration_hint != ForIterationKind::Of {
+            return Err(self.syntax_here("'for await' loop should be used with 'of'"));
+        }
         let retained_slots = match iteration_hint {
             ForIterationKind::In => 1,
             ForIterationKind::Of => 3,
@@ -2513,7 +2526,7 @@ impl<'source> Parser<'source> {
         if iteration_hint == ForIterationKind::Of {
             self.push_for_of_assignment_fragment_control(entry_depth)?;
         }
-        let target = self.parse_for_iteration_assignment_target(iteration_hint)?;
+        let target = self.parse_for_iteration_assignment_target(iteration_hint, is_for_await)?;
         self.require_stack_depth(entry_depth + retained_slots, "for-in/of assignment target")?;
         if iteration_hint == ForIterationKind::Of {
             self.pop_for_of_assignment_fragment_control(entry_depth)?;
@@ -2564,6 +2577,9 @@ impl<'source> Parser<'source> {
         if iteration_kind != iteration_hint {
             return Err(Error::internal("for-in/of delimiter probe drifted"));
         }
+        if is_for_await && iteration_kind != ForIterationKind::Of {
+            return Err(self.syntax_here("'for await' loop should be used with 'of'"));
+        }
         if has_initializer
             && (iteration_kind == ForIterationKind::Of
                 || target.declaration != ForAssignmentDeclaration::Var
@@ -2592,9 +2608,13 @@ impl<'source> Parser<'source> {
             self.parse_expression()?;
         }
         self.emit_scope_closures(scope, outer_scope)?;
-        self.emit_instruction(match iteration_kind {
-            ForIterationKind::In => Instruction::ForInStart,
-            ForIterationKind::Of => Instruction::ForOfStart,
+        self.emit_instruction(match (iteration_kind, is_for_await) {
+            (ForIterationKind::In, false) => Instruction::ForInStart,
+            (ForIterationKind::Of, false) => Instruction::ForOfStart,
+            (ForIterationKind::Of, true) => Instruction::ForAwaitOfStart,
+            (ForIterationKind::In, true) => {
+                return Err(Error::internal("for-await retained a for-in iterator"));
+            }
         })?;
         let record_depth = entry_depth + retained_slots;
         self.require_stack_depth(record_depth, "for-in/of iterator start")?;
@@ -2618,10 +2638,22 @@ impl<'source> Parser<'source> {
 
         let next_target = self.current_ir().ops.len();
         self.patch_jump(next_jump, next_target)?;
-        self.emit_instruction(match iteration_kind {
-            ForIterationKind::In => Instruction::ForInNext,
-            ForIterationKind::Of => Instruction::ForOfNext(0),
-        })?;
+        match (iteration_kind, is_for_await) {
+            (ForIterationKind::In, false) => {
+                self.emit_instruction(Instruction::ForInNext)?;
+            }
+            (ForIterationKind::Of, false) => {
+                self.emit_instruction(Instruction::ForOfNext(0))?;
+            }
+            (ForIterationKind::Of, true) => {
+                self.emit_instruction(Instruction::ForAwaitOfNext)?;
+                self.emit_instruction(Instruction::Await)?;
+                self.emit_instruction(Instruction::IteratorGetValueDone)?;
+            }
+            (ForIterationKind::In, true) => {
+                return Err(Error::internal("for-await advanced a for-in iterator"));
+            }
+        }
         let assignment_jump = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
         self.patch_jump(assignment_jump, assignment_target)?;
 
@@ -2664,6 +2696,7 @@ impl<'source> Parser<'source> {
     fn parse_for_iteration_assignment_target(
         &mut self,
         iteration_kind: ForIterationKind,
+        is_for_await: bool,
     ) -> Result<ForAssignmentTargetInfo, Error> {
         if self.for_array_assignment_pattern_ahead(iteration_kind) {
             return self.parse_for_array_assignment_pattern(iteration_kind);
@@ -2800,6 +2833,7 @@ impl<'source> Parser<'source> {
         self.parse_left_hand_side_expression()?;
         if let Some(async_span) = async_span
             && iteration_kind == ForIterationKind::Of
+            && !is_for_await
             && self.is_for_of_keyword()
         {
             return Err(Error::syntax(
@@ -3393,10 +3427,10 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    /// QuickJS changes a for-of `BlockEnv`'s scope level back to the level
-    /// outside the enumeration scope. Thus a same-loop break/continue closes
-    /// the current lexical head cell while retaining the three-slot iterator
-    /// record for the loop's shared next/close tail.
+    /// QuickJS changes a for-of/for-await `BlockEnv`'s scope level back to the
+    /// level outside the enumeration scope. Thus a same-loop break/continue
+    /// closes the current lexical head cell while retaining the three-slot
+    /// iterator record for the loop's shared next/close tail.
     fn push_for_of_control(
         &mut self,
         entry_depth: usize,
@@ -3620,22 +3654,6 @@ impl<'source> Parser<'source> {
         return_span: Span,
         await_async_generator_value: bool,
     ) -> Result<(), Error> {
-        if self.current_ir().execution_kind == BytecodeFunctionKind::AsyncGenerator
-            && self.current_ir().break_controls.iter().any(|control| {
-                matches!(
-                    control.kind,
-                    BreakControlKind::DestructuringIterator | BreakControlKind::ForOf
-                )
-            })
-        {
-            // QuickJS uses an async IteratorClose sequence here. Reusing the
-            // synchronous generator cleanup would silently expose the wrong
-            // Promise/job ordering, so keep this later frontier typed.
-            return Err(Error::unsupported(
-                "async-generator return across an active iterator is not implemented yet",
-                source_span(return_span),
-            ));
-        }
         if await_async_generator_value
             && self.current_ir().execution_kind == BytecodeFunctionKind::AsyncGenerator
         {
@@ -3644,6 +3662,21 @@ impl<'source> Parser<'source> {
             // observable ordering as `emit_return`.
             self.emit_instruction_at(Instruction::Await, source_offset(return_span)?)?;
         }
+        let async_iterator_return =
+            if self.current_ir().execution_kind == BytecodeFunctionKind::AsyncGenerator
+                && self.current_ir().break_controls.iter().any(|control| {
+                    matches!(
+                        control.kind,
+                        BreakControlKind::DestructuringIterator | BreakControlKind::ForOf
+                    )
+                })
+            {
+                Some(self.add_constant(IrConstant::Primitive(Value::String(
+                    JsString::from_static("return"),
+                )))?)
+            } else {
+                None
+            };
         // QuickJS walks BlockEnv entries from inner to outer and interleaves
         // iterator closing with finally execution. Keeping that order is
         // observable when either an iterator `return` method or a finally body
@@ -3673,11 +3706,52 @@ impl<'source> Parser<'source> {
                             "return unwind targeted an invalid iterator record",
                         ));
                     }
-                    self.emit_instruction(Instruction::IteratorClosePreserve)?;
-                    // The generic instruction effect is value preserving, but
-                    // this typed form also truncates the complete iterator
-                    // record and any intermediate finally operands.
-                    self.current_ir_mut().stack_depth = handler_depth - 2;
+                    if let Some(return_name) = async_iterator_return {
+                        // Pinned QuickJS hand-lowers AsyncGenerator return
+                        // cleanup instead of using OP_iterator_close:
+                        //
+                        //   iter next ... completion
+                        //     -> completion iter
+                        //     -> completion iter return
+                        //
+                        // A nullish return method is ignored. Otherwise it is
+                        // called without arguments, its immediate result is
+                        // checked as an Object *before* Await, and the settled
+                        // value is discarded without a second object check.
+                        self.emit_instruction(Instruction::IteratorDetachPreserve)?;
+                        self.current_ir_mut().stack_depth = handler_depth - 1;
+                        self.emit_instruction(Instruction::GetField2(return_name))?;
+                        self.emit_instruction(Instruction::Dup)?;
+                        self.emit_instruction(Instruction::IsUndefinedOrNull)?;
+                        let missing_return =
+                            self.emit_instruction(Instruction::IfTrue(u32::MAX))?;
+                        self.emit_instruction(Instruction::CallMethod(0))?;
+                        self.emit_instruction(Instruction::IteratorCheckObject)?;
+                        self.emit_instruction(Instruction::Await)?;
+                        let close_done = self.emit_instruction(Instruction::Goto(u32::MAX))?;
+
+                        let missing_target = self.current_ir().ops.len();
+                        self.current_ir_mut().stack_depth = handler_depth;
+                        self.patch_jump(missing_return, missing_target)?;
+                        // Drop the nullish method; the common tail then drops
+                        // the retained iterator or settled close result.
+                        self.emit_instruction(Instruction::Drop)?;
+                        let close_done_target = self.current_ir().ops.len();
+                        self.patch_jump(close_done, close_done_target)?;
+                        self.require_stack_depth(
+                            handler_depth - 1,
+                            "async-generator iterator-return branch",
+                        )?;
+                        self.emit_instruction(Instruction::Drop)?;
+                        self.current_ir_mut().stack_depth = handler_depth - 2;
+                    } else {
+                        self.emit_instruction(Instruction::IteratorClosePreserve)?;
+                        // The generic instruction effect is value preserving,
+                        // but this typed form also truncates the complete
+                        // iterator record and any intermediate finally
+                        // operands.
+                        self.current_ir_mut().stack_depth = handler_depth - 2;
+                    }
                 }
                 BreakControlKind::ForOfAssignmentFragment => {
                     if handler_depth < 3 || handler_depth >= self.current_ir().stack_depth {

@@ -526,9 +526,25 @@ pub enum Instruction {
     /// iterator-record values (`iterator`, `next`) plus a private unwind
     /// marker represented only in the verifier and VM region stack.
     ForOfStart,
+    /// QuickJS `OP_for_await_of_start`: acquire an async iterator (including
+    /// Async-from-Sync fallback) and install the same three-slot conceptual
+    /// unwind record as [`Instruction::ForOfStart`]. Unlike
+    /// [`Instruction::AsyncIteratorStart`], this record participates in
+    /// automatic loop cleanup.
+    ForAwaitOfStart,
     /// QuickJS `OP_for_of_next`: retain the three-slot iterator record below
     /// `offset` intermediate operands and append `value`, `done`.
     ForOfNext(u8),
+    /// QuickJS `OP_for_await_of_next`: temporarily disable the async iterator
+    /// unwind marker, call its cached `next` method without arguments, and
+    /// append the raw result which the following [`Instruction::Await`] must
+    /// settle (`iterator, next, marker -> ... result`).
+    ForAwaitOfNext,
+    /// QuickJS `OP_iterator_get_value_done`: consume the settled async iterator
+    /// result together with the conceptual private marker, read `done` and then
+    /// `value`, restore the stable unwind marker, and append `value`, `done`.
+    /// The private marker is represented only by verifier/VM region state.
+    IteratorGetValueDone,
     /// QuickJS `OP_for_in_start`: replace one source value with a hidden
     /// enumeration object.
     ForInStart,
@@ -549,6 +565,13 @@ pub enum Instruction {
     /// return leaves the precompiled assignment fragment of a for-of head:
     /// the loop iterator record is abandoned rather than normally closed.
     IteratorDropPreserve,
+    /// Preserve the top completion value while dynamically removing the
+    /// innermost stable iterator record and all intermediate operands, but keep
+    /// the iterator itself above that completion value
+    /// (`... iterator, next, marker, ..., completion -> ... completion, iterator`).
+    /// Async-generator return lowering uses the exposed iterator to perform its
+    /// explicit call/check/await close sequence.
+    IteratorDetachPreserve,
     /// `yield*`-specific GetIterator. Unlike [`Instruction::ForOfStart`], its
     /// three outputs are ordinary retained operands (`iterator`, cached
     /// `next`, placeholder) and do not install an automatic unwind region.
@@ -662,9 +685,11 @@ impl Instruction {
             // The verifier models this marker in its conceptual stack even
             // though runtime execution stores it in private handler metadata.
             Self::Catch(_) => (0, 1),
-            Self::ForOfStart => (1, 3),
+            Self::ForOfStart | Self::ForAwaitOfStart => (1, 3),
             Self::IteratorStart | Self::AsyncIteratorStart => (1, 3),
             Self::ForOfNext(_) => (3, 5),
+            Self::ForAwaitOfNext => (3, 4),
+            Self::IteratorGetValueDone => (2, 3),
             Self::IteratorNext => (4, 4),
             Self::IteratorCall(_) => (4, 5),
             Self::ForInStart => (1, 1),
@@ -796,6 +821,9 @@ impl Instruction {
             // The verifier replaces this nominal value-preserving effect with
             // the active handler's recorded entry depth.
             Self::NipCatch | Self::IteratorClosePreserve | Self::IteratorDropPreserve => (1, 1),
+            // The verifier replaces this nominal completion-to-completion-plus-
+            // iterator effect with the active region's dynamic record base.
+            Self::IteratorDetachPreserve => (1, 2),
             Self::IteratorClose => (3, 0),
             Self::Await => (1, 1),
             Self::Yield | Self::YieldStar | Self::AsyncYieldStar => (1, 2),
@@ -1117,7 +1145,11 @@ pub(crate) fn verify_parts(
 
         if !matches!(
             instruction,
-            Instruction::ConstructSuper(_) | Instruction::ApplySuper | Instruction::ForOfNext(_)
+            Instruction::ConstructSuper(_)
+                | Instruction::ApplySuper
+                | Instruction::ForOfNext(_)
+                | Instruction::ForAwaitOfNext
+                | Instruction::IteratorGetValueDone
         ) {
             verify_super_call_pair_untouched(&state, remaining_depth, popped)?;
         }
@@ -1185,21 +1217,42 @@ pub(crate) fn verify_parts(
                 next_return_addresses.retain(|address| *address < marker_index);
                 next_depth = marker_depth;
             }
-            Instruction::ForOfStart => {
+            Instruction::ForOfStart | Instruction::ForAwaitOfStart => {
                 verify_ordinary_consumption(&state, remaining_depth, popped)?;
                 let record_base = remaining_depth;
                 next_regions.push(UnwindRegionState::Iterator {
                     record_base,
                     marker_depth: next_depth,
+                    kind: if matches!(instruction, Instruction::ForOfStart) {
+                        IteratorRegionKind::Sync
+                    } else {
+                        IteratorRegionKind::Async
+                    },
+                    phase: IteratorRegionPhase::Stable,
                 });
             }
             Instruction::ForOfNext(offset) => {
-                let Some(UnwindRegionState::Iterator { marker_depth, .. }) = next_regions.last()
+                let Some(UnwindRegionState::Iterator {
+                    record_base,
+                    marker_depth,
+                    kind,
+                    phase,
+                }) = next_regions.last()
                 else {
                     return Err(Error::internal(
                         "ForOfNext has no innermost iterator region",
                     ));
                 };
+                if *kind != IteratorRegionKind::Sync {
+                    return Err(Error::internal(
+                        "ForOfNext requires a synchronous iterator region",
+                    ));
+                }
+                if *phase != IteratorRegionPhase::Stable {
+                    return Err(Error::internal(
+                        "ForOfNext reached an async-next-pending iterator region",
+                    ));
+                }
                 let expected_depth = marker_depth
                     .checked_add(usize::from(*offset))
                     .ok_or_else(|| Error::internal("for-of offset overflow"))?;
@@ -1208,18 +1261,109 @@ pub(crate) fn verify_parts(
                         "ForOfNext offset does not reach its iterator record",
                     ));
                 }
-                let record_base = marker_depth.checked_sub(3).ok_or_else(|| {
-                    Error::internal("ForOfNext iterator marker has invalid depth")
-                })?;
+                if record_base.checked_add(3) != Some(*marker_depth) {
+                    return Err(Error::internal(
+                        "ForOfNext iterator marker has invalid depth",
+                    ));
+                }
                 if state
                     .super_call_bases
                     .iter()
-                    .any(|base| *base < *marker_depth && base.saturating_add(2) > record_base)
+                    .any(|base| *base < *marker_depth && base.saturating_add(2) > *record_base)
                 {
                     return Err(Error::internal(
                         "ForOfNext touched a protected super-call pair",
                     ));
                 }
+            }
+            Instruction::ForAwaitOfNext => {
+                let Some(UnwindRegionState::Iterator {
+                    record_base,
+                    marker_depth,
+                    kind,
+                    phase,
+                }) = next_regions.last_mut()
+                else {
+                    return Err(Error::internal(
+                        "ForAwaitOfNext has no innermost iterator region",
+                    ));
+                };
+                if *kind != IteratorRegionKind::Async {
+                    return Err(Error::internal(
+                        "ForAwaitOfNext requires an asynchronous iterator region",
+                    ));
+                }
+                if *phase != IteratorRegionPhase::Stable {
+                    return Err(Error::internal(
+                        "ForAwaitOfNext repeated before async iterator result completion",
+                    ));
+                }
+                if state.depth != *marker_depth {
+                    return Err(Error::internal(
+                        "ForAwaitOfNext did not reach its iterator record",
+                    ));
+                }
+                if record_base.checked_add(3) != Some(*marker_depth) {
+                    return Err(Error::internal(
+                        "ForAwaitOfNext iterator marker has invalid depth",
+                    ));
+                }
+                if state
+                    .super_call_bases
+                    .iter()
+                    .any(|base| *base < *marker_depth && base.saturating_add(2) > *record_base)
+                {
+                    return Err(Error::internal(
+                        "ForAwaitOfNext touched a protected super-call pair",
+                    ));
+                }
+                *phase = IteratorRegionPhase::AsyncNextPending;
+            }
+            Instruction::IteratorGetValueDone => {
+                let Some(UnwindRegionState::Iterator {
+                    record_base,
+                    marker_depth,
+                    kind,
+                    phase,
+                }) = next_regions.last_mut()
+                else {
+                    return Err(Error::internal(
+                        "IteratorGetValueDone has no innermost iterator region",
+                    ));
+                };
+                if *kind != IteratorRegionKind::Async {
+                    return Err(Error::internal(
+                        "IteratorGetValueDone requires an asynchronous iterator region",
+                    ));
+                }
+                if *phase != IteratorRegionPhase::AsyncNextPending {
+                    return Err(Error::internal(
+                        "IteratorGetValueDone requires a pending async iterator result",
+                    ));
+                }
+                let expected_depth = marker_depth
+                    .checked_add(1)
+                    .ok_or_else(|| Error::internal("async iterator result depth overflow"))?;
+                if state.depth != expected_depth {
+                    return Err(Error::internal(
+                        "IteratorGetValueDone did not reach its pending iterator result",
+                    ));
+                }
+                if record_base.checked_add(3) != Some(*marker_depth) {
+                    return Err(Error::internal(
+                        "IteratorGetValueDone iterator marker has invalid depth",
+                    ));
+                }
+                if state
+                    .super_call_bases
+                    .iter()
+                    .any(|base| *base < *marker_depth && base.saturating_add(2) > *record_base)
+                {
+                    return Err(Error::internal(
+                        "IteratorGetValueDone touched a protected super-call pair",
+                    ));
+                }
+                *phase = IteratorRegionPhase::Stable;
             }
             Instruction::IteratorClose => {
                 let region = next_regions
@@ -1228,12 +1372,19 @@ pub(crate) fn verify_parts(
                 let UnwindRegionState::Iterator {
                     record_base,
                     marker_depth,
+                    phase,
+                    ..
                 } = region
                 else {
                     return Err(Error::internal(
                         "IteratorClose did not target the innermost unwind region",
                     ));
                 };
+                if phase != IteratorRegionPhase::Stable {
+                    return Err(Error::internal(
+                        "IteratorClose cannot consume an async-next-pending iterator region",
+                    ));
+                }
                 if state.depth != marker_depth || remaining_depth != record_base {
                     return Err(Error::internal(
                         "IteratorClose did not reach its iterator record",
@@ -1249,11 +1400,14 @@ pub(crate) fn verify_parts(
                     ));
                 }
             }
-            Instruction::IteratorClosePreserve | Instruction::IteratorDropPreserve => {
-                let operation = if matches!(instruction, Instruction::IteratorClosePreserve) {
-                    "IteratorClosePreserve"
-                } else {
-                    "IteratorDropPreserve"
+            Instruction::IteratorClosePreserve
+            | Instruction::IteratorDropPreserve
+            | Instruction::IteratorDetachPreserve => {
+                let operation = match instruction {
+                    Instruction::IteratorClosePreserve => "IteratorClosePreserve",
+                    Instruction::IteratorDropPreserve => "IteratorDropPreserve",
+                    Instruction::IteratorDetachPreserve => "IteratorDetachPreserve",
+                    _ => unreachable!("iterator preserve dispatch lost its instruction"),
                 };
                 let region = next_regions.pop().ok_or_else(|| {
                     Error::internal(format!("{operation} has no iterator region"))
@@ -1261,12 +1415,19 @@ pub(crate) fn verify_parts(
                 let UnwindRegionState::Iterator {
                     record_base,
                     marker_depth,
+                    phase,
+                    ..
                 } = region
                 else {
                     return Err(Error::internal(format!(
                         "{operation} did not target the innermost unwind region"
                     )));
                 };
+                if phase != IteratorRegionPhase::Stable {
+                    return Err(Error::internal(format!(
+                        "{operation} cannot consume an async-next-pending iterator region"
+                    )));
+                }
                 if state.depth <= marker_depth {
                     return Err(Error::internal(format!(
                         "{operation} has no value above its iterator marker"
@@ -1290,7 +1451,13 @@ pub(crate) fn verify_parts(
                 // address itself.
                 next_return_addresses.retain(|address| *address < record_base);
                 next_depth = record_base
-                    .checked_add(1)
+                    .checked_add(
+                        if matches!(instruction, Instruction::IteratorDetachPreserve) {
+                            2
+                        } else {
+                            1
+                        },
+                    )
                     .ok_or_else(|| Error::internal("bytecode stack depth overflow"))?;
             }
             Instruction::Ret | Instruction::DropGosub => {
@@ -1466,6 +1633,18 @@ pub(crate) fn verify_parts(
     Ok(VerifiedBytecode { max_stack: maximum })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IteratorRegionKind {
+    Sync,
+    Async,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IteratorRegionPhase {
+    Stable,
+    AsyncNextPending,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum UnwindRegionState {
     Catch {
@@ -1475,6 +1654,8 @@ enum UnwindRegionState {
     Iterator {
         record_base: usize,
         marker_depth: usize,
+        kind: IteratorRegionKind,
+        phase: IteratorRegionPhase,
     },
 }
 
@@ -2548,6 +2729,195 @@ mod tests {
             max_stack: 4,
         };
         assert_eq!(drop_preserve.verify().unwrap().max_stack, 4);
+    }
+
+    #[test]
+    fn verifier_tracks_for_await_records_phases_and_dynamic_detach() {
+        let normal = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::ForAwaitOfStart,
+                Instruction::ForAwaitOfNext,
+                Instruction::Await,
+                Instruction::IteratorGetValueDone,
+                Instruction::Drop,
+                Instruction::Drop,
+                Instruction::IteratorClose,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 5,
+        };
+        assert_eq!(normal.verify().unwrap().max_stack, 5);
+
+        for start in [Instruction::ForOfStart, Instruction::ForAwaitOfStart] {
+            let detach = BytecodeFunction {
+                name: None,
+                code: vec![
+                    Instruction::PushI32(1),
+                    start,
+                    Instruction::PushI32(42),
+                    Instruction::IteratorDetachPreserve,
+                    // Detach leaves the iterator above the preserved
+                    // completion, ready for explicit close lowering.
+                    Instruction::Drop,
+                    Instruction::Return,
+                ],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 4,
+            };
+            assert_eq!(detach.verify().unwrap().max_stack, 4);
+        }
+    }
+
+    #[test]
+    fn verifier_rejects_malformed_for_await_region_protocols() {
+        let malformed = [
+            vec![
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::Undefined,
+                Instruction::ForAwaitOfNext,
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::ForAwaitOfNext,
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::PushI32(1),
+                Instruction::ForAwaitOfStart,
+                Instruction::ForOfNext(0),
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::PushI32(1),
+                Instruction::ForAwaitOfStart,
+                Instruction::IteratorGetValueDone,
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::Undefined,
+                Instruction::IteratorGetValueDone,
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::PushI32(1),
+                Instruction::ForAwaitOfStart,
+                Instruction::ForAwaitOfNext,
+                Instruction::ForAwaitOfNext,
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::PushI32(1),
+                Instruction::ForAwaitOfStart,
+                Instruction::ForAwaitOfNext,
+                Instruction::Drop,
+                Instruction::IteratorClose,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::PushI32(1),
+                Instruction::ForAwaitOfStart,
+                Instruction::ForAwaitOfNext,
+                Instruction::IteratorDetachPreserve,
+                Instruction::Drop,
+                Instruction::Return,
+            ],
+            vec![
+                Instruction::PushI32(1),
+                Instruction::ForAwaitOfStart,
+                Instruction::IteratorDetachPreserve,
+                Instruction::Drop,
+                Instruction::Return,
+            ],
+        ];
+        for code in malformed {
+            let function = BytecodeFunction {
+                name: None,
+                code,
+                constants: vec![],
+                local_count: 0,
+                max_stack: 8,
+            };
+            assert!(function.verify().is_err());
+        }
+
+        let pending_close = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::ForAwaitOfStart,
+                Instruction::ForAwaitOfNext,
+                Instruction::Drop,
+                Instruction::IteratorClose,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        assert_eq!(
+            pending_close.verify().unwrap_err().message(),
+            "IteratorClose cannot consume an async-next-pending iterator region"
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_for_await_kind_and_phase_join_mismatches() {
+        let kind_mismatch = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushTrue,
+                Instruction::IfFalse(5),
+                Instruction::PushI32(1),
+                Instruction::ForOfStart,
+                Instruction::Goto(7),
+                Instruction::PushI32(1),
+                Instruction::ForAwaitOfStart,
+                Instruction::IteratorClose,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 3,
+        };
+        assert_eq!(
+            kind_mismatch.verify().unwrap_err().message(),
+            "control flow joins with inconsistent unwind regions"
+        );
+
+        let phase_mismatch = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(1),
+                Instruction::ForAwaitOfStart,
+                Instruction::PushTrue,
+                Instruction::IfFalse(6),
+                Instruction::ForAwaitOfNext,
+                Instruction::Goto(7),
+                Instruction::Undefined,
+                Instruction::Throw,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        assert_eq!(
+            phase_mismatch.verify().unwrap_err().message(),
+            "control flow joins with inconsistent unwind regions"
+        );
     }
 
     #[test]

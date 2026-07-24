@@ -3,16 +3,14 @@
 An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
-The `unsafe`-free engine is runnable but incomplete. The current R3aj milestone
-adds async-generator `yield*` delegation, including async iterators and
-Async-from-Sync adaptation. Pinned QuickJS passes all 775 focused paths, and
-Oxide passes all 1,550 sloppy/strict variants with deterministic reports.
-The complete 102,037-variant vector is byte-identical at 43,686 passes.
-This is not complete async iteration: `for await` is the next frontier, while
-closing an independently active outer iterator on `.return()` remains a
-separate follow-up. Modules, Proxy, and broad built-in coverage also remain
-incomplete. Pinned QuickJS is the test oracle, never a product dependency.
-See the status documents for detailed bookkeeping.
+The `unsafe`-free engine is runnable but incomplete. The current R3ak milestone
+adds `for await ... of` with async iterators, Async-from-Sync fallback, and
+QuickJS-compatible iterator-close behavior. Pinned QuickJS passes all 1,264
+focused paths, and Oxide passes all 2,490 sloppy/strict variants with
+deterministic reports; the complete vector reaches 43,689/102,037. Modules,
+Proxy, and broad built-in coverage remain incomplete. Pinned QuickJS is the
+test oracle, never a product dependency; detailed bookkeeping lives in the
+status documents.
 
 ## Try it
 
@@ -37,23 +35,8 @@ cargo run --quiet --bin qjs -- --print-result -e \
 
 ```sh
 cargo test --locked --workspace --all-targets
-./scripts/test-test262-class-public-init.sh
-./scripts/test-test262-class-private-fields.sh
-./scripts/test-test262-class-private-{methods,accessors}.sh
-./scripts/test-test262-class-generator-methods.sh
-./scripts/test-test262-class-private-generator-methods.sh
-./scripts/test-test262-class-sync-matrix.sh
-./scripts/test-test262-promise-{race-try-with-resolvers,finally,all,all-settled,any}.sh
-./scripts/test-test262-regexp-builtins.sh
-./scripts/test-test262-generator-destructuring.sh
-./scripts/test-test262-iterator-helpers.sh
-./scripts/test-test262-iterator-sequencing.sh
-./scripts/test-test262-async-{function,arrow,object-method,class-method,private-class-method,generator}-core.sh
-./scripts/test-test262-async-generator-object-method-core.sh
-./scripts/test-test262-async-generator-class-method-core.sh
-./scripts/test-test262-async-generator-private-class-method-core.sh
-./scripts/test-test262-async-generator-yield-star.sh
-./scripts/test-r3z-async-function-core-oracle.sh --oxide ./target/debug/qjs
+./scripts/test-test262-for-await-of.sh
+./scripts/test-test262-full.sh
 ```
 
 ## License

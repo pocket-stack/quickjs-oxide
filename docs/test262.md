@@ -33,9 +33,8 @@ intended early `SyntaxError`, rather than because class parsing is absent.
 
 This 193/193 result is a runner smoke baseline, not a project-wide 100%
 estimate. The sample was selected from already implemented synchronous
-surfaces. Modules, `for await`, active outer-iterator close, most `$262` host
-hooks, advanced RegExp pattern grammar, TypedArrays, and many other broad
-layers remain absent.
+surfaces. Modules, Proxy, most `$262` host hooks, advanced RegExp pattern
+grammar, TypedArrays, and many other broad layers remain absent.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
 gate, async arrows by the R3ab gate, and ordinary async object-literal methods
 by the R3ac gate. Public ordinary async class methods are measured by R3ad and
@@ -44,7 +43,10 @@ functions are measured by R3af and ordinary object-literal async-generator
 methods by R3ag; public instance/static class async-generator methods are
 measured by R3ah and private instance/static class async-generator methods by
 R3ai. Async-generator `yield*` delegation is measured across all four shapes
-by R3aj. Public fields, static blocks, private elements, and
+by R3aj. R3ak measures `for await ... of` across ordinary async functions and
+all four async-generator shapes; the active outer-iterator `.return()` path is
+locked separately by the pinned QuickJS differential. Public fields, static
+blocks, private elements, and
 public/private synchronous generator methods are measured by the scoped
 R3g/R3h/R3i/R3j/R3k/R3l gates below.
 
@@ -59,9 +61,9 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 43,686 pass;
+- 43,689 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 38,474 are classified as unsupported because of a feature, mode, host
+- 38,471 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
 - 18 fail to parse, 1,281 fail at runtime, 97 fail in the harness, and six
@@ -73,11 +75,11 @@ than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 42.81% (`43,686 / 102,037`);
+- raw suite pass rate: 42.82% (`43,689 / 102,037`);
 - conservative target-scope lower bound: 52.28%
-  (`43,686 / (102,037 - 18,475)`);
+  (`43,689 / (102,037 - 18,475)`);
 - pass rate among variants with a non-unsupported observed outcome: 96.89%
-  (`43,686 / 45,088`).
+  (`43,689 / 45,091`).
 
 The 52.28% figure is the useful whole-project progress floor, not a claim that
 the engine is 52.28% conformant. The 96.89% conditional rate measures quality
@@ -135,9 +137,9 @@ parallel defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`2932f9d54df006def9ac2e9b01a8f9b7a5228bb58a42309d2f27b5fb26d81c18`
+`36e2a11f4eaba4ffd92fdd561b18b27337b90b14a564cab9da6385f1aa0f79a3`
 and
-`7e7121200f385829a3676514ad091d26c39ee9780c46ed5f54c41dadff1ad193`.
+`1dd6c356c678568b51794d253959a58a644dbdd2871187f67516ad8d78e649af`.
 
 ## Milestone policy
 
@@ -4691,6 +4693,88 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --locked --test oracle_async_generator_yield_star -- --nocapture
 ```
 
+## R3ak authenticated `for await` gate
+
+R3ak freezes and executes the complete pinned `for await` neighborhood.
+Candidate discovery unions tracked `.js` paths
+whose filename matches `for[-_]await|forawait` with paths whose source contains
+`for await`, then intersects that set with the exhaustive 53,125-row metadata
+inventory. This yields 1,297 candidate paths and 2,531 canonical variants. The
+candidate path and key-set SHA-256 values are
+`4bdfca76ce452b54f7de1a877cf3ac63a845f89d905fe6fdd712d18abf968bcf`
+and
+`a52d5b419f81529f05a76f5fa1895f0f1c31169f46f09be552e8ee59045db54f`.
+
+The fail-closed ledger contains 33 paths / 41 variants:
+
+- three `explicit-resource-management` paths that pinned
+  `test262.conf` marks `skip`;
+- 28 module, top-level-await, import-meta, or dynamic-import paths;
+- one optional-chaining consumer;
+- one `$262.IsHTMLDDA` host consumer.
+
+The ledger, excluded-path, and excluded-key SHA-256 values are
+`cfcad1d88bd4e39de7f24763dc8e221c304f19ecbf8b314732171ca5aeb48eb1`,
+`2d2aaa8448ec87e5f7b825c6d72898be1f1f814aa1e8b0f93c94cbe958c8acdd`,
+and
+`ef68b63e1d68784d45801f0236894119a6498ab057b1e641fa29b858f68727c1`.
+Subtracting it leaves 1,264 admitted paths / 2,490 variants; the derived
+manifest and variant-key SHA-256 values are
+`45afa1e6f8f61d44e733aeea8bde5dae562a7ec919ea40d9d1e18551d6f2881f`
+and
+`756ea05ac92fed9281a84f8e7f40b1992c640258ca41790158c41dfbe720bf57`.
+
+The admitted shape is:
+
+- 1,232 paths / 2,427 variants from
+  `test/language/statements/for-await-of`, of which 1,215 paths / 2,396
+  variants exercise assignment or binding destructuring;
+- 24 paths / 48 variants inherited from the four async-generator ledgers:
+  six ordinary-function, two object-method, eight public-class, and eight
+  private-class paths, evenly split between async iterators and synchronous
+  fallback;
+- five `AsyncFromSyncIteratorPrototype` paths / ten variants;
+- one async interleaving path / two variants;
+- two staging grammar paths / three variants.
+
+Metadata classifies the manifest as 1,174 positive and 90 audited
+parse-negative paths, 1,170 async and 94 synchronous paths, and 1,226
+double-mode, 31 `noStrict`, and seven `onlyStrict` paths. The scoped profile
+admits exactly 12 features, three includes, four flags, and the async host.
+Pinned QuickJS 2026-06-04 passes 1,264/1,264 admitted paths. On the wider
+candidate it executes 1,294/1,294 baseline-enabled paths and skips exactly the
+three upstream-configured ERM paths.
+
+Reproduce the authenticated cohort and all-pass result with:
+
+```sh
+./scripts/test-test262-for-await-of.sh
+```
+
+Oxide passes all 2,490 variants: 2,490 pass, zero fail, zero unsupported, and
+zero skipped. Independent 8/8/5-worker runs produce byte-identical TSV and
+JSONL reports. The empty non-pass, TSV, and JSONL SHA-256 values are
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`,
+`7eafa4725fbb6f70954c5bdb52a823caeaa89497eb01d6c80d446925d01361d0`,
+and
+`ecba171afdc2272de5b0e40b824f28159bfad04c9f485527b64ad6b533dd00fd`.
+The global profile remains fail-closed for `async-iteration`, so this scoped
+admission does not silently widen the complete-vector denominator. A dedicated
+pinned-QuickJS transcript covers active async-generator `.return()` crossing
+the outer iterator, including the suspension and close-Promise ordering which
+is not represented by this Test262 cohort.
+
+The exact R3aj/R3ak full-vector join matches all 102,037 keys. Exactly three
+already-admitted SpiderMonkey staging variants move from
+`unsupported-runtime` to `pass`: the sloppy
+`for-await-bad-syntax.js` variant and both sloppy/strict
+`for-await-of-error.js` variants. There is no other outcome, detail, key-set,
+or previous-pass drift. The complete vector therefore retains 45,140 runnable
+variants and reaches 43,689 passes. Its TSV and JSONL SHA-256 values are
+`36e2a11f4eaba4ffd92fdd561b18b27337b90b14a564cab9da6385f1aa0f79a3`
+and
+`1dd6c356c678568b51794d253959a58a644dbdd2871187f67516ad8d78e649af`.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -5090,6 +5174,14 @@ complete R3aj vector retains 102,037 variants, 45,140 runnable variants, and
 43,686 passes, with zero drift and byte-identical TSV/JSONL reports relative
 to R3ai. `for await` is next; closing an independently active outer iterator
 across `.return()` remains a separate frontier.
+R3ak implements that `for await ... of` frontier in ordinary async functions
+and all four async-generator shapes. Pinned QuickJS passes all 1,264
+authenticated paths; Oxide passes all 2,490 variants, and independent
+8/8/5-worker reports are byte-identical. The dedicated transcript and
+repeated-GC test cover active async-generator `.return()` while `next` is
+pending. The exact complete-vector join changes only three already-admitted
+SpiderMonkey staging variants from `unsupported-runtime` to `pass`, with no
+previous-pass or other drift; the vector reaches 43,689/102,037.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

@@ -2380,6 +2380,46 @@ impl VmHost for RuntimeVmHost {
         Ok(ForOfNextOutcome::Result { value, done: false })
     }
 
+    fn iterator_get_value_done(&mut self, result: Value) -> Result<ForOfNextOutcome, Error> {
+        if !matches!(result, Value::Object(_)) {
+            return Ok(ForOfNextOutcome::Throw(
+                self.iterator_type_error("iterator must return an object")?,
+            ));
+        }
+
+        let done_key = self
+            .runtime
+            .intern_property_key("done")
+            .map_err(|error| Error::internal(error.to_string()))?;
+        let done = match self.get_property_with_key(result.clone(), &done_key, false) {
+            Ok(Completion::Return(value)) => value.to_boolean(),
+            Ok(Completion::Throw(value)) => return Ok(ForOfNextOutcome::Throw(value)),
+            Err(error) => {
+                return Ok(ForOfNextOutcome::Throw(
+                    self.materialize_iterator_error(error)?,
+                ));
+            }
+        };
+
+        // QuickJS's async iterator completion helper always performs this Get,
+        // including on the `done = true` path. This intentionally differs from
+        // the synchronous ForOfNext hook above.
+        let value_key = self
+            .runtime
+            .intern_property_key("value")
+            .map_err(|error| Error::internal(error.to_string()))?;
+        let value = match self.get_property_with_key(result, &value_key, false) {
+            Ok(Completion::Return(value)) => value,
+            Ok(Completion::Throw(value)) => return Ok(ForOfNextOutcome::Throw(value)),
+            Err(error) => {
+                return Ok(ForOfNextOutcome::Throw(
+                    self.materialize_iterator_error(error)?,
+                ));
+            }
+        };
+        Ok(ForOfNextOutcome::Result { value, done })
+    }
+
     fn iterator_close(
         &mut self,
         iterator: Value,

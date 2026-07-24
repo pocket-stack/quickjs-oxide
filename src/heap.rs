@@ -8280,6 +8280,7 @@ impl Heap {
                     | Instruction::IteratorNext
                     | Instruction::IteratorCall(_)
                     | Instruction::IteratorCheckObject
+                    | Instruction::IteratorDetachPreserve
                     | Instruction::ThrowIteratorMissingThrow
             )
         });
@@ -8299,6 +8300,18 @@ impl Heap {
                 Instruction::AsyncYieldStar | Instruction::AsyncIteratorStart
             )
         });
+        let has_async_iteration = bytecode.code.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::ForAwaitOfStart
+                    | Instruction::ForAwaitOfNext
+                    | Instruction::IteratorGetValueDone
+            )
+        });
+        let has_async_generator_iterator_detach = bytecode
+            .code
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::IteratorDetachPreserve));
         match bytecode.metadata.function_kind {
             FunctionKind::Generator => {
                 if initial_yields.len() != 1
@@ -8308,6 +8321,8 @@ impl Heap {
                     || parameter_body_pc.is_some_and(|body_pc| initial_yields[0] < body_pc)
                     || has_await
                     || has_async_delegation
+                    || has_async_iteration
+                    || has_async_generator_iterator_detach
                 {
                     return Err(HeapError::Invariant(
                         "generator bytecode has invalid suspension metadata",
@@ -8320,6 +8335,7 @@ impl Heap {
                     || bytecode.metadata.has_prototype
                     || bytecode.metadata.constructor_kind != ConstructorKind::None
                     || bytecode.metadata.class_initializer_kind.is_some()
+                    || has_async_generator_iterator_detach
                 {
                     return Err(HeapError::Invariant(
                         "async bytecode has invalid execution metadata",
@@ -8340,7 +8356,11 @@ impl Heap {
                 }
             }
             FunctionKind::Normal => {
-                if !initial_yields.is_empty() || has_generator_only_instruction || has_await {
+                if !initial_yields.is_empty()
+                    || has_generator_only_instruction
+                    || has_await
+                    || has_async_iteration
+                {
                     return Err(HeapError::Invariant(
                         "non-async bytecode contains a suspension opcode",
                     ));
@@ -12530,6 +12550,22 @@ impl Heap {
                                 "generator iterator region is outside its saved frame",
                             ));
                         }
+                        crate::vm::VmUnwindRegion::Iterator {
+                            asynchronous: true, ..
+                        } => {
+                            return Err(HeapError::Invariant(
+                                "generator activation contains an invalid iterator state",
+                            ));
+                        }
+                        crate::vm::VmUnwindRegion::Iterator {
+                            record_base,
+                            enabled: false,
+                            asynchronous: false,
+                        } if !matches!(vm.stack.get(record_base), Some(RawValue::Undefined)) => {
+                            return Err(HeapError::Invariant(
+                                "generator activation contains an invalid completed iterator",
+                            ));
+                        }
                         crate::vm::VmUnwindRegion::Catch { .. }
                         | crate::vm::VmUnwindRegion::Iterator { .. } => {}
                     }
@@ -13859,7 +13895,7 @@ fn validate_async_function_state(
             | GeneratorFrameBinding::Uninitialized => {}
         }
     }
-    for region in &vm.regions {
+    for (region_index, region) in vm.regions.iter().enumerate() {
         match *region {
             crate::vm::VmUnwindRegion::Catch {
                 target,
@@ -13874,6 +13910,33 @@ fn validate_async_function_state(
             {
                 return Err(HeapError::Invariant(
                     "AsyncFunction iterator region is outside its saved frame",
+                ));
+            }
+            crate::vm::VmUnwindRegion::Iterator {
+                record_base,
+                enabled: false,
+                asynchronous: false,
+            } if !matches!(vm.stack.get(record_base), Some(RawValue::Undefined)) => {
+                return Err(HeapError::Invariant(
+                    "AsyncFunction activation contains an invalid completed iterator",
+                ));
+            }
+            crate::vm::VmUnwindRegion::Iterator {
+                record_base,
+                enabled: false,
+                asynchronous,
+                ..
+            } if asynchronous
+                && (region_index + 1 != vm.regions.len()
+                    || record_base.checked_add(3) != Some(vm.stack.len())
+                    || !matches!(vm.stack.last(), Some(RawValue::Undefined))
+                    || !matches!(
+                        bytecode.code.get(vm.pc),
+                        Some(Instruction::IteratorGetValueDone)
+                    )) =>
+            {
+                return Err(HeapError::Invariant(
+                    "AsyncFunction activation contains an invalid pending iterator state",
                 ));
             }
             crate::vm::VmUnwindRegion::Catch { .. }
@@ -14080,7 +14143,7 @@ fn validate_async_generator_state(
             | GeneratorFrameBinding::Uninitialized => {}
         }
     }
-    for region in &vm.regions {
+    for (region_index, region) in vm.regions.iter().enumerate() {
         match *region {
             crate::vm::VmUnwindRegion::Catch {
                 target,
@@ -14095,6 +14158,34 @@ fn validate_async_generator_state(
             {
                 return Err(HeapError::Invariant(
                     "AsyncGenerator iterator region is outside its saved frame",
+                ));
+            }
+            crate::vm::VmUnwindRegion::Iterator {
+                record_base,
+                enabled: false,
+                asynchronous: false,
+            } if !matches!(vm.stack.get(record_base), Some(RawValue::Undefined)) => {
+                return Err(HeapError::Invariant(
+                    "AsyncGenerator activation contains an invalid completed iterator",
+                ));
+            }
+            crate::vm::VmUnwindRegion::Iterator {
+                record_base,
+                enabled: false,
+                asynchronous,
+                ..
+            } if asynchronous
+                && (region_index + 1 != vm.regions.len()
+                    || !matches!(data.state, AsyncGeneratorState::Executing)
+                    || record_base.checked_add(3) != Some(vm.stack.len())
+                    || !matches!(vm.stack.last(), Some(RawValue::Undefined))
+                    || !matches!(
+                        bytecode.code.get(vm.pc),
+                        Some(Instruction::IteratorGetValueDone)
+                    )) =>
+            {
+                return Err(HeapError::Invariant(
+                    "AsyncGenerator activation contains an invalid pending iterator state",
                 ));
             }
             crate::vm::VmUnwindRegion::Catch { .. }

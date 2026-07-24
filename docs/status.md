@@ -16,14 +16,14 @@ claim full parity.
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The complete R3aj
   vector is byte-identical to R3ai, with zero outcome, detail, key-set, or
-  previous-pass drift. It has 43,686 passes and 45,140 runnable variants:
-  42.81% raw, a 52.28% lower bound after the 18,475 pinned QuickJS target
-  exclusions, or 96.89% among the 45,088 variants with a non-unsupported
+  previous-pass drift. The R3ak vector has 43,689 passes and 45,140 runnable
+  variants: 42.82% raw, a 52.28% lower bound after the 18,475 pinned QuickJS
+  target exclusions, or 96.89% among the 45,091 variants with a non-unsupported
   observed outcome. It records 18 parse failures and 1,281 runtime failures;
   current full TSV/JSONL SHA-256 values are
-  `2932f9d54df006def9ac2e9b01a8f9b7a5228bb58a42309d2f27b5fb26d81c18`
+  `36e2a11f4eaba4ffd92fdd561b18b27337b90b14a564cab9da6385f1aa0f79a3`
   and
-  `7e7121200f385829a3676514ad091d26c39ee9780c46ed5f54c41dadff1ad193`.
+  `1dd6c356c678568b51794d253959a58a644dbdd2871187f67516ad8d78e649af`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -2890,6 +2890,64 @@ claim full parity.
   next; closing an independently active outer iterator when `.return()`
   crosses delegation remains a separate semantic frontier.
 
+  R3ak implements `for await ... of` in ordinary async functions and async
+  generators across function, object-method, and public/private class-method
+  forms. The compiler follows QuickJS's three-slot iterator record and emits
+  `for_await_of_next -> await -> iterator_get_value_done`; the VM disables
+  automatic close before calling cached `next`, carries that state across the
+  suspension, reads `done` then `value` even on completion, and re-enables
+  close only after both reads succeed. Async-from-Sync fallback reuses the R3aj
+  adapter. Async-generator return across an active iterator uses QuickJS's
+  hand-lowered `return` call, pre-Await Object check, and Await; ordinary async
+  function exits retain QuickJS's synchronous close behavior. The differential
+  fixture also freezes upstream's observable quirks: natural exhaustion calls
+  `return`, ordinary close does not await its Promise, and next/result failures
+  do not close.
+
+  The authenticated input candidate intersects the exhaustive pinned metadata
+  inventory with every tracked `.js` path whose name or source contains
+  `for-await`: 1,297 paths / 2,531 sloppy-strict variants. The explicit
+  33-path / 41-variant dependency ledger removes three
+  `explicit-resource-management` paths skipped by upstream QuickJS, 28
+  module/dynamic-import paths, one optional-chaining path, and one
+  `$262.IsHTMLDDA` host path. The resulting executable milestone manifest is
+  1,264 paths / 2,490 variants.
+
+  This is intentionally broader than the 24 `for_await` rows inherited from
+  the four async-generator exclusion ledgers. It contains 1,232
+  baseline-enabled paths from `language/statements/for-await-of` (including
+  1,215 destructuring paths), those 24 ordinary/object/public/private
+  async-generator shapes, five `AsyncFromSyncIteratorPrototype` consumers,
+  one async/Promise interleaving path, and two staging grammar paths. Pinned
+  QuickJS passes 1,264/1,264 admitted paths; it also executes all 1,294
+  baseline-enabled paths in the wider candidate, with exactly the three
+  upstream-configured ERM skips.
+
+  `./scripts/test-test262-for-await-of.sh` reproduces the candidate derivation,
+  all metadata and variant partitions, source-ledger provenance, profile and
+  inventory hashes, both pinned-QuickJS runs, and the Oxide result. Oxide
+  passes all 2,490 variants with no failure, unsupported, or skipped outcome;
+  independent 8/8/5-worker TSV and JSONL reports are byte-identical. The
+  profile, manifest, key-set, TSV, and JSONL SHA-256 values are
+  `20b369af5ce33890a6c480835baf3801392c26e6d7432da9d55fba1c4c1ad823`,
+  `45afa1e6f8f61d44e733aeea8bde5dae562a7ec919ea40d9d1e18551d6f2881f`,
+  `756ea05ac92fed9281a84f8e7f40b1992c640258ca41790158c41dfbe720bf57`,
+  `7eafa4725fbb6f70954c5bdb52a823caeaa89497eb01d6c80d446925d01361d0`,
+  and
+  `ecba171afdc2272de5b0e40b824f28159bfad04c9f485527b64ad6b533dd00fd`.
+  A pinned transcript and repeated-GC test separately cover close ordering and
+  the pending-next activation root not represented by the Test262 cohort.
+  The exact R3aj/R3ak full-vector join changes only three already-admitted
+  SpiderMonkey staging variants from `unsupported-runtime` to `pass`: the
+  sloppy `for-await-bad-syntax.js` variant and both variants of
+  `for-await-of-error.js`. All 102,037 keys match with no other outcome,
+  detail, key-set, or previous-pass drift. The complete vector retains 45,140
+  runnable variants and reaches 43,689 passes; its TSV and JSONL SHA-256 values
+  are
+  `36e2a11f4eaba4ffd92fdd561b18b27337b90b14a564cab9da6385f1aa0f79a3`
+  and
+  `1dd6c356c678568b51794d253959a58a644dbdd2871187f67516ad8d78e649af`.
+
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -2903,8 +2961,8 @@ claim full parity.
   reached, unrecognized ASCII is retained as a raw token, and directive probes
   seek back before strict-context rescanning. This matches the pinned
   malformed-escape commitment and tested reserved/parser/lexer error priority,
-  including line and column. Module contextual words and `for await` grammar
-  stay with those unimplemented surfaces.
+  including line and column. Module contextual words stay with the
+  unimplemented module surface.
 - The first runtime-independent RegExp kernel follows pinned
   `libregexp.c`/`libregexp-opcode.h` rather than a host regex library.
   `src/regexp/` owns exact QuickJS flag bits, a UTF-16 pattern parser, typed IR,
@@ -6575,6 +6633,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-async-generator-class-method-core.sh
 ./scripts/test-test262-async-generator-private-class-method-core.sh
 ./scripts/test-test262-async-generator-yield-star.sh
+./scripts/test-test262-for-await-of.sh
 cargo build --bin qjs
 ./scripts/test-r3l-class-private-generators-oracle.sh --oxide ./target/debug/qjs
 ./scripts/test-r3s-regexp-escape-control-oracle.sh --oxide ./target/debug/qjs
@@ -6593,6 +6652,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_async_generator_private_class_method -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_async_generator_yield_star -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_for_await_of -- --nocapture
 ./scripts/test-test262-full.sh
 ```
 

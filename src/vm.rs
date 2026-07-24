@@ -242,6 +242,11 @@ pub(crate) trait VmHost {
         iterator: Value,
         next_method: Value,
     ) -> Result<ForOfNextOutcome, Error>;
+    /// Complete the awaited result of an async iterator's cached `next`
+    /// method. Pinned QuickJS reads `done` and then `value` even when `done`
+    /// is true; JavaScript throws stay explicit so the temporarily disabled
+    /// iterator region cannot close them.
+    fn iterator_get_value_done(&mut self, result: Value) -> Result<ForOfNextOutcome, Error>;
     fn for_in_start(&mut self, value: Value) -> Result<ForInStartOutcome, Error>;
     fn for_in_next(&mut self, iterator: Value) -> Result<ForInNextOutcome, Error>;
     /// Close an iterator. With `exception_pending`, the VM retains the
@@ -968,6 +973,17 @@ impl VmHost for DetachedHost<'_> {
         _iterator: Value,
         _next_method: Value,
     ) -> Result<ForOfNextOutcome, Error> {
+        #[cfg(test)]
+        if let Some(outcome) = self.iterator_next_results.pop_front() {
+            return Ok(match outcome {
+                Ok((value, done)) => ForOfNextOutcome::Result { value, done },
+                Err(value) => ForOfNextOutcome::Throw(value),
+            });
+        }
+        Err(Error::internal("detached VM has no iterator intrinsics"))
+    }
+
+    fn iterator_get_value_done(&mut self, _result: Value) -> Result<ForOfNextOutcome, Error> {
         #[cfg(test)]
         if let Some(outcome) = self.iterator_next_results.pop_front() {
             return Ok(match outcome {
@@ -2043,6 +2059,10 @@ pub enum VmUnwindRegion {
         /// `ForOfNext` disables the record before propagating its throw or
         /// publishing `done = true`, so later unwinding must not call return.
         enabled: bool,
+        /// Async for-of temporarily disables the region across the cached
+        /// `next` call and its Await. Keeping the record family explicit
+        /// prevents sync and async continuation opcodes from crossing.
+        asynchronous: bool,
     },
 }
 
@@ -2714,6 +2734,112 @@ impl VmActivation {
                     }
                 }
             }
+            Instruction::ForAwaitOfStart => {
+                let iterable = self.pop()?;
+                match host.for_await_of_start(iterable)? {
+                    ForOfStartOutcome::Record {
+                        iterator,
+                        next_method,
+                    } => {
+                        let record_base = self.stack.len();
+                        self.stack.push(iterator);
+                        self.stack.push(next_method);
+                        self.regions.push(VmUnwindRegion::Iterator {
+                            record_base,
+                            enabled: true,
+                            asynchronous: true,
+                        });
+                    }
+                    ForOfStartOutcome::Throw(value) => {
+                        return Ok(Some(Completion::Throw(value)));
+                    }
+                }
+            }
+            Instruction::ForAwaitOfNext => {
+                let (record_base, enabled, asynchronous) = match self.regions.last() {
+                    Some(VmUnwindRegion::Iterator {
+                        record_base,
+                        enabled,
+                        asynchronous,
+                    }) => (*record_base, *enabled, *asynchronous),
+                    _ => {
+                        return Err(Error::internal(
+                            "ForAwaitOfNext has no innermost iterator region",
+                        ));
+                    }
+                };
+                if !asynchronous {
+                    return Err(Error::internal(
+                        "ForAwaitOfNext targeted a synchronous iterator region",
+                    ));
+                }
+                let record_end = record_base
+                    .checked_add(2)
+                    .ok_or_else(|| Error::internal("iterator record depth overflow"))?;
+                if self.stack.len() != record_end {
+                    return Err(Error::internal(
+                        "ForAwaitOfNext did not reach its iterator record",
+                    ));
+                }
+                if !enabled {
+                    return Err(Error::internal(
+                        "ForAwaitOfNext targeted a disabled iterator region",
+                    ));
+                }
+                let iterator = self
+                    .stack
+                    .get(record_base)
+                    .cloned()
+                    .ok_or_else(|| Error::internal("iterator record is truncated"))?;
+                let next_method = self
+                    .stack
+                    .get(record_base + 1)
+                    .cloned()
+                    .ok_or_else(|| Error::internal("iterator record is truncated"))?;
+                self.set_iterator_region_enabled(record_base, false, true)?;
+                match host.call(next_method, iterator, Vec::new())? {
+                    Completion::Return(result) => self.stack.push(result),
+                    Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
+                }
+            }
+            Instruction::IteratorGetValueDone => {
+                let result = self.pop()?;
+                let (record_base, enabled, asynchronous) = match self.regions.last() {
+                    Some(VmUnwindRegion::Iterator {
+                        record_base,
+                        enabled,
+                        asynchronous,
+                    }) => (*record_base, *enabled, *asynchronous),
+                    _ => {
+                        return Err(Error::internal(
+                            "IteratorGetValueDone has no innermost iterator region",
+                        ));
+                    }
+                };
+                if !asynchronous || enabled {
+                    return Err(Error::internal(
+                        "IteratorGetValueDone targeted a non-pending async iterator region",
+                    ));
+                }
+                let record_end = record_base
+                    .checked_add(2)
+                    .ok_or_else(|| Error::internal("iterator record depth overflow"))?;
+                if self.stack.len() != record_end {
+                    return Err(Error::internal(
+                        "IteratorGetValueDone did not reach its iterator record",
+                    ));
+                }
+                match host.iterator_get_value_done(result)? {
+                    ForOfNextOutcome::Result { value, done } => {
+                        self.set_iterator_region_enabled(record_base, true, true)?;
+                        self.stack.push(value);
+                        self.stack.push(Value::Bool(done));
+                    }
+                    ForOfNextOutcome::Throw(value) => {
+                        return Ok(Some(Completion::Throw(value)));
+                    }
+                }
+            }
             Instruction::IteratorNext => {
                 // iter, cached-next, placeholder, argument ->
                 // iter, cached-next, placeholder, result-object
@@ -3191,6 +3317,9 @@ impl VmActivation {
                     | Instruction::AsyncIteratorStart
                     | Instruction::IteratorNext
                     | Instruction::IteratorCall(_)
+                    | Instruction::ForAwaitOfStart
+                    | Instruction::ForAwaitOfNext
+                    | Instruction::IteratorGetValueDone
                     | Instruction::ForInStart
                     | Instruction::ForInNext
             ) {
@@ -3286,7 +3415,10 @@ impl VmActivation {
             Instruction::IteratorStart
             | Instruction::AsyncIteratorStart
             | Instruction::IteratorNext
-            | Instruction::IteratorCall(_) => {
+            | Instruction::IteratorCall(_)
+            | Instruction::ForAwaitOfStart
+            | Instruction::ForAwaitOfNext
+            | Instruction::IteratorGetValueDone => {
                 unreachable!("yield-star iterator dispatch was bypassed")
             }
             Instruction::PushI32(value) => self.stack.push(Value::Int(*value)),
@@ -4046,6 +4178,7 @@ impl VmActivation {
                         self.regions.push(VmUnwindRegion::Iterator {
                             record_base,
                             enabled: true,
+                            asynchronous: false,
                         });
                     }
                     ForOfStartOutcome::Throw(value) => {
@@ -4054,17 +4187,23 @@ impl VmActivation {
                 }
             }
             Instruction::ForOfNext(offset) => {
-                let (record_base, enabled) = match self.regions.last() {
+                let (record_base, enabled, asynchronous) = match self.regions.last() {
                     Some(VmUnwindRegion::Iterator {
                         record_base,
                         enabled,
-                    }) => (*record_base, *enabled),
+                        asynchronous,
+                    }) => (*record_base, *enabled, *asynchronous),
                     _ => {
                         return Err(Error::internal(
                             "ForOfNext has no innermost iterator region",
                         ));
                     }
                 };
+                if asynchronous {
+                    return Err(Error::internal(
+                        "ForOfNext targeted an asynchronous iterator region",
+                    ));
+                }
                 let expected_depth = record_base
                     .checked_add(2)
                     .and_then(|depth| depth.checked_add(usize::from(*offset)))
@@ -4107,7 +4246,13 @@ impl VmActivation {
                 unreachable!("for-in dispatch was bypassed")
             }
             Instruction::IteratorClose => {
-                let (iterator, enabled) = self.take_iterator_region(false, "IteratorClose")?;
+                let (iterator, enabled, asynchronous) =
+                    self.take_iterator_region(false, "IteratorClose")?;
+                if asynchronous && !enabled {
+                    return Err(Error::internal(
+                        "IteratorClose targeted a pending async iterator region",
+                    ));
+                }
                 if enabled {
                     match host.iterator_close(iterator, false)? {
                         IteratorCloseOutcome::Closed => {}
@@ -4118,8 +4263,13 @@ impl VmActivation {
                 }
             }
             Instruction::IteratorClosePreserve => {
-                let (iterator, enabled) =
+                let (iterator, enabled, asynchronous) =
                     self.take_iterator_region(true, "IteratorClosePreserve")?;
+                if asynchronous && !enabled {
+                    return Err(Error::internal(
+                        "IteratorClosePreserve targeted a pending async iterator region",
+                    ));
+                }
                 if enabled {
                     match host.iterator_close(iterator, false)? {
                         IteratorCloseOutcome::Closed => {}
@@ -4130,7 +4280,23 @@ impl VmActivation {
                 }
             }
             Instruction::IteratorDropPreserve => {
-                let _ = self.take_iterator_region(true, "IteratorDropPreserve")?;
+                let (_, enabled, asynchronous) =
+                    self.take_iterator_region(true, "IteratorDropPreserve")?;
+                if asynchronous && !enabled {
+                    return Err(Error::internal(
+                        "IteratorDropPreserve targeted a pending async iterator region",
+                    ));
+                }
+            }
+            Instruction::IteratorDetachPreserve => {
+                let (iterator, enabled, _) =
+                    self.take_iterator_region(true, "IteratorDetachPreserve")?;
+                if !enabled {
+                    return Err(Error::internal(
+                        "IteratorDetachPreserve targeted a disabled iterator region",
+                    ));
+                }
+                self.stack.push(iterator);
             }
             Instruction::Call(_)
             | Instruction::Eval { .. }
@@ -4274,6 +4440,7 @@ impl VmActivation {
                 VmUnwindRegion::Iterator {
                     record_base,
                     enabled,
+                    ..
                 } => {
                     let required_depth = record_base
                         .checked_add(2)
@@ -4300,26 +4467,42 @@ impl VmActivation {
     }
 
     fn disable_iterator_region(&mut self, record_base: usize) -> Result<(), Error> {
-        let Some(VmUnwindRegion::Iterator {
-            record_base: active_base,
-            enabled,
-        }) = self.regions.last_mut()
-        else {
-            return Err(Error::internal(
-                "ForOfNext has no innermost iterator region",
-            ));
-        };
-        if *active_base != record_base {
-            return Err(Error::internal(
-                "iterator unwind region changed during next",
-            ));
-        }
-        *enabled = false;
+        self.set_iterator_region_enabled(record_base, false, false)?;
         let iterator = self
             .stack
             .get_mut(record_base)
             .ok_or_else(|| Error::internal("iterator record is truncated"))?;
         *iterator = Value::Undefined;
+        Ok(())
+    }
+
+    fn set_iterator_region_enabled(
+        &mut self,
+        record_base: usize,
+        enabled_value: bool,
+        asynchronous: bool,
+    ) -> Result<(), Error> {
+        let Some(VmUnwindRegion::Iterator {
+            record_base: active_base,
+            enabled,
+            asynchronous: active_asynchronous,
+        }) = self.regions.last_mut()
+        else {
+            return Err(Error::internal(
+                "iterator operation has no innermost iterator region",
+            ));
+        };
+        if *active_base != record_base {
+            return Err(Error::internal(
+                "iterator unwind region changed during operation",
+            ));
+        }
+        if *active_asynchronous != asynchronous {
+            return Err(Error::internal(
+                "iterator operation targeted the wrong record family",
+            ));
+        }
+        *enabled = enabled_value;
         Ok(())
     }
 
@@ -4330,7 +4513,7 @@ impl VmActivation {
         &mut self,
         preserve_top: bool,
         operation: &'static str,
-    ) -> Result<(Value, bool), Error> {
+    ) -> Result<(Value, bool, bool), Error> {
         let region = self
             .regions
             .pop()
@@ -4338,6 +4521,7 @@ impl VmActivation {
         let VmUnwindRegion::Iterator {
             record_base,
             enabled,
+            asynchronous,
         } = region
         else {
             return Err(Error::internal(format!(
@@ -4368,7 +4552,7 @@ impl VmActivation {
         if let Some(value) = preserved {
             self.stack.push(value);
         }
-        Ok((iterator, enabled))
+        Ok((iterator, enabled, asynchronous))
     }
 
     fn pop(&mut self) -> Result<Value, Error> {

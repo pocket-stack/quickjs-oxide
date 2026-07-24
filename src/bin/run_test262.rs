@@ -80,6 +80,10 @@ const TEST262_ASYNC_GENERATOR_YIELD_STAR_PROFILE_SHA256: &str =
     "80bd7d1c042473a76ba15d85b3e5bbd6ebf175f0543c57e2908fd99a6b7b5256";
 const TEST262_ASYNC_GENERATOR_YIELD_STAR_MANIFEST_SHA256: &str =
     "bb31f01a982136b336f9267701ef8b2874bc0596e226f6e9ca5b59e7b9af09fb";
+const TEST262_FOR_AWAIT_OF_PROFILE_SHA256: &str =
+    "20b369af5ce33890a6c480835baf3801392c26e6d7432da9d55fba1c4c1ad823";
+const TEST262_FOR_AWAIT_OF_MANIFEST_SHA256: &str =
+    "45afa1e6f8f61d44e733aeea8bde5dae562a7ec919ea40d9d1e18551d6f2881f";
 const TEST262_ASYNC_ARROW_CORE_PROFILE_SHA256: &str =
     "f6634c6298e3d3fb740c0f55e8932ddc402ca8e120d8f0d2d9326f552186af2c";
 const TEST262_ASYNC_ARROW_CORE_MANIFEST_SHA256: &str =
@@ -768,6 +772,7 @@ enum OxideProfileKind {
     AsyncGeneratorClassMethodCore,
     AsyncGeneratorPrivateClassMethodCore,
     AsyncGeneratorYieldStar,
+    ForAwaitOf,
     AsyncArrowCore,
     AsyncObjectMethodCore,
     AsyncClassMethodCore,
@@ -854,6 +859,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-async-generator-yield-star.conf"),
             OxideProfileKind::AsyncGeneratorYieldStar,
+        ),
+        (
+            root.join("compat/test262-for-await-of.conf"),
+            OxideProfileKind::ForAwaitOf,
         ),
         (
             root.join("tests/test262-async-arrow-core.conf"),
@@ -1069,6 +1078,33 @@ fn verify_scoped_pinned_profile(
     Ok(profile_sha256)
 }
 
+fn verify_scoped_derived_profile(
+    options: &CoordinatorOptions,
+    label: &str,
+    profile_sha256: &'static str,
+    manifest_sha256: &str,
+) -> Result<&'static str, String> {
+    verify_sha256(
+        &options.oxide_profile,
+        profile_sha256,
+        &format!("scoped {label} Test262 capability profile"),
+    )?;
+    if options.all || !options.tests.is_empty() {
+        return Err(format!(
+            "the scoped {label} Test262 capability profile requires its authenticated manifest"
+        ));
+    }
+    let manifest = options.manifest.as_ref().ok_or_else(|| {
+        format!("the scoped {label} Test262 capability profile requires its authenticated manifest")
+    })?;
+    verify_sha256(
+        manifest,
+        manifest_sha256,
+        &format!("scoped {label} Test262 manifest"),
+    )?;
+    Ok(profile_sha256)
+}
+
 fn verify_scoped_object_assignment_profile(
     options: &CoordinatorOptions,
     cohort: &str,
@@ -1180,6 +1216,12 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             TEST262_ASYNC_GENERATOR_YIELD_STAR_PROFILE_SHA256,
             "tests/test262-async-generator-yield-star.txt",
             TEST262_ASYNC_GENERATOR_YIELD_STAR_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::ForAwaitOf => verify_scoped_derived_profile(
+            options,
+            "for-await-of",
+            TEST262_FOR_AWAIT_OF_PROFILE_SHA256,
+            TEST262_FOR_AWAIT_OF_MANIFEST_SHA256,
         ),
         OxideProfileKind::AsyncArrowCore => verify_scoped_pinned_profile(
             options,
@@ -2254,6 +2296,10 @@ mod cli_tests {
             identify_oxide_profile(Path::new("tests/test262-async-generator-yield-star.conf"))
                 .unwrap(),
             OxideProfileKind::AsyncGeneratorYieldStar
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("compat/test262-for-await-of.conf")).unwrap(),
+            OxideProfileKind::ForAwaitOf
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-async-arrow-core.conf")).unwrap(),
