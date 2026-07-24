@@ -8617,7 +8617,9 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                     IrOp::Bytecode(
                         Instruction::Yield
                             | Instruction::YieldStar
+                            | Instruction::AsyncYieldStar
                             | Instruction::IteratorStart
+                            | Instruction::AsyncIteratorStart
                             | Instruction::IteratorNext
                             | Instruction::IteratorCall(_)
                             | Instruction::IteratorCheckObject

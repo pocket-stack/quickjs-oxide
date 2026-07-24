@@ -37,14 +37,16 @@ pub(crate) enum Completion {
 /// `Initial` is the hidden prologue barrier reached while constructing a
 /// generator and has no yielded operand. `Yield` and `YieldStar` both preserve
 /// their output in the activation's top stack slot until the generator driver
-/// extracts it. `Await` retains the awaited operand in the same owned
-/// activation, but its resume protocol is deliberately separate from the
-/// generator value-plus-magic ABI.
+/// extracts it. `AsyncYieldStar` carries the already-extracted delegated value
+/// rather than the synchronous iterator-result object. `Await` retains the
+/// awaited operand in the same owned activation, but its resume protocol is
+/// deliberately separate from the generator value-plus-magic ABI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum VmSuspendKind {
     Initial,
     Yield,
     YieldStar,
+    AsyncYieldStar,
     Await,
 }
 
@@ -219,6 +221,9 @@ pub(crate) trait VmHost {
     /// detached execution has no captured cells.
     fn prepare_captured_local_reuse(&mut self) -> Result<(), Error>;
     fn for_of_start(&mut self, iterable: Value) -> Result<ForOfStartOutcome, Error>;
+    fn for_await_of_start(&mut self, iterable: Value) -> Result<ForOfStartOutcome, Error> {
+        self.for_of_start(iterable)
+    }
     fn append_start(&mut self, iterable: Value) -> Result<AppendStartOutcome, Error> {
         Ok(match self.for_of_start(iterable)? {
             ForOfStartOutcome::Record {
@@ -2129,7 +2134,10 @@ impl VmSuspension {
     /// Extract the visible value of `yield`/`yield*` and leave the retained
     /// operand slot ready for QuickJS-compatible resume injection.
     pub(crate) fn take_yielded(&mut self) -> Result<Value, Error> {
-        if !matches!(self.kind, VmSuspendKind::Yield | VmSuspendKind::YieldStar) {
+        if !matches!(
+            self.kind,
+            VmSuspendKind::Yield | VmSuspendKind::YieldStar | VmSuspendKind::AsyncYieldStar
+        ) {
             return Err(Error::internal(
                 "non-generator suspension has no yielded value",
             ));
@@ -2686,6 +2694,26 @@ impl VmActivation {
                     }
                 }
             }
+            Instruction::AsyncIteratorStart => {
+                let iterable = self.pop()?;
+                match host.for_await_of_start(iterable)? {
+                    ForOfStartOutcome::Record {
+                        iterator,
+                        next_method,
+                    } => {
+                        // The async delegation record has the same explicit
+                        // compiler-private shape as synchronous yield*. Its
+                        // iterator is either the authored async iterator or a
+                        // branded Async-from-Sync wrapper.
+                        self.stack.push(iterator);
+                        self.stack.push(next_method);
+                        self.stack.push(Value::Undefined);
+                    }
+                    ForOfStartOutcome::Throw(value) => {
+                        return Ok(Some(Completion::Throw(value)));
+                    }
+                }
+            }
             Instruction::IteratorNext => {
                 // iter, cached-next, placeholder, argument ->
                 // iter, cached-next, placeholder, result-object
@@ -3122,6 +3150,7 @@ impl VmActivation {
                 Instruction::InitialYield => Some(VmSuspendKind::Initial),
                 Instruction::Yield => Some(VmSuspendKind::Yield),
                 Instruction::YieldStar => Some(VmSuspendKind::YieldStar),
+                Instruction::AsyncYieldStar => Some(VmSuspendKind::AsyncYieldStar),
                 Instruction::Await => Some(VmSuspendKind::Await),
                 _ => None,
             };
@@ -3159,6 +3188,7 @@ impl VmActivation {
                     | Instruction::CopyDataProperties
                     | Instruction::CopyDataPropertiesExcluded { .. }
                     | Instruction::IteratorStart
+                    | Instruction::AsyncIteratorStart
                     | Instruction::IteratorNext
                     | Instruction::IteratorCall(_)
                     | Instruction::ForInStart
@@ -3249,10 +3279,12 @@ impl VmActivation {
             Instruction::InitialYield
             | Instruction::Yield
             | Instruction::YieldStar
+            | Instruction::AsyncYieldStar
             | Instruction::Await => {
                 unreachable!("VM suspension dispatch was bypassed")
             }
             Instruction::IteratorStart
+            | Instruction::AsyncIteratorStart
             | Instruction::IteratorNext
             | Instruction::IteratorCall(_) => {
                 unreachable!("yield-star iterator dispatch was bypassed")
@@ -5044,37 +5076,42 @@ mod tests {
 
     #[test]
     fn generator_yield_star_throw_resume_injects_magic_two() {
-        let function = BytecodeFunction {
-            name: None,
-            code: vec![
-                Instruction::PushI32(7),
-                Instruction::YieldStar,
-                Instruction::PushI32(2),
-                Instruction::StrictEq,
-                Instruction::IfFalse(6),
-                Instruction::Return,
-                Instruction::PushI32(-1),
-                Instruction::Return,
-            ],
-            constants: vec![],
-            local_count: 0,
-            max_stack: 3,
-        };
-        let mut host = DetachedHost::new(&function);
-        let VmExit::Suspend(mut suspension) =
-            CallFrame::new(3).run(&function.code, &mut host).unwrap()
-        else {
-            panic!("yield_star did not suspend");
-        };
-        assert_eq!(suspension.kind(), VmSuspendKind::YieldStar);
-        assert_eq!(suspension.take_yielded().unwrap(), Value::Int(7));
+        for (instruction, kind) in [
+            (Instruction::YieldStar, VmSuspendKind::YieldStar),
+            (Instruction::AsyncYieldStar, VmSuspendKind::AsyncYieldStar),
+        ] {
+            let function = BytecodeFunction {
+                name: None,
+                code: vec![
+                    Instruction::PushI32(7),
+                    instruction,
+                    Instruction::PushI32(2),
+                    Instruction::StrictEq,
+                    Instruction::IfFalse(6),
+                    Instruction::Return,
+                    Instruction::PushI32(-1),
+                    Instruction::Return,
+                ],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 3,
+            };
+            let mut host = DetachedHost::new(&function);
+            let VmExit::Suspend(mut suspension) =
+                CallFrame::new(3).run(&function.code, &mut host).unwrap()
+            else {
+                panic!("yield_star did not suspend");
+            };
+            assert_eq!(suspension.kind(), kind);
+            assert_eq!(suspension.take_yielded().unwrap(), Value::Int(7));
 
-        assert_eq!(
-            suspension
-                .resume(&function.code, &mut host, VmResume::Throw(Value::Int(55)),)
-                .unwrap(),
-            VmExit::Complete(Completion::Return(Value::Int(55)))
-        );
+            assert_eq!(
+                suspension
+                    .resume(&function.code, &mut host, VmResume::Throw(Value::Int(55)),)
+                    .unwrap(),
+                VmExit::Complete(Completion::Return(Value::Int(55)))
+            );
+        }
     }
 
     #[test]

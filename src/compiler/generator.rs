@@ -84,13 +84,9 @@ impl<'source> Parser<'source> {
         self.anonymous_function_definition = None;
 
         if delegated {
-            if self.current_ir().execution_kind == BytecodeFunctionKind::AsyncGenerator {
-                return Err(Error::unsupported(
-                    "async generator yield* is not implemented yet",
-                    super::source_span(yield_span),
-                ));
-            }
-            self.lower_yield_star(yield_span)?;
+            let asynchronous =
+                self.current_ir().execution_kind == BytecodeFunctionKind::AsyncGenerator;
+            self.lower_yield_star(yield_span, asynchronous)?;
             self.anonymous_function_definition = None;
             self.current_ir_mut().last_member_reference = None;
             self.current_ir_mut().last_identifier_reference = None;
@@ -120,16 +116,22 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    /// Lower the synchronous `yield*` protocol using the same retained
-    /// `iterator, next, placeholder, value/result` record as QuickJS. Only the
-    /// `YieldStar` suspension itself crosses the generator driver; every
-    /// observable iterator operation remains explicit verified bytecode.
-    fn lower_yield_star(&mut self, yield_span: super::Span) -> Result<(), Error> {
+    /// Lower QuickJS's shared `yield*` delegation loop. Both execution kinds
+    /// retain `iterator, next, placeholder, value/result`; async generators use
+    /// GetAsyncIterator, await every delegate protocol result, and suspend with
+    /// the result's extracted value. Every observable iterator operation stays
+    /// in explicit verified bytecode.
+    fn lower_yield_star(
+        &mut self,
+        yield_span: super::Span,
+        asynchronous: bool,
+    ) -> Result<(), Error> {
         let base_depth = self
             .current_ir()
             .stack_depth
             .checked_sub(1)
             .ok_or_else(|| Error::internal("yield* has no delegate operand"))?;
+        let yield_offset = source_offset(yield_span)?;
         let done = self.add_constant(super::IrConstant::Primitive(Value::String(
             JsString::from_static("done"),
         )))?;
@@ -137,19 +139,31 @@ impl<'source> Parser<'source> {
             JsString::from_static("value"),
         )))?;
 
-        self.emit_instruction(Instruction::IteratorStart)?;
+        self.emit_instruction(if asynchronous {
+            Instruction::AsyncIteratorStart
+        } else {
+            Instruction::IteratorStart
+        })?;
         // IteratorStart already retains QuickJS's ordinary undefined
         // placeholder in lieu of a catch marker. This second undefined is the
         // initial argument passed to the delegate's cached `next` method.
         self.emit_instruction(Instruction::Undefined)?;
         let loop_target = self.current_ir().ops.len();
         self.emit_instruction(Instruction::IteratorNext)?;
+        if asynchronous {
+            self.emit_instruction_at(Instruction::Await, yield_offset)?;
+        }
         self.emit_instruction(Instruction::IteratorCheckObject)?;
         self.emit_instruction(Instruction::GetField2(done))?;
         let initial_done = self.emit_instruction(Instruction::IfTrue(u32::MAX))?;
 
         let yield_target = self.current_ir().ops.len();
-        self.emit_instruction_at(Instruction::YieldStar, source_offset(yield_span)?)?;
+        if asynchronous {
+            self.emit_instruction(Instruction::GetField(value))?;
+            self.emit_instruction_at(Instruction::AsyncYieldStar, yield_offset)?;
+        } else {
+            self.emit_instruction_at(Instruction::YieldStar, yield_offset)?;
+        }
         self.emit_instruction(Instruction::Dup)?;
         let return_resume = self.emit_instruction(Instruction::IfTrue(u32::MAX))?;
         self.emit_instruction(Instruction::Drop)?;
@@ -165,8 +179,16 @@ impl<'source> Parser<'source> {
         self.emit_instruction(Instruction::StrictEq)?;
         let throw_resume = self.emit_instruction(Instruction::IfTrue(u32::MAX))?;
 
+        if asynchronous {
+            // AsyncGeneratorYield awaits the value injected by `.return(x)`
+            // before the delegate's return method observes it.
+            self.emit_instruction_at(Instruction::Await, yield_offset)?;
+        }
         self.emit_instruction(Instruction::IteratorCall(IteratorCallKind::ReturnWithValue))?;
         let missing_return = self.emit_instruction(Instruction::IfTrue(u32::MAX))?;
+        if asynchronous {
+            self.emit_instruction_at(Instruction::Await, yield_offset)?;
+        }
         self.emit_instruction(Instruction::IteratorCheckObject)?;
         self.emit_instruction(Instruction::GetField2(done))?;
         let return_not_done = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
@@ -184,6 +206,9 @@ impl<'source> Parser<'source> {
         self.patch_jump(throw_resume, throw_target)?;
         self.emit_instruction(Instruction::IteratorCall(IteratorCallKind::ThrowWithValue))?;
         let missing_throw = self.emit_instruction(Instruction::IfTrue(u32::MAX))?;
+        if asynchronous {
+            self.emit_instruction_at(Instruction::Await, yield_offset)?;
+        }
         self.emit_instruction(Instruction::IteratorCheckObject)?;
         self.emit_instruction(Instruction::GetField2(done))?;
         let throw_not_done = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
@@ -196,6 +221,9 @@ impl<'source> Parser<'source> {
             IteratorCallKind::ReturnWithoutValue,
         ))?;
         let close_missing = self.emit_instruction(Instruction::IfTrue(u32::MAX))?;
+        if asynchronous {
+            self.emit_instruction_at(Instruction::Await, yield_offset)?;
+        }
         let iterator_throw = self.current_ir().ops.len();
         self.patch_jump(close_missing, iterator_throw)?;
         self.emit_instruction(Instruction::ThrowIteratorMissingThrow)?;

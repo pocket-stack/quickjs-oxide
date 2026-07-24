@@ -514,7 +514,7 @@ impl RootedVmActivation {
                 Vm::new().resume_published_initial(suspension, &code, &mut host)
             }
             (
-                VmSuspendKind::Yield | VmSuspendKind::YieldStar,
+                VmSuspendKind::Yield | VmSuspendKind::YieldStar | VmSuspendKind::AsyncYieldStar,
                 VmActivationResume::Generator(resume),
             ) => Vm::new().resume_published(suspension, &code, &mut host, resume),
             (VmSuspendKind::Await, VmActivationResume::AwaitFulfill(value)) => {
@@ -539,7 +539,9 @@ impl RootedVmActivation {
                             "resumed activation reached an initial suspension",
                         ));
                     }
-                    VmSuspendKind::Yield | VmSuspendKind::YieldStar => {
+                    VmSuspendKind::Yield
+                    | VmSuspendKind::YieldStar
+                    | VmSuspendKind::AsyncYieldStar => {
                         suspension.take_yielded().map_err(RuntimeError::Engine)?
                     }
                     VmSuspendKind::Await => {
@@ -2248,6 +2250,20 @@ impl VmHost for RuntimeVmHost {
         })
     }
 
+    fn for_await_of_start(&mut self, iterable: Value) -> Result<ForOfStartOutcome, Error> {
+        match self
+            .runtime
+            .get_async_iterator_record(self.current_realm, iterable)
+            .map_err(runtime_error_to_vm_error)?
+        {
+            NativeConversion::Value((iterator, next_method)) => Ok(ForOfStartOutcome::Record {
+                iterator,
+                next_method,
+            }),
+            NativeConversion::Throw(value) => Ok(ForOfStartOutcome::Throw(value)),
+        }
+    }
+
     fn append_start(&mut self, iterable: Value) -> Result<AppendStartOutcome, Error> {
         // QuickJS first performs an otherwise redundant Get for its native
         // Array-values fast-path classification. The value is released before
@@ -2475,6 +2491,7 @@ impl VmHost for RuntimeVmHost {
             | ObjectPayload::ArrayIterator { .. }
             | ObjectPayload::IteratorHelper(_)
             | ObjectPayload::IteratorWrap(_)
+            | ObjectPayload::AsyncFromSyncIterator(_)
             | ObjectPayload::IteratorConcat(_)
             | ObjectPayload::Map { .. }
             | ObjectPayload::MapIterator { .. }

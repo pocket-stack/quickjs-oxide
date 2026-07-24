@@ -5,6 +5,7 @@
 //! intrinsics extend this boundary; they are not hidden in the compiler or VM.
 
 mod arguments;
+mod async_from_sync_iterator;
 mod async_function;
 mod async_generator;
 mod bytecode_publish;
@@ -4867,6 +4868,7 @@ impl Runtime {
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::IteratorHelper(_)
                 | ObjectPayload::IteratorWrap(_)
+                | ObjectPayload::AsyncFromSyncIterator(_)
                 | ObjectPayload::IteratorConcat(_)
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
@@ -4934,6 +4936,7 @@ impl Runtime {
             | ObjectPayload::ArrayIterator { .. }
             | ObjectPayload::IteratorHelper(_)
             | ObjectPayload::IteratorWrap(_)
+            | ObjectPayload::AsyncFromSyncIterator(_)
             | ObjectPayload::IteratorConcat(_)
             | ObjectPayload::Map { .. }
             | ObjectPayload::MapIterator { .. }
@@ -5301,6 +5304,7 @@ impl Runtime {
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::IteratorHelper(_)
                 | ObjectPayload::IteratorWrap(_)
+                | ObjectPayload::AsyncFromSyncIterator(_)
                 | ObjectPayload::IteratorConcat(_)
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
@@ -6399,6 +6403,7 @@ impl Runtime {
                         | ObjectPayload::ArrayIterator { .. }
                         | ObjectPayload::IteratorHelper(_)
                         | ObjectPayload::IteratorWrap(_)
+                        | ObjectPayload::AsyncFromSyncIterator(_)
                         | ObjectPayload::IteratorConcat(_)
                         | ObjectPayload::Map { .. }
                         | ObjectPayload::MapIterator { .. }
@@ -6742,6 +6747,7 @@ impl Runtime {
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::IteratorHelper(_)
                 | ObjectPayload::IteratorWrap(_)
+                | ObjectPayload::AsyncFromSyncIterator(_)
                 | ObjectPayload::IteratorConcat(_)
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
@@ -6966,6 +6972,7 @@ impl Runtime {
                         | ObjectPayload::ArrayIterator { .. }
                         | ObjectPayload::IteratorHelper(_)
                         | ObjectPayload::IteratorWrap(_)
+                        | ObjectPayload::AsyncFromSyncIterator(_)
                         | ObjectPayload::IteratorConcat(_)
                         | ObjectPayload::Map { .. }
                         | ObjectPayload::MapIterator { .. }
@@ -7079,6 +7086,7 @@ impl Runtime {
                         | ObjectPayload::ArrayIterator { .. }
                         | ObjectPayload::IteratorHelper(_)
                         | ObjectPayload::IteratorWrap(_)
+                        | ObjectPayload::AsyncFromSyncIterator(_)
                         | ObjectPayload::IteratorConcat(_)
                         | ObjectPayload::Map { .. }
                         | ObjectPayload::MapIterator { .. }
@@ -7459,6 +7467,7 @@ impl Runtime {
                     | ObjectPayload::ArrayIterator { .. }
                     | ObjectPayload::IteratorHelper(_)
                     | ObjectPayload::IteratorWrap(_)
+                    | ObjectPayload::AsyncFromSyncIterator(_)
                     | ObjectPayload::IteratorConcat(_)
                     | ObjectPayload::Map { .. }
                     | ObjectPayload::MapIterator { .. }
@@ -8387,6 +8396,7 @@ impl Runtime {
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::IteratorHelper(_)
                 | ObjectPayload::IteratorWrap(_)
+                | ObjectPayload::AsyncFromSyncIterator(_)
                 | ObjectPayload::IteratorConcat(_)
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }

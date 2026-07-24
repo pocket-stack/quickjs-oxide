@@ -1181,6 +1181,32 @@ impl Runtime {
         fulfill: &CallableRef,
         reject: &CallableRef,
     ) -> Result<(), RuntimeError> {
+        self.perform_promise_then_internal(realm, promise, Some(fulfill), Some(reject), None)
+    }
+
+    /// Register internal handlers while settling a caller-owned Promise
+    /// capability. Async-from-Sync iterator continuation uses this exact
+    /// `PerformPromiseThen` boundary: it must not observe a mutable `.then`,
+    /// perform species lookup, or allocate an otherwise visible extra Promise.
+    pub(in crate::runtime) fn perform_promise_then_with_capability(
+        &self,
+        realm: ContextId,
+        promise: &ObjectRef,
+        fulfill: Option<&CallableRef>,
+        reject: Option<&CallableRef>,
+        capability: &RootedPromiseCapability,
+    ) -> Result<(), RuntimeError> {
+        self.perform_promise_then_internal(realm, promise, fulfill, reject, Some(capability.raw()))
+    }
+
+    fn perform_promise_then_internal(
+        &self,
+        realm: ContextId,
+        promise: &ObjectRef,
+        fulfill: Option<&CallableRef>,
+        reject: Option<&CallableRef>,
+        capability: Option<PromiseCapabilityData>,
+    ) -> Result<(), RuntimeError> {
         if !matches!(
             self.0
                 .state
@@ -1196,13 +1222,13 @@ impl Runtime {
         }
         let fulfill = PromiseReaction {
             kind: PromiseReactionKind::Fulfill,
-            handler: Some(fulfill.as_object().object_id()),
-            capability: None,
+            handler: fulfill.map(|handler| handler.as_object().object_id()),
+            capability,
         };
         let reject = PromiseReaction {
             kind: PromiseReactionKind::Reject,
-            handler: Some(reject.as_object().object_id()),
-            capability: None,
+            handler: reject.map(|handler| handler.as_object().object_id()),
+            capability,
         };
         let snapshot = self
             .0

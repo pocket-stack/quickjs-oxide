@@ -51,6 +51,23 @@ impl Runtime {
             PropertyFlags::data(true, false, true),
         )?;
 
+        let async_from_sync_iterator_prototype =
+            self.new_object(Some(&async_iterator_prototype))?;
+        for (kind, name) in [
+            (GeneratorResumeKind::Next, "next"),
+            (GeneratorResumeKind::Return, "return"),
+            (GeneratorResumeKind::Throw, "throw"),
+        ] {
+            self.define_native_builtin_auto_init(
+                &async_from_sync_iterator_prototype,
+                realm,
+                NativeFunctionId::AsyncFromSyncIteratorResume(kind),
+                name,
+                1,
+                1,
+            )?;
+        }
+
         let async_generator_prototype = self.new_object(Some(&async_iterator_prototype))?;
         for (kind, name) in [
             (GeneratorResumeKind::Next, "next"),
@@ -132,6 +149,8 @@ impl Runtime {
                 realm,
                 AsyncGeneratorRealmData {
                     async_iterator_prototype: async_iterator_prototype.object_id(),
+                    async_from_sync_iterator_prototype: async_from_sync_iterator_prototype
+                        .object_id(),
                     prototype: async_generator_prototype.object_id(),
                     function_prototype: async_generator_function_prototype.object_id(),
                 },
@@ -415,19 +434,16 @@ impl Runtime {
                         return Ok(());
                     }
                 },
-                AsyncGeneratorState::SuspendedStart | AsyncGeneratorState::SuspendedYield => {}
-                AsyncGeneratorState::SuspendedYieldStar => {
-                    return Err(RuntimeError::Invariant(
-                        "async-generator yield* reached the pre-yield* driver",
-                    ));
-                }
+                AsyncGeneratorState::SuspendedStart
+                | AsyncGeneratorState::SuspendedYield
+                | AsyncGeneratorState::SuspendedYieldStar => {}
             }
 
             let previous = snapshot.state;
             let suspend_kind = match previous {
                 AsyncGeneratorState::SuspendedStart => VmSuspendKind::Initial,
                 AsyncGeneratorState::SuspendedYield => VmSuspendKind::Yield,
-                AsyncGeneratorState::SuspendedYieldStar => VmSuspendKind::YieldStar,
+                AsyncGeneratorState::SuspendedYieldStar => VmSuspendKind::AsyncYieldStar,
                 AsyncGeneratorState::Executing => VmSuspendKind::Await,
                 AsyncGeneratorState::AwaitingReturn | AsyncGeneratorState::Completed => {
                     unreachable!()
@@ -463,7 +479,7 @@ impl Runtime {
             }
             let resume = match previous {
                 AsyncGeneratorState::SuspendedStart => VmActivationResume::Initial,
-                AsyncGeneratorState::SuspendedYield => {
+                AsyncGeneratorState::SuspendedYield | AsyncGeneratorState::SuspendedYieldStar => {
                     VmActivationResume::Generator(match request.completion {
                         GeneratorResumeKind::Next => VmResume::Next(request.result),
                         GeneratorResumeKind::Return => VmResume::Return(request.result),
@@ -473,9 +489,9 @@ impl Runtime {
                 AsyncGeneratorState::Executing => {
                     VmActivationResume::AwaitFulfill(Value::Undefined)
                 }
-                AsyncGeneratorState::SuspendedYieldStar
-                | AsyncGeneratorState::AwaitingReturn
-                | AsyncGeneratorState::Completed => unreachable!(),
+                AsyncGeneratorState::AwaitingReturn | AsyncGeneratorState::Completed => {
+                    unreachable!()
+                }
             };
             let outcome = match rooted.run(self, resume) {
                 Ok(outcome) => outcome,
@@ -514,6 +530,21 @@ impl Runtime {
                         self.store_async_generator_suspension(
                             generator,
                             AsyncGeneratorState::SuspendedYield,
+                            None,
+                            &activation,
+                        )?;
+                        self.settle_front_async_generator_request(
+                            realm,
+                            generator,
+                            AsyncGeneratorSettlement::Resolve { value, done: false },
+                        )?;
+                        drop(activation);
+                        return Ok(true);
+                    }
+                    VmSuspendKind::AsyncYieldStar => {
+                        self.store_async_generator_suspension(
+                            generator,
+                            AsyncGeneratorState::SuspendedYieldStar,
                             None,
                             &activation,
                         )?;

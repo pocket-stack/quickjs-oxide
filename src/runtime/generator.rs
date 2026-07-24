@@ -397,7 +397,9 @@ impl Runtime {
                 let state = match activation.kind {
                     VmSuspendKind::Yield => GeneratorState::SuspendedYield,
                     VmSuspendKind::YieldStar => GeneratorState::SuspendedYieldStar,
-                    VmSuspendKind::Initial | VmSuspendKind::Await => {
+                    VmSuspendKind::Initial
+                    | VmSuspendKind::AsyncYieldStar
+                    | VmSuspendKind::Await => {
                         self.complete_executing_generator(&generator)?;
                         return Err(RuntimeError::Invariant(
                             "resumed generator stopped at a non-generator suspension",
@@ -466,9 +468,9 @@ impl Runtime {
             VmSuspendKind::Yield => GeneratorState::SuspendedYield,
             VmSuspendKind::YieldStar => GeneratorState::SuspendedYieldStar,
             VmSuspendKind::Initial => GeneratorState::SuspendedStart,
-            VmSuspendKind::Await => {
+            VmSuspendKind::AsyncYieldStar | VmSuspendKind::Await => {
                 return Err(RuntimeError::Invariant(
-                    "generator suspension reached an await opcode",
+                    "generator suspension reached an async-only opcode",
                 ));
             }
         };

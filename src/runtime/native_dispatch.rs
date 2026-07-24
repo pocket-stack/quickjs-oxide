@@ -482,6 +482,15 @@ impl Runtime {
             NativeFunctionId::AsyncGeneratorResume(kind) => {
                 self.call_async_generator_resume(realm, kind, invocation, arguments)
             }
+            NativeFunctionId::AsyncFromSyncIteratorResume(kind) => {
+                self.call_async_from_sync_iterator_resume(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::AsyncFromSyncIteratorUnwrap => {
+                self.call_async_from_sync_iterator_unwrap(realm, invocation, arguments)
+            }
+            NativeFunctionId::AsyncFromSyncIteratorClose => {
+                self.call_async_from_sync_iterator_close(realm, invocation, arguments)
+            }
             NativeFunctionId::Promise(kind) => {
                 self.call_promise_native(realm, kind, invocation, arguments)
             }

@@ -553,6 +553,11 @@ pub enum Instruction {
     /// three outputs are ordinary retained operands (`iterator`, cached
     /// `next`, placeholder) and do not install an automatic unwind region.
     IteratorStart,
+    /// Async-generator `yield*` GetAsyncIterator. A present
+    /// `Symbol.asyncIterator` is used directly; a nullish method falls back to
+    /// a branded Async-from-Sync iterator. The retained three-slot record has
+    /// the same compiler-private shape as [`Instruction::IteratorStart`].
+    AsyncIteratorStart,
     /// QuickJS `OP_iterator_next`: call the cached `next` method with the top
     /// resume value and replace that value with the materialized result object
     /// (`iterator, next, placeholder, value -> ... result`).
@@ -577,6 +582,12 @@ pub enum Instruction {
     /// compiler-owned delegation loop consumes the same two resume operands as
     /// ordinary `Yield`.
     YieldStar,
+    /// QuickJS `OP_async_yield_star`: suspend an async generator with the
+    /// delegate result's already-extracted `value`. The async-generator driver
+    /// wraps that value in the current request's `{ value, done: false }`
+    /// result, while resumption uses the same next/return/throw magic ABI as
+    /// synchronous delegation.
+    AsyncYieldStar,
     /// QuickJS `OP_await`: consume the value which the async-function driver
     /// resolves through the realm's intrinsic Promise constructor. Fulfilment
     /// resumes by replacing the retained slot with the resolution value;
@@ -652,7 +663,7 @@ impl Instruction {
             // though runtime execution stores it in private handler metadata.
             Self::Catch(_) => (0, 1),
             Self::ForOfStart => (1, 3),
-            Self::IteratorStart => (1, 3),
+            Self::IteratorStart | Self::AsyncIteratorStart => (1, 3),
             Self::ForOfNext(_) => (3, 5),
             Self::IteratorNext => (4, 4),
             Self::IteratorCall(_) => (4, 5),
@@ -787,7 +798,7 @@ impl Instruction {
             Self::NipCatch | Self::IteratorClosePreserve | Self::IteratorDropPreserve => (1, 1),
             Self::IteratorClose => (3, 0),
             Self::Await => (1, 1),
-            Self::Yield | Self::YieldStar => (1, 2),
+            Self::Yield | Self::YieldStar | Self::AsyncYieldStar => (1, 2),
             Self::SetLocal(_) | Self::SetLocalCheck(_) | Self::SetArg(_) | Self::SetVarRef(_) => {
                 (1, 1)
             }
@@ -1616,7 +1627,11 @@ mod tests {
 
     #[test]
     fn verifier_models_generator_suspension_resume_stack_shapes() {
-        for suspension in [Instruction::Yield, Instruction::YieldStar] {
+        for suspension in [
+            Instruction::Yield,
+            Instruction::YieldStar,
+            Instruction::AsyncYieldStar,
+        ] {
             let function = BytecodeFunction {
                 name: None,
                 code: vec![

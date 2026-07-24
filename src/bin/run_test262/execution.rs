@@ -1033,7 +1033,8 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
 
     #[test]
     fn unsupported_parser_provenance_is_opt_in_at_the_context_boundary() {
-        const UNSUPPORTED_SOURCE: &str = "async function* generator() { yield* source; }";
+        const UNSUPPORTED_SOURCE: &str =
+            "async function* generator() { for await (const value of source) yield value; }";
 
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
@@ -1055,7 +1056,7 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
         assert_eq!(error.kind(), ErrorKind::Unsupported);
         assert_eq!(
             error.message(),
-            "async generator yield* is not implemented yet"
+            "for-await-of loops are not implemented yet"
         );
         assert!(context.take_exception().unwrap().is_none());
     }

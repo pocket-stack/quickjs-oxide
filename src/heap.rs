@@ -428,6 +428,9 @@ pub struct AsyncFunctionRealmData {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AsyncGeneratorRealmData {
     pub async_iterator_prototype: ObjectId,
+    /// Realm-local `%AsyncFromSyncIteratorPrototype%`, inheriting from this
+    /// realm's `%AsyncIteratorPrototype%`.
+    pub async_from_sync_iterator_prototype: ObjectId,
     pub prototype: ObjectId,
     pub function_prototype: ObjectId,
 }
@@ -4499,6 +4502,17 @@ pub struct IteratorWrapData {
     pub next: RawValue,
 }
 
+/// Hidden state of the branded adapter created when `GetAsyncIterator`
+/// falls back to a synchronous iterator.
+///
+/// The source is known to be an object after `GetIterator`, while `next`
+/// remains an arbitrary cached ECMAScript value until the first call.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AsyncFromSyncIteratorData {
+    pub sync_iterator: ObjectId,
+    pub next: RawValue,
+}
+
 /// One eagerly validated iterable/method pair retained by `Iterator.concat`.
 ///
 /// Consumed slots become `None` so their edges can be released immediately,
@@ -4648,6 +4662,12 @@ pub enum InternalCallableData {
         already_called: Rc<Cell<bool>>,
         index: u32,
     },
+    AsyncFromSyncIteratorUnwrap {
+        done: bool,
+    },
+    AsyncFromSyncIteratorClose {
+        sync_iterator: ObjectId,
+    },
 }
 
 /// Class-specific edges stored alongside an object's ordinary properties.
@@ -4756,6 +4776,9 @@ pub enum ObjectPayload {
     /// `JS_CLASS_ITERATOR_WRAP`: source iterator and cached `next` method
     /// retained by the wrapper returned from `Iterator.from`.
     IteratorWrap(IteratorWrapData),
+    /// `JS_CLASS_ASYNC_FROM_SYNC_ITERATOR`: synchronous source iterator and
+    /// cached `next`, exposed only through Promise-returning adapter methods.
+    AsyncFromSyncIterator(AsyncFromSyncIteratorData),
     /// `JS_CLASS_ITERATOR_CONCAT`: remaining iterable/method pairs plus the
     /// lazily created current iterator and cached `next` method.
     IteratorConcat(IteratorConcatData),
@@ -4826,6 +4849,7 @@ pub enum ObjectKind {
     StringIterator,
     IteratorHelper,
     IteratorWrap,
+    AsyncFromSyncIterator,
     IteratorConcat,
     NativeFunction,
     BoundFunction,
@@ -5663,6 +5687,9 @@ pub enum NativeFunctionId {
     PromiseAllResolveElement,
     PromiseAllSettledElement(PromiseReactionKind),
     PromiseAnyRejectElement,
+    AsyncFromSyncIteratorResume(GeneratorResumeKind),
+    AsyncFromSyncIteratorUnwrap,
+    AsyncFromSyncIteratorClose,
     PrimitiveConstructor(PrimitiveKind),
     StringStatic(StringStaticKind),
     /// QuickJS's test262-only `js_string_codePointRange` helper.
@@ -6036,6 +6063,8 @@ impl NativeFunctionId {
                 | Self::PromiseAllResolveElement
                 | Self::PromiseAllSettledElement(_)
                 | Self::PromiseAnyRejectElement
+                | Self::AsyncFromSyncIteratorUnwrap
+                | Self::AsyncFromSyncIteratorClose
                 | Self::IteratorConstructorAccessor
         )
     }
@@ -6139,6 +6168,8 @@ impl NativeFunctionId {
             | Self::PromiseAllResolveElement
             | Self::PromiseAllSettledElement(_)
             | Self::PromiseAnyRejectElement
+            | Self::AsyncFromSyncIteratorUnwrap
+            | Self::AsyncFromSyncIteratorClose
             | Self::Reflect(
                 ReflectKind::Apply
                 | ReflectKind::Construct
@@ -6212,6 +6243,7 @@ impl NativeFunctionId {
             | Self::ObjectPrototypeDefineAccessor(_)
             | Self::ObjectPrototypeLookupAccessor(_)
             | Self::AsyncGeneratorPrototypeResume(_)
+            | Self::AsyncFromSyncIteratorResume(_)
             | Self::Date(
                 DateNativeKind::String(_)
                 | DateNativeKind::GetField(_)
@@ -6785,6 +6817,30 @@ impl ObjectData {
             is_constructor: false,
             kind: ObjectKind::IteratorWrap,
             payload: ObjectPayload::IteratorWrap(IteratorWrapData { source, next }),
+        }
+    }
+
+    /// Construct the branded Promise adapter used by async iteration over a
+    /// synchronous iterator.
+    #[must_use]
+    pub const fn async_from_sync_iterator(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        sync_iterator: ObjectId,
+        next: RawValue,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::AsyncFromSyncIterator,
+            payload: ObjectPayload::AsyncFromSyncIterator(AsyncFromSyncIteratorData {
+                sync_iterator,
+                next,
+            }),
         }
     }
 
@@ -7446,6 +7502,7 @@ impl Heap {
             | ObjectPayload::StringIterator { .. }
             | ObjectPayload::IteratorHelper(_)
             | ObjectPayload::IteratorWrap(_)
+            | ObjectPayload::AsyncFromSyncIterator(_)
             | ObjectPayload::IteratorConcat(_)
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. }
@@ -8125,6 +8182,16 @@ impl Heap {
                 "AsyncIterator prototype does not inherit from Object.prototype",
             ));
         }
+        let async_from_sync = self.object(async_generator.async_from_sync_iterator_prototype)?;
+        if async_from_sync.kind != ObjectKind::Ordinary
+            || !matches!(async_from_sync.payload, ObjectPayload::Ordinary)
+            || self.shape(async_from_sync.shape)?.prototype()
+                != Some(async_generator.async_iterator_prototype)
+        {
+            return Err(HeapError::Invariant(
+                "AsyncFromSyncIterator prototype does not inherit from AsyncIterator prototype",
+            ));
+        }
         let prototype = self.object(async_generator.prototype)?;
         if prototype.kind != ObjectKind::Ordinary
             || !matches!(prototype.payload, ObjectPayload::Ordinary)
@@ -8147,6 +8214,7 @@ impl Heap {
 
         self.retain_edges_transactionally(&[
             RawId::Object(async_generator.async_iterator_prototype),
+            RawId::Object(async_generator.async_from_sync_iterator_prototype),
             RawId::Object(async_generator.prototype),
             RawId::Object(async_generator.function_prototype),
         ])?;
@@ -8206,7 +8274,9 @@ impl Heap {
                 instruction,
                 Instruction::Yield
                     | Instruction::YieldStar
+                    | Instruction::AsyncYieldStar
                     | Instruction::IteratorStart
+                    | Instruction::AsyncIteratorStart
                     | Instruction::IteratorNext
                     | Instruction::IteratorCall(_)
                     | Instruction::IteratorCheckObject
@@ -8217,10 +8287,18 @@ impl Heap {
             .code
             .iter()
             .any(|instruction| matches!(instruction, Instruction::Await));
-        let has_yield_star = bytecode
-            .code
-            .iter()
-            .any(|instruction| matches!(instruction, Instruction::YieldStar));
+        let has_sync_delegation = bytecode.code.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::YieldStar | Instruction::IteratorStart
+            )
+        });
+        let has_async_delegation = bytecode.code.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::AsyncYieldStar | Instruction::AsyncIteratorStart
+            )
+        });
         match bytecode.metadata.function_kind {
             FunctionKind::Generator => {
                 if initial_yields.len() != 1
@@ -8229,6 +8307,7 @@ impl Heap {
                     || bytecode.metadata.class_initializer_kind.is_some()
                     || parameter_body_pc.is_some_and(|body_pc| initial_yields[0] < body_pc)
                     || has_await
+                    || has_async_delegation
                 {
                     return Err(HeapError::Invariant(
                         "generator bytecode has invalid suspension metadata",
@@ -8253,7 +8332,7 @@ impl Heap {
                     || bytecode.metadata.constructor_kind != ConstructorKind::None
                     || bytecode.metadata.class_initializer_kind.is_some()
                     || parameter_body_pc.is_some_and(|body_pc| initial_yields[0] < body_pc)
-                    || has_yield_star
+                    || has_sync_delegation
                 {
                     return Err(HeapError::Invariant(
                         "async-generator bytecode has invalid suspension metadata",
@@ -10314,6 +10393,20 @@ impl Heap {
         Ok((data.source.clone(), data.next.clone()))
     }
 
+    /// Snapshot one branded Async-from-Sync iterator. The cached raw method
+    /// does not gain an additional arena or atom occurrence in the clone.
+    pub(crate) fn async_from_sync_iterator_state(
+        &self,
+        id: ObjectId,
+    ) -> Result<(ObjectId, RawValue), HeapError> {
+        let ObjectPayload::AsyncFromSyncIterator(data) = &self.object(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "Async-from-Sync Iterator snapshot reached an object with the wrong class",
+            ));
+        };
+        Ok((data.sync_iterator, data.next.clone()))
+    }
+
     /// Snapshot one `Iterator.concat` state machine. Raw values in the clone
     /// do not own additional arena or atom references.
     pub(crate) fn iterator_concat_state(
@@ -11972,6 +12065,10 @@ impl Heap {
                 )
                 | (ObjectKind::IteratorHelper, ObjectPayload::IteratorHelper(_))
                 | (ObjectKind::IteratorWrap, ObjectPayload::IteratorWrap(_))
+                | (
+                    ObjectKind::AsyncFromSyncIterator,
+                    ObjectPayload::AsyncFromSyncIterator(_)
+                )
                 | (ObjectKind::IteratorConcat, ObjectPayload::IteratorConcat(_))
                 | (
                     ObjectKind::NativeFunction,
@@ -12198,6 +12295,27 @@ impl Heap {
                         ));
                     }
                 }
+                (
+                    NativeFunctionId::AsyncFromSyncIteratorUnwrap,
+                    Some(InternalCallableData::AsyncFromSyncIteratorUnwrap { .. }),
+                ) => {
+                    if object.is_constructor {
+                        return Err(HeapError::Invariant(
+                            "Async-from-Sync unwrap callable has invalid hidden state",
+                        ));
+                    }
+                }
+                (
+                    NativeFunctionId::AsyncFromSyncIteratorClose,
+                    Some(InternalCallableData::AsyncFromSyncIteratorClose { sync_iterator }),
+                ) => {
+                    self.object(*sync_iterator)?;
+                    if object.is_constructor {
+                        return Err(HeapError::Invariant(
+                            "Async-from-Sync close callable has invalid hidden state",
+                        ));
+                    }
+                }
                 (NativeFunctionId::AsyncFunctionResume(_), _)
                 | (NativeFunctionId::AsyncGeneratorResume(_), _)
                 | (NativeFunctionId::PromiseResolving(_), _)
@@ -12207,6 +12325,8 @@ impl Heap {
                 | (NativeFunctionId::PromiseAllResolveElement, _)
                 | (NativeFunctionId::PromiseAllSettledElement(_), _)
                 | (NativeFunctionId::PromiseAnyRejectElement, _)
+                | (NativeFunctionId::AsyncFromSyncIteratorUnwrap, _)
+                | (NativeFunctionId::AsyncFromSyncIteratorClose, _)
                 | (_, Some(_)) => {
                     return Err(HeapError::Invariant(
                         "native target does not match its internal callable capture",
@@ -12437,6 +12557,14 @@ impl Heap {
                 ));
             }
             validate_iterator_wrap_data(self, data)?;
+        }
+        if let ObjectPayload::AsyncFromSyncIterator(data) = &object.payload {
+            if object.is_constructor {
+                return Err(HeapError::Invariant(
+                    "Async-from-Sync Iterator object is constructable",
+                ));
+            }
+            validate_async_from_sync_iterator_data(self, data)?;
         }
         if let ObjectPayload::IteratorConcat(data) = &object.payload {
             if object.is_constructor {
@@ -12963,6 +13091,9 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         ObjectPayload::IteratorWrap(data) => raw_value_edges(&data.source)
             .len()
             .saturating_add(raw_value_edges(&data.next).len()),
+        ObjectPayload::AsyncFromSyncIterator(data) => {
+            1usize.saturating_add(raw_value_edges(&data.next).len())
+        }
         ObjectPayload::IteratorConcat(data) => data
             .items
             .iter()
@@ -13037,6 +13168,10 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         }
         ObjectPayload::IteratorWrap(data) => {
             edges.extend(raw_value_edges(&data.source));
+            edges.extend(raw_value_edges(&data.next));
+        }
+        ObjectPayload::AsyncFromSyncIterator(data) => {
+            edges.push(RawId::Object(data.sync_iterator));
             edges.extend(raw_value_edges(&data.next));
         }
         ObjectPayload::IteratorConcat(data) => {
@@ -13214,6 +13349,10 @@ fn internal_callable_edges(internal: &InternalCallableData) -> Vec<RawId> {
         InternalCallableData::PromiseAnyRejectElement { errors, reject, .. } => {
             vec![RawId::Object(*errors), RawId::Object(*reject)]
         }
+        InternalCallableData::AsyncFromSyncIteratorUnwrap { .. } => Vec::new(),
+        InternalCallableData::AsyncFromSyncIteratorClose { sync_iterator } => {
+            vec![RawId::Object(*sync_iterator)]
+        }
     }
 }
 
@@ -13318,7 +13457,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
             .saturating_add(context.set.map_or(0, |_| 2))
             .saturating_add(context.generator.map_or(0, |_| 2))
             .saturating_add(context.async_function.map_or(0, |_| 1))
-            .saturating_add(context.async_generator.map_or(0, |_| 3))
+            .saturating_add(context.async_generator.map_or(0, |_| 4))
             .saturating_add(context.promise.map_or(0, |_| 2))
             .saturating_add(context.iterator.map_or(0, |_| 4))
             .saturating_add(context.global_objects.len())
@@ -13363,6 +13502,9 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     }
     if let Some(async_generator) = context.async_generator {
         edges.push(RawId::Object(async_generator.async_iterator_prototype));
+        edges.push(RawId::Object(
+            async_generator.async_from_sync_iterator_prototype,
+        ));
         edges.push(RawId::Object(async_generator.prototype));
         edges.push(RawId::Object(async_generator.function_prototype));
     }
@@ -13447,7 +13589,9 @@ fn internal_callable_atoms(internal: &InternalCallableData) -> Vec<Atom> {
         | InternalCallableData::PromiseFinallyHandler { .. }
         | InternalCallableData::PromiseAllResolveElement { .. }
         | InternalCallableData::PromiseAllSettledElement { .. }
-        | InternalCallableData::PromiseAnyRejectElement { .. } => Vec::new(),
+        | InternalCallableData::PromiseAnyRejectElement { .. }
+        | InternalCallableData::AsyncFromSyncIteratorUnwrap { .. }
+        | InternalCallableData::AsyncFromSyncIteratorClose { .. } => Vec::new(),
     }
 }
 
@@ -13513,6 +13657,9 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
             .into_iter()
             .chain(raw_value_atom(&data.next))
             .collect(),
+        ObjectPayload::AsyncFromSyncIterator(data) => {
+            raw_value_atom(&data.next).into_iter().collect()
+        }
         ObjectPayload::IteratorConcat(data) => raw_value_atom(&data.next)
             .into_iter()
             .chain(
@@ -13880,7 +14027,7 @@ fn validate_async_generator_state(
             Some(Instruction::Yield)
         ) | (
             AsyncGeneratorState::SuspendedYieldStar,
-            Some(Instruction::YieldStar)
+            Some(Instruction::AsyncYieldStar)
         ) | (AsyncGeneratorState::Executing, Some(Instruction::Await))
     );
     if !suspension_matches {
@@ -14010,6 +14157,25 @@ fn validate_iterator_wrap_data(heap: &Heap, data: &IteratorWrapData) -> Result<(
         .into_iter()
         .chain(raw_value_edges(&data.next))
     {
+        let RawId::Object(object) = edge else {
+            unreachable!("RawValue only owns object edges")
+        };
+        heap.object(object)?;
+    }
+    Ok(())
+}
+
+fn validate_async_from_sync_iterator_data(
+    heap: &Heap,
+    data: &AsyncFromSyncIteratorData,
+) -> Result<(), HeapError> {
+    heap.object(data.sync_iterator)?;
+    if !is_map_storable_value(&data.next) {
+        return Err(HeapError::Invariant(
+            "Async-from-Sync Iterator payload contains an internal value sentinel",
+        ));
+    }
+    for edge in raw_value_edges(&data.next) {
         let RawId::Object(object) = edge else {
             unreachable!("RawValue only owns object edges")
         };
@@ -16309,6 +16475,50 @@ mod tests {
         for object in [source, next, replacement_source, replacement_next] {
             heap.release_object(object).unwrap();
         }
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn async_from_sync_iterator_owns_source_cached_next_and_symbol_atom() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let source = leaf(&mut heap, shape);
+        let next = leaf(&mut heap, shape);
+        let wrapper = heap
+            .allocate_object(ObjectData::async_from_sync_iterator(
+                shape,
+                Vec::new(),
+                source,
+                RawValue::Object(next),
+            ))
+            .unwrap();
+
+        assert_eq!(heap.object_strong_count(source), Ok(2));
+        assert_eq!(heap.object_strong_count(next), Ok(2));
+        assert_eq!(
+            heap.async_from_sync_iterator_state(wrapper),
+            Ok((source, RawValue::Object(next)))
+        );
+        heap.release_object(wrapper).unwrap();
+        assert_eq!(heap.object_strong_count(source), Ok(1));
+        assert_eq!(heap.object_strong_count(next), Ok(1));
+
+        let symbol = Atom::from_immediate_integer(29).unwrap();
+        let symbol_wrapper = heap
+            .allocate_object(ObjectData::async_from_sync_iterator(
+                shape,
+                Vec::new(),
+                source,
+                RawValue::Symbol(symbol),
+            ))
+            .unwrap();
+        let cleanup = heap.release_object(symbol_wrapper).unwrap();
+        assert_eq!(cleanup.atoms, vec![symbol]);
+        assert_eq!(heap.object_strong_count(source), Ok(1));
+
+        heap.release_object(source).unwrap();
+        heap.release_object(next).unwrap();
         heap.release_shape(shape).unwrap();
         assert_eq!(heap.counts().live, 0);
     }

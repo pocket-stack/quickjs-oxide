@@ -398,6 +398,108 @@ fn async_generator_object_methods_compose_method_grammar_with_the_async_driver()
 }
 
 #[test]
+fn async_generator_yield_star_uses_typed_async_iterator_and_await_protocol() {
+    let source = "async function* delegate() { yield* source; }";
+    let tree = Parser::parse(
+        source,
+        JsString::from_static("<async-generator-yield-star-lowering-test>"),
+    )
+    .unwrap();
+    let function = tree
+        .functions
+        .iter()
+        .find(|function| function.execution_kind == BytecodeFunctionKind::AsyncGenerator)
+        .expect("async-generator definition");
+    let instructions = function
+        .ops
+        .iter()
+        .filter_map(|operation| match &operation.op {
+            super::IrOp::Bytecode(instruction) => Some(instruction),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        instructions
+            .iter()
+            .filter(|instruction| matches!(instruction, Instruction::AsyncIteratorStart))
+            .count(),
+        1
+    );
+    assert_eq!(
+        instructions
+            .iter()
+            .filter(|instruction| matches!(instruction, Instruction::AsyncYieldStar))
+            .count(),
+        1
+    );
+    assert!(!instructions.iter().any(|instruction| matches!(
+        instruction,
+        Instruction::IteratorStart | Instruction::YieldStar
+    )));
+    // QuickJS awaits next, the injected return value, return/throw method
+    // results, the missing-throw close result, and the delegated return value.
+    assert_eq!(
+        instructions
+            .iter()
+            .filter(|instruction| matches!(instruction, Instruction::Await))
+            .count(),
+        6
+    );
+    for kind in [
+        IteratorCallKind::ReturnWithValue,
+        IteratorCallKind::ThrowWithValue,
+        IteratorCallKind::ReturnWithoutValue,
+    ] {
+        assert_eq!(
+            instructions
+                .iter()
+                .filter(|instruction| {
+                    matches!(instruction, Instruction::IteratorCall(found) if *found == kind)
+                })
+                .count(),
+            1
+        );
+    }
+
+    let async_start = instructions
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::AsyncIteratorStart))
+        .unwrap();
+    let next = instructions
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::IteratorNext))
+        .unwrap();
+    let first_await = instructions
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::Await))
+        .unwrap();
+    let check = instructions
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::IteratorCheckObject))
+        .unwrap();
+    let async_yield = instructions
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::AsyncYieldStar))
+        .unwrap();
+    assert!(async_start < next && next < first_await && first_await < check && check < async_yield);
+
+    let published = compile_unlinked_script(source).unwrap();
+    let delegate = published
+        .constants()
+        .iter()
+        .filter_map(|constant| constant.as_child())
+        .find(|function| function.metadata().function_kind == BytecodeFunctionKind::AsyncGenerator)
+        .expect("published async-generator definition");
+    assert!(
+        delegate
+            .code()
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::AsyncYieldStar))
+    );
+}
+
+#[test]
 fn async_class_methods_reuse_method_publication_and_preserve_full_source_ranges() {
     let source = concat!(
         "class Base { value() { return this.seed; } static value() { return this.seed; } }\n",
@@ -866,8 +968,10 @@ fn async_function_lexical_context_and_async_generator_frontiers_match_quickjs() 
             .unwrap_or_else(|error| panic!("async-generator source rejected {source:?}: {error}"));
     }
 
+    compile_unlinked_script("async function* generator(){ yield* source; }")
+        .expect("async-generator delegation should use the typed async iterator protocol");
+
     for source in [
-        "async function* generator(){ yield* source; }",
         "async function* generator(){ for (let value of source) { yield value; } }",
         "async function* generator(){ for (let value of source) { return value; } }",
     ] {
@@ -1351,9 +1455,14 @@ fn generator_method_frontiers_keep_async_delegation_explicit() {
         .expect("object async-generator method should use the independent async driver");
     for source in [
         "({ async *method(){ yield* source; } })",
+        "class C { async *method(){ yield* source; } }",
+    ] {
+        compile_unlinked_script(source)
+            .unwrap_or_else(|error| panic!("async delegation source rejected {source:?}: {error}"));
+    }
+    for source in [
         "({ async *method(){ for await (var value of values) yield value; } })",
         "({ async *method(values){ for (var value of values) yield value; } })",
-        "class C { async *method(){ yield* source; } }",
         "class C { async *method(){ for await (var value of values) yield value; } }",
         "class C { async *method(values){ for (var value of values) yield value; } }",
     ] {

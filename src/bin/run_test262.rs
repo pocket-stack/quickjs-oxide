@@ -76,6 +76,10 @@ const TEST262_ASYNC_GENERATOR_PRIVATE_CLASS_METHOD_CORE_PROFILE_SHA256: &str =
     "1b9d03b352d8e221cae6d0cc6c6c685776f16e0ca39c97c5fafc7b8bdca00f38";
 const TEST262_ASYNC_GENERATOR_PRIVATE_CLASS_METHOD_CORE_MANIFEST_SHA256: &str =
     "82bae49d063b9691d245f1a08d0e37583fc27282ceb878cca7c4e1129e6fcad6";
+const TEST262_ASYNC_GENERATOR_YIELD_STAR_PROFILE_SHA256: &str =
+    "80bd7d1c042473a76ba15d85b3e5bbd6ebf175f0543c57e2908fd99a6b7b5256";
+const TEST262_ASYNC_GENERATOR_YIELD_STAR_MANIFEST_SHA256: &str =
+    "bb31f01a982136b336f9267701ef8b2874bc0596e226f6e9ca5b59e7b9af09fb";
 const TEST262_ASYNC_ARROW_CORE_PROFILE_SHA256: &str =
     "f6634c6298e3d3fb740c0f55e8932ddc402ca8e120d8f0d2d9326f552186af2c";
 const TEST262_ASYNC_ARROW_CORE_MANIFEST_SHA256: &str =
@@ -763,6 +767,7 @@ enum OxideProfileKind {
     AsyncGeneratorObjectMethodCore,
     AsyncGeneratorClassMethodCore,
     AsyncGeneratorPrivateClassMethodCore,
+    AsyncGeneratorYieldStar,
     AsyncArrowCore,
     AsyncObjectMethodCore,
     AsyncClassMethodCore,
@@ -845,6 +850,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-async-generator-private-class-method-core.conf"),
             OxideProfileKind::AsyncGeneratorPrivateClassMethodCore,
+        ),
+        (
+            root.join("tests/test262-async-generator-yield-star.conf"),
+            OxideProfileKind::AsyncGeneratorYieldStar,
         ),
         (
             root.join("tests/test262-async-arrow-core.conf"),
@@ -1164,6 +1173,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             TEST262_ASYNC_GENERATOR_PRIVATE_CLASS_METHOD_CORE_PROFILE_SHA256,
             "tests/test262-async-generator-private-class-method-core.txt",
             TEST262_ASYNC_GENERATOR_PRIVATE_CLASS_METHOD_CORE_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::AsyncGeneratorYieldStar => verify_scoped_pinned_profile(
+            options,
+            "async-generator yield-star",
+            TEST262_ASYNC_GENERATOR_YIELD_STAR_PROFILE_SHA256,
+            "tests/test262-async-generator-yield-star.txt",
+            TEST262_ASYNC_GENERATOR_YIELD_STAR_MANIFEST_SHA256,
         ),
         OxideProfileKind::AsyncArrowCore => verify_scoped_pinned_profile(
             options,
@@ -2048,6 +2064,7 @@ mod cli_tests {
         TEST262_ASYNC_GENERATOR_CORE_PROFILE_SHA256,
         TEST262_ASYNC_GENERATOR_OBJECT_METHOD_CORE_PROFILE_SHA256,
         TEST262_ASYNC_GENERATOR_PRIVATE_CLASS_METHOD_CORE_PROFILE_SHA256,
+        TEST262_ASYNC_GENERATOR_YIELD_STAR_PROFILE_SHA256,
         TEST262_ASYNC_OBJECT_METHOD_CORE_PROFILE_SHA256,
         TEST262_ASYNC_PRIVATE_CLASS_METHOD_CORE_PROFILE_SHA256,
         TEST262_CATCH_BINDING_PROFILE_SHA256, TEST262_CLASS_BASE_PROFILE_SHA256,
@@ -2232,6 +2249,11 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::AsyncGeneratorPrivateClassMethodCore
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-async-generator-yield-star.conf"))
+                .unwrap(),
+            OxideProfileKind::AsyncGeneratorYieldStar
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-async-arrow-core.conf")).unwrap(),
@@ -2764,6 +2786,65 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-async-generator-private-class-method-core.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_async_generator_yield_star_profile_is_bound_to_its_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-async-generator-yield-star.conf",
+            "--manifest",
+            "tests/test262-async-generator-yield-star.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_ASYNC_GENERATOR_YIELD_STAR_PROFILE_SHA256
+        );
+
+        let tamper_error = verify_scoped_pinned_profile(
+            &options,
+            "async-generator yield-star",
+            TEST262_ASYNC_GENERATOR_YIELD_STAR_PROFILE_SHA256,
+            "tests/test262-async-generator-yield-star.txt",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap_err();
+        assert!(
+            tamper_error.contains("manifest checksum mismatch"),
+            "unexpected manifest tamper error: {tamper_error}"
+        );
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/language/expressions/async-generator/named-yield-star-async-next.js",
+            ],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-async-generator-yield-star.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

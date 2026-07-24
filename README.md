@@ -3,16 +3,16 @@
 An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
-The `unsafe`-free engine is runnable but incomplete. The current R3ai milestone
-adds private instance/static class async-generator methods by composing
-QuickJS's Method+AsyncGenerator shape with the existing private HomeObject,
-brand, and async-generator driver paths. Pinned QuickJS passes all 433 focused
-candidate paths; 308 delegation/for-await exclusions leave 125 paths and
-242/242 passing Oxide variants. The complete 102,037-variant vector remains at
-43,686 passes with no transition. `yield*`, then `for await` and async iterator
-closing, are the next async-generator frontiers; modules, Proxy, and broad
-built-in coverage also remain incomplete. Pinned QuickJS is the test oracle,
-never a product dependency. See the status documents for detailed bookkeeping.
+The `unsafe`-free engine is runnable but incomplete. The current R3aj milestone
+adds async-generator `yield*` delegation, including async iterators and
+Async-from-Sync adaptation. Pinned QuickJS passes all 775 focused paths, and
+Oxide passes all 1,550 sloppy/strict variants with deterministic reports.
+The complete 102,037-variant vector is byte-identical at 43,686 passes.
+This is not complete async iteration: `for await` is the next frontier, while
+closing an independently active outer iterator on `.return()` remains a
+separate follow-up. Modules, Proxy, and broad built-in coverage also remain
+incomplete. Pinned QuickJS is the test oracle, never a product dependency.
+See the status documents for detailed bookkeeping.
 
 ## Try it
 
@@ -52,6 +52,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-async-generator-object-method-core.sh
 ./scripts/test-test262-async-generator-class-method-core.sh
 ./scripts/test-test262-async-generator-private-class-method-core.sh
+./scripts/test-test262-async-generator-yield-star.sh
 ./scripts/test-r3z-async-function-core-oracle.sh --oxide ./target/debug/qjs
 ```
 

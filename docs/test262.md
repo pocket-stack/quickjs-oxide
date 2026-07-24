@@ -33,9 +33,9 @@ intended early `SyntaxError`, rather than because class parsing is absent.
 
 This 193/193 result is a runner smoke baseline, not a project-wide 100%
 estimate. The sample was selected from already implemented synchronous
-surfaces. Modules, delegation, async iteration-close, most `$262` host hooks,
-advanced RegExp pattern grammar, TypedArrays, and many other broad layers
-remain absent.
+surfaces. Modules, `for await`, active outer-iterator close, most `$262` host
+hooks, advanced RegExp pattern grammar, TypedArrays, and many other broad
+layers remain absent.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
 gate, async arrows by the R3ab gate, and ordinary async object-literal methods
 by the R3ac gate. Public ordinary async class methods are measured by R3ad and
@@ -43,7 +43,8 @@ ordinary private async class methods by R3ae; ordinary async-generator
 functions are measured by R3af and ordinary object-literal async-generator
 methods by R3ag; public instance/static class async-generator methods are
 measured by R3ah and private instance/static class async-generator methods by
-R3ai. Public fields, static blocks, private elements, and
+R3ai. Async-generator `yield*` delegation is measured across all four shapes
+by R3aj. Public fields, static blocks, private elements, and
 public/private synchronous generator methods are measured by the scoped
 R3g/R3h/R3i/R3j/R3k/R3l gates below.
 
@@ -4635,6 +4636,61 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --locked --test oracle_async_generator_private_class_method -- --nocapture
 ```
 
+## R3aj async-generator `yield*`
+
+R3aj adds async-generator delegation without claiming complete async
+iteration. It covers `yield*` in ordinary declarations/expressions,
+object-literal methods, and public/private instance/static class methods. The
+runtime selects `Symbol.asyncIterator` first and otherwise installs the
+QuickJS-shaped Async-from-Sync adapter over `Symbol.iterator`; delegation
+preserves the distinct async-iterator and synchronous-iterator value
+assimilation rules.
+
+The frozen cohort is the exact, duplicate-free union of the `yield_star`
+partitions from the four R3af-R3ai exclusion ledgers: 185 ordinary-function
+paths, 58 object-method paths, 232 public-class paths, and 300 private-class
+paths. That yields 775 Test262 paths and 1,550 sloppy/strict variants. There
+are 774 positive paths and one audited parse-negative path; 774 paths use the
+async harness and one is synchronous. Pinned QuickJS 2026-06-04 passes
+775/775. Oxide runs and passes 1,550/1,550 with zero failure, unsupported,
+skipped, timeout, crash, or infrastructure outcome. A canonical eight-worker
+run, an independent eight-worker repeat, and a five-worker run produce
+byte-identical TSV and JSONL reports (8/8/5).
+
+The focused QuickJS differential authenticates ten observable transcripts:
+iterator selection and cached `next`, async yielded-Promise identity,
+Async-from-Sync value assimilation, delegated `next`/`throw`/`return`, FIFO
+requests, missing-method behavior, IteratorClose/error precedence, rejection
+paths, and abrupt iterator acquisition/result completion. A separate GC test
+proves that suspended delegation retains both async and synchronous delegates.
+
+The scoped profile, manifest, variant-key, canonical TSV, and JSONL SHA-256
+values are
+`80bd7d1c042473a76ba15d85b3e5bbd6ebf175f0543c57e2908fd99a6b7b5256`,
+`bb31f01a982136b336f9267701ef8b2874bc0596e226f6e9ca5b59e7b9af09fb`,
+`d3beb98f2b199c3a66acf4c58d44f65c06f2edf6ef2a52fe4d7caf045105dec5`,
+`b819f6fe3443cfd2f3baefdde489d397ea405115f5692f943172e010df08dc40`,
+and
+`53ebba1f2d8fb80ab82aff4869b99646230f16013fd9fef8a6660d48ef36a915`.
+The complete-vector R3aj regression retains all 102,037 variants, 45,140
+runnable variants, and 43,686 passes, with zero outcome, detail, key-set, or
+previous-pass drift. It is byte-identical to R3ai: the TSV and JSONL SHA-256
+values remain
+`2932f9d54df006def9ac2e9b01a8f9b7a5228bb58a42309d2f27b5fb26d81c18`
+and
+`7e7121200f385829a3676514ad091d26c39ee9780c46ed5f54c41dadff1ad193`.
+`for await` is the next async-iteration frontier. Closing an independently
+active outer iterator when `.return()` crosses delegation remains a separate
+semantic slice.
+
+Reproduce the focused gate and semantic differential with:
+
+```sh
+./scripts/test-test262-async-generator-yield-star.sh
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --locked --test oracle_async_generator_yield_star -- --nocapture
+```
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -4744,6 +4800,7 @@ canonical progress report.
 ./scripts/test-test262-iterator-helpers.sh
 ./scripts/test-test262-iterator-sequencing.sh
 ./scripts/test-r3r-generator-destructuring-return-oracle.sh --oxide target/debug/qjs
+./scripts/test-test262-async-generator-yield-star.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -5024,8 +5081,15 @@ same Method+AsyncGenerator execution with typed private callable cells,
 HomeObject, side brands, and the shared driver. Pinned QuickJS passes all 433
 focused candidates; after 300 `yield*` and eight `for await` exclusions, the
 scoped manifest passes all 242 variants across 125 paths. The exact complete
-vector remains byte-identical at 43,686/102,037. Delegation is now the next
-async-generator frontier, followed by `for await` and iterator closing.
+vector remains byte-identical at 43,686/102,037.
+R3aj then closes the four-shape async-generator `yield*` cohort: pinned
+QuickJS passes all 775 frozen paths and Oxide passes all 1,550 sloppy/strict
+variants. Independent 8/8/5-worker reports are byte-identical, while ten
+QuickJS transcripts and a GC-retention test lock the protocol behavior. The
+complete R3aj vector retains 102,037 variants, 45,140 runnable variants, and
+43,686 passes, with zero drift and byte-identical TSV/JSONL reports relative
+to R3ai. `for await` is next; closing an independently active outer iterator
+across `.return()` remains a separate frontier.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS
