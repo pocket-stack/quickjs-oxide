@@ -694,12 +694,24 @@ fn stack_preflight_returns_a_caller_promise_rejected_with_a_caller_error() {
 var stackPromises = [];
 var stackSynchronous;
 var ordinaryOverflow;
+var insideBoundaryWrapper = false;
+function callStackBoundary() {
+    insideBoundaryWrapper = true;
+    var promise = stackBoundary();
+    insideBoundaryWrapper = false;
+    return promise;
+}
 function descendUntilOrdinaryOverflow(depth) {
     var promise;
+    insideBoundaryWrapper = false;
     try {
-        promise = stackBoundary();
+        promise = callStackBoundary();
     } catch (error) {
-        stackSynchronous = error;
+        if (insideBoundaryWrapper) {
+            stackSynchronous = error;
+        } else {
+            ordinaryOverflow = error;
+        }
         return depth;
     }
     stackPromises.push(promise);
