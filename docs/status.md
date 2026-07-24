@@ -15,14 +15,14 @@ claim full parity.
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. The current vector
-  has 43,676 passes and 45,140 runnable variants: 42.80% raw, a 52.27% lower
+  has 43,680 passes and 45,140 runnable variants: 42.81% raw, a 52.27% lower
   bound after the 18,475 pinned QuickJS target exclusions, or 96.89% among the
-  45,078 variants with a non-unsupported observed outcome. It records 18
+  45,082 variants with a non-unsupported observed outcome. It records 18
   parse failures and 1,281 runtime failures; current full TSV/JSONL SHA-256
   values are
-  `6b34f59397a351c833b1d79803b4aafd9d93256177f59d8044361123f01391b1`
+  `37f72b038cdfa81ba1704bef05578e273e70a612e3daf8c23a54d22a984a5b88`
   and
-  `c4f8ec2a11d5d84601c2250f25570f015952a7c10723ad92d52c649e606792ba`.
+  `8e7a70940a97f97232fc4fccc8b05bf57f1135896944399b9d96a8bc76fb3d2f`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -2701,6 +2701,57 @@ claim full parity.
   `for await`, async iterator close, Proxy, and realm/host behavior remain
   independent later milestones. The global async profile is not widened.
 
+  R3ag adds ordinary object-literal async-generator methods as a compiler-only
+  composition of QuickJS's Method grammar role and AsyncGenerator execution
+  kind. Fixed and computed property names continue through the established
+  enumerable `DefineMethod` path, which installs inferred names and the
+  HomeObject; the R3af callable prototype graph, own generator prototype,
+  Promise request queue, and resume driver are reused without a runtime or
+  heap change. Differential coverage locks exact authored source, descriptors,
+  nonconstructibility, fixed/computed/string/numeric/Symbol names, computed-key
+  order, `__proto__` method spelling, synchronous parameter initialization,
+  delayed body entry, borrowed receivers, and `super` across `await`, `yield`,
+  and GC.
+
+  The checksum-bound R3ag focused core candidate universe contains 113 paths /
+  216 variants from the object method-definition and Function `toString`
+  families, all passing in pinned QuickJS 2026-06-04. Its 67-path /
+  134-variant exclusion ledger records 58 `yield*`, two `for await`, four
+  destructuring, two private-name, and one Proxy path. The resulting manifest
+  contains 46 paths / 82 variants: 23 positive and 23 audited parse-negative
+  paths, 18 async and 28 synchronous paths, with 36 dual-mode, eight
+  sloppy-only, and two strict-only paths. Oxide passes 82/82 with no
+  unsupported, skipped, failed, timed-out, crashed, or infrastructure outcome;
+  its default 8/8/5-worker reports are byte-identical. Other suite consumers
+  remain visible in the complete vector. The scoped-profile, candidate,
+  exclusion-ledger, manifest, variant-key, TSV, and JSONL SHA-256 values are
+  `7c21b92bc769a6de2812f2c953bc7fe567e5df528255b4a85bfa429eb3d56ad9`,
+  `d6fd96dcc29e4b3b87b64cfe3d8692f99bd1852762ebb7673467e9b85f6d49f9`,
+  `97a7fd213d823a1c43eb650daef69c6153eb56c17db43ac54f38b1a288d97f00`,
+  `d4e3923053e589ec699880a946f5e1b9f00180c0b017a98377ed1a85643f3798`,
+  `f8cca2f8b154bef5aaa37d9dbc53c6a4faaec1e2048ff0f9cc8ceadee2c6e0dd`,
+  `e5798193ae60299f94099b8f4b8cedc72a656051d165471c535074b3c097d93c`,
+  and
+  `84b86f1fac5b6e8b9e3ed6761576202221c8dbf558a3783e646aedf0a2db96b3`.
+
+  The exact R3af/R3ag full-vector audit retains all 102,037 keys and 45,140
+  runnable variants with no previous-pass regression. Both modes of
+  `staging/sm/PrivateName/illegal-in-object-context.js` and
+  `staging/sm/extensions/newer-type-functions-caller-arguments.js` move from
+  `unsupported-runtime` to `pass`; no other outcome changes. Both modes of
+  `staging/sm/BigInt/property-name.js` remain `unsupported-parser`, but their
+  detail advances from the object-method frontier to the still-explicit class
+  async-generator method frontier. All six changed rows are already-admitted
+  consumers outside the 113-path focused candidate partition; neither the
+  manifest nor its exclusions drift. Passes rise by four to 43,680 and
+  `unsupported-runtime` falls from 30 to 26. The R3ag full TSV/JSONL SHA-256
+  values are
+  `37f72b038cdfa81ba1704bef05578e273e70a612e3daf8c23a54d22a984a5b88`
+  and
+  `8e7a70940a97f97232fc4fccc8b05bf57f1135896944399b9d96a8bc76fb3d2f`.
+  Public/private class async-generator methods, `yield*`, `for await`, and
+  active iterator closing remain explicit later frontiers.
+
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -2715,8 +2766,8 @@ claim full parity.
   seek back before strict-context rescanning. This matches the pinned
   malformed-escape commitment and tested reserved/parser/lexer error priority,
   including line and column. Module contextual words and the remaining
-  async-generator method/delegation grammar stay with those unimplemented
-  surfaces.
+  async-generator class/private-method and delegation grammar stay with those
+  unimplemented surfaces.
 - The first runtime-independent RegExp kernel follows pinned
   `libregexp.c`/`libregexp-opcode.h` rather than a host regex library.
   `src/regexp/` owns exact QuickJS flag bits, a UTF-16 pattern parser, typed IR,
@@ -5542,7 +5593,8 @@ The complete pinned Test262 vector is now recorded conservatively. Remaining
 parser frontiers with generic syntax diagnostics cannot contribute negative
 test passes until they gain typed `Unsupported` provenance or are individually
 audited as genuine early errors. The remaining native `$262` host hooks, module
-parse/link/evaluate, async-generator methods/delegation/iterator-close, the
+parse/link/evaluate, async-generator class/private methods, delegation and
+iterator-close, the
 ES5.1 suite, and a separate QuickJS-runner-quirk profile remain future
 milestones. Unsupported and host-missing outcomes are failures, not additional
 feature skips.
@@ -5572,12 +5624,14 @@ the established DefineMethod/HomeObject path and preserve `super` across
 suspension. Public ordinary async instance/static class methods reuse the
 corresponding class publication and HomeObject path; ordinary private async
 methods compose that execution path with authenticated private callable cells
-and HomeObject-derived brands. Ordinary async-generator declarations and
-expressions now include the intrinsic graph and FIFO Promise driver.
-Async-generator methods, `yield*`, `for-await`, async iterator close, other
-general assignment targets, module resolution, remaining non-simple parameter
-combinations, non-simple ObjectLiteral accessor forms outside the covered
-synchronous setter slice, and callable Proxy classes are not yet implemented.
+and HomeObject-derived brands. Ordinary async-generator declarations,
+expressions, and object-literal methods now include the intrinsic graph and
+FIFO Promise driver; object methods reuse DefineMethod/HomeObject and preserve
+`super` across suspension. Async-generator class/private methods, `yield*`,
+`for-await`, async iterator close, other general assignment targets, module
+resolution, remaining non-simple parameter combinations, non-simple
+ObjectLiteral accessor forms outside the covered synchronous setter slice, and
+callable Proxy classes are not yet implemented.
 Unsupported declaration contexts are rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` supports
 simple identifiers and recursive array/object/rest patterns in direct Program
@@ -5650,21 +5704,23 @@ expressions and the same Parameter Environment semantics as authored ordinary
 functions. Bodies remain limited to the current statement, expression, and
 simple body/block/switch/classic-for and for-in/of-head lexical-declaration
 grammar.
-Async-generator methods/delegation and Proxy new-target realms remain pending.
+Async-generator class/private methods, delegation, and Proxy new-target realms
+remain pending.
 Compiler input is still UTF-8,
 so dynamic source containing an unpaired UTF-16 surrogate throws an explicit
 implementation-gap `InternalError` instead of being silently rewritten. The
 parser now requests tokens through fallible advances, and directive probes
 seek back before strict-context rescanning, so current-token grammar errors no
 longer lose to untouched later lexical failures. Contextual word reparsing for
-modules and the remaining async-generator method/delegation grammar stays with
-those unimplemented surfaces.
+modules and the remaining async-generator class/private method and delegation
+grammar stays with those unimplemented surfaces.
 The parser now produces synchronous generator, ordinary async-function,
 async-arrow, async-object-method, and public/private ordinary
 async-class-method bytecode. It also produces ordinary async-generator
-declaration/expression bytecode; async-generator methods and `yield*` remain
-fail-closed, while function-kind metadata and `toString` fallback distinguish
-all four QuickJS kinds. Bound dispatch is iterative and therefore does not
+declaration/expression and object-literal method bytecode; async-generator
+class/private methods and `yield*` remain fail-closed, while function-kind
+metadata and `toString` fallback distinguish all four QuickJS kinds. Bound
+dispatch is iterative and therefore does not
 consume the Rust host
 stack, but exact QuickJS runtime-stack accounting and its deep-bound-chain
 overflow threshold are not yet reproduced. VM object coercion is wired through
@@ -6375,6 +6431,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-async-class-method-core.sh
 ./scripts/test-test262-async-private-class-method-core.sh
 ./scripts/test-test262-async-generator-core.sh
+./scripts/test-test262-async-generator-object-method-core.sh
 cargo build --bin qjs
 ./scripts/test-r3l-class-private-generators-oracle.sh --oxide ./target/debug/qjs
 ./scripts/test-r3s-regexp-escape-control-oracle.sh --oxide ./target/debug/qjs
@@ -6385,6 +6442,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_async_private_class_method -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_async_generator -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_async_generator_object_method -- --nocapture
 ./scripts/test-test262-full.sh
 ```
 

@@ -88,6 +88,12 @@ impl FunctionDefinitionOptions {
         options.execution_kind = BytecodeFunctionKind::Async;
         options
     }
+
+    const fn async_generator_method() -> Self {
+        let mut options = Self::generator_method();
+        options.execution_kind = BytecodeFunctionKind::AsyncGenerator;
+        options
+    }
 }
 
 impl<'source> Parser<'source> {
@@ -322,6 +328,31 @@ impl<'source> Parser<'source> {
                 parent_context: self.lexer.context(),
             },
             FunctionDefinitionOptions::async_method(),
+        )?;
+        self.emit(IrOp::MakeClosure(parsed.constant))?;
+        self.anonymous_function_definition = None;
+        Ok(parsed.child)
+    }
+
+    /// Parse one public object-literal async-generator method after its
+    /// property name has been consumed. The grammar role remains `Method`
+    /// while the independent AsyncGenerator execution kind selects the
+    /// Promise-backed iterator driver and intrinsic prototype graph.
+    pub(super) fn parse_async_generator_method_definition(
+        &mut self,
+        function_span: Span,
+    ) -> Result<FunctionId, Error> {
+        if !self.is_punctuator(Punctuator::LeftParen) {
+            return Err(self.syntax_here("invalid property name"));
+        }
+        let parsed = self.parse_function_definition_tail_with_options(
+            FunctionDefinitionHeader {
+                span: function_span,
+                name: None,
+                execution_kind: BytecodeFunctionKind::AsyncGenerator,
+                parent_context: self.lexer.context(),
+            },
+            FunctionDefinitionOptions::async_generator_method(),
         )?;
         self.emit(IrOp::MakeClosure(parsed.constant))?;
         self.anonymous_function_definition = None;

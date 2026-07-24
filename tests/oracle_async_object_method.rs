@@ -317,7 +317,7 @@ fn async_object_method_contextual_boundaries_match_pinned_quickjs() {
 }
 
 #[test]
-fn async_generator_object_methods_remain_an_explicit_frontier() {
+fn async_generator_object_method_smoke_uses_the_independent_driver() {
     const SOURCE: &str = r#"
 var object = {
     async *method() {
@@ -331,13 +331,15 @@ object.method().next().then(function (result) {
 
     let oxide = run(env!("CARGO_BIN_EXE_qjs").as_ref(), SOURCE);
     assert!(
-        !oxide.status.success(),
-        "quickjs-oxide accidentally accepted the async-generator frontier"
+        oxide.status.success(),
+        "quickjs-oxide rejected the async-generator object method smoke: {}",
+        String::from_utf8_lossy(&oxide.stderr)
     );
+    assert_eq!(String::from_utf8_lossy(&oxide.stdout), "42\n");
 
     let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
         eprintln!(
-            "SKIP async-generator frontier oracle check: \
+            "SKIP async-generator object-method smoke oracle check: \
              set QJS_ORACLE to pinned upstream qjs"
         );
         return;
@@ -345,10 +347,10 @@ object.method().next().then(function (result) {
     let quickjs = run(&oracle, SOURCE);
     assert!(
         quickjs.status.success(),
-        "pinned QuickJS rejected the recorded async-generator frontier: {}",
+        "pinned QuickJS rejected the async-generator object-method smoke: {}",
         String::from_utf8_lossy(&quickjs.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&quickjs.stdout), "42\n");
+    assert_eq!(quickjs.stdout, oxide.stdout);
 }
 
 fn compare_success_cases(group: &str, cases: &[SuccessCase]) {

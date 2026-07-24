@@ -291,6 +291,113 @@ fn async_object_methods_publish_method_grammar_async_execution_and_full_source_r
 }
 
 #[test]
+fn async_generator_object_methods_compose_method_grammar_with_the_async_driver() {
+    let source = concat!(
+        "const object = {\n",
+        "  async /* a */ * fixed(value = super.seed) { await value; yield value; },\n",
+        "  async *['computed'](value) { yield value; }\n",
+        "};",
+    );
+    let tree = Parser::parse(
+        source,
+        JsString::from_static("<async-generator-object-method-kind-test>"),
+    )
+    .unwrap();
+    let methods = tree
+        .functions
+        .iter()
+        .filter(|function| {
+            function.kind == FunctionKind::Method
+                && function.execution_kind == BytecodeFunctionKind::AsyncGenerator
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(methods.len(), 2);
+    assert!(methods.iter().all(|function| {
+        function.in_function_body
+            && function.super_allowed
+            && !function.super_call_allowed
+            && function
+                .ops
+                .iter()
+                .filter(|operation| {
+                    matches!(
+                        operation.op,
+                        super::IrOp::Bytecode(Instruction::InitialYield)
+                    )
+                })
+                .count()
+                == 1
+            && function
+                .ops
+                .iter()
+                .any(|operation| matches!(operation.op, super::IrOp::Bytecode(Instruction::Yield)))
+    }));
+    assert!(
+        methods[0]
+            .ops
+            .iter()
+            .any(|operation| { matches!(operation.op, super::IrOp::Bytecode(Instruction::Await)) })
+    );
+    for (function, authored) in methods.iter().zip([
+        "async /* a */ * fixed(value = super.seed) { await value; yield value; }",
+        "async *['computed'](value) { yield value; }",
+    ]) {
+        let start = source
+            .find(authored)
+            .expect("authored async-generator object method");
+        let range = function
+            .source
+            .range
+            .as_ref()
+            .expect("async-generator method source range");
+        assert_eq!(
+            &source[function.source.span.start.byte_offset..function.source.span.end.byte_offset],
+            "async"
+        );
+        assert_eq!(function.source.definition.as_usize(), start);
+        assert_eq!(range.start.as_usize(), start);
+        assert_eq!(range.end.as_usize(), start + authored.len());
+    }
+
+    let script = compile_unlinked_script(source).unwrap();
+    assert!(script.code().iter().any(|instruction| matches!(
+        instruction,
+        Instruction::DefineMethod {
+            kind: DefineMethodKind::Method,
+            enumerable: true,
+            ..
+        }
+    )));
+    assert!(script.code().iter().any(|instruction| matches!(
+        instruction,
+        Instruction::DefineMethodComputed {
+            kind: DefineMethodKind::Method,
+            enumerable: true,
+        }
+    )));
+    let published = script
+        .constants()
+        .iter()
+        .filter_map(|constant| constant.as_child())
+        .filter(|function| {
+            function.metadata().function_kind == BytecodeFunctionKind::AsyncGenerator
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(published.len(), 2);
+    assert!(published.iter().all(|function| {
+        function.metadata().has_prototype
+            && function.metadata().constructor_kind == ConstructorKind::None
+            && function
+                .code()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::InitialYield))
+                .count()
+                == 1
+    }));
+    assert!(published[0].metadata().needs_home_object);
+}
+
+#[test]
 fn async_class_methods_reuse_method_publication_and_preserve_full_source_ranges() {
     let source = concat!(
         "class Base { value() { return this.seed; } static value() { return this.seed; } }\n",
@@ -432,6 +539,8 @@ fn async_object_method_contextual_boundaries_match_quickjs() {
         "({ async/*\u{2029}*/method(){ return 1; } });",
         "({ async(){} });",
         "({ async\n: 1 });",
+        "({ async *generator(){ yield 1; } });",
+        "({ async *['computed'](){ yield 1; } });",
     ] {
         compile_unlinked_script(source).unwrap_or_else(|error| {
             panic!("async object method source rejected {source:?}: {error}")
@@ -455,12 +564,6 @@ fn async_object_method_contextual_boundaries_match_quickjs() {
             "{source:?}"
         );
     }
-    let source = "({ async *generator(){} });";
-    assert_eq!(
-        compile_unlinked_script(source).unwrap_err().kind(),
-        ErrorKind::Unsupported,
-        "{source:?}"
-    );
 }
 
 #[test]
@@ -1102,7 +1205,7 @@ fn generator_for_of_head_inner_close_throw_pending_closes_outer() {
 }
 
 #[test]
-fn synchronous_generator_methods_keep_async_frontier_explicit() {
+fn synchronous_generator_methods_keep_class_async_frontier_explicit() {
     for source in [
         "class C { *constructor(){} }",
         "class C { static *prototype(){} }",
@@ -1127,7 +1230,19 @@ fn synchronous_generator_methods_keep_async_frontier_explicit() {
     for source in [
         "class C { async *method(){} }",
         "class C { async *#method(){} }",
-        "({ async *method(){} })",
+    ] {
+        assert_eq!(
+            compile_unlinked_script(source).unwrap_err().kind(),
+            ErrorKind::Unsupported,
+            "{source:?}"
+        );
+    }
+    compile_unlinked_script("({ async *method(){ yield 1; } })")
+        .expect("object async-generator method should use the independent async driver");
+    for source in [
+        "({ async *method(){ yield* source; } })",
+        "({ async *method(){ for await (var value of values) yield value; } })",
+        "({ async *method(values){ for (var value of values) yield value; } })",
     ] {
         assert_eq!(
             compile_unlinked_script(source).unwrap_err().kind(),
@@ -10752,6 +10867,7 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
         "({set set(value){}})",
         "({*a(){}})",
         "({async a(){}})",
+        "({async *a(){yield 1}})",
         "({get\nlineBreak(){},set\nlineBreak(value){}})",
         "({g\\u0065t(){},s\\u0065t(value){}})",
     ] {
@@ -10759,14 +10875,6 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
             .unwrap_or_else(|error| panic!("valid Object literal {source:?}: {error}"));
     }
 
-    let source = "({async *a(){}})";
-    assert!(
-        compile_unlinked_script(source)
-            .unwrap_err()
-            .message()
-            .contains("not implemented yet"),
-        "method frontier was not explicit for {source}"
-    );
     for source in [
         "({get a(value){}})",
         "({get a(value=1){}})",

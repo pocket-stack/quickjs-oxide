@@ -33,15 +33,16 @@ intended early `SyntaxError`, rather than because class parsing is absent.
 
 This 193/193 result is a runner smoke baseline, not a project-wide 100%
 estimate. The sample was selected from already implemented synchronous
-surfaces. Modules, async-generator methods/delegation/async iteration-close,
-most `$262` host hooks, advanced RegExp pattern grammar, TypedArrays, and many
-other broad layers remain absent.
+surfaces. Modules, async-generator class/private methods, delegation, async
+iteration-close, most `$262` host hooks, advanced RegExp pattern grammar,
+TypedArrays, and many other broad layers remain absent.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
 gate, async arrows by the R3ab gate, and ordinary async object-literal methods
 by the R3ac gate. Public ordinary async class methods are measured by R3ad and
 ordinary private async class methods by R3ae; ordinary async-generator
-functions are measured by R3af. Public fields, static blocks, private elements,
-and public/private synchronous generator methods are measured by the scoped
+functions are measured by R3af and ordinary object-literal async-generator
+methods by R3ag. Public fields, static blocks, private elements, and
+public/private synchronous generator methods are measured by the scoped
 R3g/R3h/R3i/R3j/R3k/R3l gates below.
 
 Nineteen additional provenance variants guard the result: eight audited negative
@@ -55,9 +56,9 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 43,676 pass;
+- 43,680 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 38,484 are classified as unsupported because of a feature, mode, host
+- 38,480 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
 - 18 fail to parse, 1,281 fail at runtime, 97 fail in the harness, and six
@@ -69,11 +70,11 @@ than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 42.80% (`43,676 / 102,037`);
+- raw suite pass rate: 42.81% (`43,680 / 102,037`);
 - conservative target-scope lower bound: 52.27%
-  (`43,676 / (102,037 - 18,475)`);
+  (`43,680 / (102,037 - 18,475)`);
 - pass rate among variants with a non-unsupported observed outcome: 96.89%
-  (`43,676 / 45,078`).
+  (`43,680 / 45,082`).
 
 The 52.27% figure is the useful whole-project progress floor, not a claim that
 the engine is 52.27% conformant. The 96.89% conditional rate measures quality
@@ -131,9 +132,9 @@ parallel defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`6b34f59397a351c833b1d79803b4aafd9d93256177f59d8044361123f01391b1`
+`37f72b038cdfa81ba1704bef05578e273e70a612e3daf8c23a54d22a984a5b88`
 and
-`c4f8ec2a11d5d84601c2250f25570f015952a7c10723ad92d52c649e606792ba`.
+`8e7a70940a97f97232fc4fccc8b05bf57f1135896944399b9d96a8bc76fb3d2f`.
 
 ## Milestone policy
 
@@ -4424,6 +4425,75 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 The global Test262 profile remains fail-closed for broad async execution, so
 this authenticated scoped result is not a whole-suite parity claim.
 
+## R3ag object-literal async-generator methods
+
+R3ag adds ordinary object-literal `async *method(){}` syntax without adding a
+second runtime path. This follows pinned QuickJS directly: the parser combines
+the Method grammar role with AsyncGenerator execution, then publishes fixed or
+computed keys through the existing enumerable `DefineMethod` operation. Oxide
+therefore reuses the R3af intrinsic graph and Promise-backed request driver
+while the established method path supplies inferred names and HomeObject.
+
+The semantic differential locks fixed, computed, string, numeric, and Symbol
+names; computed-key ordering; the `__proto__` method spelling; property and
+callable descriptors; own/intrinsic prototype relationships;
+nonconstructibility; exact authored `Function.prototype.toString`; synchronous
+parameter initialization and abrupt completion; delayed body entry; borrowed
+receivers; and `super` across `await`, `yield`, and a GC cycle. Contextual-token
+tests cover escaped `async`, line terminators, duplicate parameters,
+parameter-position `await`/`yield`, strict directives, and `super()` early
+errors. Class/private methods, `yield*`, `for await`, and return across an
+active iterator remain typed fail-closed frontiers.
+
+The frozen focused core candidate universe contains 113 paths / 216
+metadata-selected variants from the object method-definition and Function
+`toString` families, and pinned QuickJS 2026-06-04 passes all 113 paths. The
+explicit 67-path / 134-variant ledger excludes 58 `yield*` paths, two `for
+await` paths, four destructuring paths, two private-name paths, and one Proxy
+path. The resulting manifest contains 46 paths / 82 variants: 23 positive and
+23 audited parse-negative paths, 18 async-harness and 28 synchronous paths,
+with 36 dual-mode, eight sloppy-only, and two strict-only paths. Oxide passes
+82/82 with no unsupported, skipped, failed, timed-out, crashed, or
+infrastructure outcome. Independent default 8/8/5-worker runs produce
+byte-identical TSV and JSONL; other suite consumers remain visible in the
+complete vector.
+
+The scoped-profile, candidate, exclusion-ledger, manifest, variant-key,
+canonical TSV, and JSONL SHA-256 values are
+`7c21b92bc769a6de2812f2c953bc7fe567e5df528255b4a85bfa429eb3d56ad9`,
+`d6fd96dcc29e4b3b87b64cfe3d8692f99bd1852762ebb7673467e9b85f6d49f9`,
+`97a7fd213d823a1c43eb650daef69c6153eb56c17db43ac54f38b1a288d97f00`,
+`d4e3923053e589ec699880a946f5e1b9f00180c0b017a98377ed1a85643f3798`,
+`f8cca2f8b154bef5aaa37d9dbc53c6a4faaec1e2048ff0f9cc8ceadee2c6e0dd`,
+`e5798193ae60299f94099b8f4b8cedc72a656051d165471c535074b3c097d93c`,
+and
+`84b86f1fac5b6e8b9e3ed6761576202221c8dbf558a3783e646aedf0a2db96b3`.
+
+The exact R3af/R3ag full-vector audit retains all 102,037 unique keys and all
+45,140 runnable variants. Exactly four outcomes change: sloppy and strict
+variants of `staging/sm/PrivateName/illegal-in-object-context.js` and
+`staging/sm/extensions/newer-type-functions-caller-arguments.js` move from
+`unsupported-runtime` to `pass`. There is no other outcome drift and no
+previous-pass regression. Two same-outcome detail rows also advance: sloppy
+and strict `staging/sm/BigInt/property-name.js` remain
+`unsupported-parser`, but now identify the class async-generator method
+frontier instead of the completed object-method frontier. All six changed rows
+are already-admitted consumers outside the 113-path candidate partition; its
+46-path manifest and 67 exclusions have zero drift. Passes rise from 43,676 to
+43,680 while `unsupported-runtime` falls from 30 to 26. The R3ag full
+TSV/JSONL SHA-256 values are
+`37f72b038cdfa81ba1704bef05578e273e70a612e3daf8c23a54d22a984a5b88`
+and
+`8e7a70940a97f97232fc4fccc8b05bf57f1135896944399b9d96a8bc76fb3d2f`.
+
+Reproduce the focused gate and semantic differential with:
+
+```sh
+./scripts/test-test262-async-generator-object-method-core.sh
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --locked --test oracle_async_generator_object_method -- --nocapture
+```
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -4792,6 +4862,14 @@ method, Proxy, and realm/host exclusions, Oxide passes all 440 variants across
 and broad async execution fail-closed. Fifteen already-admitted consumers
 advance with no previous-pass regression, bringing the conservative full
 vector to 43,676/102,037.
+R3ag then composes ordinary object-literal async-generator methods from Method
+grammar, enumerable DefineMethod/HomeObject publication, and the R3af driver.
+Pinned QuickJS passes all 113 candidates; after 67 explicit delegation,
+for-await, destructuring, private-name, and Proxy exclusions, Oxide passes all
+82 variants across 46 admitted paths. Four already-admitted staging variants
+advance from `unsupported-runtime` to `pass` with no other outcome change or
+previous-pass regression, bringing the conservative full vector to
+43,680/102,037.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

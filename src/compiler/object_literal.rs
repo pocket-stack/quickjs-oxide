@@ -175,33 +175,35 @@ impl<'source> Parser<'source> {
                     let method_prefix = method_prefix
                         .as_deref()
                         .ok_or_else(|| Error::internal("object method prefix disappeared"))?;
-                    if method_prefix == "async" && self.is_punctuator(Punctuator::Multiply) {
-                        return Err(Error::unsupported(
-                            "async generator methods are not implemented yet",
-                            source_span(token.span),
-                        ));
-                    }
+                    let async_generator = method_prefix == "async"
+                        && self.consume_punctuator(Punctuator::Multiply)?;
                     let property_key = self.parse_object_method_property_name()?;
-                    let method_kind = match method_prefix {
-                        "async" => {
+                    let method_kind = match (method_prefix, async_generator) {
+                        ("async", true) => {
+                            self.parse_async_generator_method_definition(token.span)?;
+                            DefineMethodKind::Method
+                        }
+                        ("async", false) => {
                             self.parse_async_method_definition(token.span)?;
                             DefineMethodKind::Method
                         }
-                        "get" => {
+                        ("get", false) => {
                             self.parse_object_method_definition(
                                 token.span,
                                 DefineMethodKind::Getter,
                             )?;
                             DefineMethodKind::Getter
                         }
-                        "set" => {
+                        ("set", false) => {
                             self.parse_object_method_definition(
                                 token.span,
                                 DefineMethodKind::Setter,
                             )?;
                             DefineMethodKind::Setter
                         }
-                        _ => return Err(Error::internal("invalid object method prefix")),
+                        _ => {
+                            return Err(Error::internal("invalid object method prefix"));
+                        }
                     };
                     match property_key {
                         ObjectMethodPropertyKey::Fixed(key) => {
