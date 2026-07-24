@@ -1,0 +1,7 @@
+proxy	test/built-ins/Function/prototype/toString/proxy-async-method-definition.js
+async_generator	test/language/expressions/object/method-definition/async-meth-array-destructuring-param-strict-body.js
+async_generator	test/language/expressions/object/method-definition/async-meth-dflt-params-duplicates.js
+async_generator	test/language/expressions/object/method-definition/async-meth-dflt-params-rest.js
+async_generator	test/language/expressions/object/method-definition/async-meth-object-destructuring-param-strict-body.js
+async_generator	test/language/expressions/object/method-definition/async-meth-rest-param-strict-body.js
+async_generator	test/language/expressions/object/method-definition/async-meth-rest-params-trailing-comma-early-error.js

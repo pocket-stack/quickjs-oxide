@@ -1821,6 +1821,41 @@ fn is_line_terminator(ch: char) -> bool {
     matches!(ch, '\n' | '\r' | '\u{2028}' | '\u{2029}')
 }
 
+/// Reproduce the deliberately small scanner behind QuickJS
+/// `simple_next_token(..., TRUE)`. Its block-comment loop notices only byte
+/// CR/LF, even though direct U+2028/U+2029 trivia is a LineTerminator. Keep
+/// this quirk separate from normal token metadata, which remains
+/// ECMAScript-correct for ASI and restricted productions.
+pub(crate) fn quickjs_simple_lookahead_has_line_terminator(mut source: &str) -> bool {
+    loop {
+        let Some(ch) = source.chars().next() else {
+            return false;
+        };
+        match ch {
+            '\r' | '\n' | '\u{2028}' | '\u{2029}' => return true,
+            '/' if source.starts_with("//") => {
+                // QuickJS returns a LineTerminator for this lookahead as soon
+                // as it sees a line comment, including one ending at EOF.
+                return true;
+            }
+            '/' if source.starts_with("/*") => {
+                let Some(end) = source[2..].find("*/") else {
+                    return false;
+                };
+                let body = &source[2..2 + end];
+                if body.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
+                    return true;
+                }
+                source = &source[2 + end + 2..];
+            }
+            ch if is_js_whitespace(ch) => {
+                source = &source[ch.len_utf8()..];
+            }
+            _ => return false,
+        }
+    }
+}
+
 fn is_js_whitespace(ch: char) -> bool {
     matches!(
         ch,
@@ -2653,6 +2688,37 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(updates.len(), 2);
         assert!(updates.iter().all(|token| token.line_terminator_before));
+    }
+
+    #[test]
+    fn quickjs_simple_lookahead_preserves_its_block_comment_unicode_quirk() {
+        for source in [
+            "\nmethod",
+            "\rmethod",
+            "\u{2028}method",
+            "\u{2029}method",
+            "/*\n*/method",
+            "/*\r*/method",
+            "// comment at eof",
+        ] {
+            assert!(
+                quickjs_simple_lookahead_has_line_terminator(source),
+                "{source:?}"
+            );
+        }
+        for source in [
+            " method",
+            "\u{00a0}method",
+            "/* no break */method",
+            "/*\u{2028}*/method",
+            "/*\u{2029}*/method",
+            "<!-- comment\nmethod",
+        ] {
+            assert!(
+                !quickjs_simple_lookahead_has_line_terminator(source),
+                "{source:?}"
+            );
+        }
     }
 
     #[test]

@@ -82,6 +82,12 @@ impl FunctionDefinitionOptions {
             accessor_parameter_count: None,
         }
     }
+
+    const fn async_method() -> Self {
+        let mut options = Self::object_method(DefineMethodKind::Method);
+        options.execution_kind = BytecodeFunctionKind::Async;
+        options
+    }
 }
 
 impl<'source> Parser<'source> {
@@ -291,6 +297,31 @@ impl<'source> Parser<'source> {
                 parent_context: self.lexer.context(),
             },
             FunctionDefinitionOptions::generator_method(),
+        )?;
+        self.emit(IrOp::MakeClosure(parsed.constant))?;
+        self.anonymous_function_definition = None;
+        Ok(parsed.child)
+    }
+
+    /// Parse one public ordinary async method after its property name has been
+    /// consumed. QuickJS keeps the grammar role as `Method` and changes only
+    /// the callable execution kind, so HomeObject and method naming continue
+    /// through the ordinary DefineMethod publication path.
+    pub(super) fn parse_async_method_definition(
+        &mut self,
+        function_span: Span,
+    ) -> Result<FunctionId, Error> {
+        if !self.is_punctuator(Punctuator::LeftParen) {
+            return Err(self.syntax_here("invalid property name"));
+        }
+        let parsed = self.parse_function_definition_tail_with_options(
+            FunctionDefinitionHeader {
+                span: function_span,
+                name: None,
+                execution_kind: BytecodeFunctionKind::Async,
+                parent_context: self.lexer.context(),
+            },
+            FunctionDefinitionOptions::async_method(),
         )?;
         self.emit(IrOp::MakeClosure(parsed.constant))?;
         self.anonymous_function_definition = None;

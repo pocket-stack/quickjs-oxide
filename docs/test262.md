@@ -33,13 +33,13 @@ intended early `SyntaxError`, rather than because class parsing is absent.
 
 This 193/193 result is a runner smoke baseline, not a project-wide 100%
 estimate. The sample was selected from already implemented synchronous
-surfaces. Modules, remaining async methods/generators, most `$262` host
+surfaces. Modules, async class methods/generators, most `$262` host
 hooks, advanced RegExp pattern grammar, TypedArrays, and many other broad
 layers remain absent. Ordinary async functions/jobs are measured by the scoped
-R3ab-refreshed R3z gate, and async arrows by the separate R3ab gate; public
-fields, static blocks, private elements, and public/private synchronous
-generator methods are measured by the scoped R3g/R3h/R3i/R3j/R3k/R3l gates
-below.
+R3ab-refreshed R3z gate, async arrows by the R3ab gate, and ordinary async
+object-literal methods by the R3ac gate; public fields, static blocks, private
+elements, and public/private synchronous generator methods are measured by the
+scoped R3g/R3h/R3i/R3j/R3k/R3l gates below.
 
 Nineteen additional provenance variants guard the result: eight audited negative
 variants pass for the intended parse error, while 11 unsupported grammar
@@ -52,12 +52,12 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 43,655 pass;
+- 43,659 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 38,507 are classified as unsupported because of a feature, mode, host
+- 38,501 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 18 fail to parse, 1,279 fail at runtime, 97 fail in the harness, and six
+- 18 fail to parse, 1,281 fail at runtime, 97 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 45,140 variants to execution. That count includes variants
@@ -66,14 +66,14 @@ than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 42.78% (`43,655 / 102,037`);
-- conservative target-scope lower bound: 52.24%
-  (`43,655 / (102,037 - 18,475)`);
+- raw suite pass rate: 42.79% (`43,659 / 102,037`);
+- conservative target-scope lower bound: 52.25%
+  (`43,659 / (102,037 - 18,475)`);
 - pass rate among variants with a non-unsupported observed outcome: 96.89%
-  (`43,655 / 45,055`).
+  (`43,659 / 45,061`).
 
-The 52.24% figure is the useful whole-project progress floor, not a claim that
-the engine is 52.24% conformant. The 96.89% conditional rate measures quality
+The 52.25% figure is the useful whole-project progress floor, not a claim that
+the engine is 52.25% conformant. The 96.89% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -128,9 +128,9 @@ parallel defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`f9b0827706c24cc97f1792e92aa1d275d7c5c7bd14d3e2b47f16d27dc543c8f0`
+`627e6e8dc2aa44e9ef6869db54c3a9059528d33eb7b24c55658db36d84a250b0`
 and
-`9026be710ff432002357a236b4ebd81abc8fd6ea9039e04b3af8944968d83d70`.
+`5879cef785efe0a855e3abb74d820dd9bc2274d20fdba9ba8c557641d0fa5dbe`.
 
 ## Milestone policy
 
@@ -4083,11 +4083,12 @@ TSV, and JSONL SHA-256 values are
 and
 `68b5efe50c71eb24a75a53fd72200d883fa966e77813a22014a046b6f09f2f58`.
 
-R3ab remains a scoped semantic gate: the global `async-functions` feature and
-async host continue to fail closed until async methods and generators are
-complete. Twelve already-admitted, untagged consumers nevertheless advance to
-pass. The exact R3z/R3ab join retains all 102,037 keys with no missing, extra,
-duplicate, or previous-pass row. Its 16 outcome transitions are eight
+At the R3ab landing this remained a scoped semantic gate: the global
+`async-functions` feature and async host stayed fail-closed pending async
+methods and generators. Twelve already-admitted, untagged consumers
+nevertheless advanced to pass. The exact R3z/R3ab join retains all 102,037
+keys with no missing, extra, duplicate, or previous-pass row. Its 16 outcome
+transitions are eight
 `unsupported-parser -> pass`, four `unsupported-runtime -> pass`, two
 `unsupported-parser -> unsupported-runtime`, and two
 `unsupported-runtime -> fail-runtime`. The last pair comes from
@@ -4108,6 +4109,73 @@ Reproduce the R3ab ordinary-async and async-arrow gates with:
 ./scripts/test-test262-async-function-core.sh
 ./scripts/test-test262-async-arrow-core.sh
 ```
+
+## R3ac ordinary async object methods
+
+R3ac ports ordinary async object-literal methods onto the established async
+function machinery rather than adding a runtime fork. The compiler retains
+`FunctionKind::Method`, selects `BytecodeFunctionKind::Async`, and publishes
+through the existing `DefineMethod`/HomeObject path. `super` therefore keeps
+the current receiver in parameter initializers and across `await`; branding,
+non-constructibility, inferred name/length, authored source, rejected
+parameter completion, and Promise settlement follow the same QuickJS-shaped
+paths already used by R3z/R3ab. No runtime change was required.
+
+The frozen candidate universe contains 49 paths / 90 variants. It includes
+Function `toString`, complex-parameter, eval, forbidden-extension,
+private-name, Proxy, and async-generator adjacencies, and pinned QuickJS
+2026-06-04 passes all 49 paths. Six async-generator neighbors and one Proxy
+path remain in the explicit exclusion ledger. The admitted manifest therefore
+contains 42 paths / 76 variants: 25 positive and 17 audited
+parse/SyntaxError paths, 23 async-harness and 19 synchronous paths, 34
+double-mode, six `noStrict`, and two `onlyStrict`, producing 40 sloppy and 36
+strict variants. Oxide passes 76/76 with no unsupported, skipped, failed,
+timed-out, crashed, or infrastructure outcome. Broad async feature/host
+admission remains fail-closed pending async class methods and generators.
+
+The scoped-profile, candidate, manifest, variant-key, canonical TSV, and JSONL
+SHA-256 values are
+`ec8be515bb6f68cb3226f1770b4ac73b66c013d5c27a74bcda974770546b9e9f`,
+`535880772cfeff4e3c7cf31d956a80ea70fa67b2fc1fd043825d43eab6c6536a`,
+`38b1fd3cc785923d4e98a28b8e8daf19777bf02630634753715abf7160c9d796`,
+`dc5b96263b7f54cae137ec6e2c935da0f8186387fa59baf43630b0be7474e5db`,
+`511ebd130275568679425664893888b56da1280d93731bbab7c4003dadd2ad64`,
+and
+`06a5557df83f1ff795d73a89ae60d83547976b372b8a87d1f3098126f4b9dc95`.
+
+The differential oracle also freezes QuickJS's contextual-lookahead quirk.
+Direct U+2028/U+2029 trivia after `async` prevents an async method, but the
+same code points inside an intervening block comment are ignored by the
+pinned target's small lookahead scanner. The ordinary lexer still records
+them correctly for ASI and restricted productions. Annex B HTML comments
+remain an existing independent parser frontier.
+
+The exact R3ab/R3ac full join retains all 102,037 unique keys and every prior
+pass. Two `unsupported-parser -> pass` and two
+`unsupported-runtime -> pass` transitions account for the four new passes.
+Two `unsupported-parser -> unsupported-runtime` variants now stop at the
+typed async-generator frontier. The two
+`unsupported-runtime -> fail-runtime` variants are
+`test/staging/sm/async-functions/async-contains-unicode-escape.js`; pinned
+QuickJS also fails that Test262 expectation, making them recorded target
+disagreements rather than semantic regressions. Six more rows retain their
+outcome while exposing a deeper async class/generator detail.
+
+The runnable count remains 45,140. Passes rise from 43,655 to 43,659,
+`fail-runtime` rises to 1,281, `unsupported-parser` falls to 45, and
+`unsupported-runtime` falls to 34. The R3ac full TSV/JSONL SHA-256 values are
+`627e6e8dc2aa44e9ef6869db54c3a9059528d33eb7b24c55658db36d84a250b0`
+and
+`5879cef785efe0a855e3abb74d820dd9bc2274d20fdba9ba8c557641d0fa5dbe`.
+
+Reproduce the focused gate with:
+
+```sh
+./scripts/test-test262-async-object-method-core.sh
+```
+
+Public async class methods are the next recommended milestone, followed by
+private async class methods and then async generators.
 
 ## Runner contract
 
@@ -4444,9 +4512,18 @@ paths in Oxide, with QuickJS at 61/61. The stable `with` gate also reaches
 variants and leaves only four async-generator/host dependencies excluded. A
 SpiderMonkey staging case that contradicts the pinned target's single-binding
 `await` token timing is checksum-pinned as audit-only, outside that universe.
-Broad async feature/host admission remains fail-closed pending async methods
-and generators. Twelve already-admitted consumers still advance without a
-previous-pass regression, bringing the full vector to 43,655/102,037.
+At the R3ab landing, broad async feature/host admission remained fail-closed
+pending async methods and generators. Twelve already-admitted consumers still
+advanced without a previous-pass regression, bringing the full vector to
+43,655/102,037.
+R3ac then adds ordinary async object-literal methods through Method+Async
+metadata and the existing DefineMethod/HomeObject path, without a runtime
+change. Its 49-path/90-variant candidate universe passes 49/49 in pinned
+QuickJS; after six async-generator and one Proxy exclusion, Oxide passes the
+42-path/76-variant gate in full. Four already-admitted consumers advance, no
+previous pass regresses, and the conservative vector reaches
+43,659/102,037. Public and private async class methods, then async generators,
+remain the recommended next milestones.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

@@ -3,16 +3,16 @@
 An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
-The `unsafe`-free engine is runnable but incomplete. The current R3ab milestone
-adds async arrows with pinned QuickJS token timing and lexical-capture
-semantics. Its canonical language tree has no exclusions: Oxide passes 110/110
-variants across 60 paths, and QuickJS 2026-06-04 passes all 60 paths. The
-conservative full vector is 43,655/102,037 after 12 already-admitted consumers
-advance, while broad async feature/host admission stays fail-closed until
-async methods and generators are complete. Modules, Proxy, and broad built-in
-coverage also remain incomplete. Pinned QuickJS is the test oracle, never a
-product dependency. See the status documents below for the R3z/R3aa history
-and reproducible R3ab evidence.
+The `unsafe`-free engine is runnable but incomplete. The current R3ac milestone
+adds ordinary async object-literal methods on the existing async execution
+path, including QuickJS-compatible method identity, `super`, source, and token
+timing. Oxide passes the focused 76/76 variants across 42 admitted paths;
+pinned QuickJS passes all 49 candidate paths. The conservative full vector is
+43,659/102,037 with no previous-pass regression. Public/private async class
+methods, async generators, modules, Proxy, and broad built-in coverage remain
+incomplete. Pinned QuickJS is the test oracle, never a product dependency. See
+the status documents below for the R3z/R3aa/R3ab history and reproducible R3ac
+evidence.
 
 ## Try it
 
@@ -50,6 +50,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-iterator-sequencing.sh
 ./scripts/test-test262-async-function-core.sh
 ./scripts/test-test262-async-arrow-core.sh
+./scripts/test-test262-async-object-method-core.sh
 ./scripts/test-r3z-async-function-core-oracle.sh --oxide ./target/debug/qjs
 ```
 

@@ -209,6 +209,133 @@ fn ordinary_async_functions_publish_async_kind_and_await_bytecode() {
 }
 
 #[test]
+fn async_object_methods_publish_method_grammar_async_execution_and_full_source_ranges() {
+    let source = concat!(
+        "const object = {\n",
+        "  async fixed(value = super.seed) { return await value; },\n",
+        "  async ['computed'](value) { return await value; }\n",
+        "};",
+    );
+    let tree = Parser::parse(
+        source,
+        JsString::from_static("<async-object-method-kind-test>"),
+    )
+    .unwrap();
+    let methods = tree
+        .functions
+        .iter()
+        .filter(|function| function.kind == FunctionKind::Method)
+        .collect::<Vec<_>>();
+    assert_eq!(methods.len(), 2);
+    assert!(methods.iter().all(|function| {
+        function.execution_kind == BytecodeFunctionKind::Async
+            && function.in_function_body
+            && function.super_allowed
+            && !function.super_call_allowed
+            && function
+                .ops
+                .iter()
+                .filter(|operation| {
+                    matches!(operation.op, super::IrOp::Bytecode(Instruction::Await))
+                })
+                .count()
+                == 1
+    }));
+    for (function, authored) in methods.iter().zip([
+        "async fixed(value = super.seed) { return await value; }",
+        "async ['computed'](value) { return await value; }",
+    ]) {
+        let start = source.find(authored).expect("authored async method");
+        let range = function
+            .source
+            .range
+            .as_ref()
+            .expect("async method source range");
+        assert_eq!(
+            &source[function.source.span.start.byte_offset..function.source.span.end.byte_offset],
+            "async"
+        );
+        assert_eq!(function.source.definition.as_usize(), start);
+        assert_eq!(range.start.as_usize(), start);
+        assert_eq!(range.end.as_usize(), start + authored.len());
+    }
+
+    let script = compile_unlinked_script(source).unwrap();
+    assert!(script.code().iter().any(|instruction| matches!(
+        instruction,
+        Instruction::DefineMethod {
+            kind: DefineMethodKind::Method,
+            enumerable: true,
+            ..
+        }
+    )));
+    assert!(script.code().iter().any(|instruction| matches!(
+        instruction,
+        Instruction::DefineMethodComputed {
+            kind: DefineMethodKind::Method,
+            enumerable: true,
+        }
+    )));
+    let published = script
+        .constants()
+        .iter()
+        .filter_map(|constant| constant.as_child())
+        .collect::<Vec<_>>();
+    assert_eq!(published.len(), 2);
+    assert!(published.iter().all(|function| {
+        function.metadata().function_kind == BytecodeFunctionKind::Async
+            && !function.metadata().has_prototype
+            && function.metadata().constructor_kind == ConstructorKind::None
+    }));
+    assert!(published[0].metadata().needs_home_object);
+}
+
+#[test]
+fn async_object_method_contextual_boundaries_match_quickjs() {
+    for source in [
+        "({ async method(){ return await 1; } });",
+        "({ async ['computed'](value = (nested = (await) => await) => nested){ return await value; } });",
+        "({ async await(){ return 1; }, async yield(){ return 2; } });",
+        "({ async/*\u{2028}*/method(){ return 1; } });",
+        "({ async/*\u{2029}*/method(){ return 1; } });",
+        "({ async(){} });",
+        "({ async\n: 1 });",
+    ] {
+        compile_unlinked_script(source).unwrap_or_else(|error| {
+            panic!("async object method source rejected {source:?}: {error}")
+        });
+    }
+
+    for source in [
+        "({ async method(value = await 1){} });",
+        r"({ async method(\u0061wait){} });",
+        "({ async method(value, value){} });",
+        r"({ \u0061sync method(){} });",
+        "({ async\nmethod(){} });",
+        "({ async/*\n*/method(){} });",
+        "({ async\u{2028}method(){} });",
+        "({ async\u{2029}method(){} });",
+        "({ async get method(){} });",
+    ] {
+        assert_eq!(
+            compile_unlinked_script(source).unwrap_err().kind(),
+            ErrorKind::Syntax,
+            "{source:?}"
+        );
+    }
+    for source in [
+        "({ async *generator(){} });",
+        "class C { async method(){} }",
+    ] {
+        assert_eq!(
+            compile_unlinked_script(source).unwrap_err().kind(),
+            ErrorKind::Unsupported,
+            "{source:?}"
+        );
+    }
+}
+
+#[test]
 fn async_arrows_publish_arrow_grammar_async_execution_and_full_source_ranges() {
     let source = concat!(
         "const first = async value => await value;\n",
@@ -389,7 +516,6 @@ fn async_function_lexical_context_and_fail_closed_neighbors_match_quickjs() {
     for source in [
         "async function* generator(){}",
         "(async function*(){})",
-        "({ async method(){} });",
         "class C { async method(){} }",
     ] {
         assert_eq!(
@@ -10491,6 +10617,7 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
         "({get get(){}})",
         "({set set(value){}})",
         "({*a(){}})",
+        "({async a(){}})",
         "({get\nlineBreak(){},set\nlineBreak(value){}})",
         "({g\\u0065t(){},s\\u0065t(value){}})",
     ] {
@@ -10498,7 +10625,7 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
             .unwrap_or_else(|error| panic!("valid Object literal {source:?}: {error}"));
     }
 
-    let source = "({async a(){}})";
+    let source = "({async *a(){}})";
     assert!(
         compile_unlinked_script(source)
             .unwrap_err()

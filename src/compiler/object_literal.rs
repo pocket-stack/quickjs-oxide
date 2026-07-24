@@ -4,7 +4,9 @@ use super::{
 };
 use crate::bytecode::{DefineMethodKind, Instruction};
 use crate::error::Error;
-use crate::lexer::{NumberKind, Punctuator, TokenKind};
+use crate::lexer::{
+    NumberKind, Punctuator, TokenKind, quickjs_simple_lookahead_has_line_terminator,
+};
 use crate::value::{JsString, Value};
 
 enum ObjectMethodPropertyKey {
@@ -17,8 +19,8 @@ impl<'source> Parser<'source> {
     /// `js_parse_object_literal`. The fresh Object stays below every property
     /// operation. Fixed names reuse `DefineField`; computed names are
     /// canonicalized before their RHS and use `DefineArrayEl` followed by the
-    /// same key drop as upstream. Synchronous concise methods use dedicated
-    /// define-method operations so runtime naming and non-constructor metadata
+    /// same key drop as upstream. Concise methods use dedicated define-method
+    /// operations so runtime naming, HomeObject, and non-constructor metadata
     /// remain distinct from ordinary data-property NamedEvaluation.
     pub(super) fn parse_object_literal(&mut self) -> Result<(), Error> {
         if !self.is_punctuator(Punctuator::LeftBrace) {
@@ -150,10 +152,14 @@ impl<'source> Parser<'source> {
                         | TokenKind::Number(_)
                         | TokenKind::Punctuator(Punctuator::LeftBracket)
                 );
+                let async_prefix_has_line_terminator = method_prefix.as_deref() == Some("async")
+                    && quickjs_simple_lookahead_has_line_terminator(
+                        &self.lexer.source()[token.span.end.byte_offset..],
+                    );
                 let is_method_prefix = method_prefix.as_deref().is_some_and(|prefix| {
                     (next_starts_property_name
                         || (prefix == "async" && self.is_punctuator(Punctuator::Multiply)))
-                        && (prefix != "async" || !self.current().line_terminator_before)
+                        && (prefix != "async" || !async_prefix_has_line_terminator)
                 });
                 if self.is_punctuator(Punctuator::LeftParen) {
                     self.parse_object_method_definition(token.span, DefineMethodKind::Method)?;
@@ -169,19 +175,34 @@ impl<'source> Parser<'source> {
                     let method_prefix = method_prefix
                         .as_deref()
                         .ok_or_else(|| Error::internal("object method prefix disappeared"))?;
-                    if method_prefix == "async" {
+                    if method_prefix == "async" && self.is_punctuator(Punctuator::Multiply) {
                         return Err(Error::unsupported(
-                            "async object literal methods are not implemented yet",
+                            "async generator methods are not implemented yet",
                             source_span(token.span),
                         ));
                     }
-                    let method_kind = if method_prefix == "get" {
-                        DefineMethodKind::Getter
-                    } else {
-                        DefineMethodKind::Setter
-                    };
                     let property_key = self.parse_object_method_property_name()?;
-                    self.parse_object_method_definition(token.span, method_kind)?;
+                    let method_kind = match method_prefix {
+                        "async" => {
+                            self.parse_async_method_definition(token.span)?;
+                            DefineMethodKind::Method
+                        }
+                        "get" => {
+                            self.parse_object_method_definition(
+                                token.span,
+                                DefineMethodKind::Getter,
+                            )?;
+                            DefineMethodKind::Getter
+                        }
+                        "set" => {
+                            self.parse_object_method_definition(
+                                token.span,
+                                DefineMethodKind::Setter,
+                            )?;
+                            DefineMethodKind::Setter
+                        }
+                        _ => return Err(Error::internal("invalid object method prefix")),
+                    };
                     match property_key {
                         ObjectMethodPropertyKey::Fixed(key) => {
                             let key_constant =

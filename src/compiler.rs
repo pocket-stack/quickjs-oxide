@@ -8629,8 +8629,10 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 }
             }
             BytecodeFunctionKind::Async
-                if matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Arrow)
-                    && !function.class_constructor
+                if matches!(
+                    function.kind,
+                    FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
+                ) && !function.class_constructor
                     && function.class_initializer_kind.is_none()
                     && function.in_function_body
                     && initial_yields == 0
