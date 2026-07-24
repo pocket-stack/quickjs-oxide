@@ -648,7 +648,8 @@ impl Runtime {
         let callable_shape_valid = match kind {
             ClosureVariableKind::PrivateMethod => matches!(
                 (metadata.function_kind, metadata.has_prototype),
-                (FunctionKind::Normal, false) | (FunctionKind::Generator, true)
+                (FunctionKind::Normal | FunctionKind::Async, false)
+                    | (FunctionKind::Generator, true)
             ),
             ClosureVariableKind::PrivateGetter
             | ClosureVariableKind::PrivateSetter
@@ -1080,50 +1081,52 @@ mod tests {
     }
 
     #[test]
-    fn private_callable_var_refs_admit_generators_only_as_methods() {
+    fn private_callable_var_refs_admit_async_and_generators_as_methods() {
         let runtime = Runtime::new();
-        let (generator, _) = private_callable(&runtime, FunctionKind::Generator);
+        for function_kind in [FunctionKind::Async, FunctionKind::Generator] {
+            let (callable, _) = private_callable(&runtime, function_kind);
 
-        let method = runtime
-            .new_private_callable_var_ref(&generator, ClosureVariableKind::PrivateMethod)
-            .unwrap();
-        assert_eq!(
-            runtime
-                .private_callable_from_raw_var_ref(&method, ClosureVariableKind::PrivateMethod,)
-                .unwrap(),
-            generator
-        );
-        let uninitialized_method = runtime
-            .new_uninitialized_captured_var_ref(true, true, ClosureVariableKind::PrivateMethod)
-            .unwrap();
-        runtime
-            .initialize_private_callable_var_ref(
-                &uninitialized_method,
-                &generator,
-                ClosureVariableKind::PrivateMethod,
-            )
-            .unwrap();
-
-        for kind in [
-            ClosureVariableKind::PrivateGetter,
-            ClosureVariableKind::PrivateSetter,
-            ClosureVariableKind::PrivateGetterSetter,
-        ] {
-            assert!(matches!(
-                runtime.new_private_callable_var_ref(&generator, kind),
-                Err(RuntimeError::Invariant(
-                    "private-callable cell has invalid bytecode metadata"
-                ))
-            ));
-            let uninitialized = runtime
-                .new_uninitialized_captured_var_ref(true, true, kind)
+            let method = runtime
+                .new_private_callable_var_ref(&callable, ClosureVariableKind::PrivateMethod)
                 .unwrap();
-            assert!(matches!(
-                runtime.initialize_private_callable_var_ref(&uninitialized, &generator, kind),
-                Err(RuntimeError::Invariant(
-                    "private-callable cell has invalid bytecode metadata"
-                ))
-            ));
+            assert_eq!(
+                runtime
+                    .private_callable_from_raw_var_ref(&method, ClosureVariableKind::PrivateMethod,)
+                    .unwrap(),
+                callable
+            );
+            let uninitialized_method = runtime
+                .new_uninitialized_captured_var_ref(true, true, ClosureVariableKind::PrivateMethod)
+                .unwrap();
+            runtime
+                .initialize_private_callable_var_ref(
+                    &uninitialized_method,
+                    &callable,
+                    ClosureVariableKind::PrivateMethod,
+                )
+                .unwrap();
+
+            for kind in [
+                ClosureVariableKind::PrivateGetter,
+                ClosureVariableKind::PrivateSetter,
+                ClosureVariableKind::PrivateGetterSetter,
+            ] {
+                assert!(matches!(
+                    runtime.new_private_callable_var_ref(&callable, kind),
+                    Err(RuntimeError::Invariant(
+                        "private-callable cell has invalid bytecode metadata"
+                    ))
+                ));
+                let uninitialized = runtime
+                    .new_uninitialized_captured_var_ref(true, true, kind)
+                    .unwrap();
+                assert!(matches!(
+                    runtime.initialize_private_callable_var_ref(&uninitialized, &callable, kind),
+                    Err(RuntimeError::Invariant(
+                        "private-callable cell has invalid bytecode metadata"
+                    ))
+                ));
+            }
         }
     }
 

@@ -1,4 +1,4 @@
-//! QuickJS-shaped private field, synchronous-method, and accessor declaration
+//! QuickJS-shaped private field, method, and accessor declaration
 //! lowering.
 //!
 //! Each `#name` owns a lexical cell in the class body's dedicated private-name
@@ -8,7 +8,7 @@
 //! brand or consume field identities through `DefinePrivateField`.
 
 use super::super::*;
-use super::ClassElementState;
+use super::{ClassElementState, ClassMethodFlavor};
 use crate::bytecode::DefineMethodKind;
 
 impl<'source> Parser<'source> {
@@ -191,7 +191,7 @@ impl<'source> Parser<'source> {
         self.consume_statement_terminator()
     }
 
-    /// Parse and publish an ordinary or generator synchronous private method.
+    /// Parse and publish an ordinary, async, or generator private method.
     /// The body is parsed before the namespace binding is registered, matching
     /// QuickJS's diagnostic priority when a malformed body and a duplicate
     /// private spelling coexist.
@@ -202,16 +202,20 @@ impl<'source> Parser<'source> {
         name: String,
         span: Span,
         function_span: Span,
-        generator: bool,
+        flavor: ClassMethodFlavor,
     ) -> Result<(), Error> {
         if name == "#constructor" {
             return Err(Error::syntax("invalid method name", source_span(span)));
         }
 
-        let method = if generator {
-            self.parse_generator_method_definition(function_span)?
-        } else {
-            self.parse_object_method_definition(function_span, DefineMethodKind::Method)?
+        let method = match flavor {
+            ClassMethodFlavor::Ordinary => {
+                self.parse_object_method_definition(function_span, DefineMethodKind::Method)?
+            }
+            ClassMethodFlavor::Generator => {
+                self.parse_generator_method_definition(function_span)?
+            }
+            ClassMethodFlavor::Async => self.parse_async_method_definition(function_span)?,
         };
         // A private method needs HomeObject even when its authored body never
         // mentions `super`: the runtime derives its unforgeable brand from the

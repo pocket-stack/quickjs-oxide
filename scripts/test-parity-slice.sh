@@ -124,6 +124,7 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/test-test262-async-arrow-core.sh
 ./scripts/test-test262-async-object-method-core.sh
 ./scripts/test-test262-async-class-method-core.sh
+./scripts/test-test262-async-private-class-method-core.sh
 ./scripts/test-test262-full.sh
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ./scripts/check-rust-only.sh

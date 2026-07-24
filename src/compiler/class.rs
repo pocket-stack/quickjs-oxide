@@ -3,9 +3,8 @@
 //! This is the first vertical slice of QuickJS `js_parse_class`: class name
 //! scopes, heritage, base/derived constructors, `super()` and synchronous
 //! methods/accessors, fields, private methods/accessors, and static blocks.
-//! Public and private synchronous generator methods are supported; async
-//! public methods reuse the ordinary async method path. Private async methods
-//! and async generators remain explicit typed frontiers.
+//! Public/private synchronous generator methods and ordinary async methods are
+//! supported. Async generators remain an explicit typed frontier.
 
 use super::function::ParsedFunctionDefinition;
 use super::*;
@@ -23,6 +22,13 @@ enum ClassPropertyKey {
     Fixed { value: JsString },
     Computed,
     Private { name: String, span: Span },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClassMethodFlavor {
+    Ordinary,
+    Generator,
+    Async,
 }
 
 impl<'source> Parser<'source> {
@@ -285,20 +291,21 @@ impl<'source> Parser<'source> {
         }
 
         if let ClassPropertyKey::Private { name, span } = &key {
-            if asynchronous {
-                return Err(Error::unsupported(
-                    "private async class methods are not implemented yet",
-                    source_span(function_span),
-                ));
-            }
             if method_kind == DefineMethodKind::Method {
+                let flavor = if generator {
+                    ClassMethodFlavor::Generator
+                } else if asynchronous {
+                    ClassMethodFlavor::Async
+                } else {
+                    ClassMethodFlavor::Ordinary
+                };
                 self.parse_private_class_method(
                     elements,
                     is_static,
                     name.clone(),
                     *span,
                     function_span,
-                    generator,
+                    flavor,
                 )?;
             } else {
                 self.parse_private_class_accessor(

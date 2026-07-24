@@ -384,6 +384,8 @@ fn async_class_method_contextual_boundaries_match_quickjs() {
         "class C { async/*\u{2028}*/method(){ return 1; } }",
         "class C { async/*\u{2029}*/method(){ return 1; } }",
         "class C { async(){} static async(){} }",
+        "class C { async #private(){} }",
+        "class C { static async #private(){} }",
         "class C { async\nmethod(){} }",
         "class C { async/*\n*/method(){} }",
         "class C { async\u{2028}method(){} }",
@@ -409,8 +411,6 @@ fn async_class_method_contextual_boundaries_match_quickjs() {
         );
     }
     for source in [
-        "class C { async #private(){} }",
-        "class C { static async #private(){} }",
         "class C { async *generator(){} }",
         "class C { static async *generator(){} }",
     ] {

@@ -3826,7 +3826,7 @@ fn validate_published_private_callable_initializer(
     let callable_shape_valid = match kind {
         PrivateCallableInitializerKind::Method => matches!(
             (child.metadata.function_kind, child.metadata.has_prototype),
-            (FunctionKind::Normal, false) | (FunctionKind::Generator, true)
+            (FunctionKind::Normal | FunctionKind::Async, false) | (FunctionKind::Generator, true)
         ),
         PrivateCallableInitializerKind::Accessor => {
             child.metadata.function_kind == FunctionKind::Normal && !child.metadata.has_prototype
@@ -16945,9 +16945,10 @@ mod tests {
     }
 
     #[test]
-    fn linked_private_methods_accept_generator_callable_shape() {
+    fn linked_private_methods_accept_async_and_generator_callable_shapes() {
         for (function_kind, has_prototype) in [
             (FunctionKind::Normal, false),
+            (FunctionKind::Async, false),
             (FunctionKind::Generator, true),
         ] {
             let mut heap = Heap::new();
@@ -16965,7 +16966,6 @@ mod tests {
     fn linked_private_callables_reject_cross_role_execution_shapes() {
         for (function_kind, has_prototype) in [
             (FunctionKind::Normal, true),
-            (FunctionKind::Async, false),
             (FunctionKind::AsyncGenerator, true),
         ] {
             let mut heap = Heap::new();

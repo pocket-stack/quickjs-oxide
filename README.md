@@ -3,15 +3,16 @@
 An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
-The `unsafe`-free engine is runnable but incomplete. The current R3ad milestone
-adds public ordinary async instance/static class methods on the existing
-`Method+Async` and `HomeObject` path. Pinned QuickJS passes all 313 candidate
-paths; 19 private-async/async-generator exclusions leave 294 paths and 568/568
-passing Oxide variants. The conservative full vector is 43,661/102,037 with no
-previous-pass regression. Private async class methods, async generators,
-modules, Proxy, and broad built-in coverage remain incomplete. Pinned QuickJS
-is the test oracle, never a product dependency. See the status documents below
-for historical milestones and reproducible R3ad evidence.
+The `unsafe`-free engine is runnable but incomplete. The current R3ae milestone
+adds ordinary private async instance/static class methods by combining the
+existing `Method+Async` execution path with authenticated private-method
+HomeObject/brand publication. Pinned QuickJS passes all 233 candidate paths;
+77 async-generator/mixed-staging exclusions leave 156 paths and 312/312
+passing Oxide variants. The conservative full vector remains byte-identical at
+43,661/102,037 with no previous-pass regression. Async generators, modules,
+Proxy, and broad built-in coverage remain incomplete. Pinned QuickJS is the
+test oracle, never a product dependency. See the status documents below for
+historical milestones and reproducible R3ae evidence.
 
 ## Try it
 
@@ -47,10 +48,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-generator-destructuring.sh
 ./scripts/test-test262-iterator-helpers.sh
 ./scripts/test-test262-iterator-sequencing.sh
-./scripts/test-test262-async-function-core.sh
-./scripts/test-test262-async-arrow-core.sh
-./scripts/test-test262-async-object-method-core.sh
-./scripts/test-test262-async-class-method-core.sh
+./scripts/test-test262-async-{function,arrow,object-method,class-method,private-class-method}-core.sh
 ./scripts/test-r3z-async-function-core-oracle.sh --oxide ./target/debug/qjs
 ```
 

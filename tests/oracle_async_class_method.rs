@@ -345,54 +345,37 @@ fn async_class_method_contextual_boundaries_match_pinned_quickjs() {
 }
 
 #[test]
-fn private_async_and_async_generator_class_methods_remain_explicit_frontiers() {
-    let cases = [
-        (
-            "private async",
-            r#"
-class C {
-    async #method() { return 42; }
-    read() { return this.#method(); }
-}
-new C().read().then(print);
-"#,
-        ),
-        (
-            "async generator",
-            r#"
+fn async_generator_class_methods_remain_an_explicit_frontier() {
+    let source = r#"
 class C {
     async *method() { yield 42; }
 }
 new C().method().next().then(function (result) {
     print(result.value);
 });
-"#,
-        ),
-    ];
+"#;
 
     let oracle = std::env::var_os("QJS_ORACLE");
     if oracle.is_none() {
         eprintln!(
-            "SKIP async class frontier oracle checks: \
+            "SKIP async-generator class frontier oracle check: \
              set QJS_ORACLE to pinned upstream qjs"
         );
     }
-    for (description, source) in cases {
-        let oxide = run(env!("CARGO_BIN_EXE_qjs").as_ref(), source);
-        assert!(
-            !oxide.status.success(),
-            "quickjs-oxide accidentally accepted the {description} frontier"
-        );
+    let oxide = run(env!("CARGO_BIN_EXE_qjs").as_ref(), source);
+    assert!(
+        !oxide.status.success(),
+        "quickjs-oxide accidentally accepted the async-generator frontier"
+    );
 
-        if let Some(oracle) = &oracle {
-            let quickjs = run(oracle, source);
-            assert!(
-                quickjs.status.success(),
-                "pinned QuickJS rejected the recorded {description} frontier: {}",
-                String::from_utf8_lossy(&quickjs.stderr)
-            );
-            assert_eq!(String::from_utf8_lossy(&quickjs.stdout), "42\n");
-        }
+    if let Some(oracle) = &oracle {
+        let quickjs = run(oracle, source);
+        assert!(
+            quickjs.status.success(),
+            "pinned QuickJS rejected the recorded async-generator frontier: {}",
+            String::from_utf8_lossy(&quickjs.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&quickjs.stdout), "42\n");
     }
 }
 

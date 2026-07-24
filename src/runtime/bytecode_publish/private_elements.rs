@@ -404,7 +404,7 @@ fn verify_private_callable_initializer(
                 child.metadata().function_kind,
                 child.metadata().has_prototype
             ),
-            (FunctionKind::Normal, false) | (FunctionKind::Generator, true)
+            (FunctionKind::Normal | FunctionKind::Async, false) | (FunctionKind::Generator, true)
         ),
         Some(_) => {
             child.metadata().function_kind == FunctionKind::Normal
@@ -1113,7 +1113,7 @@ mod tests {
     }
 
     #[test]
-    fn private_callable_initializer_accepts_only_generator_method_shape() {
+    fn private_callable_initializer_accepts_async_and_generator_method_shapes() {
         let code = vec![
             Instruction::SetLocalUninitialized(0),
             Instruction::FClosure(0),
@@ -1125,7 +1125,7 @@ mod tests {
             (FunctionKind::Generator, true, true),
             (FunctionKind::Normal, true, false),
             (FunctionKind::Generator, false, false),
-            (FunctionKind::Async, false, false),
+            (FunctionKind::Async, false, true),
             (FunctionKind::AsyncGenerator, true, false),
         ] {
             let function = private_method_function_with_shape(
