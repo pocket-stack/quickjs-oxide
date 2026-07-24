@@ -420,6 +420,18 @@ pub struct AsyncFunctionRealmData {
     pub function_prototype: ObjectId,
 }
 
+/// Realm-owned identities required by async-generator functions and objects.
+///
+/// QuickJS keeps `%AsyncIteratorPrototype%`, `%AsyncGeneratorPrototype%`, and
+/// `%AsyncGeneratorFunction.prototype%` as independent context roots. The
+/// hidden dynamic constructor remains reachable from the reciprocal graph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AsyncGeneratorRealmData {
+    pub async_iterator_prototype: ObjectId,
+    pub prototype: ObjectId,
+    pub function_prototype: ObjectId,
+}
+
 /// Realm-owned Promise identities used by allocation and species fallback.
 ///
 /// Both identities remain explicit Context roots.  User code may delete the
@@ -504,6 +516,8 @@ pub struct ContextData {
     /// Realm-local `%AsyncFunction.prototype%`, attached after its hidden
     /// constructor/prototype graph has been initialized.
     pub async_function: Option<AsyncFunctionRealmData>,
+    /// Realm-local async-iterator and async-generator intrinsic graph.
+    pub async_generator: Option<AsyncGeneratorRealmData>,
     /// Realm-local `%Promise.prototype%` and `%Promise%`, attached atomically
     /// after their reciprocal public property graph is initialized.
     pub promise: Option<PromiseRealmData>,
@@ -568,6 +582,7 @@ impl ContextData {
             set: None,
             generator: None,
             async_function: None,
+            async_generator: None,
             promise: None,
             iterator: None,
             function_constructor: None,
@@ -4351,11 +4366,53 @@ pub struct GeneratorActivationData {
     pub reusable_captured_locals: Vec<bool>,
 }
 
+/// ECMAScript-visible lifecycle of a branded async-generator object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AsyncGeneratorState {
+    SuspendedStart,
+    SuspendedYield,
+    SuspendedYieldStar,
+    Executing,
+    AwaitingReturn,
+    Completed,
+}
+
+/// One queued `.next`, `.return`, or `.throw` request and its Promise
+/// capability. Every identity is stored as a raw traced edge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AsyncGeneratorRequestData {
+    pub completion: GeneratorResumeKind,
+    pub result: RawValue,
+    pub promise: ObjectId,
+    pub resolve: ObjectId,
+    pub reject: ObjectId,
+}
+
+/// Complete hidden state of one genuine AsyncGenerator.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AsyncGeneratorData {
+    pub state: AsyncGeneratorState,
+    pub activation: Option<Box<GeneratorActivationData>>,
+    pub queue: VecDeque<AsyncGeneratorRequestData>,
+    /// Realm whose intrinsic Promise machinery owns the currently installed
+    /// await/return reaction callbacks.
+    pub resume_realm: Option<ContextId>,
+}
+
 /// Settlement branch selected by an internal async-function resume callback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AsyncFunctionResumeKind {
     Fulfill,
     Reject,
+}
+
+/// Settlement branch selected by an internal async-generator reaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AsyncGeneratorResumeKind {
+    AwaitFulfill,
+    AwaitReject,
+    ReturnFulfill,
+    ReturnReject,
 }
 
 /// Heap-visible lifecycle of one async-function driver.
@@ -4549,6 +4606,10 @@ pub enum InternalCallableData {
         state: ObjectId,
         kind: AsyncFunctionResumeKind,
     },
+    AsyncGeneratorResume {
+        generator: ObjectId,
+        kind: AsyncGeneratorResumeKind,
+    },
     PromiseResolving {
         promise: ObjectId,
         already_resolved: Rc<Cell<bool>>,
@@ -4731,6 +4792,9 @@ pub enum ObjectPayload {
         state: GeneratorState,
         activation: Option<Box<GeneratorActivationData>>,
     },
+    /// `JS_CLASS_ASYNC_GENERATOR`: a dormant resumable frame plus the FIFO
+    /// request queue whose Promise capabilities serialize public resumes.
+    AsyncGenerator(AsyncGeneratorData),
     /// Hidden GC-visible async-function driver shared by its pending `await`
     /// reactions. It is never exposed to authored ECMAScript code.
     AsyncFunctionState(AsyncFunctionStateData),
@@ -4766,6 +4830,7 @@ pub enum ObjectKind {
     BoundFunction,
     BytecodeFunction,
     Generator,
+    AsyncGenerator,
     AsyncFunctionState,
     Promise,
 }
@@ -5516,6 +5581,7 @@ pub enum NativeFunctionId {
     FunctionPrototype,
     FunctionConstructor(DynamicFunctionKind),
     GeneratorPrototypeResume(GeneratorResumeKind),
+    AsyncGeneratorPrototypeResume(GeneratorResumeKind),
     ArrayConstructor,
     ArrayIsArray,
     ArrayFrom,
@@ -5588,6 +5654,7 @@ pub enum NativeFunctionId {
     SetIteratorNext,
     Promise(PromiseNativeKind),
     AsyncFunctionResume(AsyncFunctionResumeKind),
+    AsyncGeneratorResume(AsyncGeneratorResumeKind),
     PromiseResolving(PromiseResolvingKind),
     PromiseCapabilityExecutor,
     PromiseFinallyHandler(PromiseReactionKind),
@@ -5960,6 +6027,7 @@ impl NativeFunctionId {
         matches!(
             self,
             Self::AsyncFunctionResume(_)
+                | Self::AsyncGeneratorResume(_)
                 | Self::PromiseResolving(_)
                 | Self::PromiseCapabilityExecutor
                 | Self::PromiseFinallyHandler(_)
@@ -6062,6 +6130,7 @@ impl NativeFunctionId {
                 | PromiseNativeKind::WithResolvers,
             )
             | Self::AsyncFunctionResume(_)
+            | Self::AsyncGeneratorResume(_)
             | Self::PromiseResolving(_)
             | Self::PromiseCapabilityExecutor
             | Self::PromiseFinallyHandler(_)
@@ -6141,6 +6210,7 @@ impl NativeFunctionId {
             | Self::ObjectIntegrity(_)
             | Self::ObjectPrototypeDefineAccessor(_)
             | Self::ObjectPrototypeLookupAccessor(_)
+            | Self::AsyncGeneratorPrototypeResume(_)
             | Self::Date(
                 DateNativeKind::String(_)
                 | DateNativeKind::GetField(_)
@@ -6936,6 +7006,30 @@ impl ObjectData {
         }
     }
 
+    /// Construct a branded async generator in its initial suspended state.
+    #[must_use]
+    pub fn async_generator(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        activation: GeneratorActivationData,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::AsyncGenerator,
+            payload: ObjectPayload::AsyncGenerator(AsyncGeneratorData {
+                state: AsyncGeneratorState::SuspendedStart,
+                activation: Some(Box::new(activation)),
+                queue: VecDeque::new(),
+                resume_realm: None,
+            }),
+        }
+    }
+
     /// Construct one hidden async-function driver in its initial executing
     /// phase. The runtime roots the active frame until the first suspension;
     /// the state object owns the outer resolving functions immediately.
@@ -7355,6 +7449,7 @@ impl Heap {
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. }
             | ObjectPayload::Generator { .. }
+            | ObjectPayload::AsyncGenerator(_)
             | ObjectPayload::AsyncFunctionState(_)
             | ObjectPayload::Promise(_) => {
                 return Err(HeapError::Invariant(
@@ -8005,6 +8100,63 @@ impl Heap {
         Ok(())
     }
 
+    /// Atomically publish the realm-local async-iterator/generator graph.
+    pub(crate) fn attach_async_generator_intrinsics(
+        &mut self,
+        realm: ContextId,
+        async_generator: AsyncGeneratorRealmData,
+    ) -> Result<(), HeapError> {
+        let context = self.context(realm)?;
+        if context.async_generator.is_some() {
+            return Err(HeapError::Invariant(
+                "context already has AsyncGenerator intrinsic roots",
+            ));
+        }
+        let object_prototype = context.object_prototype;
+        let function_prototype = context.function_prototype;
+
+        let async_iterator = self.object(async_generator.async_iterator_prototype)?;
+        if async_iterator.kind != ObjectKind::Ordinary
+            || !matches!(async_iterator.payload, ObjectPayload::Ordinary)
+            || self.shape(async_iterator.shape)?.prototype() != Some(object_prototype)
+        {
+            return Err(HeapError::Invariant(
+                "AsyncIterator prototype does not inherit from Object.prototype",
+            ));
+        }
+        let prototype = self.object(async_generator.prototype)?;
+        if prototype.kind != ObjectKind::Ordinary
+            || !matches!(prototype.payload, ObjectPayload::Ordinary)
+            || self.shape(prototype.shape)?.prototype()
+                != Some(async_generator.async_iterator_prototype)
+        {
+            return Err(HeapError::Invariant(
+                "AsyncGenerator prototype does not inherit from AsyncIterator prototype",
+            ));
+        }
+        let function = self.object(async_generator.function_prototype)?;
+        if function.kind != ObjectKind::Ordinary
+            || !matches!(function.payload, ObjectPayload::Ordinary)
+            || self.shape(function.shape)?.prototype() != Some(function_prototype)
+        {
+            return Err(HeapError::Invariant(
+                "AsyncGeneratorFunction prototype does not inherit from Function.prototype",
+            ));
+        }
+
+        self.retain_edges_transactionally(&[
+            RawId::Object(async_generator.async_iterator_prototype),
+            RawId::Object(async_generator.prototype),
+            RawId::Object(async_generator.function_prototype),
+        ])?;
+        let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(realm))?.data
+        else {
+            unreachable!("context identity was validated before retaining AsyncGenerator roots")
+        };
+        context.async_generator = Some(async_generator);
+        Ok(())
+    }
+
     /// Allocate and publish immutable function bytecode, retaining its realm
     /// and every GC edge in its constant pool. `auxiliary_atoms` and symbol
     /// constants transfer to the node on success. No arena slot is reserved
@@ -8064,6 +8216,10 @@ impl Heap {
             .code
             .iter()
             .any(|instruction| matches!(instruction, Instruction::Await));
+        let has_yield_star = bytecode
+            .code
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::YieldStar));
         match bytecode.metadata.function_kind {
             FunctionKind::Generator => {
                 if initial_yields.len() != 1
@@ -8090,7 +8246,20 @@ impl Heap {
                     ));
                 }
             }
-            FunctionKind::Normal | FunctionKind::AsyncGenerator => {
+            FunctionKind::AsyncGenerator => {
+                if initial_yields.len() != 1
+                    || !bytecode.metadata.has_prototype
+                    || bytecode.metadata.constructor_kind != ConstructorKind::None
+                    || bytecode.metadata.class_initializer_kind.is_some()
+                    || parameter_body_pc.is_some_and(|body_pc| initial_yields[0] < body_pc)
+                    || has_yield_star
+                {
+                    return Err(HeapError::Invariant(
+                        "async-generator bytecode has invalid suspension metadata",
+                    ));
+                }
+            }
+            FunctionKind::Normal => {
                 if !initial_yields.is_empty() || has_generator_only_instruction || has_await {
                     return Err(HeapError::Invariant(
                         "non-async bytecode contains a suspension opcode",
@@ -10703,6 +10872,275 @@ impl Heap {
         Ok(())
     }
 
+    pub(crate) fn async_generator_snapshot(
+        &self,
+        id: ObjectId,
+    ) -> Result<AsyncGeneratorData, HeapError> {
+        let ObjectPayload::AsyncGenerator(data) = &self.object(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "AsyncGenerator state requested for an object with the wrong class",
+            ));
+        };
+        Ok(data.clone())
+    }
+
+    /// Append one request after the runtime has retained any Symbol atom in
+    /// `result`. Arena edges transfer transactionally into the FIFO.
+    pub(crate) fn async_generator_enqueue(
+        &mut self,
+        id: ObjectId,
+        request: AsyncGeneratorRequestData,
+    ) -> Result<(), HeapError> {
+        if !is_promise_storable_value(&request.result) {
+            return Err(HeapError::Invariant(
+                "AsyncGenerator request contains an internal value sentinel",
+            ));
+        }
+        if !matches!(self.object(id)?.payload, ObjectPayload::AsyncGenerator(_)) {
+            return Err(HeapError::Invariant(
+                "AsyncGenerator request reached an object with the wrong class",
+            ));
+        }
+        let edges = async_generator_request_edges(&request);
+        self.retain_edges_transactionally(&edges)?;
+        let ObjectPayload::AsyncGenerator(data) = &mut self.object_mut(id)?.payload else {
+            unreachable!("AsyncGenerator payload was validated before queue append")
+        };
+        data.queue.push_back(request);
+        Ok(())
+    }
+
+    pub(crate) fn async_generator_front_request(
+        &self,
+        id: ObjectId,
+    ) -> Result<Option<AsyncGeneratorRequestData>, HeapError> {
+        let ObjectPayload::AsyncGenerator(data) = &self.object(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "AsyncGenerator request lookup reached an object with the wrong class",
+            ));
+        };
+        Ok(data.queue.front().cloned())
+    }
+
+    /// Detach the request which the runtime has already promoted to rooted
+    /// values and callables.
+    pub(crate) fn async_generator_pop_front(
+        &mut self,
+        id: ObjectId,
+    ) -> Result<(AsyncGeneratorRequestData, HeapCleanup), HeapError> {
+        let request = {
+            let ObjectPayload::AsyncGenerator(data) = &mut self.object_mut(id)?.payload else {
+                return Err(HeapError::Invariant(
+                    "AsyncGenerator request removal reached an object with the wrong class",
+                ));
+            };
+            data.queue.pop_front().ok_or(HeapError::Invariant(
+                "AsyncGenerator request queue is empty",
+            ))?
+        };
+        for edge in async_generator_request_edges(&request) {
+            self.release_raw_no_drain(edge)?;
+        }
+        let mut cleanup = self.drain_zero_queue()?;
+        cleanup.atoms.extend(raw_value_atom(&request.result));
+        Ok((request, cleanup))
+    }
+
+    /// Move one parked activation into transient rooted runtime ownership.
+    pub(crate) fn begin_async_generator_resume(
+        &mut self,
+        id: ObjectId,
+    ) -> Result<(AsyncGeneratorState, GeneratorActivationData, HeapCleanup), HeapError> {
+        let (previous, activation, resume_realm) = {
+            let ObjectPayload::AsyncGenerator(data) = &mut self.object_mut(id)?.payload else {
+                return Err(HeapError::Invariant(
+                    "AsyncGenerator resume reached an object with the wrong class",
+                ));
+            };
+            if !matches!(
+                data.state,
+                AsyncGeneratorState::SuspendedStart
+                    | AsyncGeneratorState::SuspendedYield
+                    | AsyncGeneratorState::SuspendedYieldStar
+                    | AsyncGeneratorState::Executing
+            ) {
+                return Err(HeapError::Invariant(
+                    "AsyncGenerator resume began outside a parked state",
+                ));
+            }
+            let previous = data.state;
+            let activation = data.activation.take().ok_or(HeapError::Invariant(
+                "parked AsyncGenerator has no activation",
+            ))?;
+            let resume_realm = data.resume_realm.take();
+            data.state = AsyncGeneratorState::Executing;
+            (previous, *activation, resume_realm)
+        };
+        for edge in generator_activation_edges(&activation) {
+            self.release_raw_no_drain(edge)?;
+        }
+        if let Some(realm) = resume_realm {
+            self.release_raw_no_drain(RawId::Context(realm))?;
+        }
+        let mut cleanup = self.drain_zero_queue()?;
+        cleanup
+            .atoms
+            .extend(generator_activation_atoms(&activation));
+        Ok((previous, activation, cleanup))
+    }
+
+    /// Store a yielded or awaited activation after an executing pump step.
+    pub(crate) fn suspend_async_generator(
+        &mut self,
+        id: ObjectId,
+        state: AsyncGeneratorState,
+        activation: GeneratorActivationData,
+        resume_realm: Option<ContextId>,
+    ) -> Result<(), HeapError> {
+        if !matches!(
+            (state, resume_realm),
+            (AsyncGeneratorState::SuspendedYield, None)
+                | (AsyncGeneratorState::SuspendedYieldStar, None)
+                | (AsyncGeneratorState::Executing, Some(_))
+        ) {
+            return Err(HeapError::Invariant(
+                "AsyncGenerator suspension has an invalid state/realm pair",
+            ));
+        }
+        match &self.object(id)?.payload {
+            ObjectPayload::AsyncGenerator(AsyncGeneratorData {
+                state: AsyncGeneratorState::Executing,
+                activation: None,
+                resume_realm: None,
+                queue,
+            }) if !queue.is_empty() => {}
+            ObjectPayload::AsyncGenerator(_) => {
+                return Err(HeapError::Invariant(
+                    "AsyncGenerator suspension did not follow execution",
+                ));
+            }
+            _ => {
+                return Err(HeapError::Invariant(
+                    "AsyncGenerator suspension reached an object with the wrong class",
+                ));
+            }
+        }
+
+        let mut candidate = self.object(id)?.clone();
+        let ObjectPayload::AsyncGenerator(candidate_data) = &mut candidate.payload else {
+            unreachable!("AsyncGenerator payload was validated before suspension")
+        };
+        candidate_data.state = state;
+        candidate_data.activation = Some(Box::new(activation.clone()));
+        candidate_data.resume_realm = resume_realm;
+        self.validate_object_layout(&candidate)?;
+
+        let mut edges = generator_activation_edges(&activation);
+        edges.extend(resume_realm.map(RawId::Context));
+        self.retain_edges_transactionally(&edges)?;
+        let ObjectPayload::AsyncGenerator(data) = &mut self.object_mut(id)?.payload else {
+            unreachable!("AsyncGenerator payload was validated before retaining activation")
+        };
+        data.state = state;
+        data.activation = Some(Box::new(activation));
+        data.resume_realm = resume_realm;
+        Ok(())
+    }
+
+    /// Discard any parked activation and enter the absorbing completed state.
+    pub(crate) fn complete_async_generator(
+        &mut self,
+        id: ObjectId,
+    ) -> Result<HeapCleanup, HeapError> {
+        let (activation, resume_realm) = {
+            let ObjectPayload::AsyncGenerator(data) = &mut self.object_mut(id)?.payload else {
+                return Err(HeapError::Invariant(
+                    "AsyncGenerator completion reached an object with the wrong class",
+                ));
+            };
+            if matches!(
+                data.state,
+                AsyncGeneratorState::AwaitingReturn | AsyncGeneratorState::Completed
+            ) {
+                return Err(HeapError::Invariant(
+                    "AsyncGenerator completion repeated or interrupted completed-return await",
+                ));
+            }
+            data.state = AsyncGeneratorState::Completed;
+            (data.activation.take(), data.resume_realm.take())
+        };
+        let mut atoms = Vec::new();
+        if let Some(activation) = activation.as_deref() {
+            for edge in generator_activation_edges(activation) {
+                self.release_raw_no_drain(edge)?;
+            }
+            atoms.extend(generator_activation_atoms(activation));
+        }
+        if let Some(realm) = resume_realm {
+            self.release_raw_no_drain(RawId::Context(realm))?;
+        }
+        let mut cleanup = self.drain_zero_queue()?;
+        cleanup.atoms.extend(atoms);
+        Ok(cleanup)
+    }
+
+    pub(crate) fn begin_async_generator_completed_return(
+        &mut self,
+        id: ObjectId,
+        realm: ContextId,
+    ) -> Result<(), HeapError> {
+        self.context(realm)?;
+        match &self.object(id)?.payload {
+            ObjectPayload::AsyncGenerator(AsyncGeneratorData {
+                state: AsyncGeneratorState::Completed,
+                activation: None,
+                resume_realm: None,
+                queue,
+            }) if !queue.is_empty() => {}
+            ObjectPayload::AsyncGenerator(_) => {
+                return Err(HeapError::Invariant(
+                    "AsyncGenerator completed return began in an invalid state",
+                ));
+            }
+            _ => {
+                return Err(HeapError::Invariant(
+                    "AsyncGenerator completed return reached the wrong class",
+                ));
+            }
+        }
+        self.retain_raw(RawId::Context(realm), 1)?;
+        let ObjectPayload::AsyncGenerator(data) = &mut self.object_mut(id)?.payload else {
+            unreachable!("AsyncGenerator payload was validated before completed return")
+        };
+        data.state = AsyncGeneratorState::AwaitingReturn;
+        data.resume_realm = Some(realm);
+        Ok(())
+    }
+
+    pub(crate) fn finish_async_generator_completed_return(
+        &mut self,
+        id: ObjectId,
+    ) -> Result<HeapCleanup, HeapError> {
+        let realm = {
+            let ObjectPayload::AsyncGenerator(data) = &mut self.object_mut(id)?.payload else {
+                return Err(HeapError::Invariant(
+                    "AsyncGenerator completed-return callback reached the wrong class",
+                ));
+            };
+            if data.state != AsyncGeneratorState::AwaitingReturn || data.activation.is_some() {
+                return Err(HeapError::Invariant(
+                    "AsyncGenerator completed-return callback reached an invalid state",
+                ));
+            }
+            data.state = AsyncGeneratorState::Completed;
+            data.resume_realm.take().ok_or(HeapError::Invariant(
+                "AsyncGenerator completed-return callback lost its realm",
+            ))?
+        };
+        self.release_raw_no_drain(RawId::Context(realm))?;
+        self.drain_zero_queue()
+    }
+
     /// Clone one async driver state while its hidden object still owns every
     /// referenced edge. The runtime must promote any raw identities it keeps
     /// across a subsequent heap mutation.
@@ -11547,6 +11985,7 @@ impl Heap {
                     ObjectPayload::BytecodeFunction { .. }
                 )
                 | (ObjectKind::Generator, ObjectPayload::Generator { .. })
+                | (ObjectKind::AsyncGenerator, ObjectPayload::AsyncGenerator(_))
                 | (
                     ObjectKind::AsyncFunctionState,
                     ObjectPayload::AsyncFunctionState(_)
@@ -11591,6 +12030,21 @@ impl Heap {
                     if object.is_constructor || data.realm != Some(state_data.driver_realm) {
                         return Err(HeapError::Invariant(
                             "AsyncFunction resume callable has invalid hidden state",
+                        ));
+                    }
+                }
+                (
+                    NativeFunctionId::AsyncGeneratorResume(target_kind),
+                    Some(InternalCallableData::AsyncGeneratorResume { generator, kind }),
+                ) if target_kind == *kind => {
+                    if object.is_constructor
+                        || !matches!(
+                            self.object(*generator)?.payload,
+                            ObjectPayload::AsyncGenerator(_)
+                        )
+                    {
+                        return Err(HeapError::Invariant(
+                            "AsyncGenerator resume callable has invalid hidden state",
                         ));
                     }
                 }
@@ -11744,6 +12198,7 @@ impl Heap {
                     }
                 }
                 (NativeFunctionId::AsyncFunctionResume(_), _)
+                | (NativeFunctionId::AsyncGeneratorResume(_), _)
                 | (NativeFunctionId::PromiseResolving(_), _)
                 | (NativeFunctionId::PromiseCapabilityExecutor, _)
                 | (NativeFunctionId::PromiseFinallyHandler(_), _)
@@ -11959,6 +12414,9 @@ impl Heap {
                     }
                 }
             }
+        }
+        if let ObjectPayload::AsyncGenerator(data) = &object.payload {
+            validate_async_generator_state(self, object, data)?;
         }
         if let ObjectPayload::AsyncFunctionState(data) = &object.payload {
             validate_async_function_state(self, object, data)?;
@@ -12480,6 +12938,18 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
         | ObjectPayload::Generator { .. } => 0,
+        ObjectPayload::AsyncGenerator(data) => data
+            .activation
+            .as_deref()
+            .map_or(0, |activation| generator_activation_edges(activation).len())
+            .saturating_add(
+                data.queue
+                    .iter()
+                    .map(async_generator_request_edges)
+                    .map(|edges| edges.len())
+                    .sum::<usize>(),
+            )
+            .saturating_add(usize::from(data.resume_realm.is_some())),
         ObjectPayload::AsyncFunctionState(data) => 3usize.saturating_add(
             data.activation
                 .as_deref()
@@ -12649,6 +13119,15 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
                 edges.extend(generator_activation_edges(activation));
             }
         }
+        ObjectPayload::AsyncGenerator(data) => {
+            if let Some(activation) = data.activation.as_deref() {
+                edges.extend(generator_activation_edges(activation));
+            }
+            for request in &data.queue {
+                edges.extend(async_generator_request_edges(request));
+            }
+            edges.extend(data.resume_realm.map(RawId::Context));
+        }
         ObjectPayload::AsyncFunctionState(data) => {
             edges.push(RawId::Context(data.driver_realm));
             edges.push(RawId::Object(data.outer_resolve));
@@ -12674,6 +13153,16 @@ fn promise_capability_edges(capability: &PromiseCapabilityData) -> [RawId; 2] {
     ]
 }
 
+fn async_generator_request_edges(request: &AsyncGeneratorRequestData) -> Vec<RawId> {
+    let mut edges = raw_value_edges(&request.result);
+    edges.extend([
+        RawId::Object(request.promise),
+        RawId::Object(request.resolve),
+        RawId::Object(request.reject),
+    ]);
+    edges
+}
+
 fn promise_reaction_edges(reaction: &PromiseReaction) -> Vec<RawId> {
     reaction
         .handler
@@ -12693,6 +13182,9 @@ fn internal_callable_edges(internal: &InternalCallableData) -> Vec<RawId> {
     match internal {
         InternalCallableData::AsyncFunctionResume { state, .. } => {
             vec![RawId::Object(*state)]
+        }
+        InternalCallableData::AsyncGeneratorResume { generator, .. } => {
+            vec![RawId::Object(*generator)]
         }
         InternalCallableData::PromiseResolving { promise, .. } => {
             vec![RawId::Object(*promise)]
@@ -12825,6 +13317,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
             .saturating_add(context.set.map_or(0, |_| 2))
             .saturating_add(context.generator.map_or(0, |_| 2))
             .saturating_add(context.async_function.map_or(0, |_| 1))
+            .saturating_add(context.async_generator.map_or(0, |_| 3))
             .saturating_add(context.promise.map_or(0, |_| 2))
             .saturating_add(context.iterator.map_or(0, |_| 4))
             .saturating_add(context.global_objects.len())
@@ -12866,6 +13359,11 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     }
     if let Some(async_function) = context.async_function {
         edges.push(RawId::Object(async_function.function_prototype));
+    }
+    if let Some(async_generator) = context.async_generator {
+        edges.push(RawId::Object(async_generator.async_iterator_prototype));
+        edges.push(RawId::Object(async_generator.prototype));
+        edges.push(RawId::Object(async_generator.function_prototype));
     }
     if let Some(promise) = context.promise {
         edges.push(RawId::Object(promise.prototype));
@@ -12943,6 +13441,7 @@ fn internal_callable_atoms(internal: &InternalCallableData) -> Vec<Atom> {
             raw_value_atom(value).into_iter().collect()
         }
         InternalCallableData::AsyncFunctionResume { .. }
+        | InternalCallableData::AsyncGeneratorResume { .. }
         | InternalCallableData::PromiseResolving { .. }
         | InternalCallableData::PromiseFinallyHandler { .. }
         | InternalCallableData::PromiseAllResolveElement { .. }
@@ -12987,6 +13486,18 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
             .as_deref()
             .map(generator_activation_atoms)
             .unwrap_or_default(),
+        ObjectPayload::AsyncGenerator(data) => data
+            .activation
+            .as_deref()
+            .map(generator_activation_atoms)
+            .into_iter()
+            .flatten()
+            .chain(
+                data.queue
+                    .iter()
+                    .filter_map(|request| raw_value_atom(&request.result)),
+            )
+            .collect(),
         ObjectPayload::AsyncFunctionState(data) => data
             .activation
             .as_deref()
@@ -13215,6 +13726,227 @@ fn validate_async_function_state(
             {
                 return Err(HeapError::Invariant(
                     "AsyncFunction iterator region is outside its saved frame",
+                ));
+            }
+            crate::vm::VmUnwindRegion::Catch { .. }
+            | crate::vm::VmUnwindRegion::Iterator { .. } => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_async_generator_state(
+    heap: &Heap,
+    object: &ObjectData,
+    data: &AsyncGeneratorData,
+) -> Result<(), HeapError> {
+    let state_shape_is_valid = match data.state {
+        AsyncGeneratorState::SuspendedStart
+        | AsyncGeneratorState::SuspendedYield
+        | AsyncGeneratorState::SuspendedYieldStar => {
+            data.activation.is_some() && data.resume_realm.is_none()
+        }
+        AsyncGeneratorState::Executing => {
+            (data.activation.is_none() && data.resume_realm.is_none())
+                || (data.resume_realm.is_some()
+                    && data.activation.as_deref().is_some_and(|activation| {
+                        matches!(
+                            heap.function_bytecode(activation.bytecode),
+                            Ok(bytecode)
+                                if matches!(
+                                    bytecode.code.get(activation.vm.pc.saturating_sub(1)),
+                                    Some(Instruction::Await)
+                                )
+                        )
+                    }))
+        }
+        AsyncGeneratorState::AwaitingReturn => {
+            data.activation.is_none()
+                && data.resume_realm.is_some()
+                && data
+                    .queue
+                    .front()
+                    .is_some_and(|request| request.completion == GeneratorResumeKind::Return)
+        }
+        AsyncGeneratorState::Completed => data.activation.is_none() && data.resume_realm.is_none(),
+    };
+    if object.is_constructor
+        || !state_shape_is_valid
+        || matches!(
+            data.state,
+            AsyncGeneratorState::Executing | AsyncGeneratorState::AwaitingReturn
+        ) && data.queue.is_empty()
+    {
+        return Err(HeapError::Invariant(
+            "AsyncGenerator has inconsistent state, activation, or queue",
+        ));
+    }
+    if let Some(realm) = data.resume_realm {
+        heap.context(realm)?;
+    }
+    for request in &data.queue {
+        if !is_promise_storable_value(&request.result)
+            || !matches!(
+                heap.object(request.promise)?.payload,
+                ObjectPayload::Promise(_)
+            )
+        {
+            return Err(HeapError::Invariant(
+                "AsyncGenerator request retains an invalid value or Promise",
+            ));
+        }
+        let ObjectPayload::NativeFunction {
+            data: resolve_data,
+            internal:
+                Some(InternalCallableData::PromiseResolving {
+                    promise: resolve_promise,
+                    already_resolved: resolve_cell,
+                    kind: PromiseResolvingKind::Resolve,
+                }),
+        } = &heap.object(request.resolve)?.payload
+        else {
+            return Err(HeapError::Invariant(
+                "AsyncGenerator request retains an invalid resolve function",
+            ));
+        };
+        let ObjectPayload::NativeFunction {
+            data: reject_data,
+            internal:
+                Some(InternalCallableData::PromiseResolving {
+                    promise: reject_promise,
+                    already_resolved: reject_cell,
+                    kind: PromiseResolvingKind::Reject,
+                }),
+        } = &heap.object(request.reject)?.payload
+        else {
+            return Err(HeapError::Invariant(
+                "AsyncGenerator request retains an invalid reject function",
+            ));
+        };
+        if resolve_data.target != NativeFunctionId::PromiseResolving(PromiseResolvingKind::Resolve)
+            || reject_data.target
+                != NativeFunctionId::PromiseResolving(PromiseResolvingKind::Reject)
+            || *resolve_promise != request.promise
+            || *reject_promise != request.promise
+            || !Rc::ptr_eq(resolve_cell, reject_cell)
+        {
+            return Err(HeapError::Invariant(
+                "AsyncGenerator request capability does not resolve its Promise",
+            ));
+        }
+    }
+
+    let Some(activation) = data.activation.as_deref() else {
+        return Ok(());
+    };
+    let bytecode = heap.function_bytecode(activation.bytecode)?;
+    let vm = &activation.vm;
+    let function = heap.object(vm.current_function)?;
+    if bytecode.metadata.function_kind != FunctionKind::AsyncGenerator
+        || bytecode.metadata.constructor_kind != ConstructorKind::None
+        || !bytecode.metadata.has_prototype
+        || bytecode.metadata.class_initializer_kind.is_some()
+        || bytecode.realm != vm.callee_realm
+        || vm.strict != bytecode.metadata.strict
+        || heap.context(vm.callee_realm)?.global_object != vm.callee_global
+        || !matches!(
+            function.payload,
+            ObjectPayload::BytecodeFunction {
+                bytecode: owner,
+                ..
+            } if owner == activation.bytecode
+        )
+        || function.is_constructor
+        || activation.arguments.len() < usize::from(bytecode.metadata.argument_count)
+        || activation.actual_argument_count > activation.arguments.len()
+        || activation.locals.len() != usize::from(bytecode.metadata.local_count)
+        || activation.reusable_captured_locals.len() != activation.locals.len()
+        || vm.stack.len() > usize::from(bytecode.metadata.max_stack)
+        || vm.pc == 0
+        || vm.pc > bytecode.code.len()
+    {
+        return Err(HeapError::Invariant(
+            "AsyncGenerator activation has invalid frame metadata",
+        ));
+    }
+    let suspension_matches = matches!(
+        (data.state, bytecode.code.get(vm.pc - 1)),
+        (
+            AsyncGeneratorState::SuspendedStart,
+            Some(Instruction::InitialYield)
+        ) | (
+            AsyncGeneratorState::SuspendedYield,
+            Some(Instruction::Yield)
+        ) | (
+            AsyncGeneratorState::SuspendedYieldStar,
+            Some(Instruction::YieldStar)
+        ) | (AsyncGeneratorState::Executing, Some(Instruction::Await))
+    );
+    if !suspension_matches {
+        return Err(HeapError::Invariant(
+            "AsyncGenerator activation is parked after the wrong opcode",
+        ));
+    }
+    for value in vm
+        .stack
+        .iter()
+        .chain(std::iter::once(&vm.this_value))
+        .chain(vm.normalized_this.iter())
+        .chain(std::iter::once(&vm.new_target))
+    {
+        if !is_map_storable_value(value) {
+            return Err(HeapError::Invariant(
+                "AsyncGenerator activation contains an internal-only value",
+            ));
+        }
+    }
+    for binding in activation.arguments.iter().chain(activation.locals.iter()) {
+        match binding {
+            GeneratorFrameBinding::Direct(value) if !is_map_storable_value(value) => {
+                return Err(HeapError::Invariant(
+                    "AsyncGenerator frame binding contains an internal-only value",
+                ));
+            }
+            GeneratorFrameBinding::Private(atom) if atom.is_null() => {
+                return Err(HeapError::Invariant(
+                    "AsyncGenerator private binding contains the null atom",
+                ));
+            }
+            GeneratorFrameBinding::PrivateCallable(callable) => {
+                if !matches!(
+                    heap.object(*callable)?.payload,
+                    ObjectPayload::NativeFunction { .. }
+                        | ObjectPayload::BoundFunction { .. }
+                        | ObjectPayload::BytecodeFunction { .. }
+                ) {
+                    return Err(HeapError::Invariant(
+                        "AsyncGenerator private callable binding is not callable",
+                    ));
+                }
+            }
+            GeneratorFrameBinding::Captured(var_ref) => {
+                heap.var_ref(*var_ref)?;
+            }
+            GeneratorFrameBinding::Direct(_)
+            | GeneratorFrameBinding::Private(_)
+            | GeneratorFrameBinding::Uninitialized => {}
+        }
+    }
+    for region in &vm.regions {
+        match *region {
+            crate::vm::VmUnwindRegion::Catch {
+                target,
+                stack_depth,
+            } if target >= bytecode.code.len() || stack_depth > vm.stack.len() => {
+                return Err(HeapError::Invariant(
+                    "AsyncGenerator catch region is outside its saved frame",
+                ));
+            }
+            crate::vm::VmUnwindRegion::Iterator { record_base, .. }
+                if record_base.saturating_add(1) >= vm.stack.len() =>
+            {
+                return Err(HeapError::Invariant(
+                    "AsyncGenerator iterator region is outside its saved frame",
                 ));
             }
             crate::vm::VmUnwindRegion::Catch { .. }
@@ -16686,7 +17418,10 @@ mod tests {
         function_kind: FunctionKind,
         has_prototype: bool,
     ) -> FunctionBytecodeId {
-        let code: Rc<[Instruction]> = if function_kind == FunctionKind::Generator {
+        let code: Rc<[Instruction]> = if matches!(
+            function_kind,
+            FunctionKind::Generator | FunctionKind::AsyncGenerator
+        ) {
             Rc::from([
                 Instruction::InitialYield,
                 Instruction::Undefined,

@@ -754,7 +754,8 @@ impl Runtime {
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. }
             | ObjectPayload::AsyncFunctionState(_)
-            | ObjectPayload::Generator { .. } => false,
+            | ObjectPayload::Generator { .. }
+            | ObjectPayload::AsyncGenerator(_) => false,
         })
     }
 

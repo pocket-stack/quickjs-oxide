@@ -6,6 +6,7 @@
 
 mod arguments;
 mod async_function;
+mod async_generator;
 mod bytecode_publish;
 mod class;
 mod class_fields;
@@ -1030,6 +1031,8 @@ impl Runtime {
             &global_object,
         )
         .expect("Promise intrinsic initialization must succeed");
+        self.initialize_async_generator_intrinsic(realm, &function_prototype, &object_prototype)
+            .expect("AsyncGenerator intrinsic initialization must succeed");
         drop(global_var_object);
         drop(global_object);
         drop(uninitialized_vars);
@@ -3440,10 +3443,14 @@ impl Runtime {
                     ))?
                     .function_prototype
             }
-            // Source parsing remains fail-closed for async generators. Keep
-            // the existing explicit-bytecode embedding path on
-            // Function.prototype until its own intrinsic graph lands.
-            FunctionKind::AsyncGenerator => context.function_prototype,
+            FunctionKind::AsyncGenerator => {
+                context
+                    .async_generator
+                    .ok_or(RuntimeError::Invariant(
+                        "async-generator closure realm has no AsyncGenerator intrinsics",
+                    ))?
+                    .function_prototype
+            }
         };
         let shape = state.get_or_create_shape(Some(function_prototype), &[])?;
         let object = match state
@@ -3493,13 +3500,20 @@ impl Runtime {
             false,
             true,
         )?;
-        if metadata.function_kind == FunctionKind::Generator {
+        if matches!(
+            metadata.function_kind,
+            FunctionKind::Generator | FunctionKind::AsyncGenerator
+        ) {
             if !metadata.has_prototype || metadata.constructor_kind != ConstructorKind::None {
                 return Err(RuntimeError::Invariant(
-                    "generator bytecode has invalid prototype/constructor metadata",
+                    "generator-family bytecode has invalid prototype/constructor metadata",
                 ));
             }
-            return self.define_generator_function_prototype(callable.as_object(), realm);
+            return self.define_generator_function_prototype(
+                callable.as_object(),
+                realm,
+                metadata.function_kind,
+            );
         }
         if !metadata.has_prototype {
             return Ok(());
@@ -3511,18 +3525,35 @@ impl Runtime {
         &self,
         function: &ObjectRef,
         realm: ContextId,
+        function_kind: FunctionKind,
     ) -> Result<(), RuntimeError> {
-        let generator_prototype = self
-            .0
-            .state
-            .borrow()
-            .heap
-            .context(realm)?
-            .generator
-            .ok_or(RuntimeError::Invariant(
-                "generator function realm has no Generator intrinsics",
-            ))?
-            .prototype;
+        let generator_prototype = {
+            let state = self.0.state.borrow();
+            let context = state.heap.context(realm)?;
+            match function_kind {
+                FunctionKind::Generator => {
+                    context
+                        .generator
+                        .ok_or(RuntimeError::Invariant(
+                            "generator function realm has no Generator intrinsics",
+                        ))?
+                        .prototype
+                }
+                FunctionKind::AsyncGenerator => {
+                    context
+                        .async_generator
+                        .ok_or(RuntimeError::Invariant(
+                            "async-generator function realm has no AsyncGenerator intrinsics",
+                        ))?
+                        .prototype
+                }
+                FunctionKind::Normal | FunctionKind::Async => {
+                    return Err(RuntimeError::Invariant(
+                        "ordinary function requested a generator prototype",
+                    ));
+                }
+            }
+        };
         let generator_prototype =
             ObjectRef::from_borrowed_handle(self.clone(), generator_prototype)?;
         let prototype = self.new_object(Some(&generator_prototype))?;
@@ -4847,7 +4878,8 @@ impl Runtime {
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }
                 | ObjectPayload::RegExpStringIterator { .. }
-                | ObjectPayload::Generator { .. } => {
+                | ObjectPayload::Generator { .. }
+                | ObjectPayload::AsyncGenerator(_) => {
                     return Err(RuntimeError::Engine(Error::new(
                         ErrorKind::Type,
                         "not a function",
@@ -4913,7 +4945,8 @@ impl Runtime {
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }
             | ObjectPayload::RegExpStringIterator { .. }
-            | ObjectPayload::Generator { .. } => Err(RuntimeError::Invariant(
+            | ObjectPayload::Generator { .. }
+            | ObjectPayload::AsyncGenerator(_) => Err(RuntimeError::Invariant(
                 "validated callable no longer has a callable payload",
             )),
         }
@@ -5279,7 +5312,8 @@ impl Runtime {
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }
                 | ObjectPayload::RegExpStringIterator { .. }
-                | ObjectPayload::Generator { .. } => {
+                | ObjectPayload::Generator { .. }
+                | ObjectPayload::AsyncGenerator(_) => {
                     return Err(RuntimeError::Engine(Error::new(
                         ErrorKind::Type,
                         "not a function",
@@ -6378,7 +6412,8 @@ impl Runtime {
                         | ObjectPayload::RegExpStringIterator { .. }
                         | ObjectPayload::BoundFunction { .. }
                         | ObjectPayload::NativeFunction { .. }
-                        | ObjectPayload::Generator { .. } => false,
+                        | ObjectPayload::Generator { .. }
+                        | ObjectPayload::AsyncGenerator(_) => false,
                     }
                 }
                 Value::Undefined
@@ -6525,11 +6560,17 @@ impl Runtime {
                             ))?
                             .function_prototype
                     }
-                    DynamicFunctionKind::AsyncGenerator => {
-                        return Err(RuntimeError::Invariant(
-                            "dynamic AsyncGeneratorFunction has no intrinsic prototype yet",
-                        ));
-                    }
+                    DynamicFunctionKind::AsyncGenerator => self
+                        .0
+                        .state
+                        .borrow()
+                        .heap
+                        .context(fallback_realm)?
+                        .async_generator
+                        .ok_or(RuntimeError::Invariant(
+                            "dynamic AsyncGeneratorFunction realm has no AsyncGenerator intrinsics",
+                        ))?
+                        .function_prototype,
                 };
                 ObjectRef::from_borrowed_handle(self.clone(), prototype)?
             }
@@ -6712,7 +6753,8 @@ impl Runtime {
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }
                 | ObjectPayload::RegExpStringIterator { .. }
-                | ObjectPayload::Generator { .. } => (false, None, FunctionKind::Normal),
+                | ObjectPayload::Generator { .. }
+                | ObjectPayload::AsyncGenerator(_) => (false, None, FunctionKind::Normal),
             }
         };
         if !is_callable {
@@ -6935,7 +6977,8 @@ impl Runtime {
                         | ObjectPayload::Error
                         | ObjectPayload::StringIterator { .. }
                         | ObjectPayload::RegExpStringIterator { .. }
-                        | ObjectPayload::Generator { .. } => {
+                        | ObjectPayload::Generator { .. }
+                        | ObjectPayload::AsyncGenerator(_) => {
                             return Err(RuntimeError::Invariant(
                                 "ordinary instanceof received a non-callable target",
                             ));
@@ -7050,7 +7093,8 @@ impl Runtime {
                         | ObjectPayload::NativeFunction { .. }
                         | ObjectPayload::BoundFunction { .. }
                         | ObjectPayload::BytecodeFunction { .. }
-                        | ObjectPayload::Generator { .. } => None,
+                        | ObjectPayload::Generator { .. }
+                        | ObjectPayload::AsyncGenerator(_) => None,
                     }
                 };
                 if let Some((method_realm, min_readable_args)) = standard_method {
@@ -7429,7 +7473,8 @@ impl Runtime {
                     | ObjectPayload::NativeFunction { .. }
                     | ObjectPayload::BoundFunction { .. }
                     | ObjectPayload::BytecodeFunction { .. }
-                    | ObjectPayload::Generator { .. } => None,
+                    | ObjectPayload::Generator { .. }
+                    | ObjectPayload::AsyncGenerator(_) => None,
                 }
             };
             if let Some(payload) = payload {
@@ -8355,7 +8400,8 @@ impl Runtime {
                 | ObjectPayload::NativeFunction { .. }
                 | ObjectPayload::BoundFunction { .. }
                 | ObjectPayload::BytecodeFunction { .. }
-                | ObjectPayload::Generator { .. } => None,
+                | ObjectPayload::Generator { .. }
+                | ObjectPayload::AsyncGenerator(_) => None,
             }
         };
         if let Some(hidden) = global_hidden {

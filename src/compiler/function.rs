@@ -210,18 +210,15 @@ impl<'source> Parser<'source> {
         header: FunctionDefinitionHeader<'source>,
         private_name_binding: bool,
     ) -> Result<ParsedFunctionDefinition, Error> {
-        if header.execution_kind == BytecodeFunctionKind::AsyncGenerator {
-            return Err(Error::unsupported(
-                "async generator functions are not implemented yet",
-                source_span(header.span),
-            ));
-        }
         // Preserve QuickJS's token-sensitive declaration/expression asymmetry.
         // A top-level generator-expression name arrives as TOK_IDENT and is
         // reserved, while contextual TOK_YIELD from an outer sloppy generator
         // is admitted by quickjs.c:36419-36439.
         if private_name_binding
-            && header.execution_kind == BytecodeFunctionKind::Generator
+            && matches!(
+                header.execution_kind,
+                BytecodeFunctionKind::Generator | BytecodeFunctionKind::AsyncGenerator
+            )
             && let Some((identifier, span)) = &header.name
             && identifier.value == "yield"
             && !(header.parent_context.generator
@@ -238,7 +235,10 @@ impl<'source> Parser<'source> {
         // FunctionExpression name. The contextual TOK_AWAIT admitted above is
         // a separate legacy path and must survive this early error.
         if private_name_binding
-            && header.execution_kind == BytecodeFunctionKind::Async
+            && matches!(
+                header.execution_kind,
+                BytecodeFunctionKind::Async | BytecodeFunctionKind::AsyncGenerator
+            )
             && let Some((identifier, span)) = &header.name
             && identifier.value == "await"
             && !(header.parent_context.async_function
@@ -651,7 +651,10 @@ impl<'source> Parser<'source> {
             insert_hoist_fragment(&mut self.functions[child], guard_at, guard)?;
         }
         self.finish_identifier_parameter_environment()?;
-        if options.execution_kind == BytecodeFunctionKind::Generator {
+        if matches!(
+            options.execution_kind,
+            BytecodeFunctionKind::Generator | BytecodeFunctionKind::AsyncGenerator
+        ) {
             self.insert_generator_initial_yield()?;
         }
         self.functions[child].in_function_body = true;

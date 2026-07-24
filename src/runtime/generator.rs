@@ -107,7 +107,7 @@ impl Runtime {
         Ok(())
     }
 
-    fn define_generator_to_string_tag(
+    pub(super) fn define_generator_to_string_tag(
         &self,
         object: &ObjectRef,
         value: &'static str,

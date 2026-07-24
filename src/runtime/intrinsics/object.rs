@@ -839,7 +839,8 @@ impl Runtime {
                 // deliberately excludes JS_CLASS_GENERATOR. The standard
                 // "Generator" tag comes from the inherited @@toStringTag;
                 // deleting it therefore falls back to "Object".
-                | ObjectPayload::Generator { .. } => JsString::from_static("Object"),
+                | ObjectPayload::Generator { .. }
+            | ObjectPayload::AsyncGenerator(_) => JsString::from_static("Object"),
                 ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::StringIterator { .. }
                 | ObjectPayload::RegExpStringIterator { .. } => JsString::from_static("Object"),

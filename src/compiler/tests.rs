@@ -610,7 +610,7 @@ fn async_arrow_lexical_context_matches_quickjs_token_timing() {
 }
 
 #[test]
-fn async_function_lexical_context_and_fail_closed_neighbors_match_quickjs() {
+fn async_function_lexical_context_and_async_generator_frontiers_match_quickjs() {
     for source in [
         "async function await(){}",
         "async function outer(){ function inner(){ var await=1; return await; } return await inner(); }",
@@ -641,9 +641,15 @@ fn async_function_lexical_context_and_fail_closed_neighbors_match_quickjs() {
         assert_eq!(error.message(), message, "{source:?}");
     }
 
+    for source in ["async function* generator(){}", "(async function*(){})"] {
+        compile_unlinked_script(source)
+            .unwrap_or_else(|error| panic!("async-generator source rejected {source:?}: {error}"));
+    }
+
     for source in [
-        "async function* generator(){}",
-        "(async function*(){})",
+        "async function* generator(){ yield* source; }",
+        "async function* generator(){ for (let value of source) { yield value; } }",
+        "async function* generator(){ for (let value of source) { return value; } }",
         "class C { async *method(){} }",
     ] {
         assert_eq!(

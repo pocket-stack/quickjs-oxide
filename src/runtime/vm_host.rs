@@ -2110,10 +2110,13 @@ impl Runtime {
                 return self.start_async_bytecode_callable(caller_realm, host, input, active_frame);
             }
             FunctionKind::AsyncGenerator => {
-                active_frame.finish()?;
-                return Err(RuntimeError::Invariant(
-                    "async-generator bytecode execution is not implemented",
-                ));
+                return self.start_async_generator_bytecode_callable(
+                    caller_realm,
+                    callable,
+                    host,
+                    input,
+                    active_frame,
+                );
             }
             FunctionKind::Normal => {}
         }
@@ -2483,7 +2486,8 @@ impl VmHost for RuntimeVmHost {
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }
             | ObjectPayload::RegExpStringIterator { .. }
-            | ObjectPayload::Generator { .. } => "object",
+            | ObjectPayload::Generator { .. }
+            | ObjectPayload::AsyncGenerator(_) => "object",
         })
     }
 

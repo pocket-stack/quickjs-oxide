@@ -65,7 +65,8 @@ impl Runtime {
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }
             | ObjectPayload::AsyncFunctionState(_)
-            | ObjectPayload::Generator { .. } => {
+            | ObjectPayload::Generator { .. }
+            | ObjectPayload::AsyncGenerator(_) => {
                 return Err(RuntimeError::Invariant(
                     "validated method callable no longer has a callable payload",
                 ));

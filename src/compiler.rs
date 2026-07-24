@@ -3582,11 +3582,11 @@ impl<'source> Parser<'source> {
         let statement_depth = self.current_ir().stack_depth;
         let return_span = self.current().span;
         self.advance()?;
-        if self.current().line_terminator_before
+        let has_value = !(self.current().line_terminator_before
             || self.at_eof()
             || self.is_punctuator(Punctuator::Semicolon)
-            || self.is_punctuator(Punctuator::RightBrace)
-        {
+            || self.is_punctuator(Punctuator::RightBrace));
+        if !has_value {
             self.emit_instruction(Instruction::Undefined)?;
         } else {
             self.parse_expression()?;
@@ -3603,7 +3603,7 @@ impl<'source> Parser<'source> {
                 *pc_site = Some(source_offset(return_span)?);
             }
         }
-        self.emit_return_completion(return_span)?;
+        self.emit_return_completion(return_span, has_value)?;
         self.consume_statement_terminator()?;
         // Parsing continues through unreachable source. Retain the enclosing
         // statement's marker/discriminant shape just as break/continue do.
@@ -3615,7 +3615,35 @@ impl<'source> Parser<'source> {
     /// TOS. Generator resumption uses this same path when `.return(value)` is
     /// injected at a `yield`, so iterator/finally unwinding remains identical
     /// to an authored ReturnStatement.
-    fn emit_return_completion(&mut self, return_span: Span) -> Result<(), Error> {
+    fn emit_return_completion(
+        &mut self,
+        return_span: Span,
+        await_async_generator_value: bool,
+    ) -> Result<(), Error> {
+        if self.current_ir().execution_kind == BytecodeFunctionKind::AsyncGenerator
+            && self.current_ir().break_controls.iter().any(|control| {
+                matches!(
+                    control.kind,
+                    BreakControlKind::DestructuringIterator | BreakControlKind::ForOf
+                )
+            })
+        {
+            // QuickJS uses an async IteratorClose sequence here. Reusing the
+            // synchronous generator cleanup would silently expose the wrong
+            // Promise/job ordering, so keep this later frontier typed.
+            return Err(Error::unsupported(
+                "async-generator return across an active iterator is not implemented yet",
+                source_span(return_span),
+            ));
+        }
+        if await_async_generator_value
+            && self.current_ir().execution_kind == BytecodeFunctionKind::AsyncGenerator
+        {
+            // Pinned QuickJS performs this await before any iterator-close or
+            // finally work so a rejected return value wins with the same
+            // observable ordering as `emit_return`.
+            self.emit_instruction_at(Instruction::Await, source_offset(return_span)?)?;
+        }
         // QuickJS walks BlockEnv entries from inner to outer and interleaves
         // iterator closing with finally execution. Keeping that order is
         // observable when either an iterator `return` method or a finally body
@@ -5020,7 +5048,10 @@ impl<'source> Parser<'source> {
             return self.parse_power_suffix(power_mode);
         }
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Await)) {
-            if self.current_ir().execution_kind != BytecodeFunctionKind::Async {
+            if !matches!(
+                self.current_ir().execution_kind,
+                BytecodeFunctionKind::Async | BytecodeFunctionKind::AsyncGenerator
+            ) {
                 return Err(self.syntax_here("unexpected 'await' keyword"));
             }
             if !self.current_ir().in_function_body {
@@ -6188,7 +6219,10 @@ impl<'source> Parser<'source> {
                 self.parse_super_property(token.span)?;
             }
             TokenKind::Keyword(Keyword::Yield)
-                if self.current_ir().execution_kind == BytecodeFunctionKind::Generator =>
+                if matches!(
+                    self.current_ir().execution_kind,
+                    BytecodeFunctionKind::Generator | BytecodeFunctionKind::AsyncGenerator
+                ) =>
             {
                 return Err(self.syntax_here("unexpected 'yield' keyword"));
             }
@@ -8637,8 +8671,32 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                     && function.in_function_body
                     && initial_yields == 0
                     && suspension_ops == 0 => {}
-            BytecodeFunctionKind::AsyncGenerator => {
-                return Err(Error::internal("compiler published an async generator"));
+            BytecodeFunctionKind::AsyncGenerator
+                if matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method)
+                    && !function.class_constructor
+                    && function.class_initializer_kind.is_none()
+                    && function.in_function_body
+                    && initial_yields == 1 =>
+            {
+                let initial = function
+                    .ops
+                    .iter()
+                    .position(|operation| {
+                        matches!(operation.op, IrOp::Bytecode(Instruction::InitialYield))
+                    })
+                    .ok_or_else(|| Error::internal("async generator lost its initial yield"))?;
+                let body = function
+                    .ops
+                    .iter()
+                    .position(|operation| {
+                        matches!(operation.op, IrOp::EnterScope(scope) if scope == function.body_scope)
+                    })
+                    .ok_or_else(|| Error::internal("async generator lost its body entry"))?;
+                if initial >= body {
+                    return Err(Error::internal(
+                        "async generator initial yield did not precede its body scope",
+                    ));
+                }
             }
             _ => {
                 return Err(Error::internal(
@@ -14120,7 +14178,10 @@ fn lower_unlinked_tree(
             has_prototype: matches!(
                 (function.kind, function.execution_kind),
                 (FunctionKind::Ordinary, BytecodeFunctionKind::Normal)
-                    | (_, BytecodeFunctionKind::Generator)
+                    | (
+                        _,
+                        BytecodeFunctionKind::Generator | BytecodeFunctionKind::AsyncGenerator
+                    )
             ),
             constructor_kind: if function.execution_kind != BytecodeFunctionKind::Normal {
                 ConstructorKind::None

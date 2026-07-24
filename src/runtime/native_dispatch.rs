@@ -398,6 +398,9 @@ impl Runtime {
             NativeFunctionId::GeneratorPrototypeResume(kind) => {
                 self.call_generator_prototype_resume(realm, kind, invocation, arguments)
             }
+            NativeFunctionId::AsyncGeneratorPrototypeResume(kind) => {
+                self.call_async_generator_prototype_resume(realm, kind, invocation, arguments)
+            }
             NativeFunctionId::ArrayConstructor => {
                 self.call_array_constructor(realm, invocation, arguments)
             }
@@ -475,6 +478,9 @@ impl Runtime {
             NativeFunctionId::SetIteratorNext => self.call_set_iterator_next(realm, invocation),
             NativeFunctionId::AsyncFunctionResume(kind) => {
                 self.call_async_function_resume(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::AsyncGeneratorResume(kind) => {
+                self.call_async_generator_resume(realm, kind, invocation, arguments)
             }
             NativeFunctionId::Promise(kind) => {
                 self.call_promise_native(realm, kind, invocation, arguments)

@@ -7480,7 +7480,10 @@ fn function_bind_and_to_string_use_quickjs_payload_and_source_paths() {
             "async function *fallback() {\n    [native code]\n}",
         ),
     ] {
-        let (code, metadata) = if function_kind == crate::heap::FunctionKind::Generator {
+        let (code, metadata) = if matches!(
+            function_kind,
+            crate::heap::FunctionKind::Generator | crate::heap::FunctionKind::AsyncGenerator
+        ) {
             (
                 vec![
                     Instruction::InitialYield,

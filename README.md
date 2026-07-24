@@ -3,16 +3,15 @@
 An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
-The `unsafe`-free engine is runnable but incomplete. The current R3ae milestone
-adds ordinary private async instance/static class methods by combining the
-existing `Method+Async` execution path with authenticated private-method
-HomeObject/brand publication. Pinned QuickJS passes all 233 candidate paths;
-77 async-generator/mixed-staging exclusions leave 156 paths and 312/312
-passing Oxide variants. The conservative full vector remains byte-identical at
-43,661/102,037 with no previous-pass regression. Async generators, modules,
-Proxy, and broad built-in coverage remain incomplete. Pinned QuickJS is the
-test oracle, never a product dependency. See the status documents below for
-historical milestones and reproducible R3ae evidence.
+The `unsafe`-free engine is runnable but incomplete. The current R3af milestone
+adds ordinary async-generator functions and their queue/Promise semantics.
+Pinned QuickJS passes all 1,008 candidate paths; 765 explicit frontier
+exclusions leave 243 paths and 440/440 passing Oxide variants. Async-generator
+methods, `yield*`, `for await`, async iterator closing, modules, Proxy, and broad
+built-in coverage remain incomplete. The conservative full vector gains 15
+passes to 43,676/102,037 with no previous-pass regression. Pinned QuickJS is
+the test oracle, never a product dependency. See the status documents for
+detailed bookkeeping.
 
 ## Try it
 
@@ -48,7 +47,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-generator-destructuring.sh
 ./scripts/test-test262-iterator-helpers.sh
 ./scripts/test-test262-iterator-sequencing.sh
-./scripts/test-test262-async-{function,arrow,object-method,class-method,private-class-method}-core.sh
+./scripts/test-test262-async-{function,arrow,object-method,class-method,private-class-method,generator}-core.sh
 ./scripts/test-r3z-async-function-core-oracle.sh --oxide ./target/debug/qjs
 ```
 

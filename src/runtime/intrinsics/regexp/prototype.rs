@@ -139,7 +139,8 @@ impl Runtime {
                 | ObjectPayload::BoundFunction { .. }
                 | ObjectPayload::BytecodeFunction { .. }
                 | ObjectPayload::AsyncFunctionState(_)
-                | ObjectPayload::Generator { .. } => None,
+                | ObjectPayload::Generator { .. }
+                | ObjectPayload::AsyncGenerator(_) => None,
             }
         };
         let Some(pattern) = pattern else {
@@ -207,7 +208,8 @@ impl Runtime {
                 | ObjectPayload::BoundFunction { .. }
                 | ObjectPayload::BytecodeFunction { .. }
                 | ObjectPayload::AsyncFunctionState(_)
-                | ObjectPayload::Generator { .. } => None,
+                | ObjectPayload::Generator { .. }
+                | ObjectPayload::AsyncGenerator(_) => None,
             }
         };
         if let Some(flags) = flags {

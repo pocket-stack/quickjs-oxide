@@ -43,6 +43,15 @@ initial snapshot. Both paths are pinned in `tests/oracle_for_in.rs`.
 
 ## Open implementation frontiers
 
+- Admitted ordinary async-generator direct-yield/await paths match the pinned
+  driver, including poisoned Promise constructors, iterator-result resolution
+  reentry, and completed-state queue re-entry. Internal allocation/setup
+  failure is not yet recovered identically: iterator-result allocation can
+  fail after the VM has advanced, and failure to create or install a private
+  continuation can leave the front request capability pending for a later
+  retry. These host-error paths require fault injection and a transactional
+  pending-settlement representation before they can be admitted; they are an
+  unresolved hardening frontier, not an approved observable deviation.
 - `Promise.all`, `Promise.allSettled`, and `Promise.any` match pinned QuickJS on
   ordinary JavaScript-observable paths, but internal allocation failure is not
   yet routed identically. Failure to allocate the output Array currently

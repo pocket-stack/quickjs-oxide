@@ -1884,7 +1884,10 @@ fn verify_unlinked_tree_with_root(
                 || function.metadata().eval_kind != EvalKind::None
                 || !matches!(
                     function.metadata().function_kind,
-                    FunctionKind::Normal | FunctionKind::Generator | FunctionKind::Async
+                    FunctionKind::Normal
+                        | FunctionKind::Generator
+                        | FunctionKind::Async
+                        | FunctionKind::AsyncGenerator
                 ))
         {
             return Err(RuntimeError::Engine(Error::internal(
@@ -1896,7 +1899,10 @@ fn verify_unlinked_tree_with_root(
                 || function.metadata().eval_kind != EvalKind::None
                 || !matches!(
                     function.metadata().function_kind,
-                    FunctionKind::Normal | FunctionKind::Generator | FunctionKind::Async
+                    FunctionKind::Normal
+                        | FunctionKind::Generator
+                        | FunctionKind::Async
+                        | FunctionKind::AsyncGenerator
                 )
                 || function.metadata().eval_variable_object_local.is_none())
         {

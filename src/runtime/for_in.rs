@@ -171,7 +171,8 @@ impl Runtime {
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. }
             | ObjectPayload::AsyncFunctionState(_)
-            | ObjectPayload::Generator { .. } => return Ok(None),
+            | ObjectPayload::Generator { .. }
+            | ObjectPayload::AsyncGenerator(_) => return Ok(None),
         };
         let shape = state.heap.shape(object_data.shape)?;
         for entry in shape.entries() {

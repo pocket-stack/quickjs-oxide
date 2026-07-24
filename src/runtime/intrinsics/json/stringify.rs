@@ -319,7 +319,8 @@ impl Runtime {
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. }
             | ObjectPayload::AsyncFunctionState(_)
-            | ObjectPayload::Generator { .. } => JsonWrapperKind::Other,
+            | ObjectPayload::Generator { .. }
+            | ObjectPayload::AsyncGenerator(_) => JsonWrapperKind::Other,
         })
     }
 }

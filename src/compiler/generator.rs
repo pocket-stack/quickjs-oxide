@@ -13,8 +13,10 @@ impl<'source> Parser<'source> {
     /// after it.
     pub(super) fn insert_generator_initial_yield(&mut self) -> Result<(), Error> {
         let function = self.current_ir();
-        if function.execution_kind != BytecodeFunctionKind::Generator
-            || function.in_function_body
+        if !matches!(
+            function.execution_kind,
+            BytecodeFunctionKind::Generator | BytecodeFunctionKind::AsyncGenerator
+        ) || function.in_function_body
             || function.stack_depth != 0
         {
             return Err(Error::internal(
@@ -58,7 +60,10 @@ impl<'source> Parser<'source> {
         if !matches!(self.current().kind, TokenKind::Keyword(Keyword::Yield)) {
             return Err(Error::internal("yield parser did not start at yield"));
         }
-        if self.current_ir().execution_kind != BytecodeFunctionKind::Generator {
+        if !matches!(
+            self.current_ir().execution_kind,
+            BytecodeFunctionKind::Generator | BytecodeFunctionKind::AsyncGenerator
+        ) {
             return Err(self.syntax_here("unexpected 'yield' keyword"));
         }
         if !self.current_ir().in_function_body {
@@ -79,6 +84,12 @@ impl<'source> Parser<'source> {
         self.anonymous_function_definition = None;
 
         if delegated {
+            if self.current_ir().execution_kind == BytecodeFunctionKind::AsyncGenerator {
+                return Err(Error::unsupported(
+                    "async generator yield* is not implemented yet",
+                    super::source_span(yield_span),
+                ));
+            }
             self.lower_yield_star(yield_span)?;
             self.anonymous_function_definition = None;
             self.current_ir_mut().last_member_reference = None;
@@ -86,6 +97,13 @@ impl<'source> Parser<'source> {
             return Ok(());
         }
 
+        // QuickJS awaits every ordinary AsyncGenerator yield operand before
+        // publishing the iterator result. This is distinct from resolving the
+        // request Promise with an object whose `value` still contains the
+        // original thenable.
+        if self.current_ir().execution_kind == BytecodeFunctionKind::AsyncGenerator {
+            self.emit_instruction_at(Instruction::Await, source_offset(yield_span)?)?;
+        }
         self.emit_instruction_at(Instruction::Yield, source_offset(yield_span)?)?;
 
         // QuickJS's driver injects a false discriminator for `.next()` and a
@@ -93,7 +111,7 @@ impl<'source> Parser<'source> {
         // the VM's pending-exception path and never reaches this branch.
         let next = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
         let resumed_depth = self.current_ir().stack_depth;
-        self.emit_return_completion(yield_span)?;
+        self.emit_return_completion(yield_span, true)?;
         let next_target = self.current_ir().ops.len();
         self.patch_jump(next, next_target)?;
         self.current_ir_mut().stack_depth = resumed_depth;
@@ -159,7 +177,7 @@ impl<'source> Parser<'source> {
         for _ in 0..3 {
             self.emit_instruction(Instruction::Nip)?;
         }
-        self.emit_return_completion(yield_span)?;
+        self.emit_return_completion(yield_span, true)?;
 
         self.current_ir_mut().stack_depth = base_depth + 4;
         let throw_target = self.current_ir().ops.len();

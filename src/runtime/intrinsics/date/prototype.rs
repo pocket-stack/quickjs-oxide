@@ -123,7 +123,8 @@ impl Runtime {
                 | ObjectPayload::StringIterator { .. }
                 | ObjectPayload::RegExpStringIterator { .. }
                 | ObjectPayload::AsyncFunctionState(_)
-                | ObjectPayload::Generator { .. } => None,
+                | ObjectPayload::Generator { .. }
+                | ObjectPayload::AsyncGenerator(_) => None,
             }
         };
         let Some(value) = value else {

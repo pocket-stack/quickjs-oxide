@@ -52,7 +52,8 @@ impl Runtime {
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. }
             | ObjectPayload::AsyncFunctionState(_)
-            | ObjectPayload::Generator { .. } => None,
+            | ObjectPayload::Generator { .. }
+            | ObjectPayload::AsyncGenerator(_) => None,
         })
     }
 
@@ -1211,7 +1212,8 @@ impl Runtime {
                 | ObjectPayload::BoundFunction { .. }
                 | ObjectPayload::BytecodeFunction { .. }
                 | ObjectPayload::AsyncFunctionState(_)
-                | ObjectPayload::Generator { .. } => None,
+                | ObjectPayload::Generator { .. }
+                | ObjectPayload::AsyncGenerator(_) => None,
             }
         };
         if let Some((hidden, var_ref, configurable)) = global_var_ref {
