@@ -261,7 +261,7 @@ new C().read().next().then(function (result) {
     assert_eq!(String::from_utf8_lossy(&quickjs.stdout), "84\n");
     assert!(
         String::from_utf8_lossy(&oxide.stderr)
-            .contains("async generator class methods are not implemented yet")
+            .contains("private async generator class methods are not implemented yet")
     );
 }
 

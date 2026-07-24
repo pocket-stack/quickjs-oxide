@@ -334,8 +334,8 @@ impl<'source> Parser<'source> {
         Ok(parsed.child)
     }
 
-    /// Parse one public object-literal async-generator method after its
-    /// property name has been consumed. The grammar role remains `Method`
+    /// Parse one public object-literal or class async-generator method after
+    /// its property name has been consumed. The grammar role remains `Method`
     /// while the independent AsyncGenerator execution kind selects the
     /// Promise-backed iterator driver and intrinsic prototype graph.
     pub(super) fn parse_async_generator_method_definition(

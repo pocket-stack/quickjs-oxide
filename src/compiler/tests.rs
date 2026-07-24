@@ -483,10 +483,122 @@ fn async_class_methods_reuse_method_publication_and_preserve_full_source_ranges(
 }
 
 #[test]
+fn async_generator_class_methods_compose_method_grammar_with_the_async_driver() {
+    let source = concat!(
+        "class Base {}\n",
+        "class Class extends Base {\n",
+        "  async /* a */ * fixed(value = super.seed) { await value; yield value; }\n",
+        "  static async *['computed'](value = super.seed) { yield value; }\n",
+        "}",
+    );
+    let tree = Parser::parse(
+        source,
+        JsString::from_static("<async-generator-class-method-kind-test>"),
+    )
+    .unwrap();
+    let methods = tree
+        .functions
+        .iter()
+        .filter(|function| {
+            function.kind == FunctionKind::Method
+                && function.execution_kind == BytecodeFunctionKind::AsyncGenerator
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(methods.len(), 2);
+    assert!(methods.iter().all(|function| {
+        function.in_function_body
+            && function.super_allowed
+            && !function.super_call_allowed
+            && function
+                .ops
+                .iter()
+                .filter(|operation| {
+                    matches!(
+                        operation.op,
+                        super::IrOp::Bytecode(Instruction::InitialYield)
+                    )
+                })
+                .count()
+                == 1
+            && function
+                .ops
+                .iter()
+                .any(|operation| matches!(operation.op, super::IrOp::Bytecode(Instruction::Yield)))
+    }));
+    assert!(
+        methods[0]
+            .ops
+            .iter()
+            .any(|operation| { matches!(operation.op, super::IrOp::Bytecode(Instruction::Await)) })
+    );
+    for (function, authored) in methods.iter().zip([
+        "async /* a */ * fixed(value = super.seed) { await value; yield value; }",
+        "async *['computed'](value = super.seed) { yield value; }",
+    ]) {
+        let start = source
+            .find(authored)
+            .expect("authored async-generator class method");
+        let range = function
+            .source
+            .range
+            .as_ref()
+            .expect("async-generator class method source range");
+        assert_eq!(
+            &source[function.source.span.start.byte_offset..function.source.span.end.byte_offset],
+            "async"
+        );
+        assert_eq!(function.source.definition.as_usize(), start);
+        assert_eq!(range.start.as_usize(), start);
+        assert_eq!(range.end.as_usize(), start + authored.len());
+    }
+
+    let script = compile_unlinked_script(source).unwrap();
+    assert!(script.code().iter().any(|instruction| matches!(
+        instruction,
+        Instruction::DefineMethod {
+            kind: DefineMethodKind::Method,
+            enumerable: false,
+            ..
+        }
+    )));
+    assert!(script.code().iter().any(|instruction| matches!(
+        instruction,
+        Instruction::DefineMethodComputed {
+            kind: DefineMethodKind::Method,
+            enumerable: false,
+        }
+    )));
+    let published = script
+        .constants()
+        .iter()
+        .filter_map(|constant| constant.as_child())
+        .filter(|function| {
+            function.metadata().function_kind == BytecodeFunctionKind::AsyncGenerator
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(published.len(), 2);
+    assert!(published.iter().all(|function| {
+        function.metadata().needs_home_object
+            && function.metadata().has_prototype
+            && function.metadata().constructor_kind == ConstructorKind::None
+            && function
+                .code()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::InitialYield))
+                .count()
+                == 1
+    }));
+}
+
+#[test]
 fn async_class_method_contextual_boundaries_match_quickjs() {
     for source in [
         "class C { async method(){ return await 1; } }",
         "class C { static async ['computed'](){ return await 1; } }",
+        "class C { async *generator(){ yield 1; } }",
+        "class C { static async *['computed'](){ yield 1; } }",
+        "class C { async/*\u{2028}*/*generator(){ yield 1; } }",
+        "class C { async/*\u{2029}*/*generator(){ yield 1; } }",
         "class C { async await(){ return 1; } static async constructor(){ return 2; } }",
         "class C { async/*\u{2028}*/method(){ return 1; } }",
         "class C { async/*\u{2029}*/method(){ return 1; } }",
@@ -509,6 +621,11 @@ fn async_class_method_contextual_boundaries_match_quickjs() {
         "class C { async method(value = await 1){} }",
         r"class C { async method(\u0061wait){} }",
         r"class C { \u0061sync method(){} }",
+        r"class C { \u0061sync *method(){} }",
+        "class C { async *constructor(){} }",
+        "class C { static async *prototype(){} }",
+        "class C { async *method(value = await 1){} }",
+        "class C { async *method(value = yield 1){} }",
         "class C { async; }",
     ] {
         assert_eq!(
@@ -517,15 +634,19 @@ fn async_class_method_contextual_boundaries_match_quickjs() {
             "{source:?}"
         );
     }
+    let private = compile_unlinked_script("class C { async *#generator(){} }").unwrap_err();
+    assert_eq!(private.kind(), ErrorKind::Unsupported);
+    assert_eq!(
+        private.message(),
+        "private async generator class methods are not implemented yet"
+    );
     for source in [
-        "class C { async *generator(){} }",
-        "class C { static async *generator(){} }",
+        "class C { async *constructor(value = await 1) { yield* source; } }",
+        "class C { static async *prototype(value = yield 1) { super(); } }",
     ] {
-        assert_eq!(
-            compile_unlinked_script(source).unwrap_err().kind(),
-            ErrorKind::Unsupported,
-            "{source:?}"
-        );
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source:?}");
+        assert_eq!(error.message(), "invalid method name", "{source:?}");
     }
 }
 
@@ -753,7 +874,6 @@ fn async_function_lexical_context_and_async_generator_frontiers_match_quickjs() 
         "async function* generator(){ yield* source; }",
         "async function* generator(){ for (let value of source) { yield value; } }",
         "async function* generator(){ for (let value of source) { return value; } }",
-        "class C { async *method(){} }",
     ] {
         assert_eq!(
             compile_unlinked_script(source).unwrap_err().kind(),
@@ -1205,7 +1325,7 @@ fn generator_for_of_head_inner_close_throw_pending_closes_outer() {
 }
 
 #[test]
-fn synchronous_generator_methods_keep_class_async_frontier_explicit() {
+fn generator_method_frontiers_keep_private_async_generators_and_delegation_explicit() {
     for source in [
         "class C { *constructor(){} }",
         "class C { static *prototype(){} }",
@@ -1227,22 +1347,23 @@ fn synchronous_generator_methods_keep_class_async_frontier_explicit() {
         "invalid property name"
     );
 
-    for source in [
-        "class C { async *method(){} }",
-        "class C { async *#method(){} }",
-    ] {
-        assert_eq!(
-            compile_unlinked_script(source).unwrap_err().kind(),
-            ErrorKind::Unsupported,
-            "{source:?}"
-        );
-    }
+    compile_unlinked_script("class C { async *method(){ yield 1; } }")
+        .expect("public class async-generator method should use the independent async driver");
+    assert_eq!(
+        compile_unlinked_script("class C { async *#method(){} }")
+            .unwrap_err()
+            .kind(),
+        ErrorKind::Unsupported,
+    );
     compile_unlinked_script("({ async *method(){ yield 1; } })")
         .expect("object async-generator method should use the independent async driver");
     for source in [
         "({ async *method(){ yield* source; } })",
         "({ async *method(){ for await (var value of values) yield value; } })",
         "({ async *method(values){ for (var value of values) yield value; } })",
+        "class C { async *method(){ yield* source; } }",
+        "class C { async *method(){ for await (var value of values) yield value; } }",
+        "class C { async *method(values){ for (var value of values) yield value; } }",
     ] {
         assert_eq!(
             compile_unlinked_script(source).unwrap_err().kind(),

@@ -3,8 +3,9 @@
 //! This is the first vertical slice of QuickJS `js_parse_class`: class name
 //! scopes, heritage, base/derived constructors, `super()` and synchronous
 //! methods/accessors, fields, private methods/accessors, and static blocks.
-//! Public/private synchronous generator methods and ordinary async methods are
-//! supported. Async generators remain an explicit typed frontier.
+//! Public/private synchronous generator methods, ordinary async methods, and
+//! public async-generator methods are supported. Private async-generator
+//! methods remain an explicit typed frontier.
 
 use super::function::ParsedFunctionDefinition;
 use super::*;
@@ -239,15 +240,17 @@ impl<'source> Parser<'source> {
             self.advance()?;
         }
         let asynchronous = !generator && self.contextual_class_async_method_ahead()?;
-        if asynchronous {
+        let async_generator = if asynchronous {
             self.advance()?;
             if self.is_punctuator(Punctuator::Multiply) {
-                return Err(Error::unsupported(
-                    "async generator class methods are not implemented yet",
-                    source_span(function_span),
-                ));
+                self.advance()?;
+                true
+            } else {
+                false
             }
-        }
+        } else {
+            false
+        };
 
         let mut method_kind = DefineMethodKind::Method;
         if !generator
@@ -292,6 +295,12 @@ impl<'source> Parser<'source> {
 
         if let ClassPropertyKey::Private { name, span } = &key {
             if method_kind == DefineMethodKind::Method {
+                if async_generator {
+                    return Err(Error::unsupported(
+                        "private async generator class methods are not implemented yet",
+                        source_span(function_span),
+                    ));
+                }
                 let flavor = if generator {
                     ClassMethodFlavor::Generator
                 } else if asynchronous {
@@ -362,7 +371,9 @@ impl<'source> Parser<'source> {
                 Some(self.parse_class_constructor_definition(function_span, has_heritage)?);
             self.anonymous_function_definition = None;
         } else {
-            if generator {
+            if async_generator {
+                self.parse_async_generator_method_definition(function_span)?;
+            } else if generator {
                 self.parse_generator_method_definition(function_span)?;
             } else if asynchronous {
                 self.parse_async_method_definition(function_span)?;

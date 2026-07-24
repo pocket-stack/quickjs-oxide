@@ -43,9 +43,10 @@ initial snapshot. Both paths are pinned in `tests/oracle_for_in.rs`.
 
 ## Open implementation frontiers
 
-- Admitted ordinary async-generator function and object-method direct-yield/
-  await paths match the pinned driver, including poisoned Promise constructors,
-  iterator-result resolution reentry, and completed-state queue re-entry.
+- Admitted ordinary async-generator function, object-method, and public
+  class-method direct-yield/await paths match the pinned driver, including
+  poisoned Promise constructors, iterator-result resolution reentry, and
+  completed-state queue re-entry.
   Internal allocation/setup
   failure is not yet recovered identically: iterator-result allocation can
   fail after the VM has advanced, and failure to create or install a private
